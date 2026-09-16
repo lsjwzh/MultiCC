@@ -3,7 +3,8 @@ const { gitWorktreeMergeState, gitWorktreeRemove } = require('../git/service');
 const { taskDirId } = require('./core');
 
 function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getState,
-  getRunState, getHistoryService, destroySession, directories, persist }) {
+  getRunState, getHistoryService, destroySession, directories, persist, mutate,
+  workspaceBroadcast, chatBroadcast }) {
   function worktrees(ids) {
     return Object.values(getBoard().tasks).filter(t => ids.includes(t.id) && t.worktreePath && t.branch);
   }
@@ -93,7 +94,23 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
     }
     persist();
   }
-  return { assertTaskIdle, prepareTaskDelete, purgeTaskData };
+  function syncTaskTitle(task) {
+    if (typeof mutate !== 'function') return;
+    const updated = [];
+    mutate('task.title-rename', sessions => {
+      for (const record of sessions.values()) {
+        if (record.taskBoundTaskId !== task.id) continue;
+        record.label = task.title;
+        updated.push({ id: record.id, dirId: record.dirId });
+      }
+    });
+    for (const record of updated) {
+      const event = { type: 'session_updated', sessionId: record.id, label: task.title };
+      workspaceBroadcast?.(record.dirId, event);
+      chatBroadcast?.(record.id, event);
+    }
+  }
+  return { assertTaskIdle, prepareTaskDelete, purgeTaskData, syncTaskTitle };
 }
 
 module.exports = { createTaskLifecycleHost };

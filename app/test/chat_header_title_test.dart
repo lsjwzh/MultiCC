@@ -57,6 +57,8 @@ Widget _host(
   VoidCallback? onDeleteTask,
   bool forceSyncing = false,
   bool autoCommit = true,
+  Future<Map<String, dynamic>> Function(String taskId, String title)?
+  renameTask,
 }) => MultiProvider(
   providers: [
     ChangeNotifierProvider<SessionManager>.value(value: mgr),
@@ -89,6 +91,7 @@ Widget _host(
             artifactsLabel: artifactsLabel,
             onArtifacts: onArtifacts ?? () {},
             onDeleteTask: onDeleteTask,
+            renameTask: renameTask,
           ),
         ),
       ),
@@ -364,6 +367,60 @@ void main() {
 
       expect(mgr.renamedIds, isEmpty);
       expect(find.text(t('renameSessionSaved')), findsNothing);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    testWidgets('任务绑定会话双击后改任务标题，不改隐藏会话别名', (tester) async {
+      final settings = await _settings();
+      final mgr = _RecordingManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 'task-session',
+        displayName: '任务 · 原标题',
+        dirName: 'multicc',
+        sessionCwd: '/tmp',
+        taskBoundTaskId: 'tsk_a',
+      );
+      final calls = <Map<String, String>>[];
+
+      await tester.pumpWidget(
+        _host(
+          mgr,
+          settings,
+          provider,
+          renameTask: (taskId, title) async {
+            calls.add({'taskId': taskId, 'title': title});
+            return {
+              'ok': true,
+              'task': {'id': taskId, 'title': title},
+            };
+          },
+        ),
+      );
+
+      final title = find.text('multicc / 任务 · 原标题');
+      await tester.tap(title);
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(title);
+      await tester.pump();
+
+      expect(find.text('更改任务标题'), findsOneWidget);
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.controller!.text, '原标题');
+      expect(field.maxLength, 40);
+      await tester.enterText(find.byType(TextField), '新任务标题');
+      await tester.tap(find.text(t('save')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(calls, [
+        {'taskId': 'tsk_a', 'title': '新任务标题'},
+      ]);
+      expect(mgr.renamedIds, isEmpty);
+      expect(provider.displayName, '新任务标题');
+      expect(find.text('任务标题已更新。'), findsOneWidget);
 
       provider.dispose();
       mgr.dispose();

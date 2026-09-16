@@ -9,6 +9,7 @@ import '../models/message.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../services/chat_service.dart';
+import '../services/air_service.dart';
 import '../services/notification_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
@@ -61,6 +62,8 @@ class ChatHeader extends StatelessWidget {
   final VoidCallback onCwd;
   final bool advancedMode;
   final VoidCallback? onDeleteTask;
+  final Future<Map<String, dynamic>> Function(String taskId, String title)?
+  renameTask;
   const ChatHeader({
     super.key,
     required this.settings,
@@ -85,31 +88,32 @@ class ChatHeader extends StatelessWidget {
     required this.onCwd,
     this.advancedMode = true,
     this.onDeleteTask,
+    this.renameTask,
   });
 
-  /// 双击标题改名 —— 对齐 web `chat.js` 的 renameSessionFromChat()：预填的是
-  /// 当前别名（不是「目录 / 名字」那串），上限 80 字，留空就清掉别名回落到
-  /// 会话 id。改完由 SessionManager.loadDashboard() 把新名字推回标题，这里不
-  /// 自己改 displayName —— 否则服务端拒绝时本地已经先变了。
-  Future<void> _renameSession(
-    BuildContext context,
-    ChatProvider provider,
-  ) async {
+  /// 普通会话改别名；任务绑定会话改任务板里的正式标题。后者不能再 PATCH 隐藏
+  /// 会话的 label，否则 Air 列表仍是旧标题，Web 与 App 会各显示一套名字。
+  Future<void> _renameTitle(BuildContext context, ChatProvider provider) async {
     final manager = context.read<SessionManager>();
     final messenger = ScaffoldMessenger.of(context);
-    final ctrl = TextEditingController(text: provider.displayName);
+    final taskId = provider.taskBoundTaskId;
+    final taskMode = taskId != null && taskId.isNotEmpty;
+    final current = taskMode
+        ? provider.displayName.replaceFirst(RegExp(r'^任务\s*·\s*'), '')
+        : provider.displayName;
+    final ctrl = TextEditingController(text: current);
     final next = await showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: const Color(0xFFffffff),
         title: Text(
-          t('renameSessionTitle'),
+          taskMode ? '更改任务标题' : t('renameSessionTitle'),
           style: const TextStyle(fontSize: 15, color: Color(0xFF20364d)),
         ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          maxLength: 80,
+          maxLength: taskMode ? 40 : 80,
           style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
           decoration: InputDecoration(
             hintText: provider.sessionName,
@@ -143,12 +147,43 @@ class ChatHeader extends StatelessWidget {
       ),
     );
     if (next == null) return;
+    final title = next.trim();
+    if (taskMode && title.isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('任务标题不能为空。')));
+      return;
+    }
     try {
-      await manager.renameSession(provider.sessionName, next.trim());
-      messenger.showSnackBar(SnackBar(content: Text(t('renameSessionSaved'))));
+      if (taskMode) {
+        final service = renameTask == null
+            ? AirService(settings: settings)
+            : null;
+        late final Map<String, dynamic> result;
+        try {
+          result =
+              await (renameTask?.call(taskId, title) ??
+                  service!.renameTask(taskId, title));
+        } finally {
+          service?.close();
+        }
+        final task = result['task'];
+        final saved = task is Map ? '${task['title'] ?? title}' : title;
+        provider.setDisplayName(saved);
+        messenger.showSnackBar(const SnackBar(content: Text('任务标题已更新。')));
+      } else {
+        await manager.renameSession(provider.sessionName, title);
+        messenger.showSnackBar(
+          SnackBar(content: Text(t('renameSessionSaved'))),
+        );
+      }
     } catch (error) {
       messenger.showSnackBar(
-        SnackBar(content: Text(t('renameSessionFailed', {'error': '$error'}))),
+        SnackBar(
+          content: Text(
+            taskMode
+                ? '任务标题更新失败：$error'
+                : t('renameSessionFailed', {'error': '$error'}),
+          ),
+        ),
       );
     }
   }
@@ -189,7 +224,7 @@ class ChatHeader extends StatelessWidget {
           // screens move the title to its own full-width second line.
           final title = _SessionTitle(
             label: provider.titleLabel,
-            onDoubleTap: () => _renameSession(context, provider),
+            onDoubleTap: () => _renameTitle(context, provider),
           );
           // 只读历史（Web 的 `#status` 在 readOnly 模式下写成「只读历史」）：
           // 归档记录不能删、不能清空，但能继续对话，所以只加一枚标识说明现在

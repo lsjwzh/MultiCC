@@ -18,7 +18,7 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
     execution: { busy: false, status: 'idle' }, resource: { residency: 'retained', lease: 'idle', path: '/projects/multicc/.worktrees/task-a', branch: 'multicc/task-a' },
     attribution: {}, configuration: { cli: 'codex', model: 'gpt-5.5', effectiveModel: 'gpt-5.5' }, roleBindings: null, messages: [] };
   const listed = () => [{ ...entry.task, dirId: entry.task.dirId || 'd1', updatedAt: Date.now(), resource: entry.resource }];
-  const statusCalls = [], relocateCalls = [], deleteCalls = [];
+  const statusCalls = [], renameCalls = [], relocateCalls = [], deleteCalls = [];
 
   for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
     routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)),
@@ -46,6 +46,11 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
     entry.task.status = value.status; entry.status = value.status;
     return json({ ok: true, task: entry.task });
   };
+  routes['POST /api/task-board/tasks/tsk_a/title'] = ({ body }) => {
+    const value = JSON.parse(body); renameCalls.push(value);
+    entry.task.title = value.title;
+    return json({ ok: true, task: entry.task });
+  };
   routes['POST /api/task-board/tasks/tsk_a/relocate'] = ({ body }) => {
     const value = JSON.parse(body); relocateCalls.push(value);
     entry.task.dirId = value.dirId;
@@ -59,6 +64,17 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?task=tsk_a&dir=d1');
     assert.ok(await page.waitFor(`document.getElementById('task-title')?.textContent==='完善任务协作体验'`), 'task opened');
+    assert.equal(await page.evaluate(`document.getElementById('task-title').title`), '双击更改任务标题');
+    await page.evaluate(`document.getElementById('task-title').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
+    assert.ok(await page.waitFor(`document.querySelector('.rename-task-dialog')?.open===true`), 'rename dialog opened');
+    assert.equal(await page.evaluate(`document.querySelector('.rename-task-dialog input').value`), '完善任务协作体验');
+    await page.evaluate(`(()=>{const input=document.querySelector('.rename-task-dialog input');input.value='手动命名的任务';input.form.requestSubmit();})()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-title')?.textContent==='手动命名的任务'`), 'renamed title painted');
+    assert.deepEqual(renameCalls, [{ title: '手动命名的任务' }]);
+    assert.equal(await page.evaluate(`document.querySelector('#tasks button.selected strong')?.textContent`), '手动命名的任务', 'sidebar title updated too');
+    // 后台 CDP 标签的 dialog close 事件需要推进一帧（下方移动弹窗同理）。
+    await page.screenshot('rename-dialog-close-frame');
+    assert.ok(await page.waitFor(`document.querySelectorAll('.rename-task-dialog').length===0`), 'rename dialog removed');
     assert.ok(await page.waitFor(`document.getElementById('conversation')?.contentDocument?.getElementById('air-delete-task-btn')?.hidden===false`),
       'the chat More menu receives the host-owned delete action');
     assert.equal(await page.evaluate(`(() => {
@@ -116,7 +132,7 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
       'delete notice: ' + await page.evaluate(`document.getElementById('notice').textContent`));
     assert.deepEqual(deleteCalls, ['tsk_a']);
     assert.equal(await page.evaluate(`window.__confirmed.length`), 1, 'delete asks once');
-    assert.ok((await page.evaluate(`window.__confirmed[0]`)).includes('完善任务协作体验'), 'the confirm names the task');
+    assert.ok((await page.evaluate(`window.__confirmed[0]`)).includes('手动命名的任务'), 'the confirm names the task');
     assert.ok((await page.evaluate(`window.__confirmed[0]`)).includes('不可撤销'), 'the confirm says it cannot be undone');
     assert.equal(await page.evaluate(`location.search.includes('task=')`), false, 'the deleted task is no longer selected');
     assert.deepEqual(await page.evaluate(`(window.__errors||[]).filter(m=>!/Failed to load resource|net::/.test(m))`), []);

@@ -859,6 +859,22 @@
     return recentPool();
   }
 
+  function applyTaskTitleEditing(task = null) {
+    const titleEditable = !!(taskId && task);
+    $('task-title').classList.toggle('editable', titleEditable);
+    if (titleEditable) {
+      $('task-title').title = '双击更改任务标题';
+      $('task-title').tabIndex = 0;
+      $('task-title').setAttribute('aria-keyshortcuts', 'Enter F2');
+      $('task-title').setAttribute('aria-label', `任务标题：${task.title}。双击或按回车更改`);
+    } else {
+      $('task-title').removeAttribute('title');
+      $('task-title').removeAttribute('tabindex');
+      $('task-title').removeAttribute('aria-keyshortcuts');
+      $('task-title').removeAttribute('aria-label');
+    }
+  }
+
   function renderHeader(dir) {
     const selectedEntry = entry?.task?.id === taskId ? entry : null;
     const adminHeadings = {
@@ -911,6 +927,7 @@
       $('task-title').textContent = dir?.name || '先添加工作目录';
       $('task-state').textContent = dir?.path || '添加目录后即可创建任务。';
     }
+    applyTaskTitleEditing(selectedEntry?.task || null);
     for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share',
       'details-toggle', 'chat-more']) $(id).hidden = !taskId;
     $('task-state').disabled = !taskId;
@@ -1206,6 +1223,8 @@
     task_busy: '任务正在执行或排队中，等它空闲下来再操作。',
     task_archived: '任务已归档。',
     task_deleting: '任务正在删除中，请稍等。',
+    title_required: '任务标题不能为空。',
+    title_too_long: '任务标题最多 40 个字符。',
     task_workspace_dirty: '工作区还有未提交改动：请先在任务里让它提交或清理，再删除。',
     task_workspace_unmerged: '工作区还有未合并到基分支的提交：请先合并，再删除。',
     task_session_shared: '会话还被其他任务共享，无法删除。',
@@ -1311,6 +1330,58 @@
     dialog.append(form);
     document.body.append(dialog);
     dialog.showModal();
+  }
+
+  function openTaskTitleDialog() {
+    if (!taskId || !entry?.task || document.querySelector('.rename-task-dialog')) return;
+    const selectedTaskId = taskId;
+    const currentTitle = String(entry.task.title || '').trim();
+    const dialog = node('dialog', null, 'rename-task-dialog');
+    const form = node('form');
+    form.append(node('span', 'TASK TITLE', 'eyebrow'), node('h2', '更改任务标题'));
+    form.append(node('p', '标题会同步到任务列表与任务会话；手动标题不会再被自动归类覆盖。'));
+    const label = node('label', '任务标题');
+    const input = node('input');
+    input.name = 'title'; input.type = 'text'; input.required = true; input.maxLength = 40;
+    input.autocomplete = 'off'; input.value = currentTitle;
+    label.append(input);
+    const error = node('p', '', 'rename-task-error');
+    error.setAttribute('role', 'alert');
+    const footer = node('div', null, 'rename-task-footer');
+    const cancel = node('button', '取消');
+    cancel.type = 'button'; cancel.onclick = () => dialog.close();
+    const save = node('button', '保存');
+    save.type = 'submit'; save.classList.add('primary');
+    footer.append(cancel, save);
+    form.append(label, error, footer);
+    form.onsubmit = async event => {
+      event.preventDefault();
+      const title = input.value.trim();
+      if (!title) { error.textContent = '任务标题不能为空。'; input.focus(); return; }
+      if (title === currentTitle) { dialog.close(); return; }
+      input.disabled = true; save.disabled = true; error.textContent = '';
+      try {
+        const result = await api(`/api/task-board/tasks/${encodeURIComponent(selectedTaskId)}/title`, { title });
+        const updated = result.task || { id: selectedTaskId, title };
+        if (data?.tasks) {
+          const listed = data.tasks.find(task => task.id === selectedTaskId);
+          if (listed) Object.assign(listed, updated);
+        }
+        if (entry?.task?.id === selectedTaskId) Object.assign(entry.task, updated);
+        dialog.close();
+        render();
+        syncFrame();
+        notice('任务标题已更新。');
+      } catch (cause) {
+        error.textContent = taskActionError(cause) || '任务标题更新失败。';
+        input.disabled = false; save.disabled = false; input.focus();
+      }
+    };
+    dialog.onclose = () => { $('task-title')?.focus(); dialog.remove(); };
+    dialog.append(form);
+    document.body.append(dialog);
+    dialog.showModal();
+    input.focus(); input.select();
   }
 
   function renderDelivery(value) {
@@ -1664,6 +1735,7 @@
       // 不在这儿记一笔，「最近」在刚进页面时就是空的。只有排序真的变了才重画。
       if (recentTaskIds[0] !== selected) { rememberTask(selected); render(); }
       $('task-title').textContent = entry.task.title;
+      applyTaskTitleEditing(entry.task);
       $('task-state').textContent = taskStateText(entry);
       renderDelivery(entry);
       renderDetails(entry);
@@ -1756,6 +1828,15 @@
   $('mobile-nav').onclick = toggleNav;
   $('nav-scrim').onclick = closeNav;
   $('task-options').onclick = toggleOptions;
+  $('task-title').ondblclick = event => {
+    event.preventDefault();
+    openTaskTitleDialog();
+  };
+  $('task-title').onkeydown = event => {
+    if (!['Enter', 'F2'].includes(event.key)) return;
+    event.preventDefault();
+    openTaskTitleDialog();
+  };
   // 点里面的哪一件工具都算用过了：浮层再晾在那儿，只会挡住它刚刚改的那一屏 ——
   // 「更多」还会在对话帧里开自己的菜单，两层叠着更乱。用捕获阶段收：那件工具自己
   // 的处理器会 stopPropagation（#chat-more 就是），冒泡到这里就晚了。
