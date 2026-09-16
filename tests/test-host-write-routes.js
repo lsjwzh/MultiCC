@@ -21,7 +21,6 @@ const EXPECTED_PATHS = [
   '/api/tunnel/restart/:provider',
   '/api/tunnel/funnel',
   '/api/settings/access-token',
-  '/api/settings/proxy',
   '/api/settings/official-oauth',
   '/api/settings/power',
 ];
@@ -80,11 +79,9 @@ function createHarness(overrides = {}) {
       BARK_URL: 'https://api.day.app/device-old',
       WEBHOOK_URL: 'https://hooks.example.test/hook-old',
       ACCESS_TOKEN: 'old-token',
-      CLAUDE_PROXY_ENABLED: '0',
       CLAUDE_OFFICIAL_VIA_PROXY: '0',
     },
     accessToken: 'old-token',
-    proxyEnabled: false,
     oauthEnabled: false,
     allowRemote: false,
     envWrites: [],
@@ -125,11 +122,6 @@ function createHarness(overrides = {}) {
     },
     getAllowRemote: () => state.allowRemote,
     isLocalRequest: req => req.local === true,
-    getProxyEnabled: () => state.proxyEnabled,
-    setProxyEnabled: enabled => {
-      state.events.push(['proxy-live', enabled]);
-      state.proxyEnabled = enabled;
-    },
     getOfficialOAuthEnabled: () => state.oauthEnabled,
     setOfficialOAuthEnabled: enabled => {
       state.events.push(['oauth-live', enabled]);
@@ -166,7 +158,6 @@ test('permission matrix preserves authenticated routes and limits only sensitive
   const { routes, state } = createHarness();
   for (const routePath of [
     '/api/settings/access-token',
-    '/api/settings/proxy',
     '/api/settings/official-oauth',
   ]) {
     const response = await invoke(routes, routePath, {
@@ -574,43 +565,37 @@ test('access-token and boolean persistence failures leave live values unchanged'
     local: true,
     body: { token: 'new-token' },
   });
-  const proxy = await invoke(routes, '/api/settings/proxy', {
+  const oauth = await invoke(routes, '/api/settings/official-oauth', {
     local: true,
     body: { enabled: true },
   });
   assert.equal(access.nextError.message, secret);
-  assert.equal(proxy.nextError.message, secret);
+  assert.equal(oauth.nextError.message, secret);
   assert.equal(state.accessToken, 'old-token');
-  assert.equal(state.proxyEnabled, false);
-  for (const response of [access, proxy]) {
+  assert.equal(state.oauthEnabled, false);
+  for (const response of [access, oauth]) {
     const presented = presentSafely(response.nextError);
     assert.equal(presented.body.error, 'internal_error');
     assert.equal(JSON.stringify(presented.body).includes('/Users/private'), false);
   }
 });
 
-test('proxy and official OAuth validate booleans and preserve response DTOs', async () => {
+test('official OAuth validates booleans, preserves response DTOs and persists before going live', async () => {
   const { routes, state } = createHarness();
-  assert.deepEqual((await invoke(routes, '/api/settings/proxy', {
+  assert.deepEqual((await invoke(routes, '/api/settings/official-oauth', {
     local: true,
     body: { enabled: 'true' },
   })).body, { error: 'enabled 必须是布尔' });
 
-  const proxy = await invoke(routes, '/api/settings/proxy', {
-    local: true,
-    body: { enabled: true },
-  });
   const oauth = await invoke(routes, '/api/settings/official-oauth', {
     local: true,
     body: { enabled: true },
   });
-  assert.deepEqual(proxy.body, { ok: true, enabled: true });
   assert.deepEqual(oauth.body, { ok: true, enabled: true });
-  assert.equal(state.proxyEnabled, true);
   assert.equal(state.oauthEnabled, true);
-  const proxyPersist = state.events.findIndex(([type, value]) => type === 'persist' && value.CLAUDE_PROXY_ENABLED === '1');
-  const proxyLive = state.events.findIndex(([type]) => type === 'proxy-live');
-  assert.ok(proxyPersist >= 0 && proxyPersist < proxyLive);
+  const oauthPersist = state.events.findIndex(([type, value]) => type === 'persist' && value.CLAUDE_OFFICIAL_VIA_PROXY === '1');
+  const oauthLive = state.events.findIndex(([type]) => type === 'oauth-live');
+  assert.ok(oauthPersist >= 0 && oauthPersist < oauthLive);
 });
 
 test('power settings preserve success and validation responses and redact thrown errors', async () => {

@@ -443,10 +443,6 @@ const {
   multiccImgHint: MULTICC_IMG_HINT,
   userInputReminder: USER_INPUT_REMINDER,
 } = createHostPrompts(process.env);
-// Default-on toggle for the per-session/per-role cli-provider-router Claude proxy.
-// `let`: hot-reloadable at runtime via POST /api/settings/proxy (persists to .env).
-// Set CLAUDE_PROXY_ENABLED=0 in .env to bypass and route claude directly to the provider.
-let CLAUDE_PROXY_ENABLED = String(process.env.CLAUDE_PROXY_ENABLED ?? '1') !== '0';
 // Default-OFF, opt-in: route claude-official (OAuth-subscription) sessions THROUGH
 // the proxy by replaying the macOS Keychain OAuth token. OFF: official sessions
 // bypass the proxy and connect direct to api.anthropic.com (subagent routing
@@ -1079,7 +1075,7 @@ async function createSession(id) {
     // Route interactive tmux claude through the per-session/per-role proxy too.
     providers.applyClaudeProxyEnv(termEnv, {
       providerId: persisted.provider, sessionId: id,
-      subagent: persisted.subagent, port: PORT, enabled: CLAUDE_PROXY_ENABLED,
+      subagent: persisted.subagent, port: PORT,
       officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
     });
   } else if (persisted.cli === 'codex') {
@@ -1873,7 +1869,6 @@ mountHostReadRoutes(app, {
   tunnel,
   getAccessToken: () => ACCESS_TOKEN,
   isLocalRequest,
-  getProxyEnabled: () => CLAUDE_PROXY_ENABLED,
   getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
   macosPower,
 });
@@ -1894,11 +1889,6 @@ mountHostWriteRoutes(app, {
   },
   getAllowRemote: () => networkPolicy.allowRemote,
   isLocalRequest,
-  getProxyEnabled: () => CLAUDE_PROXY_ENABLED,
-  setProxyEnabled: (enabled) => {
-    CLAUDE_PROXY_ENABLED = enabled;
-    process.env.CLAUDE_PROXY_ENABLED = enabled ? '1' : '0';
-  },
   getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
   setOfficialOAuthEnabled: (enabled) => {
     CLAUDE_OFFICIAL_VIA_PROXY = enabled;
@@ -2604,7 +2594,6 @@ const chatTurnEngine = createChatTurnEngine({
   getSessionHibernation: () => sessionHibernationRuntime, getWorkspaceAdmission: () => workspaceAdmission,
   isShuttingDown: () => _shuttingDown,
   getPort: () => PORT,
-  getClaudeProxyEnabled: () => CLAUDE_PROXY_ENABLED,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
   persistedSessions,
   chatSessions,

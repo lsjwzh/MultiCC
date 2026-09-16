@@ -214,7 +214,6 @@ function assertHostReadDeps(deps) {
     'getVapidPublicKey',
     'getAccessToken',
     'isLocalRequest',
-    'getProxyEnabled',
     'getOfficialOAuthEnabled',
   ]) {
     if (typeof deps[name] !== 'function') throw new TypeError(`host read route dependency missing: ${name}`);
@@ -235,7 +234,6 @@ function mountHostReadRoutes(app, rawDeps) {
   app.get('/api/tunnel/funnel', createTunnelFunnelHandler(deps));
   app.get('/api/tunnel/ipv6', createTunnelIpv6Handler(deps));
   app.get('/api/settings/access-token', createAccessTokenSettingsHandler(deps));
-  app.get('/api/settings/proxy', createBooleanSettingHandler(deps.getProxyEnabled));
   app.get('/api/settings/official-oauth', createBooleanSettingHandler(deps.getOfficialOAuthEnabled));
   app.get('/api/settings/power', createPowerSettingsHandler(deps));
 }

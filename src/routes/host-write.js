@@ -340,8 +340,6 @@ function assertHostWriteDeps(deps) {
     'setAccessToken',
     'getAllowRemote',
     'isLocalRequest',
-    'getProxyEnabled',
-    'setProxyEnabled',
     'getOfficialOAuthEnabled',
     'setOfficialOAuthEnabled',
   ]) {
@@ -380,12 +378,6 @@ function mountHostWriteRoutes(app, rawDeps) {
   app.post('/api/tunnel/restart/:provider', createTunnelRestartHandler(deps));
   app.post('/api/tunnel/funnel', createTunnelFunnelHandler(deps));
   app.post('/api/settings/access-token', createAccessTokenHandler(deps));
-  app.post('/api/settings/proxy', createBooleanSettingHandler(deps, {
-    envKey: 'CLAUDE_PROXY_ENABLED',
-    get: deps.getProxyEnabled,
-    set: deps.setProxyEnabled,
-    logMessage: enabled => `[multicc/proxy] claude proxy ${enabled ? 'enabled' : 'disabled'} via UI`,
-  }));
   app.post('/api/settings/official-oauth', createBooleanSettingHandler(deps, {
     envKey: 'CLAUDE_OFFICIAL_VIA_PROXY',
     get: deps.getOfficialOAuthEnabled,
