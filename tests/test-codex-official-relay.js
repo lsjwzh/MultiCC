@@ -690,6 +690,67 @@ test('an item-not-found rejection repairs by removing the named id once and comp
   assert.match(Buffer.concat(res.chunks).toString(), /response.completed/);
 });
 
+// Live against the ChatGPT Codex backend this rejection arrives as 404, not
+// 400 — the status the repair path was pinned to. Gating on 400 alone meant the
+// real cross-provider resume died with the raw upstream error instead of taking
+// the one bounded repair it is designed to take.
+test('the same item-not-found rejection repairs when the backend answers 404', async () => {
+  const sent = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'tok', accountId: 'acct' }),
+    fetch: async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      if (sent.length === 1) return new Response(JSON.stringify({ error: {
+        message: "Item with id 'rs_9f3k2h' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+        type: 'invalid_request_error',
+      } }), { status: 404 });
+      return new Response('data: {"type":"response.completed","response":{}}\n\n', {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  const thread = { model: 'gpt-5.3-codex', stream: true, input: [
+    { type: 'reasoning', id: 'rs_9f3k2h', encrypted_content: 'gAAAAA_third_party' },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'kept' }] },
+  ] };
+  const req = request(structuredClone(thread));
+  const res = response();
+  await handler(req, res, () => assert.fail('Official must not fall through'));
+  assert.equal(sent.length, 2, 'one 404 + one repaired retry');
+  // The proactive pass cannot prove a blob is third-party, so the first send
+  // still carries it — the named-id repair is what removes it.
+  assert.equal(sent[0].input.length, 2, 'proactive pass strips nothing here');
+  assert.equal(sent[0].input[0].id, 'rs_9f3k2h');
+  assert.equal(sent[1].input.length, 1);
+  assert.deepEqual(sent[1].input[0], thread.input[1]);
+  assert.equal(res.statusCode, 200);
+  assert.match(Buffer.concat(res.chunks).toString(), /response.completed/);
+});
+
+// The widened status gate must not turn "any 404" into a replay: only a
+// rejection the converter actually recognises gets the second attempt.
+test('a 404 the converter cannot repair is never replayed', async () => {
+  let calls = 0;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'tok', accountId: 'acct' }),
+    fetch: async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: {
+        message: 'Not Found', type: 'invalid_request_error',
+      } }), { status: 404 });
+    },
+  });
+  const req = request({ model: 'gpt-5.3-codex', stream: true, input: [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+  ] });
+  const res = response();
+  await handler(req, res, () => assert.fail('Official must not fall through'));
+  assert.equal(calls, 1, 'no replay for an unrecognised 404');
+  assert.equal(res.statusCode, 404);
+});
+
 test('a third-party encrypted-reasoning rejection repairs by dropping the blobs and dangling ids once', async () => {
   const sent = [];
   const handler = createCodexOfficialRelayHandler({
