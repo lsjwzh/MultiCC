@@ -606,12 +606,91 @@ test('Official relay proactively strips third-party reasoning content before ups
   const res = response();
   await handler(req, res, () => assert.fail('Official must not fall through'));
   assert.equal(calls.length, 1, 'no 400+repair round-trip — stripped up front');
-  assert.equal(Object.hasOwn(calls[0].input[0], 'content'), false);
-  assert.deepEqual(calls[0].input[1], thirdPartyThread.input[1]);
+  // Content goes first; the id-only husk it leaves behind cannot resolve under
+  // store:false either, so the composed pass drops the whole item.
+  assert.equal(calls[0].input.length, 1);
+  assert.deepEqual(calls[0].input[0], thirdPartyThread.input[1]);
   assert.deepEqual(req.body.input[0].content, [{ type: 'reasoning_text', text: 'recorded on DeepSeek' }], 'request body copy only');
 });
 
-test('a third-party encrypted-reasoning rejection repairs by dropping the blobs once', async () => {
+test('Official relay proactively strips store:false-unresolvable references from cross-provider resumes', async () => {
+  const calls = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'tok', accountId: 'acct' }),
+    fetch: async (url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response('data: {"type":"response.completed","response":{}}\n\n', {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  // What a ToAPIs→official switch actually replays: a previous_response_id the
+  // official account never stored, an item_reference, blob-less third-party
+  // reasoning ids — each alone draws "Item with id … not found" under
+  // store:false. Official-native replay (reasoning WITH a verifiable blob,
+  // inline messages/tool calls) must pass through untouched.
+  const crossProvider = { model: 'gpt-5.3-codex', stream: true, previous_response_id: 'resp_toapis', input: [
+    { type: 'reasoning', id: 'rs_toapis_1', summary: [{ type: 'summary_text', text: 'third-party chain' }] },
+    { type: 'item_reference', id: 'rs_toapis_2' },
+    { type: 'reasoning', id: 'rs_official', summary: [], encrypted_content: 'official-verifiable-blob' },
+    { type: 'message', id: 'msg_1', role: 'user', content: [{ type: 'input_text', text: 'Continue.' }] },
+    { type: 'function_call', id: 'fc_official', call_id: 'call_1', name: 'exec', arguments: '{}' },
+  ] };
+  const req = request(structuredClone(crossProvider));
+  const res = response();
+  await handler(req, res, () => assert.fail('Official must not fall through'));
+  assert.equal(calls.length, 1, 'no 400+repair round-trip — stripped up front');
+  assert.equal(calls[0].previous_response_id, undefined);
+  assert.equal(calls[0].input.length, 4);
+  assert.deepEqual(calls[0].input[0], { type: 'reasoning', summary: [{ type: 'summary_text', text: 'third-party chain' }] }, 'foreign id dropped, summary kept');
+  assert.deepEqual(calls[0].input[1], crossProvider.input[2], 'official replay items untouched');
+  assert.deepEqual(calls[0].input[2], crossProvider.input[3], 'official replay items untouched');
+  assert.deepEqual(calls[0].input[3], crossProvider.input[4], 'official replay items untouched');
+  assert.deepEqual(req.body.previous_response_id, 'resp_toapis', 'request body copy only');
+});
+
+test('an item-not-found rejection repairs by removing the named id once and completes', async () => {
+  const sent = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'tok', accountId: 'acct' }),
+    fetch: async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      if (sent.length === 1) return new Response(JSON.stringify({ error: {
+        message: "Item with id 'rs_9f3k2h' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+        type: 'invalid_request_error',
+      } }), { status: 400 });
+      return new Response('data: {"type":"response.completed","response":{}}\n\n', {
+        status: 200, headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  const thread = { model: 'gpt-5.3-codex', stream: true, input: [
+    { type: 'reasoning', id: 'rs_9f3k2h', encrypted_content: 'gAAAAA_third_party' },
+    { type: 'reasoning', id: 'rs_9f3k2h2', summary: [{ type: 'summary_text', text: 'kept' }] },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'kept' }] },
+  ] };
+  const req = request(structuredClone(thread));
+  const res = response();
+  await handler(req, res, () => assert.fail('Official must not fall through'));
+  assert.equal(sent.length, 2, 'one 400 + one repaired retry');
+  // The first send kept the blob-backed item (the proactive strip cannot know
+  // a third-party blob is unverifiable — only official can); its blob-less
+  // sibling already lost its foreign id up front.
+  assert.equal(sent[0].input[0].id, 'rs_9f3k2h');
+  assert.equal(Object.hasOwn(sent[0].input[1], 'id'), false, 'blob-less third-party ids stripped proactively');
+  // The repair targets the named id: its unverifiable blob and the id go
+  // together, leaving no context — the whole item is dropped. The summary that
+  // survived elsewhere and the message stay.
+  assert.equal(sent[1].input.length, 2);
+  assert.deepEqual(sent[1].input[0], { type: 'reasoning', summary: [{ type: 'summary_text', text: 'kept' }] });
+  assert.deepEqual(sent[1].input[1], thread.input[2]);
+  assert.equal(res.statusCode, 200);
+  assert.match(Buffer.concat(res.chunks).toString(), /response.completed/);
+});
+
+test('a third-party encrypted-reasoning rejection repairs by dropping the blobs and dangling ids once', async () => {
   const sent = [];
   const handler = createCodexOfficialRelayHandler({
     getProvider: () => officialProvider(),
@@ -635,9 +714,10 @@ test('a third-party encrypted-reasoning rejection repairs by dropping the blobs 
   const res = response();
   await handler(req, res, () => assert.fail('Official must not fall through'));
   assert.equal(sent.length, 2, 'one 400 + one repaired retry');
-  assert.equal(Object.hasOwn(sent[1].input[0], 'encrypted_content'), false);
-  assert.equal(sent[1].input[0].id, thread.input[0].id);
-  assert.deepEqual(sent[1].input[1], thread.input[1]);
+  // Dropping the blob leaves the id unresolvable under store:false — the same
+  // repair round removes it, and the now-empty husk goes entirely.
+  assert.equal(sent[1].input.length, 1);
+  assert.deepEqual(sent[1].input[0], thread.input[1]);
   assert.equal(res.statusCode, 200);
   assert.match(Buffer.concat(res.chunks).toString(), /response.completed/);
 });
