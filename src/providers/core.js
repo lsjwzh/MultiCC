@@ -997,6 +997,30 @@ const ANTHROPIC_ROUTING_KEYS = [
 // providers return "model not found" / 1211). Strip-without-set => clean child.
 const CLAUDE_ROUTING_KEYS = [...ANTHROPIC_ROUTING_KEYS, 'CLAUDE_CODE_SIMPLE'];
 
+// Claude Code's alternate transports. Unlike the ANTHROPIC_* keys above these
+// do not route through ANTHROPIC_BASE_URL at all: with one enabled the CLI
+// ignores the proxy URL we just wrote and dials Bedrock/Vertex/Foundry with the
+// endpoint + credential it finds in its own env, so "ANTHROPIC_BASE_URL points
+// at 127.0.0.1" would prove nothing. Nothing in multicc sets them (a repo-wide
+// scan finds no reference) — they can only arrive from a hand-written provider
+// record or from the operator's shell, which is exactly why they are not in
+// CLAUDE_ROUTING_KEYS. A routed spawn therefore blanks them: the empty string
+// disables the transport, and because settingsOverrideFor mirrors every
+// ANTHROPIC_*/CLAUDE_CODE_* string of the final child env into the per-session
+// --settings file, the blank also outranks a ~/.claude/settings.json that tries
+// to switch the transport back on. Only the enable flags need to be here — with
+// CLAUDE_CODE_USE_* blank the transport is off whatever else is configured.
+const CLAUDE_ALT_TRANSPORT_KEYS = [
+  'CLAUDE_CODE_USE_BEDROCK',
+  'ANTHROPIC_BEDROCK_BASE_URL',
+  'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_VERTEX_BASE_URL',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'ANTHROPIC_FOUNDRY_BASE_URL',
+  'ANTHROPIC_FOUNDRY_API_KEY',
+];
+
 // Build the full child environment for spawning a session's CLI.
 //   base   — the inherited env to start from (normally process.env)
 //   extra  — extra vars to layer on (MULTICC_*, TERM, etc.)
@@ -1823,6 +1847,15 @@ function applyClaudeProxyEnv(env, options) {
     );
   }
   assertClaudeProxyEnvApplied({ required: required && options?.enabled !== false, applied });
+  // A rewritten ANTHROPIC_BASE_URL only binds the CLI as long as no alternate
+  // transport is switched on, so close that door on exactly the spawns we are
+  // claiming are routed (see CLAUDE_ALT_TRANSPORT_KEYS). The operator escape
+  // hatch (CLAUDE_PROXY_ENABLED=0) is left alone: it means "run what the
+  // provider record says", and second-guessing the record there would be a
+  // different change with a different blast radius.
+  if (env && required && options?.enabled !== false) {
+    for (const key of CLAUDE_ALT_TRANSPORT_KEYS) env[key] = '';
+  }
   return applied;
 }
 
