@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../services/air_service.dart';
 import '../../theme.dart';
 import 'air_role_editor.dart';
+import 'air_task_actions.dart';
 
 /// 归属建议被挡在哪一条上（Web `air.js` 的 `blockerNames`）。这些是枚举值，漏
 /// 一个界面上就会蹦出一行英文。
@@ -568,11 +569,14 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
   /// 服务端认定的任务生命周期状态。`done` / `archived` 是终态那两位，
   /// 「归档 / 恢复」按钮翻的就是它 —— Web 读的是同一处的 `value.task.status
   /// || value.status`（`public/air.js` 的 `renderDetail`）。
-  String get _lifecycleStatus => '${(_value?['task'] as Map?)?['status'] ?? _value?['status'] ?? ''}';
+  String get _lifecycleStatus =>
+      '${(_value?['task'] as Map?)?['status'] ?? _value?['status'] ?? ''}';
 
   void _toast(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// 生命周期动作的统一外壳：按住的这段时间禁用整条动作栏，失败时把服务端的
@@ -620,10 +624,8 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
     final title = '${(_value?['task'] as Map?)?['title'] ?? widget.taskId}';
     final chosen = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => _MoveTaskDialog(
-        title: title,
-        targets: targets,
-      ),
+      builder: (dialogContext) =>
+          _MoveTaskDialog(title: title, targets: targets),
     );
     if (chosen == null || !mounted) return;
     await _runTaskAction(() async {
@@ -648,33 +650,20 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
   /// 一起删」和「什么时候会被拒绝」都写在同一句话里，比一个「确定吗」有用。
   Future<void> _deleteTask() async {
     final title = '${(_value?['task'] as Map?)?['title'] ?? widget.taskId}';
-    final confirmed = await showDialog<bool>(
+    if (_working) return;
+    setState(() => _working = true);
+    final deleted = await deleteAirTaskWithConfirmation(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        key: const ValueKey('air-details-delete-confirm'),
-        title: Text('删除任务「$title」？'),
-        content: const Text(
-          '它的专属会话与工作区会一并删除；有未提交改动或未合并提交时会被拒绝。此操作不可撤销。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            key: const ValueKey('air-details-delete-confirm-ok'),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('删除', style: TextStyle(color: AppColors.danger)),
-          ),
-        ],
-      ),
+      service: widget.service,
+      taskId: widget.taskId,
+      title: title,
+      keyPrefix: 'air-details',
+      onError: (error) {
+        if (mounted) setState(() => _error = '$error');
+      },
     );
-    if (confirmed != true || !mounted) return;
-    await _runTaskAction(() async {
-      await widget.service.deleteTask(widget.taskId);
-      _toast('任务已删除。');
-      widget.onTaskRemoved?.call();
-    });
+    if (mounted) setState(() => _working = false);
+    if (deleted) widget.onTaskRemoved?.call();
   }
 
   @override
@@ -1076,7 +1065,11 @@ class _MoveTaskDialogState extends State<_MoveTaskDialog> {
         children: [
           const Text(
             '选择目标工作目录。工作区会迁到目标仓库，未提交的改动和新文件一起带走；正在执行的任务不能移动。',
-            style: TextStyle(color: AppColors.muted, fontSize: 12.5, height: 1.6),
+            style: TextStyle(
+              color: AppColors.muted,
+              fontSize: 12.5,
+              height: 1.6,
+            ),
           ),
           const SizedBox(height: 6),
           for (final directory in widget.targets)
@@ -1087,7 +1080,10 @@ class _MoveTaskDialogState extends State<_MoveTaskDialog> {
               onChanged: (value) => setState(() => _chosen = value),
               contentPadding: EdgeInsets.zero,
               dense: true,
-              title: Text(directory.name, style: const TextStyle(fontSize: 13.5)),
+              title: Text(
+                directory.name,
+                style: const TextStyle(fontSize: 13.5),
+              ),
               subtitle: Text(
                 directory.path,
                 maxLines: 1,

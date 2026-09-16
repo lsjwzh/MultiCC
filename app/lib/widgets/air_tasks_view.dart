@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../i18n.dart';
 import '../providers/session_manager.dart';
 import '../screens/docs_registry_screen.dart';
+import '../screens/aux_screen.dart';
 import '../screens/memory_graph_screen.dart';
 import '../screens/push_settings_screen.dart';
 import '../screens/settings_screen.dart';
@@ -31,6 +32,7 @@ import 'air/air_sidebar.dart';
 import 'air/air_task_config.dart';
 import 'air/air_task_details.dart';
 import 'air/air_task_status.dart';
+import 'air/air_task_actions.dart';
 import 'task_board_view.dart';
 import 'tour_overlay.dart';
 import 'workspace_navigation_drawer.dart';
@@ -67,6 +69,8 @@ class AirTasksView extends StatefulWidget {
 
 enum _AirMode { tasks, library }
 
+enum _DirectoryTaskStatus { open, all, archived }
+
 class _AirTasksViewState extends State<AirTasksView>
     with WidgetsBindingObserver {
   late final AirService _service = AirService(
@@ -102,6 +106,9 @@ class _AirTasksViewState extends State<AirTasksView>
       _foreground = true;
   bool _openingTerminal = false;
   bool _showAll = false;
+  final _taskSearch = TextEditingController();
+  String _taskQuery = '';
+  _DirectoryTaskStatus _taskStatus = _DirectoryTaskStatus.open;
   _AirMode _mode = _AirMode.tasks;
   Timer? _timer;
 
@@ -131,6 +138,7 @@ class _AirTasksViewState extends State<AirTasksView>
   @override
   void dispose() {
     _timer?.cancel();
+    _taskSearch.dispose();
     widget.settings.advancedMode.removeListener(_onAdvancedModeChanged);
     _service.close();
     _ops.dispose();
@@ -203,6 +211,10 @@ class _AirTasksViewState extends State<AirTasksView>
     setState(() {
       _directoryId = dirId;
       _mode = _AirMode.tasks;
+      _showAll = false;
+      _taskQuery = '';
+      _taskStatus = _DirectoryTaskStatus.open;
+      _taskSearch.clear();
     });
   }
 
@@ -263,9 +275,7 @@ class _AirTasksViewState extends State<AirTasksView>
     final running = data.tasksOf(dirId).where(airTaskRunning).toList();
     final messenger = ScaffoldMessenger.of(context);
     if (running.isEmpty) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('本目录当前没有正在执行的任务。')),
-      );
+      messenger.showSnackBar(const SnackBar(content: Text('本目录当前没有正在执行的任务。')));
       return;
     }
     await showModalBottomSheet<void>(
@@ -814,8 +824,23 @@ class _AirTasksViewState extends State<AirTasksView>
               Navigator.of(routeContext).pop();
               _openMemoryGraph();
             },
+            onOpenAiAssistant: () {
+              Navigator.of(routeContext).pop();
+              _openAiAssistant();
+            },
             onOpenWebConsole: _openWebConsole,
           ),
+        ),
+      ),
+    );
+  }
+
+  void _openAiAssistant() {
+    _closeDrawer();
+    unawaited(
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => AuxScreen(settings: widget.settings),
         ),
       ),
     );
@@ -1038,7 +1063,18 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 里。行序同样是 `updatedAt` 倒序（[AirSnapshot.tasksOf] 已经排好了）。
   List<AirTask> _visibleTasks(BuildContext context) {
     final rows = _data?.tasksOf(_directoryId) ?? const <AirTask>[];
-    if (_showAll) return rows;
+    if (_showAll) {
+      final needle = _taskQuery.trim().toLowerCase();
+      return rows.where((task) {
+        final statusMatches = switch (_taskStatus) {
+          _DirectoryTaskStatus.all => true,
+          _DirectoryTaskStatus.archived => task.status == 'archived',
+          _DirectoryTaskStatus.open => !task.closed,
+        };
+        return statusMatches &&
+            (needle.isEmpty || task.title.toLowerCase().contains(needle));
+      }).toList();
+    }
     return rows.take(_recentRowLimit(context)).toList();
   }
 
@@ -1210,7 +1246,7 @@ class _AirTasksViewState extends State<AirTasksView>
             Padding(
               padding: const EdgeInsets.only(right: 4),
               child: Center(
-              child: AirStatusBadge(
+                child: AirStatusBadge(
                   text: runningHere > 0 ? '执行中 $runningHere' : '空闲',
                   onTap: () => unawaited(_showRunningTasks()),
                 ),
@@ -1418,13 +1454,59 @@ class _AirTasksViewState extends State<AirTasksView>
                 ),
               ),
               Text(
-                '${all.length} 个任务',
+                _showAll
+                    ? '${tasks.length} / ${all.length} 个任务'
+                    : '${all.length} 个任务',
                 key: const ValueKey('air-tasks-count'),
                 style: const TextStyle(color: AppColors.faint, fontSize: 11.5),
               ),
             ],
           ),
           const SizedBox(height: 12),
+          if (_showAll) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('air-directory-task-search'),
+                    controller: _taskSearch,
+                    onChanged: (value) => setState(() => _taskQuery = value),
+                    style: const TextStyle(color: AppColors.text, fontSize: 13),
+                    decoration: sheetInputDecoration(hint: '搜索任务标题'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 145,
+                  child: DropdownButtonFormField<_DirectoryTaskStatus>(
+                    key: const ValueKey('air-directory-task-status'),
+                    value: _taskStatus,
+                    isExpanded: true,
+                    decoration: sheetInputDecoration(hint: ''),
+                    dropdownColor: AppColors.panel,
+                    items: const [
+                      DropdownMenuItem(
+                        value: _DirectoryTaskStatus.open,
+                        child: Text('进行中与待处理'),
+                      ),
+                      DropdownMenuItem(
+                        value: _DirectoryTaskStatus.all,
+                        child: Text('全部记录'),
+                      ),
+                      DropdownMenuItem(
+                        value: _DirectoryTaskStatus.archived,
+                        child: Text('已归档'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) setState(() => _taskStatus = value);
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
           if (data != null && tasks.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 28),
@@ -1438,45 +1520,91 @@ class _AirTasksViewState extends State<AirTasksView>
                 ),
               ),
             ),
-          for (final task in tasks)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: AirTaskTile(
-                task: task,
-                // Web Air 的目录任务行尾部就是那个 `<time>`（`air.js` 的
-                // `toLocaleString('zh-CN', {month, day, hour, minute})`），列表
-                // 又正是按 updatedAt 排序的 —— 时间本身就是排序依据，要看得见。
-                showTime: true,
-                onTap: () => unawaited(_open(task)),
-                trailing: IconButton(
-                  key: ValueKey('air-task-details-${task.id}'),
-                  onPressed: () => unawaited(_openDetails(task)),
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                  tooltip: '任务详情',
-                  icon: const Icon(
-                    Icons.info_outline_rounded,
-                    color: AppColors.faint,
-                  ),
-                ),
+          if (_showAll && tasks.isNotEmpty)
+            SizedBox(
+              key: const ValueKey('air-directory-task-scroll'),
+              height: 390,
+              child: ListView.separated(
+                primary: false,
+                itemCount: tasks.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 10),
+                itemBuilder: (_, index) => _directoryTaskTile(tasks[index]),
               ),
-            ),
+            )
+          else if (!_showAll)
+            for (final task in tasks) ...[
+              _directoryTaskTile(task),
+              const SizedBox(height: 10),
+            ],
           // Web `#directory-task-more`：列表是截过的，这条是留给剩下那些的出口。
-          // 那边点开的是控制台那份完整清单；App 没有第二个容器，就地展开。
+          // 两端都在当前目录页就地展开固定高度的完整清单。
           if (all.length > tasks.length || _showAll)
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton(
                 key: const ValueKey('air-tasks-more'),
-                onPressed: () => setState(() => _showAll = !_showAll),
+                onPressed: () => setState(() {
+                  _showAll = !_showAll;
+                  if (!_showAll) {
+                    _taskQuery = '';
+                    _taskStatus = _DirectoryTaskStatus.open;
+                    _taskSearch.clear();
+                  }
+                }),
                 child: Text(
-                  _showAll ? '只看最近 ›' : '查看全部 ${all.length} 个任务 ›',
+                  _showAll ? '收起，返回最近任务' : '查看全部 ${all.length} 个任务 ›',
                 ),
               ),
             ),
         ],
       ),
     );
+  }
+
+  Widget _directoryTaskTile(AirTask task) => AirTaskTile(
+    key: ValueKey('air-directory-task-${task.id}'),
+    task: task,
+    showTime: MediaQuery.sizeOf(context).width > 380,
+    onTap: () => unawaited(_open(task)),
+    trailing: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          key: ValueKey('air-task-details-${task.id}'),
+          onPressed: () => unawaited(_openDetails(task)),
+          iconSize: 18,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+          padding: EdgeInsets.zero,
+          tooltip: '任务详情',
+          icon: const Icon(Icons.info_outline_rounded, color: AppColors.faint),
+        ),
+        IconButton(
+          key: ValueKey('air-task-delete-${task.id}'),
+          onPressed: () => unawaited(_deleteTaskFromList(task)),
+          iconSize: 18,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+          padding: EdgeInsets.zero,
+          tooltip: '删除任务',
+          icon: const Icon(
+            Icons.delete_outline_rounded,
+            color: AppColors.danger,
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _deleteTaskFromList(AirTask task) async {
+    final deleted = await deleteAirTaskWithConfirmation(
+      context: context,
+      service: _service,
+      taskId: task.id,
+      title: task.title,
+      keyPrefix: 'air-directory-${task.id}',
+    );
+    if (deleted && mounted) await _refresh();
   }
 }
 

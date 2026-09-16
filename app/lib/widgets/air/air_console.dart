@@ -12,6 +12,7 @@ import '../workspace_navigation_drawer.dart';
 import 'air_attention_screen.dart';
 import 'air_panels.dart';
 import 'air_task_status.dart';
+import 'air_task_actions.dart';
 
 /// 控制台：跨所有工作目录看「现在有什么在跑、有什么在等我」。
 ///
@@ -32,6 +33,7 @@ class AirConsoleScreen extends StatefulWidget {
     required this.onOpenDestination,
     required this.onOpenMemory,
     required this.onOpenWebConsole,
+    this.onOpenAiAssistant,
     this.onOpenSchedules,
     this.httpClient,
   });
@@ -63,6 +65,9 @@ class AirConsoleScreen extends StatefulWidget {
 
   /// 控制台里的一切都在原生页上；想用网页版留一个明确的出口。
   final VoidCallback onOpenWebConsole;
+
+  /// AI Assistant 是控制台的一级入口，不再要求先进入设置中心再找一层卡片。
+  final VoidCallback? onOpenAiAssistant;
 
   @override
   State<AirConsoleScreen> createState() => _AirConsoleScreenState();
@@ -148,27 +153,40 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
   String _directoryName(String dirId) =>
       _data?.directoryOf(dirId)?.name ?? dirId;
 
+  Future<void> _deleteTask(AirTask task) async {
+    final deleted = await deleteAirTaskWithConfirmation(
+      context: context,
+      service: _service,
+      taskId: task.id,
+      title: task.title,
+      keyPrefix: 'air-console-${task.id}',
+    );
+    if (deleted && mounted) await _load();
+  }
+
   /// 「全部任务」这一份列表。控制台是跨目录的，这里不按当前目录收窄 —— 目录是
   /// 执行上下文，不是「能不能看见这条任务」的前提。
   List<AirTask> get _filteredTasks {
     final needle = _query.trim().toLowerCase();
-    final rows = _tasks
-        .where(
-          (task) => switch (_status) {
-            _ConsoleStatus.all => true,
-            _ConsoleStatus.archived => task.status == 'archived',
-            _ConsoleStatus.open => !task.closed,
-          },
-        )
-        .where((task) => _dir == 'all' || task.dirId == _dir)
-        .where(
-          (task) =>
-              needle.isEmpty ||
-              '${task.title} ${_directoryName(task.dirId)}'.toLowerCase()
-                  .contains(needle),
-        )
-        .toList()
-      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final rows =
+        _tasks
+            .where(
+              (task) => switch (_status) {
+                _ConsoleStatus.all => true,
+                _ConsoleStatus.archived => task.status == 'archived',
+                _ConsoleStatus.open => !task.closed,
+              },
+            )
+            .where((task) => _dir == 'all' || task.dirId == _dir)
+            .where(
+              (task) =>
+                  needle.isEmpty ||
+                  '${task.title} ${_directoryName(task.dirId)}'
+                      .toLowerCase()
+                      .contains(needle),
+            )
+            .toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     return rows;
   }
 
@@ -263,6 +281,12 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                 onOpenSchedules: _openSchedules,
               ),
               const SizedBox(height: 15),
+              _AssistantCard(
+                onTap:
+                    widget.onOpenAiAssistant ??
+                    () => widget.onOpenDestination(WorkspaceDestination.global),
+              ),
+              const SizedBox(height: 15),
               _Panel(
                 eyebrow: 'ACROSS ALL WORKSPACES',
                 title: '谁在等我',
@@ -304,8 +328,7 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                           onTap: () => widget.onOpenTask(task),
                         ),
                       ),
-                    if (urgent.isEmpty)
-                      const _Empty('没有正在等待或正在执行的任务。'),
+                    if (urgent.isEmpty) const _Empty('没有正在等待或正在执行的任务。'),
                   ],
                 ),
               ),
@@ -388,19 +411,44 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                       ],
                     ),
                     const SizedBox(height: 10),
-                    for (final task in shown)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: AirTaskTile(
-                          key: ValueKey('air-console-task-${task.id}'),
-                          task: task,
-                          directoryName: _directoryName(task.dirId),
-                          showTime: true,
-                          onTap: () => widget.onOpenTask(task),
+                    if (rows.isEmpty)
+                      const _Empty('没有符合条件的任务。换个关键词或放宽筛选。')
+                    else
+                      SizedBox(
+                        key: const ValueKey('air-console-task-scroll'),
+                        height: (shown.length * 76.0)
+                            .clamp(76.0, 340.0)
+                            .toDouble(),
+                        child: ListView.separated(
+                          primary: false,
+                          itemCount: shown.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 8),
+                          itemBuilder: (context, index) {
+                            final task = shown[index];
+                            return AirTaskTile(
+                              key: ValueKey('air-console-task-${task.id}'),
+                              task: task,
+                              directoryName: _directoryName(task.dirId),
+                              showTime: MediaQuery.sizeOf(context).width > 360,
+                              onTap: () => widget.onOpenTask(task),
+                              trailing: IconButton(
+                                key: ValueKey('air-console-delete-${task.id}'),
+                                tooltip: '删除任务',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 32,
+                                  height: 32,
+                                ),
+                                padding: EdgeInsets.zero,
+                                iconSize: 18,
+                                color: AppColors.danger,
+                                onPressed: () => _deleteTask(task),
+                                icon: const Icon(Icons.delete_outline_rounded),
+                              ),
+                            );
+                          },
                         ),
                       ),
-                    if (rows.isEmpty)
-                      const _Empty('没有符合条件的任务。换个关键词或放宽筛选。'),
                   ],
                 ),
               ),
@@ -455,6 +503,91 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
       return;
     }
     widget.onOpenDestination(WorkspaceDestination.cron);
+  }
+}
+
+class _AssistantCard extends StatelessWidget {
+  const _AssistantCard({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(AppColors.radiusPanel),
+      child: InkWell(
+        key: const ValueKey('air-console-ai-assistant'),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppColors.radiusPanel),
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFF0F7FF), Color(0xFFFAF7FF)],
+            ),
+            borderRadius: BorderRadius.circular(AppColors.radiusPanel),
+            border: Border.all(color: const Color(0xFFCFE1F4)),
+          ),
+          padding: const EdgeInsets.all(13),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF3794EE), Color(0xFF755EC9)],
+                  ),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: const Icon(
+                  Icons.auto_awesome_rounded,
+                  color: Colors.white,
+                  size: 21,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'AI ASSISTANT',
+                      style: TextStyle(
+                        color: AppColors.faint,
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      '分类、摘要与意图判断',
+                      style: TextStyle(
+                        color: AppColors.text,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      '配置协议、Provider 与模型，查看健康状态和运行记录',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: AppColors.muted, fontSize: 10.5),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.chevron_right_rounded, color: AppColors.accent),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -909,10 +1042,28 @@ class _ToolGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tools = <(String, IconData, String, String, VoidCallback)>[
-      ('docs', Icons.travel_explore_outlined, '服务与文档', '本地服务、网页和文件', onOpenDocs),
+      (
+        'docs',
+        Icons.travel_explore_outlined,
+        '服务与文档',
+        '本地服务、网页和文件',
+        onOpenDocs,
+      ),
       ('memory', Icons.hub_outlined, '记忆图谱', '项目与会话记忆', onOpenMemory),
-      ('settings', Icons.settings_outlined, '设置中心', 'Provider、通知与连接', onOpenSettings),
-      ('schedules', Icons.schedule_rounded, '自动运行', '固定任务定时规则', onOpenSchedules),
+      (
+        'settings',
+        Icons.settings_outlined,
+        '设置中心',
+        'Provider、通知与连接',
+        onOpenSettings,
+      ),
+      (
+        'schedules',
+        Icons.schedule_rounded,
+        '自动运行',
+        '固定任务定时规则',
+        onOpenSchedules,
+      ),
     ];
     return Column(
       children: [

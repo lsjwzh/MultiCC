@@ -54,45 +54,47 @@ Widget _host(
   VoidCallback? onDebug,
   String? artifactsLabel,
   VoidCallback? onArtifacts,
+  VoidCallback? onDeleteTask,
   bool forceSyncing = false,
   bool autoCommit = true,
 }) => MultiProvider(
-      providers: [
-        ChangeNotifierProvider<SessionManager>.value(value: mgr),
-        ChangeNotifierProvider<ChatProvider>.value(value: provider),
-      ],
-      child: MaterialApp(
-        home: Scaffold(
-          body: Align(
-            alignment: Alignment.topCenter,
-            child: SizedBox(
-              width: 360,
-              child: ChatHeader(
-                settings: settings,
-                mergeReady: false,
-                cwd: cwd,
-                branch: branch,
-                behind: behind,
-                onCwd: () {},
-                onMerge: () {},
-                onRole: () {},
-                onMemory: () {},
-                onMemo: () {},
-                onShare: () {},
-                onForceSync: onForceSync ?? () {},
-                forceSyncing: forceSyncing,
-                onChatWidth: onChatWidth ?? () {},
-                autoCommit: autoCommit,
-                onAutoCommit: onAutoCommit ?? () {},
-                onDebug: onDebug ?? () {},
-                artifactsLabel: artifactsLabel,
-                onArtifacts: onArtifacts ?? () {},
-              ),
-            ),
+  providers: [
+    ChangeNotifierProvider<SessionManager>.value(value: mgr),
+    ChangeNotifierProvider<ChatProvider>.value(value: provider),
+  ],
+  child: MaterialApp(
+    home: Scaffold(
+      body: Align(
+        alignment: Alignment.topCenter,
+        child: SizedBox(
+          width: 360,
+          child: ChatHeader(
+            settings: settings,
+            mergeReady: false,
+            cwd: cwd,
+            branch: branch,
+            behind: behind,
+            onCwd: () {},
+            onMerge: () {},
+            onRole: () {},
+            onMemory: () {},
+            onMemo: () {},
+            onShare: () {},
+            onForceSync: onForceSync ?? () {},
+            forceSyncing: forceSyncing,
+            onChatWidth: onChatWidth ?? () {},
+            autoCommit: autoCommit,
+            onAutoCommit: onAutoCommit ?? () {},
+            onDebug: onDebug ?? () {},
+            artifactsLabel: artifactsLabel,
+            onArtifacts: onArtifacts ?? () {},
+            onDeleteTask: onDeleteTask,
           ),
         ),
       ),
-    );
+    ),
+  ),
+);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -107,131 +109,168 @@ void main() {
     NotificationService.debugSetPermissionGranted(false);
   });
 
-  testWidgets('narrow header keeps the title visible on its own full-width line', (
-    tester,
-  ) async {
+  testWidgets('任务绑定会话的更多菜单显示删除入口并交回宿主执行', (tester) async {
     final settings = await _settings();
     final mgr = SessionManager(settings: settings);
     final provider = ChatProvider(
       settings: settings,
-      sessionName: 'multicc-claude-chat-06',
-      displayName: '全栈工程师3',
-      dirName: 'multicc',
+      sessionName: 's-task-bound',
       sessionCwd: '/tmp',
+      taskBoundTaskId: 'task-1',
     );
+    var deleted = 0;
 
-    await tester.pumpWidget(_host(mgr, settings, provider));
-
-    // 回归点：旧布局里标题被固定宽度的 chrome 挤到 0 宽（手机上完全看不到）。
-    // 现在窄屏标题独占第二行，必须拿到真实宽度。
-    final title = find.text('multicc / 全栈工程师3');
-    expect(title, findsOneWidget);
-    final box = tester.renderObject<RenderBox>(title);
-    expect(box.size.width, greaterThan(100));
+    await tester.pumpWidget(
+      _host(mgr, settings, provider, onDeleteTask: () => deleted++),
+    );
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    final deleteItem = find.byKey(const Key('chat-header-delete-task'));
+    expect(deleteItem, findsOneWidget);
+    await tester.ensureVisible(deleteItem);
+    await tester.pumpAndSettle();
+    await tester.tap(deleteItem);
+    await tester.pumpAndSettle();
+    expect(deleted, 1);
 
     provider.dispose();
     mgr.dispose();
   });
 
-  testWidgets('long title ellipsizes to one line but stays fully readable to semantics', (
-    tester,
-  ) async {
-    final settings = await _settings();
-    final mgr = SessionManager(settings: settings);
-    final longLabel = 'multicc / 这是一个非常长的会话标题用来验证窄屏省略号行为的测试样例数据';
-    final provider = ChatProvider(
-      settings: settings,
-      sessionName: 's-long',
-      displayName: longLabel.substring('multicc / '.length),
-      dirName: 'multicc',
-      sessionCwd: '/tmp',
-    );
-
-    await tester.pumpWidget(_host(mgr, settings, provider));
-
-    final text = tester.widget<Text>(find.text(longLabel));
-    expect(text.maxLines, 1);
-    expect(text.overflow, TextOverflow.ellipsis);
-    // 无障碍：视觉省略了，语义标签仍朗读完整标题。
-    final handle = tester.ensureSemantics();
-    expect(find.bySemanticsLabel(longLabel), findsWidgets);
-    handle.dispose();
-
-    provider.dispose();
-    mgr.dispose();
-  });
-
-  testWidgets('session_updated-style rename reflects immediately via setDisplayName', (
-    tester,
-  ) async {
-    final settings = await _settings();
-    final mgr = SessionManager(settings: settings);
-    final provider = ChatProvider(
-      settings: settings,
-      sessionName: 's-rename',
-      displayName: 's-rename', // label 为空 → 回退 id
-      dirName: '',
-      sessionCwd: '/tmp',
-    );
-    expect(provider.titleLabel, 's-rename');
-
-    // 服务端 session_updated 分支最终调用的就是 setDisplayName：
-    // 新 label 生效；label 清空时回退 id，绝不残留旧标题。
-    provider.setDisplayName('新标题');
-    expect(provider.titleLabel, '新标题');
-    provider.setDisplayName('s-rename');
-    expect(provider.titleLabel, 's-rename');
-
-    // dirName 后到（先开会话、后加载目录）：titleLabel 立即带上目录前缀。
-    provider.setDisplayName('新标题', dirName: 'gapasea');
-    expect(provider.titleLabel, 'gapasea / 新标题');
-
-    await tester.pumpWidget(_host(mgr, settings, provider));
-    expect(find.text('gapasea / 新标题'), findsOneWidget);
-
-    provider.dispose();
-    mgr.dispose();
-  });
-
-  // 聊天页原来的 working 目录条（_CwdBar）整行删掉，目录/分支收进 ⋯ 菜单：
-  // 信息行只读、短目录名 inline + 全路径在 Tooltip，「切换」仍是动作项。
-  group('ChatHeader cwd in ⋯ menu', () {
-    testWidgets('menu leads with cwd + branch info rows and a change-dir action', (
-      tester,
-    ) async {
+  testWidgets(
+    'narrow header keeps the title visible on its own full-width line',
+    (tester) async {
       final settings = await _settings();
       final mgr = SessionManager(settings: settings);
       final provider = ChatProvider(
         settings: settings,
         sessionName: 'multicc-claude-chat-06',
-        sessionCwd: '/repo/.multicc-worktrees/wt-alpha',
+        displayName: '全栈工程师3',
+        dirName: 'multicc',
+        sessionCwd: '/tmp',
       );
 
-      await tester.pumpWidget(_host(
-        mgr,
-        settings,
-        provider,
-        cwd: '/repo/.multicc-worktrees/wt-alpha',
-        branch: 'multicc/multicc-claude-chat-06',
-        behind: 2,
-      ));
-      await tester.tap(find.byIcon(Icons.more_vert));
-      await tester.pumpAndSettle();
+      await tester.pumpWidget(_host(mgr, settings, provider));
 
-      // 短目录名 inline（全路径在 Tooltip），分支行带落后警示 ↓2。
-      final cwdRow = find.byKey(const Key('chat-header-cwd'));
-      expect(cwdRow, findsOneWidget);
-      expect(tester.widget<Text>(cwdRow).data, 'wt-alpha');
-      final branchRow = find.byKey(const Key('chat-header-branch'));
-      expect(tester.widget<Text>(branchRow).data, 'multicc/multicc-claude-chat-06');
-      expect(find.text('↓2'), findsOneWidget);
-      // 「切换」动作项排在信息行后面，原有动作项不丢。
-      expect(find.text('切换'), findsOneWidget);
-      expect(find.text('角色提示词'), findsOneWidget);
+      // 回归点：旧布局里标题被固定宽度的 chrome 挤到 0 宽（手机上完全看不到）。
+      // 现在窄屏标题独占第二行，必须拿到真实宽度。
+      final title = find.text('multicc / 全栈工程师3');
+      expect(title, findsOneWidget);
+      final box = tester.renderObject<RenderBox>(title);
+      expect(box.size.width, greaterThan(100));
 
       provider.dispose();
       mgr.dispose();
-    });
+    },
+  );
+
+  testWidgets(
+    'long title ellipsizes to one line but stays fully readable to semantics',
+    (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final longLabel = 'multicc / 这是一个非常长的会话标题用来验证窄屏省略号行为的测试样例数据';
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-long',
+        displayName: longLabel.substring('multicc / '.length),
+        dirName: 'multicc',
+        sessionCwd: '/tmp',
+      );
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+
+      final text = tester.widget<Text>(find.text(longLabel));
+      expect(text.maxLines, 1);
+      expect(text.overflow, TextOverflow.ellipsis);
+      // 无障碍：视觉省略了，语义标签仍朗读完整标题。
+      final handle = tester.ensureSemantics();
+      expect(find.bySemanticsLabel(longLabel), findsWidgets);
+      handle.dispose();
+
+      provider.dispose();
+      mgr.dispose();
+    },
+  );
+
+  testWidgets(
+    'session_updated-style rename reflects immediately via setDisplayName',
+    (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-rename',
+        displayName: 's-rename', // label 为空 → 回退 id
+        dirName: '',
+        sessionCwd: '/tmp',
+      );
+      expect(provider.titleLabel, 's-rename');
+
+      // 服务端 session_updated 分支最终调用的就是 setDisplayName：
+      // 新 label 生效；label 清空时回退 id，绝不残留旧标题。
+      provider.setDisplayName('新标题');
+      expect(provider.titleLabel, '新标题');
+      provider.setDisplayName('s-rename');
+      expect(provider.titleLabel, 's-rename');
+
+      // dirName 后到（先开会话、后加载目录）：titleLabel 立即带上目录前缀。
+      provider.setDisplayName('新标题', dirName: 'gapasea');
+      expect(provider.titleLabel, 'gapasea / 新标题');
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      expect(find.text('gapasea / 新标题'), findsOneWidget);
+
+      provider.dispose();
+      mgr.dispose();
+    },
+  );
+
+  // 聊天页原来的 working 目录条（_CwdBar）整行删掉，目录/分支收进 ⋯ 菜单：
+  // 信息行只读、短目录名 inline + 全路径在 Tooltip，「切换」仍是动作项。
+  group('ChatHeader cwd in ⋯ menu', () {
+    testWidgets(
+      'menu leads with cwd + branch info rows and a change-dir action',
+      (tester) async {
+        final settings = await _settings();
+        final mgr = SessionManager(settings: settings);
+        final provider = ChatProvider(
+          settings: settings,
+          sessionName: 'multicc-claude-chat-06',
+          sessionCwd: '/repo/.multicc-worktrees/wt-alpha',
+        );
+
+        await tester.pumpWidget(
+          _host(
+            mgr,
+            settings,
+            provider,
+            cwd: '/repo/.multicc-worktrees/wt-alpha',
+            branch: 'multicc/multicc-claude-chat-06',
+            behind: 2,
+          ),
+        );
+        await tester.tap(find.byIcon(Icons.more_vert));
+        await tester.pumpAndSettle();
+
+        // 短目录名 inline（全路径在 Tooltip），分支行带落后警示 ↓2。
+        final cwdRow = find.byKey(const Key('chat-header-cwd'));
+        expect(cwdRow, findsOneWidget);
+        expect(tester.widget<Text>(cwdRow).data, 'wt-alpha');
+        final branchRow = find.byKey(const Key('chat-header-branch'));
+        expect(
+          tester.widget<Text>(branchRow).data,
+          'multicc/multicc-claude-chat-06',
+        );
+        expect(find.text('↓2'), findsOneWidget);
+        // 「切换」动作项排在信息行后面，原有动作项不丢。
+        expect(find.text('切换'), findsOneWidget);
+        expect(find.text('角色提示词'), findsOneWidget);
+
+        provider.dispose();
+        mgr.dispose();
+      },
+    );
 
     testWidgets('omits the info rows when cwd/branch are unknown', (
       tester,
@@ -262,9 +301,7 @@ void main() {
   // 双击标题改名（对齐 web 双击 #session-title → renameSessionFromChat）。
   // renameSession 走真实 HTTP 会打不通本机不可达端口，所以只记调用。
   group('双击标题改名', () {
-    testWidgets('双击标题弹出改名框，预填当前别名并提交给 SessionManager', (
-      tester,
-    ) async {
+    testWidgets('双击标题弹出改名框，预填当前别名并提交给 SessionManager', (tester) async {
       final settings = await _settings();
       final mgr = _RecordingManager(settings: settings);
       final provider = ChatProvider(
@@ -347,13 +384,15 @@ void main() {
       var forced = 0;
       var width = 0;
 
-      await tester.pumpWidget(_host(
-        mgr,
-        settings,
-        provider,
-        onForceSync: () => forced++,
-        onChatWidth: () => width++,
-      ));
+      await tester.pumpWidget(
+        _host(
+          mgr,
+          settings,
+          provider,
+          onForceSync: () => forced++,
+          onChatWidth: () => width++,
+        ),
+      );
       await tester.tap(find.byIcon(Icons.more_vert));
       await tester.pumpAndSettle();
 
@@ -389,7 +428,9 @@ void main() {
         sessionCwd: '/tmp',
       );
 
-      await tester.pumpWidget(_host(mgr, settings, provider, forceSyncing: true));
+      await tester.pumpWidget(
+        _host(mgr, settings, provider, forceSyncing: true),
+      );
       await tester.tap(find.byIcon(Icons.more_vert));
       await tester.pumpAndSettle();
 
@@ -414,13 +455,15 @@ void main() {
       );
       var toggled = 0;
 
-      await tester.pumpWidget(_host(
-        mgr,
-        settings,
-        provider,
-        autoCommit: true,
-        onAutoCommit: () => toggled++,
-      ));
+      await tester.pumpWidget(
+        _host(
+          mgr,
+          settings,
+          provider,
+          autoCommit: true,
+          onAutoCommit: () => toggled++,
+        ),
+      );
       await tester.tap(find.byIcon(Icons.more_vert));
       await tester.pumpAndSettle();
       expect(find.text(t('autoCommitOn')), findsOneWidget);
@@ -431,13 +474,15 @@ void main() {
       expect(toggled, 1);
 
       // 关掉之后同一位置应该显示「自动提交✕」。
-      await tester.pumpWidget(_host(
-        mgr,
-        settings,
-        provider,
-        autoCommit: false,
-        onAutoCommit: () => toggled++,
-      ));
+      await tester.pumpWidget(
+        _host(
+          mgr,
+          settings,
+          provider,
+          autoCommit: false,
+          onAutoCommit: () => toggled++,
+        ),
+      );
       await tester.tap(find.byIcon(Icons.more_vert));
       await tester.pumpAndSettle();
       expect(find.text(t('autoCommitOff')), findsOneWidget);

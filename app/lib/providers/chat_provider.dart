@@ -336,6 +336,7 @@ class StagedSendTracker {
 }
 
 class ChatProvider extends ChangeNotifier {
+  final String? taskBoundTaskId;
   final SettingsService settings;
   final String sessionName;
   String displayName;
@@ -914,6 +915,7 @@ class ChatProvider extends ChangeNotifier {
     SessionCli initialCli = SessionCli.claude,
     this.onSessionConfigChanged,
     this.historyArchive = false,
+    this.taskBoundTaskId,
     QuotaService? quotaService,
   }) : displayName = displayName ?? sessionName,
        dirName = dirName ?? '' {
