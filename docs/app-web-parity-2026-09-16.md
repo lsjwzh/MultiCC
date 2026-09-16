@@ -26,6 +26,11 @@ cd app && flutter test integration_test/ui_tour_test.dart -d <UDID> \
 巡游里的 `SHOT:` 时间戳与截图文件名同源（同一台机器的时钟），按最近时间即可把 PNG 命名成
 `01-home / 02-sidebar / 03-task-details / 04-chat / 05-chat-actions`。
 
+**目前只有前三个点位是真的。** 首页 / 侧栏 / 任务详情三张稳定复现；`04-chat` 那一步
+（点任务行 → `AirService.openTask()` → 换出聊天页）在集成测试里没有生效，抓到的帧仍停在
+首页，所以「聊天页对齐」目前靠 widget 测试钉住（`test/chat_header_title_test.dart` 的
+language + task-notify 两组），不靠这两张截图。下次动这个脚本时先解决这一跳。
+
 两个坑，都踩过：
 
 1. **iOS 通知权限弹窗会盖住整屏且没人能点。** 集成测试必须带
