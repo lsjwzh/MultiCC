@@ -136,36 +136,67 @@ test('clearing the label broadcasts null, not the stale title', () => {
   assert.equal(workspace[0].payload.label, null);
 });
 
-test('non-label PATCHes stay silent — no spurious session_updated', () => {
-  const { workspace, chat } = fixture({
-    id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', provider: null, model: null, label: 'x',
-  });
-  const { handler } = fixture({
+test('non-label PATCHes emit no session_updated — route changes speak their own event', () => {
+  const { workspace, chat, handler } = fixture({
     id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', provider: null, model: null,
   });
   invoke(handler, { params: { id: 's1' }, body: { provider: '' } });
-  assert.equal(workspace.length, 0);
-  assert.equal(chat.length, 0);
+  assert.equal(workspace.filter(e => e.payload.type === 'session_updated').length, 0);
+  assert.equal(chat.filter(e => e.payload.type === 'session_updated').length, 0);
 });
 
-test('an active provider-bound turn rejects route mutation before session state changes', () => {
+test('an immediately-applied provider switch broadcasts session_configuration_applied on both planes', () => {
+  const session = {
+    id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat',
+    provider: 'claude-official', model: 'opus',
+  };
+  const { handler, workspace, chat } = fixture(session);
+  const res = invoke(handler, { params: { id: 's1' }, body: { provider: 'relay-b' } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(session.provider, 'relay-b');
+  // Regression: the Air task page saves AI 配置 from the parent page, so the
+  // embedded chat iframe only learns a provider changed through this push.
+  // Without it the iframe's quota bar kept rendering the OLD provider (e.g.
+  // 官方 → 借道 with no visible switch) until a full page reload.
+  assert.deepEqual(chat.filter(e => e.payload.type === 'session_configuration_applied'),
+    [{ sessionId: 's1', payload: { type: 'session_configuration_applied', sessionId: 's1' } }]);
+  assert.deepEqual(workspace.filter(e => e.payload.type === 'session_configuration_applied'),
+    [{ dirId: 'd1', payload: { type: 'session_configuration_applied', sessionId: 's1' } }]);
+});
+
+test('a label-only PATCH stays silent about configuration — no spurious applied event', () => {
+  const { workspace, chat, handler } = fixture({
+    id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', label: null,
+  });
+  invoke(handler, { params: { id: 's1' }, body: { label: '改名' } });
+  assert.equal(workspace.filter(e => e.payload.type === 'session_configuration_applied').length, 0);
+  assert.equal(chat.filter(e => e.payload.type === 'session_configuration_applied').length, 0);
+});
+
+test('an active provider-bound turn defers the route mutation to next turn', () => {
   const session = {
     id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat',
     provider: 'provider-a', model: 'model-a', cliSessionId: 'native-a',
   };
-  const { handler } = fixture(session, {
+  const { handler, chat } = fixture(session, {
     chatState: { _activeRunner: { providerAttempt: { routeAttemptId: 'attempt-a' } } },
   });
 
   const res = invoke(handler, { params: { id: 's1' }, body: { provider: 'provider-b' } });
 
-  assert.equal(res.statusCode, 409);
+  // Busy sessions no longer reject with 409 — the same validation runs on a
+  // detached desired-state draft and is staged as pendingConfiguration
+  // (200 + deferred:true, appliesOn next_turn). The live record must stay
+  // untouched while the turn is still running on the old route.
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.deferred, true);
+  assert.equal(res.body.appliesOn, 'next_turn');
   assert.equal(session.provider, 'provider-a');
   assert.equal(session.model, 'model-a');
-  assert.match(res.body.error, /active turn/);
+  assert.ok(chat.some(e => e.payload.type === 'session_configuration_pending'));
 });
 
-test('a live background task rejects route mutation before persistence or stream teardown', () => {
+test('a live background task defers the mutation without persistence or stream teardown', () => {
   const session = {
     id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat',
     provider: 'provider-a', model: 'model-a',
@@ -174,10 +205,10 @@ test('a live background task rejects route mutation before persistence or stream
 
   const res = invoke(handler, { params: { id: 's1' }, body: { model: 'model-b' } });
 
-  assert.equal(res.statusCode, 409);
-  assert.match(res.body.error, /background task/i);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.deferred, true);
   assert.equal(session.model, 'model-a');
-  assert.deepEqual(effects, [], 'rejected route mutation must not begin persistence or close the warm stream');
+  assert.deepEqual(effects, [], 'deferred route mutation must not begin persistence or close the warm stream');
 });
 
 test('idle Codex route changes synchronize the exact native rollout before authority changes', () => {

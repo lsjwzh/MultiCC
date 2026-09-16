@@ -403,6 +403,19 @@ function createSessionProfileRoutes(rawDeps) {
       }
       rememberActiveCliState(s);
       mutation.commit();
+      // An immediately-applied route change (provider/model/effort/…) used to be
+      // write-only: the PATCH persisted + audited but the session's chat socket
+      // heard nothing, so an open chat page kept the OLD provider's quota bar and
+      // header pills until its next full reload. The Air task page's AI 配置
+      // dialog saves from the parent page, so its embedded chat iframe depends
+      // entirely on this push. Mirror the deferred branch's
+      // session_configuration_pending with the applied variant — the chat client
+      // already treats it as "re-read the session configuration".
+      if (routeMutation) {
+        const applied = { type: 'session_configuration_applied', sessionId: s.id };
+        chatBroadcast(s.id, applied);
+        workspaceBroadcast(s.dirId, applied);
+      }
       res.json({
         ...s,
         // The full checkpoint can contain recent visible conversation text. Keep
