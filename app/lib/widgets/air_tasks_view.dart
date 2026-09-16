@@ -11,6 +11,7 @@ import '../screens/docs_registry_screen.dart';
 import '../screens/push_settings_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/setup_screen.dart';
+import '../screens/task_graph_screen.dart';
 import '../screens/terminal_screen.dart';
 import '../services/air_service.dart';
 import '../services/session_service.dart';
@@ -206,13 +207,20 @@ class _AirTasksViewState extends State<AirTasksView>
 
   /// 打开一个任务：先换出可续接的会话，再交给现有的聊天页。只读记录不能在这里
   /// 接管，只能回到它原来的会话。
-  Future<void> _open(AirTask task) async {
+  Future<void> _open(AirTask task) => _openTask(task.id);
+
+  /// 按 id 打开任务对话。
+  ///
+  /// 列表之外还有一个入口会走到这里：任务图谱节点详情里的「在 Air 打开」
+  /// （[_openTaskFromGraph]）—— 图谱是跨目录的，那一行不一定在当前目录的快照
+  /// 里，所以打开这件事按 id 收口，不要求先能拿到 [AirTask]。
+  Future<void> _openTask(String taskId) async {
     if (_opening) return;
     _opening = true;
     // 打开对话就是把引导交给聊天页（Web 第 2 步那颗「打开对话后继续」）。
     _tourKey.currentState?.handOffToChat();
     try {
-      final entry = await _service.openTask(task.id);
+      final entry = await _service.openTask(taskId);
       if (!mounted) return;
       final id =
           (entry['readOnly'] == true
@@ -229,7 +237,7 @@ class _AirTasksViewState extends State<AirTasksView>
           ).fetchTaskBoundSession(id);
       if (!mounted) return;
       if (session == null) throw Exception('无法打开任务会话，请刷新后重试。');
-      await _store?.rememberTask(task.id);
+      await _store?.rememberTask(taskId);
       mgr.openSession(session, historyArchive: true);
       mgr.switchToSession(session.id);
       if (mounted) setState(() {});
@@ -238,6 +246,71 @@ class _AirTasksViewState extends State<AirTasksView>
     } finally {
       _opening = false;
     }
+  }
+
+  /// 页头那颗「执行中 N / 空闲」徽标点开的东西：**本目录正在执行的这几条**。
+  ///
+  /// Web 的 `#task-state` 是按钮，点开的是「当前打开的那个任务」的详情
+  /// （`public/air.js:1835` 的 `openTaskDetails(currentTaskId)`）。App 的 Air
+  /// 首页没有「当前打开的任务」这一层 —— 这一行说的是「本目录有几条在跑」，
+  /// 照搬 Web 就得替用户猜一个任务。所以这里点开的是那个数字本身：正在执行的
+  /// 任务清单，每一条还是走同一套 [_open]。
+  Future<void> _showRunningTasks() async {
+    final data = _data;
+    final dirId = _directoryId;
+    if (data == null || dirId == null) return;
+    final running = data.tasksOf(dirId).where(airTaskRunning).toList();
+    final messenger = ScaffoldMessenger.of(context);
+    if (running.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('本目录当前没有正在执行的任务。')),
+      );
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.panel,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '正在执行 ${running.length} 个任务',
+                style: const TextStyle(
+                  color: AppColors.text,
+                  fontSize: 14.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final task in running)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: AirTaskTile(
+                          task: task,
+                          showTime: true,
+                          onTap: () {
+                            Navigator.of(sheetContext).pop();
+                            unawaited(_open(task));
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   /// 侧栏 TERMINAL 一组点开一行：先换出会话对象，再开终端页。
@@ -803,8 +876,12 @@ class _AirTasksViewState extends State<AirTasksView>
 
   /// 网页版控制台。原生页已经能干活了，这里留一个明确出口，不是默认入口。
   void _openWebConsole() {
-    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
+    // 控制台现在就是 Air 自己（`/manage` 会 302 到 `/air?view=overview`，
+    // `public/air.js` 里那句「?view=overview 表示打开控制台」）。写旧地址虽然
+    // 靠重定向也能到，但那是别人的兼容承诺，不是这一页的入口。
+    final uri = Uri.parse(widget.settings.buildHttpUrl('/air')).replace(
       queryParameters: {
+        'view': 'overview',
         if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
       },
     );
@@ -812,7 +889,10 @@ class _AirTasksViewState extends State<AirTasksView>
   }
 
   void _openWebMemory() {
-    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
+    // 记忆图谱现在住在 Air 的视图里（`public/air.html` 的
+    // `data-air-view="memory"`）。老地址 `/manage?view=memory` 会 302 到同一个
+    // 终点，这里直接写终点：少一跳兼容跳转，也不依赖别人继续维护那张映射表。
+    final uri = Uri.parse(widget.settings.buildHttpUrl('/air')).replace(
       queryParameters: {
         'view': 'memory',
         if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
@@ -821,16 +901,36 @@ class _AirTasksViewState extends State<AirTasksView>
     unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
   }
 
-  /// 「任务图谱」（Web `?view=taskgraph`）还没有原生页，先和记忆图谱一样把
-  /// 网页版打开；原生渲染器补上之后，这里换成本地路由即可。
-  void _openWebTaskGraph() {
-    final uri = Uri.parse(widget.settings.buildHttpUrl('/manage')).replace(
-      queryParameters: {
-        'view': 'taskgraph',
-        if (widget.settings.token.isNotEmpty) 'token': widget.settings.token,
-      },
+  /// 「任务图谱」（Web `?view=taskgraph`）—— 原生页 [TaskGraphScreen]。
+  ///
+  /// 以前这里开的是 `/manage?view=taskgraph`，而那条老地址现在 302 到
+  /// `/air?view=overview`：点「任务图谱」实际只会看到控制台。原生页补齐之后
+  /// 这个入口不再依赖那张映射表。
+  Future<void> _openTaskGraph() async {
+    final navigator = Navigator.of(context);
+    await _push(
+      (_) => TaskGraphScreen(
+        settings: widget.settings,
+        // 图谱不认识 Air 路由，回跳由宿主来做：先把图谱这一层收掉，再走和任务
+        // 行完全相同的 [_openTask]（`.pop()` 之后这一帧的 context 就不该再用了，
+        // 所以 Navigator 先取出来）。
+        onOpenTaskInAir: (dirId, taskId) {
+          navigator.pop();
+          unawaited(_openTaskFromGraph(dirId, taskId));
+        },
+      ),
     );
-    unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+  }
+
+  /// 图谱详情里「在 Air 打开」：先切到任务所属目录（列表跟着换），再照常打开。
+  ///
+  /// 任务可能不在当前目录的快照里（图谱是跨目录的），所以这里按 id 打开，
+  /// 不要求先能在这份列表里找到那一行。
+  Future<void> _openTaskFromGraph(String dirId, String taskId) async {
+    if (dirId.isNotEmpty && dirId != _directoryId) {
+      _selectDirectory(dirId);
+    }
+    await _openTask(taskId);
   }
 
   Future<void> _push(WidgetBuilder builder) async {
@@ -1034,7 +1134,7 @@ class _AirTasksViewState extends State<AirTasksView>
         },
         onOpenTaskGraph: () {
           _closeDrawer();
-          _openWebTaskGraph();
+          unawaited(_openTaskGraph());
         },
         onOpenSettings: () => _openDestination(WorkspaceDestination.global),
         onOpenAllDestinations: () {
@@ -1113,8 +1213,9 @@ class _AirTasksViewState extends State<AirTasksView>
             Padding(
               padding: const EdgeInsets.only(right: 4),
               child: Center(
-                child: AirStatusBadge(
+              child: AirStatusBadge(
                   text: runningHere > 0 ? '执行中 $runningHere' : '空闲',
+                  onTap: () => unawaited(_showRunningTasks()),
                 ),
               ),
             ),

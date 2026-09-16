@@ -30,13 +30,14 @@ Future<void> main() async {
   await I18n.init(settings.lang);
   runApp(MultiCCApp(settings: settings));
 
-  // The permission alert can only be answered by a human, so it must never sit
-  // between launch and the first frame — see
-  // NotificationService.requestPermissions for what that looks like from the
-  // user's side.
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    NotificationService.requestPermissions();
-  });
+  // 刻意**不**在这里(或 post-frame)申请系统通知权限 —— 这里原来有一次无条件的
+  // `NotificationService.requestPermissions()`。Web 的授权弹窗只在用户主动打开
+  // 聊天页头那颗 `#notify-btn` 时才出现：toggle() 打开开关后调
+  // `ensurePushSubscribed()`，其中的 `Notification.requestPermission()` 才是弹窗
+  // 来源（public/chat-notifications.js:112 → public/pwa.js:224），页面加载本身从
+  // 不弹。冷启动就弹一次会把「还没决定要不要提醒」的人按在系统弹窗上，语义也和
+  // Web 不一致。App 的等价入口是 ⋯ 菜单里的「任务提醒」—— chat_header 的
+  // toggleTaskNotifyWithPermission() 在那里申请，被拒还会把开关回滚成关闭。
 }
 
 class MultiCCApp extends StatelessWidget {

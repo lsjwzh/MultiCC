@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/providers/chat_provider.dart';
 import 'package:multicc_app/providers/session_manager.dart';
+import 'package:multicc_app/services/notification_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/utils/session_status_helpers.dart';
 import 'package:multicc_app/widgets/chat_header.dart';
@@ -98,6 +99,13 @@ void main() {
 
   // ⋯ 菜单断言用 zh 文案（「切换」「角色提示词」…），必须先装载词条。
   setUpAll(() => I18n.init('zh'));
+
+  // 「任务提醒」三态读的是 NotificationService 的静态权限缓存 / 注入的 fake，
+  // 用完必须还原，否则会串到后面的用例去。
+  tearDown(() {
+    NotificationService.debugPermissionRequester = null;
+    NotificationService.debugSetPermissionGranted(false);
+  });
 
   testWidgets('narrow header keeps the title visible on its own full-width line', (
     tester,
@@ -474,7 +482,7 @@ void main() {
       mgr.dispose();
     });
 
-    testWidgets('任务提醒入口按开/关显示 ✓/✕，点了写 Web 那套本地键', (tester) async {
+    testWidgets('任务提醒入口在 ⋯ 菜单里，标签按 Web 的 title 三态显示', (tester) async {
       final settings = await _settings();
       final mgr = SessionManager(settings: settings);
       final provider = ChatProvider(
@@ -488,19 +496,148 @@ void main() {
       await tester.tap(find.byIcon(Icons.more_vert));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('chat-header-task-notify')), findsOneWidget);
-      expect(find.text(t('taskNotifyOn')), findsOneWidget);
+      // 这一档的文案必须跟 Web 的 title 一字不差（public/chat-notifications.js
+      // 的 updateButton()：pushOn 为假时是「任务提醒 (点击开启系统通知)」）。
+      expect(t('taskNotifyOnNoPush'), '任务提醒 (点击开启系统通知)');
+      expect(find.text(t('taskNotifyOnNoPush')), findsOneWidget);
+      expect(find.text(t('taskNotifyOnPush')), findsNothing);
       expect(find.text(t('taskNotifyOff')), findsNothing);
 
-      await tester.tap(find.byKey(const Key('chat-header-task-notify')));
-      await tester.pumpAndSettle();
-      // 落的是 Web 同一个键 `multicc_notify:<sessionId>`，值 'off'。
-      expect(settings.taskNotifyEnabled('s-notify'), isFalse);
+      provider.dispose();
+      mgr.dispose();
+    });
 
-      // 菜单每次展开都重读偏好，所以再开一次就该是 ✕。
+    // Web 的三态标签（public/chat-notifications.js:78-86）：开着且系统通知已授权
+    // / 开着但还没授权 / 已关闭。App 的 ⋯ 菜单没有 tooltip，三态只能落在文案上。
+    testWidgets('任务提醒三态①：开着且系统通知已授权 → 「系统通知已开启」', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-notify-granted',
+        sessionCwd: '/tmp',
+      );
+      expect(t('taskNotifyOnPush'), '任务提醒 (系统通知已开启)');
+      // 权限状态是异步查出来的、菜单 itemBuilder 是同步的，所以测试直接预置这
+      // 份同步缓存（NotificationService.permissionGranted）。
+      NotificationService.debugSetPermissionGranted(true);
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
       await tester.tap(find.byIcon(Icons.more_vert));
       await tester.pumpAndSettle();
+      expect(find.text(t('taskNotifyOnPush')), findsOneWidget);
+      expect(find.text(t('taskNotifyOnNoPush')), findsNothing);
+      expect(find.text(t('taskNotifyOff')), findsNothing);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    testWidgets('任务提醒三态②：开着但系统通知未授权 → 「点击开启系统通知」', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-notify-nopush',
+        sessionCwd: '/tmp',
+      );
+      NotificationService.debugSetPermissionGranted(false);
+      expect(settings.taskNotifyEnabled('s-notify-nopush'), isTrue);
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      expect(find.text(t('taskNotifyOnNoPush')), findsOneWidget);
+      expect(find.text(t('taskNotifyOnPush')), findsNothing);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    testWidgets('任务提醒三态③：关掉 → 「已关闭」', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-notify-off',
+        sessionCwd: '/tmp',
+      );
+      // 落的是 Web 同一个键 `multicc_notify:<sessionId>`，值 'off'。
+      await settings.setTaskNotifyEnabled('s-notify-off', false);
+      expect(t('taskNotifyOff'), '任务提醒 (已关闭)');
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('chat-header-task-notify')), findsOneWidget);
       expect(find.text(t('taskNotifyOff')), findsOneWidget);
-      expect(find.text(t('taskNotifyOn')), findsNothing);
+      expect(find.text(t('taskNotifyOnPush')), findsNothing);
+      expect(find.text(t('taskNotifyOnNoPush')), findsNothing);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    // Web toggle()（public/chat-notifications.js:112-117）：打开时申请系统通知
+    // 权限，`ensurePushSubscribed()` 返回 false 就把开关回滚成关闭。App 的用户
+    // 反馈落在 SnackBar 上 —— 不提示的话「点了没反应」和「真的坏掉了」分不开。
+    testWidgets('任务提醒：打开时申请系统通知权限，被拒就回滚成关闭并提示', (tester) async {
+      var requested = 0;
+      NotificationService.debugSetPermissionGranted(false);
+      NotificationService.debugPermissionRequester = () async {
+        requested++;
+        return false;
+      };
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-notify-denied',
+        sessionCwd: '/tmp',
+      );
+      await settings.setTaskNotifyEnabled('s-notify-denied', true);
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('chat-header-task-notify')));
+      await tester.pumpAndSettle();
+
+      expect(requested, 1);
+      expect(settings.taskNotifyEnabled('s-notify-denied'), isFalse);
+      expect(find.text(t('taskNotifyPermissionDenied')), findsOneWidget);
+
+      // 让 SnackBar 自己收掉，别把 4s 计时器留给后面的用例。
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    testWidgets('任务提醒：已授权时点击 = 直接关闭，不会再申请权限', (tester) async {
+      var requested = 0;
+      NotificationService.debugPermissionRequester = () async {
+        requested++;
+        return true;
+      };
+      NotificationService.debugSetPermissionGranted(true);
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-notify-close',
+        sessionCwd: '/tmp',
+      );
+      expect(settings.taskNotifyEnabled('s-notify-close'), isTrue);
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('chat-header-task-notify')));
+      await tester.pumpAndSettle();
+
+      expect(settings.taskNotifyEnabled('s-notify-close'), isFalse);
+      expect(requested, 0);
 
       provider.dispose();
       mgr.dispose();
