@@ -393,8 +393,13 @@
     if (!element) return;
     const claudeProvider = isClaudeProvider(currentProviderBaseUrl);
     const provider = limitProvider();
+    // A vendor whose dedicated slot (#zhipu-quota-bar …) is on screen already
+    // shows this account's windows — it fetches the same vendor surface the
+    // Provider balance query resolves to. Painting the window here too showed
+    // two identical `5h … 1wk …` meters side by side, one second apart.
+    const vendorSlotOwnsWindows = isZhipuBaseUrl(currentProviderBaseUrl);
     let bar = null, state, clickable = false;
-    if (currentProviderWindowBar && activeProviderMatchesCli()) {
+    if (currentProviderWindowBar && !vendorSlotOwnsWindows && activeProviderMatchesCli()) {
       // Exact Provider query wins over CLI heuristics and passive events. This
       // is what lets a Codex session correctly show GLM/borrowed/official quota
       // according to its active Provider rather than the local Codex account.
@@ -405,7 +410,7 @@
       bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentLimitBar || idleBarFor('claude');
       state = claudeUsageFetchInFlight ? 'fetching' : (claudeLoginPending ? 'login_pending' : undefined);
       clickable = true;
-    } else if (provider && providerMatchesCli(provider, currentCli)) {
+    } else if (provider && providerMatchesCli(provider, currentCli) && !vendorSlotOwnsWindows) {
       bar = currentLimitBar;
     }
     const view = paintBar(element, bar, state);

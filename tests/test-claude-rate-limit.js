@@ -410,8 +410,12 @@ test('loopback relay plumbing is not a borrowed provider and a balance chip show
 test('switching provider clears the previous provider\'s stale window bar', () => {
   const f = freshClient();
   try {
-    // Own GLM provider paints a window bar and persists it per session.
-    f.C.setProviderBaseUrl('https://open.bigmodel.cn/api/paas/v4');
+    // Own GLM provider under the codex CLI paints a window bar and persists it
+    // per session. (Under the claude CLI the zhipu baseUrl case is owned by the
+    // vendor slot — see the no-duplicate test below — so codex is the plain
+    // pass-through-event path here.)
+    f.C.setCli('codex');
+    f.C.setProviderBaseUrl('https://glm.example/api/paas/v4');
     const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.8, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
     const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
     f.C.consumeRateLimitEvent(info, 'mixed-sess', bar);
@@ -422,9 +426,47 @@ test('switching provider clears the previous provider\'s stale window bar', () =
     // Switch the session to the borrowed provider: the old provider's bar must
     // not keep speaking for the relay (whose gate would let it linger) — it is
     // cleared until the relay's first pass-through event repaints it.
-    f.C.setProviderBaseUrl('https://relay.example:3000/claude-proxy/glm/remote');
+    f.C.setProviderBaseUrl('https://relay.example:3000/codex-proxy/glm/remote');
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
     assert.equal(f.values.has(key), false, 'the stale persisted bar is dropped');
+  } finally { f.cleanup(); }
+});
+
+test('a Zhipu provider shows one window bar, not the vendor slot plus the Provider query', async () => {
+  const f = freshClient();
+  try {
+    await flushClient();
+    // Regression: a resolved Provider on a Zhipu baseUrl gets its window DTO
+    // from BOTH the vendor slot (/api/quota/bars/refresh?kind=zhipu) and the
+    // exact Provider query (/api/providers/.../balance, kind=window) — the same
+    // glm-monitor account twice. Both painted `5h … 1wk …` side by side, one
+    // second apart in staleness. The vendor slot owns the row; the generic
+    // provider window bar must stay hidden.
+    global.fetch = (url) => {
+      if (String(url).includes('/api/providers/')) {
+        return Promise.resolve({ json: async () => ({ ok: true, dto: { kind: 'window', provider: 'glm', utilization: 0.05 }, bar: { text: 'Provider GLM window' } }) });
+      }
+      return Promise.resolve({ json: async () => ({ status: 'ok', bar: { text: 'Zhipu slot window' } }) });
+    };
+    f.C.setProviderBaseUrl('https://open.bigmodel.cn/api/paas/v4', 'glm-1', { appType: 'claude' });
+    await flushClient();
+    assert.equal(f.element('zhipu-quota-bar').style.display, 'block');
+    assert.equal(f.element('zhipu-quota-bar').textContent, 'Zhipu slot window');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+    assert.notEqual(f.element('claude-rate-limit-bar').textContent, 'Provider GLM window');
+
+    // The passive pass-through GLM event is the same account's windows too —
+    // it must not repaint the hidden generic slot while the vendor slot shows.
+    const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.05, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
+    f.C.consumeRateLimitEvent(info, 'zhipu-dup', Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW)));
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+
+    // Off the Zhipu baseUrl, the Provider window bar is the only display and
+    // paints as before (e.g. a GLM endpoint the vendor slot does not cover).
+    f.C.setProviderBaseUrl('https://glm.example/api/paas/v4', 'glm-2', { appType: 'claude' });
+    await flushClient();
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'Provider GLM window');
   } finally { f.cleanup(); }
 });
 
