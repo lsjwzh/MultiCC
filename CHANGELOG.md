@@ -2,6 +2,29 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.0.0 — The Air release (2026-09-16)
+
+### Highlights
+
+- **The Air console is the main interface** — `/` and `/manage` now both redirect to `/air`, making the task-first surface the single entry point. Tasks, not roles, are the unit of work.
+- **First-run setup guidance** — new users land on `/air` and are walked through a setup card: prepare a model (import a provider or use a CLI's own login), then configure the AI Assistant. The AI Assistant is a core service — a lightweight flash-tier model is enough.
+- **AI Assistant (aux) console page** — model settings and run records for the intent-classification / task-attribution / auto-advance service, in the Air console under Settings › AI & execution.
+- **Native task graph and memory graph** — `view=taskgraph` renders the task relationship network (parent/child, grouping, merges, shell links); `view=memory` renders the cross-task memory network.
+- **The new-task composer remembers your last runtime** — the most recently used CLI, line, and model (`lastRuntime`) are pre-filled on the next task.
+- **Provider switches broadcast instantly** — the chat page's quota bar updates as soon as the line changes, no reload needed.
+- **Scheduled tasks bind to fixed Air tasks** — cron-style recurring work keeps its task, session, and context across runs; task delivery is sectioned and drag-orderable.
+
+### Improvements and fixes
+
+- **SakuraFrp tunnel monitoring** — launcher detection, diagnostics, and `frpc` fallback join Tailscale Funnel and 花生壳 as the third built-in public-tunnel option.
+- **Share links open the chat page directly** — recipients of a password-protected snapshot land in the conversation, not an index page.
+- **README fully revised for 2.0** — task-first Quick Start, the Air console section, eight-CLI feature list, and operational screenshots captured in the docker test environment.
+- **Desktop releases stay in lock-step with the main tag** — the desktop packaging flow was hardened so the five desktop artifacts publish automatically with the main release.
+
+### Compatibility
+
+- No API or data-format changes. Existing provider configurations, relay shares and imported Fleets keep working without migration.
+
 ## v1.7.0 — The Air console, and a light native client
 
 ### Highlights
