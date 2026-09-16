@@ -262,3 +262,32 @@ test('an unidentifiable workspace names its failure instead of reading as busy',
   f.deps.directories.delete('d');
   assert.throws(() => f.host.occupied(f.record.id), { code: 'workspace_directory_missing' });
 });
+
+test('reclaim demotes a workspace whose directory is gone and keeps the rest', t => {
+  const f = fixture(t);
+  const gone = f.add('gone', 'resident'), kept = f.add('kept', 'resident');
+  assert.deepEqual(f.registry.reclaim(record => (record.id === gone.id ? 'gone' : 'present')), [gone.id]);
+  assert.equal(f.registry.workspace(gone.id).residency, 'hibernated');
+  assert.equal(f.registry.workspace(kept.id).residency, 'resident');
+  assert.equal(f.registry.workspace(gone.id).path, gone.path, 'the record keeps its identity');
+});
+
+test('reclaim never takes a workspace that holds a live lease', t => {
+  const f = fixture(t);
+  const busy = f.add('busy', 'resident');
+  f.registry.acquire(busy.id, 'busy', 'm');
+  assert.deepEqual(f.registry.reclaim(() => 'gone'), []);
+  assert.equal(f.registry.workspace(busy.id).residency, 'resident');
+});
+
+test('a worktree that disappears stops spending the resident budget', async t => {
+  const f = await hostFixture(t), d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);
+  await guard.complete({ accepted: true });
+  const workspaceId = f.registry.binding(f.record.id).workspaceId;
+  assert.equal(f.registry.workspace(workspaceId).residency, 'resident');
+  // relocate/hibernate detach the directory; nothing tells the registry.
+  fs.rmSync(f.record.worktreePath, { recursive: true, force: true });
+  f.deps.budgets = { residencyReclaimMs: 0 };
+  for (let i = 0; i < 50 && f.registry.workspace(workspaceId).residency === 'resident'; i++) await new Promise(r => setTimeout(r, 100));
+  assert.equal(f.registry.workspace(workspaceId).residency, 'hibernated');
+});
