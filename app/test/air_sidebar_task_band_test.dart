@@ -80,6 +80,7 @@ void main() {
             onOpenTerminal: (_) {},
             onOpenDocs: () {},
             onOpenMemory: () {},
+            onOpenTaskGraph: () {},
             onOpenSettings: () {},
             onOpenAllDestinations: () {},
             ops: ops,

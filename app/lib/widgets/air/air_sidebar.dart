@@ -39,6 +39,7 @@ class AirSidebar extends StatelessWidget {
     required this.onOpenTerminal,
     required this.onOpenDocs,
     required this.onOpenMemory,
+    required this.onOpenTaskGraph,
     required this.onOpenSettings,
     required this.onOpenAllDestinations,
     required this.ops,
@@ -77,6 +78,10 @@ class AirSidebar extends StatelessWidget {
   final ValueChanged<AirSession> onOpenTerminal;
   final VoidCallback onOpenDocs;
   final VoidCallback onOpenMemory;
+
+  /// 「任务图谱」在 Web 侧是 `?view=taskgraph` 那页关联网络，App 还没有原生版，
+  /// 所以和「记忆图谱」一样交给宿主开网页。
+  final VoidCallback onOpenTaskGraph;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenAllDestinations;
 
@@ -270,6 +275,7 @@ class AirSidebar extends StatelessWidget {
               onAdvancedModeChanged: onAdvancedModeChanged,
               onOpenDocs: onOpenDocs,
               onOpenMemory: onOpenMemory,
+              onOpenTaskGraph: onOpenTaskGraph,
               onOpenSettings: onOpenSettings,
               onOpenTaskBoard: onOpenTaskBoard,
               terminalSessions: terminalSessions,
@@ -655,6 +661,7 @@ class _MoreSection extends StatelessWidget {
     required this.onAdvancedModeChanged,
     required this.onOpenDocs,
     required this.onOpenMemory,
+    required this.onOpenTaskGraph,
     required this.onOpenSettings,
     required this.onOpenTaskBoard,
     required this.terminalSessions,
@@ -670,6 +677,7 @@ class _MoreSection extends StatelessWidget {
   final ValueChanged<bool>? onAdvancedModeChanged;
   final VoidCallback onOpenDocs;
   final VoidCallback onOpenMemory;
+  final VoidCallback onOpenTaskGraph;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenTaskBoard;
   final List<AirSession> terminalSessions;
@@ -712,6 +720,14 @@ class _MoreSection extends StatelessWidget {
             icon: Icons.hub_outlined,
             label: '记忆图谱',
             onTap: onOpenMemory,
+          ),
+          // Web 的 `#side-more .global-links` 里，「任务图谱」夹在记忆图谱和
+          // 设置中心之间（`air.html`）；App 少这一行就会和 Web 对不上。
+          _NavRow(
+            semanticKey: 'air-more-task-graph',
+            icon: Icons.account_tree_outlined,
+            label: '任务图谱',
+            onTap: onOpenTaskGraph,
           ),
           _NavRow(
             semanticKey: 'air-more-settings',

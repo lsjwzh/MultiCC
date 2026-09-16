@@ -2513,7 +2513,11 @@ class ChatProvider extends ChangeNotifier {
 
   /// Send a local notification if this session is not currently visible.
   void _maybeNotify(String title, String detail) {
-    if (SettingsService.current?.notificationsEnabled == false) return;
+    final settings = SettingsService.current;
+    if (settings?.notificationsEnabled == false) return;
+    // 会话级「任务提醒」开关（Web 页头 `#notify-btn` → public/pwa.js
+    // getTaskNotifyEnabled）：关掉只静音这一个会话，全局开关不动。
+    if (settings?.taskNotifyEnabled(sessionName) == false) return;
     if (isInBackground || !isActive) {
       final who = titleLabel;
       NotificationService.show(
