@@ -94,6 +94,29 @@ test('a legacy planned task deletes its own clean worktree without a chat sessio
   assert.equal((await git('branch', '--list', 'task-branch')).stdout.trim(), '');
 });
 
+test('manual task title sync updates only its bound session and broadcasts both planes', () => {
+  const records = new Map([
+    ['bound', { id: 'bound', dirId: 'd1', taskBoundTaskId: 'task-1', label: '旧标题' }],
+    ['other', { id: 'other', dirId: 'd1', taskBoundTaskId: 'task-2', label: '别的任务' }],
+  ]);
+  const workspace = [], chat = [], mutations = [];
+  const host = createTaskLifecycleHost({
+    records,
+    mutate(source, operation) { mutations.push(source); operation(records); },
+    workspaceBroadcast: (dirId, event) => workspace.push([dirId, event]),
+    chatBroadcast: (sessionId, event) => chat.push([sessionId, event]),
+  });
+
+  host.syncTaskTitle({ id: 'task-1', title: '新标题' });
+
+  assert.deepEqual(mutations, ['task.title-rename']);
+  assert.equal(records.get('bound').label, '新标题');
+  assert.equal(records.get('other').label, '别的任务');
+  const event = { type: 'session_updated', sessionId: 'bound', label: '新标题' };
+  assert.deepEqual(workspace, [['d1', event]]);
+  assert.deepEqual(chat, [['bound', event]]);
+});
+
 test('busy tasks are unchanged and failed deletion stays blocked until cleanup retry succeeds', async t => {
   let busy = true, fail = true;
   const f = harness(t, { assertTaskIdle: async () => { if (busy) throw Object.assign(new Error('busy'), { code: 'task_busy' }); },

@@ -88,8 +88,40 @@ test('new evidence and explicit merges reopen planned done cards without couplin
   assert.equal(source.status, 'archived');
 });
 
+test('manual rename owns the title for planned and observed task identities', () => {
+  const board = core.createEmptyBoard();
+  const planned = planning.createPlannedTask(board, {
+    title: '自动标题', dirId: 'dir-1', workflowStage: 'inbox',
+  }).task;
+  board.tasks.observed = {
+    id: 'observed', title: '观察标题', status: 'active', recordType: 'observed',
+    origin: 'session', areas: [], refs: [], createdAt: 1, updatedAt: 1,
+  };
+
+  assert.equal(planning.renameTask(board, planned.id, '  人工计划标题  ', { now: 20 }).ok, true);
+  assert.equal(planned.title, '人工计划标题');
+  assert.equal(planned.titleSource, 'manual');
+  assert.equal(planned.planningRevision, 2);
+
+  assert.equal(planning.renameTask(board, 'observed', '人工观察标题', { now: 21 }).ok, true);
+  assert.equal(board.tasks.observed.title, '人工观察标题');
+  assert.equal(board.tasks.observed.titleSource, 'manual');
+  assert.equal(board.tasks.observed.planningRevision, undefined);
+  assert.equal(planning.renameTask(board, 'observed', '   ').error, 'title_required');
+  assert.equal(planning.renameTask(board, 'observed', 'x'.repeat(41)).error, 'title_too_long');
+
+  const reloaded = core.normalizeBoard(JSON.parse(JSON.stringify(board)));
+  assert.equal(reloaded.tasks.observed.titleSource, 'manual');
+  const classified = core.applyTaskClassification(reloaded, 'observed', {
+    id: 'observed', title: '分类器的新标题', module: '模块', areas: [],
+  }, null, 30);
+  assert.equal(classified.ok, true);
+  assert.equal(reloaded.tasks.observed.title, '人工观察标题');
+});
+
 test('planning create, update and move are revisioned, preserve empty refs and persist DTO fields', async () => {
-  const fixture = mkRuntime();
+  const syncedTitles = [];
+  const fixture = mkRuntime({ syncTaskTitle: task => syncedTitles.push([task.id, task.title]) });
   const routes = planningRoutes(fixture.runtime);
   const create = planningResponse();
   await routes.get('POST /api/task-board/tasks')({ body: {
@@ -130,15 +162,24 @@ test('planning create, update and move are revisioned, preserve empty refs and p
   assert.equal(fixture.runtime.getBoard().revision, 2);
   assert.equal(fixture.runtime.getBoard().tasks[create.body.task.id].description, '补充后的描述');
 
+  const rename = planningResponse();
+  await routes.get('POST /api/task-board/tasks/:taskId/title')({
+    params: { taskId: create.body.task.id }, body: { title: '手动标题' },
+  }, rename);
+  assert.equal(rename.code, 200);
+  assert.equal(rename.body.task.title, '手动标题');
+  assert.equal(rename.body.task.planningRevision, 3);
+  assert.deepEqual(syncedTitles, [[create.body.task.id, '手动标题']]);
+
   const move = planningResponse();
   await routes.get('POST /api/task-board/tasks/:taskId/move')({
     params: { taskId: create.body.task.id },
-    body: { workflowStage: 'ready', expectedRevision: 2 },
+    body: { workflowStage: 'ready', expectedRevision: 3 },
   }, move);
   assert.equal(move.code, 200);
   assert.equal(move.body.task.workflowStage, 'ready');
   assert.equal(move.body.task.status, 'active');
-  assert.equal(move.body.task.planningRevision, 3);
+  assert.equal(move.body.task.planningRevision, 4);
 });
 
 test('planning update atomically edits content and moves to the target Fleet stage tail', async () => {

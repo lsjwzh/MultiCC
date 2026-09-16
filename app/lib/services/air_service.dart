@@ -52,6 +52,8 @@ const Map<String, String> airTaskActionErrors = {
   'task_busy': '任务正在执行或排队中，等它空闲下来再操作。',
   'task_archived': '任务已归档。',
   'task_deleting': '任务正在删除中，请稍等。',
+  'title_required': '任务标题不能为空。',
+  'title_too_long': '任务标题最多 40 个字符。',
   'task_workspace_dirty': '工作区还有未提交改动：请先在任务里让它提交或清理，再删除。',
   'task_workspace_unmerged': '工作区还有未合并到基分支的提交：请先合并，再删除。',
   'task_session_shared': '会话还被其他任务共享，无法删除。',
@@ -576,6 +578,15 @@ class AirService {
     '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/status',
     {'status': status},
   );
+
+  /// 手动更改任务身份上的标题。它和会话别名是两件事：任务绑定会话只是执行载体，
+  /// Web / App 的任务页都通过这条路由改任务板中的正式标题。
+  Future<Map<String, dynamic>> renameTask(String taskId, String title) =>
+      _lifecycle(
+        'POST',
+        '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/title',
+        {'title': title},
+      );
 
   /// 把任务移到另一个工作目录。返回体带 `carried`：有未提交改动或未跟踪的新
   /// 文件时，它说明这些东西跟着工作区一起带走了多少（`src/task-board/

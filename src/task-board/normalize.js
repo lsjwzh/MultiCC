@@ -133,6 +133,7 @@ function normalizeBoard(raw) {
           })).slice(-MAX_REFS_PER_TASK)
         : [],
     };
+    if (t.titleSource === 'manual') task.titleSource = 'manual';
     // Origin marker. Absent on every card written before it existed, so fall
     // back to the id shape rather than guessing 'session' for old board sends.
     task.origin = TASK_ORIGINS.has(t.origin) ? t.origin : legacyTaskOrigin(id);

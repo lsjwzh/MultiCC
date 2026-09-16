@@ -279,6 +279,28 @@ function updatePlannedTask(board, taskIdValue, patch = {}, { now = Date.now(), e
   return { ok: true, task };
 }
 
+// A title belongs to the task identity, not to whichever session currently
+// happens to execute it. Unlike the planning drawer, title rename is therefore
+// valid for both planned and observed tasks. Marking the source as manual keeps
+// a later classifier result from silently replacing an explicit user choice.
+function renameTask(board, taskIdValue, titleValue, { now = Date.now() } = {}) {
+  const task = board.tasks?.[taskIdValue];
+  if (!task) return invalid('task_not_found');
+  if (task.deleting) return invalid('task_deleting');
+  if (typeof titleValue === 'string' && titleValue.trim().length > 40) {
+    return invalid('title_too_long', 'title');
+  }
+  const title = cleanText(titleValue, 40);
+  if (!title) return invalid('title_required', 'title');
+  task.title = title;
+  task.titleSource = 'manual';
+  task.updatedAt = now;
+  if (task.recordType === 'planned') {
+    task.planningRevision = planningRevision(task.planningRevision) + 1;
+  }
+  return { ok: true, task };
+}
+
 function movePlannedTask(board, taskIdValue, input = {}, { now = Date.now(), expectedRevision } = {}) {
   const task = board.tasks?.[taskIdValue];
   if (!task) return invalid('task_not_found');
@@ -341,6 +363,7 @@ module.exports = {
   rankForMove,
   createPlannedTask,
   updatePlannedTask,
+  renameTask,
   movePlannedTask,
   markPlannedTaskStarted,
   alignStageWithStatus,
