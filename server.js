@@ -126,7 +126,6 @@ const { mountQoderModelRoutes } = require('./src/routes/qoder-models');
 const { mountQoderQuotaRoutes } = require('./src/routes/qoder-quota');
 const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota'); const { createOfficialAccountStore, sanitizeLoginEnv } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex/accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
-const { mountZhipuQuotaRoutes } = require('./src/routes/zhipu-quota');
 const { mountKimiQuotaRoutes } = require('./src/routes/kimi-quota');
 const { mountClaudeUsageQuotaRoutes } = require('./src/routes/claude-usage-quota');
 const { mountAliyunQuotaRoutes } = require('./src/routes/aliyun-quota');
@@ -2135,8 +2134,8 @@ mountQoderModelRoutes(app); require('./src/routes/claude-models').mountClaudeMod
 // the chat rate-limit bar can prompt instead of degrading silently.
 mountOpenCodeQuotaRoutes(app); mountQoderQuotaRoutes(app); mountCodexQuotaRoutes(app, { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
 // Vendor routes feed results into the provider-limit cache via the recorder;
-// Qoder/OpenCode/Codex are account-level, so only ark/zhipu/kimi/claude feed here.
-mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountZhipuQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app, { quotaBarCache, recordVendor: limitRecorder.recordVendor, recordClaude: limitRecorder.recordClaude });
+// Qoder/OpenCode/Codex are account-level, so only ark/kimi/claude feed here.
+mountArkQuotaRoutes(app, limitRecorder.recordVendor); mountKimiQuotaRoutes(app, { recordVendor: limitRecorder.recordVendor }); mountClaudeUsageQuotaRoutes(app, limitRecorder.recordClaude); mountAliyunQuotaRoutes(app); require('./src/routes/quota-bars').mountQuotaBarRoutes(app, { quotaBarCache, recordVendor: limitRecorder.recordVendor, recordClaude: limitRecorder.recordClaude });
 mountCodexOAuthRoutes(app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id) }); mountCodexAccountRoutes(app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id) }); mountClaudeAccountRoutes(app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger }); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent }); claudeOAuthSurface.mountRoutes(app); // see src/routes/claude-oauth.js header
 // Token APIs remain between the two Provider route phases so the established

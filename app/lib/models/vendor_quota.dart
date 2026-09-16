@@ -194,7 +194,6 @@ bool providerMatchesCli(String provider, String cliName, String? providerBaseUrl
 }
 
 /// Host to pass as `?host=` so the backend puts the current site first.
-String zhipuHostFromBaseUrl(String? baseUrl) => hostFromBaseUrl(baseUrl);
 String kimiHostFromBaseUrl(String? baseUrl) => hostFromBaseUrl(baseUrl);
 
 /// Which Ark plan the provider baseUrl points to (Volcano serves Coding Plan

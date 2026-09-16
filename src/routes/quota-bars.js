@@ -18,7 +18,7 @@
 const { idleQuotaBars } = require('../quota/quota-bar-view');
 const { rememberClaudeScrape, renderClaudeBar } = require('../quota/claude-bar-state');
 
-const REFRESH_KINDS = new Set(['opencode', 'qoder', 'codex', 'claude', 'ark', 'zhipu', 'kimi']);
+const REFRESH_KINDS = new Set(['opencode', 'qoder', 'codex', 'claude', 'ark', 'kimi']);
 
 function statusCodeFor(status) {
   if (status === 'ok') return 200;
@@ -46,7 +46,6 @@ function defaultDeps() {
   const { fetchQoderUsage } = require('./qoder-quota');
   const { fetchCodexUsage } = require('./codex-quota');
   const { fetchArkUsage } = require('./ark-quota');
-  const { fetchZhipuUsage } = require('./zhipu-quota');
   const { fetchKimiUsage } = require('./kimi-quota');
   const { fetchClaudeUsage } = require('./claude-usage-quota');
   const { renderQuotaBar } = require('../quota/quota-bar-view');
@@ -55,7 +54,6 @@ function defaultDeps() {
     fetchQoderUsage,
     fetchCodexUsage,
     fetchArkUsage,
-    fetchZhipuUsage,
     fetchKimiUsage,
     fetchClaudeUsage,
     renderQuotaBar,
@@ -96,12 +94,6 @@ function createQuotaBarRuntime(options = {}) {
         try { deps.recordVendor({ kind: 'ark', result, baseUrl: selector.baseUrl }); } catch (_) {}
       }
       bar = renderQuotaBar('ark', result, opts);
-    } else if (kind === 'zhipu') {
-      result = await deps.fetchZhipuUsage(selector.host);
-      if (typeof deps.recordVendor === 'function') {
-        try { deps.recordVendor({ kind: 'zhipu', result, host: selector.host }); } catch (_) {}
-      }
-      bar = renderQuotaBar('zhipu', result);
     } else if (kind === 'kimi') {
       result = await deps.fetchKimiUsage(selector.host);
       if (typeof deps.recordVendor === 'function') {

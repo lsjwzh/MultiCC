@@ -662,20 +662,16 @@ class ChatProvider extends ChangeNotifier {
   QuotaService get _quota => _quotaService ??= QuotaService(settings: settings);
 
   Map<String, dynamic>? _arkQuota;
-  Map<String, dynamic>? _zhipuQuota;
   Map<String, dynamic>? _kimiQuota;
   Map<String, dynamic>? _qoderQuota;
   bool _arkLoading = false;
   bool _arkInstalling = false;
-  bool _zhipuLoading = false;
   bool _kimiLoading = false;
   bool _qoderLoading = false;
   bool _arkInFlight = false;
-  bool _zhipuInFlight = false;
   bool _kimiInFlight = false;
   bool _qoderInFlight = false;
   int _arkErrorAt = 0;
-  int _zhipuErrorAt = 0;
   int _kimiErrorAt = 0;
   int _qoderErrorAt = 0;
   static const int _vendorQuotaBackoffMs = 60000;
@@ -992,7 +988,6 @@ class ChatProvider extends ChangeNotifier {
   Map<String, void Function(Map<String, dynamic>)> get _vendorQuotaCacheSlots =>
       {
         'arkQuota': (v) => _arkQuota = v,
-        'zhipuQuota': (v) => _zhipuQuota = v,
         'kimiQuota': (v) => _kimiQuota = v,
         'qoderQuota': (v) => _qoderQuota = v,
         'opencodeQuota': (v) => _opencodeQuota = v,
@@ -1032,7 +1027,6 @@ class ChatProvider extends ChangeNotifier {
   Map<String, dynamic>? _quotaDataOf(String cacheKey) {
     final Map<String, dynamic>? data = switch (cacheKey) {
       'arkQuota' => _arkQuota,
-      'zhipuQuota' => _zhipuQuota,
       'kimiQuota' => _kimiQuota,
       'qoderQuota' => _qoderQuota,
       'opencodeQuota' => _opencodeQuota,
@@ -1849,7 +1843,6 @@ class ChatProvider extends ChangeNotifier {
       // drop any error backoff so the new bar fetches immediately (web
       // setProviderBaseUrl clears backoff the same way).
       _arkErrorAt = 0;
-      _zhipuErrorAt = 0;
       _kimiErrorAt = 0;
       refreshVendorQuotas();
     }
@@ -2013,7 +2006,6 @@ class ChatProvider extends ChangeNotifier {
       );
     }
     if (isArkBaseUrl(baseUrl)) _fetchArkQuota();
-    if (isZhipuBaseUrl(baseUrl)) _fetchZhipuQuota();
     if (isKimiBaseUrl(baseUrl)) _fetchKimiQuota();
   }
 
@@ -2031,12 +2023,10 @@ class ChatProvider extends ChangeNotifier {
     );
   }
 
-  /// Zhipu quota bar, visible only when the provider baseUrl points at
-  /// z.ai / bigmodel.cn. Tappable: force refetch (no login window).
-  VendorQuotaView? get zhipuQuotaView {
-    if (!isZhipuBaseUrl(_providerBaseUrl)) return null;
-    return _vendorOrIdle(_zhipuQuota, 'zhipu', loading: _zhipuLoading);
-  }
+  // No zhipu slot: its windows come from the active Provider balance query
+  // (_fetchActiveProviderLimit), which polls the same glm-monitor surface the
+  // removed /api/zhipu/quota route did — a dedicated slot only duplicated the
+  // bar (web removed its slot for the same reason).
 
   /// Kimi quota bar, visible only when the provider baseUrl points at
   /// moonshot/kimi. Tappable: login (action 'login') or force refetch.
@@ -2090,31 +2080,6 @@ class ChatProvider extends ChangeNotifier {
     } else {
       _arkErrorAt = 0;
       _arkQuota = data;
-      if (data['status'] == 'ok') _persistRuntimeCache();
-    }
-    notifyListeners();
-  }
-
-  Future<void> _fetchZhipuQuota({bool force = false}) async {
-    if (_zhipuInFlight) return;
-    if (!force &&
-        _zhipuErrorAt != 0 &&
-        _nowMs() - _zhipuErrorAt < _vendorQuotaBackoffMs) {
-      return;
-    }
-    _zhipuInFlight = true;
-    _zhipuLoading = true;
-    notifyListeners();
-    final data = await _quota.fetchZhipuQuota(
-      zhipuHostFromBaseUrl(_providerBaseUrl),
-    );
-    _zhipuInFlight = false;
-    _zhipuLoading = false;
-    if (data == null) {
-      _zhipuErrorAt = _nowMs();
-    } else {
-      _zhipuErrorAt = 0;
-      _zhipuQuota = data;
       if (data['status'] == 'ok') _persistRuntimeCache();
     }
     notifyListeners();
@@ -2351,12 +2316,6 @@ class ChatProvider extends ChangeNotifier {
   /// window — it reads chatgpt.com/backend-api with the browser's session).
   Future<void> handleCodexQuotaTap() async {
     await refreshCodexQuota(force: true);
-  }
-
-  /// Tap on the Zhipu balance/quota bar: the zhipu route has no login window
-  /// (the web slot passes no loginKind), so every tap is a force refetch.
-  Future<void> handleZhipuQuotaTap() async {
-    await _fetchZhipuQuota(force: true);
   }
 
   /// Tap on the Kimi bar: action 'login' dispatches the kimi login POST and

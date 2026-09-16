@@ -43,7 +43,6 @@ void main() {
     });
 
     test('host helpers pass the baseUrl host through for the ?host= query', () {
-      expect(zhipuHostFromBaseUrl('https://open.bigmodel.cn/api/paas/v4'), 'open.bigmodel.cn');
       expect(kimiHostFromBaseUrl('https://api.moonshot.cn/v1'), 'api.moonshot.cn');
       expect(hostFromBaseUrl(''), '');
       expect(hostFromBaseUrl(null), '');

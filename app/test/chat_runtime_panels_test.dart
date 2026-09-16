@@ -456,11 +456,10 @@ void main() {
     expect(taps, 1);
   });
 
-  testWidgets('Ark / Zhipu / Kimi bars render as tappable slots in web order', (
+  testWidgets('Ark / Kimi bars render as tappable slots in web order', (
     tester,
   ) async {
     var arkTaps = 0;
-    var zhipuTaps = 0;
     var kimiTaps = 0;
     await tester.pumpWidget(
       _host(
@@ -472,14 +471,12 @@ void main() {
           limit: const VendorQuotaView('5h 50% 1h', VendorQuotaColor.blue),
           balance: const VendorQuotaView('DeepSeek 余额 ¥1.2', VendorQuotaColor.blue),
           arkUsage: const VendorQuotaView('Coding 5h 30%', VendorQuotaColor.blue),
-          zhipuUsage: const VendorQuotaView('GLM 用量 60%', VendorQuotaColor.blue),
           kimiUsage: const VendorQuotaView('Kimi 1wk 20%', VendorQuotaColor.blue),
           onOpenCodeQuotaTap: () {},
           onQoderQuotaTap: () {},
           onCodexQuotaTap: () {},
           onClaudeQuotaTap: () {},
           onArkQuotaTap: () => arkTaps++,
-          onZhipuQuotaTap: () => zhipuTaps++,
           onKimiQuotaTap: () => kimiTaps++,
         ),
       ),
@@ -502,7 +499,6 @@ void main() {
       'codex-quota-bar',
       'claude-quota-bar',
       'ark-quota-bar',
-      'zhipu-quota-bar',
       'kimi-quota-bar',
     ];
     final seen = [
@@ -514,12 +510,9 @@ void main() {
 
     await tester.tap(find.byKey(const Key('ark-quota-bar')));
     await tester.pump();
-    await tester.tap(find.byKey(const Key('zhipu-quota-bar')));
-    await tester.pump();
     await tester.tap(find.byKey(const Key('kimi-quota-bar')));
     await tester.pump();
     expect(arkTaps, 1);
-    expect(zhipuTaps, 1);
     expect(kimiTaps, 1);
   });
 
