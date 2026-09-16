@@ -78,9 +78,9 @@ Web 侧参考帧用无头 Chrome 按同一视口取：
      逐项对着 `public/task-graph.js` 实现。
    - 侧栏「任务图谱」不再开外部浏览器，走原生路由；节点详情里的「在 Air 打开」把
      `(dirId, taskId)` 交回宿主，先切目录再走和任务行完全相同的打开链路。
-   - 有意偏离 Web 的三处（都写在代码注释里）：图例固定画全套 6 个 classify 色（Web 只画
-     当前子图出现过的）；不做「拖动节点固定」；文字标签只在节点 ≤400 且 `degree > 0` 时画
-     （手机上 1000+ 节点画标签会糊成一片）。
+   - 有意偏离 Web 的一处（写在代码注释里）：图例固定画全套 6 个 classify 色（Web 只画
+     当前子图出现过的）—— 手机上切项目时布局不跳动，而且「图例齐、节点不全」本身就是信息。
+     本轮另外补掉的「拖动节点固定」「缩放级标签」见 §4.3 / §4.4。
 2. **聊天页「任务提醒」补三态与权限语义。** Web 的 `#notify-btn` 会区分
    「系统通知已开启 / 点击开启系统通知 / 已关闭」（`public/chat-notifications.js:78-86`），
    而且打开开关时会去申请系统通知权限、用户拒绝就把开关**回滚成关闭**
@@ -98,21 +98,57 @@ Web 侧参考帧用无头 Chrome 按同一视口取：
    图谱改走原生页之后这个入口不再依赖那张映射表；同时把「记忆图谱」的网页入口从
    `/manage?view=memory` 直接改成终点 `/air?view=memory`（少一跳兼容跳转）。
 
-## 4. 还没对齐（按优先级，均已核实到代码）
+## 4. 第三轮：原生记忆图谱 + 共用图谱画布（2026-09-16）
+
+1. **原生记忆图谱页**（Air 侧栏「记忆图谱」不再开外部浏览器）。
+   - `app/lib/services/memory_graph_service.dart`（`GET /api/memory/graph`）+
+     `memory_file_service.dart`（`GET/PUT/DELETE /api/memory/file`）+
+     `app/lib/screens/memory_graph_screen.dart` + `memory_file_editor_screen.dart`，
+     对着 `public/memory-graph.js` / `memory-model.js` / `memory-controller.js` 实现。
+   - 项目筛选与 Web 同规则：`node.dirId === target || scope ∈ {machine, cli}`
+     （`public/memory-graph.js:136`）—— 全局层不随项目切走。
+   - 图例只画**当前子图出现过**的类型与作用域（`renderLegend()` 逐字对齐）。这点和任务
+     图谱的选择相反（§3.1）：记忆图谱的 KIND/SCOPE 档数多，全画会占掉半屏。
+   - 文件编辑器照抄 Web 的三条安全语义：超过 20 万字符只读；读取失败禁用保存；404 视为
+     「保存后创建」。删除要二次确认；返回时若有未保存改动先拦一道；改动过就回图谱重取。
+2. **抽出共用图谱画布** `app/lib/widgets/graph/graph_canvas.dart`（857 行）。两张图谱页
+   原来各写一份力导向 / 手势 / 命中 / 视图换算；现在 `GraphLayout`（物理 + 视图，纯计算）、
+   `GraphCanvasController`（帧驱动、手势、命中）、`GraphPainter`（画线 / 画点 / 标签 /
+   箭头 / 虚线）都只有一份，页面只交 payload 和各自的 painter。
+   `task_graph_screen.dart` 因此从 1,527 行回到 1,034 行。
+3. **补上「拖动节点固定」**（原「还没对齐」第 2 条的一半）。手指把节点拖到哪它就钉在哪，力导向
+   不再挪它（Web `if (a.pinned) continue`，`task-graph.js:215`），并按 Web 的手感
+   `startSim(0.25)` 抖一下让邻居让位。两页都加了「重置视图」按钮
+   （Web 的 `#tg-reset-view` / `#mg-reset-view`）：松开所有钉住的节点并重新适配。
+4. **补上「缩放级标签」**（原「还没对齐」第 2 条的另一半）—— 这条是 App 侧的设计，Web 没有对应
+   的抽稀：Web 给每个节点都建 `<text>`，只靠 `opacity: degree > 0 ? 0.95 : 0` 决定显不
+   显示（`task-graph.js:279` / `memory-graph.js:273`），手机上缩到 0.3 倍就是几百个标签
+   糊成一片。App 按缩放档位抽稀：`≥1.2` 全标、`≥0.8` 只标 `degree ≥ 1`、`≥0.5` 只标
+   `≥3`、`≥0.3` 只标 `≥5`、再小只标 `≥8`（`GraphLayout.labelMinDegreeFor`）；节点数超过
+   1,200 就整体不建标签（任务图谱原来是 400 且只按 `degree > 0` 判）。
+   为了让「放大到位就一定看得到孤立节点的标题」成立，捏合上限回到 Web 的 `0.2..4`
+   （`task-graph.js:380`）；首次装载 / 双击的 `fitView()` 仍按 Web 夹 `0.2..2`
+   （`task-graph.js:313`）。
+
+## 5. 还没对齐（按优先级，均已核实到代码）
 
 1. **通知权限状态有「延迟一拍」**：⋯ 菜单是同步构建的，而系统权限查询是异步的，所以 App
    维护了一份同步缓存，展开菜单时 fire-and-forget 刷新。用户在系统设置里刚改过权限时，
    第一次展开可能仍显示旧值（`NotificationService.permissionGranted` 的注释里写了取舍）。
-2. **任务图谱的 Web 版有「拖动节点固定」「按缩放级别出标签」**，App 版没做（见 §3.1）。
-3. **归档场景的入口差异**：Web 的任务详情动作条有「移动到其他目录…」，App 已在第一轮补齐；
+2. **归档场景的入口差异**：Web 的任务详情动作条有「移动到其他目录…」，App 已在第一轮补齐；
    但 Web 控制台里跨目录的批量操作 App 没有对应容器。
 
-## 5. 回归
+## 6. 回归
 
 ```bash
 cd app && flutter analyze            # 仅存量 info，无 error/warning
-cd app && flutter test               # 928 项全绿
+cd app && flutter test               # 962 项全绿
 npm run test:architecture            # 55 项（含行数/字节预算门）全绿
 ```
+
+本轮新增的测试：`app/test/graph_canvas_test.dart`（11 项，缩放级标签分档 / 拖动固定 /
+拖后吞 tap / `resetView` / `zoomAt` 夹取 / 命中 / 适配）、`app/test/memory_graph_screen_test.dart`
+（12 项）、`app/test/memory_file_editor_screen_test.dart`（9 项），`task_graph_screen_test.dart`
+补 2 项。巡游脚本加了 `07-memory-graph` 点位。
 
 巡游脚本不进默认门（要真机/模拟器 + 活服务），只在做对齐取证时手动跑。

@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:http/http.dart' as http;
 
 import '../services/settings_service.dart';
 import '../services/task_graph_service.dart';
 import '../theme.dart';
+import '../widgets/graph/graph_canvas.dart';
 
 /// 任务图谱的配色与文案 —— 逐字对齐 Web `public/task-graph.js:20-36` 的
 /// `CLASSIFY` / `EDGE` 常量，以及详情弹窗里的 `CLASSIFY_NAMES`
@@ -75,10 +75,6 @@ class TaskGraphPalette {
   static const Color shellFill = Color(0xFF30363D);
   static const Color shellStroke = Color(0xFF8B949E);
 
-  /// 箭头统一灰色 —— Web 只有一支配色写死的 marker，所有边共用
-  /// （`task-graph.js:241-244`）。
-  static const Color arrowColor = Color(0xFF6E7681);
-
   /// done / archived 任务的描边色，比平时那圈更亮一点（`task-graph.js:271`）。
   static const Color doneRing = Color(0xFF6E7681);
 
@@ -127,16 +123,18 @@ class TaskGraphScreen extends StatefulWidget {
 }
 
 class TaskGraphScreenState extends State<TaskGraphScreen>
-    with SingleTickerProviderStateMixin {
-  static const double _minScale = 0.2;
-  static const double _maxScale = 2.0;
-
-  /// fitView 的 padding，和 Web 一样固定 40（`task-graph.js:312`）。
-  static const double _fitPadding = 40;
-
+    with TickerProviderStateMixin {
   late final TaskGraphService _service = TaskGraphService(
     settings: widget.settings,
     httpClient: widget.httpClient,
+  );
+
+  /// 力导向 + 视图变换 + 手势都在共用画布里（`widgets/graph/graph_canvas.dart`）：
+  /// 记忆图谱用的是同一套，物理参数只此一份。这里只留「这个 payload 长什么样」
+  /// 和页面自己的控件。
+  late final GraphCanvasController _canvas = GraphCanvasController(
+    vsync: this,
+    onNodeTap: (node) => unawaited(openNodeDetails(node.id)),
   );
 
   /// 全量 payload —— 只在刷新时重取，切项目不动它（Web 的 `_taskRaw`）。
@@ -145,36 +143,9 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
   /// 当前子图（过滤后的）。计数行 / 图例 / 画布都看它。
   TaskGraphPayload? _sub;
 
-  /// 力导向布局 + 视图变换。空图时为 null。
-  _GraphLayout? _graph;
-
   bool _loading = true;
   String? _error;
   String _project = 'all';
-
-  /// 画布尺寸（LayoutBuilder 给的），力导向的 `k` 与 fitView 都要它。
-  Size _size = Size.zero;
-
-  /// 数据到了但画布尺寸还没到手 —— 等下一帧 LayoutBuilder 里再热身。
-  bool _pendingPrepare = false;
-
-  /// 只有「节点/边集合变了」才需要重建 painter（setState）；位置变化走
-  /// [_repaint]，**不** setState —— 一帧一次 setState 会让整棵树重 build。
-  final _Repaint _repaint = _Repaint();
-
-  /// 力导向的驱动。用不重复的 AnimationController 每帧回调一次：Web 是
-  /// `requestAnimationFrame` + `alpha *= 0.94`，收敛条件一致，而且到点就
-  /// `stop()`（ticker 不留着空转）。
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 1),
-  )..addListener(_step);
-
-  double _alpha = 0;
-  double _decay = 0.94;
-  int _ticksPerFrame = 2;
-  int _frames = 0;
-  int _maxFrames = 200;
 
   /// 请求序号：晚发的请求才有资格写状态（Web 的 `_reqSeq`，
   /// `task-graph.js:67`）。
@@ -191,8 +162,7 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
   @override
   void dispose() {
     _disposed = true;
-    _controller.dispose();
-    _repaint.dispose();
+    _canvas.dispose();
     _service.dispose();
     super.dispose();
   }
@@ -205,7 +175,7 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
       _loading = true;
       _error = null;
     });
-    _stopSim();
+    _canvas.stopSim();
     try {
       final payload = await _service.fetch();
       if (_disposed || seq != _fetchSeq) return;
@@ -224,9 +194,9 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
         _error = '$err';
         _raw = null;
         _sub = null;
-        _graph = null;
+        _canvas.setLayout(null);
       });
-      _stopSim();
+      _canvas.stopSim();
     }
   }
 
@@ -237,321 +207,92 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
     if (raw == null) return;
     final sub = raw.filterByProject(_project);
     _sub = sub;
-    if (sub.nodes.isEmpty) {
-      _graph = null;
-      _stopSim();
-      return;
-    }
-    _graph = _GraphLayout.build(sub);
-    if (_size.width < 1 || _size.height < 1) {
-      _pendingPrepare = true;
-      return;
-    }
-    _prepare(_graph!);
+    _canvas.setLayout(sub.nodes.isEmpty ? null : _buildLayout(sub));
   }
 
   void _selectProject(String? dirId) {
     if (dirId == null || dirId == _project) return;
     setState(() {
       _project = dirId;
-      _stopSim();
       _applyFilter();
     });
   }
 
-  // ── 力导向（与 Web `task-graph.js:165-235` 同构）─────────────────────────
-
-  /// 黄金角螺旋初值：不用随机数，所以同一个 payload 每次画出来都一样
-  /// （截图对比、测试命中坐标都靠这个）。
-  void _initPositions(_GraphLayout graph) {
-    final count = graph.nodes.length;
-    if (count == 0) return;
-    final cx = _size.width / 2;
-    final cy = _size.height / 2;
-    final spread = math.min(_size.width, _size.height) * 0.4;
-    for (var i = 0; i < count; i++) {
-      final node = graph.nodes[i];
-      final angle = i * 2.399963; // 黄金角
-      final radius = spread * math.sqrt((i + 1) / count);
-      node.x = cx + radius * math.cos(angle);
-      node.y = cy + radius * math.sin(angle);
+  /// payload → 布局。半径与标签文本都是任务图谱自己的规则（记忆图谱另有一套），
+  /// 物理与视图在共用画布里。
+  GraphLayout _buildLayout(TaskGraphPayload payload) {
+    final nodes = <GraphNode>[];
+    final byId = <String, GraphNode>{};
+    for (final node in payload.nodes) {
+      final entry = GraphNode(
+        id: node.id,
+        title: node.title,
+        // 任务壳是配角，固定 3.5；任务按关联度长大（`task-graph.js:146`）。
+        radius: node.isShell ? 3.5 : 6 + math.min(node.degree, 12) * 1.4,
+        degree: node.degree,
+        // 标签：壳用 title、任务用 title 兜底 id（`task-graph.js:280`）；
+        // 关联度为 0 的孤立节点不建标签 —— 缩放级抽稀那边也要求 degree ≥ 1
+        // 才会画（见 GraphLayout.labelMinDegreeFor）。
+        labelText: node.isShell
+            ? node.title
+            : (node.title.isNotEmpty ? node.title : node.id),
+        payload: node,
+      );
+      nodes.add(entry);
+      byId[node.id] = entry;
     }
-  }
-
-  /// Web 在 `loadTaskGraph` 后先同步跑一批「热身」迭代再显示
-  /// （`task-graph.js:125-126`），这样第一帧就不是一团毛线。
-  ///
-  /// 退化：小图（≤400）照 Web 的 `clamp(3600/n, 8, 60)`；大图砍到 6 次 ——
-  /// 一步 tick 是 O(n²)，1000 节点一次约 50 万次配对，60 次就是 3000 万次，
-  /// 手机上那是肉眼可见的卡顿，而多跑几次对「别看起来像毛线」帮助有限。
-  void _warmUp(_GraphLayout graph) {
-    final count = graph.nodes.length;
-    if (count == 0) return;
-    final warm = count <= 400
-        ? math.max(8, math.min(60, (3600 / count).round()))
-        : 6;
-    for (var i = 0; i < warm; i++) {
-      _tick(graph, 0.9);
-    }
-  }
-
-  /// Fruchterman-Reingold 的一步（逐条对齐 `task-graph.js:178-221`）。
-  void _tick(_GraphLayout graph, double temp) {
-    final nodes = graph.nodes;
-    final edges = graph.edges;
-    final count = nodes.length;
-    if (count == 0) return;
-
-    final area = _size.width * _size.height;
-    final k = 1.1 * math.sqrt(area / count);
-    final k2 = k * k;
-    final cx = _size.width / 2;
-    final cy = _size.height / 2;
-
-    for (final node in nodes) {
-      node.fx = 0;
-      node.fy = 0;
-    }
-
-    // 斥力 k²/d²：两两配对，O(n²) —— 大图的瓶颈就在这个双层循环。
-    for (var i = 0; i < count; i++) {
-      final a = nodes[i];
-      for (var j = i + 1; j < count; j++) {
-        final b = nodes[j];
-        var dx = a.x - b.x;
-        var dy = a.y - b.y;
-        var d2 = dx * dx + dy * dy;
-        if (d2 < 0.01) {
-          dx = (i - j) * 0.1 + 0.05;
-          dy = 0.05;
-          d2 = dx * dx + dy * dy;
-        }
-        final d = math.sqrt(d2);
-        final force = k2 / d2;
-        final ux = dx / d;
-        final uy = dy / d;
-        a.fx += ux * force;
-        a.fy += uy * force;
-        b.fx -= ux * force;
-        b.fy -= uy * force;
-      }
-    }
-
-    // 弹簧 d²/k：父子 / 合并比同组 / 壳链接更强，家族靠得更近。
-    for (final edge in edges) {
-      final a = edge.source;
-      final b = edge.target;
-      final dx = b.x - a.x;
-      final dy = b.y - a.y;
-      final d = math.sqrt(dx * dx + dy * dy);
-      if (d < 0.01) continue;
-      final weight = edge.edge.type == 'parent' || edge.edge.type == 'merged'
+    final links = <GraphLink>[];
+    for (final edge in payload.edges) {
+      // 两端都得在这张子图里（Web `buildGraph()` 里那句 continue，
+      // `task-graph.js:151-155`）；`filterByProject` 已经保证过一遍，这里是
+      // 防脏数据（比如边指向一个被截断掉的节点）。
+      final source = byId[edge.source];
+      final target = byId[edge.target];
+      if (source == null || target == null) continue;
+      // 父子 / 合并比同组 / 壳链接更强，家族靠得更近（`task-graph.js:196-198`
+      // 把边类型折算成弹簧强度）。
+      final spring = edge.type == 'parent' || edge.type == 'merged'
           ? 2.4
-          : edge.edge.type == 'group'
+          : edge.type == 'group'
           ? 1.4
           : 1.0;
-      final force = (d * d) / k * (0.6 + weight * 0.1);
-      final ux = dx / d;
-      final uy = dy / d;
-      a.fx += ux * force;
-      a.fy += uy * force;
-      b.fx -= ux * force;
-      b.fy -= uy * force;
+      links.add(
+        GraphLink(
+          source: source,
+          target: target,
+          spring: spring,
+          payload: edge,
+        ),
+      );
     }
-
-    final maxStep = 26 * temp;
-    for (final node in nodes) {
-      node.fx += (cx - node.x) * 0.009;
-      node.fy += (cy - node.y) * 0.009;
-      final length = math.sqrt(node.fx * node.fx + node.fy * node.fy);
-      if (length < 0.0001) continue;
-      final step = math.min(length, maxStep);
-      node.x += (node.fx / length) * step;
-      node.y += (node.fy / length) * step;
-    }
+    return GraphLayout(nodes: nodes, links: links);
   }
 
-  /// 热身 + fitView + 起动画。
-  void _prepare(_GraphLayout graph) {
-    _pendingPrepare = false;
-    _initPositions(graph);
-    _warmUp(graph);
-    fitView();
-    _startSim(graph);
-  }
+  // ── 视图（转发给共用画布；测试也直接用这几个方法拿坐标）─────────────────
 
-  void _startSim(_GraphLayout graph) {
-    final count = graph.nodes.length;
-    if (count == 0) return;
-    // 退化：>400 节点时每帧只推 1 步、alpha 衰减加快到 0.85（约 18 帧收敛）、
-    // 帧数封顶 24。总配对量因此从「上万帧 × 50 万」降到百万量级，画面依旧
-    // 会自己长出来，但不会 ANR。
-    if (count <= 400) {
-      _ticksPerFrame = 2;
-      _decay = 0.94;
-      _maxFrames = 200;
-    } else {
-      _ticksPerFrame = 1;
-      _decay = 0.85;
-      _maxFrames = 24;
-    }
-    _frames = 0;
-    _alpha = 0.6;
-    // 可能是在 build 里被调到的（LayoutBuilder 补尺寸那一次），起动画推迟到
-    // 本帧结束，别在 build 期间动调度器。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _disposed) return;
-      if (_graph == null || _controller.isAnimating) return;
-      _controller.repeat();
-    });
-  }
+  /// 双击 / 首次加载用的适配（Web `fitView()`，`task-graph.js:304-317`）。
+  void fitView() => _canvas.fitView();
 
-  void _step() {
-    final graph = _graph;
-    if (graph == null) {
-      _controller.stop();
-      return;
-    }
-    for (var i = 0; i < _ticksPerFrame; i++) {
-      _tick(graph, _alpha);
-    }
-    _alpha *= _decay;
-    _frames++;
-    _repaint.ping();
-    // Web 的收敛条件：alpha < 0.03 收工（`task-graph.js:229-230`）。
-    // 大图另有帧数封顶，见 _startSim。
-    if (_alpha < 0.03 || _frames >= _maxFrames) {
-      _controller.stop();
-      _alpha = 0;
-    }
-  }
-
-  void _stopSim() {
-    if (_controller.isAnimating) _controller.stop();
-    _alpha = 0;
-    _frames = 0;
-  }
-
-  // ── 视图：fit / 缩放 / 平移 / 命中 ──────────────────────────────────────
-
-  /// 双击 / 首次加载用的适配：包围盒（含半径）加 40 padding 居中。
-  /// 逐条对齐 Web `fitView()`（`task-graph.js:304-317`）。
-  void fitView() {
-    final graph = _graph;
-    if (graph == null || graph.nodes.isEmpty) return;
-    if (_size.width < 1 || _size.height < 1) return;
-    var minX = double.infinity;
-    var minY = double.infinity;
-    var maxX = -double.infinity;
-    var maxY = -double.infinity;
-    for (final node in graph.nodes) {
-      minX = math.min(minX, node.x - node.radius);
-      minY = math.min(minY, node.y - node.radius);
-      maxX = math.max(maxX, node.x + node.radius);
-      maxY = math.max(maxY, node.y + node.radius);
-    }
-    final bw = math.max(maxX - minX, 1.0);
-    final bh = math.max(maxY - minY, 1.0);
-    final scale = math
-        .min(
-          (_size.width - _fitPadding) / bw,
-          (_size.height - _fitPadding) / bh,
-        )
-        .clamp(_minScale, _maxScale);
-    graph.scale = scale;
-    graph.tx = (_size.width - (minX + maxX) * scale) / 2;
-    graph.ty = (_size.height - (minY + maxY) * scale) / 2;
-    _repaint.ping();
-  }
-
-  /// 把某个节点挪到视口正中（Web `focusNode()`，`task-graph.js:504`）——
-  /// 点邻居之后用的。
-  void focusNode(String id) {
-    final graph = _graph;
-    if (graph == null) return;
-    final node = graph.byId[id];
-    if (node == null) return;
-    graph.tx = _size.width / 2 - node.x * graph.scale;
-    graph.ty = _size.height / 2 - node.y * graph.scale;
-    _repaint.ping();
-  }
+  /// 把某个节点挪到视口正中（Web `focusNode()`）—— 点邻居之后用的。
+  void focusNode(String id) => _canvas.focusNode(id);
 
   /// 画布命中测试：返回半径 + [slack] 内最近的节点 id。
   ///
-  /// 公开是为了让测试用同一个判定拿坐标去 `tapAt` —— 力导向的结果没法在测试
-  /// 里重算，硬编码坐标只会变成一颗定时炸弹。
-  String? hitTestNodeId(Offset local, {double slack = 6}) {
-    final graph = _graph;
-    if (graph == null) return null;
-    final lx = (local.dx - graph.tx) / graph.scale;
-    final ly = (local.dy - graph.ty) / graph.scale;
-    String? best;
-    var bestDistance = double.infinity;
-    for (final node in graph.nodes) {
-      final dx = node.x - lx;
-      final dy = node.y - ly;
-      final distance = math.sqrt(dx * dx + dy * dy);
-      if (distance > node.radius + slack / graph.scale) continue;
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = node.node.id;
-      }
-    }
-    return best;
-  }
+  /// 公开是为了让测试用同一个判定拿坐标去 `tapAt` —— 力导向的结果没法在测试里
+  /// 重算，硬编码坐标只会变成一颗定时炸弹。
+  String? hitTestNodeId(Offset local, {double slack = 6}) =>
+      _canvas.hitTestNodeId(local, slack: slack);
 
   /// 节点中心在画布坐标系里的位置（测试算点击坐标用；画布外返回 null）。
-  Offset? nodeCenterInCanvas(String id) {
-    final graph = _graph;
-    if (graph == null) return null;
-    final node = graph.byId[id];
-    if (node == null) return null;
-    return Offset(
-      node.x * graph.scale + graph.tx,
-      node.y * graph.scale + graph.ty,
-    );
-  }
+  Offset? nodeCenterInCanvas(String id) => _canvas.nodeCenterInCanvas(id);
 
-  // ── 手势 ───────────────────────────────────────────────────────────────
-
-  double _gestureStartScale = 1;
-
-  void _onScaleStart(ScaleStartDetails details) {
-    _gestureStartScale = _graph?.scale ?? 1;
-  }
-
-  void _onScaleUpdate(ScaleUpdateDetails details) {
-    final graph = _graph;
-    if (graph == null) return;
-    if (details.pointerCount >= 2) {
-      // 双指捏合：以焦点为锚点缩放（Web 滚轮缩放是同一套算法，
-      // `zoomAt()` `task-graph.js:379`）。
-      final next = (_gestureStartScale * details.scale).clamp(
-        _minScale,
-        _maxScale,
-      );
-      final lx = (details.localFocalPoint.dx - graph.tx) / graph.scale;
-      final ly = (details.localFocalPoint.dy - graph.ty) / graph.scale;
-      graph.scale = next;
-      graph.tx = details.localFocalPoint.dx - lx * next;
-      graph.ty = details.localFocalPoint.dy - ly * next;
-    } else {
-      // 单指拖拽 = 平移。
-      graph.tx += details.focalPointDelta.dx;
-      graph.ty += details.focalPointDelta.dy;
-    }
-    _repaint.ping();
-  }
-
-  void _onTapUp(TapUpDetails details) {
-    final id = hitTestNodeId(details.localPosition);
-    if (id != null) unawaited(openNodeDetails(id));
-  }
+  /// 当前图的布局（**测试用**）：拖动固定、缩放级标签这些没有 widget 可断言。
+  GraphLayout? get layout => _canvas.layout;
 
   /// 点节点 → 底部详情面板（Web 的 `tgNodeModalOpen`，`task-graph.js:428`）。
   Future<void> openNodeDetails(String id) async {
-    final graph = _graph;
-    if (graph == null || !graph.byId.containsKey(id)) return;
+    final layout = _canvas.layout;
+    if (layout == null || !layout.byId.containsKey(id)) return;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -562,7 +303,7 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
         ),
       ),
       builder: (_) => _NodeDetailSheet(
-        layout: graph,
+        layout: layout,
         initialId: id,
         onFocus: (next) {
           if (_disposed) return;
@@ -573,31 +314,6 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
     );
   }
 
-  // ── 构建 ───────────────────────────────────────────────────────────────
-
-  /// 画布尺寸（Web `measure()`，`task-graph.js:159`）。位置是按 W/H 归一化
-  /// 出来的，尺寸没到手之前没法热身；尺寸变了（转屏、分屏）就地重热一次。
-  void _syncCanvasSize(Size size) {
-    // 尺寸不是一个有限的、够大的矩形时不记：力导向的 `k = 1.1*sqrt(W*H/n)` 和
-    // fitView 都会被 0/∞ 带着算出 NaN，那之后整张图就再也画不出来了。
-    if (!size.isFinite || size.width < 1 || size.height < 1) return;
-    final resized =
-        (size.width - _size.width).abs() > 0.5 ||
-        (size.height - _size.height).abs() > 0.5;
-    _size = size;
-    final graph = _graph;
-    if (graph == null) return;
-    if (_pendingPrepare) {
-      _prepare(graph);
-      return;
-    }
-    if (resized) {
-      _warmUp(graph);
-      fitView();
-      _repaint.ping();
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -605,6 +321,17 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
       appBar: AppBar(
         title: const Text('任务图谱'),
         actions: [
+          IconButton(
+            key: const ValueKey('task-graph-reset'),
+            // 拖动固定过的节点不会自己松开，得给一条退路（Web 的
+            // `tgGraphReset()` 是窗口 API，没有按钮；这里是它的语义）。
+            icon: const Icon(Icons.center_focus_strong_rounded,
+                color: AppColors.muted),
+            tooltip: '重置视图',
+            onPressed: _canvas.layout == null
+                ? null
+                : () => setState(_canvas.resetView),
+          ),
           IconButton(
             key: const ValueKey('task-graph-refresh'),
             icon: const Icon(Icons.refresh_rounded, color: AppColors.muted),
@@ -741,7 +468,7 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
       child = _buildError();
     } else if (!_loading && (_sub?.nodes.isEmpty ?? true)) {
       child = _buildEmpty();
-    } else if (_graph == null) {
+    } else if (_canvas.layout == null) {
       child = const SizedBox.expand();
     } else {
       child = _buildCanvas();
@@ -803,192 +530,45 @@ class TaskGraphScreenState extends State<TaskGraphScreen>
   }
 
   Widget _buildCanvas() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        _syncCanvasSize(constraints.biggest);
-        final graph = _graph;
-        if (graph == null) return const SizedBox.expand();
-        return GestureDetector(
-          key: const ValueKey('task-graph-canvas'),
-          behavior: HitTestBehavior.opaque,
-          onScaleStart: _onScaleStart,
-          onScaleUpdate: _onScaleUpdate,
-          onTapUp: _onTapUp,
-          onDoubleTap: fitView,
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: CustomPaint(
-                  painter: _TaskGraphPainter(layout: graph, repaint: _repaint),
-                ),
-              ),
-              Positioned(
-                left: 10,
-                bottom: 8,
-                child: IgnorePointer(
-                  child: Text(
-                    // Web 的提示是「拖拽平移 · 滚轮缩放 · 点击节点看详情 ·
-                    // 拖动节点可固定」（manage.html:1120）；手机上换成捏合，
-                    // 也不做节点拖拽（见 _TaskGraphPainter 的取舍说明）。
-                    '拖拽平移 · 双指缩放 · 双击适配 · 点击节点看详情',
-                    style: TextStyle(fontSize: 10, color: AppColors.faint),
-                  ),
-                ),
-              ),
-            ],
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GraphCanvasView(
+            controller: _canvas,
+            canvasKey: const ValueKey('task-graph-canvas'),
+            painterBuilder: (layout, repaint) =>
+                _TaskGraphPainter(layout: layout, repaint: repaint),
           ),
-        );
-      },
+        ),
+        Positioned(
+          left: 10,
+          bottom: 8,
+          child: IgnorePointer(
+            child: Text(
+              // Web 的提示是「拖拽平移 · 滚轮缩放 · 点击节点看详情 · 拖动节点可
+              // 固定」（manage.html:1120）；手机上把滚轮换成捏合，其余照抄。
+              '拖拽平移 · 双指缩放 · 双击适配 · 点击节点看详情 · 拖动节点可固定',
+              style: TextStyle(fontSize: 10, color: AppColors.faint),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
 
-/// 力导向布局的一帧快照：节点位置/半径/标签 + 视图变换（tx/ty/scale）。
-///
-/// 这些数字每帧都在动，但它们**不是** widget 状态 —— 只有「节点/边集合」变了
-/// 才需要重建（setState），位置变化走 [_Repaint] 只重绘不重建。
-class _GraphLayout {
-  _GraphLayout.build(TaskGraphPayload payload) {
-    final withLabels = payload.nodes.length <= labelMaxNodes;
-    for (final node in payload.nodes) {
-      final entry = _GraphNode(node);
-      nodes.add(entry);
-      byId[node.id] = entry;
-      if (withLabels) entry.label = _buildLabel(node);
-    }
-    for (final edge in payload.edges) {
-      // 两端都得在这张子图里（Web `buildGraph()` 里那句 continue，
-      // `task-graph.js:151-155`）；`filterByProject` 已经保证过一遍，这里是
-      // 防脏数据（比如边指向一个被截断掉的节点）。
-      final source = byId[edge.source];
-      final target = byId[edge.target];
-      if (source == null || target == null) continue;
-      edges.add(_GraphEdge(edge, source, target));
-    }
-  }
-
-  final List<_GraphNode> nodes = <_GraphNode>[];
-  final List<_GraphEdge> edges = <_GraphEdge>[];
-  final Map<String, _GraphNode> byId = <String, _GraphNode>{};
-
-  double scale = 1;
-  double tx = 0;
-  double ty = 0;
-
-  /// 标签总数封顶：每个标签是一个 TextPainter（构建时 layout 一次，之后每帧
-  /// 只 paint），但 400 个以上就没必要了 —— 那个尺度上字是糊的，不如把这一帧
-  /// 的时间留给力导向。Web 那边是 1000 个 SVG `<text>` 直接扔给浏览器。
-  static const int labelMaxNodes = 400;
-
-  /// 标签文本：Web 只给 `degree > 0` 的节点画（`task-graph.js:279`，degree 0
-  /// 的节点 opacity 设成 0），壳用 title、任务用 title 兜底 id，截断 18 字
-  /// （`truncate()`，`task-graph.js:55`）。
-  static TextPainter? _buildLabel(TaskGraphNode node) {
-    if (node.degree <= 0) return null;
-    final raw = node.isShell
-        ? node.title
-        : (node.title.isNotEmpty ? node.title : node.id);
-    if (raw.isEmpty) return null;
-    return TextPainter(
-      text: TextSpan(
-        text: _truncate(raw, 18),
-        // Web 的标签是 10px 等宽、fill #adbac7 —— 那是深色画布上的颜色，
-        // 这里的画布是浅色（AppColors.panel），改用 AppColors.muted 才看得
-        // 清。这是有意偏离 Web 的唯一一处配色。
-        style: const TextStyle(
-          fontSize: 10,
-          fontFamily: 'monospace',
-          color: AppColors.muted,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-    )..layout();
-  }
-}
-
-/// 布局里的一个节点：接口数据 + 每帧变化的位置 + 预排好的标签。
-class _GraphNode {
-  _GraphNode(this.node)
-    : radius = node.isShell ? 3.5 : 6 + math.min(node.degree, 12) * 1.4;
-
-  final TaskGraphNode node;
-
-  /// 半径：任务按关联度长大（`6 + min(degree,12) * 1.4`），壳是配角固定
-  /// 3.5 —— 见 `task-graph.js:146`。
-  final double radius;
-
-  double x = 0;
-  double y = 0;
-  double fx = 0;
-  double fy = 0;
-
-  /// 只在 `degree > 0` 且节点总数不过多时才有（见 `_GraphLayout._buildLabel`）。
-  TextPainter? label;
-}
-
-/// 布局里的一条边（两端已经解析成节点对象）。
-class _GraphEdge {
-  const _GraphEdge(this.edge, this.source, this.target);
-
-  final TaskGraphEdge edge;
-  final _GraphNode source;
-  final _GraphNode target;
-}
-
-/// CustomPainter 的 repaint 通道。位置每帧都在动，走这里只重绘、不重建整棵树
-/// —— 每帧 setState 会让整页（含下拉、图例）跟着 rebuild。
-class _Repaint extends ChangeNotifier {
-  bool _closed = false;
-
-  @override
-  void dispose() {
-    _closed = true;
-    super.dispose();
-  }
-
-  void ping() {
-    if (_closed) return;
-    if (WidgetsBinding.instance.schedulerPhase ==
-        SchedulerPhase.persistentCallbacks) {
-      // 布局/绘制阶段（LayoutBuilder 的 builder 就在这里面）直接
-      // markNeedsPaint 会撞 Flutter 的断言，推迟到本帧结束再重绘。
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_closed) notifyListeners();
-      });
-      return;
-    }
-    notifyListeners();
-  }
-}
-
 /// 画布本体。Web 是 SVG（每个节点一个 `<g>`），这里是手画：手机上没有 hover、
-/// 也不需要 DOM 命中，命中测试交给 `TaskGraphScreenState.hitTestNodeId`。
-///
-/// 取舍：不做「拖动节点固定」（Web `onNodePointerMove` + pinned，
-/// `task-graph.js:336-343`）—— 手指按住节点时不放大到能精确拖，缩放后坐标
-/// 还会串味；单指留给平移、点节点看详情已经够用。
-class _TaskGraphPainter extends CustomPainter {
-  _TaskGraphPainter({required this.layout, required Listenable repaint})
-    : super(repaint: repaint);
-
-  final _GraphLayout layout;
+/// 也不需要 DOM 命中。视图变换、标签（含缩放级抽稀）、虚线/箭头工具都在
+/// [GraphPainter] 里，这里只画任务图谱自己的形状 —— 记忆图谱另有一份 painter。
+class _TaskGraphPainter extends GraphPainter {
+  _TaskGraphPainter({required super.layout, required super.repaint});
 
   @override
-  void paint(Canvas canvas, Size size) {
-    if (layout.nodes.isEmpty) return;
-    canvas.save();
-    canvas.translate(layout.tx, layout.ty);
-    canvas.scale(layout.scale);
-    _paintEdges(canvas);
-    _paintNodes(canvas);
-    canvas.restore();
-  }
-
-  void _paintEdges(Canvas canvas) {
-    for (final edge in layout.edges) {
-      final a = edge.source;
-      final b = edge.target;
+  void paintLinks(Canvas canvas) {
+    for (final link in layout.links) {
+      final edge = link.payload as TaskGraphEdge;
+      final a = link.source;
+      final b = link.target;
       final dx = b.x - a.x;
       final dy = b.y - a.y;
       final distance = math.sqrt(dx * dx + dy * dy);
@@ -1006,139 +586,71 @@ class _TaskGraphPainter extends CustomPainter {
       final paint = Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.1
-        ..color = TaskGraphPalette.edgeColor(edge.edge.type);
-      if (edge.edge.dashed) {
-        _dashedLine(
+        ..color = TaskGraphPalette.edgeColor(edge.type);
+      if (edge.dashed) {
+        GraphPainter.dashedLine(
           canvas,
           start,
           end,
           paint,
-          edge.edge.type == 'merged'
+          edge.type == 'merged'
               ? const <double>[4, 3]
               : const <double>[2, 2],
         );
       } else {
         canvas.drawLine(start, end, paint);
       }
-      _arrowHead(canvas, end, Offset(ux, uy));
+      // 箭头统一灰色（Web 只有一支写死颜色的 marker，`task-graph.js:241`）。
+      GraphPainter.arrowHead(canvas, end, Offset(ux, uy));
     }
-  }
-
-  void _paintNodes(Canvas canvas) {
-    for (final entry in layout.nodes) {
-      final node = entry.node;
-      final center = Offset(entry.x, entry.y);
-      if (node.isShell) {
-        // 任务壳：rotate(45°) 的方块 = 小菱形，归档的再降透明度
-        // （`task-graph.js:262-265`）。
-        final side = entry.radius * 1.8;
-        final rect = Rect.fromCenter(
-          center: Offset.zero,
-          width: side,
-          height: side,
-        );
-        final fill = Paint()
-          ..style = PaintingStyle.fill
-          ..color = TaskGraphPalette.shellFill.withValues(
-            alpha: node.archived ? 0.35 : 0.85,
-          );
-        final stroke = Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1
-          ..color = TaskGraphPalette.shellStroke;
-        canvas.save();
-        canvas.translate(center.dx, center.dy);
-        canvas.rotate(math.pi / 4);
-        canvas.drawRect(rect, fill);
-        canvas.drawRect(rect, stroke);
-        canvas.restore();
-      } else {
-        final classify = TaskGraphPalette.classifyColor(node.classifyState);
-        // provisional 半透明（身份未锁）/ 其余实色 0.92（`task-graph.js:274`）。
-        final fill = Paint()
-          ..style = PaintingStyle.fill
-          ..color = classify.withValues(alpha: node.provisional ? 0.4 : 0.92);
-        final done = node.status == 'done' || node.status == 'archived';
-        final stroke = Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = done ? 1.4 : 1
-          ..color = done
-              ? TaskGraphPalette.doneRing
-              : const Color(0x59000000); // rgba(0,0,0,.35)
-        canvas.drawCircle(center, entry.radius, fill);
-        canvas.drawCircle(center, entry.radius, stroke);
-      }
-      final label = entry.label;
-      if (label != null) {
-        // 近似 SVG 的 text-anchor=middle + dy=r+11：横向居中、纵向让文字底部
-        // 落在「半径 + 11」那条线上（基线就在那附近）。
-        label.paint(
-          canvas,
-          Offset(
-            entry.x - label.width / 2,
-            entry.y + entry.radius + 11 - label.height,
-          ),
-        );
-      }
-    }
-  }
-
-  /// 虚线：dart:ui 还没有公开的 `PathEffect`，照 Web 的 `stroke-dasharray`
-  /// （merged `4 3`、shell-link `2 2`）自己切段。段长按布局单位算 —— 画布已经
-  /// scale 过，和 SVG transform 下的表现一致。
-  static void _dashedLine(
-    Canvas canvas,
-    Offset from,
-    Offset to,
-    Paint paint,
-    List<double> pattern,
-  ) {
-    final total = (to - from).distance;
-    if (total <= 0.01) return;
-    final direction = (to - from) / total;
-    var travelled = 0.0;
-    var index = 0;
-    var on = true;
-    while (travelled < total - 0.01) {
-      final next = math.min(travelled + pattern[index % pattern.length], total);
-      if (on) {
-        canvas.drawLine(
-          from + direction * travelled,
-          from + direction * next,
-          paint,
-        );
-      }
-      travelled = next;
-      index++;
-      on = !on;
-    }
-  }
-
-  /// 箭头：Web 用同一个 `marker-end`（写死灰色 #6e7681，`task-graph.js:241`），
-  /// 这里也一样 —— 四种边色各自的箭头反而更花。
-  static void _arrowHead(Canvas canvas, Offset tip, Offset direction) {
-    const length = 6.0;
-    const half = 2.6;
-    final back = tip - direction * length;
-    final normal = Offset(-direction.dy, direction.dx) * half;
-    final path = Path()
-      ..moveTo(tip.dx, tip.dy)
-      ..lineTo(back.dx + normal.dx, back.dy + normal.dy)
-      ..lineTo(back.dx - normal.dx, back.dy - normal.dy)
-      ..close();
-    canvas.drawPath(
-      path,
-      Paint()
-        ..style = PaintingStyle.fill
-        ..color = TaskGraphPalette.arrowColor,
-    );
   }
 
   @override
-  bool shouldRepaint(covariant _TaskGraphPainter oldDelegate) =>
-      oldDelegate.layout != layout;
+  void paintNode(Canvas canvas, GraphNode entry) {
+    final node = entry.payload as TaskGraphNode;
+    final center = Offset(entry.x, entry.y);
+    if (node.isShell) {
+      // 任务壳：rotate(45°) 的方块 = 小菱形，归档的再降透明度
+      // （`task-graph.js:262-265`）。
+      final side = entry.radius * 1.8;
+      final rect = Rect.fromCenter(
+        center: Offset.zero,
+        width: side,
+        height: side,
+      );
+      final fill = Paint()
+        ..style = PaintingStyle.fill
+        ..color = TaskGraphPalette.shellFill.withValues(
+          alpha: node.archived ? 0.35 : 0.85,
+        );
+      final stroke = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = TaskGraphPalette.shellStroke;
+      canvas.save();
+      canvas.translate(center.dx, center.dy);
+      canvas.rotate(math.pi / 4);
+      canvas.drawRect(rect, fill);
+      canvas.drawRect(rect, stroke);
+      canvas.restore();
+      return;
+    }
+    final classify = TaskGraphPalette.classifyColor(node.classifyState);
+    // provisional 半透明（身份未锁）/ 其余实色 0.92（`task-graph.js:274`）。
+    final fill = Paint()
+      ..style = PaintingStyle.fill
+      ..color = classify.withValues(alpha: node.provisional ? 0.4 : 0.92);
+    final done = node.status == 'done' || node.status == 'archived';
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = done ? 1.4 : 1
+      ..color = done
+          ? TaskGraphPalette.doneRing
+          : const Color(0x59000000); // rgba(0,0,0,.35)
+    canvas.drawCircle(center, entry.radius, fill);
+    canvas.drawCircle(center, entry.radius, stroke);
+  }
 }
-
 /// 节点详情底部面板 —— 对应 Web 的 `#tg-node-modal` / `tgNodeModalOpen()`
 /// （`task-graph.js:428-501`）：标签区 + 详情行 + 出/入邻居，点邻居换人。
 class _NodeDetailSheet extends StatefulWidget {
@@ -1149,7 +661,8 @@ class _NodeDetailSheet extends StatefulWidget {
     this.onOpenTaskInAir,
   });
 
-  final _GraphLayout layout;
+  /// 当前子图的布局（节点位置每帧都在动）—— 详情面板只读它的拓扑与 payload。
+  final GraphLayout layout;
   final String initialId;
 
   /// 点邻居时把画布视口挪过去（`focusNode()`）。
@@ -1170,16 +683,17 @@ class _NodeDetailSheetState extends State<_NodeDetailSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final node = widget.layout.byId[_id]?.node;
+    final node = widget.layout.byId[_id]?.payload as TaskGraphNode?;
     if (node == null) return const SizedBox.shrink();
 
     final out = <_Neighbor>[];
     final incoming = <_Neighbor>[];
-    for (final edge in widget.layout.edges) {
-      if (edge.edge.source == node.id) {
-        out.add(_Neighbor(edge.target.node, edge.edge.type));
-      } else if (edge.edge.target == node.id) {
-        incoming.add(_Neighbor(edge.source.node, edge.edge.type));
+    for (final link in widget.layout.links) {
+      final edge = link.payload as TaskGraphEdge;
+      if (edge.source == node.id) {
+        out.add(_Neighbor(link.target.payload as TaskGraphNode, edge.type));
+      } else if (edge.target == node.id) {
+        incoming.add(_Neighbor(link.source.payload as TaskGraphNode, edge.type));
       }
     }
 
@@ -1304,7 +818,7 @@ class _NodeDetailSheetState extends State<_NodeDetailSheet> {
       if (node.archived) tags.add('已归档');
       final current = node.currentTaskId;
       if (current != null && current.isNotEmpty) {
-        tags.add('当前任务 ${_truncate(current, 20)}');
+        tags.add('当前任务 ${graphTruncate(current, 20)}');
       }
     } else {
       tags.add(node.provisional ? 'provisional（身份未锁）' : 'canonical');
@@ -1517,11 +1031,4 @@ class _LegendEdge extends StatelessWidget {
       ],
     );
   }
-}
-
-/// Web 的 `truncate(s, n)`：超长时留 n-1 个字符 + 一个省略号
-/// （`task-graph.js:55`）。
-String _truncate(String value, int max) {
-  if (value.length <= max) return value;
-  return '${value.substring(0, max - 1)}…';
 }

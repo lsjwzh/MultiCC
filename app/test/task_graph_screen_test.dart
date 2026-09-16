@@ -400,5 +400,61 @@ void main() {
       expect(find.textContaining('加载失败：'), findsOneWidget);
       expect(find.textContaining('连接被拒绝'), findsOneWidget);
     });
+
+    testWidgets('拖动节点 → 固定；重置视图松开（Web 的 pinned / resetView）', (tester) async {
+      final state = await pumpScreen(tester, _client(_samplePayload()));
+      final box = tester.renderObject<RenderBox>(
+        find.byKey(const ValueKey('task-graph-canvas')),
+      );
+      // 从节点中心往外拖：位移 > 3px，算「拖」不算「点」（所以不该弹详情）。
+      // 分几次 move 而不是一步到位 —— 手势竞技场要在一帧帧的真实事件流里才把
+      // 拖动判给 scale recognizer。
+      final start = box.localToGlobal(state.nodeCenterInCanvas('n1')!);
+      final gesture = await tester.startGesture(start);
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveBy(const Offset(20, 0));
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.moveBy(const Offset(30, 30));
+      await tester.pump(const Duration(milliseconds: 20));
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(state.layout!.byId['n1']!.pinned, isTrue);
+      expect(
+        find.byKey(const ValueKey('task-graph-node-title')),
+        findsNothing,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('task-graph-reset')));
+      await tester.pumpAndSettle();
+      expect(state.layout!.byId['n1']!.pinned, isFalse);
+    });
+
+    testWidgets('缩放级标签：缩到最小只剩枢纽，放大到位孤立节点也标', (tester) async {
+      final payload = _samplePayload();
+      // 加一颗完全没有边的节点：默认档（有关联才标）它不该有标签。
+      (payload['nodes'] as List).add({
+        'id': 'iso',
+        'kind': 'task',
+        'title': '孤立任务',
+        'dirId': 'd1',
+        'status': 'active',
+        'degree': 0,
+        'sources': ['board'],
+      });
+      final state = await pumpScreen(tester, _client(payload));
+      final layout = state.layout!;
+      TextPainter? labelOf(String id) => layout.visibleLabel(layout.byId[id]!);
+
+      layout.scale = 1;
+      expect(labelOf('n1'), isNotNull); // degree 2
+      expect(labelOf('iso'), isNull); // 孤立节点默认不标
+
+      layout.scale = 0.2;
+      expect(labelOf('n1'), isNull); // degree 2 < 8
+
+      layout.scale = 1.4;
+      expect(labelOf('iso'), isNotNull);
+    });
   });
 }
