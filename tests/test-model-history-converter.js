@@ -184,6 +184,20 @@ test('stripUnresolvedItemReferences removes every store:false-only reference sha
   assert.equal(named.body.input[0].content[0].text, 'hi');
 });
 
+test('inline third-party reasoning content survives both the id strip and a named-id repair', () => {
+  const inline = { type: 'reasoning', id: 'rs_third', content: [{ type: 'reasoning_text', text: 'cot' }] };
+  const stripped = stripUnresolvedItemReferences({ input: [inline, { type: 'message', id: 'msg_1' }] });
+  assert.equal(Object.hasOwn(stripped.body.input[0], 'id'), false);
+  assert.deepEqual(stripped.body.input[0].content, [{ type: 'reasoning_text', text: 'cot' }]);
+  // The upstream named this exact id: the id and any blob go, but the inline
+  // content is the only context the item carries, so the item must survive —
+  // dropping it would silently delete a third-party chain of thought.
+  const named = stripUnresolvedItemReferences({ input: [inline] }, ['rs_third']);
+  assert.equal(named.body.input.length, 1);
+  assert.equal(Object.hasOwn(named.body.input[0], 'id'), false);
+  assert.deepEqual(named.body.input[0].content, [{ type: 'reasoning_text', text: 'cot' }]);
+});
+
 test('an item-not-found rejection repairs by removing the named id and the whole reference family', () => {
   const body = { previous_response_id: 'resp_old', input: [
     { type: 'reasoning', id: 'rs_foreign', summary: [{ type: 'summary_text', text: 'chain' }] },

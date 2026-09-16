@@ -459,6 +459,58 @@ test('non-Official Codex routes share preprocessing before the CPR bridge', asyn
   assert.equal(body.input[0].id, 'tool_a');
 });
 
+test('non-Official routes strip store:false-unresolvable references before the CPR bridge', async () => {
+  const body = {
+    previous_response_id: 'resp_foreign',
+    input: [
+      { type: 'message', id: 'msg_keep', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+      { type: 'reasoning', id: 'rs_foreign', summary: [{ type: 'summary_text', text: 'thought' }] },
+      { type: 'reasoning', id: 'rs_hollow' },
+      { type: 'item_reference', id: 'msg_foreign' },
+      { type: 'message', id: 'msg_keep2', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'yo' }] },
+    ],
+  };
+  const req = request(body);
+  let forwarded;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => ({ appType: 'codex', settingsConfig: { auth: { OPENAI_API_KEY: 'sk-x' } } }),
+    fetch: async () => assert.fail('must fall through'),
+  });
+  await handler(req, response(), () => { forwarded = req.body; });
+  // The CLI itself sends store:false on every route, so no upstream can resolve
+  // an id-only reference — drop that family on this hop too, not only official.
+  assert.equal(forwarded.previous_response_id, undefined);
+  assert.deepEqual(forwarded.input, [
+    { type: 'message', id: 'msg_keep', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+    { type: 'reasoning', summary: [{ type: 'summary_text', text: 'thought' }] },
+    { type: 'message', id: 'msg_keep2', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'yo' }] },
+  ]);
+  // Request copies only: the caller's body keeps the original ids.
+  assert.equal(body.input[1].id, 'rs_foreign');
+  assert.equal(body.input.length, 5);
+});
+
+test('non-Official routes keep third-party reasoning content while dropping its unresolvable id', async () => {
+  const body = {
+    input: [
+      { type: 'reasoning', id: 'rs_third', content: [{ type: 'reasoning_text', text: 'chain of thought' }] },
+      { type: 'message', id: 'msg_after', role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+    ],
+  };
+  const req = request(body);
+  let forwarded;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => ({ appType: 'codex', settingsConfig: { auth: { OPENAI_API_KEY: 'sk-x' } } }),
+    fetch: async () => assert.fail('must fall through'),
+  });
+  await handler(req, response(), () => { forwarded = req.body; });
+  // Inline reasoning content is real context for the gateway that minted it —
+  // only the id goes, exactly as the official hop keeps summaries.
+  assert.equal(forwarded.input[0].id, undefined);
+  assert.deepEqual(forwarded.input[0].content, [{ type: 'reasoning_text', text: 'chain of thought' }]);
+  assert.equal(forwarded.input[1].id, 'msg_after');
+});
+
 test('a stream read failure exposes its socket cause without replaying partial output', async () => {
   let calls = 0;
   let reads = 0;
