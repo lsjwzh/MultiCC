@@ -97,6 +97,22 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 
 ---
 
+## The Air console
+
+`/air` is MultiCC's home screen — both `/` and the old `/manage` now redirect there. Tasks, not roles, are the unit of work: you describe what you want done, and each task carries its own bound session, worktree, and transcript.
+
+![The Air console: directories and tasks at a glance](docs/images/air-tasks.png)
+
+- **Directory home** — every registered repo with its tasks and sessions in one list
+- **New-task composer** — describe a goal, pick a CLI / line / model (it remembers your last choice), and the task spins up a bound session
+- **⌘K search** — directories, tasks, and sessions from one palette
+- **Built-in console** — providers, schedules, AI Assistant, host operations, without leaving the page
+- **Scheduled tasks** — cron-style recurring work bound to fixed Air tasks
+
+**→ First run, task graph, memory graph, console pages: [Features](docs/features.md)**
+
+---
+
 ## Why people run it
 
 | | |
@@ -115,7 +131,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 ### 1. Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.7.0/install.sh | bash -s -- --branch v1.7.0
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.0/install.sh | bash -s -- --branch v2.0.0
 ```
 
 The script detects your OS, checks prerequisites, clones the repo, installs dependencies, generates an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd`). Installation never builds the Android APK.
@@ -164,7 +180,7 @@ signing status: [Desktop app](docs/desktop.md)**
 
 Android APKs are built once by the GitHub release workflow when a `vX.Y.Z` tag is
 published, signed with the project release key, and attached to that exact GitHub
-Release. The **APK area in `/manage`** prefers a non-empty local
+Release. The **APK area in the web console** prefers a non-empty local
 `public/multicc.apk`; when none exists, it links only to the `multicc.apk` asset
 for the server's exact package version. It never falls forward to `latest`.
 Installation and `./multicc update` never build an APK. Starting with v1.6.1,
@@ -179,19 +195,24 @@ cd MultiCC
 ./multicc start
 ```
 
-Open **<http://localhost:3000/manage>**. Installer-created, password-protected instances also listen on the IPv4 LAN automatically; public access is never configured automatically and should use Tailscale Funnel — see [Configuration](docs/configuration.md).
+Open **<http://localhost:3000>** — you land on the **Air console** (`/air`). Installer-created, password-protected instances also listen on the IPv4 LAN automatically; public access is never configured automatically and should use a tunnel (Tailscale Funnel, 花生壳, or SakuraFrp) — see [Configuration](docs/configuration.md).
 
 ### 3. See the point in 30 seconds
 
-1. On `/manage`, **add a directory** — point it at any git repo.
-2. **New chat session** → pick `claude` (or whichever CLI you have).
-3. Ask it something real: *"summarise what this project does and list the three riskiest files."*
-4. When it answers, click the **CLI badge in the chat header** and pick a different CLI.
-5. Send a follow-up: *"you're a different model now — do you agree with the previous assessment?"*
+1. On `/air`, **add a directory** — point it at any git repo.
+2. First run: the **setup card** walks you through preparing a model (import a provider from `cc-switch`, or just use a CLI's own login) and configuring the **AI Assistant** — a lightweight flash-tier model is enough.
+
+   ![The first-run setup card on /air](docs/images/air-first-run.png)
+3. Describe a goal in the **new-task composer** — *"summarise what this project does and list the three riskiest files."* — and create the task. The composer remembers your most recent CLI, line, and model.
+
+   ![The new-task composer with the AI configuration pill](docs/images/air-new-task.png)
+4. The task binds a chat session and gets to work. Open it to watch the transcript; when it answers, click the **CLI badge in the chat header** and pick a different CLI, then send a follow-up: *"you're a different model now — do you agree with the previous assessment?"*
 
 The second CLI answers with full awareness of the conversation, on the same branch and worktree, and tells you it is working from a handoff checkpoint. Switch back and the first CLI resumes its own session.
 
-Then open the same URL on your phone, or install the [Flutter app](docs/installation.md#build-the-flutter-app) — the session is right there, mid-conversation.
+Then open the same URL on your phone, or install the [Flutter app](docs/installation.md#build-the-flutter-app) — the task is right there, mid-conversation.
+
+![MultiCC on a phone-width screen](docs/images/air-mobile.png)
 
 ### 4. Keep it up to date
 
@@ -202,7 +223,7 @@ Then open the same URL on your phone, or install the [Flutter app](docs/installa
 
 A plain `update` already copes with an everyday dirty tree: on the dev channel it stashes your changes as `multicc-auto-update`, fast-forwards `main`, and pops them back. `--force` is for when that isn't enough — the pop conflicts with what was just pulled, the stable channel's `git checkout <tag>` refuses over a local edit, or your branch carries local commits and plain `update` just says *nothing to update*. It puts you on the remote's code regardless: everything in the tree, **including untracked files**, goes into a labelled `multicc-force-update-<timestamp>` stash first, then the checkout is forced (`git reset --hard origin/main` on dev, `git checkout -f <tag>` on stable). **Nothing is deleted, but the stash is not restored** — you land on a clean checkout and recover your work yourself with `git stash list` / `git stash pop`. One exception: on the stable channel `--force` still only acts when a newer release exists; at the newest tag it stops and prints the `git checkout -f` to run by hand.
 
-Or do it from the browser: click the **version number at the bottom of the `/manage` sidebar** → a dialog shows current vs. latest and a *强制更新* checkbox → confirm, and MultiCC runs the same update in the background, streams the log into the dialog, restarts itself, and reloads the page once it's back. If the update fails, the dialog keeps the full output and offers a force retry.
+Or do it from the browser: click the **version number at the bottom of the Air console sidebar** → a dialog shows current vs. latest and a *强制更新* checkbox → confirm, and MultiCC runs the same update in the background, streams the log into the dialog, restarts itself, and reloads the page once it's back. If the update fails, the dialog keeps the full output and offers a force retry.
 
 **→ Install flags, `./multicc` service manager, systemd unit, app builds: [Installation](docs/installation.md)**
 
@@ -218,7 +239,9 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 - Per-session **git worktree** on `multicc/<sessionId>`
 - Merge back with **syntax-gated** validation; sibling worktrees auto-sync after a merge
 - **Cross-session dispatch** — one agent hands work to another
-- Shared **task board** — every task owns a bound chat session with live transcript, cancel/cleanup, and stable short codes
+- **Agent Commander** — a fleet-conductor session seeded into every new directory
+- Shared **task board** with a **unified task chat view** — every task owns a bound chat session with live transcript, cancel/cleanup, and stable short codes
+- Native **task graph** and **memory graph** views in the Air console
 - **Scheduled message dock** — queue and review messages before they are sent
 - **Hibernate idle task worktrees** — auto-suspend idle task sessions to free resources
 - **run-detached** tasks, **cron** schedules, post-turn / file-change **triggers**
@@ -228,6 +251,8 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 
 **Models & cost**
 - **Multi-provider**: bind any Anthropic- or OpenAI-compatible endpoint per CLI
+- **Auto Provider failover** — when an upstream fails on a retryable condition, switch to the next healthy candidate automatically
+- **AI Assistant (aux)** — intent classification, task attribution, and auto-advance; configured from its own console page (a lightweight flash-tier model is enough)
 - Read-only import from **cc-switch**
 - **Subagent routing** — cheap models for the grunt work, via a local provider router
 - Per-provider `CODEX_HOME` isolation
@@ -241,8 +266,10 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 - Native **desktop app** (Electron) for macOS / Windows / Linux — backend included, loopback-only, no terminal needed
 - Native **Flutter app** for Android and iOS
 - **IM bridges**: WeChat, Feishu, Telegram, Discord, Slack
-- **Session sharing** via password-protected snapshot links
-- **Relay-token remote sharing** — grant access and share provider configs securely from `/manage`
+- **Session sharing** via password-protected snapshot links; share links open the chat page directly
+- **Cross-instance Fleet sharing** — password-protected read-only snapshots, imported and interactively driven on the other side
+- **Relay-token remote sharing** — grant access and share provider configs securely from the console
+- Public tunnels built in: **Tailscale Funnel**, **花生壳**, and **SakuraFrp** with live monitoring
 - Web Push / Bark / webhook **notifications**
 - Chinese + English UI
 
@@ -258,6 +285,10 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 
 </td></tr>
 </table>
+
+![CLI and provider settings in the Air console](docs/images/air-provider.png)
+
+![The AI Assistant page in the Air console](docs/images/aux-console.png)
 
 **→ Every feature in detail: [Features](docs/features.md)**
 
@@ -278,7 +309,7 @@ Or do it from the browser: click the **version number at the bottom of the `/man
 | [FAQ](docs/faq.md) | Troubleshooting and common questions |
 | [Tech stack](docs/tech-stack.md) | Runtime dependencies and what each one is for |
 
-The full index — design contracts, voice, provider routing, governance reviews, and modularization history — is in **[docs/README.md](docs/README.md)** (35 documents).
+The full index — design contracts, voice, provider routing, governance reviews, and modularization history — is in **[docs/README.md](docs/README.md)** (50+ documents).
 
 ---
 
@@ -296,9 +327,9 @@ ACCESS_TOKEN=<generated-by-install.sh>
 # MULTICC_ALLOW_REMOTE=0
 ```
 
-Requests from loopback bypass `ACCESS_TOKEN`. MultiCC serves **plain HTTP** and does not terminate TLS — use Tailscale Funnel (built into `/manage` → Tunnel), ngrok, or your own reverse proxy for public access.
+Requests from loopback bypass `ACCESS_TOKEN`. MultiCC serves **plain HTTP** and does not terminate TLS — use one of the built-in tunnels (Tailscale Funnel, 花生壳, or SakuraFrp, managed from the console's host settings), ngrok, or your own reverse proxy for public access.
 
-Providers, subagent routing, voice, TTS/ASR and notification settings are configured from `/manage`; the underlying variables are documented in **[Configuration](docs/configuration.md)**.
+Providers, subagent routing, voice, TTS/ASR and notification settings are configured from the Air console; the underlying variables are documented in **[Configuration](docs/configuration.md)**.
 
 ---
 
@@ -308,7 +339,7 @@ Projects that **harness** the official CLIs — spawning and managing the real `
 
 **Where MultiCC is the only one, or nearly so:**
 
-- **In-place cross-CLI switching** across six coding CLIs with a bounded handoff checkpoint
+- **In-place cross-CLI switching** across eight coding CLIs with a bounded handoff checkpoint
 - **Task board with bound chat sessions** — every task gets a private chat transcript, short codes, and lifecycle controls
 - **Scheduled messages** and **relay-token remote sharing**
 - **Speech-to-speech** voice conversation with an agent, plus hands-free task announcements
@@ -319,7 +350,7 @@ Projects that **harness** the official CLIs — spawning and managing the real `
 
 **Where it is weaker:** no hosted/cloud option, no built-in code editor, CLI/server installs are macOS/Linux only (the desktop app covers Windows), and single-user by design — there is no team RBAC.
 
-Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, cc-connect, CloudCLI, Superset, Orca, cockpit-tools.
+Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, cc-connect, CloudCLI, Superset, Orca, cockpit-tools — eleven peers, plus MultiCC itself, make up the 12-project landscape.
 
 **→ The full 12-project survey and head-to-head tables: [How MultiCC compares](docs/ecosystem-comparison.md)**
 
@@ -341,7 +372,7 @@ Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, 
     │  │ (terminal mode)    │  │ (chat mode)   │  │ + handoff        │  │
     │  └─────────┬──────────┘  └───────┬───────┘  └────────┬─────────┘  │
     │            ▼                     ▼                   ▼            │
-    │      claude / codex …    5 CLI adapters      per-CLI native       │
+    │      claude / codex …    8 CLI adapters      per-CLI native       │
     │                          (stream-json, exec) session state        │
     └───────────────────────────────────────────────────────────────────┘
                                      │
@@ -376,7 +407,7 @@ A few of the most common questions:
 
 - **Is there a desktop app?** Yes — macOS (dmg), Windows (exe), and Linux (AppImage/deb) installers ship on the Releases page. Double-click and everything (backend + UI) starts locally; no Node, no terminal. See [Desktop app](docs/desktop.md).
 - **Does MultiCC serve HTTPS?** No — direct LAN access is plain HTTP. Use `http://localhost` for microphone and PWA features, or a tunnel that terminates real TLS.
-- **Can I use it without Claude Code?** Yes. Any one of the six supported CLIs is enough.
+- **Can I use it without Claude Code?** Yes. Any one of the eight supported CLIs is enough.
 - **Does switching CLIs cost tokens immediately?** No. The checkpoint is queued and delivered with your *next* message.
 - **Port already in use?** Set a different `PORT` in `.env` — automatic rollover only happens in development mode.
 - **`./multicc update` stopped, or says "nothing to update" while I'm behind?** `./multicc update --force` puts you on the remote's code. Local changes are stashed as `multicc-force-update-<ts>` and not restored — see [Keep it up to date](#4-keep-it-up-to-date).

@@ -7,13 +7,33 @@
 | Mode | UI | Backend |
 |------|----|---------|
 | **Terminal** (`/`) | Full `xterm.js` — scrollback, colors, input, resize | `tmux` session, `pipe-pane` + named FIFO for reliable output |
-| **Chat** (`/chat`) | Message bubbles with streaming tool cards, image previews, in-place CLI switching | Claude Code, Codex, OpenCode, ZCode, Kimi Code, or Qoder CN — events normalized over WebSocket |
+| **Chat** (`/chat`) | Message bubbles with streaming tool cards, image previews, in-place CLI switching | Claude Code, Codex, OpenCode, ZCode, Kimi Code, Qoder CN, WorkBuddy, or DSH — events normalized over WebSocket |
 
 Both modes share the same session registry, auth, and notifications. Reconnect replays the last 500 stream events so you never see a half-empty conversation.
 
+## The Air console (`/air`)
+
+`/air` is the task-first home surface — both `/` and the legacy `/manage` redirect there:
+
+- **Directory home** — every registered repo with its tasks and sessions in one list.
+- **First-run setup card** — guided onboarding: prepare a model (import a provider or use a CLI's own login), then configure the AI Assistant.
+- **New-task composer** — describe a goal and create a task bound to a chat session; remembers the most recently used CLI, line, and model.
+- **⌘K search** — one palette across directories, tasks, and sessions.
+- **Console pages** — providers, schedules, AI Assistant, host operations (update, tunnels, APK) without leaving the page.
+- **Native task graph** (`view=taskgraph`) — parent/child, grouping, merge, and shell-link relationships as an interactive network.
+- **Native memory graph** (`view=memory`) — the cross-task memory network.
+
+## AI Assistant (aux)
+
+The AI Assistant is the core background service for intent classification, task attribution, and auto-advance:
+
+- Configured from its own console page in the Air console (Settings › AI & execution) — a lightweight flash-tier model is enough.
+- Run records are visible on the same page.
+- Works alongside the per-session AI configuration pill in the new-task composer.
+
 ## Multi-provider support
 
-Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`). Claude/Codex/OpenCode can use MultiCC provider routing; ZCode drives its own engine config (`~/.zcode/cli/config.json`); Kimi Code uses its native login or OpenAI-format provider credentials injected per session; Qoder CN keeps its own signed-in account or BYOK configuration.
+Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, `kimi`, `qoder`, `codebuddy`, or `dsh`). Claude/Codex/OpenCode can use MultiCC provider routing; ZCode drives its own engine config (`~/.zcode/cli/config.json`); Kimi Code uses its native login or OpenAI-format provider credentials injected per session; Qoder CN keeps its own signed-in account or BYOK configuration; WorkBuddy (`codebuddy`) and DSH (`dsh`) are providerless — they authenticate with their own vendor accounts.
 
 | CLI | Terminal mode | Chat mode | Provider isolation |
 |-----|---------------|-----------|--------------------|
@@ -23,6 +43,8 @@ Each session picks its own CLI (`claude`, `codex`, `opencode`, `zcode`, `kimi`, 
 | **ZCode** | ZCode TUI (engine) inside `tmux` | in-tree bridge → `zcode.cjs --prompt --json` | Drives the headless engine inside the ZCode.app bundle; provider/auth owned by ZCode in `~/.zcode/cli/config.json`, located via `ZCODE_ENGINE` |
 | **Kimi Code** | `kimi` inside `tmux`, resumed by `--session <id>` | `kimi -p <prompt> --output-format stream-json --auto` | Native `kimi login` device-code flow, or an OpenAI-format MultiCC provider injected as `KIMI_API_KEY`/`KIMI_BASE_URL` inside a per-session `KIMI_CODE_HOME` under `~/.multicc/kimi-homes` |
 | **Qoder CN** | `qoderclicn --resume <id>` inside `tmux` | `qoderclicn -p --output-format stream-json` | Uses Qoder's own login/BYOK settings; native session id, model tier, reasoning effort, and agent retained per logical chat |
+| **WorkBuddy** | `codebuddy` inside `tmux` | in-tree headless adapter (drives the bundled `codebuddy-headless`) | Providerless — vendor auth via the `codebuddy` TUI `/login` (`~/.codebuddy`); install with `npm install -g @tencent-ai/codebuddy-code` |
+| **DSH** | `dsh` inside `tmux` | in-tree headless adapter (`--profile` mode) | Providerless — DeepSeek-native credentials (`DEEPSEEK_API_KEY` env or the `dsh web` Models page); install with `npm install -g @deepseek-ai/dsh` |
 
 For Qoder CN, install the official CLI (`curl -fsSL https://qoder.cn/install | bash`), then run `qoderclicn` once to sign in or set `QODERCN_PERSONAL_ACCESS_TOKEN`. MultiCC auto-detects the `qoderclicn` executable and deliberately leaves Qoder account/BYOK management to Qoder itself. See the [Qoder CN quick start](https://docs.qoder.cn/cli/qoder-cli-cn-get-started-quickly).
 
@@ -31,6 +53,7 @@ For ZCode, install the official desktop app from [zcode.z.ai](https://zcode.z.ai
 For Kimi Code, install the official CLI (`npm install -g @moonshot-ai/kimi-code` — also one-click installable from the CLI switcher), then sign in once with `kimi login` (OAuth device-code flow: MultiCC can open the verification page in the managed browser via `POST /api/kimi/auth/login`). Alternatively bind the session to an OpenAI-format MultiCC provider: MultiCC injects the provider's API key and base URL into an isolated per-session `KIMI_CODE_HOME` and fails closed when the binding loses its credentials.
 
 - Providers are managed from `/manage` or the provider API — create, edit, import from `cc-switch`, set per-CLI defaults.
+- **Auto Provider failover.** When a provider attempt fails on a retryable upstream condition, MultiCC falls back to the next healthy candidate automatically instead of surfacing the failure; each failover attempt is bound to its own candidate model so a retry never lands on a mismatched endpoint. Provider switches are broadcast instantly — the chat page's quota bar updates as soon as the line changes.
 - **Per-session model selection**: each session can override the provider's default model; the chat UI shows a model picker with provider-specific options.
 - **Provider-aware model options**: custom providers expose their own model lists (e.g., DeepSeek, GLM, Qwen) via `modelOptions`.
 - **Per-role subagent routing (cost optimization)**: each Claude session can set a separate `subagent = { providerId, model }`. The main loop runs on your frontier model (Opus/Fable/Sonnet); Task-tool subagents — exploration, grep, file reads, test iteration — are routed through the local `claude-proxy` to a cheaper provider+model of your choice. Configure per session via the chat UI or the session API. Native Claude Code only lets subagents inherit the main client; MultiCC is the only harness that routes them independently.
@@ -45,7 +68,7 @@ For Kimi Code, install the official CLI (`npm install -g @moonshot-ai/kimi-code`
 - **Git worktree isolation.** Each normal session runs in `<repo>/.multicc-worktrees/<sessionId>` on branch `multicc/<sessionId>`. Parallel agents edit safely; merge/sync APIs move changes between session branches and the base branch.
 - **Agent Commander.** Every new directory is seeded with an Agent Commander chat session — a fleet conductor that can coordinate specialized sibling sessions. Comes with role presets for common agent profiles.
 - **MCP-only cross-session dispatch.** `route_task` is one-way. `dispatch_master` requires `mode="sync"` (stream safe, provider-emitted reasoning plus worker progress and return inline) or `mode="async"` (return after admission; `dispatch_slave` later inserts a result message and wakes the caller). The retired HTTP and text-marker paths are not executable.
-- **In-place cross-CLI handoff (chat sessions only).** A chat can switch among Claude, Codex, OpenCode, ZCode, Kimi Code, and Qoder CN without changing its logical session or worktree. Terminal sessions are fixed to the CLI they were created with. See [Multi-CLI switching](cli-switching.md). Each CLI keeps an independent native session and settings snapshot; a bounded checkpoint of visible conversation, task state, and Git state bridges the semantic context. Vendor JSONL files are never rewritten or shared.
+- **In-place cross-CLI handoff (chat sessions only).** A chat can switch among Claude, Codex, OpenCode, ZCode, Kimi Code, Qoder CN, WorkBuddy, and DSH without changing its logical session or worktree. Terminal sessions are fixed to the CLI they were created with. See [Multi-CLI switching](cli-switching.md). Each CLI keeps an independent native session and settings snapshot; a bounded checkpoint of visible conversation, task state, and Git state bridges the semantic context. Vendor JSONL files are never rewritten or shared.
 - **Passive inter-agent notes.** Sessions leave notes for siblings in the same directory; notes are prepended to the target agent's next chat turn.
 - **Syntax-gated merges.** Merge is rejected if a session's changes introduce JS syntax errors — broken code can't reach the base branch.
 - **Auto-commit + auto-sync.** Sessions auto-commit before merging; after a successful merge, sibling worktrees in the same directory are synced to the new base automatically (conflicting ones are skipped and reported as `siblingsSynced` on the merge response).
@@ -142,7 +165,9 @@ A real Flutter app (Android + iOS), not a wrapped webview:
 - **KPI dashboard**: active sessions, waiting sessions, cron jobs — all tappable for drill-down.
 - **Directory management**: drag-to-reorder, compact preview cards, detail sheets.
 
-## Web dashboard (`/manage`)
+## Web dashboard (`/manage`, legacy)
+
+> Since the Air console, `/` and `/manage` redirect to `/air`; the classic `/manage` page remains available directly for legacy deep links, and its operational surfaces (host settings, tunnels, APK area, update dialog) are also reachable from the Air console's host-ops region.
 
 A single operational surface for everything:
 
@@ -162,9 +187,10 @@ A single operational surface for everything:
 
 ## Session sharing
 
-- Share selected chat messages as a **read-only snapshot link** — perfect for showing results to teammates.
+- Share selected chat messages as a **read-only snapshot link** — perfect for showing results to teammates. Share links open the chat page directly.
 - Optional password protection and operation permission.
 - Shared sessions render with the same message bubbles and tool cards as the original.
+- **Cross-instance Fleet sharing.** One instance issues a password-protected, bounded share capability for a Fleet; another MultiCC instance imports it as a read-only metadata snapshot over loopback or the LAN — and imported Fleets are fully interactive: their sessions can be opened and driven, with the same memo and Git views as local work. Imported Fleets never enter local directories or the Git/worktree lifecycle.
 
 ## i18n (Internationalization)
 
@@ -176,7 +202,8 @@ A single operational surface for everything:
 
 - **Tailscale Funnel**: one-click toggle in `/manage` to expose your MultiCC server to the public internet via Tailscale.
 - **花生壳 (phtunnel) monitor**: optional shell watchdog that restarts the DDNS client if the public URL goes unreachable.
-- Both tunnel modes are managed from the dashboard with live status indicators.
+- **SakuraFrp (樱花frp)**: CLI-based tunnel provider with launcher detection, diagnostics, and monitoring — falls back to a local `frpc` binary when no launcher is configured.
+- All three tunnel modes are managed from the dashboard with live status indicators.
 
 ## Security
 

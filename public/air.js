@@ -83,6 +83,24 @@
   // 只是把常用的几个任务放在手边。
   let recentTaskIds = stored('air:recent-tasks', []);
   if (!Array.isArray(recentTaskIds)) recentTaskIds = [];
+
+  // ── 首启配置卡：AI Assistant 配没配，由服务端那份配置说话 ──
+  // null = 还没查到（页面刚起或查询失败），false = 未配置（亮卡），true = 已配置。
+  // 离开 aux 设置页时重查一次：在那儿保存过之后，这张卡应该当场消失，而不是
+  // 等下次刷新。跳过只记在本机 —— 跳过的是「这张卡」，不是「这个配置」。
+  let auxConfigured = null;
+  let setupDismissed = stored('air:setup-dismissed', false);
+  async function refreshAuxConfigured() {
+    try {
+      const config = await api('/api/aux/config');
+      auxConfigured = !!config.providerId;
+    } catch (_) { return; }   // 查不到就维持现状，不把卡藏起来也不弹错误
+    renderSetupCard();
+  }
+  function renderSetupCard() {
+    const card = $('setup-card');
+    if (card) card.hidden = !(data && auxConfigured === false && !setupDismissed);
+  }
   function rememberTask(id) {
     if (!id) return;
     recentTaskIds = [id, ...recentTaskIds.filter(value => value !== id)].slice(0, 12);
@@ -341,6 +359,9 @@
     // 展开这层面板，页面留在原处。
     if (next === 'overview') { setConsole(true); return; }
     saveDraft();
+    // 从 AI Assistant 设置页离开时重查配置：刚在那儿保存过的话，首启配置卡
+    // 会在这次渲染里自己消失。
+    if (mode === 'aux' && next !== 'aux') void refreshAuxConfigured();
     mode = next;
     taskId = null;
     entry = null;
@@ -1066,6 +1087,7 @@
 
   function render() {
     if (!data) return;
+    renderSetupCard();
     if (!directoryId && taskId) directoryId = data.tasks.find(task => task.id === taskId)?.dirId;
     if (!directoryId || !data.directories.some(directory => directory.id === directoryId)) directoryId = data.directories[0]?.id || null;
     const dir = data.directories.find(directory => directory.id === directoryId);
@@ -1867,6 +1889,16 @@
     if (!taskId) render();
   });
   $('add-directory').onclick = () => window.MultiCCAirSettings.directory(async directory => { await refresh(); navigate(directory.id); });
+  // 首启配置卡的两个入口各自直达对应设置页；跳过只藏卡，配置状态仍以下一次
+  // 查询为准（换浏览器/换设备时该出现的还会出现）。
+  $('setup-provider').onclick = () => setMode('provider');
+  $('setup-aux').onclick = () => setMode('aux');
+  $('setup-dismiss').onclick = () => {
+    setupDismissed = true;
+    try { localStorage.setItem('air:setup-dismissed', 'true'); } catch (_) {}
+    renderSetupCard();
+  };
+  void refreshAuxConfigured();
   $('directory-open-planner').onclick = () => setMode('planner');
   $('quick-task-form').onsubmit = submitQuickTask;
   $('quick-task-attach').onclick = () => $('quick-task-file-input').click();
