@@ -820,7 +820,8 @@ class SessionCliConfig {
           : SessionSubagent.fromJson(json['subagent']),
       deferred: json['deferred'] == true || json['pendingConfiguration'] is Map,
       pendingCli: json['pendingConfiguration'] is Map
-          ? parseCli(json['pendingConfiguration']['cli']?.toString()) : null,
+          ? parseCli(json['pendingConfiguration']['cli']?.toString())
+          : null,
       changed: json['changed'] == true,
       reusedTarget: json['reusedTarget'] == true,
     );
@@ -857,6 +858,7 @@ class Session {
   final DateTime? lastActivity;
   final String? type; // 'aux' for the special AuxQueue session
   final String? auxLabel;
+  final String? taskBoundTaskId;
 
   /// 会话级「自动提交」（对齐 web 的 `#auto-commit-btn`）：每轮成功后若该轮
   /// 的勾选仍为真、且工作树确实有事可合，就自动 merge 回基分支。
@@ -891,6 +893,7 @@ class Session {
     this.lastActivity,
     this.type,
     this.auxLabel,
+    this.taskBoundTaskId,
     this.autoCommit = true,
   });
 
@@ -929,6 +932,7 @@ class Session {
           : null,
       type: json['type']?.toString(),
       auxLabel: json['label']?.toString(),
+      taskBoundTaskId: json['taskBoundTaskId']?.toString(),
       autoCommit: json['autoCommit'] != false,
     );
   }
@@ -974,6 +978,7 @@ class Session {
       lastActivity: lastActivity,
       type: type,
       auxLabel: label ?? this.label,
+      taskBoundTaskId: taskBoundTaskId,
       autoCommit: autoCommit ?? this.autoCommit,
     );
   }

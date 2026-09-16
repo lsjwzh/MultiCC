@@ -59,6 +59,14 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?task=tsk_a&dir=d1');
     assert.ok(await page.waitFor(`document.getElementById('task-title')?.textContent==='完善任务协作体验'`), 'task opened');
+    assert.ok(await page.waitFor(`document.getElementById('conversation')?.contentDocument?.getElementById('air-delete-task-btn')?.hidden===false`),
+      'the chat More menu receives the host-owned delete action');
+    assert.equal(await page.evaluate(`(() => {
+      const original=window.__multiccAirDeleteCurrentTask;let called=0;
+      window.__multiccAirDeleteCurrentTask=()=>called++;
+      document.getElementById('conversation').contentDocument.getElementById('air-delete-task-btn').click();
+      window.__multiccAirDeleteCurrentTask=original;return called;
+    })()`), 1, 'the frame menu delegates deletion to the Air host');
     await page.evaluate(`document.getElementById('details-toggle').click()`);
     const actionLabels = `[...document.querySelectorAll('#task-detail-groups .detail-actions button')].map(b=>b.textContent)`;
     assert.ok(await page.waitFor(`document.querySelector('[data-action="archive"]')!==null`), 'detail actions rendered');

@@ -74,13 +74,14 @@ class SessionService {
     final uri = Uri.parse(_url('/api/sessions/${Uri.encodeComponent(id)}'));
     try {
       final client = httpClient;
-      final res = await (client != null
-              ? client.get(uri, headers: _headers)
-              : http.get(uri, headers: _headers))
-          .timeout(const Duration(seconds: 10));
+      final res =
+          await (client != null
+                  ? client.get(uri, headers: _headers)
+                  : http.get(uri, headers: _headers))
+              .timeout(const Duration(seconds: 10));
       if (res.statusCode != 200) return null;
-      final j =
-          (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+      final j = (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+          .cast<String, dynamic>();
       final marker = j['taskBoundTaskId'];
       if (marker is! String || marker.isEmpty) return null;
       return Session(
@@ -93,6 +94,7 @@ class SessionService {
         createdAt:
             DateTime.tryParse(j['createdAt']?.toString() ?? '') ??
             DateTime.now(),
+        taskBoundTaskId: marker,
       );
     } catch (_) {
       return null;
@@ -107,7 +109,9 @@ class SessionService {
       final err = _tryParseError(res.body);
       throw Exception(err ?? '${res.statusCode}');
     }
-    return SessionCliConfig.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    return SessionCliConfig.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
   }
 
   Future<SessionCliConfig> switchSessionCli(
@@ -119,17 +123,16 @@ class SessionService {
         .post(
           Uri.parse(_url('/api/sessions/$id/switch-cli')),
           headers: _headers,
-          body: jsonEncode({
-            'cli': cli.name,
-            'fresh': fresh,
-          }),
+          body: jsonEncode({'cli': cli.name, 'fresh': fresh}),
         )
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) {
       final err = _tryParseError(res.body);
       throw Exception(err ?? '${res.statusCode}');
     }
-    return SessionCliConfig.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    return SessionCliConfig.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
   }
 
   // ── CLI install (three-endpoint contract shared with web/CLI) ──────────────
@@ -292,11 +295,16 @@ class SessionService {
   /// proceeds; 'abort' rolls the worktree back to the pre-rebase state. Mirrors
   /// web manage's rebase-resolve flow. On remaining conflicts (409) the result
   /// map carries `ok: false` and an updated `conflicts` list.
-  Future<Map<String, dynamic>> rebaseSession(String id,
-      {String action = 'continue'}) async {
+  Future<Map<String, dynamic>> rebaseSession(
+    String id, {
+    String action = 'continue',
+  }) async {
     final res = await http
-        .post(Uri.parse(_url('/api/sessions/$id/rebase')),
-            headers: _headers, body: jsonEncode({'action': action}))
+        .post(
+          Uri.parse(_url('/api/sessions/$id/rebase')),
+          headers: _headers,
+          body: jsonEncode({'action': action}),
+        )
         .timeout(const Duration(seconds: 30));
     final body = jsonDecode(res.body);
     final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
@@ -311,10 +319,16 @@ class SessionService {
   /// creates a fresh one in the target directory's repo. The session keeps its
   /// id but its worktreePath/branch/dirId change. Used when a session's work
   /// belongs under a different project.
-  Future<Map<String, dynamic>> relocateSession(String id, String targetDirId) async {
+  Future<Map<String, dynamic>> relocateSession(
+    String id,
+    String targetDirId,
+  ) async {
     final res = await http
-        .post(Uri.parse(_url('/api/sessions/$id/relocate')),
-            headers: _headers, body: jsonEncode({'dirId': targetDirId}))
+        .post(
+          Uri.parse(_url('/api/sessions/$id/relocate')),
+          headers: _headers,
+          body: jsonEncode({'dirId': targetDirId}),
+        )
         .timeout(const Duration(seconds: 30));
     final body = jsonDecode(res.body);
     final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
@@ -365,8 +379,11 @@ class SessionService {
   Future<Map<String, dynamic>> fetchFileDiff(String id, String path) async {
     final res = await http
         .get(
-          Uri.parse(_url(
-              '/api/sessions/$id/diff/file?path=${Uri.encodeQueryComponent(path)}')),
+          Uri.parse(
+            _url(
+              '/api/sessions/$id/diff/file?path=${Uri.encodeQueryComponent(path)}',
+            ),
+          ),
           headers: _headers,
         )
         .timeout(const Duration(seconds: 20));
@@ -393,11 +410,7 @@ class SessionService {
   }) async {
     final c = client ?? http.Client();
     final ownsClient = client == null;
-    final body = <String, dynamic>{
-      'id': id,
-      'type': type,
-      'prompt': prompt,
-    };
+    final body = <String, dynamic>{'id': id, 'type': type, 'prompt': prompt};
     if (meta != null) body['meta'] = meta;
     try {
       final res = await c
@@ -425,8 +438,11 @@ class SessionService {
     if (taskId.isEmpty) return;
     try {
       await http
-          .post(Uri.parse(_url('/api/aux/cancel')),
-              headers: _headers, body: jsonEncode({'id': taskId}))
+          .post(
+            Uri.parse(_url('/api/aux/cancel')),
+            headers: _headers,
+            body: jsonEncode({'id': taskId}),
+          )
           .timeout(const Duration(seconds: 5));
     } catch (_) {
       // Best-effort cancel; ignore.
@@ -454,10 +470,7 @@ class SessionService {
   // from "idle" and "stalled" at a glance.
   Future<Map<String, dynamic>> fetchLiveness(String id) async {
     final res = await http
-        .get(
-          Uri.parse(_url('/api/sessions/$id/liveness')),
-          headers: _headers,
-        )
+        .get(Uri.parse(_url('/api/sessions/$id/liveness')), headers: _headers)
         .timeout(const Duration(seconds: 10));
     final body = jsonDecode(res.body);
     final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
@@ -758,7 +771,8 @@ class SessionService {
   /// Returns the new session id. Mirrors the web chat's per-message fork.
   Future<String> forkSession(String sessionId, {String? atMessageId}) async {
     final body = <String, dynamic>{};
-    if (atMessageId != null && atMessageId.isNotEmpty) body['atMessageId'] = atMessageId;
+    if (atMessageId != null && atMessageId.isNotEmpty)
+      body['atMessageId'] = atMessageId;
     final res = await http
         .post(
           Uri.parse(_url('/api/sessions/$sessionId/fork')),
@@ -820,14 +834,27 @@ class SessionService {
   /// `hasNewer` flags. `found` is false when the message was trimmed from
   /// history. The raw message maps reuse [ChatMessage.fromHistory] at the call
   /// site, the same parser as [fetchHistory].
-  Future<({List<Map<String, dynamic>> messages, bool found, bool hasMore, bool hasNewer})>
-      fetchHistoryAround(String sessionId, String messageId, {bool historyArchive = false}) async {
+  Future<
+    ({
+      List<Map<String, dynamic>> messages,
+      bool found,
+      bool hasMore,
+      bool hasNewer,
+    })
+  >
+  fetchHistoryAround(
+    String sessionId,
+    String messageId, {
+    bool historyArchive = false,
+  }) async {
     final res = await http
         .get(
-          Uri.parse(_url(
-            '/api/sessions/${Uri.encodeComponent(sessionId)}/history'
-            '?around=${Uri.encodeQueryComponent(messageId)}&historyScope=${historyArchive ? 'archive' : 'display'}',
-          )),
+          Uri.parse(
+            _url(
+              '/api/sessions/${Uri.encodeComponent(sessionId)}/history'
+              '?around=${Uri.encodeQueryComponent(messageId)}&historyScope=${historyArchive ? 'archive' : 'display'}',
+            ),
+          ),
           headers: _headers,
         )
         .timeout(const Duration(seconds: 15));
@@ -1076,7 +1103,10 @@ class SessionService {
   /// Returns `{files: [{status, path}, ...]}`.
   Future<Map<String, dynamic>> fetchUncommitted(String id) async {
     final res = await http
-        .get(Uri.parse(_url('/api/directories/$id/uncommitted')), headers: _headers)
+        .get(
+          Uri.parse(_url('/api/directories/$id/uncommitted')),
+          headers: _headers,
+        )
         .timeout(const Duration(seconds: 15));
     final body = jsonDecode(res.body);
     final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
@@ -1216,8 +1246,6 @@ class SessionService {
       final err = _tryParseError(res.body);
       throw Exception(err ?? '${res.statusCode}');
     }
-    return GitCommitDiff.fromJson(
-      jsonDecode(res.body) as Map<String, dynamic>,
-    );
+    return GitCommitDiff.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 }

@@ -117,6 +117,7 @@ void main() {
     final settings = await _settings();
     final requests = <String>[];
     final opened = <String>[];
+    var openedAssistant = 0;
     final client = _client(
       requests,
       schedules: const [
@@ -138,6 +139,7 @@ void main() {
           onOpenDestination: (_) {},
           onOpenMemory: () {},
           onOpenWebConsole: () {},
+          onOpenAiAssistant: () => openedAssistant++,
         ),
       ),
     );
@@ -164,22 +166,24 @@ void main() {
     expect(find.text('等待回答、资源或重试'), findsOneWidget);
     expect(statValue('定时任务', '2'), findsOneWidget);
     expect(find.text('共 3 条规则'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-console-ai-assistant')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('air-console-ai-assistant')));
+    expect(openedAssistant, 1);
 
     // 「谁在等我」按紧急度排：等回答的在前，出错的在后，空闲 / 归档的不进来。
-    expect(
-      find.byKey(const ValueKey('air-console-urgent-t1')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('air-console-urgent-t2')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('air-console-urgent-t1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-console-urgent-t2')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-console-urgent-t3')), findsNothing);
     expect(find.byKey(const ValueKey('air-console-urgent-t4')), findsNothing);
     expect(
       tester.getTopLeft(find.byKey(const ValueKey('air-console-urgent-t1'))).dy,
       lessThan(
-        tester.getTopLeft(find.byKey(const ValueKey('air-console-urgent-t2'))).dy,
+        tester
+            .getTopLeft(find.byKey(const ValueKey('air-console-urgent-t2')))
+            .dy,
       ),
     );
     // 行上一眼能看出它在等我回答 / 出错了（同一条任务在两个分区里各一行）。
@@ -189,8 +193,7 @@ void main() {
     // 分区顺序：控制台要一眼回答两件事 —— 谁在等我、我有哪些目录 —— 所以「工作目录」
     // 紧跟「谁在等我」，不压到「全部任务」和工具格底下等用户滚到底才看见。
     // 拿 eyebrow 定位（「工作目录」这四个字统计卡上也有，用标题会撞上）。
-    double sectionY(String eyebrow) =>
-        tester.getTopLeft(find.text(eyebrow)).dy;
+    double sectionY(String eyebrow) => tester.getTopLeft(find.text(eyebrow)).dy;
     expect(
       sectionY('WORK DIRECTORIES'),
       greaterThan(sectionY('ACROSS ALL WORKSPACES')),
@@ -218,7 +221,8 @@ void main() {
   testWidgets('全部任务的筛选：默认只看没结束的，搜索和状态各收窄一层', (tester) async {
     _tallCanvas(tester);
     final settings = await _settings();
-    final client = _client(<String>[]);
+    final requests = <String>[];
+    final client = _client(requests);
 
     await tester.pumpWidget(
       MaterialApp(
@@ -275,6 +279,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(row('t4'), findsOneWidget);
     expect(find.text('4 条'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('air-console-delete-t2')));
+    await tester.pumpAndSettle();
+    expect(find.text('删除任务「支付回调」？'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('air-console-t2-delete-confirm-ok')),
+    );
+    await tester.pumpAndSettle();
+    expect(requests, contains('/api/task-board/tasks/t2'));
 
     // 「已归档」只剩它一条。
     await tester.tap(find.byKey(const ValueKey('air-console-status')));
@@ -451,10 +464,7 @@ void main() {
     );
     expect(find.text('定时任务读取失败，下拉重试'), findsOneWidget);
     // 主体照常。
-    expect(
-      find.byKey(const ValueKey('air-console-urgent-t1')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('air-console-urgent-t1')), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
@@ -567,6 +577,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('65 条 · 显示最近 60 条'), findsOneWidget);
+    expect(
+      tester
+          .getSize(find.byKey(const ValueKey('air-console-task-scroll')))
+          .height,
+      340,
+      reason: '全部任务在固定高度容器内滚动，不再把控制台无限拉长',
+    );
     // 全部空闲，没有一条要我去处理。
     expect(find.text('没有正在等待或正在执行的任务。'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -652,9 +669,7 @@ void main() {
     expect(find.text('8 条 · 按紧急度排序，点击直达'), findsOneWidget);
     expect(find.byKey(const ValueKey('air-attention-task-r4')), findsOneWidget);
     expect(
-      tester
-          .getTopLeft(find.byKey(const ValueKey('air-attention-task-w1')))
-          .dy,
+      tester.getTopLeft(find.byKey(const ValueKey('air-attention-task-w1'))).dy,
       lessThan(
         tester
             .getTopLeft(find.byKey(const ValueKey('air-attention-task-e1')))
@@ -735,9 +750,7 @@ void main() {
     );
     await _pumpFrames(tester);
 
-    final card = tester.getSize(
-      find.byKey(const ValueKey('air-stat-工作目录')),
-    );
+    final card = tester.getSize(find.byKey(const ValueKey('air-stat-工作目录')));
     // 原来是 24px 的数字 + 26×3 的色条，卡片明显更高。这里钉住「确实压扁了」，
     // 不钉死具体数值 —— 那会在下次微调时变成噪声。
     expect(card.height, lessThan(100), reason: '统计卡实测 ${card.height}');

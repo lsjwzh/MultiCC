@@ -167,10 +167,17 @@
         <div id="empty">
           <div id="directory-stats" aria-label="当前目录任务统计"></div>
           <section class="directory-task-panel">
-            <div class="section-heading"><div><span class="caption">当前目录</span><strong>最近任务</strong></div><span id="directory-overview-count"></span></div>
+            <div class="section-heading"><div><span class="caption">当前目录</span><strong id="directory-task-heading">最近任务</strong></div><span id="directory-overview-count"></span></div>
+            <div id="directory-task-controls" class="admin-task-controls directory-task-controls" hidden>
+              <input id="directory-task-search" type="search" placeholder="搜索任务标题" aria-label="搜索当前目录任务">
+              <select id="directory-task-status" aria-label="按状态筛选当前目录任务">
+                <option value="open">进行中与待处理</option>
+                <option value="all">全部记录</option>
+                <option value="archived">已归档</option>
+              </select>
+            </div>
             <div id="directory-task-list"></div>
-            <!-- 列表是截过的，这条是留给「剩下的那些」的出口：这一页只摆最近几条，
-                 完整的那份永远在控制台（air.js 的 recentRowLimit）。 -->
+            <!-- 就地展开当前目录的完整清单；固定高度与筛选避免把输入框推到页面之外。 -->
             <button id="directory-task-more" type="button" hidden></button>
           </section>
           <!-- 全站唯一的那一个输入框模块。它在目录首页是常驻的，侧栏那颗

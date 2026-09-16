@@ -372,15 +372,18 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-task-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
 .directory-task-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 #directory-task-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.directory-task-row { min-width: 0; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 11px 14px; border: 0; border-right: 1px solid #e8eef5; border-bottom: 1px solid #e8eef5; border-radius: 0; background: transparent; text-align: left; }
+.directory-task-panel.expanded #directory-task-list { height: min(390px, 48dvh); overflow-y: auto; overscroll-behavior: contain; }
+.directory-task-row { min-width: 0; display: flex; align-items: stretch; padding: 0; border: 0; border-right: 1px solid #e8eef5; border-bottom: 1px solid #e8eef5; border-radius: 0; background: transparent; text-align: left; }
 .directory-task-row:nth-child(2n) { border-right: 0; }
-.directory-task-row:hover { background: #f2f8fe; }
-.directory-task-row > span:nth-child(2) { min-width: 0; }
+.directory-task-row:hover, .directory-task-row:focus-within { background: #f2f8fe; }
+.directory-task-row .task-row-open { min-width: 0; flex: 1; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 11px 8px 11px 14px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.directory-task-row .task-row-open > span:nth-child(2) { min-width: 0; }
 .directory-task-row strong, .directory-task-row small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .directory-task-row strong { color: #35536d; font-size: 11px; }
 .directory-task-row time { color: #8c9aaa; font-size: 8px; }
 .directory-task-mark { color: #3b8edc; font-size: 18px; }
 .directory-task-empty { grid-column: 1 / -1; padding: 26px; text-align: center; font-size: 11px; }
+.directory-task-controls { grid-template-columns: minmax(0, 1fr) auto; margin: 0; padding: 10px 14px; border-bottom: 1px solid #e8eef5; background: #f8fbfe; }
 /* 列表是截过的（air.js 的 recentRowLimit），所以底下必须留一条明路：这一页只
    放得下最近那几条，完整的那份在控制台。数字跟着行数走，别让人以为只剩这些。 */
 #directory-task-more { display: block; width: 100%; padding: 11px 14px; border: 0; border-top: 1px solid #e8eef5; border-radius: 0 0 15px 15px; background: transparent; color: #3b8edc; font-size: 11px; text-align: center; }
@@ -508,12 +511,16 @@ button.admin-stat:hover { transform: translateY(-1px); }
    所以它们自己是一个 flex 组，不会被 space-between 拆到两头。 */
 .admin-panel-meta { display: flex; align-items: center; gap: 4px; }
 .admin-recent-list { display: grid; }
-.admin-recent-row { width: 100%; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px 4px; border: 0; border-bottom: 1px solid #e9eff5; border-radius: 0; background: transparent; text-align: left; }
+.admin-recent-row { width: 100%; min-width: 0; display: flex; align-items: stretch; padding: 0; border: 0; border-bottom: 1px solid #e9eff5; border-radius: 0; background: transparent; text-align: left; }
 .admin-recent-row:last-child { border-bottom: 0; }
-.admin-recent-row > span:nth-child(2) { min-width: 0; flex: 1; }
+.admin-recent-row:hover, .admin-recent-row:focus-within { background: #f2f8fe; }
+.admin-recent-row .task-row-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; padding: 9px 4px; }
+.admin-recent-row .task-row-open > span:nth-child(2) { min-width: 0; flex: 1; }
 .admin-recent-row strong, .admin-recent-row small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .admin-recent-row strong { color: #314f69; font-size: 11px; }
 .admin-recent-row time { flex: 0 0 auto; color: #8a9aad; font-size: 9px; }
+.task-delete { flex: 0 0 auto; align-self: center; min-width: 34px; min-height: 30px; margin: 4px; padding: 4px 7px; color: #a94343; border-color: transparent; background: transparent; font-size: 10px; opacity: .66; }
+.task-delete:hover, .task-delete:focus-visible { color: #b52f2f; border-color: #efd0d0; background: #fff2f2; opacity: 1; }
 .admin-row-mark { color: #3b8ddd; font-size: 18px; }
 .admin-tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .admin-tool-card { min-width: 0; min-height: 100px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 13px; text-align: left; }
@@ -822,6 +829,16 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 
 .console-attention { margin-bottom: 15px; }
 .admin-panel-note { color: var(--muted); font-size: 10px; }
+#console-task-list { max-height: min(350px, 44dvh); overflow-y: auto; overscroll-behavior: contain; padding-right: 3px; }
+
+.admin-assistant-card { width: 100%; min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 0 0 15px; padding: 13px 16px; color: #315675; border-color: #cfe1f4; border-radius: 16px; background: linear-gradient(135deg, rgba(240, 247, 255, .98), rgba(250, 247, 255, .98)); text-align: left; box-shadow: 0 10px 28px #416b9b0d; }
+.admin-assistant-card:hover { border-color: #b9d5f1; background: linear-gradient(135deg, #eaf4ff, #f5f1ff); }
+.admin-assistant-mark { width: 42px; height: 42px; display: grid; place-items: center; color: #fff; border-radius: 13px; background: linear-gradient(145deg, #3794ee, #755ec9); font-size: 20px; box-shadow: 0 8px 18px #526fc12c; }
+.admin-assistant-copy { min-width: 0; }
+.admin-assistant-copy > span, .admin-assistant-copy > strong, .admin-assistant-copy > small { display: block; }
+.admin-assistant-copy > strong { margin: 2px 0; color: #294760; font-size: 13px; }
+.admin-assistant-copy > small { overflow: hidden; color: #71869b; font-size: 10.5px; white-space: nowrap; text-overflow: ellipsis; }
+.admin-assistant-action { color: #4375a6; font-size: 10.5px; white-space: nowrap; }
 
 /* 控制台里那份「全部任务」的筛选条：搜索 + 状态 + 目录，一行三件。 */
 .admin-task-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 7px; margin-bottom: 9px; }
@@ -953,6 +970,10 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   #empty { padding: 19px 12px 30px; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
+  .directory-task-panel.expanded #directory-task-list { height: min(360px, 46dvh); }
+  .admin-assistant-card { grid-template-columns: 38px minmax(0, 1fr); padding: 12px; }
+  .admin-assistant-mark { width: 38px; height: 38px; border-radius: 12px; }
+  .admin-assistant-action { display: none; }
   #quick-task-form { bottom: 12px; }
   .quick-task-actions { flex-wrap: wrap; }
   #quick-task-status { order: 4; flex-basis: 100%; }
