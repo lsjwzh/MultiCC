@@ -5,11 +5,11 @@
 <h1 align="center">MultiCC</h1>
 
 <p align="center">
-  <strong>一个对话，六个 AI 编程 CLI。任务进行到一半也能随时切换，上下文不丢。</strong>
+  <strong>一个对话，八个 AI 编程 CLI。任务进行到一半也能随时切换，上下文不丢。</strong>
 </p>
 
 <p align="center">
-  <em>Claude Code · Codex · OpenCode · ZCode · Kimi Code · Qoder —— 同一个聊天、同一个仓库、同一件事。<br/>
+  <em>Claude Code · Codex · OpenCode · ZCode · Kimi Code · Qoder · WorkBuddy · DSH —— 同一个聊天、同一个仓库、同一件事。<br/>
   多个会话并行跑在互不干扰的 git worktree 里，桌面、手机、微信都能操控。</em>
 </p>
 
@@ -19,7 +19,7 @@
 
 ---
 
-> 这是一份**中文导引**，不是英文 README 的逐句翻译。完整的技术细节都在 [`docs/`](docs/) 下的分主题文档里（目前以英文为主）。
+> 这是一份**中文导引**，不是英文 README 的逐句翻译。完整的技术细节都在 [`docs/`](docs/) 下的分主题文档里（中英混合，逐步补全）。
 
 ## 一句话定位
 
@@ -50,11 +50,11 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 每个 CLI 都记着自己的原生会话 id、模型、思考强度、provider、子 agent 路由。Claude → Codex → Claude 切回来，回到的是**那个已经存在的 Claude 会话**，并补上一份涵盖这期间发生了什么的新 checkpoint —— 而不是一张白纸。想要白纸就传 `fresh: true`。
 
-清空对话会同时作废**全部六个** CLI 的原生会话，所以切换永远不会把你刚删掉的上下文又捞回来。
+清空对话会同时作废**全部八个** CLI 的原生会话，所以切换永远不会把你刚删掉的上下文又捞回来。
 
 ### 缺哪个 CLI，切换弹窗里一键装
 
-切换弹窗会显示：哪些 CLI 已安装、哪些已有会话，并为缺失的提供一键安装（`claude`、`codex`、`opencode`、`kimi`、`qoder`；ZCode 的 CLI 内置在其桌面版里，需要手动装）。
+切换弹窗会显示：哪些 CLI 已安装、哪些已有会话，并为缺失的提供一键安装（`claude`、`codex`、`opencode`、`kimi`、`qoder`、`codebuddy`、`dsh`；ZCode 的 CLI 内置在其桌面版里，需要手动装）。
 
 **→ 完整说明：[Multi-CLI switching](docs/cli-switching.md)**
 
@@ -62,12 +62,32 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 ---
 
+## Air 控制台
+
+`/air` 是 MultiCC 的主界面——`/` 和旧的 `/manage` 现在都重定向到这里。**任务，而不是角色，才是干活的单位**：你描述要做成的事，每个任务自带绑定的会话、worktree 和对话记录。
+
+![Air 控制台：目录与任务一览](docs/images/air-tasks.png)
+
+- **目录首页** —— 所有登记过的仓库、它们的任务和会话一屏可见
+- **新任务输入框** —— 描述目标，选 CLI / 线路 / 模型（会记住你上次的选择），任务即建即跑
+- **⌘K 搜索** —— 一个命令面板同时搜目录、任务、会话
+- **内置控制台** —— Provider、定时任务、AI Assistant、主机操作，不用离开页面
+- **定时任务** —— cron 式循环工作，绑定固定的 Air 任务
+
+**→ 首启引导、任务图谱、记忆图谱、控制台各页：[Features](docs/features.md)**
+
+---
+
 ## 还有什么
 
 | | |
 |---|---|
-| 🧵 **真并行** | 每个会话独占一个 git worktree，分支 `multicc/<会话id>`。六个 agent 同仓库互不打架，合回主分支时有语法校验把关，合并后自动同步兄弟 worktree。 |
-| 📋 **任务板绑定会话** | 每个任务拥有独立的隐藏聊天会话，实时台账、稳定短码 `#CODE`、取消/清理/归档释放全套生命周期。 |
+| 🧵 **真并行** | 每个会话独占一个 git worktree，分支 `multicc/<会话id>`。八个 agent 同仓库互不打架，合回主分支时有语法校验把关，合并后自动同步兄弟 worktree。 |
+| 📋 **任务板绑定会话** | 每个任务拥有独立的隐藏聊天会话，实时台账、稳定短码 `#CODE`、取消/清理/归档释放全套生命周期；任务聊天视图与普通会话同一套渲染器。 |
+| 🕸️ **任务图谱与记忆图谱** | Air 控制台原生视图：任务父子 / 分组 / 合并关系的关联网络，以及跨任务的记忆网络。 |
+| 🤖 **AI Assistant (aux)** | 意图分类、任务归属、自动推进的核心服务，控制台里有独立的设置页和运行记录（轻量 flash 级模型即可）。 |
+| ♻️ **Auto Provider 故障切换** | 上游失败时自动切到下一个健康候选线路，额度条随线路切换即时更新。 |
+| 👨‍✈️ **Agent Commander** | 每个新目录自动播种一个「舰队指挥官」会话，协调专职兄弟会话，附带常用角色预设。 |
 | ⏰ **定时消息浮窗** | 把消息排队进会话 FIFO，发送前在浮窗里复核，避免手滑。 |
 | 💤 **空闲任务 worktree 休眠** | 长时间空闲的任务绑定会话自动休眠，释放系统资源。 |
 | 💸 **子 agent 省钱** | 主 agent 用前沿模型，子 agent 通过本地 provider router 路由到 DeepSeek / GLM / Qwen。同一个仓库、并行跑、成本只有零头。 |
@@ -75,8 +95,13 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 | 🗣️ **语音，包括全双工** | 可以口述 prompt，也可以像打电话一样和 agent 实时语音对话（支持插话打断）。本地 ASR 用 sherpa-onnx SenseVoice，不走云端。 |
 | 🔊 **语音播报任务完成** | 全双工语音模式下会播报已完成任务的身份，全程免手操作。 |
 | 🔔 **它会来找你** | Web Push、Bark、Webhook，以及微信、飞书、Telegram、Discord、Slack 五个 IM 桥接。 |
-| 🔗 **借道分享 / 中继令牌** | 在 `/manage` 生成 relay token、选择地址，安全地分享访问权限或 provider 配置。 |
+| 🔗 **分享：快照 / Fleet / 中继令牌** | 会话快照链接（密码保护，直开聊天页）；跨实例 Fleet 分享（只读快照 + 可交互导入）；在控制台生成 relay token 安全外借访问或 provider 配置。 |
+| 🌐 **隧道三件套** | Tailscale Funnel、花生壳、SakuraFrp 三种公网隧道，控制台里开关与监控。 |
 | 🌐 **多端一个后端** | 桌面应用（macOS / Windows / Linux，Electron）、网页聊天、PWA、原生 Flutter App（Android / iOS）。 |
+
+![Air 控制台里的 CLI 与 Provider 设置](docs/images/air-provider.png)
+
+![Air 控制台的 AI Assistant 页](docs/images/aux-console.png)
 
 ---
 
@@ -85,7 +110,7 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 ### 1. 安装
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v1.7.0/install.sh | bash -s -- --branch v1.7.0
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.0/install.sh | bash -s -- --branch v2.0.0
 ```
 
 脚本会自动识别系统、检查依赖、克隆仓库、安装依赖、生成 `ACCESS_TOKEN`，并可选注册为后台服务（macOS `launchd`）。安装过程不会构建 Android APK。
@@ -113,7 +138,7 @@ MultiCC 同时是一个普通的桌面应用——双击图标，后端和界面
 
 Android APK 只在发布 `vX.Y.Z` tag 时由 GitHub release workflow 构建一次，
 使用项目统一的发布密钥签名，并上传到该精确版本的 GitHub Release。
-`/manage` 的 **APK 区域**优先使用非空的本地 `public/multicc.apk`；本地没有时，
+`/manage` 的 **APK 区域**（现位于 Air 控制台的主机设置里）优先使用非空的本地 `public/multicc.apk`；本地没有时，
 只提供与当前服务端 package 版本完全一致的 Release `multicc.apk`，不会回退到
 `latest`。安装和 `./multicc update` 都不会构建 APK。从 v1.6.1 开始，每个稳定
 release 都会附带签名 APK，远程兜底立即生效。同一个 Release 页也会附带桌面
@@ -126,21 +151,26 @@ cd MultiCC
 ./multicc start
 ```
 
-打开 **<http://localhost:3000/manage>**。
+打开 **<http://localhost:3000>** —— 直接落在 **Air 控制台**（`/air`）。
 
-> 安装器会生成 `ACCESS_TOKEN`；只要没有手工指定 `HOST` / `MULTICC_ALLOW_REMOTE`，MultiCC 就会自动监听 IPv4 局域网，同一 Wi-Fi 下可直接打开安装完成页给出的 LAN 地址并用该密码登录。它不会配置路由器端口映射或公网入口；公网访问仍请使用 `/manage` 内置的 Tailscale Funnel。想保持仅本机访问时，设置 `HOST=127.0.0.1` 或 `MULTICC_ALLOW_REMOTE=0`。
+> 安装器会生成 `ACCESS_TOKEN`；只要没有手工指定 `HOST` / `MULTICC_ALLOW_REMOTE`，MultiCC 就会自动监听 IPv4 局域网，同一 Wi-Fi 下可直接打开安装完成页给出的 LAN 地址并用该密码登录。它不会配置路由器端口映射或公网入口；公网访问请使用控制台内置的隧道（Tailscale Funnel / 花生壳 / SakuraFrp）。想保持仅本机访问时，设置 `HOST=127.0.0.1` 或 `MULTICC_ALLOW_REMOTE=0`。
 
-### 3. 30 秒体验到「多 CLI 切换」
+### 3. 30 秒体验到「任务优先」
 
-1. 在 `/manage` 里**添加一个目录**，指向任意 git 仓库。
-2. **新建聊天会话**，选 `claude`（或你装了的任意一个 CLI）。
-3. 问一个真实问题：*「总结这个项目是干什么的，并列出三个风险最高的文件。」*
-4. 等它回答完，点聊天头部的 **CLI 徽标**，换一个 CLI。
-5. 追问：*「你现在是另一个模型了——你同意刚才那个判断吗？」*
+1. 在 `/air` 里**添加一个目录**，指向任意 git 仓库。
+2. 首次启动会弹出**首启配置卡**：先准备模型（从 `cc-switch` 导入 Provider，或直接用 CLI 自带登录），再配置 **AI Assistant**——它是意图分类和任务归属的核心服务，轻量 flash 级模型就够了。
+
+   ![Air 首启配置卡](docs/images/air-first-run.png)
+3. 在**新任务输入框**里描述目标：*「总结这个项目是干什么的，并列出三个风险最高的文件。」*——创建任务。输入框会记住你最近用的 CLI、线路和模型。
+
+   ![新任务输入框与 AI 配置胶囊](docs/images/air-new-task.png)
+4. 任务绑定一个聊天会话开始干活。打开它看实时记录；回答完点聊天头部的 **CLI 徽标** 换一个 CLI，再追问：*「你现在是另一个模型了——你同意刚才那个判断吗？」*
 
 第二个 CLI 会带着完整上下文回答，仍在同一个分支和 worktree 上，并且会说明自己是基于交接 checkpoint 在工作。切回去，第一个 CLI 会接着它自己的会话继续。
 
-然后在手机上打开同一个地址，或装上 [Flutter App](docs/installation.md#build-the-flutter-app)——会话就在那儿，对话还在半路上。
+然后在手机上打开同一个地址，或装上 [Flutter App](docs/installation.md#build-the-flutter-app)——任务就在那儿，对话还在半路上。
+
+![手机宽度的 Air 界面](docs/images/air-mobile.png)
 
 ### 4. 后续更新
 
@@ -151,7 +181,7 @@ cd MultiCC
 
 日常的脏工作区不带参数的 `update` 自己就能处理：dev 渠道下它会先把改动 stash 成 `multicc-auto-update`，快进 `main`，再 pop 回来。`--force` 是给这样处理不了的情况准备的——pop 回来时和刚拉下来的代码冲突、stable 渠道的 `git checkout <tag>` 因为本地改动而拒绝、或者你的分支上有本地提交、不带参数的 `update` 只会说一句「nothing to update」。加上它就一定落到远端那份代码：工作区的全部改动（**包括未跟踪文件**）先备份进一个带标签的 `multicc-force-update-<时间戳>` stash，然后强制切换（dev 渠道是 `git reset --hard origin/main`，stable 渠道是 `git checkout -f <tag>`）。**不会删任何东西，但也不会自动恢复** —— 更新后你拿到的是一个干净的检出，本地改动请自己用 `git stash list` / `git stash pop` 取回。唯一的例外：stable 渠道下 `--force` 仍然只在有更新的 release 时才动手，已经在最新 tag 上时它会停下，并打印出让你手动执行的 `git checkout -f`。
 
-也可以在网页里点：`/manage` **左侧栏底部的版本号** → 弹窗显示当前版本、最新版本和一个「强制更新」勾选框 → 确认后 MultiCC 就在后台跑同一个更新，日志实时显示在弹窗里，跑完自动重启服务、服务回来后自动刷新页面。更新失败时弹窗会保留完整输出，并提供「强制更新重试」。
+也可以在网页里点：**Air 控制台左侧栏底部的版本号** → 弹窗显示当前版本、最新版本和一个「强制更新」勾选框 → 确认后 MultiCC 就在后台跑同一个更新，日志实时显示在弹窗里，跑完自动重启服务、服务回来后自动刷新页面。更新失败时弹窗会保留完整输出，并提供「强制更新重试」。
 
 **→ 安装参数、`./multicc` 服务管理命令、systemd 配置、App 编译：[Installation](docs/installation.md)**
 
@@ -171,9 +201,77 @@ ACCESS_TOKEN=<安装脚本生成>
 # MULTICC_ALLOW_REMOTE=0
 ```
 
-来自本机回环地址的请求会跳过 `ACCESS_TOKEN` 校验。MultiCC 只提供**明文 HTTP**，不自己做 TLS —— 公网访问请用 Tailscale Funnel（`/manage` → 隧道里内置）、ngrok 或你自己的反向代理。
+来自本机回环地址的请求会跳过 `ACCESS_TOKEN` 校验。MultiCC 只提供**明文 HTTP**，不自己做 TLS —— 公网访问请用控制台内置的隧道（Tailscale Funnel / 花生壳 / SakuraFrp）、ngrok 或你自己的反向代理。
 
-Provider、子 agent 路由、语音、TTS/ASR、通知都在 `/manage` 里配；底层环境变量见 **[Configuration](docs/configuration.md)**。
+Provider、子 agent 路由、语音、TTS/ASR、通知都在 Air 控制台里配；底层环境变量见 **[Configuration](docs/configuration.md)**。
+
+---
+
+## 架构速览
+
+```
+    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+    │  桌面浏览器   │  │  手机 PWA    │  │  Flutter App │  │  微信 / IM   │
+    │  （终端）     │  │  （聊天）    │  │ Android/iOS  │  │    桥接      │
+    └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+           │                 │                 │                 │
+           ▼                 ▼                 ▼                 ▼
+    ┌───────────────────────────────────────────────────────────────────┐
+    │           MultiCC 服务端（Express + ws，带鉴权的局域网 HTTP）        │
+    │  ┌────────────────────┐  ┌───────────────┐  ┌──────────────────┐  │
+    │  │ tmux 后端          │  │ CLI 生成器     │  │ cli-switch       │  │
+    │  │ （终端模式）        │  │ （聊天模式）    │  │ + 交接 checkpoint │  │
+    │  └─────────┬──────────┘  └───────┬───────┘  └────────┬─────────┘  │
+    │            ▼                     ▼                   ▼            │
+    │      claude / codex …    8 个 CLI 适配器         各 CLI 原生        │
+    │                          （stream-json、exec）   会话状态          │
+    └───────────────────────────────────────────────────────────────────┘
+                                     │
+                    每会话独立 git worktree：multicc/<会话id>
+```
+
+关键决策：厂商对话记录永不互相翻译；状态是扁平 JSON 而非数据库；每个会话独占一个分支和 worktree；网络绑定默认 fail-closed。桌面版只是多了一个客户端，没有第二套 UI——它内嵌同一个服务端，从本机回环端口提供同一个网页。
+
+**技术栈：** Node.js · Express · ws · better-sqlite3 · sherpa-onnx（本地 ASR）· cli-provider-router · chokidar · tmux · Flutter · Electron（桌面壳）。没有前端构建步骤——Web 客户端是纯 JavaScript。
+
+**→ [Architecture](docs/architecture.md)**
+
+---
+
+## API
+
+MultiCC 暴露完整的 REST + WebSocket API——会话、git、provider、语音、通知、任务板、分享、隧道全覆盖。
+
+```bash
+# 把一个正在进行的聊天切到另一个 CLI
+curl -X POST "http://localhost:3000/api/sessions/$SESSION_ID/switch-cli" \
+  -H 'Content-Type: application/json' -d '{"cli":"codex"}'
+```
+
+**→ [API reference](docs/api-reference.md)**
+
+---
+
+## 生态对比
+
+那些**驾驭**官方 CLI 的项目（拉起并管理真实的 `claude` / `codex` 二进制，而不是重造它们）大致分三类：远程访问包装、Web IDE、多 agent 编排器。
+
+**MultiCC 独有或接近独有：**
+
+- 跨**八个**编程 CLI 的原位切换，附带有界交接 checkpoint
+- **任务板绑定聊天会话**——每个任务自带私有聊天记录、短码和生命周期控制
+- **定时消息**与**中继令牌远程分享**
+- 与 agent 的**语音对语音**实时对话，外加免手操作的任务播报
+- 经典语音输入走**本地 ASR**（sherpa-onnx SenseVoice）
+- 五平台 **IM 桥接**，支持完整派发 + 回复
+- 按会话的 **provider 与子 agent 路由**，精准控成本
+- **原生桌面与手机 App**、PWA、终端、网页聊天共用一个后端，每个稳定版都带签名 APK
+
+**较弱的地方：** 没有托管/云端方案、没有内置代码编辑器、CLI/服务端安装仅支持 macOS/Linux（Windows 由桌面版覆盖）、设计上单用户——没有团队 RBAC。
+
+调查范围：cc-switch、Ruflo、CLIProxyAPI、oh-my-claudecode、AionUi、vibe-kanban、cc-connect、CloudCLI、Superset、Orca、cockpit-tools——十一个同类，加上 MultiCC 本身，构成 12 项目横评。
+
+**→ 完整 12 项目横评与逐项对比表：[How MultiCC compares](docs/ecosystem-comparison.md)**
 
 ---
 
@@ -189,7 +287,7 @@ Provider、子 agent 路由、语音、TTS/ASR、通知都在 `/manage` 里配�
 `MediaRecorder` 需要安全上下文。本机用 `http://localhost:3000`，远程用 Tailscale Funnel / ngrok。直接用 `http://<局域网IP>:3000` 在任何现代浏览器里都拿不到麦克风权限。
 
 **不用 Claude Code 行不行？**
-行。六个支持的 CLI 里有任意一个就够了。
+行。八个支持的 CLI 里有任意一个就够了。
 
 **切换 CLI 会立刻消耗 token 吗？**
 不会。checkpoint 是排队等待的，随你的**下一条消息**一起送出。所以切完又反悔，一分钱不花。
@@ -225,7 +323,7 @@ cd MultiCC && ./multicc update --force
 | [FAQ](docs/faq.md) | 排错与常见问题 |
 | [Tech stack](docs/tech-stack.md) | 运行时依赖及其用途 |
 
-完整的文档索引（35 篇，含设计契约、语音、provider 路由、治理评审、模块化历史）在 **[docs/README.md](docs/README.md)**。
+完整的文档索引（50+ 篇，含设计契约、语音、provider 路由、治理评审、模块化历史）在 **[docs/README.md](docs/README.md)**。
 
 界面本身支持中英文切换，默认中文。
 
@@ -238,5 +336,5 @@ MIT。
 ---
 
 <p align="center">
-  <sub>为 Claude Code、Codex、OpenCode、ZCode、Kimi Code、Qoder 打造 · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
+  <sub>为 Claude Code、Codex、OpenCode、ZCode、Kimi Code、Qoder、WorkBuddy、DSH 打造 · <a href="https://github.com/lsjwzh/MultiCC">github.com/lsjwzh/MultiCC</a></sub>
 </p>
