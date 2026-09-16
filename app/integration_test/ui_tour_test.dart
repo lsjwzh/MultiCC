@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'package:multicc_app/main.dart' as app;
+import 'package:multicc_app/screens/chat_screen.dart';
 import 'package:multicc_app/widgets/air/air_panels.dart';
 
 /// How long each screen stays on screen so the host-side capture loop can catch
@@ -122,6 +123,79 @@ Future<void> _closeDrawer(WidgetTester tester) async {
   await _settle(tester, 1);
 }
 
+/// Taps a row inside the sidebar. The sidebar scrolls (and 「更多与系统」is a
+/// collapsed section by default), so bring the row into view first — a plain
+/// `find.text` can resolve to an off-screen row that the tap silently misses.
+Future<bool> _tapInDrawer(WidgetTester tester, String label) async {
+  final target = find.text(label);
+  if (target.evaluate().isEmpty) return false;
+  try {
+    await tester.ensureVisible(target.first);
+    await tester.pump();
+  } catch (_) {}
+  return _tapText(tester, label);
+}
+
+
+/// Polls until [finder] matches, pumping between attempts. The chat page is a
+/// draggable sheet that mounts *after* `AirService.openTask()` round-trips the
+/// server, so a fixed delay is a coin flip: this waits for the real thing.
+Future<bool> _waitFor(
+  WidgetTester tester,
+  Finder finder, {
+  int seconds = 20,
+}) async {
+  for (var i = 0; i < seconds; i++) {
+    await tester.pump();
+    if (finder.evaluate().isNotEmpty) return true;
+    await Future<void>.delayed(const Duration(seconds: 1));
+    await tester.pump();
+  }
+  return finder.evaluate().isNotEmpty;
+}
+
+/// The visible error copy, if any. When a step silently no-ops, this is the
+/// difference between "the tour is broken" and "the server said no".
+String _visibleError(WidgetTester tester) {
+  final hits = <String>[];
+  for (final element in find.byType(Text).evaluate()) {
+    final data = (element.widget as Text).data;
+    if (data == null || data.isEmpty) continue;
+    if (data.contains('失败') ||
+        data.contains('无法') ||
+        data.contains('错误') ||
+        data.contains('异常') ||
+        data.contains('不能')) {
+      hits.add(data);
+    }
+  }
+  return hits.take(3).join(' | ');
+}
+
+/// The tile the tour should open. The home list carries archived rows, and an
+/// archived/observed record has no resumable session of its own — tapping it
+/// used to land on an error toast instead of the chat page. Prefer a row that
+/// is bound to a live session, fall back to whatever is there.
+Finder _openableTaskTile() {
+  final bound = find
+      .byWidgetPredicate(
+        (w) => w is AirTaskTile && !w.task.readOnly && w.task.sessionId != null,
+      )
+      .hitTestable();
+  if (bound.evaluate().isNotEmpty) return bound.first;
+  return find.byType(AirTaskTile).hitTestable().first;
+}
+
+/// The guided tour re-appears *inside* the chat sheet (step 3/4 covers the
+/// composer and the message list), so the first-run dismissal has to run again
+/// once the chat is up — otherwise every chat frame is half overlay.
+Future<void> _skipOnboarding(WidgetTester tester) async {
+  for (var i = 0; i < 3; i++) {
+    if (!await _tapText(tester, '跳过')) break;
+    await _settle(tester, 1);
+  }
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -159,18 +233,59 @@ void main() {
       debugPrint('TOUR:no-task-details');
     }
 
+    // 原生任务图谱（Web `#side-more` 里的 `data-air-view="taskgraph"`）。它是
+    // 一个 push 出来的整页，所以先取好 Navigator 再 pop 回来。
+    await _openDrawer(tester);
+    await _tapInDrawer(tester, '更多与系统');
+    await _settle(tester, 1);
+    final graphNavigator = tester.state<NavigatorState>(
+      find.byType(Navigator).first,
+    );
+    if (await _tapInDrawer(tester, '任务图谱')) {
+      final graphUp = await _waitFor(
+        tester,
+        find.byKey(const ValueKey('task-graph-canvas')),
+        seconds: 15,
+      );
+      debugPrint('TOUR:task-graph-up:$graphUp');
+      await _settle(tester, 3);
+      await _mark(tester, '06-task-graph');
+      graphNavigator.pop();
+      await _settle(tester, 2);
+    } else {
+      debugPrint('TOUR:no-task-graph-entry');
+    }
+    await _closeDrawer(tester);
+
     // Tapping a task tile hands off to its chat, which is the App's session UI.
-    final taskTile = find.byType(AirTaskTile).hitTestable();
+    // The chat is a sheet that slides up over the home once the open round-trip
+    // finishes, so wait for [ChatView] instead of guessing a delay.
+    final taskTile = _openableTaskTile();
     if (taskTile.evaluate().isNotEmpty) {
-      await tester.tap(taskTile.first, warnIfMissed: false);
-      await _settle(tester, 12);
+      final opened = (taskTile.evaluate().first.widget as AirTaskTile).task;
+      debugPrint('TOUR:opening-task:${opened.id}:${opened.title}');
+      await tester.tap(taskTile, warnIfMissed: false);
+      final chatUp = await _waitFor(tester, find.byType(ChatView), seconds: 25);
+      debugPrint('TOUR:chat-up:$chatUp');
+      if (!chatUp) {
+        final err = _visibleError(tester);
+        debugPrint('TOUR:chat-error:${err.isEmpty ? "(no visible error)" : err}');
+      }
+      await _settle(tester, 3);
+      await _skipOnboarding(tester);
       await _mark(tester, '04-chat');
 
-      final headerMenu = find.byIcon(Icons.more_horiz_rounded);
+      // 聊天页头那颗 overflow 菜单是 ⋯（`Icons.more_vert`，`chat_header.dart`
+      // 的 `_HeaderOverflowMenu`）—— 不是横排的 more_horiz。首页页头也有一颗
+      // 同款图标压在下层，所以取 hitTestable 里的最后一颗。
+      final headerMenu = find.byIcon(Icons.more_vert).hitTestable();
       if (headerMenu.evaluate().isNotEmpty) {
         await tester.tap(headerMenu.last, warnIfMissed: false);
         await _settle(tester, 2);
         await _mark(tester, '05-chat-actions');
+        // Close the menu again so the next step starts from a clean sheet.
+        await tester.tapAt(const Offset(20, 120));
+        await _settle(tester, 1);
       } else {
         debugPrint('TOUR:no-chat-menu');
       }

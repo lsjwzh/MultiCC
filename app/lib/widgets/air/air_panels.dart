@@ -419,16 +419,26 @@ class AirTaskTile extends StatelessWidget {
 }
 
 class AirStatusBadge extends StatelessWidget {
-  const AirStatusBadge({super.key, required this.text, this.closed = false});
+  const AirStatusBadge({
+    super.key,
+    required this.text,
+    this.closed = false,
+    this.onTap,
+  });
 
   final String text;
   final bool closed;
+
+  /// 点了做什么。Web 的 `#task-state` 是一颗按钮（`public/air.js` 把点击接到
+  /// 「打开那个任务的详情」）；App 的 Air 首页没有「当前打开的任务」这一层，
+  /// 所以点开的目标交回宿主决定 —— 宿主不给就保持纯展示，不假装可点。
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     if (text.isEmpty) return const SizedBox.shrink();
     final color = closed ? AppColors.faint : AppColors.blue;
-    return Container(
+    final badge = Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.10),
@@ -442,6 +452,15 @@ class AirStatusBadge extends StatelessWidget {
           fontSize: 11,
           fontWeight: FontWeight.w600,
         ),
+      ),
+    );
+    if (onTap == null) return badge;
+    return Tooltip(
+      message: '查看本目录正在执行的任务',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppColors.radiusPill),
+        child: badge,
       ),
     );
   }
