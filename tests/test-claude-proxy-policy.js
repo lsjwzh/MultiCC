@@ -131,3 +131,67 @@ test('the official login is routed through the local proxy too', () => {
   assert.equal(env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:4321/claude-proxy/claude-official/sess-official');
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, '', 'the OAuth token stays host-side');
 });
+
+// A rewritten ANTHROPIC_BASE_URL is only binding while no alternate transport is
+// switched on: with Bedrock/Vertex/Foundry enabled the CLI ignores the base URL
+// it was handed and dials the cloud endpoint from these keys instead, so an
+// untouched CLAUDE_CODE_USE_* would smuggle a direct route out of a spawn that
+// looks (and asserts) routed.
+const ALT_TRANSPORT_KEYS = [
+  'CLAUDE_CODE_USE_BEDROCK',
+  'ANTHROPIC_BEDROCK_BASE_URL',
+  'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_VERTEX_BASE_URL',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'ANTHROPIC_FOUNDRY_BASE_URL',
+  'ANTHROPIC_FOUNDRY_API_KEY',
+];
+
+test('a routed spawn turns the alternate transports off, in the env and in the settings file', () => {
+  const provider = providers.createProvider({
+    appType: 'claude',
+    name: 'Alt transport fixture',
+    baseUrl: 'https://relay.example',
+    authToken: 'relay-fixture-key',
+    model: 'claude-sonnet-4-5',
+  });
+  const env = {
+    ANTHROPIC_BASE_URL: 'https://bedrock.example',
+    CLAUDE_CODE_USE_BEDROCK: '1',
+    ANTHROPIC_BEDROCK_BASE_URL: 'https://bedrock.example',
+    AWS_BEARER_TOKEN_BEDROCK: 'aws-fixture',
+    CLAUDE_CODE_USE_VERTEX: '1',
+    ANTHROPIC_VERTEX_BASE_URL: 'https://vertex.example',
+    ANTHROPIC_VERTEX_PROJECT_ID: 'project-fixture',
+    CLAUDE_CODE_USE_FOUNDRY: '1',
+    ANTHROPIC_FOUNDRY_BASE_URL: 'https://foundry.example',
+    ANTHROPIC_FOUNDRY_API_KEY: 'foundry-fixture-key',
+  };
+  providers.applyClaudeProxyEnv(env, {
+    providerId: provider.id, sessionId: 'sess-alt', port: 4321, enabled: true,
+  });
+  assert.equal(env.ANTHROPIC_BASE_URL, `http://127.0.0.1:4321/claude-proxy/${provider.id}/sess-alt`);
+  for (const key of ALT_TRANSPORT_KEYS) assert.equal(env[key], '', key);
+  // Ambient cloud credentials stay: the CLI reaches for Bedrock only via
+  // CLAUDE_CODE_USE_BEDROCK (now blank), while the operator's own AWS tooling in
+  // the session's Bash inherits this env and still needs its token.
+  assert.equal(env.AWS_BEARER_TOKEN_BEDROCK, 'aws-fixture');
+  // Settings files merge per key, so a ~/.claude/settings.json that enables
+  // Bedrock would come back on top of the process env unless the blank is
+  // mirrored into the session's own --settings file as well.
+  const mirrored = JSON.parse(fs.readFileSync(providers.settingsOverrideFor('sess-alt', env), 'utf8')).env;
+  for (const key of ALT_TRANSPORT_KEYS) assert.equal(mirrored[key], '', `settings ${key}`);
+});
+
+test('spawns that claim no local route keep their env untouched', () => {
+  // Provider-less sessions and the CLAUDE_PROXY_ENABLED=0 escape hatch both mean
+  // "do not route me" — blanking transport keys there would be a different
+  // change with a different blast radius.
+  const bare = { CLAUDE_CODE_USE_BEDROCK: '1' };
+  assert.equal(providers.applyClaudeProxyEnv(bare, { providerId: '', enabled: true }), false);
+  assert.equal(bare.CLAUDE_CODE_USE_BEDROCK, '1');
+  const hatch = { CLAUDE_CODE_USE_BEDROCK: '1' };
+  assert.equal(providers.applyClaudeProxyEnv(hatch, { providerId: 'deleted-provider-id', enabled: false }), false);
+  assert.equal(hatch.CLAUDE_CODE_USE_BEDROCK, '1');
+});
