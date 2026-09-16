@@ -45,6 +45,18 @@ AirService _service(
 );
 
 void main() {
+  group('renameTask', () {
+    test('任务标题写入任务身份端点，任务 id 会安全编码', () async {
+      final settings = await _settings();
+      final posts = _sink();
+      await _service(settings, posts).renameTask('a/b', '手动标题');
+      expect(posts.single, {
+        'path': '/api/task-board/tasks/a%2Fb/title',
+        'body': {'title': '手动标题'},
+      });
+    });
+  });
+
   group('createTask', () {
     test('只给必填项时，可选字段一个都不出现', () async {
       final settings = await _settings();

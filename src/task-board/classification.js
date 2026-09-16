@@ -473,7 +473,7 @@ function applyTaskClassification(board, pendingTaskId, entry, ref, now = Date.no
     return { ok: true, taskId: target.id, removedTaskId: pendingTaskId, touched: [target.id, pendingTaskId] };
   }
 
-  pending.title = resolvedTitle || pending.title;
+  if (pending.titleSource !== 'manual') pending.title = resolvedTitle || pending.title;
   pending.moduleId = mod.id;
   pending.updatedAt = now;
   for (const area of entry?.areas || []) {

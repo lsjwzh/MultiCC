@@ -322,6 +322,8 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .breadcrumb { min-width: 0; flex: 1; }
 .breadcrumb .caption { margin: 0 0 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #task-title { overflow-wrap: anywhere; }
+#task-title.editable { cursor: text; }
+#task-title.editable:focus-visible { outline: 2px solid #8fc3f4; outline-offset: 4px; border-radius: 5px; }
 #task-state { display: block; max-width: 100%; min-height: 22px; margin-top: 4px; padding: 2px 0; overflow: hidden; color: var(--muted); border: 0; border-radius: 5px; background: transparent; font-size: 11px; text-align: left; white-space: nowrap; text-overflow: ellipsis; }
 #task-state:not(:disabled)::after { content: " ›"; }
 #task-state:not(:disabled):hover { color: var(--accent); }
@@ -1088,3 +1090,8 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 .move-task-dialog .move-task-target small { color: var(--muted); overflow-wrap: anywhere; }
 .move-task-dialog .move-task-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .move-task-dialog .move-task-footer button.primary { color: #146dcc; background: #eaf4ff; }
+.rename-task-dialog { max-width: 470px; }
+.rename-task-dialog input { width: 100%; }
+.rename-task-dialog .rename-task-error { min-height: 18px; margin: 9px 0 0; }
+.rename-task-dialog .rename-task-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.rename-task-dialog .rename-task-footer button.primary { color: #146dcc; background: #eaf4ff; }

@@ -1115,6 +1115,7 @@ test('REST: board, messages, send and status flow', async () => {
   assert.deepEqual([...routes.keys()], [
     'POST /api/task-board/tasks',
     'POST /api/task-board/tasks/:taskId/update',
+    'POST /api/task-board/tasks/:taskId/title',
     'POST /api/task-board/tasks/:taskId/planning',
     'POST /api/task-board/tasks/:taskId/move',
     'GET /api/task-board',
@@ -1181,6 +1182,13 @@ test('REST: board, messages, send and status flow', async () => {
   assert.equal(taskRes.body.task.status, 'active');
   assert.ok(Array.isArray(taskRes.body.task.runs), 'task DTO carries run list');
   assert.equal(taskRes.body.task.runs.length, 0);
+
+  const renameRes = res();
+  await routes.get('POST /api/task-board/tasks/:taskId/title')(
+    { params: { taskId: tid }, body: { title: '人工命名的任务' } }, renameRes);
+  assert.equal(renameRes.code, 200);
+  assert.equal(renameRes.body.task.title, '人工命名的任务');
+  assert.equal(runtime.getBoard().tasks[tid].titleSource, 'manual');
 
   const taskMiss = res();
   routes.get('GET /api/task-board/tasks/:taskId')({ params: { taskId: 'nope' } }, taskMiss);

@@ -666,7 +666,7 @@ function createTaskBoardRuntime(deps) {
         ts: message.ts || Date.now(),
         excerpt: '',
       }, message.ts || Date.now());
-      if (task.title === core.PENDING_TASK_TITLE && userMessage) {
+      if (task.titleSource !== 'manual' && task.title === core.PENDING_TASK_TITLE && userMessage) {
         const derived = core.deriveTaskTitle(userMessage.taskText || core.messageText(userMessage));
         if (derived !== core.PENDING_TASK_TITLE) {
           task.title = derived;
@@ -1197,7 +1197,7 @@ function createTaskBoardRuntime(deps) {
         excerpt: '',
       }, now);
       const title = String(meta.taskName || '').trim().slice(0, 40);
-      if (title && task.title !== title) {
+      if (task.titleSource !== 'manual' && title && task.title !== title) {
         task.title = title;
         task.updatedAt = now;
         changed = true;
@@ -1252,7 +1252,7 @@ function createTaskBoardRuntime(deps) {
       const nextTitle = rawTitle && rawTitle !== core.PENDING_TASK_TITLE
         ? rawTitle.slice(0, 40)
         : '';
-      if (task.title === core.PENDING_TASK_TITLE && nextTitle) {
+      if (task.titleSource !== 'manual' && task.title === core.PENDING_TASK_TITLE && nextTitle) {
         task.title = nextTitle;
         changed = true;
       }
@@ -2834,7 +2834,7 @@ function createTaskBoardRuntime(deps) {
     taskDto,
     resolveTask: resolvedTask,
     taskDirId: task => core.taskDirId(board, task),
-    notify,
+    notify, afterRename: typeof deps.syncTaskTitle === 'function' ? deps.syncTaskTitle : null,
     hasDirectory: resolveDirectoryPort ? dirId => !!resolveDirectoryPort(dirId) : null,
     beforeStageChange: async task => {
       const stopped = await cancelOpenTaskRun(task);
