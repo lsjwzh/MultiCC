@@ -59,6 +59,22 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   ]);
   routes['/api/air/tasks/tsk_a'] = routes['/api/task-shell-tasks/tsk_a'] = () => json(entry);
   routes['/api/air/tasks/tsk_new'] = routes['/api/task-shell-tasks/tsk_new'] = () => json(newEntry);
+  // AI Assistant(aux)控制台页的三个数据源:状态、配置、运行记录。
+  const auxPosts = [];
+  routes['/api/aux/status'] = () => json({ processing: false, queueDepth: 1, totalProcessed: 137, lastTaskTime: Date.now() - 64000, currentTask: null, health: { unhealthy: false } });
+  routes['/api/aux/config'] = () => json({
+    protocol: 'openai', providerId: 'codex-lab', model: 'gpt-5.5',
+    protocols: [{ id: 'anthropic', name: 'Anthropic Messages' }, { id: 'openai', name: 'OpenAI Responses / Chat Completions' }],
+    providersByProtocol: {
+      anthropic: [],
+      openai: [{ id: 'codex-lab', name: 'Lab Responses', wireApi: 'responses', modelOptions: ['gpt-5.5', 'gpt-5.6-sol'] }],
+    },
+  });
+  routes['POST /api/aux/config'] = ({ body }) => { auxPosts.push(JSON.parse(body)); return json({ ok: true, protocol: 'openai', providerId: 'codex-lab', model: 'gpt-5.6-sol' }); };
+  routes['/api/aux/history?limit=100'] = routes['/api/aux/history'] = () => json([
+    { role: 'user', content: '判断任务意图\n把安装包归档', ts: Date.now() - 3600000, taskType: 'classify', meta: { sessionName: '整理下载目录' } },
+    { role: 'assistant', content: 'organize', ts: Date.now() - 3599000, durationMs: 1000, enqueuedAt: Date.now() - 3600000, startedAt: Date.now() - 3599800, queueMs: 200 },
+  ]);
   routes['POST /api/air/tasks'] = ({ body }) => {
     const value = JSON.parse(body);
     quickCreates.push(value);
@@ -559,8 +575,21 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('air-doc-summary').textContent.includes('2 条登记')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.air-legacy-frame').length`), 0);
     await page.evaluate(`document.querySelector('[data-air-view="settings"]').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心' && document.querySelectorAll('.air-setting-card').length===10`));
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心' && document.querySelectorAll('.air-setting-card').length===11`));
     assert.equal(await page.evaluate(`document.body.innerText.includes('Provider 配置')`), true);
+    // AI Assistant(aux):设置与运行记录在控制台有原生页,不再只能回 manage 弹窗。
+    await page.evaluate(`[...document.querySelectorAll('.air-setting-card')].find(x=>x.innerText.includes('AI Assistant')).click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='AI Assistant' && document.querySelectorAll('#air-aux-records .air-aux-item').length===1`));
+    assert.equal(await page.evaluate(`document.querySelector('#air-aux-status').innerText.includes('137 条')`), true, '状态格显示累计处理数');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#air-aux-form select').length`), 3, '协议/Provider/模型三级联动');
+    assert.equal(await page.evaluate(`document.querySelector('#air-aux-form select').value`), 'openai');
+    await page.evaluate(`document.querySelectorAll('#air-aux-form select')[2].value='gpt-5.6-sol'`);
+    await page.evaluate(`[...document.querySelectorAll('#air-aux-form button')].find(b=>b.textContent==='保存').click()`);
+    // 保存成功后页面会重拉三份数据并重绘,等记录区重画完再断言提交内容。
+    await page.waitFor(`document.querySelectorAll('#air-aux-records .air-aux-item').length===1 && ${JSON.stringify('x')}==='x'`);
+    assert.deepEqual(auxPosts.at(-1), { protocol: 'openai', providerId: 'codex-lab', model: 'gpt-5.6-sol' }, '保存提交新模型');
+    await page.evaluate(`document.querySelector('[data-air-view="settings"]').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心'`));
     await page.evaluate(`[...document.querySelectorAll('.air-setting-card')].find(x=>x.innerText.includes('Provider 配置')).click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='CLI 与 Provider' && document.querySelectorAll('.air-provider-card').length===3`));
     assert.equal(await page.evaluate(`[...document.querySelectorAll('.air-legacy-frame')].filter(x=>x.offsetParent).length`), 0);
