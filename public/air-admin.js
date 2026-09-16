@@ -144,16 +144,56 @@
     return bits.join(' · ');
   }
 
-  /** 一条任务行：徽标 + 标题 + 目录/阶段 + 时间。侧栏和控制台共用同一个形状。 */
+  /**
+   * 控制台与目录面板共用的任务筛选语义。directoryName 只在跨目录搜索时传入；
+   * 目录首页已经把 rows 收窄到一个目录，所以搜索标题即可。
+   */
+  function filterTasks(tasks, filter = {}, directoryName = () => '') {
+    const status = filter.status || 'open';
+    const dir = filter.dir || 'all';
+    const needle = String(filter.query || '').trim().toLowerCase();
+    return (tasks || [])
+      .filter(task => status === 'all' ? true
+        : status === 'archived' ? task.status === 'archived'
+          : !['done', 'archived'].includes(task.status))
+      .filter(task => dir === 'all' || task.dirId === dir)
+      .filter(task => !needle || `${task.title || ''} ${directoryName(task.dirId)}`.toLowerCase().includes(needle))
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  }
+
+  /** 一条任务行：徽标 + 标题 + 目录/阶段 + 时间；删除是独立按钮，避免按钮嵌套。 */
   function taskRow(task, context, options = {}) {
-    const row = action('', () => context.navigate(task.dirId, task.id), 'admin-recent-row');
+    const row = make('div', null, 'admin-recent-row');
+    const openTask = () => {
+      options.onOpen?.();
+      context.navigate(task.dirId, task.id);
+    };
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.onclick = event => { if (!event.target.closest('.task-delete')) openTask(); };
+    row.onkeydown = event => {
+      if ((event.key === 'Enter' || event.key === ' ') && !event.target.closest('.task-delete')) {
+        event.preventDefault();
+        openTask();
+      }
+    };
     applyRing(row, isRunning(task));
+    const body = make('span', null, 'task-row-open');
     const copy = make('span');
     const where = options.dir === false ? '' : `${context.directoryName(task.dirId)} · `;
     copy.append(make('strong', task.title || '未命名任务'), make('small', where + taskDetail(task, context)));
-    row.append(statusBadge(task, options.badge || {}), copy,
+    body.append(statusBadge(task, options.badge || {}), copy,
       make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
-    if (options.onOpen) row.onclick = () => { options.onOpen(); context.navigate(task.dirId, task.id); };
+    row.append(body);
+    if (options.deletable && context.deleteTask) {
+      const remove = action('删除', async event => {
+        event.stopPropagation();
+        await context.deleteTask(task);
+      }, 'task-delete danger');
+      remove.dataset.action = 'delete';
+      remove.setAttribute('aria-label', `删除任务 ${task.title || '未命名任务'}`);
+      row.append(remove);
+    }
     return row;
   }
 
@@ -211,6 +251,19 @@
       statCard('进行中任务', active.length, `${executing.length} 个正在执行`, 'green', () => setMode('tasks')),
       statCard('等待处理', waiting.length, waiting.length ? '等待回答、资源或重试' : '当前没有要处理的事', waiting.length ? 'amber' : ''),
       statCard('定时任务', enabledSchedules.length, `共 ${(scheduleTasks || []).length} 条规则`, 'purple', () => setMode('schedules')),
+    );
+
+    const assistant = action('', () => setMode('aux'), 'admin-assistant-card');
+    assistant.id = 'console-ai-assistant';
+    assistant.append(
+      make('span', '✦', 'admin-assistant-mark'),
+      make('span', null, 'admin-assistant-copy'),
+      make('span', '打开配置 ›', 'admin-assistant-action'),
+    );
+    assistant.querySelector('.admin-assistant-copy').append(
+      make('span', 'AI ASSISTANT', 'eyebrow'),
+      make('strong', '分类、摘要与意图判断'),
+      make('small', '配置协议、Provider 与模型，查看健康状态和运行记录'),
     );
 
     const attention = make('section', null, 'admin-panel console-attention');
@@ -279,16 +332,11 @@
     // 只重画列表，不重画面板：每敲一个字就 replaceChildren 的话，输入框会在第一次
     // 按键后失去焦点。筛选状态存在模块里，所以重开面板还是同一份筛选。
     function paintTaskList() {
-      const needle = consoleFilter.query.trim().toLowerCase();
-      const rows = tasks
-        .filter(task => consoleFilter.status === 'all' ? true
-          : consoleFilter.status === 'archived' ? task.status === 'archived'
-            : !['done', 'archived'].includes(task.status))
-        .filter(task => consoleFilter.dir === 'all' || task.dirId === consoleFilter.dir)
-        .filter(task => !needle || `${task.title || ''} ${context.directoryName(task.dirId)}`.toLowerCase().includes(needle))
-        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+      const rows = filterTasks(tasks, consoleFilter, context.directoryName);
       const shown = rows.slice(0, TASK_LIST_LIMIT);
-      allList.replaceChildren(...shown.map(task => taskRow(task, context, { onOpen: () => context.closeConsole?.() })));
+      allList.replaceChildren(...shown.map(task => taskRow(task, context, {
+        onOpen: () => context.closeConsole?.(), deletable: true,
+      })));
       if (!rows.length) allList.append(make('p', '没有符合条件的任务。换个关键词或放宽筛选。', 'admin-empty'));
       allNote.textContent = rows.length > shown.length
         ? `${rows.length} 条 · 显示最近 ${shown.length} 条`
@@ -333,7 +381,6 @@
       ['docs', '▤', '服务与文档', '本地服务、网页和文件'],
       ['memory', '◇', '记忆图谱', '项目与会话记忆'],
       ['taskgraph', '⛓', '任务图谱', '父子 / 分组 / 合并关联'],
-      ['aux', '✦', 'AI Assistant', '分类模型与运行记录'],
       ['settings', '⚙', '设置中心', 'Provider、通知与连接'],
       ['schedules', '◴', '自动运行', '固定任务定时规则'],
     ];
@@ -347,7 +394,7 @@
     // 控制台要回答的是两件「一眼扫完」的事：谁在等我，以及我有哪些目录。所以「工作目录」
     // 紧跟在「谁在等我」后面 —— 它是这一页的第二眼，不该压在「全部任务」和工具格底下
     // 等用户滚到底才看见。
-    content.replaceChildren(stats, attention, workspacePanel, split);
+    content.replaceChildren(stats, assistant, attention, workspacePanel, split);
   }
 
   // 「谁在等我」的整页：控制台那一格只放最近更新的几条，完整清单在这里。它和控制台
@@ -820,5 +867,6 @@
     runningDirectories,
     statusBadge,
     applyRing,
+    filterTasks,
   });
 })(typeof window !== 'undefined' ? window : null);

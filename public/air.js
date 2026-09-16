@@ -34,6 +34,8 @@
   let stopped = false;
   let loading = false;
   let quickCreateAttempt = null;
+  let directoryTasksExpanded = false;
+  const directoryTaskFilter = { query: '', status: 'open' };
 
   const stateNames = {
     active: '进行中', succeeded: '成功', unknown: '结果待核验', failed: '失败', error: '失败', cancelled: '已取消',
@@ -317,6 +319,11 @@
   }
   function navigate(dir, task = null) {
     saveDraft();
+    if (dir !== directoryId) {
+      directoryTasksExpanded = false;
+      directoryTaskFilter.query = '';
+      directoryTaskFilter.status = 'open';
+    }
     directoryId = dir;
     taskId = task;
     mode = 'tasks';
@@ -396,11 +403,24 @@
       stat('已完成', tasks.filter(task => task.status === 'done').length, '仍保留在本目录', 'green'),
       stat('全部记录', tasks.length, `${tasks.filter(task => task.status === 'archived').length} 个已归档`),
     );
-    $('directory-overview-count').textContent = `${tasks.length} 个任务`;
-    const rows = [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, recentRowLimit());
+    const filtered = window.MultiCCAirAdmin?.filterTasks?.(tasks, directoryTaskFilter, () => '')
+      || [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    const rows = directoryTasksExpanded
+      ? filtered
+      : [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, recentRowLimit());
+    $('directory-task-heading').textContent = directoryTasksExpanded ? '全部任务' : '最近任务';
+    $('directory-overview-count').textContent = directoryTasksExpanded
+      ? `${filtered.length} / ${tasks.length} 个任务`
+      : `${tasks.length} 个任务`;
+    $('directory-task-controls').hidden = !directoryTasksExpanded;
+    if ($('directory-task-search').value !== directoryTaskFilter.query) $('directory-task-search').value = directoryTaskFilter.query;
+    $('directory-task-status').value = directoryTaskFilter.status;
+    document.querySelector('.directory-task-panel')?.classList.toggle('expanded', directoryTasksExpanded);
     $('directory-task-list').replaceChildren(...rows.map(task => {
-      const button = node('button', null, 'directory-task-row');
-      applyRing(button, isRunningTask(task));
+      const row = node('div', null, 'directory-task-row');
+      applyRing(row, isRunningTask(task));
+      const button = node('button', null, 'task-row-open');
+      button.type = 'button';
       const copy = node('span');
       const meta = node('small', null, 'task-meta');
       meta.append(statusBadge(task));
@@ -412,14 +432,20 @@
       button.append(node('span', task.recordType === 'planned' ? '◇' : '›', 'directory-task-mark'), copy,
         node('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
       button.onclick = () => navigate(directoryId, task.id);
-      return button;
+      const remove = node('button', '删除', 'task-delete danger');
+      remove.type = 'button';
+      remove.dataset.action = 'delete';
+      remove.setAttribute('aria-label', `删除任务 ${task.title || '未命名任务'}`);
+      remove.onclick = event => { event.stopPropagation(); void deleteTaskById(task); };
+      row.append(button, remove);
+      return row;
     }));
     if (!rows.length) $('directory-task-list').append(node('p', '这里还没有任务。可以直接在下方描述第一个目标。', 'directory-task-empty'));
     // 截掉的那些得有个去处，否则「最近任务」看着就是全部。数字用的是这个目录
     // 的全部任务数，不是剩下的条数 —— 说的是「还有多少」，不是「还差几行」。
     const more = $('directory-task-more');
-    more.hidden = tasks.length <= rows.length;
-    more.textContent = `查看全部 ${tasks.length} 个任务 ›`;
+    more.hidden = !directoryTasksExpanded && tasks.length <= rows.length;
+    more.textContent = directoryTasksExpanded ? '收起，返回最近任务' : `查看全部 ${tasks.length} 个任务 ›`;
     renderQuickPills();
     for (const element of [$('quick-task-input'), $('quick-task-submit'),
       $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
@@ -1214,17 +1240,23 @@
     });
   }
 
-  async function deleteTask() {
-    if (!taskId || !entry) return;
-    const title = entry.task?.title || taskId;
+  async function deleteTaskById(task) {
+    const selectedId = task?.id || taskId;
+    if (!selectedId) return;
+    const title = task?.title || (selectedId === taskId ? entry?.task?.title : '') || selectedId;
     if (!window.confirm(`删除任务「${title}」？\n\n它的专属会话与工作区会一并删除；有未提交改动或未合并提交时会被拒绝。此操作不可撤销。`)) return;
     await taskAction('delete', async () => {
-      await api(`/api/task-board/tasks/${encodeURIComponent(taskId)}`, undefined, 'DELETE');
-      // 先离开这条任务再刷新：留在原处刷新的话，详情面板会去取一条已删除的任务。
-      navigate(directoryId);
+      await api(`/api/task-board/tasks/${encodeURIComponent(selectedId)}`, undefined, 'DELETE');
+      // 删除当前打开的任务时先退回目录；从列表删别的任务则留在原地，让筛选和滚动容器继续可用。
+      if (selectedId === taskId) navigate(task?.dirId || directoryId);
       await refresh();
       notice('任务已删除。');
     });
+  }
+
+  async function deleteTask() {
+    if (!taskId || !entry) return;
+    await deleteTaskById({ id: taskId, dirId: directoryId, title: entry.task?.title });
   }
 
   // 移动 = 换工作目录。会话工作区在目标仓库重建，未提交改动（含未跟踪的新
@@ -1666,6 +1698,7 @@
   function adminContext() {
     return {
       data, scheduleTasks, api, setMode, navigate, notice, directoryName,
+      deleteTask: task => deleteTaskById(task),
       // 中文词表只有一份（stateNames）：面板要说的状态词跟侧栏是同一批，
       // 传下去比在 air-admin.js 里再抄一份可靠。
       label,
@@ -1682,9 +1715,20 @@
   // task page — the full directory library stays on ⌘K and 控制台 › 浏览工作目录.
   $('library').onclick = () => (directoryId ? navigate(directoryId) : setMode('library'));
   $('overview').onclick = () => setConsole(!consoleOpen);
-  // 「最近任务」下面那条出口直接开控制台：那一层本来就是跨目录看全部任务的地方，
-  // 不必再给这一页造第二个「全部任务」页。
-  $('directory-task-more').onclick = () => setConsole(true);
+  $('directory-task-more').onclick = () => {
+    directoryTasksExpanded = !directoryTasksExpanded;
+    renderDirectoryOverview();
+    if (directoryTasksExpanded) requestAnimationFrame(() => $('directory-task-search').focus());
+  };
+  $('directory-task-search').oninput = event => {
+    directoryTaskFilter.query = event.target.value;
+    renderDirectoryOverview();
+    $('directory-task-search').focus();
+  };
+  $('directory-task-status').onchange = event => {
+    directoryTaskFilter.status = event.target.value;
+    renderDirectoryOverview();
+  };
   $('console-close').onclick = () => setConsole(false);
   $('console-scrim').onclick = () => setConsole(false);
   $('palette-scrim').onclick = () => closePalette();
@@ -1835,6 +1879,7 @@
   });
   $('task-state').onclick = () => toggleDetails();
   $('details-close').onclick = closeDetails;
+  window.__multiccAirDeleteCurrentTask = () => deleteTask();
   $('schedule-create').onclick = () => openScheduleDialog();
   $('schedule-close').onclick = () => $('schedule-dialog').close();
   $('schedule-cancel').onclick = () => $('schedule-dialog').close();

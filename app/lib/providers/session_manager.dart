@@ -385,7 +385,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 把某个 fleet 里的会话顺序写回服务端并刷新列表。[orderedIds] 是拖拽后该组
   /// 屏幕上的完整顺序（见 utils/manual_order.dart 的 reorderAround）。
-  Future<void> saveFleetSessionOrder(String dirId, List<String> orderedIds) async {
+  Future<void> saveFleetSessionOrder(
+    String dirId,
+    List<String> orderedIds,
+  ) async {
     final write = uiLayout.saveSessionOrder(dirId, orderedIds);
     // 乐观写已经改过内存里的排布，先重绘再等请求落地，卡片才跟手。
     notifyListeners();
@@ -508,6 +511,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
             sessionCwd: session.cwd,
             initialCli: session.cli,
             historyArchive: historyArchive,
+            taskBoundTaskId: session.taskBoundTaskId,
             onSessionConfigChanged: loadDashboard,
           )
           ..isActive = false
@@ -532,10 +536,12 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// (the chat scrolls to + highlights that message once its history loads).
   /// A null / empty [focusMessageId] - or a non-chat session - behaves exactly
   /// like a normal open (no focus stashed). Terminals ignore the focus.
-  void openSessionWithFocus(Session session, {String? focusMessageId, bool historyArchive = false}) {
-    if (focusMessageId != null &&
-        focusMessageId.isNotEmpty &&
-        session.isChat) {
+  void openSessionWithFocus(
+    Session session, {
+    String? focusMessageId,
+    bool historyArchive = false,
+  }) {
+    if (focusMessageId != null && focusMessageId.isNotEmpty && session.isChat) {
       _pendingFocusSessionId = session.id;
       _pendingFocusMessageId = focusMessageId;
     } else {
@@ -551,8 +557,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// different session (guards against a stale focus leaking to the wrong
   /// chat). Always clears the stash.
   String? consumeFocusMessage(String sessionId) {
-    final match = _pendingFocusSessionId == sessionId &&
-        _pendingFocusMessageId != null;
+    final match =
+        _pendingFocusSessionId == sessionId && _pendingFocusMessageId != null;
     final focus = match ? _pendingFocusMessageId : null;
     _pendingFocusSessionId = null;
     _pendingFocusMessageId = null;
@@ -610,7 +616,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       fresh: fresh,
     );
     for (final provider in _providers.values) {
-      if (!config.deferred && provider.executionSessionName == id) provider.applyCliConfig(config);
+      if (!config.deferred && provider.executionSessionName == id)
+        provider.applyCliConfig(config);
     }
     await loadDashboard();
     return config;
@@ -736,7 +743,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final config = await _sessionService.fetchSessionCliConfig(id);
       for (final provider in _providers.values) {
-        if (provider.executionSessionName == id) provider.applyProviderSwitch(config);
+        if (provider.executionSessionName == id)
+          provider.applyProviderSwitch(config);
       }
     } catch (_) {
       // Non-fatal: bars keep the previous provider until the next CLI switch

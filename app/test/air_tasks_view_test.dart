@@ -219,9 +219,7 @@ void main() {
   // 状态徽标上的字来自 i18n 词典（注册表只给 key），不加载就只有 key。
   setUpAll(() => I18n.init('zh'));
 
-  testWidgets('Air 首页列出当前目录的最近任务（含归档行），320px 不溢出', (
-    tester,
-  ) async {
+  testWidgets('Air 首页列出当前目录的最近任务（含归档行），320px 不溢出', (tester) async {
     final settings = await _settings();
     final requests = <String>[];
     final client = _client(requests);
@@ -261,10 +259,16 @@ void main() {
     expect(tester.takeException(), isNull);
     // 首页只问一次 /api/air —— 目录库、侧栏、统计都从这一份快照里出。（侧栏底部
     // 的主机运维是另一条线，它自己问 /api/server-info 和 /api/version-check。）
-    expect(
-      requests.where((path) => path.startsWith('/api/air')),
-      ['/api/air'],
+    expect(requests.where((path) => path.startsWith('/api/air')), ['/api/air']);
+
+    await tester.tap(find.byKey(const ValueKey('air-task-delete-t1')));
+    await tester.pumpAndSettle();
+    expect(find.text('删除任务「登录页面」？'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('air-directory-t1-delete-confirm-ok')),
     );
+    await tester.pumpAndSettle();
+    expect(requests, contains('/api/task-board/tasks/t1'));
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -280,7 +284,9 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
-      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -303,9 +309,27 @@ void main() {
 
     // 展开之后就是全量那几行，抬头跟着换名字，按钮翻面。
     expect(find.text('全部任务'), findsOneWidget);
-    expect(find.text('只看最近 ›'), findsOneWidget);
-    expect(find.text('任务 1'), findsOneWidget);
-    expect(find.text('8 个任务'), findsOneWidget);
+    expect(find.text('收起，返回最近任务'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-directory-task-search')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('air-directory-task-status')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('air-directory-task-scroll')),
+      findsOneWidget,
+    );
+    final expandedList = tester.widget<ListView>(
+      find.descendant(
+        of: find.byKey(const ValueKey('air-directory-task-scroll')),
+        matching: find.byType(ListView),
+      ),
+    );
+    expect(expandedList.semanticChildCount, 8);
+    expect(find.text('8 / 8 个任务'), findsOneWidget);
 
     await tester.tap(more);
     await tester.pumpAndSettle();
@@ -324,7 +348,9 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
-      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -407,7 +433,9 @@ void main() {
       );
     });
     await tester.pumpWidget(
-      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
@@ -425,10 +453,7 @@ void main() {
     await tester.tap(find.text('控制台'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('air-console')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('air-console-urgent-t1')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('air-console-urgent-t1')), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
@@ -438,7 +463,9 @@ void main() {
     final settings = await _settings();
     final client = _airAndCronClient();
     await tester.pumpWidget(
-      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
@@ -605,10 +632,10 @@ void main() {
     await tester.pumpAndSettle();
 
     // 面板自己拉一次详情 —— 任务行那份快照里没有 attribution / execution。
-    expect(
-      requests.where((path) => path.startsWith('/api/air')),
-      ['/api/air', '/api/air/tasks/t1'],
-    );
+    expect(requests.where((path) => path.startsWith('/api/air')), [
+      '/api/air',
+      '/api/air/tasks/t1',
+    ]);
     expect(find.byKey(const ValueKey('air-details-panel')), findsOneWidget);
     // 计划任务还没发第一条消息：交付卡说的是「计划尚未执行」，不是「任务已就绪」。
     expect(find.text('计划尚未执行'), findsOneWidget);
@@ -792,7 +819,9 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
-      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
@@ -839,7 +868,9 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
-      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));

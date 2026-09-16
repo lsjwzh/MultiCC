@@ -181,15 +181,16 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.ok(await page.evaluate(`document.getElementById('console-content').innerText.includes('谁在等我')`), '面板里有跨目录的待办清单');
     assert.ok(await page.evaluate(`document.querySelector('.console-attention .admin-recent-row').innerText.includes('结算页')`), '等待回答的排在最前');
     assert.ok(await page.evaluate(`document.querySelector('.console-attention .admin-recent-row .mc-status-label').textContent==='等待回答'`), '待办行自报状态');
-    // 控制台要一眼回答两件事：谁在等我、我有哪些目录。所以「工作目录」紧跟在
-    // 「谁在等我」后面 —— 它是这一页的第二眼，不该压在「全部任务」和工具格底下等
-    // 用户滚到底才看见。分区顺序断在这里，免得以后又被顺手挪到末尾。
+    // AI Assistant 是控制台一级入口；工作目录仍紧跟在「谁在等我」之后。
     assert.deepEqual(await page.evaluate(`[...document.getElementById('console-content').children].map(node =>
       node.classList.contains('admin-stats') ? 'stats'
+        : node.id==='console-ai-assistant' ? 'ai-assistant'
         : node.classList.contains('console-attention') ? 'attention'
           : node.classList.contains('admin-directory-panel') ? 'directories'
             : node.classList.contains('admin-overview-grid') ? 'tasks+tools' : node.className)`),
-      ['stats', 'attention', 'directories', 'tasks+tools'], '控制台分区顺序：统计 → 谁在等我 → 工作目录 → 全部任务与工具');
+      ['stats', 'ai-assistant', 'attention', 'directories', 'tasks+tools'], '控制台分区顺序：统计 → AI Assistant → 谁在等我 → 工作目录 → 全部任务与工具');
+    assert.equal(await page.evaluate(`document.getElementById('console-ai-assistant').innerText.includes('分类、摘要与意图判断')`), true,
+      'AI Assistant 配置不再藏在底部工具格');
     await page.screenshot('01-console-open');
 
     // Esc 关掉，回到原处
@@ -232,6 +233,8 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     // 只重画列表才留得住焦点：整块 replaceChildren 的话，第一个字打进去输入框就没了。
     assert.equal(await page.evaluate(`document.activeElement===document.getElementById('console-task-search')`), true, '重画列表不夺走搜索框焦点');
     assert.equal(await page.evaluate(`document.querySelectorAll('#console-task-list .admin-recent-row').length`), 1);
+    assert.deepEqual(await page.evaluate(`(() => { const s=getComputedStyle(document.getElementById('console-task-list')); return [s.overflowY,s.maxHeight]; })()`),
+      ['auto', '350px'], '全部任务列表有固定上限并在内部滚动');
 
     // ── 彩虹圈：运行中的任务，和任务对应的目录 ───────────────────────────
     // 圈只有一份定义（status-presentation.js 只给 running 设了 spinner），所以它
@@ -358,6 +361,66 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
   });
 
   console.log('截图目录: ' + shots);
+});
+
+test('directory all-tasks expands in place with filters, fixed height and delete', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const routes = {}, publicDir = path.resolve(__dirname, '../public');
+  const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
+    routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: {
+      'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html',
+    } };
+  }
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
+    routes['/shared/' + file] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
+  }
+  routes['/air'] = routes['/air.html'];
+  routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
+  routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url` };
+  const directories = [{ id: 'd1', name: 'MultiCC', path: '/projects/multicc' }];
+  let tasks = [
+    ...Array.from({ length: 12 }, (_, i) => ({
+      id: `t${i + 1}`, dirId: 'd1', title: `目录任务 ${i + 1}`, status: 'active', runState: 'idle',
+      updatedAt: 1000 + i, resource: { residency: 'planned', lease: 'idle' },
+    })),
+    { id: 'archived', dirId: 'd1', title: '已经归档', status: 'archived', runState: null,
+      updatedAt: 500, resource: { residency: 'retained', lease: 'idle' } },
+  ];
+  routes['/api/air'] = () => json({ ok: true, directories, clis: ['codex'], migration: { errors: [] }, tasks, sessions: [] });
+  routes['/api/cron'] = () => json([]);
+  routes['/api/docs-registry'] = () => json([]);
+  const deletes = [];
+  routes['DELETE /api/task-board/tasks/t12'] = () => {
+    deletes.push('t12'); tasks = tasks.filter(task => task.id !== 't12');
+    return json({ ok: true, deleted: true });
+  };
+
+  await withCdpHarness({ routes }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/air?dir=d1');
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===10`));
+    await page.evaluate(`document.getElementById('directory-task-more').click()`);
+    assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false, 'all tasks stays on the directory page');
+    assert.equal(await page.evaluate(`document.getElementById('directory-task-heading').textContent`), '全部任务');
+    assert.equal(await page.evaluate(`document.getElementById('directory-task-controls').hidden`), false);
+    assert.deepEqual(await page.evaluate(`(() => { const l=document.getElementById('directory-task-list'),s=getComputedStyle(l);
+      return [document.querySelectorAll('#directory-task-list .directory-task-row').length,s.overflowY,Math.round(l.getBoundingClientRect().height)]; })()`),
+      [12, 'auto', 390], 'default filter shows open rows inside a fixed-height scroller');
+
+    await page.evaluate(`(() => { const i=document.getElementById('directory-task-search');i.value='12';i.dispatchEvent(new Event('input')); })()`);
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#directory-task-list strong')].map(e=>e.textContent)`), ['目录任务 12']);
+    await page.evaluate(`window.confirm=()=>true;document.querySelector('#directory-task-list .task-delete').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('任务已删除')`));
+    assert.deepEqual(deletes, ['t12']);
+    assert.equal(await page.evaluate(`document.getElementById('directory-task-heading').textContent`), '全部任务', 'delete keeps the panel expanded');
+
+    await page.evaluate(`(() => { const i=document.getElementById('directory-task-search');i.value='';i.dispatchEvent(new Event('input'));
+      const s=document.getElementById('directory-task-status');s.value='archived';s.dispatchEvent(new Event('change')); })()`);
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#directory-task-list strong')].map(e=>e.textContent)`), ['已经归档']);
+    await page.evaluate(`document.getElementById('directory-task-more').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('directory-task-heading').textContent`), '最近任务');
+  });
 });
 
 // 控制台的第一格是「谁在等我」，它一长就把下面整片推走。这里用一个 8 条待办的
