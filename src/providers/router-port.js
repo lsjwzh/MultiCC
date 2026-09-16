@@ -8,6 +8,7 @@ const {
   toLegacyProviderView,
 } = require('./binding');
 const { mountCodexOfficialRelay } = require('../codex/official-relay');
+const { createCodexHistoryHooks } = require('./codex-history-hooks');
 const {
   createProviderProxyAdmission,
   createProviderProxyGuard,
@@ -478,6 +479,15 @@ function createProviderRouterPort(options = {}) {
         `/${String(mountOptions.codexProxyPath || '/codex-proxy').replace(/^\/+|\/+$/g, '')}`,
         createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest }),
       );
+      // MultiCC's cross-upstream history correction runs INSIDE the router, at
+      // the dial point, instead of before the proxy: this is where the upstream
+      // that rejects the history is actually observed, so the repair can be
+      // driven by the rejection itself rather than by a guess made before the
+      // hop. Only the router's requestHooks capability is assumed — a router
+      // without it keeps the relay's pre-proxy normalization below.
+      const historyHooks = mode === 'cpr' && typeof router.CAPABILITIES?.requestHooks === 'string'
+        ? createCodexHistoryHooks({ logger })
+        : null;
       // CPR's generic Codex proxy intentionally requires an API key + base_url.
       // Mount the host-owned ChatGPT OAuth adapter first on the SAME guarded
       // admission surface. Official therefore shares attempt authorization,
@@ -487,13 +497,18 @@ function createProviderRouterPort(options = {}) {
         ...common,
         logger,
         ...(mountOptions.codexOfficialRelay || {}),
+        // The relay keeps its own normalization + rejection repair on its private
+        // ChatGPT dial. Every other Codex route now gets both from the router
+        // hook, so it must not normalize a second time here — stated after the
+        // caller's options so the two cannot drift apart.
+        genericHistoryNormalization: !historyHooks,
         getProvider: admission ? admission.getProvider : getProvider,
         ...(admission ? { onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent } : {}),
         ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}),
       });
       mounted.codex = requireMethod(backend, 'mountCodexProxy', mode === 'cpr' ? 'router' : 'legacy')(
         admission ? admission.app : app,
-        { ...common, ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}) },
+        { ...common, ...(historyHooks || {}), ...(admission ? { getProvider: admission.getProvider, onActivity: admission.onActivity, onUsageEvent: admission.onUsageEvent } : {}), ...(mountOptions.codexProxyPath ? { codexProxyPath: String(mountOptions.codexProxyPath) } : {}), ...(mountOptions.codexProxy || {}) },
       );
     }
     return Object.freeze(mounted);

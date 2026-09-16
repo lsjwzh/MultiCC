@@ -50,6 +50,27 @@ tool_calls 后必须紧跟对应 tool 消息，直接 400
   历史遗留的 `openai_chat` 标签 / `chat-to-responses` proxyTarget 由
   `migrateLegacyProviderProtocols` 在启动时迁移为直连 responses。
 
+## 本地请求钩子（跨上游历史修正，2026-09-16 起）
+
+代理是请求抵达上游前的最后一站，也是唯一能看到上游**拒绝**它的地方，所以
+MultiCC 的历史修正改为挂在 CPR 的请求钩子上（CPR capability `requestHooks`，
+见 `cli-provider-router/docs/request-hooks.md`）执行，实现在
+`src/providers/codex-history-hooks.js`：
+
+- `onRequest`：转发前修正请求副本（归一化 Responses item id、剥掉
+  `previous_response_id` / `item_reference` / 无法解析的 reasoning id 等只在
+  服务端可解析的引用）。返回 `undefined` 时请求逐字节原样转发。
+- `onUpstreamRejected`：仅在 400/404 且转换器识别该拒绝时，返回
+  `{retry:true, body}` 授权一次有界重发；重发发生在向客户端写出任何内容之前，
+  所以客户端看到的是修好的回合而不是拒绝本身。其他状态码（401/429/5xx）
+  依旧 fail-fast，不重放。
+
+挂载点：`src/providers/router-port.js` 的 `mountProtocolProxies`（仅在 CPR 且
+router 声明 `requestHooks` 时注入，用 `mountOptions.codexProxy` 可覆盖）。同
+一个 pass 原先由官方 relay 在代理之前执行，现在改为：官方 OAuth relay 保留自己
+私有的 ChatGPT 拨号路径上的预处理与修复，其余 Codex 路由全部交给钩子，避免同一
+份 body 被修正两次（`genericHistoryNormalization`）。
+
 ## 验收
 
 - 包契约测试：direct Responses、responses-compat、main/sub role、
