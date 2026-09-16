@@ -1155,6 +1155,15 @@
     #aux-classify-bar .ac-cancel-task:hover { background: var(--chat-danger-hover, #4a1719); border-color: #f8514988; }
     #aux-classify-bar .ac-cancel-task:disabled { opacity: .6; cursor: default; }
     #aux-classify-bar.can-cancel-task .ac-cancel-task { display: inline-flex; }
+    /* The judgement Aux is no longer revising: shown, but not as current. The
+     * words live in the chip's tooltip; the chip itself is the glance signal. */
+    #aux-classify-bar .ac-stale {
+      display: none; flex: none; padding: 1px 8px; border-radius: 9px; font-size: 10px; font-weight: 600;
+      color: var(--chat-warning, #e3b341);
+      background: var(--chat-warning-soft, #241c08); border: 1px dashed #e3b34188;
+    }
+    #aux-classify-bar.aux-stale .ac-stale { display: inline-flex; }
+    #aux-classify-bar.aux-stale .ac-goal { opacity: .75; }
     .worktree-conflict-bar {
       display: flex; align-items: center; gap: 8px;
       padding: 6px 12px; font-size: 12px;
@@ -2467,6 +2476,7 @@
   <div id="aux-classify-bar" data-i18n-title="auxClassifyHint" title="AI 助手对当前会话的理解（目标 · 阶段 · 状态），由辅助模型自动判断">
     <span class="ac-icon">🎯</span>
     <span class="ac-goal" id="ac-goal"></span>
+    <span class="ac-stale" id="ac-stale"></span>
     <span class="ac-state" id="ac-state"></span>
     <span class="ac-phase" id="ac-phase"></span>
     <button type="button" class="ac-cancel-task" id="ac-cancel-task" title="立即取消正在执行的任务">✕ 取消</button>

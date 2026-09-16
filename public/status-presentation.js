@@ -386,7 +386,13 @@
     let accessible = String(translate(spec.ariaKey) ?? spec.ariaKey);
     if (accessible === spec.ariaKey) accessible = label;   // catalog gap → visible copy
     const reason = sanitizeReason(opts.reason);
-    return { label, accessible, reason };
+    // A judgement Aux is no longer revising is still the best description there
+    // is, so it keeps being shown — it just stops claiming to be current. Said
+    // in words (tooltip + accessible name) rather than as a colour, because
+    // "this may be out of date" is not a status the tone vocabulary expresses.
+    // See src/classify/aux-verdict-health.js.
+    const stale = opts.stale === true ? String(translate('auxVerdictPaused')) : '';
+    return { label, accessible, reason, stale };
   }
 
   /**
@@ -399,7 +405,7 @@
   function applyStatusBadge(el, domain, status, opts = {}) {
     if (!el) return null;
     const spec = presentation(domain, status);
-    const { label, accessible, reason } = resolveCopy(spec, opts);
+    const { label, accessible, reason, stale } = resolveCopy(spec, opts);
     const showLabel = opts.showLabel !== false;
     // `opts.document` lets callers that already hold a document reference (the
     // chat modules, and the fake DOM in tests) avoid depending on a global.
@@ -410,6 +416,7 @@
     el.classList.add(`st-tone-${spec.tone}`);
     el.classList.toggle('st-spin', spec.spinner === true);
     el.classList.toggle('st-terminal', spec.terminal === true);
+    el.classList.toggle('st-stale', !!stale);
     el.dataset.statusDomain = domain;
     el.dataset.status = spec.status;
 
@@ -438,12 +445,12 @@
       text.remove();
     }
 
-    const title = reason ? `${label} · ${reason}` : label;
+    const title = [label, stale, reason].filter(Boolean).join(' · ');
     el.setAttribute?.('title', title);
     // The accessible name always carries the state in words, so the badge is
     // readable with colour vision deficiency, in high contrast, and by a screen
     // reader — never colour alone.
-    el.setAttribute?.('aria-label', reason ? `${accessible} · ${reason}` : accessible);
+    el.setAttribute?.('aria-label', [accessible, stale, reason].filter(Boolean).join(' · '));
     el.setAttribute?.('role', 'img');
     return spec;
   }
@@ -451,15 +458,16 @@
   /** String form for the innerHTML-based renderers. Same spec, same classes. */
   function statusBadgeHtml(domain, status, opts = {}) {
     const spec = presentation(domain, status);
-    const { label, accessible, reason } = resolveCopy(spec, opts);
+    const { label, accessible, reason, stale } = resolveCopy(spec, opts);
     const showLabel = opts.showLabel !== false;
-    const title = reason ? `${label} · ${reason}` : label;
-    const aria = reason ? `${accessible} · ${reason}` : accessible;
+    const title = [label, stale, reason].filter(Boolean).join(' · ');
+    const aria = [accessible, stale, reason].filter(Boolean).join(' · ');
     const classes = [
       'mc-status',
       `st-tone-${spec.tone}`,
       spec.spinner ? 'st-spin' : '',
       spec.terminal ? 'st-terminal' : '',
+      stale ? 'st-stale' : '',
       opts.className || '',
     ].filter(Boolean).join(' ');
     const idAttr = opts.id ? ` id="${escapeHtml(opts.id)}"` : '';
