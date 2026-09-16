@@ -42,6 +42,39 @@ const Map<String, String> airStateNames = {
 String airLabel(String? value) =>
     (value == null || value.isEmpty) ? '' : (airStateNames[value] ?? value);
 
+/// 任务生命周期动作（归档/恢复、移动、删除）的错误码 → 文案，逐条对着 Web
+/// `public/air.js` 的 `TASK_ACTION_ERRORS` 抄。
+///
+/// 这三个动作是一次性、不可撤销的写，失败原因又几乎全是「现在还不能做」这类
+/// 业务判断（任务在跑、工作区有未提交改动、壳被别的任务共用）。服务端只回一个
+/// code，把 code 原样丢给用户等于什么都没说；Web 也是先过这张表再退回原文。
+const Map<String, String> airTaskActionErrors = {
+  'task_busy': '任务正在执行或排队中，等它空闲下来再操作。',
+  'task_archived': '任务已归档。',
+  'task_deleting': '任务正在删除中，请稍等。',
+  'task_workspace_dirty': '工作区还有未提交改动：请先在任务里让它提交或清理，再删除。',
+  'task_workspace_unmerged': '工作区还有未合并到基分支的提交：请先合并，再删除。',
+  'task_session_shared': '会话还被其他任务共享，无法删除。',
+  'shell_workspace_referenced': '工作区被其他会话引用，无法删除。',
+  'task_shell_shared': '任务的会话壳还挂着别的任务，不能整体移动。',
+  'carry_apply_failed': '未提交改动套用到目标仓库失败（两个目录的代码上下文不兼容），任务仍留在原处。',
+  'active': '会话仍活跃，请稍后再试。',
+  'unmerged': '还有未合并到基分支的提交：请先在任务详情里合并，再移动。',
+};
+
+/// 归档 / 恢复 / 移动 / 删除失败。带上服务端的 `error` code，界面才能按
+/// [airTaskActionErrors] 说话（Web 的 `taskActionError(error)` 读的也是它）。
+class AirTaskActionException implements Exception {
+  const AirTaskActionException(this.code);
+
+  /// 服务端错误码（`task_busy` 这类），不是 HTTP 状态码。
+  final String code;
+
+  @override
+  String toString() =>
+      airTaskActionErrors[code] ?? '操作失败（$code）。';
+}
+
 /// 这行卡在哪：先说容量/租约这类会自己好转的原因，没有才说目录是计划态还是已经
 /// 备好 —— 同 Web Air 的 `resourceText`。任务行和详情面板都要这一句，所以放在
 /// 这里而不是任一处界面代码里。
@@ -443,6 +476,21 @@ class AirService {
     String path, [
     Map<String, dynamic>? body,
   ]) async {
+    final response = await _request(method, path, body);
+    final result = _decode(response);
+    if (response.statusCode >= 400 || result['ok'] == false) {
+      throw Exception(
+        result['message'] ?? result['code'] ?? 'HTTP ${response.statusCode}',
+      );
+    }
+    return result;
+  }
+
+  Future<http.Response> _request(
+    String method,
+    String path, [
+    Map<String, dynamic>? body,
+  ]) {
     final uri = Uri.parse(settings.buildHttpUrl(path));
     final headers = {
       'Content-Type': 'application/json',
@@ -453,11 +501,13 @@ class AirService {
       'DELETE' => _http.delete(uri, headers: headers),
       _ => _http.post(uri, headers: headers, body: jsonEncode(body ?? {})),
     };
-    final response = await request.timeout(const Duration(seconds: 30));
+    return request.timeout(const Duration(seconds: 30));
+  }
+
+  Map<String, dynamic> _decode(http.Response response) {
     final raw = utf8.decode(response.bodyBytes);
-    Map<String, dynamic> result;
     try {
-      result = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      return Map<String, dynamic>.from(jsonDecode(raw) as Map);
     } catch (_) {
       // 拿回一整页 HTML 说明这个请求根本没落到 API 上（旧版服务没有这些路由），
       // 那句话比「无法识别的数据」有用得多。
@@ -467,9 +517,25 @@ class AirService {
             : 'Air 服务返回了无法识别的数据（HTTP ${response.statusCode}）。',
       );
     }
+  }
+
+  /// 任务生命周期写（归档/恢复、移动、删除）。
+  ///
+  /// 与 [_send] 只差错误那一句：这三条路由的失败响应是 `{ok:false,
+  /// error:'task_busy'}`（`src/task-board/relocate.js` 的 `fail`、`lifecycle.js`
+  /// 同款），没有 `message`。照 [_send] 那套会退化成「HTTP 409」，把「为什么
+  /// 不行」整句丢掉 —— 而这几条恰恰只在这种时候才有话要说。
+  Future<Map<String, dynamic>> _lifecycle(
+    String method,
+    String path, [
+    Map<String, dynamic>? body,
+  ]) async {
+    final response = await _request(method, path, body);
+    final result = _decode(response);
     if (response.statusCode >= 400 || result['ok'] == false) {
-      throw Exception(
-        result['message'] ?? result['code'] ?? 'HTTP ${response.statusCode}',
+      final reasons = result['reasons'];
+      throw AirTaskActionException(
+        '${result['error'] ?? result['code'] ?? (reasons is List && reasons.isNotEmpty ? reasons.first : null) ?? 'HTTP ${response.statusCode}'}',
       );
     }
     return result;
@@ -501,6 +567,30 @@ class AirService {
   /// 以完整交付条件为准（同 Web `reconcileDelivery`）。
   Future<void> reconcileDelivery(String taskId) =>
       _post('/api/air/tasks/${Uri.encodeComponent(taskId)}/delivery/reconcile');
+
+  /// 归档 / 恢复任务。Web Air 的「归档任务 / 恢复任务」就是往这条路由写
+  /// `status`（`public/air.js` 的 `archiveTask`）：归档的任务不再执行，随时可以
+  /// 恢复成 `active`。
+  Future<void> setTaskLifecycle(String taskId, String status) => _lifecycle(
+    'POST',
+    '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/status',
+    {'status': status},
+  );
+
+  /// 把任务移到另一个工作目录。返回体带 `carried`：有未提交改动或未跟踪的新
+  /// 文件时，它说明这些东西跟着工作区一起带走了多少（`src/task-board/
+  /// relocate.js`）。`carried` 缺失代表这次只搬了干净的工作区。
+  Future<Map<String, dynamic>> relocateTask(String taskId, String dirId) =>
+      _lifecycle(
+        'POST',
+        '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/relocate',
+        {'dirId': dirId},
+      );
+
+  /// 删除任务。它的专属会话与工作区一并消失，不可撤销；工作区还有未提交改动或
+  /// 未合并提交时服务端会拒绝（错误码见 [airTaskActionErrors]）。
+  Future<void> deleteTask(String taskId) =>
+      _lifecycle('DELETE', '/api/task-board/tasks/${Uri.encodeComponent(taskId)}');
 
   /// 建任务。第一条消息由 [sendFirstMessage] 单独发出，中途失败时任务已经存在
   /// —— Web Air 会退回目录并把草稿留在会话存储里，这里用同样的顺序。

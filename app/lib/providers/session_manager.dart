@@ -414,6 +414,10 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     // it's a status update, not an alert. Only succeeded/waiting warrant
     // interrupting the user.
     if (state == 'running') return;
+    // 会话级「任务提醒」开关：Web 的 manage 页读到同一个 verdict 时也是先问
+    // getTaskNotifyEnabled(sessionId) 再弹通知（public/manage-dashboard.js:438）。
+    // 少了这一句，页头关掉的提醒会从这条工作区通道漏出去。
+    if (SettingsService.current?.taskNotifyEnabled(sessionId) == false) return;
     if (!_isInBackground && sessionId == _activeSessionId) return;
     final who = _displayTitleFor(sessionId);
     final outcome = state == 'waiting'

@@ -352,11 +352,17 @@ void main() {
       expect(find.text(t('worktreeForceSync')), findsOneWidget);
       expect(find.text(t('chatWidthTitle')), findsOneWidget);
 
+      // 菜单比屏幕高（web 那套顺序里这两项排在语言/提醒/角色/… 之后），
+      // 先滚到可见处再点 —— 否则点击落在可视区外，菜单只是被关掉。
+      await tester.ensureVisible(find.text(t('worktreeForceSync')));
+      await tester.pumpAndSettle();
       await tester.tap(find.text(t('worktreeForceSync')));
       await tester.pumpAndSettle();
       expect(forced, 1);
 
       await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text(t('chatWidthTitle')));
       await tester.pumpAndSettle();
       await tester.tap(find.text(t('chatWidthTitle')));
       await tester.pumpAndSettle();
@@ -428,6 +434,73 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text(t('autoCommitOff')), findsOneWidget);
       expect(find.text(t('autoCommitOn')), findsNothing);
+
+      provider.dispose();
+      mgr.dispose();
+    });
+  });
+
+  // Web 聊天页（Air 模式）的 ⋯ 菜单头两项是 lang-btn / notify-btn
+  // （public/chat.js:257），App 此前两项都缺 —— 这一组钉住「入口在、点了按
+  // Web 的语义变状态」。
+  group('ChatHeader language + task-notify entries', () {
+    testWidgets('语言入口用 Web 的 t(language) 文案，点了翻转持久化语言', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-lang',
+        sessionCwd: '/tmp',
+      );
+      expect(settings.lang, 'zh');
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+
+      // Web 的按钮文字就是 t('language')（zh '中/EN' / en 'EN/中'）。
+      expect(find.byKey(const Key('chat-header-language')), findsOneWidget);
+      expect(find.text('中/EN'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('chat-header-language')));
+      await tester.pumpAndSettle();
+
+      // Web 的 toggleLang() 把新语言写进 `multicc_lang` 再重载页面；
+      // App 写的是同一个键（SettingsService.setLanguage → prefs）。
+      expect(settings.lang, 'en');
+      expect(settings.language.value, 'en');
+
+      provider.dispose();
+      mgr.dispose();
+    });
+
+    testWidgets('任务提醒入口按开/关显示 ✓/✕，点了写 Web 那套本地键', (tester) async {
+      final settings = await _settings();
+      final mgr = SessionManager(settings: settings);
+      final provider = ChatProvider(
+        settings: settings,
+        sessionName: 's-notify',
+        sessionCwd: '/tmp',
+      );
+      expect(settings.taskNotifyEnabled('s-notify'), isTrue);
+
+      await tester.pumpWidget(_host(mgr, settings, provider));
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('chat-header-task-notify')), findsOneWidget);
+      expect(find.text(t('taskNotifyOn')), findsOneWidget);
+      expect(find.text(t('taskNotifyOff')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('chat-header-task-notify')));
+      await tester.pumpAndSettle();
+      // 落的是 Web 同一个键 `multicc_notify:<sessionId>`，值 'off'。
+      expect(settings.taskNotifyEnabled('s-notify'), isFalse);
+
+      // 菜单每次展开都重读偏好，所以再开一次就该是 ✕。
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await tester.pumpAndSettle();
+      expect(find.text(t('taskNotifyOff')), findsOneWidget);
+      expect(find.text(t('taskNotifyOn')), findsNothing);
 
       provider.dispose();
       mgr.dispose();

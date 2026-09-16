@@ -74,6 +74,55 @@ MockClient _client(List<String> requests) => MockClient((request) async {
   );
 });
 
+/// 一个目录八条任务。用来盯首页抬头上那句「N 个任务」和它下面那块**截过的**
+/// 「最近任务」—— Web 的 `recentRowLimit()` 在 760px 及以下取 6，`updatedAt`
+/// 倒序（`air.js` 的 `[...tasks].sort((a, b) => Number(b.updatedAt || 0) - ...)`），
+/// 所以屏上该是任务 8…3，「查看全部」说的是 8 而不是剩下的 2。
+MockClient _manyTasksClient() => MockClient((request) async {
+  if (request.url.path.startsWith('/api/air/tasks/')) {
+    return http.Response(
+      jsonEncode({
+        'ok': true,
+        'task': const {'id': 't1', 'title': '任务 1', 'status': 'active'},
+        'status': 'active',
+        'execution': const {'status': 'idle', 'busy': false, 'pending': false},
+        'messages': const [],
+        'attribution': const {},
+        'resource': const {'residency': 'planned', 'lease': 'idle'},
+        'configuration': const {},
+        'readOnly': false,
+      }),
+      200,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
+  }
+  return http.Response(
+    jsonEncode({
+      'ok': true,
+      'clis': const ['codex'],
+      'directories': const [
+        {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
+      ],
+      'tasks': [
+        for (var i = 1; i <= 8; i++)
+          {
+            'id': 't$i',
+            'dirId': 'd1',
+            'title': '任务 $i',
+            'status': 'active',
+            'recordType': 'planned',
+            'workflowStage': 'inbox',
+            'runState': null,
+            'updatedAt': 1000 + i,
+            'resource': const {'residency': 'planned', 'lease': 'idle'},
+          },
+      ],
+    }),
+    200,
+    headers: {'content-type': 'application/json; charset=utf-8'},
+  );
+});
+
 /// 任务快照 + 一条定时规则。所有「进定时任务中心」的用例都要这两份数据 ——
 /// 中心那一页自己拉 `/api/cron`。
 MockClient _airAndCronClient() => MockClient((request) async {
@@ -170,7 +219,7 @@ void main() {
   // 状态徽标上的字来自 i18n 词典（注册表只给 key），不加载就只有 key。
   setUpAll(() => I18n.init('zh'));
 
-  testWidgets('Air 首页列出当前目录的任务，归档记录默认不出现，320px 不溢出', (
+  testWidgets('Air 首页列出当前目录的最近任务（含归档行），320px 不溢出', (
     tester,
   ) async {
     final settings = await _settings();
@@ -198,11 +247,17 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('计划 · 待处理 · 执行时准备目录'), findsOneWidget);
-    expect(find.text('旧任务'), findsNothing);
-    // 「全部」是筛选，不是开关：它在同一个列表上多放出归档的那些行。
-    await tester.tap(find.widgetWithText(ChoiceChip, '全部'));
-    await tester.pumpAndSettle();
+    // 抬头照 Web 的 `.section-heading`：小字「当前目录」+ 粗体「最近任务」+ 右侧计数。
+    expect(find.byKey(const ValueKey('air-tasks-heading')), findsOneWidget);
+    expect(find.text('最近任务'), findsOneWidget);
+    expect(find.text('2 个任务'), findsOneWidget);
+    // Web 的这块列表只按 dirId 过，归档行照摆（`renderDirectoryOverview` 里那道
+    // `done/archived` 过滤只用在上面四张统计卡上），所以「旧任务」在「最近任务」
+    // 里就该看得见 —— 从前这里默认把它藏起来，只留两条筛选 chip。
     expect(find.text('旧任务'), findsOneWidget);
+    // 两条都摆得下，那颗「查看全部」就不出现（Web 的 `more.hidden = tasks.length
+    // <= rows.length`）。
+    expect(find.byKey(const ValueKey('air-tasks-more')), findsNothing);
     expect(tester.takeException(), isNull);
     // 首页只问一次 /api/air —— 目录库、侧栏、统计都从这一份快照里出。（侧栏底部
     // 的主机运维是另一条线，它自己问 /api/server-info 和 /api/version-check。）
@@ -210,6 +265,53 @@ void main() {
       requests.where((path) => path.startsWith('/api/air')),
       ['/api/air'],
     );
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('最近的条数跟着屏宽截断，剩下的走「查看全部 N 个任务」', (tester) async {
+    final settings = await _settings();
+    final client = _manyTasksClient();
+    tester.view.devicePixelRatio = 1;
+    // 视口给高一点，让整块面板（统计卡 + 输入框 + 抬头 + 六行 + 那颗按钮）一次全
+    // 在树上：列表是懒建的，靠滚动去够某一行，会把「被截掉」和「在视口外」混成
+    // 同一件事。
+    tester.view.physicalSize = const Size(390, 1600);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+    );
+    await tester.pumpAndSettle();
+
+    // 抬头上的数字说的是这个目录一共几条，不是这一屏摆得下几条。
+    expect(find.text('最近任务'), findsOneWidget);
+    expect(find.text('8 个任务'), findsOneWidget);
+    // 行序是 updatedAt 倒序，最新的一条排在最前（`AirSnapshot.tasksOf`）。
+    expect(find.text('任务 8'), findsOneWidget);
+    expect(find.text('任务 7'), findsOneWidget);
+    // 窄屏截到六行（Web `recentRowLimit()` 的 760px 断点）：第 1、2 条不在树上。
+    expect(find.text('任务 2'), findsNothing);
+    expect(find.text('任务 1'), findsNothing);
+
+    final more = find.byKey(const ValueKey('air-tasks-more'));
+    expect(more, findsOneWidget);
+    // 数字用的是这个目录的全部条数 —— Web 那句 `查看全部 ${tasks.length} 个任务 ›`。
+    expect(find.text('查看全部 8 个任务 ›'), findsOneWidget);
+    await tester.tap(more);
+    await tester.pumpAndSettle();
+
+    // 展开之后就是全量那几行，抬头跟着换名字，按钮翻面。
+    expect(find.text('全部任务'), findsOneWidget);
+    expect(find.text('只看最近 ›'), findsOneWidget);
+    expect(find.text('任务 1'), findsOneWidget);
+    expect(find.text('8 个任务'), findsOneWidget);
+
+    await tester.tap(more);
+    await tester.pumpAndSettle();
+    expect(find.text('最近任务'), findsOneWidget);
+    expect(find.text('任务 1'), findsNothing);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -255,7 +357,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('控制台'), findsOneWidget);
     expect(find.text('定时任务'), findsOneWidget);
-    expect(find.text('最近任务'), findsOneWidget);
+    // 侧栏那一组叫「最近任务」，首页抬头那块也叫「最近任务」（Web 上就是同一个
+    // 词，`air.html` 的 `.section-heading` 与侧栏各一处），所以这里圈定抽屉里那份。
+    expect(
+      find.descendant(of: find.byType(Drawer), matching: find.text('最近任务')),
+      findsOneWidget,
+    );
     expect(find.text('新任务'), findsOneWidget);
     expect(find.text('更多与系统'), findsOneWidget);
     // 最近打开过的任务优先：这次会话没打开过任何任务，补位的是当前目录里
@@ -404,6 +511,28 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('air-dest-push')));
     await tester.pumpAndSettle();
     expect(opened, [WorkspaceDestination.push]);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('「更多与系统」补齐 Web 侧栏那一行「任务图谱」', (tester) async {
+    final settings = await _settings();
+    final client = _client(<String>[]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
+
+    // Web `air.html` 的 `#side-more .global-links` 是四项：
+    // 服务与文档 / 记忆图谱 / 任务图谱 / 设置中心。
+    expect(find.byKey(const ValueKey('air-more-task-graph')), findsOneWidget);
+    expect(find.text('任务图谱'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
