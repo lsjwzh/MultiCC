@@ -380,6 +380,40 @@ test('badge copy is HTML-escaped', () => {
   assert.ok(html.includes('&lt;img'));
 });
 
+// A judgement Aux has stopped revising keeps its own status (the verdict is
+// still the best description we have) but says so in words and carries a
+// non-colour class, so it cannot be read as a current judgement.
+test('a stale verdict is stated in words and marked, without changing the status', () => {
+  const translate = key => ({ auxVerdictPaused: '判定已暂停' }[key] ?? key);
+  const el = makeEl();
+  const spec = SP.applyStatusBadge(el, 'session', 'waiting', {
+    translate, label: '等待用户', reason: '排查电量消耗增加原因', stale: true,
+  });
+  assert.equal(spec.status, 'waiting', 'staleness is not a status');
+  assert.equal(el.classList.contains('st-stale'), true);
+  assert.ok(el.getAttribute('title').startsWith('等待用户'));
+  assert.ok(el.getAttribute('title').includes('判定已暂停'));
+  assert.ok(el.getAttribute('aria-label').includes('判定已暂停'));
+  assert.ok(el.getAttribute('aria-label').includes('排查电量消耗增加原因'));
+
+  const html = SP.statusBadgeHtml('task', 'waiting', { translate, stale: true, showLabel: false });
+  assert.ok(html.includes('st-stale'));
+  assert.ok(html.includes('判定已暂停'));
+
+  // ...and a fresh verdict never carries the marker.
+  const fresh = makeEl();
+  SP.applyStatusBadge(fresh, 'session', 'waiting', { translate, label: '等待用户' });
+  assert.equal(fresh.classList.contains('st-stale'), false);
+  assert.ok(!fresh.getAttribute('title').includes('判定已暂停'));
+});
+
+test('every surface that renders a judgement badge loads the stale stylesheet rule', () => {
+  const css = read('public/status-badge.css');
+  assert.ok(/\.mc-status\.st-stale\s*\{/.test(css), 'st-stale must have a rule, not just a class');
+  assert.ok(/forced-colors/.test(css.split('.mc-status.st-stale')[1] || ''),
+    'forced-colours mode must keep the marker visible');
+});
+
 // ── 7. i18n completeness ────────────────────────────────────────────────────
 
 test('every label and aria key exists in both zh and en', () => {

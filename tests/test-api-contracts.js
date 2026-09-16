@@ -341,9 +341,15 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(source.includes('initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile })'));
   // Every task_state producer must carry the outward short code. The connect-time
   // seed in turn-engine once omitted it, so a freshly opened chat showed the bare
-  // goal until the next classify event — pin the field on the wire.
+  // goal until the next classify event — pin the field on the wire. The payload
+  // now lives in src/chat/task-state-seed.js (the turn engine is at its line
+  // ceiling), which is also where freshness rides along: a page opened during an
+  // outage would otherwise never learn its verdict is frozen.
+  const seed = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'task-state-seed.js'), 'utf8');
+  assert.ok(seed.includes("taskShortCode: taskShortCode(task.taskId)"));
+  assert.ok(seed.includes('...auxVerdictStaleness()'));
   const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert.ok(turnEngine.includes("type: 'task_state', goal: ts0.goal || '', taskShortCode: taskShortCode(ts0.taskId)"));
+  assert.ok(turnEngine.includes('if (seed) sendWs(ws, seed);'), 'the connect path must send it');
 });
 
 test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {

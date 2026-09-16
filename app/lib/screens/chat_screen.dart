@@ -8,7 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../i18n.dart';
-import '../utils/status_presentation.dart';
 import '../models/dispatch_queue.dart';
 import '../models/message.dart';
 import '../models/usage_readout.dart';
@@ -24,6 +23,7 @@ import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/session_status_helpers.dart';
 import '../widgets/ai_config_sheet.dart';
+import '../widgets/aux_classify_bar.dart';
 import '../widgets/task_separation_prompt.dart';
 import '../widgets/background_tasks_dock.dart';
 import '../widgets/floating_dock.dart';
@@ -861,6 +861,7 @@ class _ChatViewState extends State<ChatView> {
                           goal: provider.classifyGoal,
                           phase: provider.classifyPhase,
                           classifyState: provider.classifyState,
+                          stale: provider.classifyStale,
                           onMarkTurnSucceeded: actions.canMarkDone
                               ? () => _markTurnSucceeded(provider)
                               : null,
@@ -1925,167 +1926,6 @@ class _MergeHintBarState extends State<MergeHintBar> {
             constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
             color: const Color(0xFFa85a25),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-// Persistent top banner shown while the session's worktree is behind its base
-// branch — complements the transient SnackBar with an always-visible reminder.
-/// AI 助手对当前会话的理解条（目标 · 阶段 · 状态），对齐 web 的
-/// `#aux-classify-bar`。公开而非私有：两个动作药丸的显隐规则直接照抄 web 的
-/// `can-mark-done`(W) / `can-cancel-task`(P) 两个 class，是条容易改坏的规则，
-/// 需要能被 widget 测试直接钉住。
-class AuxClassifyBar extends StatelessWidget {
-  final String goal;
-  final String phase;
-
-  /// Live classify-state letter (D/W/B/E/P). Drives the pill tint, aligned
-  /// with main_shell _classifyBadge and the web CLASSIFY_DISPLAY barTint.
-  final String classifyState;
-
-  /// Non-null when state is W: shows the localized turn-success button.
-  /// The compatibility endpoint changes only turn outcome, never task lifecycle.
-  final VoidCallback? onMarkTurnSucceeded;
-
-  /// Non-null when state is P (processing): shows 「✕ 取消」. Web gates the same
-  /// button on `can-cancel-task` and wires it to cancelStreaming().
-  final VoidCallback? onCancelTurn;
-
-  const AuxClassifyBar({
-    required this.goal,
-    required this.phase,
-    required this.classifyState,
-    this.onMarkTurnSucceeded,
-    this.onCancelTurn,
-  });
-
-  String _phaseLabel(String value) => switch (value) {
-    'idle' => t('activityIdle'),
-    'planning' => t('phasePlanning'),
-    'running' => t('phaseRunning'),
-    'editing' => t('activityEditing'),
-    'verifying' => t('phaseVerifying'),
-    'waiting' => t('phaseWaiting'),
-    'blocked' => t('phaseBlocked'),
-    'reviewing' => t('phaseReviewing'),
-    'completed' || 'done' => t('phaseDone'),
-    'interrupted' => t('phaseInterrupted'),
-    _ => value,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    // classify 字母 → canonical 状态 → 图标/色彩，全部走中心 registry：这条
-    // bar 曾自带一套色表（E 是 ⚠、卡片却是 ❌），现在与会话卡、任务面板同源。
-    final spec = statusPresentation[classifyStatusOf(classifyState)]!;
-    final phaseColor = spec.color;
-    final phaseBg = phaseColor.withValues(alpha: 0.12);
-    final phaseBorder = phaseColor.withValues(alpha: 0.34);
-    final stateEmoji = spec.icon;
-    final phaseLabel = _phaseLabel(phase);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: const BoxDecoration(
-        color: Color(0xFFf4f8fd),
-        border: Border(bottom: BorderSide(color: Color(0xFFf8fbff))),
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.auto_awesome_outlined,
-            size: 14,
-            color: Color(0xFF8a9aab),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Tooltip(
-              message: goal,
-              child: Text(
-                goal,
-                style: const TextStyle(
-                  color: Color(0xFF4a6076),
-                  fontSize: 12,
-                  height: 1.3,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: phaseBg,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: phaseBorder),
-            ),
-            child: Text(
-              '$stateEmoji $phaseLabel',
-              style: TextStyle(
-                color: phaseColor,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          // Cancel button: visible only when state is P (processing). Same slot
-          // and same red tint as the web's ac-cancel-task pill; the action is
-          // the composer's Stop — cancel the in-flight turn.
-          if (onCancelTurn != null) ...[
-            const SizedBox(width: 6),
-            Tooltip(
-              message: t('cancelTurnFromBarTitle'),
-              child: GestureDetector(
-                key: const Key('classify-cancel-turn'),
-                onTap: onCancelTurn,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFfdf0ef),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: const Color(0x88b64e43)),
-                  ),
-                  child: Text(
-                    t('cancelTurnFromBar'),
-                    style: const TextStyle(
-                      color: Color(0xFFb64e43),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-          // Turn-success button: visible only when state is W (waiting-for-user)
-          if (onMarkTurnSucceeded != null) ...[
-            const SizedBox(width: 6),
-            GestureDetector(
-              onTap: onMarkTurnSucceeded,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFedf8f1),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: const Color(0x882ba67a)),
-                ),
-                child: Text(
-                  t('markTurnSucceeded'),
-                  style: const TextStyle(
-                    color: Color(0xFF2ba67a),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ),
-          ],
         ],
       ),
     );

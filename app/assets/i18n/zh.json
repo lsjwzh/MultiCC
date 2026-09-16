@@ -460,6 +460,8 @@
   "classifyWaitingBackground": "后台等待",
   "classifyApiError": "API 异常",
   "classifyProcessing": "处理中",
+  "auxVerdictPaused": "判定已暂停",
+  "auxVerdictPausedHint": "AI 助手当前不可用，这条判定不会再更新；恢复后自动继续判定",
   "livenessWorking": "产出中",
   "livenessIdle": "空闲",
   "livenessStalled": "疑似卡住",

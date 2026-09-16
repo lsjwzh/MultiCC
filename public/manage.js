@@ -466,7 +466,7 @@ async function connectWorkspace(dirId) {
         _workspaceStatus.set(s.id, { status: s.status, currentFile: s.currentFile, lastActivity: s.lastActivity, runStartedAt: s.runStartedAt || null, runEndedAt: s.runEndedAt || null, mergeState: s.mergeState || null });
         _workspaceNotes.set(s.id, s.pendingNotes || 0);
         if (s.summary) _workspaceSummaries.set(s.id, { summary: s.summary, ts: s.summaryTs || 0 });
-        if (s.classifyState) _workspaceClassify.set(s.id, { classifyState: s.classifyState, goal: s.goal || '', phase: s.phase || 'idle', code: s.taskShortCode });
+        if (s.classifyState) _workspaceClassify.set(s.id, { classifyState: s.classifyState, goal: s.goal || '', phase: s.phase || 'idle', code: s.taskShortCode, stale: s.auxUnhealthy === true });
         updateSessionStatusDom(s.id);
         updateSessionNotesDom(s.id);
         updateSessionMergeDom(s.id);
@@ -504,10 +504,20 @@ async function connectWorkspace(dirId) {
       updateSessionSummaryDom(msg.sessionId);
       updateDirPreviewForSession(msg.sessionId);
     } else if (msg.type === 'task_state') {
-      _workspaceClassify.set(msg.sessionId, { classifyState: msg.classifyState || null, goal: msg.goal || '', phase: msg.phase || 'idle', code: msg.taskShortCode });
+      _workspaceClassify.set(msg.sessionId, { classifyState: msg.classifyState || null, goal: msg.goal || '', phase: msg.phase || 'idle', code: msg.taskShortCode, stale: msg.auxUnhealthy === true });
       updateSessionClassifyDom(msg.sessionId);
       // goal changes often mean the summary should refresh too
       updateSessionSummaryDom(msg.sessionId);
+    } else if (msg.type === 'aux_verdict_staleness') {
+      // Fleet-wide: the assistant went down (or came back) and every judgement
+      // on this page froze with it. No further task_state is coming, so the
+      // badges have to be told directly. See src/classify/aux-verdict-health.js.
+      const stale = msg.auxUnhealthy === true;
+      for (const [sessionId, entry] of _workspaceClassify) {
+        if (!entry || entry.stale === stale) continue;
+        _workspaceClassify.set(sessionId, { ...entry, stale });
+        updateSessionClassifyDom(sessionId);
+      }
     } else if (msg.type === 'session_queue_status') {
       applyWorkspaceQueueStatus(msg);
     } else if (msg.type === 'task_board_update') {
@@ -637,6 +647,7 @@ function updateSessionClassifyDom(sessionId) {
       showLabel: false,
       label: tt(_CLASSIFY_TITLE[String(cls).toUpperCase()] || 'classifyProcessing'),
       reason: c.goal,
+      stale: c.stale === true,
     });
     el.classList.add('classify-badge');
     el.style.display = '';
