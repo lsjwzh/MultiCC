@@ -127,7 +127,7 @@ function browserContext() {
       const pathname = String(url);
       let data = {};
       if (pathname.endsWith('/start')) data = { ok: true };
-      else if (pathname === '/api/settings/proxy') data = { enabled: true };
+      else if (pathname === '/api/settings/official-oauth') data = { enabled: true };
       else if (pathname.endsWith('/gateway')) data = null;
       else if (pathname.endsWith('/status')) data = { configured: false, running: false, gateway: null };
       else if (pathname.endsWith('/config')) data = { configured: false };
@@ -270,14 +270,14 @@ test('host settings preserve bootstrap header auth without credential query para
   assert.doesNotMatch(source, /[?&]token=/i);
   assert.doesNotMatch(source, /fetch\(\s*[`'"]https?:\/\//i);
   const harness = browserContext();
-  const toggle = harness.context.document.getElementById('cc-proxy-enabled');
+  const toggle = harness.context.document.getElementById('cc-oauth-enabled');
   toggle.checked = true;
   vm.runInContext(source, harness.context, { filename: 'manage-host-settings.js' });
   assert.equal(typeof harness.context.MultiCCManageHostSettings.initialize, 'function');
-  assert.equal(typeof harness.context.saveProxySetting, 'function');
+  assert.equal(typeof harness.context.saveOfficialOAuthSetting, 'function');
 
-  await harness.context.saveProxySetting();
-  const request = harness.requests.find(item => item.url === '/api/settings/proxy');
+  await harness.context.saveOfficialOAuthSetting();
+  const request = harness.requests.find(item => item.url === '/api/settings/official-oauth');
   assert.equal(request.options.method, 'POST');
   assert.equal(request.options.headers['X-Access-Token'], 'bootstrap-secret');
   assert.equal(JSON.parse(request.options.body).enabled, true);
