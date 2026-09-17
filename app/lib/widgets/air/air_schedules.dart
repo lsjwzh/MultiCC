@@ -20,6 +20,7 @@ class AirSchedulesScreen extends StatefulWidget {
     required this.settings,
     this.httpClient,
     this.directories = const <AirDirectory>[],
+    this.initialDirectoryId,
     this.onOpenTask,
   });
 
@@ -31,6 +32,10 @@ class AirSchedulesScreen extends StatefulWidget {
   /// 新建 / 编辑规则时选目标目录。宿主手里已经有 `/api/air` 那份快照，直接带过
   /// 来就省一次 `/api/directories`；空的话编辑器自己拉一次。
   final List<AirDirectory> directories;
+
+  /// 从某个工作目录进入定时任务中心时，新建规则默认选中它。用户仍可在编辑器里
+  /// 改选其他目录；全局入口没有当前目录时留空，回退到第一项。
+  final String? initialDirectoryId;
 
   /// 点「固定 Air 任务」→ 打开那条任务。固定任务的工作目录可以和当前目录不是
   /// 同一个，所以 dirId 和 taskId 一起带出去。
@@ -200,6 +205,7 @@ class _AirSchedulesScreenState extends State<AirSchedulesScreen> {
       builder: (_) => _ScheduleEditorDialog(
         manage: _manage,
         directories: choices,
+        initialDirectoryId: widget.initialDirectoryId,
         task: task,
       ),
     );
@@ -788,11 +794,13 @@ class _ScheduleEditorDialog extends StatefulWidget {
   const _ScheduleEditorDialog({
     required this.manage,
     required this.directories,
+    this.initialDirectoryId,
     this.task,
   });
 
   final ManageService manage;
   final List<AirDirectory> directories;
+  final String? initialDirectoryId;
   final CronTask? task;
 
   @override
@@ -838,7 +846,7 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
     _cli = widget.task?.cli ?? 'claude';
     _enabled = widget.task?.enabled ?? true;
     final ids = widget.directories.map((d) => d.id).toSet();
-    final wanted = widget.task?.dirId;
+    final wanted = widget.task?.dirId ?? widget.initialDirectoryId;
     _dirId = wanted != null && ids.contains(wanted)
         ? wanted
         : widget.directories.first.id;
