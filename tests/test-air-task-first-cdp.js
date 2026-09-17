@@ -37,6 +37,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   const configPatches = [], quickDispatches = [], quickCreates = [], syncRequests = [];
   let syncFailure = true;
   const directory = { id: 'd1', name: 'MultiCC', path: '/projects/multicc' };
+  const otherDirectory = { id: 'd2', name: 'Design Lab', path: '/projects/design-lab' };
   const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource }];
   const newEntry = { ...structuredClone(entry), task: { id: 'tsk_new', title: '从目录首页创建任务' }, sessionId: 'task-new', ownerShellId: 'shell-new', messages: [] };
   for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } };
@@ -46,7 +47,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/air'] = routes['/air.html'];
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
-  routes['/api/air'] = () => json({ ok: true, directories: [directory], clis: ['codex', 'claude'], migration: { errors: [] },
+  routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'claude'], migration: { errors: [] },
     tasks: airTasks,
     sessions: [{ id: 'old-role', dirId: 'd1', kind: 'chat', label: 'FIXED_ROLE_MUST_NOT_SHOW' }, { id: 'term', dirId: 'd1', kind: 'terminal', label: '终端' }] });
   routes['/api/cron'] = () => json([{ id: 'cron-a', name: '每日体验巡检', dirId: 'd1', dirName: 'MultiCC',
@@ -78,7 +79,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['POST /api/air/tasks'] = ({ body }) => {
     const value = JSON.parse(body);
     quickCreates.push(value);
-    airTasks.push({ ...newEntry.task, dirId: 'd1', status: 'active', updatedAt: Date.now(), resource: newEntry.resource });
+    airTasks.push({ ...newEntry.task, dirId: value.dirId, status: 'active', updatedAt: Date.now(), resource: newEntry.resource });
     return json({ ok: true, taskId: 'tsk_new', sessionId: 'task-new', shellId: 'shell-new' });
   };
   routes['POST /api/task-shell-tasks/tsk_new/messages'] = ({ body }) => { quickDispatches.push(JSON.parse(body)); return json({ ok: true, taskId: 'tsk_new', sessionId: 'task-new' }); };
@@ -501,7 +502,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('quick-task-form').parentElement.id`), 'quick-task-slot');
     assert.equal(await page.evaluate(`document.querySelectorAll('#quick-task-form').length`), 1, '搬走就是搬走，不在原地留第二份');
     assert.equal(await page.evaluate(`document.getElementById('empty').contains(document.getElementById('quick-task-form'))`), false);
-    assert.equal(await page.evaluate(`document.getElementById('quick-task-dialog-directory').textContent`), '/projects/multicc', '弹窗只说建在哪个目录上');
+    assert.deepEqual(await page.evaluate(`(()=>{const s=document.getElementById('quick-task-dialog-directory');return {tag:s.tagName,value:s.value,options:[...s.options].map(o=>[o.value,o.textContent])}})()`), {
+      tag: 'SELECT', value: 'd1', options: [['d1', 'MultiCC · /projects/multicc'], ['d2', 'Design Lab · /projects/design-lab']],
+    }, '弹窗默认当前目录，同时允许改选');
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, '三颗胶囊跟着一起搬');
     // 搬动的是同一个节点，不是重新造一个：上面挑好的线路和角色必须原样还在。
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · Backup Responses · gpt-5.6-sol');
@@ -536,8 +539,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     screenshots.push(await page.screenshot('new-task-dialog-mobile-closed'));
     assert.ok(await page.waitFor(`document.getElementById('quick-task-form').classList.contains('is-folded')`), '关掉就收回那条细杠');
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
-    await page.evaluate(`document.getElementById('quick-task-input').value='从目录首页创建任务';document.getElementById('quick-task-goal').checked=true;document.getElementById('quick-task-form').requestSubmit()`);
+    await page.evaluate(`document.getElementById('create').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('quick-task-dialog').open===true`));
+    await page.evaluate(`(()=>{const s=document.getElementById('quick-task-dialog-directory');s.value='d2';s.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('quick-task-input').value='从目录首页创建任务';document.getElementById('quick-task-goal').checked=true;document.getElementById('quick-task-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`location.search.includes('task=tsk_new')`));
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('dir')`), 'd2');
     assert.equal(quickDispatches.length, 1);
     assert.equal(quickDispatches[0].text, '从目录首页创建任务');
     assert.equal(quickDispatches[0].goal, true);
@@ -545,7 +551,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // pinned at creation and the roles are bound before the first message runs.
     const createBody = page.requests.filter(r => r.method === 'POST' && r.path === '/api/air/tasks').map(r => JSON.parse(r.body)).pop();
     const roleBody = page.requests.filter(r => r.path === '/api/air/tasks/tsk_new/roles').map(r => JSON.parse(r.body)).pop();
-    assert.equal(createBody.dirId, 'd1');
+    assert.equal(createBody.dirId, 'd2');
     assert.equal(createBody.title, '从目录首页创建任务');
     assert.equal(createBody.cli, 'codex');
     assert.equal(createBody.provider, 'codex-backup');
@@ -565,7 +571,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await settleOverlay(page);
     assert.notEqual(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台', '控制台没有顶掉页头');
     assert.equal(await page.evaluate(`Math.round(document.getElementById('console-panel').getBoundingClientRect().left)`), 0, '面板从左侧滑到位');
-    assert.equal(await page.evaluate(`document.querySelectorAll('#console-content .admin-directory-row').length`), 1);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#console-content .admin-directory-row').length`), 2);
     assert.equal(await page.evaluate(`document.querySelector('#console-content .admin-directory-row').innerText.includes('MultiCC')`), true);
     assert.equal(await page.evaluate(`[...document.querySelectorAll('.air-legacy-frame')].filter(x=>x.offsetParent).length`), 0);
     assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);

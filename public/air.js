@@ -514,11 +514,27 @@
   //
   // 目录首页开着的时候，弹窗后面那一页会暂时缺了输入框（被搬走了）。那一片被
   // ::backdrop 压暗着，读起来就是「它弹出来了」，关掉即回原位。
+  let quickDialogDirectoryId = null;
+
+  function quickTargetDirectoryId() {
+    if (!$('quick-task-dialog').open) return directoryId;
+    return data?.directories?.some(entry => entry.id === quickDialogDirectoryId)
+      ? quickDialogDirectoryId : directoryId;
+  }
+
   function openNewTaskComposer() {
     const dialog = $('quick-task-dialog');
     if (!data || !directoryId || dialog.open) return;
-    const directory = data.directories.find(entry => entry.id === directoryId);
-    $('quick-task-dialog-directory').textContent = directory?.path || '';
+    const select = $('quick-task-dialog-directory');
+    select.replaceChildren(...data.directories.map(entry => {
+      const option = node('option', [entry.name, entry.path].filter(Boolean).join(' · '));
+      option.value = entry.id;
+      return option;
+    }));
+    quickDialogDirectoryId = data.directories.some(entry => entry.id === directoryId)
+      ? directoryId : data.directories[0]?.id || null;
+    select.value = quickDialogDirectoryId || '';
+    select.disabled = false;
     $('quick-task-slot').append($('quick-task-form'));
     dialog.showModal();
     // 手机上这个模块平时折成一条细杠（air-quick-fold.js）；弹窗里要的是整张。
@@ -535,12 +551,17 @@
   // 本来就是它，append 回去正好是原来那个位置。
   $('quick-task-dialog').addEventListener('close', () => {
     $('empty').append($('quick-task-form'));
+    quickDialogDirectoryId = null;
+    $('quick-task-dialog-directory').disabled = false;
     // 手机上它平时折成一条细杠，弹窗里为了写字摊开成整张 —— 回到目录首页就按原来
     // 的规矩收回去，别让一次「算了」把半屏的卡片留在那儿。盒子里还有草稿时
     // fold() 自己什么都不做：那半句话不该被藏进一条细杠。
     window.__airQuickFold?.fold?.();
   });
   $('quick-task-dialog-close').onclick = closeNewTaskComposer;
+  $('quick-task-dialog-directory').onchange = event => {
+    quickDialogDirectoryId = event.target.value;
+  };
 
   // 新任务不再每次从「默认线路 · 默认模型」起步：/api/air 快照带着 lastRuntime
   // —— 最近一次实际用过的那套 CLI · 线路 · 模型。refresh() 会把它灌进胶囊；
@@ -644,7 +665,8 @@
 
   async function submitQuickTask(event) {
     event.preventDefault();
-    if (!data || !directoryId) return;
+    const targetDirectoryId = quickTargetDirectoryId();
+    if (!data || !targetDirectoryId) return;
     const typed = $('quick-task-input').value.trim();
     if (!typed) return;
     const paths = [...$('quick-task-files').querySelectorAll('[data-path]')].map(chip => chip.dataset.path);
@@ -657,17 +679,18 @@
     }
     const goal = $('quick-task-goal').checked;
     const goalLimits = goal ? goalLimitsFromForm() : null;
-    const fingerprint = JSON.stringify([directoryId, text, runtime, quickRoles, goalLimits]);
+    const fingerprint = JSON.stringify([targetDirectoryId, text, runtime, quickRoles, goalLimits]);
     if (!quickCreateAttempt || quickCreateAttempt.fingerprint !== fingerprint) {
       quickCreateAttempt = { fingerprint, createId: quickTaskId(), sendId: quickTaskId() };
     }
     const attempt = quickCreateAttempt;
     let created = null;
     $('quick-task-submit').disabled = true;
+    if ($('quick-task-dialog').open) $('quick-task-dialog-directory').disabled = true;
     quickStatus('正在创建固定任务…');
     try {
       const title = typed.split(/\n/).find(Boolean).trim().slice(0, 120);
-      created = await api('/api/air/tasks', { dirId: directoryId, title, clientMsgId: attempt.createId, ...runtime });
+      created = await api('/api/air/tasks', { dirId: targetDirectoryId, title, clientMsgId: attempt.createId, ...runtime });
       quickStatus('任务已创建，正在写入角色与第一条消息…');
       // Roles are bound before the first message: the binding speaks for the
       // next message, and the next message is exactly the one below.
@@ -698,17 +721,20 @@
       // 搬回目录首页）。失败时留着 —— 草稿还在里面，重试就是原样再点一次。
       closeNewTaskComposer();
       await refresh();
-      navigate(directoryId, created.taskId);
+      navigate(targetDirectoryId, created.taskId);
     } catch (error) {
       if (created?.taskId) {
         sessionStorage.setItem(`air:draft:${created.taskId}`, text);
         quickCreateAttempt = null;
         closeNewTaskComposer();
         await refresh();
-        navigate(directoryId, created.taskId);
+        navigate(targetDirectoryId, created.taskId);
         notice(`任务已创建，但第一条消息未确认送达：${error.message}。草稿已保留。`);
       } else quickStatus(error.message);
-    } finally { $('quick-task-submit').disabled = false; }
+    } finally {
+      $('quick-task-submit').disabled = false;
+      $('quick-task-dialog-directory').disabled = false;
+    }
   }
 
   function scheduleTime(value) {
