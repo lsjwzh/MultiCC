@@ -161,13 +161,39 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .nav-row { width: 100%; display: flex; align-items: center; gap: 9px; border-color: transparent; background: transparent; text-align: left; color: #4f657d; }
 .nav-row.active { color: #0f63c6; border-color: #cfe3f8; background: #fff; }
 nav { display: flex; flex-direction: column; gap: 4px; }
-/* Lives inside .side-more-body (a grid), so all it still decides is how tight
-   its own rows sit compared with the generic `nav` gap above. */
-.frequent-settings { gap: 2px; }
-.frequent-settings > .caption { margin: 4px 5px 1px; text-transform: uppercase; letter-spacing: .8px; }
-.sidebar-setting-row { width: 100%; min-height: 32px; display: flex; align-items: center; gap: 9px; padding: 4px 9px; border: 1px solid transparent; border-radius: 9px; color: #526b83; background: transparent; text-align: left; font-size: 11px; }
+/* Lives inside .side-more-body, so all it still decides is how its own rows sit.
+   两列：四个入口排 2×2，比一列短一半，也和下面 .global-links 的两列对齐。
+   行内距跟着收紧（图标 13px、间距 6px、字号 10.5px）—— 两列每格只有一百像素
+   出头，按一列那套尺寸排，「Provider 配置」这种长标签会被挤到换行。 */
+.frequent-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3px 4px; }
+.sidebar-setting-row { width: 100%; min-width: 0; min-height: 27px; display: flex; align-items: center; gap: 5px; padding: 3px 4px; border: 1px solid transparent; border-radius: 9px; color: #526b83; background: transparent; text-align: left; font-size: 10.5px; }
 .sidebar-setting-row:hover, .sidebar-setting-row.active { color: #0f63c6; border-color: #d7e7f8; background: rgba(255, 255, 255, .78); }
-.sidebar-setting-row > span:first-child { width: 15px; color: #6d89a4; text-align: center; }
+/* hidden 属性是 UA 的 display:none，挡不住上面那条 display:flex —— 关盖运行这行
+   在不支持的环境里要靠显式规则才真的消失。 */
+.sidebar-setting-row[hidden] { display: none; }
+.sidebar-setting-row > span:first-child { flex: 0 0 11px; width: 11px; color: #6d89a4; text-align: center; }
+/* 标签自己可以被截断：两列很窄，宁可少一个字也不要换行把行高压高。 */
+.sidebar-setting-row > span:nth-child(2) { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* Provider 配置是这一栏里最常点的入口（换线路、换模型都从它进）：加粗 + 更实的蓝，
+   一眼能看出它和旁边几行不是一个权重。 */
+.sidebar-setting-row.is-primary { color: #0d5fbe; font-weight: 650; }
+.sidebar-setting-row.is-primary > span:first-child { color: #0d69d5; }
+/* 关盖运行这行的开关（air.js 的 loadLidSleepRow 把控 .on）。行只有二十来像素高，
+   所以开关做成 19×11 的迷你尺寸，和 10.5px 的字同一档。 */
+.sidebar-setting-row .row-switch { flex: 0 0 auto; margin-left: auto; width: 19px; height: 11px; border-radius: 999px; background: #c6d6e6; box-shadow: inset 0 0 0 1px #b1c6da66; transition: background .18s; }
+.sidebar-setting-row .row-switch::after { content: ""; display: block; width: 9px; height: 9px; margin: 1px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px #2b4a6b3d; transition: transform .18s; }
+.sidebar-setting-row.on .row-switch { background: var(--green); }
+.sidebar-setting-row.on .row-switch::after { transform: translateX(8px); }
+/* 「更多与系统」里的每一组各套一个框：常用设置 / 系统工具 / 最近启动 / 主机操作。
+   四组原来只靠 4px 留白分隔，叠起来是一整片按钮，视线会顺着滑进下一组 —— 用户要
+   的「框住避免视觉干扰」就是这件事。框很轻（半透明白 + 一条淡边），只负责分组，
+   不跟里面的行抢注意力。 */
+.side-group { padding: 4px; border: 1px solid rgba(203, 219, 238, .8); border-radius: 13px; background: rgba(255, 255, 255, .5); }
+.side-group-title { display: flex; align-items: center; gap: 5px; padding: 1px 5px 4px; color: #5c7186; font-size: 10px; font-weight: 650; letter-spacing: .8px; cursor: pointer; list-style: none; }
+.side-group-title::-webkit-details-marker { display: none; }
+.side-group-title::after { content: "▾"; margin-left: auto; color: #93a9bf; font-size: 9px; transition: transform .18s; }
+.side-group-title:hover { color: #0f63c6; }
+details.side-group:not([open]) > .side-group-title::after { transform: rotate(-90deg); }
 #tasks button { width: 100%; min-width: 0; border-color: transparent; background: transparent; text-align: left; overflow-wrap: anywhere; }
 
 /* Three bands share the sidebar: fixed chrome, the task list, and the pinned
@@ -228,7 +254,7 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 .side-more > summary { padding: 7px 9px; color: #566d85; border: 1px solid transparent; border-radius: 11px; font-size: 11px; cursor: pointer; }
 .side-more > summary:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .side-more[open] > summary { color: #0f63c6; border-color: #d7e7f8; background: rgba(255, 255, 255, .9); }
-.side-more-body { display: grid; gap: 4px; padding: 6px 0 2px; }
+.side-more-body { display: grid; gap: 6px; padding: 6px 0 2px; }
 #air-ops-status:empty { display: none; }
 
 /* ── Host ops (air-ops.js): the manage sidebar's pinned bottom region ── */
@@ -267,14 +293,13 @@ nav { display: flex; flex-direction: column; gap: 4px; }
   font-size: 10px;
   font-weight: 650;
 }
-/* Indented to the version text rather than the icon, on the same two-line
-   rhythm, so the boot fact reads as the version row's sibling. */
-.ops-boot { padding: 0 7px 2px 28px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* 这一条自己就是一个 .side-group 的框，缩进不再对齐版本行（框给了边界）。 */
+.ops-boot { padding: 4px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .ops-boot-row { display: flex; gap: 6px; font-size: 11px; line-height: 1.35; }
 .ops-boot-label { color: var(--muted); }
 #air-boot-time { overflow: hidden; color: var(--text); white-space: nowrap; text-overflow: ellipsis; }
 .ops-boot-uptime { color: var(--muted); font-size: 10px; line-height: 1.35; }
-.ops-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 6px; padding: 2px 0 0; }
+.ops-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 4px; padding: 4px 4px 5px; }
 .ops-actions button, .ops-actions a {
   min-height: 28px;
   padding: 3px 7px;
