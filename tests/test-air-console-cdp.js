@@ -154,13 +154,20 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     // 频次收敛：每天点的留在外面，偶尔点的折进「更多与系统」；运维回执不能被折进去。
     const more = await page.evaluate(`(() => { const d=document.getElementById('side-more');
       return { tag: d.tagName, open: d.open, links: [...d.querySelectorAll('.global-links button')].map(b=>b.textContent),
-        holdsReceipt: d.contains(document.getElementById('air-ops-status')) }; })()`);
+        holdsReceipt: d.contains(document.getElementById('air-ops-status')),
+        holdsSettings: d.contains(document.getElementById('frequent-settings')),
+        settingsFirst: d.querySelector('.side-more-body').firstElementChild.id === 'frequent-settings',
+        outsideSettings: [...document.querySelectorAll('#sidebar > *')]
+          .filter(el => el !== d.parentElement).some(el => el.contains(document.getElementById('frequent-settings'))) }; })()`);
     assert.equal(more.tag, 'DETAILS');
     assert.equal(more.open, false, '「更多与系统」默认收起');
     assert.deepEqual(more.links, ['服务与文档', '记忆图谱', '任务图谱', '设置中心']);
     assert.equal(more.holdsReceipt, false, '运维回执留在折叠区外，折起来会连回执一起藏掉');
+    assert.equal(more.holdsSettings, true, '常用设置折进「更多与系统」');
+    assert.equal(more.settingsFirst, true, '常用设置是折叠区里的第一栏');
+    assert.equal(more.outsideSettings, false, '侧栏外面不再常驻这三行');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#frequent-settings .sidebar-setting-row')].map(el=>el.textContent.trim())`),
-      ['◈Provider 配置', '⌁外网穿透', '⇄消息桥接'], '常用设置在侧栏直接可达');
+      ['◈Provider 配置', '⌁外网穿透', '⇄消息桥接'], '三个常用设置自成一栏，一个不少');
 
     // ── 控制台：从左侧滑入，地址不变，当前任务不卸载 ─────────────────────
     const before = await page.evaluate(`(() => {

@@ -34,12 +34,6 @@
       <span>◫</span><span>控制台</span><span id="console-badge" class="console-badge" hidden></span>
     </button>
     <button id="schedules" class="nav-row" type="button"><span>◴</span><span>定时任务</span></button>
-    <nav id="frequent-settings" class="frequent-settings" aria-label="常用设置">
-      <span class="caption">常用设置</span>
-      <button type="button" class="sidebar-setting-row" data-air-view="provider"><span>◈</span><span>Provider 配置</span></button>
-      <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span>外网穿透</span></button>
-      <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span>消息桥接</span></button>
-    </nav>
 
     <!-- 这里原本是一组「收藏目录」（.favorite-caption 标题 + #favorites 列表），连同
          目录卡上那颗 ☆ 一起撤掉了：工作目录本来就不会很多，一组随时可能空的快捷
@@ -62,8 +56,8 @@
       <nav id="tasks" aria-label="最近任务列表"></nav>
     </section>
 
-    <!-- 频次收敛：每天点的（当前目录、控制台、定时任务、常用设置、最近任务、新建）留在外面，
-         偶尔点的（全局工具、任务看板、TERMINAL、主机运维）折进「更多」。
+    <!-- 频次收敛：每天点的（当前目录、控制台、定时任务、最近任务、新建）留在外面，
+         偶尔点的（常用设置、全局工具、任务看板、TERMINAL、主机运维）折进「更多」。
          版本行留在外面：它是更新提示的落点，藏起来就没人知道有新版本。 -->
     <div class="side-bottom">
       <div id="air-ver-row" class="ops-version" role="button" tabindex="0" title="点击检查并安装更新">
@@ -77,6 +71,17 @@
       <details id="side-more" class="side-more">
         <summary>更多与系统</summary>
         <div class="side-more-body">
+          <!-- 常用设置原本是侧栏顶部的一栏（控制台 / 定时任务下面）。三行常驻把
+               任务清单往下推了一整段，而它们其实是「偶尔改一次」的东西 —— 收进
+               折叠区，但自成一栏、排在这批折叠项的最前面：比起同在这里的全局工具
+               和主机运维，这三个还是点得最多的。id 和 .sidebar-setting-row 都留着，
+               air.js 的 data-air-view 绑定与 active 态不认位置。 -->
+          <nav id="frequent-settings" class="frequent-settings" aria-label="常用设置">
+            <span class="caption">常用设置</span>
+            <button type="button" class="sidebar-setting-row" data-air-view="provider"><span>◈</span><span>Provider 配置</span></button>
+            <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span>外网穿透</span></button>
+            <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span>消息桥接</span></button>
+          </nav>
           <nav class="global-links">
             <button type="button" data-air-view="docs">服务与文档</button>
             <button type="button" data-air-view="memory">记忆图谱</button>
