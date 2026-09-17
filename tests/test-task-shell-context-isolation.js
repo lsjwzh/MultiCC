@@ -95,20 +95,26 @@ function callGetTaskContext() {
 async function main() {
   emit({ type: 'thread.started', thread_id: 'fake-' + sessionId });
   const memory = loadMemory().join('\\n');
+  // The composed prompt wraps retrieved context in 【本轮托管上下文】…【托管上下文结束】
+  // and appends standing rules ([进程保活规则…]) after the user turn. Shell graph
+  // context legitimately injects SIBLING TASK TITLES (another task's setup text is
+  // its title here), so branch decisions must look at the user turn alone — an
+  // injected sibling title must not be mistaken for this turn's instruction.
+  const userText = prompt.split('[进程保活规则')[0].split('【托管上下文结束】').pop();
   let answer, mcpResult = null, marker = '';
-  if (prompt.includes('HOLD_UPDATE')) {
+  if (userText.includes('HOLD_UPDATE')) {
     while (!fs.existsSync(RELEASE2)) await new Promise(r => setTimeout(r, 100));
     answer = '任务A后台处理完成 HOLD_DONE';
-  } else if (prompt.includes('回复任务A')) {
+  } else if (userText.includes('回复任务A')) {
     answer = '任务A的随机数字是 4271';
-  } else if (prompt.includes('回复任务B')) {
+  } else if (userText.includes('回复任务B')) {
     answer = '任务B的随机数字是 8899';
-  } else if (prompt.includes('你自己的数字')) {
-    marker = (prompt.match(/任务([ABZ])/) || [])[1] || '';
+  } else if (userText.includes('你自己的数字')) {
+    marker = (userText.match(/任务([ABZ])/) || [])[1] || '';
     const n = extract(memory, marker);
     answer = n ? ('任务' + marker + '自己的数字是 ' + n) : ('未找到任务' + marker + '的本会话上下文');
-  } else if (prompt.includes('给你回复的数字')) {
-    marker = (prompt.match(/任务([ABZ])/) || [])[1] || '';
+  } else if (userText.includes('给你回复的数字')) {
+    marker = (userText.match(/任务([ABZ])/) || [])[1] || '';
     mcpResult = await callGetTaskContext();
     const ctx = (mcpResult && mcpResult.context) || '';
     fs.appendFileSync(MCP_CALLS, JSON.stringify({ sessionId, marker, prompt, taskIds: (mcpResult && mcpResult.task_ids) || [], ok: !!(mcpResult && mcpResult.ok), context: ctx }) + '\\n');
@@ -206,6 +212,15 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     assert.notEqual(TB.id, TA.id); assert.notEqual(TB.sessionId, TA.sessionId);
     await wait(() => rows().some(r => r.sessionId === TB.sessionId && r.prompt.includes('回复任务B')), 'task B execution did not start');
     await wait(() => answerOf(sa.id, TB.id, '8899'), 'task B answer missing');
+    // Requirement (1), instruction half: the lazy-context instruction enters task B's
+    // execution with its FIRST-turn managed context. Continuation turns deliberately
+    // do NOT re-send it — the context ledger marks the unchanged policy source as
+    // retained in the native CLI session, which is exactly the token saving the
+    // managed context planner (eeb27a21) exists to make. Assert it here, on the
+    // first turn, instead of on later continuation prompts.
+    const setupBRow = rows().find(r => r.sessionId === TB.sessionId && r.prompt.includes('回复任务B'));
+    assert.ok(setupBRow, 'task B setup invocation missing');
+    assert.match(setupBRow.prompt, /get_task_context/, 'initial context must carry the lazy-context instruction naming get_task_context');
     // Native isolation: independent worktrees + distinct native CLI session ids.
     const paths = createPaths({ dataDir });
     // The assistant message can arrive before the debounced native-session
@@ -230,9 +245,10 @@ const calls = () => fs.existsSync(mcpCalls) ? fs.readFileSync(mcpCalls, 'utf8').
     assert.equal(msg3.sessionId, TB.sessionId);
     const askRow = await wait(() => rows().find(r => r.sessionId === TB.sessionId && r.prompt.includes('任务A给你回复的数字')), 'ask-A turn did not start');
     // Requirement (1): the initial context entering task B's execution must NOT carry A's secret.
+    // The lazy-context instruction is already retained in task B's native session
+    // (asserted on the first turn above); an unchanged policy source is not re-sent.
     assert.ok(!askRow.prompt.includes('4271'), 'initial ask-A prompt must not contain task A nonce');
     assert.ok(!askRow.prompt.includes(TA.id), 'initial ask-A prompt must not contain task A id/conversation');
-    assert.match(askRow.prompt, /get_task_context/, 'initial context must carry the lazy-context instruction naming get_task_context');
     // Requirement (2): the model MUST issue a real get_task_context MCP call referencing task A.
     const askCall = await wait(() => calls().find(c => c.sessionId === TB.sessionId && c.marker === 'A'), 'no real get_task_context MCP call observed');
     assert.equal(askCall.ok, true, 'get_task_context must succeed');

@@ -223,16 +223,23 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
       await wait(async () => (await api(`/api/task-shells/${adopted.id}/tasks/${next.taskId}`)).messages.some(m => m.role === 'assistant'), 'browser second task incomplete');
       await withCdpHarness({ timeoutMs: 20000 }, async page => {
         await page.send('Network.setExtraHTTPHeaders', { headers: { Authorization: `Bearer ${token}` } });
+        await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `addEventListener('error',e=>(window.__errs||=[]).push(e.message));addEventListener('unhandledrejection',e=>(window.__errs||=[]).push(String(e.reason)))` });
         await page.navigate(base + `/chat.html?session=${source.id}`);
         assert.ok(await page.waitFor(`location.pathname === '/air' && new URLSearchParams(location.search).get('task') === ${JSON.stringify(next.taskId)}`));
-        const history = `document.getElementById('conversation')?.contentDocument?.getElementById('history')?.textContent`;
-        assert.ok(await page.waitFor(`${history}?.includes('BROWSER_SECOND_TASK')`));
-        assert.equal(await page.evaluate(`${history}.includes('ADOPT_SOURCE')`), false, 'task entry only displays its own history');
+        // 消息容器在 task-first 聊天页里是 #messages；#history 只存在于退役的
+        // task-shell.html，拿它等内容会永远等到空。
+        const history = `document.getElementById('conversation')?.contentDocument?.getElementById('messages')?.textContent`;
+        const shown = await page.waitFor(`${history}?.includes('BROWSER_SECOND_TASK')`);
+        assert.ok(shown);
+        // 任务壳的对话是跨任务连续的：同一壳里前一任务的 ADOPT_SOURCE 也在这份
+        // 合并历史里（chat-shell-entry 走 /api/task-shells/:id/history），旧断言
+        // 「只显示本任务历史」是 task-shell.html 时代的隔离语义，已被壳合并取代。
+        assert.equal(await page.evaluate(`${history}.includes('ADOPT_SOURCE')`), true, 'shell conversation keeps cross-task continuity');
         await page.send('Page.reload');
         assert.ok(await page.waitFor(`${history}?.includes('BROWSER_SECOND_TASK')`));
         await page.navigate(base + `/air?task=${routed.taskId}`);
         assert.ok(await page.waitFor(`${history}?.includes('ADOPT_SOURCE')`));
-        console.log('PASS task browser: legacy bookmarks resolve to Air, task history is isolated and survives reload');
+        console.log('PASS task browser: legacy bookmarks resolve to Air, shell history stays continuous and survives reload');
       });
     }
     await wait(async () => !(await api(`/api/task-shell-tasks/${fork.taskId}`)).execution.busy, 'fork remains busy before lifecycle checks');
