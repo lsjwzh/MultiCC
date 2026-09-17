@@ -1145,6 +1145,89 @@ void main() {
       expect(tester.takeException(), isNull);
       await _teardown(tester, store, client);
     });
+
+  // 关盖运行（macOS 电源）：设置中心 › 全局配置里那个开关，Air 侧栏「常用设置」
+  // 里也有一行。状态机只有三种：不知道（读不到）/ 这台主机没这个能力 / 有——界面
+  // 只在最后一种情况下摆那一行，所以这三件事必须分得开。
+  group('关盖运行（macOS 电源）', () {
+    test('这台主机没这个能力：available=false，不是「关着」', () async {
+      final settings = await _settings();
+      final client = MockClient((request) async {
+        expect(request.url.path, '/api/settings/power');
+        return _json(const {'available': false, 'enabled': false});
+      });
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await store.loadLidSleep();
+      expect(store.lidSleepAvailable, isFalse);
+      expect(store.lidSleepOn, isFalse);
+      client.close();
+    });
+
+    test('读不到就保持「不知道」：不能替主机回答它不支持', () async {
+      final settings = await _settings();
+      final client = MockClient(
+        (_) async => throw const SocketExceptionStub(),
+      );
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await store.loadLidSleep();
+      expect(store.lidSleepAvailable, isNull);
+      client.close();
+    });
+
+    test('点一下先动界面：授权框还弹在 Mac 上，开关已经翻过去了', () async {
+      final settings = await _settings();
+      final posts = <String>[];
+      final client = MockClient((request) async {
+        if (request.method == 'POST') {
+          posts.add(request.body);
+          return _json(const {'ok': true, 'available': true, 'enabled': true});
+        }
+        return _json(const {'available': true, 'enabled': false});
+      });
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await store.loadLidSleep();
+      expect(store.lidSleepAvailable, isTrue);
+      expect(store.lidSleepOn, isFalse);
+
+      await store.toggleLidSleep();
+      expect(posts, ['{"enabled":true}']);
+      expect(store.lidSleepOn, isTrue);
+      expect(store.receipt, '已开启关盖保持运行');
+      store.dispose();
+      client.close();
+    });
+
+    test('写失败：开关退回原状态，并说清失败在哪一步', () async {
+      final settings = await _settings();
+      final client = MockClient((request) async => request.method == 'POST'
+          ? _json(const {'error': 'Administrator authorization was canceled'}, 500)
+          : _json(const {'available': true, 'enabled': false}));
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await store.loadLidSleep();
+      await store.toggleLidSleep();
+      // 失败不能画成一次成功的切换：开关回原位，回执说失败。
+      expect(store.lidSleepOn, isFalse);
+      expect(store.receiptTone, 'err');
+      expect(store.receipt, contains('关盖运行设置失败'));
+      store.dispose();
+      client.close();
+    });
+
+    test('这台主机没这个能力时，点也点不动（一个请求都不发）', () async {
+      final settings = await _settings();
+      var posts = 0;
+      final client = MockClient((request) async {
+        if (request.method == 'POST') posts++;
+        return _json(const {'available': false, 'enabled': false});
+      });
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      await store.loadLidSleep();
+      await store.toggleLidSleep();
+      expect(posts, 0);
+      expect(store.lidSleepOn, isFalse);
+      client.close();
+    });
+  });
   });
 }
 
