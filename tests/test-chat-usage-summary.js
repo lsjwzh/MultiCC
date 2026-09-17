@@ -141,7 +141,9 @@ test('account quota and this conversation\'s context are separate rows, never on
   for (const id of ['opencode-quota-bar', 'qoder-quota-bar', 'codex-quota-bar']) {
     assert.match(primary, new RegExp(`id="${id}"[^>]*data-usage-role="native"`));
   }
-  for (const id of ['claude-rate-limit-bar', 'usage-balance-bar', 'ark-quota-bar', 'zhipu-quota-bar', 'kimi-quota-bar']) {
+  // The dedicated zhipu slot was removed (bbd90094): GLM windows now render
+  // through the generic provider-balance bar (usage-balance-bar) instead.
+  for (const id of ['claude-rate-limit-bar', 'usage-balance-bar', 'ark-quota-bar', 'kimi-quota-bar']) {
     assert.match(secondary, new RegExp(`id="${id}"`));
   }
   // Subscription windows meter an account over time; the context bar meters
