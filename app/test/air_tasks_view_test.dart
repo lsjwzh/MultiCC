@@ -152,6 +152,7 @@ MockClient _airAndCronClient() => MockClient((request) async {
       'clis': const ['claude'],
       'directories': const [
         {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
+        {'id': 'd2', 'name': '工作目录 B', 'path': '/project/b'},
       ],
       'tasks': const [],
     }),
@@ -466,7 +467,7 @@ void main() {
     client.close();
   });
 
-  testWidgets('侧栏的「定时任务」进的是原生定时任务中心', (tester) async {
+  testWidgets('侧栏的「定时任务」进原生中心，新建时默认当前目录', (tester) async {
     final settings = await _settings();
     final client = _airAndCronClient();
     await tester.pumpWidget(
@@ -474,6 +475,12 @@ void main() {
         home: AirTasksView(settings: settings, httpClient: client),
       ),
     );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-header-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('工作目录库'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-directory-d2')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
     await tester.pumpAndSettle();
@@ -484,6 +491,16 @@ void main() {
     expect(find.byKey(const ValueKey('air-schedules')), findsOneWidget);
     expect(find.text('1 条规则'), findsOneWidget);
     expect(find.text('每日巡检'), findsWidgets);
+    await tester.tap(find.byKey(const ValueKey('air-schedules-new')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<DropdownButtonFormField<String>>(
+            find.byKey(const ValueKey('air-schedule-dir')),
+          )
+          .initialValue,
+      'd2',
+    );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();

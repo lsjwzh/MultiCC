@@ -146,6 +146,7 @@ void _tallCanvas(WidgetTester tester) {
 Future<void> _pump(
   WidgetTester tester,
   MockClient client, {
+  String? initialDirectoryId,
   void Function(String dirId, String taskId)? onOpenTask,
 }) async {
   final settings = await _settings();
@@ -155,6 +156,7 @@ Future<void> _pump(
         settings: settings,
         httpClient: client,
         directories: _directories,
+        initialDirectoryId: initialDirectoryId,
         onOpenTask: onOpenTask,
       ),
     ),
@@ -459,7 +461,7 @@ void main() {
     _tallCanvas(tester);
     final calls = _Calls();
     final client = _client(calls);
-    await _pump(tester, client);
+    await _pump(tester, client, initialDirectoryId: 'd2');
 
     await tester.tap(find.byKey(const ValueKey('air-schedules-new')));
     await tester.pumpAndSettle();
@@ -468,6 +470,14 @@ void main() {
     );
     expect(title.data, '新建定时任务');
     expect(find.text('创建并绑定任务'), findsOneWidget);
+    expect(
+      tester
+          .widget<DropdownButtonFormField<String>>(
+            find.byKey(const ValueKey('air-schedule-dir')),
+          )
+          .initialValue,
+      'd2',
+    );
 
     // 名字空着就不发请求，先在表单里说清楚。
     await tester.tap(find.byKey(const ValueKey('air-schedule-save')));
@@ -505,7 +515,7 @@ void main() {
     expect(calls.paths, ['/api/cron', '/api/cron', '/api/cron']);
     expect(calls.bodies.single, {
       'name': '夜间巡检',
-      'dirId': 'd1',
+      'dirId': 'd2',
       'prompt': '检查一遍线上日志',
       'cron': '0 * * * *',
       'cli': 'claude',

@@ -888,6 +888,7 @@ class _AirTasksViewState extends State<AirTasksView>
             settings: widget.settings,
             httpClient: widget.httpClient,
             directories: _data?.directories ?? const <AirDirectory>[],
+            initialDirectoryId: _directoryId,
             onOpenTask: (dirId, taskId) {
               Navigator.of(routeContext).pop();
               _openTaskById(dirId, taskId);
