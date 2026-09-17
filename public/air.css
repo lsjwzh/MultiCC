@@ -161,7 +161,9 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .nav-row { width: 100%; display: flex; align-items: center; gap: 9px; border-color: transparent; background: transparent; text-align: left; color: #4f657d; }
 .nav-row.active { color: #0f63c6; border-color: #cfe3f8; background: #fff; }
 nav { display: flex; flex-direction: column; gap: 4px; }
-.frequent-settings { flex-shrink: 0; gap: 2px; margin-top: 2px; }
+/* Lives inside .side-more-body (a grid), so all it still decides is how tight
+   its own rows sit compared with the generic `nav` gap above. */
+.frequent-settings { gap: 2px; }
 .frequent-settings > .caption { margin: 4px 5px 1px; text-transform: uppercase; letter-spacing: .8px; }
 .sidebar-setting-row { width: 100%; min-height: 32px; display: flex; align-items: center; gap: 9px; padding: 4px 9px; border: 1px solid transparent; border-radius: 9px; color: #526b83; background: transparent; text-align: left; font-size: 11px; }
 .sidebar-setting-row:hover, .sidebar-setting-row.active { color: #0f63c6; border-color: #d7e7f8; background: rgba(255, 255, 255, .78); }
@@ -923,7 +925,7 @@ body.console-open #console-panel { transform: none; visibility: visible; }
      手机上会把中间那些固定内容压扁（目录卡被裁），而这些恰恰是抽屉存在的理由；
      手机上滚动一屏比钉住一行值。 */
   #sidebar { position: fixed; inset: 0 auto 0 0; width: min(286px, calc(100% - 34px)); transform: translateX(-105%); box-shadow: 14px 0 70px #263f5d30; overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > .frequent-settings, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   /* 任务区跟着抽屉一起滚，不再自己开第二层滚动条。 */
   #task-sidebar { overflow: visible; }
   #tasks { overflow: visible; }
@@ -1047,15 +1049,17 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 }
 
 /* 矮屏（横屏手机、被压扁的窗口）同样分不出那三段：固定内容（目录卡、导航、
-   抬头与「＋ 新任务」、脚注）加起来就超过屏幕，留给任务带的只剩十几像素 ——
-   于是清单的 min-height 撑破带子，带子虽然重新变成滚动者，却只是一条 12px 的
-   缝，缝里还挂着另一份要自己滚的清单，谁也看不全。整条侧栏一起滚，跟上面
-   手机宽度那条规则同一个理由：滚动一屏比钉住一行值。
-   阈值是实测来的：1280 宽下固定内容约 408px，加上抬头/新建按钮与三行清单约
-   224px，再矮这套三段布局就站不体面了。 */
+   抬头与「＋ 新任务」、脚注）加上清单的 min-height 就超过屏幕，留给任务带的只剩
+   十几像素 —— 于是清单的 min-height 撑破带子，带子虽然重新变成滚动者，却只是
+   一条 12px 的缝，缝里还挂着另一份要自己滚的清单，谁也看不全。整条侧栏一起滚，
+   跟上面手机宽度那条规则同一个理由：滚动一屏比钉住一行值。
+   阈值是实测来的：1280 宽下固定内容约 365px（常用设置折进「更多」之前是 489px，
+   那一栏自己就占 124px），加上 #tasks 的 min-height 120px 约 485px。切点没有跟着
+   降到 500 出头：这条规则管的是「站不站得体面」而不是「装不装得下」，而 365px
+   是版本行还没长出更新提示、目录名还没换行时量到的下限。 */
 @media (max-height: 640px) {
   #sidebar { overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .frequent-settings, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   #task-sidebar { overflow: visible; }
   #tasks { min-height: 0; overflow: visible; }
 }
