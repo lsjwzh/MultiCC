@@ -2025,6 +2025,50 @@
   $('palette-input').oninput = () => { paletteIndex = 0; renderPalette(); };
   $('schedules').onclick = () => setMode('schedules');
   document.querySelectorAll('[data-air-view]').forEach(button => { button.onclick = () => setMode(button.dataset.airView); });
+
+  // ── 常用设置里的「关盖运行」 ───────────────────────────────────────────
+  // 设置中心 › 全局配置里那个开关的快捷版：点一下直接切，不用先跳页。这一行只在
+  // macOS 且读得到状态时才出现 —— 非 macOS 的 /api/settings/power 答 available:false，
+  // 接口打不通（旧服务、未登录）也一律当不支持：宁可少一行，也不要摆一个点了没
+  // 反应的按钮。状态读取是 best-effort，失败不弹错误（侧栏不是报错的地方）。
+  const lidSleepRow = $('air-lid-sleep');
+  let lidSleepBusy = false;
+  function paintLidSleep(enabled) {
+    lidSleepRow.classList.toggle('on', !!enabled);
+    lidSleepRow.setAttribute('aria-pressed', String(!!enabled));
+    lidSleepRow.title = enabled
+      ? '关盖时保持运行，不进入睡眠（点击恢复关盖睡眠）'
+      : '关盖时保持运行（点击开启，需要在 Mac 上完成管理员授权）';
+  }
+  async function loadLidSleepRow() {
+    if (!lidSleepRow) return;
+    try {
+      const status = await api('/api/settings/power');
+      if (!status.available) { lidSleepRow.hidden = true; return; }
+      paintLidSleep(status.enabled);
+      lidSleepRow.hidden = false;
+    } catch (_) { lidSleepRow.hidden = true; }
+  }
+  async function toggleLidSleep() {
+    if (lidSleepBusy) return;
+    lidSleepBusy = true;
+    const wanted = !lidSleepRow.classList.contains('on');
+    // 先动开关：授权框弹在 Mac 上的时候，它不该还停在旧状态上装没反应。
+    paintLidSleep(wanted);
+    try {
+      const result = await api('/api/settings/power', { enabled: wanted }, 'POST');
+      paintLidSleep(result.enabled);
+      notice(result.enabled ? '已开启关盖保持运行' : '已恢复关盖睡眠');
+    } catch (error) {
+      // 失败退回原状态：开关不能替服务点头。
+      paintLidSleep(!wanted);
+      notice(`关盖运行设置失败：${error.message}`);
+    } finally { lidSleepBusy = false; }
+  }
+  if (lidSleepRow) lidSleepRow.onclick = () => { void toggleLidSleep(); };
+  // 展开「更多与系统」时对一次状态：这个开关在别处（设置中心、manage 页）也能改。
+  const sideMore = $('side-more');
+  if (sideMore) sideMore.addEventListener('toggle', () => { if (sideMore.open) void loadLidSleepRow(); });
   $('directory-search').oninput = renderDirectories;
   // Refreshing means reloading what the page is showing. The conversation lives
   // in a frame of its own, so reloading it is a partial reload of this page: the
@@ -2249,5 +2293,6 @@
     if (!document.hidden || !data) await refresh();
     if (!stopped && currentEpoch === epoch) timer = setTimeout(() => poll(currentEpoch), 4000);
   }
+  void loadLidSleepRow();
   void poll();
 })();
