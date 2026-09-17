@@ -15,7 +15,7 @@ test('Air owns the management home and exposes the management navigation', () =>
   assert.match(html, /data-air-view="docs"/);
   assert.match(html, /data-air-view="memory"/);
   assert.match(html, /data-air-view="settings"/);
-  assert.match(html, /id="frequent-settings"[\s\S]*?data-air-view="provider"[\s\S]*?data-air-view="tunnel"[\s\S]*?data-air-view="bridges"/);
+  assert.match(html, /id="side-more"[\s\S]*?id="frequent-settings"[\s\S]*?data-air-view="provider"[\s\S]*?data-air-view="tunnel"[\s\S]*?data-air-view="bridges"/);
   assert.match(html, /src="air-admin\.js"/);
   assert.match(html, /src="air-provider\.js"/);
   assert.match(js, /adminModes\.has\(requested\)/);
