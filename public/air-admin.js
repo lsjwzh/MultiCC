@@ -11,6 +11,7 @@
     return value;
   };
   const legacyPanels = {
+    docs: ['服务与文档', '本地服务、网页和文件', 'DOCS'],
     memory: ['记忆图谱', '项目记忆、会话记忆与文件编辑', 'MEMORY'],
     taskgraph: ['任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接', 'TASKGRAPH'],
     // aux 不是 legacy iframe 页(manage 那边配置在弹窗里,没有 view 可嵌)——
@@ -28,6 +29,7 @@
     storage: ['临时上传', '上传缓存、空间占用与清理', 'STORAGE'],
   };
   const settingGroups = [
+    ['重要功能', ['docs', 'memory', 'taskgraph']],
     ['AI 与执行', ['provider', 'aux', 'goal', 'voice', 'global']],
     ['连接与通知', ['push', 'tunnel', 'bridges']],
     ['资源与存储', ['resources', 'skillsync', 'storage']],
@@ -766,7 +768,7 @@
     const content = el('admin-content');
     const groups = make('div', null, 'air-settings-groups');
     for (const [title, modes] of settingGroups) {
-      const section = make('section', null, 'admin-panel air-settings-group');
+      const section = make('section', null, `admin-panel air-settings-group${title === '重要功能' ? ' air-settings-feature-group' : ''}`);
       section.append(make('h3', title));
       const grid = make('div', null, 'air-settings-grid');
       for (const mode of modes) {
