@@ -1,4 +1,7 @@
 node_modules/
+# Worktrees may carry node_modules as a symlink to the main checkout's deps;
+# a trailing-slash pattern does not match a symlink, so ignore the name itself.
+node_modules
 .env
 
 # OS / IDE
