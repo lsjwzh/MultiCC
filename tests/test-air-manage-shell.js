@@ -31,6 +31,8 @@ test('native Air registry and compatibility panels preserve every former manage 
   assert.match(admin, /MultiCCAirProvider/);
   assert.match(admin, /service-dialog/);
   assert.match(admin, /embed=air/);
+  assert.match(admin, /const settingGroups = \[[\s\S]*?\['重要功能', \['docs', 'memory', 'taskgraph'\]\]/);
+  assert.match(admin, /air-settings-feature-group/);
   assert.match(read('public/manage.html'), /manage-air-embed\.css/);
   assert.match(read('public/manage-air-embed.css'), /html\.air-embed #nav/);
 });
