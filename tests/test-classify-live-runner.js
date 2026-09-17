@@ -449,3 +449,63 @@ test('low relevance in a locked shell raises confirmation without changing name,
   assert.equal(h.observed.shellSettlements.length, 0);
   assert.equal(h.observed.boardReassignments.length, 0);
 });
+
+// relation=new 配 relevance=high 是同仓库连续迭代的常态（模型认为「同主题有
+// 关联」），只听 low 信号弹窗永远不出现——新任务判定本身也要汇到同一个
+// 用户确认弹窗，标题取模型给新任务起的名字。
+test('relation=new with high relevance still raises the separation confirmation', async () => {
+  const history = [
+    { id: 'u0', role: 'user', content: 'Original feature', taskId: 'task-1' },
+    { id: 'u1', role: 'user', content: 'Different feature', taskId: 'task-1', turnId: 'turn-new' },
+    { id: 'a1', role: 'assistant', content: 'Done', taskId: 'task-1', turnId: 'turn-new' },
+  ];
+  const h = fixture({ taskShell: true, isStreaming: false, history, separationResult: { id: 'sep-2', state: 'pending' },
+    auxText: JSON.stringify({ relation: 'new', taskName: '修复 limit bar 不更新', contextRelevance: 'high', splitTaskName: null }) });
+  h.record.taskState.taskId = 'task-1'; h.record.taskState.classifyState = 'D';
+  h.chatState.currentUserText = 'Different feature';
+  h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-new' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.observed.separations.length, 1);
+  assert.equal(h.observed.separations[0][2].separation.title, '修复 limit bar 不更新');
+  assert.equal(h.record.taskState.taskId, 'task-1', '用户确认前任务身份不变');
+  assert.equal(h.observed.shellSettlements.length, 0);
+  assert.equal(h.observed.boardReassignments.length, 0);
+});
+
+// 弹窗不可提出（首轮无前序/锚点过期 → propose 返回 null）时必须落回原来的
+// 归属候选路径，新任务判定不能就这么丢掉。
+test('relation=new falls back to attribution handling when no separation can be proposed', async () => {
+  const history = [
+    { id: 'u0', role: 'user', content: 'Original feature', taskId: 'task-1' },
+    { id: 'u1', role: 'user', content: 'Different feature', taskId: 'task-1', turnId: 'turn-new' },
+    { id: 'a1', role: 'assistant', content: 'Done', taskId: 'task-1', turnId: 'turn-new' },
+  ];
+  const h = fixture({ taskShell: true, isStreaming: false, history, separationResult: null,
+    auxText: JSON.stringify({ relation: 'new', taskName: '修复 limit bar 不更新', contextRelevance: 'high', splitTaskName: null }) });
+  h.record.taskState.taskId = 'task-1'; h.record.taskState.classifyState = 'D';
+  h.chatState.currentUserText = 'Different feature';
+  h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-new' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.observed.separations.length, 1, '仍然尝试过提出分离建议');
+  assert.equal(h.observed.shellSettlements.length, 1, 'propose 无果后回归归属结算路径');
+});
+
+// 用户已经对这个标题点过「保留在当前任务」：propose 返回 kept 占位,不能因此
+// 又跑去建归属候选折腾同一个任务。
+test('a previously kept split title settles quietly without attribution churn', async () => {
+  const history = [
+    { id: 'u0', role: 'user', content: 'Original feature', taskId: 'task-1' },
+    { id: 'u1', role: 'user', content: 'Different feature', taskId: 'task-1', turnId: 'turn-new' },
+    { id: 'a1', role: 'assistant', content: 'Done', taskId: 'task-1', turnId: 'turn-new' },
+  ];
+  const h = fixture({ taskShell: true, isStreaming: false, history, separationResult: { id: 'sep-3', state: 'kept' },
+    auxText: JSON.stringify({ relation: 'new', taskName: '修复 limit bar 不更新', contextRelevance: 'high', splitTaskName: null }) });
+  h.record.taskState.taskId = 'task-1'; h.record.taskState.classifyState = 'D';
+  h.chatState.currentUserText = 'Different feature';
+  h.machine.runClassifyNow(h.chatState, 's1', { turnId: 'turn-new' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.observed.separations.length, 1);
+  assert.equal(h.record.taskState.taskId, 'task-1');
+  assert.equal(h.observed.shellSettlements.length, 0);
+  assert.equal(h.observed.boardReassignments.length, 0);
+});
