@@ -161,6 +161,11 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .nav-row { width: 100%; display: flex; align-items: center; gap: 9px; border-color: transparent; background: transparent; text-align: left; color: #4f657d; }
 .nav-row.active { color: #0f63c6; border-color: #cfe3f8; background: #fff; }
 nav { display: flex; flex-direction: column; gap: 4px; }
+.frequent-settings { flex-shrink: 0; gap: 2px; margin-top: 2px; }
+.frequent-settings > .caption { margin: 4px 5px 1px; text-transform: uppercase; letter-spacing: .8px; }
+.sidebar-setting-row { width: 100%; min-height: 32px; display: flex; align-items: center; gap: 9px; padding: 4px 9px; border: 1px solid transparent; border-radius: 9px; color: #526b83; background: transparent; text-align: left; font-size: 11px; }
+.sidebar-setting-row:hover, .sidebar-setting-row.active { color: #0f63c6; border-color: #d7e7f8; background: rgba(255, 255, 255, .78); }
+.sidebar-setting-row > span:first-child { width: 15px; color: #6d89a4; text-align: center; }
 #tasks button { width: 100%; min-width: 0; border-color: transparent; background: transparent; text-align: left; overflow-wrap: anywhere; }
 
 /* Three bands share the sidebar: fixed chrome, the task list, and the pinned
@@ -893,7 +898,7 @@ body.console-open #console-panel { transform: none; visibility: visible; }
      手机上会把中间那些固定内容压扁（目录卡被裁），而这些恰恰是抽屉存在的理由；
      手机上滚动一屏比钉住一行值。 */
   #sidebar { position: fixed; inset: 0 auto 0 0; width: min(286px, calc(100% - 34px)); transform: translateX(-105%); box-shadow: 14px 0 70px #263f5d30; overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > .frequent-settings, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   /* 任务区跟着抽屉一起滚，不再自己开第二层滚动条。 */
   #task-sidebar { overflow: visible; }
   #tasks { overflow: visible; }
@@ -1025,7 +1030,7 @@ body.console-open #console-panel { transform: none; visibility: visible; }
    224px，再矮这套三段布局就站不体面了。 */
 @media (max-height: 640px) {
   #sidebar { overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .frequent-settings, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   #task-sidebar { overflow: visible; }
   #tasks { min-height: 0; overflow: visible; }
 }
