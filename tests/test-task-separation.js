@@ -25,6 +25,9 @@ test('only explicit low relevance with a title produces a suggestion; locked ide
     { title: 'New goal', reason: 'Separate' });
   assert.equal(parseTaskAttribution('{"contextRelevance":"low"}').separation, undefined);
   assert.match(buildTaskAttributionSystemPrompt({ identityLocked: true }), /即使任务身份锁定，也必须判断关联度/);
+  // 判定标准刻意放宽:同一仓库/同一产品内的不同功能也算不同交付目标,
+  // 否则同产品迭代永远拿不到 low,「任务另起」建议形同虚设。
+  assert.match(buildTaskAttributionSystemPrompt({}), /同一仓库、同一产品内的不同功能或问题也算不同交付目标/);
 });
 test('suggestion is durable, deduplicated and makes no task, identity, cursor or execution changes', async t => {
   const f = await setup(t), before = JSON.stringify(f.store.list('task')), shell = f.runtime.view(f.a.id);
