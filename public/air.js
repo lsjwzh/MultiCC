@@ -2,7 +2,17 @@
   'use strict';
 
   const $ = id => document.getElementById(id);
-  const initialParams = new URLSearchParams(location.search);
+  function readRouteParams() {
+    const params = new URLSearchParams(location.search);
+    // Retired planner bookmarks open the current console, including on an
+    // already-running server that still has the old /manage redirect loaded.
+    if (params.get('view') === 'planner') {
+      params.set('view', 'overview');
+      history.replaceState(history.state, '', `${location.pathname}?${params}${location.hash}`);
+    }
+    return params;
+  }
+  const initialParams = readRouteParams();
   const adminModes = window.MultiCCAirAdmin?.modes || new Set();
   const modeFrom = params => {
     const requested = params.get('view');
@@ -45,8 +55,7 @@
     starting: '正在启动', running: '执行中', uncertain: '等待核实执行状态', idle: '空闲', queued: '排队中',
     waiting: '等待回答', archived: '已归档', stale: '建议已过期',
     // 工作流阶段（src/task-board/planning.js WORKFLOW_STAGES）五个都要有词：任务行
-    // 会把阶段当补充信息写在徽标后面，漏一个就有一行蹦出英文。用词跟老看板
-    // （manage-task-planner.js plannerStage*）对齐 —— 同一件事不在这套界面里叫两个名字。
+    // 会把阶段当补充信息写在徽标后面，漏一个就有一行蹦出英文。
     inbox: '待处理', ready: '待执行', doing: '进行中', review: '待验收', done: '已完成',
   };
   const blockerNames = {
@@ -412,7 +421,6 @@
     const current = tasks.filter(task => !['done', 'archived'].includes(task.status));
     const running = current.filter(isRunningTask);
     const planned = current.filter(task => task.recordType === 'planned' && !running.includes(task));
-    $('directory-open-planner').disabled = !dir;
     const stat = (name, value, detail, tone = '') => {
       const card = node('article', null, `directory-stat ${tone}`);
       card.append(node('span', name), node('strong', String(value)), node('small', detail));
@@ -925,7 +933,6 @@
   function renderHeader(dir) {
     const selectedEntry = entry?.task?.id === taskId ? entry : null;
     const adminHeadings = {
-      planner: ['MultiCC Air › 工作管理', '任务看板', '按模块查看、筛选与规划全部任务。'],
       // 「谁在等我」的整页。控制台那一格只放最近更新的几条，这里是完整清单。
       attention: ['MultiCC Air › 控制台', '谁在等我', '跨所有工作目录：谁在等我回答、出错或正在跑。'],
       docs: ['MultiCC Air › 系统工具', '服务与文档', 'Agent 产物、本地页面和服务登记。'],
@@ -1135,7 +1142,6 @@
     // Page actions ride in the header (see air.html): one heading band per view.
     $('add-directory').hidden = mode !== 'library';
     $('schedule-create').hidden = mode !== 'schedules';
-    $('directory-open-planner').hidden = $('task-layout').hidden || !!taskId;
     $('admin-actions').hidden = !adminMode;
     if (adminMode) window.MultiCCAirAdmin?.render(mode, adminContext());
 
@@ -1925,7 +1931,6 @@
     renderSetupCard();
   };
   void refreshAuxConfigured();
-  $('directory-open-planner').onclick = () => setMode('planner');
   $('quick-task-form').onsubmit = submitQuickTask;
   $('quick-task-attach').onclick = () => $('quick-task-file-input').click();
   $('quick-task-file-input').onchange = event => void uploadQuickTaskFiles(event.target.files);
@@ -2057,7 +2062,7 @@
   });
   window.addEventListener('popstate', () => {
     saveDraft();
-    const params = new URLSearchParams(location.search);
+    const params = readRouteParams();
     taskId = params.get('task');
     directoryId = params.get('dir');
     mode = modeFrom(params);
@@ -2065,7 +2070,7 @@
     closeDetails();
     closePalette();
     // 后退/前进要如实反映地址：?view=overview 就是「控制台开着」。
-    applyConsole(params.get('view') === 'overview');
+    applyConsole(['overview', 'activity'].includes(params.get('view')));
     render();
     void refreshEntry();
     if (mode === 'schedules' || consoleOpen) void refreshSchedules().then(render);

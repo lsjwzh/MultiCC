@@ -11,7 +11,6 @@
     return value;
   };
   const legacyPanels = {
-    planner: ['任务看板', '按模块查看、筛选与规划全部任务', 'PLANNER'],
     memory: ['记忆图谱', '项目记忆、会话记忆与文件编辑', 'MEMORY'],
     taskgraph: ['任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接', 'TASKGRAPH'],
     // aux 不是 legacy iframe 页(manage 那边配置在弹窗里,没有 view 可嵌)——
@@ -784,8 +783,8 @@
 
   function renderLegacy(mode, context) {
     const [title] = legacyPanels[mode] || [mode];
-    const legacyView = mode === 'planner' ? 'tasks' : mode;
-    const homeMode = ['planner', 'memory', 'taskgraph'].includes(mode) ? 'overview' : 'settings';
+    const legacyView = mode;
+    const homeMode = ['memory', 'taskgraph'].includes(mode) ? 'overview' : 'settings';
     setActions([
       action(homeMode === 'overview' ? '返回控制台' : '返回设置中心', () => context.setMode(homeMode), '', panelIcon('←')),
       action('在独立页打开', () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener'), '', panelIcon('↗')),

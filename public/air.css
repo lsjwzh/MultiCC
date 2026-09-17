@@ -357,7 +357,6 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #task-layout { min-height: 0; flex: 1; display: flex; }
 #task-content { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; background: linear-gradient(145deg, #fff, #f7faff); }
 #empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 34px; color: var(--muted); }
-#directory-open-planner { flex: 0 0 auto; color: #37698f; background: rgba(255, 255, 255, .72); }
 #directory-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 /* 四张统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
    再往下就是任务列表。所以它们按「一行字」而不是「一张卡片」来做 —— 填充、

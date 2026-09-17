@@ -260,24 +260,15 @@ async function refreshTaskBoard(force) {
     const d = await r.json();
     if (!d || !d.ok) return;
     _tbBoard = window.MultiCCTaskBoardUi.reconcileSnapshot(d);
-    if (typeof window.MultiCCTaskPlanner?.reconcileSnapshot === 'function') {
-      window.MultiCCTaskPlanner.reconcileSnapshot(d);
-    }
     if (_tbMergeMode) _tbPruneMergeSelection(_tbTasksForDir(_tbMergeDirId));
     _tbFetchedAt = Date.now();
     // A task-bound chat is deliberately absent from the ordinary Fleet session
     // list, so task activity has to refresh the outer Fleet state explicitly.
     if (typeof refreshTaskBoardFleetActivity === 'function') refreshTaskBoardFleetActivity();
     else if (typeof refreshAllCardBorders === 'function') refreshAllCardBorders();
-    // The unified task surface reconciles the snapshot above. Keep its DOM
-    // stable so search/scroll/focus survive, but refresh the outer Fleet tab's
-    // count and running marker from the same snapshot.
-    if (typeof _detailModalOpen === 'function' && _detailModalOpen()) {
-      if (typeof _dirDetailTab !== 'undefined' && _dirDetailTab === 'tasks') {
-        if (typeof refreshDirectoryDetailTaskTab === 'function') refreshDirectoryDetailTaskTab(_detailDirId);
-      } else if (typeof renderDirectoryDetailBody === 'function') {
-        renderDirectoryDetailBody(_detailDirId);
-      }
+    if (typeof _detailModalOpen === 'function' && _detailModalOpen()
+        && typeof renderDirectoryDetailBody === 'function') {
+      renderDirectoryDetailBody(_detailDirId);
     }
     // 刷新后定位新任务（若有待定位的）
     if (_tbPendingTaskIds.length) {

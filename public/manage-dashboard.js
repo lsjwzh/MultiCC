@@ -1424,10 +1424,7 @@ function updateDirDetailPush(dirId) {
   btn.title = title;
   btn.onclick = (e) => { e.stopPropagation(); pushDirectory(dirId); };
 }
-// Detail modal content tabs: sessions and one shared TODO/task surface. The
-// planner owns list/board/activity perspectives and source filtering inside the
-// task tab, so Fleet detail no longer exposes two competing task products.
-let _dirDetailTab = 'sessions';   // 'sessions' | 'tasks'
+// Fleet details keep session controls here; tasks open the current Air console.
 function directoryWorkTaskCount(tasks) {
   return (Array.isArray(tasks) ? tasks : []).reduce((count, task) => {
     const stage = String(task?.workflowStage || '').toLowerCase();
@@ -1458,9 +1455,13 @@ function refreshDirectoryDetailTaskTab(dirId) {
   button.innerHTML = `📋 任务${taskCount ? ` (${taskCount})` : ''}${runningBadge}`;
 }
 function switchDirDetailTab(tab) {
-  // Map old in-page calls during a rolling frontend update to the unified tab.
-  _dirDetailTab = ['tasks', 'taskboard', 'planner'].includes(tab) ? 'tasks' : 'sessions';
-  if (_detailDirId) renderDirectoryDetailBody(_detailDirId);
+  if (!_detailDirId) return;
+  if (['tasks', 'taskboard', 'planner'].includes(tab)) {
+    const params = new URLSearchParams({ view: 'overview', dir: _detailDirId });
+    location.assign(`/air?${params}`);
+    return;
+  }
+  renderDirectoryDetailBody(_detailDirId);
 }
 function renderDirectoryDetailBody(dirId) {
   const body = document.getElementById('dir-detail-body');
@@ -1482,35 +1483,20 @@ function renderDirectoryDetailBody(dirId) {
       : '';
     tabs = `
       <div class="dd-tabs">
-        <button class="dd-tab${_dirDetailTab === 'sessions' ? ' on' : ''}" onclick="switchDirDetailTab('sessions')">🖥 会话</button>
-        <button class="dd-tab${_dirDetailTab === 'tasks' ? ' on' : ''}${runningTaskCount ? ' has-running' : ''}" data-dir-detail-tab="tasks" onclick="switchDirDetailTab('tasks')">📋 任务${taskCount ? ` (${taskCount})` : ''}${runningBadge}</button>
+        <button class="dd-tab on" onclick="switchDirDetailTab('sessions')">🖥 会话</button>
+        <button class="dd-tab${runningTaskCount ? ' has-running' : ''}" data-dir-detail-tab="tasks" onclick="switchDirDetailTab('tasks')">📋 任务${taskCount ? ` (${taskCount})` : ''}${runningBadge}</button>
       </div>`;
   }
-  const tasksTabActive = hasBoard && _dirDetailTab === 'tasks';
-  if (!tasksTabActive && window.MultiCCTaskPlanner?.unmountFleet) {
-    window.MultiCCTaskPlanner.unmountFleet();
-  }
-  const content = tasksTabActive
-    ? '<div class="fleet-task-planner-root"></div>'
-    : renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId), dirId);
-  const modal = document.getElementById('dir-detail-modal');
-  if (modal) modal.classList.toggle('fleet-planner-open', tasksTabActive);
-  body.innerHTML = tabs + content;
-  if (tasksTabActive) {
-    const plannerRoot = body.querySelector('.fleet-task-planner-root');
-    if (plannerRoot && window.MultiCCTaskPlanner?.mountFleet) {
-      window.MultiCCTaskPlanner.mountFleet(plannerRoot, dirId);
-    }
-  } else initSessionCardDragDrop(body);
+  body.innerHTML = tabs + renderEventTimeline(dirId) + renderDirSessionGroups(dirSessionsOf(dirId), dirId);
+  initSessionCardDragDrop(body);
   // The board composer sits outside this re-rendered body (static container in
   // the modal) so typed text/recording survive WS-driven redraws.
   if (typeof syncTaskBoardDirComposer === 'function') syncTaskBoardDirComposer(dirId, false);
 }
 function closeDirectoryDetail() {
-  if (window.MultiCCTaskPlanner?.unmountFleet) window.MultiCCTaskPlanner.unmountFleet();
   _detailDirId = null;
   const m = document.getElementById('dir-detail-modal');
-  if (m) m.classList.remove('visible', 'fleet-planner-open');
+  if (m) m.classList.remove('visible');
 }
 function _detailModalOpen() {
   const m = document.getElementById('dir-detail-modal');

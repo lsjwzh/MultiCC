@@ -18,7 +18,27 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
   const cron = await fetch(base + '/manage?view=cron', { redirect: 'manual' });
   assert.equal(cron.headers.get('location'), '/air?view=schedules');
   const planner = await fetch(base + '/manage?view=tasks', { redirect: 'manual' });
-  assert.equal(planner.headers.get('location'), '/air?view=planner');
+  assert.equal(planner.headers.get('location'), '/air?view=overview');
+  for (const url of ['/air?view=planner', '/air.html?view=planner', '/manage?view=planner',
+    '/manage?view=tasks', '/manage.html?view=tasks&embed=air', '/manage.html?view=planner']) {
+    const response = await fetch(base + url + '&dir=fleet%26one&task=task-1&token=bootstrap', { redirect: 'manual' });
+    assert.equal(response.status, 302, url);
+    const destination = new URL(response.headers.get('location'), base);
+    assert.equal(destination.pathname, '/air');
+    assert.equal(destination.searchParams.get('view'), 'overview');
+    assert.equal(destination.searchParams.get('dir'), 'fleet&one');
+    assert.equal(destination.searchParams.get('task'), 'task-1');
+    assert.equal(destination.searchParams.get('token'), 'bootstrap');
+    assert.equal(destination.searchParams.has('embed'), false);
+  }
+  for (const url of ['/manage-task-planner.js', '/manage-task-planner.css']) {
+    assert.equal((await fetch(base + url)).status, 404, url);
+  }
+  const air = await (await fetch(base + '/air')).text();
+  assert.doesNotMatch(air, /view=planner|directory-open-planner/);
+  const legacyManage = await (await fetch(base + '/manage.html?view=memory&embed=air')).text();
+  assert.doesNotMatch(legacyManage, /manage-task-planner|task-planner-root|nav-planner-count/);
+  assert.match(legacyManage, /manage-air-embed\.css/);
   for (const url of ['/chat?session=a', '/chat.html?session=a', '/task-shell?shell=s', '/task-shell.html?task=t&board=1', '/task-shell.html?air=1', '/task-shell.html?air=1&board=1&shell=s']) {
     const response = await fetch(base + url), html = await response.text();
     assert.equal(response.status, 200, url); assert.match(html, /task-entry.js/);

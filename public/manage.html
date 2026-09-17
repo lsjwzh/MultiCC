@@ -13,7 +13,6 @@
   <link rel="apple-touch-icon" href="/icon.svg" />
   <link rel="stylesheet" href="/error-envelope.css" />
   <link rel="stylesheet" href="/manage-fleet-sharing.css" />
-  <link rel="stylesheet" href="/manage-task-planner.css" />
   <link rel="stylesheet" href="/manage-workspace-setup.css" />
   <title>MultiCC — Dashboard</title>
   <script src="error-envelope.js"></script>
@@ -806,7 +805,6 @@
     <div id="nav-scroll">
     <div class="nav-label" data-i18n="workspace">Workspace</div>
     <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> <span>工作目录与任务</span> <span class="badge" id="nav-dir-count">0</span></button>
-    <button class="nav-item" data-view="tasks" onclick="setView('tasks')"><span class="ic">▦</span> <span data-i18n="plannerTaskCenter">任务中心</span> <span class="badge" id="nav-planner-count">0</span></button>
     <!-- Cron sits with Overview, not under Settings: it is scheduled work that
          spawns sessions, so it belongs with the live view of what is running
          rather than with the config panes. -->
@@ -874,12 +872,12 @@
       <button class="icon-btn" id="nav-toggle" onclick="document.body.classList.toggle('nav-open')" aria-controls="nav" aria-expanded="false" data-i18n-title="menu" title="菜单">☰</button>
       <div class="crumb" id="crumb"><span>工作目录与任务</span> <small id="crumb-sub"></small></div>
       <div class="topspace"></div>
-      <div class="search planner-hide-on-tasks"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索工作区 / 会话…" oninput="filterDirs(this.value)" /></div>
+      <div class="search"><span>⌕</span><input id="dir-search" data-i18n-placeholder="search" placeholder="搜索工作区 / 会话…" oninput="filterDirs(this.value)" /></div>
       <button class="icon-btn lang-toggle" onclick="toggleLang()" data-i18n-title="language" title="Language">中/EN</button>
       <button class="icon-btn" id="topbar-help" onclick="startOnboarding()" data-i18n-title="onboarding" title="引导">❓</button>
       <button class="icon-btn" id="topbar-refresh" onclick="loadDashboard()" data-i18n-title="refresh" title="刷新">⟳</button>
-      <button class="btn planner-hide-on-tasks" type="button" onclick="openImportFleetModal()" title="从另一台 MultiCC 导入共享工作区"><span aria-hidden="true">⇩</span> <span class="fleet-import-label">导入工作区</span></button>
-      <button class="btn primary planner-hide-on-tasks" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建工作区</button>
+      <button class="btn" type="button" onclick="openImportFleetModal()" title="从另一台 MultiCC 导入共享工作区"><span aria-hidden="true">⇩</span> <span class="fleet-import-label">导入工作区</span></button>
+      <button class="btn primary" onclick="openNewDirectoryModal()" data-i18n="newDirectory">＋ 新建工作区</button>
     </header>
 
     <div id="content">
@@ -909,11 +907,6 @@
           </button>
           <div class="sec-head"><h2 data-i18n="directories">工作区</h2><span class="count" id="dir-count-pill">0</span><div class="line"></div></div>
           <div id="directory-list"></div>
-        </section>
-
-        <!-- ─── Unified task center ─── -->
-        <section class="view planner-view" data-view="tasks">
-          <div id="task-planner-root"></div>
         </section>
 
         <!-- ─── Memory Graph ─── -->
@@ -2318,7 +2311,6 @@
     (function () {
       const TITLES = {
         overview: ['工作目录与任务', ''], cron: ['定时任务', '到点自动新建会话执行'],
-  tasks: ['任务中心', '按模块查看、筛选与派发任务'],
         voice: ['语音 Voice', '流式识别与转写'], power: ['macOS 电源', '关盖与系统睡眠设置'],
         goal: ['目标 Goal', '会话目标与自动分类'],
         provider: ['Provider', '多供应商接入与默认配置'],
@@ -2334,6 +2326,13 @@
         taskgraph: ['⛓ 任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接'],
       };
       window.setView = function (v) {
+        if (v === 'tasks' || v === 'planner') {
+          const params = new URLSearchParams(location.search);
+          params.set('view', 'overview');
+          params.delete('embed');
+          location.assign(`/air?${params}`);
+          return;
+        }
         if (v === 'overview') { location.assign('/air'); return; }
         document.body.dataset.view = v;
         document.querySelectorAll('#sidebar > .view').forEach(s => s.classList.toggle('active', s.dataset.view === v));
@@ -2363,8 +2362,8 @@
         }
       };
       const requestedView = new URLSearchParams(location.search).get('view') || 'docs';
-      const allowedViews = ['overview', 'tasks', 'memory', 'taskgraph', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs'];
-      if (allowedViews.includes(requestedView)) {
+      const allowedViews = ['overview', 'memory', 'taskgraph', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs'];
+      if (allowedViews.includes(requestedView) || ['tasks', 'planner'].includes(requestedView)) {
         window.setView(requestedView);
       }
 
@@ -2453,7 +2452,6 @@
       };
     })();
   </script>
-  <script src="manage-task-planner.js"></script>
   <script src="tour.js"></script>
 
   <!-- Git tree modal -->
