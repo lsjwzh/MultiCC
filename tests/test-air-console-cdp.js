@@ -202,6 +202,25 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(await page.evaluate(`document.getElementById('keep-alive-marker')!==null`), true);
     assert.equal(await page.evaluate(`document.getElementById('console-panel').getBoundingClientRect().width>=1000`), true, '收起状态下仍然量得到盒子（可见性只影响绘制）');
 
+    // Retired planner bookmarks also work before the server is restarted:
+    // these fixture routes serve the HTML directly, without HTTP redirects.
+    await page.navigate('/air?view=planner&dir=d2');
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'overview');
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('dir')`), 'd2');
+    assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), 'North · 商城');
+    assert.equal(await page.evaluate(`document.querySelectorAll('.air-legacy-frame, #directory-open-planner, a[href*="view=planner"]').length`), 0);
+    assert.equal(await page.evaluate(`window.MultiCCAirAdmin.modes.has('planner')`), false);
+    await page.evaluate(`document.getElementById('console-close').click()`);
+    assert.ok(await page.waitFor(`!document.body.classList.contains('console-open')`));
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).has('view')`), false);
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('dir')`), 'd2');
+    // Old entries in the browser history receive the same migration.
+    await page.evaluate(`history.pushState({}, '', '/air?view=planner&dir=d1'); dispatchEvent(new PopStateEvent('popstate'))`);
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'overview');
+    assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), 'MultiCC 主仓');
+
     // /manage 那条老入口照旧可用：打开面板，顺带把地址收干净
     await page.navigate('/air?view=overview');
     assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));

@@ -249,10 +249,8 @@ test('Fleet parent activity reuses the task board origin-aware running aggregate
     /function renderDirectoryDetailBody\(dirId\)[\s\S]*?taskBoardRunningCountForDir\(dirId\)/);
 });
 
-test('unified Fleet task tab renders and clears the shared running animation', () => {
+test('Fleet task entry renders and clears the shared running animation', () => {
   let runningTaskCount = 2;
-  const plannerRoot = {};
-  const mounts = [];
   const tabClasses = new Set();
   const taskTab = {
     innerHTML: '',
@@ -275,17 +273,13 @@ test('unified Fleet task tab renders and clears the shared running animation', (
   const { context } = createHarness({
     taskBoardRunningCountForDir: () => runningTaskCount,
     _tbTasksForDir: () => fleetTasks,
+    renderEventTimeline: () => '',
     renderTaskBoardSection: () => '<div class="legacy-board">unused</div>',
     syncTaskBoardDirComposer() {},
-    MultiCCTaskPlanner: {
-      mountFleet(element, dirId) { mounts.push({ element, dirId }); },
-      unmountFleet() {},
-    },
   });
   const body = {
     innerHTML: '',
     querySelector(selector) {
-      if (selector === '.fleet-task-planner-root') return plannerRoot;
       if (selector === '.dd-tab[data-dir-detail-tab="tasks"]') return taskTab;
       return null;
     },
@@ -294,17 +288,15 @@ test('unified Fleet task tab renders and clears the shared running animation', (
   context.document.getElementById = id => id === 'dir-detail-body' ? body : null;
   vm.runInContext(`
     _cachedDirectories = [{ id: 'fleet-1', name: 'Fleet 1' }];
-    _dirDetailTab = 'tasks';
   `, context);
 
   assert.equal(context.directoryWorkTaskCount(fleetTasks), 3);
   context.renderDirectoryDetailBody('fleet-1');
   assert.equal((body.innerHTML.match(/<button class="dd-tab/g) || []).length, 2);
-  assert.match(body.innerHTML, /dd-tab on has-running/);
+  assert.match(body.innerHTML, /dd-tab has-running/);
   assert.match(body.innerHTML, /dd-tab-running/);
   assert.match(body.innerHTML, /data-status="running"/);
   assert.match(body.innerHTML, /📋 任务 \(3\)/);
-  assert.deepEqual(mounts, [{ element: plannerRoot, dirId: 'fleet-1' }]);
 
   context.refreshDirectoryDetailTaskTab('fleet-1');
   assert.equal(tabClasses.has('has-running'), true);
@@ -320,71 +312,31 @@ test('unified Fleet task tab renders and clears the shared running animation', (
   assert.match(css, /prefers-reduced-motion:reduce[\s\S]*?\.card-border-rainbow\{animation:none/);
 });
 
-test('Fleet detail exposes one task tab and maps legacy task routes onto it', () => {
-  const mounts = [];
-  let unmounts = 0;
+test('Fleet task links open Air with the directory and never mount the retired planner', () => {
+  const destinations = [];
   const composerStates = [];
-  const plannerRoot = {};
-  const body = {
-    innerHTML: '',
-    querySelector(selector) {
-      return selector === '.fleet-task-planner-root' ? plannerRoot : null;
-    },
-    querySelectorAll() { return []; },
-  };
-  const modalClasses = new Set();
-  const modal = {
-    classList: {
-      toggle(name, enabled) {
-        if (enabled) modalClasses.add(name);
-        else modalClasses.delete(name);
-      },
-    },
-  };
+  const body = { innerHTML: '', querySelectorAll() { return []; } };
   const { context } = createHarness({
-    _tbTasksForDir: dirId => [{
-      id: `planned-${dirId}`, recordType: 'planned', status: 'active',
-    }],
+    location: { assign(url) { destinations.push(url); } },
+    _tbTasksForDir: dirId => [{ id: `planned-${dirId}`, recordType: 'planned', status: 'active' }],
     renderEventTimeline: () => '<div class="timeline">timeline</div>',
-    renderTaskBoardSection: () => '<div class="board">board</div>',
+    renderTaskBoardSection: () => { throw new Error('retired board must not mount'); },
     syncTaskBoardDirComposer(dirId, active) { composerStates.push({ dirId, active }); },
-    MultiCCTaskPlanner: {
-      mountFleet(element, dirId) { mounts.push({ element, dirId }); },
-      unmountFleet() { unmounts += 1; },
-    },
   });
-  context.document.getElementById = id => {
-    if (id === 'dir-detail-body') return body;
-    if (id === 'dir-detail-modal') return modal;
-    return null;
-  };
+  context.document.getElementById = id => id === 'dir-detail-body' ? body : null;
   vm.runInContext(`
-    _cachedDirectories = [
-      { id: 'fleet-a', name: 'Fleet A' },
-      { id: 'fleet-b', name: 'Fleet B' },
-    ];
-    _detailDirId = 'fleet-a';
+    _cachedDirectories = [{ id: 'fleet&a', name: 'Fleet A' }];
+    _detailDirId = 'fleet&a';
   `, context);
-
-  context.switchDirDetailTab('planner');
-  assert.equal(vm.runInContext('_dirDetailTab', context), 'tasks');
-  assert.equal((body.innerHTML.match(/<button class="dd-tab/g) || []).length, 2);
-  assert.match(body.innerHTML, /class="dd-tab on"[^>]*onclick="switchDirDetailTab\('tasks'\)"[^>]*>📋 任务 \(1\)/);
-  assert.doesNotMatch(body.innerHTML, /任务板|计划看板/);
-  assert.equal(mounts.length, 1);
-  assert.equal(mounts[0].element, plannerRoot);
-  assert.equal(mounts[0].dirId, 'fleet-a');
-  assert.equal(modalClasses.has('fleet-planner-open'), true);
-  assert.deepEqual(composerStates.at(-1), { dirId: 'fleet-a', active: false });
-
-  vm.runInContext("_detailDirId = 'fleet-b'", context);
-  context.renderDirectoryDetailBody('fleet-b');
-  assert.deepEqual(mounts.map(call => call.dirId), ['fleet-a', 'fleet-b']);
-
+  context.renderDirectoryDetailBody('fleet&a');
+  assert.match(body.innerHTML, /timeline/);
+  assert.match(body.innerHTML, /onclick="switchDirDetailTab\('tasks'\)"/);
+  assert.doesNotMatch(body.innerHTML, /planner|class="board"/);
+  assert.deepEqual(composerStates.at(-1), { dirId: 'fleet&a', active: false });
+  for (const tab of ['tasks', 'planner', 'taskboard']) context.switchDirDetailTab(tab);
+  assert.deepEqual(destinations, Array(3).fill('/air?view=overview&dir=fleet%26a'));
   context.switchDirDetailTab('sessions');
-  assert.equal(unmounts, 1);
-  assert.equal(modalClasses.has('fleet-planner-open'), false);
-  assert.deepEqual(composerStates.at(-1), { dirId: 'fleet-b', active: false });
+  assert.equal(destinations.length, 3);
 });
 
 test('session card consumes provider summary fields without rendering credential material', () => {
