@@ -647,7 +647,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(mobileHeader.tools, 'none', '工具不能自己占一行：收在浮层里', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.crumb, 'none', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.conv, mobileHeader.h, JSON.stringify(mobileHeader));
-      assert.equal(mobileHeader.sameLine, width > 340, JSON.stringify(mobileHeader));
+      // 320 上「⋯」拿走的 34px 在 macOS 字体度量下会把状态挤回第二行，但
+      // docker 的 noto-cjk 更窄，一行可能仍然放得下 —— 那是更好的渲染，不是
+      // 回归。这条守的真正不变量是「放不下时宁可换行也不裁标题」，标题不裁
+      // 由下一条 titleClipped 断言守。
+      if (width > 340) assert.equal(mobileHeader.sameLine, true, JSON.stringify(mobileHeader));
+      else assert.ok(!mobileHeader.sameLine || !mobileHeader.titleClipped, JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.titleClipped, false, JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.full, '本轮 执行中 · 任务 进行中', JSON.stringify(mobileHeader));
       // 藏的是显示，不是文字：几段拼起来仍然等于整条文案，分隔符跟着段一起走。
