@@ -165,10 +165,16 @@ MockClient _airAndCronClient() => MockClient((request) async {
 MockClient _createFromSheetClient(
   List<String> posts, {
   required bool firstMessageOk,
+  List<Map<String, dynamic>>? createBodies,
 }) => MockClient((request) async {
   const headers = {'content-type': 'application/json; charset=utf-8'};
   if (request.method == 'POST') {
     posts.add(request.url.path);
+    if (request.url.path == '/api/air/tasks') {
+      createBodies?.add(
+        (jsonDecode(request.body) as Map).cast<String, dynamic>(),
+      );
+    }
     if (request.url.path.endsWith('/messages') && !firstMessageOk) {
       return http.Response(
         jsonEncode({'ok': false, 'error': 'temporary failure'}),
@@ -188,6 +194,7 @@ MockClient _createFromSheetClient(
       'clis': const ['claude'],
       'directories': const [
         {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
+        {'id': 'd2', 'name': '工作目录 B', 'path': '/project/b'},
       ],
       'tasks': const [],
     }),
@@ -794,10 +801,20 @@ void main() {
     );
     expect(find.byKey(const ValueKey('air-new-task-title')), findsNothing);
     expect(find.text('任务名称'), findsNothing);
-    // 弹层里那句目录路径取的是当前目录。
+    // 弹层默认当前目录，但给用户留下切换余地。
     expect(
       tester
-          .widget<Text>(find.byKey(const ValueKey('air-new-task-directory')))
+          .widget<DropdownButtonFormField<String>>(
+            find.byKey(const ValueKey('air-new-task-directory')),
+          )
+          .initialValue,
+      'd1',
+    );
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('air-new-task-directory-path')),
+          )
           .data,
       '/project/a',
     );
@@ -813,7 +830,12 @@ void main() {
   testWidgets('从弹层创建：交出去之后这一层就收掉，不等快照', (tester) async {
     final settings = await _settings();
     final posts = <String>[];
-    final client = _createFromSheetClient(posts, firstMessageOk: true);
+    final createBodies = <Map<String, dynamic>>[];
+    final client = _createFromSheetClient(
+      posts,
+      firstMessageOk: true,
+      createBodies: createBodies,
+    );
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(390, 844);
     addTearDown(tester.view.resetPhysicalSize);
@@ -827,6 +849,16 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
     await tester.pumpAndSettle();
     await tapInSidebar(tester, find.text('新任务'));
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byKey(const ValueKey('air-new-task-directory')),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('工作目录 B').last);
+    await tester.pumpAndSettle();
 
     await tester.enterText(
       find.descendant(
@@ -845,6 +877,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(posts, contains('/api/air/tasks'), reason: '任务建出去了');
+    expect(createBodies.single['dirId'], 'd2', reason: '下拉选择的目录要进入创建请求');
     expect(
       posts,
       contains('/api/task-shell-tasks/t9/messages'),

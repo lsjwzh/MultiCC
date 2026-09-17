@@ -37,7 +37,7 @@ MockClient _client() => MockClient(
 
 Widget _host({
   required SettingsService settings,
-  required AirComposerSubmit onSubmit,
+  required AirNewTaskSubmit onSubmit,
   List<String> clis = const ['claude', 'codex'],
 }) => MaterialApp(
   home: Builder(
@@ -47,7 +47,11 @@ Widget _host({
           key: const ValueKey('open'),
           onPressed: () => showAirNewTaskSheet(
             context,
-            directoryPath: '/project/a',
+            directories: const [
+              AirDirectory(id: 'd1', name: '工作目录 A', path: '/project/a'),
+              AirDirectory(id: 'd2', name: '工作目录 B', path: '/project/b'),
+            ],
+            initialDirectoryId: 'd1',
             settings: settings,
             httpClient: _client(),
             clis: clis,
@@ -61,23 +65,27 @@ Widget _host({
 );
 
 /// 什么都不做、直接说「成了」的提交口，返回上次交出去的正文与线路。
-AirComposerSubmit _recorder(
+AirNewTaskSubmit _recorder(
   List<String> texts, {
+  List<String>? directoryIds,
   bool landed = true,
   Future<void>? gate,
-}) => ({
-  required String text,
-  required String cli,
-  required AirTaskRuntime runtime,
-  required List<AirRoleBinding> roles,
-  required bool goal,
-  int? goalRounds,
-  int? goalBudget,
-}) async {
-  texts.add(text);
-  if (gate != null) await gate;
-  return landed;
-};
+}) =>
+    ({
+      required String directoryId,
+      required String text,
+      required String cli,
+      required AirTaskRuntime runtime,
+      required List<AirRoleBinding> roles,
+      required bool goal,
+      int? goalRounds,
+      int? goalBudget,
+    }) async {
+      directoryIds?.add(directoryId);
+      texts.add(text);
+      if (gate != null) await gate;
+      return landed;
+    };
 
 Future<void> _open(WidgetTester tester) async {
   await tester.pumpAndSettle();
@@ -95,8 +103,12 @@ void main() {
 
     expect(find.text('新任务'), findsOneWidget);
     expect(find.text('NEW TASK'), findsOneWidget);
-    // 建在哪个目录：Web 的 `#quick-task-dialog-directory`。它只是一句话。
-    expect(find.byKey(const ValueKey('air-new-task-directory')), findsOneWidget);
+    // 建在哪个目录：默认当前目录，但不是只读路径，用户可以切换。
+    expect(
+      find.byKey(const ValueKey('air-new-task-directory')),
+      findsOneWidget,
+    );
+    expect(find.text('工作目录 A'), findsOneWidget);
     expect(find.text('/project/a'), findsOneWidget);
 
     // 关键：装的就是目录首页那一个模块，三颗胶囊一个不少。
@@ -140,7 +152,16 @@ void main() {
             settings: settings,
             clis: const ['claude'],
             busy: false,
-            onSubmit: _recorder(<String>[]),
+            onSubmit:
+                ({
+                  required String text,
+                  required String cli,
+                  required AirTaskRuntime runtime,
+                  required List<AirRoleBinding> roles,
+                  required bool goal,
+                  int? goalRounds,
+                  int? goalBudget,
+                }) async => true,
           ),
         ),
       ),
@@ -157,10 +178,20 @@ void main() {
   testWidgets('交出去的是那段话和当前线路，成了这一层自己收掉', (tester) async {
     final settings = await _settings();
     final texts = <String>[];
+    final directoryIds = <String>[];
     await tester.pumpWidget(
-      _host(settings: settings, onSubmit: _recorder(texts)),
+      _host(
+        settings: settings,
+        onSubmit: _recorder(texts, directoryIds: directoryIds),
+      ),
     );
     await _open(tester);
+
+    await tester.tap(find.byKey(const ValueKey('air-new-task-directory')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('工作目录 B').last);
+    await tester.pumpAndSettle();
+    expect(find.text('/project/b'), findsOneWidget);
 
     await tester.enterText(
       find.byKey(const ValueKey('air-quick-input')),
@@ -170,6 +201,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(texts, ['把登录页的错误提示改清楚']);
+    expect(directoryIds, ['d2']);
     // 人已经被带进新任务了：这一层收起来，别压在聊天页上面。
     expect(find.byKey(const ValueKey('air-quick-input')), findsNothing);
   });

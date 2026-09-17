@@ -748,7 +748,8 @@ dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; }
 .quick-task-dialog { max-width: 680px; padding: 0; background: #fbfdff; }
 .quick-task-dialog-body { padding: 24px; }
 .quick-task-dialog .section-heading { margin: -24px -24px 0; padding: 21px 24px 15px; border-bottom: 1px solid #e1eaf3; background: rgba(251, 253, 255, .96); }
-.quick-task-dialog #quick-task-dialog-directory { margin: 14px 0 0; color: #3b8edc; font-size: 11.5px; }
+.quick-task-dialog-directory { display: block; margin: 14px 0 0; color: var(--muted); font-size: 11px; }
+.quick-task-dialog-directory select { margin-top: 6px; color: #2f6597; background: #fff; font-size: 12px; }
 .quick-task-dialog #quick-task-form { position: static; margin-top: 14px; }
 #quick-task-dialog-close { min-width: 38px; padding: 4px; color: #718398; border-color: transparent; background: transparent; font-size: 23px; }
 
