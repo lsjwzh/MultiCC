@@ -637,6 +637,63 @@ function createSessionGitRuntime(rawDeps) {
       } catch (_) { stat = ''; }
       return res.json({ hash, stat, diff, truncated, error: error || null });
     });
+
+    // Directory-level git health for the Air directory home: what the main
+    // checkout itself looks like — commits not pushed, and files changed
+    // outside any session worktree. Session worktrees each have merge-status;
+    // the checkout they all merge into had nothing watching it.
+    app.get('/api/git/directory-status', async (req, res) => {
+      const dirId = req.query.dirId;
+      if (!dirId || typeof dirId !== 'string') return res.status(400).json({ error: 'dirId required' });
+      const dir = deps.directories.get(dirId);
+      if (!dir) return res.status(404).json({ error: 'directory not found' });
+      if (!deps.existsSync(dir.path)) return res.status(404).json({ error: 'repo path missing' });
+      try {
+        const branch = (await deps.gitRunQueued(dir.path,
+          ['rev-parse', '--abbrev-ref', 'HEAD'], { maxBuffer: 4096 })).trim();
+        // @{upstream} fails outright in repos without a tracking remote — that
+        // is a normal state, not an error; ahead/behind then fall back to the
+        // base branch ("local-only commits" rather than "unpushed").
+        let upstream = '';
+        try {
+          upstream = (await deps.gitRunQueued(dir.path,
+            ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { maxBuffer: 4096 })).trim();
+        } catch (_) { upstream = ''; }
+        let baseBranch = dir.baseBranch || '';
+        if (!baseBranch) {
+          try { baseBranch = await deps.gitBaseBranch(dir.path); } catch (_) { baseBranch = ''; }
+        }
+        const aheadRef = upstream || baseBranch;
+        let ahead = 0;
+        let behind = 0;
+        if (aheadRef) {
+          try {
+            ahead = parseInt((await deps.gitRunQueued(dir.path,
+              ['rev-list', '--count', `${aheadRef}..HEAD`], { maxBuffer: 4096 })).trim() || '0', 10) || 0;
+            behind = parseInt((await deps.gitRunQueued(dir.path,
+              ['rev-list', '--count', `HEAD..${aheadRef}`], { maxBuffer: 4096 })).trim() || '0', 10) || 0;
+          } catch (_) { ahead = 0; behind = 0; }
+        }
+        const dirtyFiles = [];
+        try {
+          const status = await deps.gitRunQueued(dir.path, ['status', '--porcelain'], { maxBuffer: 256 * 1024 });
+          for (const line of String(status).split('\n')) {
+            if (line.length < 4) continue;
+            const filePath = line.slice(3).replace(/ -> /, ' → ');
+            // Session worktrees live inside the checkout but are their own git
+            // dirs; they must not read as pending changes of this one.
+            if (filePath.startsWith('.multicc-worktrees/') || filePath.startsWith('.multicc-worktrees → ')) continue;
+            dirtyFiles.push({ status: line.slice(0, 2).trim(), path: filePath });
+          }
+        } catch (_) { /* dirty list stays empty on error */ }
+        return res.json({
+          branch, upstream: upstream || null, baseBranch: baseBranch || null,
+          ahead, behind, dirtyFiles,
+        });
+      } catch (error) {
+        return res.status(500).json({ error: errorText(error) });
+      }
+    });
   }
 
   // M3 · per-task worktree surface: the same git core parameterized by a task

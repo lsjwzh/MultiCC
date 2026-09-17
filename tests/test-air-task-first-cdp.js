@@ -90,6 +90,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['POST /api/task-shells/shell-new/tasks/resolve'] = () => json({ sessionId: 'task-new' });
   routes['/api/task-shells/shell-a/chat'] = () => json({ activeSessionId: 'task-a', taskId: 'tsk_a' });
   routes['/api/sessions/task-a/merge-status'] = () => json({ branch: 'multicc/task-a', baseBranch: 'main', behind: 2 });
+  // 目录首页的 Git 状态卡：主检出的未推送提交与 worktree 之外的脏文件。
+  routes['/api/git/directory-status'] = () => json({ branch: 'main', upstream: 'origin/main', baseBranch: 'main', ahead: 2, behind: 1,
+    dirtyFiles: [{ status: 'M', path: 'README.md' }, { status: '??', path: 'notes/scratch.md' }] });
+  routes['/api/git/log'] = () => json({ repoPath: '/projects/multicc', commits: [
+    { hash: 'c2'.repeat(20), short: 'c2c2c2c', author: 'green', date: '2026-09-17T10:00:00+08:00', subject: 'Air 目录首页加 Git 状态', refs: 'HEAD -> main' },
+    { hash: 'c1'.repeat(20), short: 'c1c1c1c', author: 'green', date: '2026-09-16T09:00:00+08:00', subject: '上一条提交', refs: '' },
+  ] });
+  routes['/api/git/commit-diff'] = () => json({ hash: 'c2'.repeat(20), stat: ' air.js | 2 ++', diff: '+新增一行', truncated: false, error: null });
   routes['POST /api/task-shell-tasks/tsk_a/messages'] = async ({ body }) => {
     syncRequests.push(JSON.parse(body));
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -406,6 +414,16 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===4`));
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent.includes('MultiCC') && document.getElementById('task-state').textContent.includes('/projects/multicc')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.directory-task-row').length`), 1);
+    // Git 状态卡：未推送提交数、主检出的脏文件，提交列表与 diff 懒加载。
+    assert.ok(await page.waitFor(`document.getElementById('directory-git').textContent.includes('2 个提交未推送')`));
+    assert.equal(await page.evaluate(`document.getElementById('directory-git').textContent.includes('2 个未提交文件')`), true);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-git-list .directory-git-commit').length`), 0, 'Git 记录默认折叠');
+    await page.evaluate(`document.getElementById('directory-git').querySelector('.directory-git-actions button').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-git-list .directory-git-commit').length===2`));
+    await page.evaluate(`document.querySelectorAll('#directory-git-list .directory-git-commit-head')[0].click()`);
+    assert.ok(await page.waitFor(`document.getElementById('directory-git-list').textContent.includes('+新增一行')`));
+    // 旧任务列表的跳转已删：侧栏不再渲染 TERMINAL 折叠组。
+    assert.equal(await page.evaluate(`document.getElementById('legacy-sessions')===null`), true);
     // The new-task composer reuses the chat's two composers instead of growing
     // its own CLI/Provider selects: the AI 配置 pill opens the same dialog (with
     // 模型, which the old panel dropped) and hands the runtime back as a draft,

@@ -478,6 +478,175 @@
     renderQuickPills();
     for (const element of [$('quick-task-input'), $('quick-task-submit'),
       $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
+    renderDirectoryGit();
+  }
+
+  // ── 目录 Git 状态：主检出的「未推送提交」与「不在 worktree 的脏文件」 ──
+  // 每个会话 worktree 的 ahead/dirty 由它自己的 merge-status 管（任务页头那颗
+  // 合并按钮）；目录首页要看的是主检出本身 —— 多少提交还没 push、有没有漂在
+  // 任务体系之外直接改的文件。提交列表与 diff 走 /api/git/log 和
+  // /api/git/commit-diff，同旧控制台（manage.html 的 git 树）那两条接口，
+  // 展开才取，首屏只有一份轻量状态。
+  const directoryGitView = {
+    dirId: null, status: null, error: '', fetchedAt: 0,
+    logOpen: false, commits: null, logError: '', openHash: null,
+  };
+  const GIT_REFRESH_MS = 60000;
+
+  function renderDirectoryGit() {
+    const panel = $('directory-git');
+    if (!panel) return;
+    const show = !taskId && !!directoryId;
+    panel.hidden = !show;
+    if (!show) return;
+    if (directoryGitView.dirId !== directoryId) {
+      Object.assign(directoryGitView, { status: null, error: '', logOpen: false, commits: null, logError: '', openHash: null });
+    }
+    if (directoryGitView.dirId !== directoryId || Date.now() - directoryGitView.fetchedAt > GIT_REFRESH_MS) {
+      void loadDirectoryGit();
+    }
+    paintDirectoryGit();
+  }
+
+  async function loadDirectoryGit() {
+    try {
+      const status = await api(`/api/git/directory-status?dirId=${encodeURIComponent(directoryId)}`);
+      Object.assign(directoryGitView, { status, error: '' });
+    } catch (error) {
+      Object.assign(directoryGitView, { status: null, error: error.message });
+    }
+    Object.assign(directoryGitView, { dirId: directoryId, fetchedAt: Date.now() });
+    paintDirectoryGit();
+  }
+
+  function paintDirectoryGit() {
+    const brief = $('directory-git-brief');
+    if (!brief) return;
+    const note = $('directory-git-note');
+    const list = $('directory-git-list');
+    if (directoryGitView.error) {
+      brief.replaceChildren(node('p', `读取 Git 状态失败：${directoryGitView.error}`, 'directory-git-empty error'));
+      if (note) note.textContent = '读取失败';
+      if (list) list.hidden = true;
+      return;
+    }
+    const status = directoryGitView.status;
+    if (!status) {
+      brief.replaceChildren(node('p', '正在读取 Git 状态…', 'directory-git-empty'));
+      if (note) note.textContent = '读取中…';
+      if (list) list.hidden = true;
+      return;
+    }
+    const chips = node('div', null, 'directory-git-chips');
+    const chip = (text, tone = '') => node('span', text, `directory-git-chip ${tone}`.trim());
+    chips.append(chip(`⎇ ${status.branch || '—'}`));
+    // 有上游就说「没 push」，没有上游的仓库退到基分支：说的还是「这些提交
+    // 只存在于本地」，只是对齐的对象从远端换成了基分支。
+    const target = status.upstream || status.baseBranch;
+    if (target) {
+      chips.append(chip(status.upstream
+        ? (status.ahead ? `↑ ${status.ahead} 个提交未推送` : '已与上游同步')
+        : (status.ahead ? `↑ ${status.ahead} 个提交未合入 ${status.baseBranch}` : `与基分支 ${status.baseBranch} 一致`),
+      status.ahead ? 'warn' : 'ok'));
+      if (status.upstream && status.behind) chips.append(chip(`↓ 落后上游 ${status.behind} 个提交`, 'warn'));
+    }
+    chips.append(chip(status.dirtyFiles?.length
+      ? `● ${status.dirtyFiles.length} 个未提交文件（主检出）`
+      : '主检出工作区干净', status.dirtyFiles?.length ? 'warn' : 'ok'));
+    const actions = node('div', null, 'directory-git-actions');
+    const logButton = node('button', directoryGitView.logOpen ? '收起 Git 记录' : '查看 Git 记录', 'subtle');
+    logButton.type = 'button';
+    logButton.onclick = () => void toggleDirectoryGitLog();
+    actions.append(logButton);
+    brief.replaceChildren(chips, actions);
+    if (status.dirtyFiles?.length) {
+      const files = node('details', null, 'directory-git-files');
+      files.append(node('summary',
+        `未提交文件 ${status.dirtyFiles.length} 个 — 在主检出里直接改的，不属于任何任务 worktree`));
+      const fileList = node('ul');
+      const shown = status.dirtyFiles.slice(0, 50);
+      for (const file of shown) fileList.append(node('li', `${file.status || 'M'}  ${file.path}`));
+      if (status.dirtyFiles.length > shown.length) fileList.append(node('li', `…还有 ${status.dirtyFiles.length - shown.length} 个`));
+      files.append(fileList);
+      brief.append(files);
+    }
+    if (note) note.textContent = status.upstream ? `上游 ${status.upstream}` : '无上游分支，按基分支统计';
+    if (list) {
+      list.hidden = !directoryGitView.logOpen;
+      if (directoryGitView.logOpen) paintDirectoryGitLog(list);
+    }
+  }
+
+  async function toggleDirectoryGitLog() {
+    directoryGitView.logOpen = !directoryGitView.logOpen;
+    if (directoryGitView.logOpen && !directoryGitView.commits && !directoryGitView.logError) {
+      const list = $('directory-git-list');
+      list.replaceChildren(node('p', '正在读取提交记录…', 'directory-git-empty'));
+      try {
+        const result = await api(`/api/git/log?dirId=${encodeURIComponent(directoryId)}&limit=30`);
+        directoryGitView.commits = result.commits || [];
+      } catch (error) {
+        directoryGitView.logError = error.message;
+      }
+    }
+    paintDirectoryGit();
+  }
+
+  function paintDirectoryGitLog(list) {
+    if (directoryGitView.logError) {
+      list.replaceChildren(node('p', `读取提交记录失败：${directoryGitView.logError}`, 'directory-git-empty error'));
+      return;
+    }
+    const commits = directoryGitView.commits;
+    if (!commits) return;
+    if (!commits.length) {
+      list.replaceChildren(node('p', '暂无提交记录。', 'directory-git-empty'));
+      return;
+    }
+    list.replaceChildren(...commits.map(commit => {
+      const item = node('div', null, 'directory-git-commit');
+      const head = node('button', null, 'directory-git-commit-head');
+      head.type = 'button';
+      head.setAttribute('aria-expanded', String(directoryGitView.openHash === commit.hash));
+      const copy = node('span', null, 'directory-git-commit-copy');
+      copy.append(node('code', commit.short || String(commit.hash || '').slice(0, 7)),
+        node('strong', commit.subject || '(无标题)'));
+      head.append(copy,
+        node('time', commit.date ? commit.date.replace('T', ' ').slice(0, 16) : ''),
+        node('small', `${commit.author || '—'}${commit.refs ? ` · ${commit.refs}` : ''}`));
+      head.onclick = () => void toggleCommitDetail(commit);
+      item.append(head);
+      if (directoryGitView.openHash === commit.hash) {
+        const detail = node('div', null, 'directory-git-commit-detail');
+        if (commit.__stat) detail.append(node('div', commit.__stat, 'directory-git-stat'));
+        detail.append(node('pre', commit.__diff || '正在读取 diff…', 'directory-git-diff'));
+        item.append(detail);
+      }
+      return item;
+    }));
+  }
+
+  async function toggleCommitDetail(commit) {
+    if (directoryGitView.openHash === commit.hash) {
+      directoryGitView.openHash = null;
+      paintDirectoryGit();
+      return;
+    }
+    directoryGitView.openHash = commit.hash;
+    if (commit.__diff === undefined) {
+      paintDirectoryGit();
+      try {
+        const result = await api(`/api/git/commit-diff?dirId=${encodeURIComponent(directoryId)}&hash=${encodeURIComponent(commit.hash)}`);
+        commit.__stat = result.stat || '';
+        commit.__diff = result.error ? `读取 diff 失败：${result.error}`
+          : result.diff || '（该提交无可显示的 diff，可能是空合并提交）';
+        if (result.truncated) commit.__diff += '\n⚠ diff 过长已截断';
+      } catch (error) {
+        commit.__stat = '';
+        commit.__diff = `读取 diff 失败：${error.message}`;
+      }
+    }
+    paintDirectoryGit();
   }
 
   function quickTaskId() {
@@ -1187,11 +1356,6 @@
       $('console-close').textContent = taskId ? '返回任务' : '关闭控制台';
       window.MultiCCAirAdmin?.render('overview', adminContext());
     }
-    $('legacy-sessions').replaceChildren(...data.sessions.filter(session => session.kind === 'terminal' && session.dirId === directoryId).map(session => {
-      const link = node('a', `›_ ${session.label}`);
-      link.href = `/?id=${encodeURIComponent(session.id)}`;
-      return link;
-    }));
 
     const hasTask = !!taskId;
     $('empty').hidden = hasTask;
