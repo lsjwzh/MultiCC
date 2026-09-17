@@ -83,10 +83,6 @@
             <button type="button" data-air-view="taskgraph">任务图谱</button>
             <button type="button" data-air-view="settings">设置中心</button>
           </nav>
-          <details class="terminal-group">
-            <summary>TERMINAL</summary>
-            <nav id="legacy-sessions"></nav>
-          </details>
           <!-- Deliberately outside the version row above: that row is a click target
                for the update check, and reading a timestamp should not fire a call. -->
           <div class="ops-boot">
@@ -204,6 +200,19 @@
             <div id="directory-task-list"></div>
             <!-- 就地展开当前目录的完整清单；固定高度与筛选避免把输入框推到页面之外。 -->
             <button id="directory-task-more" type="button" hidden></button>
+          </section>
+          <!-- 目录的代码状态：主检出本身有多少提交没 push、有没有漂在任务
+               worktree 之外的未提交文件。会话 worktree 的 ahead/dirty 在各自
+               的任务页头（合并按钮）看；这里看的是它们共同的主人 —— 主检出。
+               提交列表与 diff 复用旧控制台那两条接口（/api/git/log、
+               /api/git/commit-diff），air.js 懒加载，首屏只取一份状态。 -->
+          <section id="directory-git" class="directory-git-panel" hidden aria-label="目录 Git 状态">
+            <div class="section-heading">
+              <div><span class="caption">GIT</span><strong id="directory-git-title">代码状态</strong></div>
+              <span id="directory-git-note" class="admin-panel-note"></span>
+            </div>
+            <div id="directory-git-brief"></div>
+            <div id="directory-git-list" hidden></div>
           </section>
           <!-- 全站唯一的那一个输入框模块。它在目录首页是常驻的，侧栏那颗
                「＋ 新任务」会把它临时搬进 #quick-task-dialog（air.js 的
