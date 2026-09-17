@@ -432,6 +432,7 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 返回是否**整条链路都成了**：任务建出来不算，第一条消息也得确认送达 ——
   /// 只有全成才算这一份草稿已经交出去，输入区那边才可以清空重来。
   Future<bool> _createFromComposer({
+    String? targetDirectoryId,
     required String text,
     required String cli,
     required AirTaskRuntime runtime,
@@ -440,7 +441,7 @@ class _AirTasksViewState extends State<AirTasksView>
     int? goalRounds,
     int? goalBudget,
   }) async {
-    final dirId = _directoryId;
+    final dirId = targetDirectoryId ?? _directoryId;
     if (dirId == null || _submitting) return false;
     final title = text
         .split(RegExp(r'\n'))
@@ -536,20 +537,27 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 第一条消息，建完直接进去。唯一的区别在写法 —— 手上开着别的任务时，它不必先
   /// 把你送回目录首页。
   Future<void> _newTask() async {
-    final directory = _data?.directoryOf(_directoryId);
-    if (directory == null) {
+    final directories =
+        _data?.directories.where((directory) => !directory.external).toList() ??
+        const <AirDirectory>[];
+    if (directories.isEmpty) {
       setState(() => _error = '请先选一个工作目录。');
       return;
     }
+    final directory = directories.any((entry) => entry.id == _directoryId)
+        ? directories.firstWhere((entry) => entry.id == _directoryId)
+        : directories.first;
     await showAirNewTaskSheet(
       context,
-      directoryPath: directory.path,
+      directories: directories,
+      initialDirectoryId: directory.id,
       settings: widget.settings,
       service: _service,
       httpClient: widget.httpClient,
       clis: _data?.clis ?? const [],
       onSubmit:
           ({
+            required String directoryId,
             required String text,
             required String cli,
             required AirTaskRuntime runtime,
@@ -559,6 +567,7 @@ class _AirTasksViewState extends State<AirTasksView>
             int? goalBudget,
           }) async {
             await _createFromComposer(
+              targetDirectoryId: directoryId,
               text: text,
               cli: cli,
               runtime: runtime,

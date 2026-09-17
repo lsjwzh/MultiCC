@@ -18,12 +18,25 @@ import 'air_task_config.dart';
 ///
 /// [onSubmit] 交回宿主（`_createFromComposer`：建任务 → 绑角色 → 发第一条消息）。
 /// 它返回真值这一层就收起来，返回假值就留着 —— 让用户改完接着点。
+typedef AirNewTaskSubmit =
+    Future<bool> Function({
+      required String directoryId,
+      required String text,
+      required String cli,
+      required AirTaskRuntime runtime,
+      required List<AirRoleBinding> roles,
+      required bool goal,
+      int? goalRounds,
+      int? goalBudget,
+    });
+
 Future<void> showAirNewTaskSheet(
   BuildContext context, {
-  required String directoryPath,
+  required List<AirDirectory> directories,
+  required String initialDirectoryId,
   required SettingsService settings,
   required List<String> clis,
-  required AirComposerSubmit onSubmit,
+  required AirNewTaskSubmit onSubmit,
   AirService? service,
   http.Client? httpClient,
 }) {
@@ -37,7 +50,8 @@ Future<void> showAirNewTaskSheet(
       ),
     ),
     builder: (_) => _AirNewTaskSheet(
-      directoryPath: directoryPath,
+      directories: directories,
+      initialDirectoryId: initialDirectoryId,
       settings: settings,
       clis: clis,
       onSubmit: onSubmit,
@@ -49,7 +63,8 @@ Future<void> showAirNewTaskSheet(
 
 class _AirNewTaskSheet extends StatefulWidget {
   const _AirNewTaskSheet({
-    required this.directoryPath,
+    required this.directories,
+    required this.initialDirectoryId,
     required this.settings,
     required this.clis,
     required this.onSubmit,
@@ -57,10 +72,11 @@ class _AirNewTaskSheet extends StatefulWidget {
     required this.httpClient,
   });
 
-  final String directoryPath;
+  final List<AirDirectory> directories;
+  final String initialDirectoryId;
   final SettingsService settings;
   final List<String> clis;
-  final AirComposerSubmit onSubmit;
+  final AirNewTaskSubmit onSubmit;
   final AirService? service;
   final http.Client? httpClient;
 
@@ -73,6 +89,18 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
   /// 路由，那个 State `setState` 重建不到这里 —— 而输入框那颗按钮的文案
   /// （「正在创建…」）和禁用态看的就是这个值。
   bool _submitting = false;
+  late String _directoryId;
+
+  @override
+  void initState() {
+    super.initState();
+    _directoryId =
+        widget.directories.any(
+          (directory) => directory.id == widget.initialDirectoryId,
+        )
+        ? widget.initialDirectoryId
+        : widget.directories.first.id;
+  }
 
   Future<bool> _submit({
     required String text,
@@ -85,6 +113,7 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
   }) async {
     setState(() => _submitting = true);
     final landed = await widget.onSubmit(
+      directoryId: _directoryId,
       text: text,
       cli: cli,
       runtime: runtime,
@@ -127,15 +156,7 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
               ),
               const SizedBox(height: 10),
               _head(),
-              // 建在哪个目录上 —— Web 的 `#quick-task-dialog-directory` 就是这句。
-              // 弹层里没有选目录的控件，因为入口本来就是从某个目录点进来的。
-              Text(
-                widget.directoryPath,
-                key: const ValueKey('air-new-task-directory'),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: AppColors.blue, fontSize: 11.5),
-              ),
+              _directoryPicker(),
               const SizedBox(height: 12),
               AirQuickComposer(
                 key: const ValueKey('air-new-task-composer'),
@@ -151,6 +172,52 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _directoryPicker() {
+    final selected = widget.directories.firstWhere(
+      (directory) => directory.id == _directoryId,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DropdownButtonFormField<String>(
+          key: const ValueKey('air-new-task-directory'),
+          value: _directoryId,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: '工作目录',
+            isDense: true,
+            border: OutlineInputBorder(),
+          ),
+          dropdownColor: AppColors.panel,
+          items: [
+            for (final directory in widget.directories)
+              DropdownMenuItem(
+                value: directory.id,
+                child: Text(
+                  directory.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+          onChanged: _submitting
+              ? null
+              : (value) {
+                  if (value != null) setState(() => _directoryId = value);
+                },
+        ),
+        const SizedBox(height: 4),
+        Text(
+          selected.path,
+          key: const ValueKey('air-new-task-directory-path'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: AppColors.blue, fontSize: 11.5),
+        ),
+      ],
     );
   }
 
