@@ -1001,10 +1001,26 @@ function createClassifyStateMachine(rawDeps) {
         supersededReason,
         latencyMs: Date.now() - startedAt,
       });
-      if (!supersededReason && shellOwned && res.separation && ['turn-end', 'manual'].includes(runSource)) {
-        const suggestion = getTaskContextHost().proposeTaskSeparation?.(sessionName, shellReceiptId, {
-          separation: res.separation, turnId, anchorMessageId,
-        });
+      if (!supersededReason && shellOwned && ['turn-end', 'manual'].includes(runSource)) {
+        // Two signals feed the same user-confirmed separation dialog:
+        // contextRelevance=low is an explicit split suggestion, while
+        // relation=new means the model judged this turn an independent
+        // deliverable. In same-repo iteration the latter almost always comes
+        // with relevance=high ("same product theme"), so listening only to
+        // the first signal means the dialog never shows for exactly the
+        // sessions it was built for. propose() is idempotent per turn, so
+        // both signals firing together still yield a single suggestion; a
+        // null return (first turn / stale anchor) falls through to the
+        // attribution-candidate path below.
+        const separationAsk = res.separation || (res.relation === 'new' && res.taskName ? {
+          title: res.taskName,
+          reason: '归集判定本轮为独立新任务（relation=new）',
+        } : null);
+        const suggestion = separationAsk
+          ? getTaskContextHost().proposeTaskSeparation?.(sessionName, shellReceiptId, {
+            separation: separationAsk, turnId, anchorMessageId,
+          })
+          : null;
         if (suggestion) {
           // Keep the original task identity/name until the user decides. The
           // auxiliary verdict remains in the audit log; rule-owned state is untouched.
