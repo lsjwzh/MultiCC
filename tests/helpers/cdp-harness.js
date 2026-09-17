@@ -272,6 +272,14 @@ async function createCdpHarness(options = {}) {
       send('Runtime.enable'),
       send('Network.enable'),
     ]);
+    // The target is created with background:true so the harness never steals
+    // focus, but on some headless Chromium builds (Debian chromium in the
+    // docker CI gate) a hidden tab never gets a compositor surface and
+    // Page.captureScreenshot then waits forever. Bringing the tab to the front
+    // gives it one; headless has no real window, so this only means the
+    // compositor has something to render. Best-effort: builds that reject it
+    // keep the old behaviour.
+    try { await send('Page.bringToFront'); } catch (_) {}
 
     const harness = {
       baseUrl: fixture.baseUrl,
@@ -319,7 +327,16 @@ async function createCdpHarness(options = {}) {
           screenshotDir,
           `${safeName(path.basename(fileName, path.extname(fileName)))}-${process.pid}-${Date.now()}.png`,
         );
-        const captured = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+        const capture = () => send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+        let captured;
+        try {
+          captured = await capture();
+        } catch (error) {
+          // Hidden-tab compositor stall (the docker CI chromium): re-assert the
+          // surface once and retry before giving up on the shot.
+          try { await send('Page.bringToFront'); } catch (_) {}
+          captured = await capture();
+        }
         fs.writeFileSync(file, Buffer.from(captured.data, 'base64'));
         return file;
       },
