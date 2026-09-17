@@ -215,9 +215,6 @@ nav { display: flex; flex-direction: column; gap: 4px; }
 .task-meta .mc-status { font-size: 11px; }
 .task-note { color: #8b9cad; font-size: 10px; }
 .sidebar-link { display: flex; justify-content: space-between; padding: 8px 10px; color: #5d7187; font-size: 11px; }
-.terminal-group { flex-shrink: 0; margin: 1px 4px 0; color: var(--muted); }
-.terminal-group summary { padding: 8px 5px; cursor: pointer; font-size: 9px; letter-spacing: 1px; }
-#legacy-sessions a { padding: 6px; font-size: 11px; overflow-wrap: anywhere; }
 
 .side-bottom { flex-shrink: 0; display: grid; gap: 5px; padding: 10px 8px 0; border-top: 1px solid rgba(198, 215, 233, .75); }
 .global-links { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
@@ -394,6 +391,34 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    放得下最近那几条，完整的那份在控制台。数字跟着行数走，别让人以为只剩这些。 */
 #directory-task-more { display: block; width: 100%; padding: 11px 14px; border: 0; border-top: 1px solid #e8eef5; border-radius: 0 0 15px 15px; background: transparent; color: #3b8edc; font-size: 11px; text-align: center; }
 #directory-task-more:hover { background: #f2f8fe; }
+/* 目录的 Git 状态面板：与任务面板同一张卡的语法，但内容是「代码现在什么
+   状态」—— 未推送提交、主检出的脏文件、可展开的提交记录。 */
+.directory-git-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
+.directory-git-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
+#directory-git-brief { display: grid; gap: 8px; padding: 12px 15px; }
+.directory-git-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.directory-git-chip { padding: 4px 10px; border-radius: 13px; background: #eef4fa; color: #47607a; font-size: 11px; }
+.directory-git-chip.warn { background: #fdf3e4; color: #9a6b1f; }
+.directory-git-chip.ok { background: #e9f7f0; color: #2c7d5c; }
+.directory-git-actions { display: flex; gap: 8px; }
+.directory-git-actions button { min-height: 28px; padding: 4px 10px; font-size: 11px; }
+.directory-git-files { border: 1px solid #f0d9c8; border-radius: 11px; background: #fdf7f1; }
+.directory-git-files summary { padding: 8px 11px; color: #9a6b1f; font-size: 10.5px; cursor: pointer; }
+.directory-git-files ul { margin: 0; padding: 2px 12px 10px 26px; color: #6d5a45; font-size: 10.5px; line-height: 1.7; word-break: break-all; }
+.directory-git-empty { padding: 18px; color: #8a9aab; font-size: 11px; text-align: center; }
+.directory-git-empty.error { color: #a6533c; }
+#directory-git-list { max-height: min(390px, 48dvh); overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid #e8eef5; }
+.directory-git-commit + .directory-git-commit { border-top: 1px solid #edf2f8; }
+.directory-git-commit-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 4px 10px; width: 100%; padding: 9px 15px; border: 0; background: transparent; text-align: left; }
+.directory-git-commit-head:hover { background: #f2f8fe; }
+.directory-git-commit-copy { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.directory-git-commit-copy code { color: #3b8edc; font-size: 10px; }
+.directory-git-commit-copy strong { overflow: hidden; color: #35536d; font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; }
+.directory-git-commit-head time { color: #8c9aaa; font-size: 9.5px; }
+.directory-git-commit-head small { grid-column: 1 / -1; color: #8c9aaa; font-size: 9.5px; }
+.directory-git-commit-detail { border-top: 1px dashed #e3ebf3; background: #f8fbfe; }
+.directory-git-stat { padding: 8px 15px 0; color: #6d8094; font-size: 10px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.directory-git-diff { margin: 0; padding: 10px 15px 14px; color: #43596e; font-size: 10px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* The new-task composer is the composer module (composer.css) in its panel
    placement; only where it sits in the column is decided here — floating a
    little above the bottom edge so it reads as part of the conversation column
