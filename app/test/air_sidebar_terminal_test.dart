@@ -71,6 +71,7 @@ void main() {
             onOpenTaskGraph: () {},
             onOpenSettings: () {},
             onOpenAllDestinations: () {},
+            onOpenDestination: (_) {},
             ops: ops,
             onOpenPush: () {},
             onLogout: () {},
