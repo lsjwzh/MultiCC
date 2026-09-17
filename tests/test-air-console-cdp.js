@@ -114,6 +114,16 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
   routes['POST /api/task-board/tasks/tsk_wait/chat-session'] = () => json({ ok: true, sessionId: 'task-wait' });
   routes['POST /api/task-board/tasks/tsk_other/chat-session'] = () => json({ ok: true, sessionId: 'task-other' });
   for (const dir of ['d1', 'd2', 'd3']) routes['POST /api/task-shells'] = () => json({ id: 'shell-a' });
+  // 常用设置里的「关盖运行」开关打的就是这两条：GET 决定这一行出不出现、开关在
+  // 哪一边，POST 是点一下之后的落点（把这个 body 断言出来，才算断到真的在写）。
+  const powerPosts = [];
+  let powerEnabled = false;
+  routes['/api/settings/power'] = () => json({ available: true, enabled: powerEnabled });
+  routes['POST /api/settings/power'] = req => {
+    powerEnabled = JSON.parse(req.body).enabled;
+    powerPosts.push(req.body);
+    return json({ ok: true, available: true, enabled: powerEnabled });
+  };
 
   await withCdpHarness({ routes, screenshotDir: shots }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -156,7 +166,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
       return { tag: d.tagName, open: d.open, links: [...d.querySelectorAll('.global-links button')].map(b=>b.textContent),
         holdsReceipt: d.contains(document.getElementById('air-ops-status')),
         holdsSettings: d.contains(document.getElementById('frequent-settings')),
-        settingsFirst: d.querySelector('.side-more-body').firstElementChild.id === 'frequent-settings',
+        settingsFirst: d.querySelector('.side-more-body').firstElementChild.contains(document.getElementById('frequent-settings')),
         outsideSettings: [...document.querySelectorAll('#sidebar > *')]
           .filter(el => el !== d.parentElement).some(el => el.contains(document.getElementById('frequent-settings'))) }; })()`);
     assert.equal(more.tag, 'DETAILS');
@@ -166,8 +176,54 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(more.holdsSettings, true, '常用设置折进「更多与系统」');
     assert.equal(more.settingsFirst, true, '常用设置是折叠区里的第一栏');
     assert.equal(more.outsideSettings, false, '侧栏外面不再常驻这三行');
-    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#frequent-settings .sidebar-setting-row')].map(el=>el.textContent.trim())`),
-      ['◈Provider 配置', '⌁外网穿透', '⇄消息桥接'], '三个常用设置自成一栏，一个不少');
+    // 每一组各套一个框：组与组之间原来只靠留白，叠起来是一整片按钮，视线会顺着
+    // 滑进下一组。四条边都要在，少一条就不算框。
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.side-more-body > *')].map(el => {
+      const cs = getComputedStyle(el);
+      return [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth];
+    })`), [['1px','1px','1px','1px'], ['1px','1px','1px','1px'], ['1px','1px','1px','1px'], ['1px','1px','1px','1px']],
+      '四组（常用设置 / 系统工具 / 最近启动 / 主机操作）各自被框住');
+    // 展开面板再量：收起状态下子树不在布局树里，grid-template-columns 这类
+    // 跟布局有关的计算值 Chrome 会答空字符串，量出来的「列数」是假的。
+    await page.evaluate(`document.getElementById(\'side-more\').open = true`);
+    // 常用设置这一栏自己可收缩（用户要的），默认展开：折起来等于把常用入口藏掉。
+    const freq = await page.evaluate(`(() => {
+      const group = document.getElementById('frequent-settings-group');
+      const nav = document.getElementById('frequent-settings');
+      const rows = [...nav.querySelectorAll('.sidebar-setting-row')].filter(el => !el.hidden);
+      const label = el => el.querySelector('span:nth-child(2)');
+      const cs = getComputedStyle(nav);
+      return { tag: group.tagName, open: group.open, display: cs.display,
+        columns: cs.gridTemplateColumns.split(' ').filter(Boolean).length,
+        labels: rows.map(el => el.textContent.trim()),
+        provider: getComputedStyle(label(rows[0])).fontWeight,
+        neighbour: getComputedStyle(label(rows[1])).fontWeight,
+        lidOn: document.getElementById('air-lid-sleep').classList.contains('on') };
+    })()`);
+    assert.equal(freq.tag, 'DETAILS', '常用设置是可以收缩的一栏');
+    assert.equal(freq.open, true, '默认展开');
+    assert.equal(freq.display, 'grid');
+    assert.equal(freq.columns, 2, '两列排布');
+    assert.deepEqual(freq.labels, ['◈Provider 配置', '⌁外网穿透', '⇄消息桥接', '☾关盖运行'],
+      '三个常用设置 + 关盖运行（macOS 可用时才出现），一个不少');
+    assert.ok(Number(freq.provider) > Number(freq.neighbour), `Provider 配置比旁边几行加粗（${freq.provider} vs ${freq.neighbour}）`);
+    assert.equal(freq.lidOn, false, '关盖运行的开关跟着服务端状态');
+    // 点一下就是切：请求带上取反后的值，回来之后开关跟着服务端答的那个状态走。
+    await page.evaluate(`document.getElementById('air-lid-sleep').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-lid-sleep').classList.contains('on')`), '点一下开关就亮');
+    assert.deepEqual(powerPosts.map(raw => JSON.parse(raw)), [{ enabled: true }], '写的是取反后的值');
+    assert.equal(await page.evaluate(`document.getElementById('notice').textContent`), '已开启关盖保持运行');
+    // 折起来之后里面那几行不再渲染（这一栏的意义就是把「偶尔改一次」的东西收起来）。
+    // 这里不能用 offsetHeight 断：closed 的 details 走 content-visibility:hidden，
+    // 子树还留着上一次量到的尺寸，offsetHeight 照样答 57；checkVisibility() 才认。
+    const freqOpenHeight = await page.evaluate(`Math.round(document.getElementById('frequent-settings-group').getBoundingClientRect().height)`);
+    await page.evaluate(`document.querySelector('#frequent-settings-group > summary').click()`);
+    const collapsed = await page.evaluate(`(() => { const g = document.getElementById('frequent-settings-group');
+      return { open: g.open, navVisible: document.getElementById('frequent-settings').checkVisibility(),
+        height: Math.round(g.getBoundingClientRect().height) }; })()`);
+    assert.equal(collapsed.open, false);
+    assert.equal(collapsed.navVisible, false, '收起后常用设置的行不再渲染');
+    assert.ok(collapsed.height < freqOpenHeight, `收起后这一栏只剩标题（${collapsed.height} < ${freqOpenHeight}）`);
 
     // ── 控制台：从左侧滑入，地址不变，当前任务不卸载 ─────────────────────
     const before = await page.evaluate(`(() => {

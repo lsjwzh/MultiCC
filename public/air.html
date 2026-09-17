@@ -75,14 +75,29 @@
                任务清单往下推了一整段，而它们其实是「偶尔改一次」的东西 —— 收进
                折叠区，但自成一栏、排在这批折叠项的最前面：比起同在这里的全局工具
                和主机运维，这三个还是点得最多的。id 和 .sidebar-setting-row 都留着，
-               air.js 的 data-air-view 绑定与 active 态不认位置。 -->
-          <nav id="frequent-settings" class="frequent-settings" aria-label="常用设置">
-            <span class="caption">常用设置</span>
-            <button type="button" class="sidebar-setting-row" data-air-view="provider"><span>◈</span><span>Provider 配置</span></button>
-            <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span>外网穿透</span></button>
-            <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span>消息桥接</span></button>
-          </nav>
-          <nav class="global-links">
+               air.js 的 data-air-view 绑定与 active 态不认位置。
+
+               这一栏现在自己也是可折叠的（details/summary，默认展开），并且和下面
+               几栏一样套了一个 .side-group 的框：这几组东西（设置入口 / 系统工具 /
+               最近启动 / 主机操作）之间本来只靠留白分隔，四组叠在一起看着是一整片
+               按钮。框住之后每一组自己成立，视线不再被下一组的行带走。
+               两列排布：四个入口正好 2×2，比一列短一半。 -->
+          <details id="frequent-settings-group" class="side-group" open>
+            <summary class="side-group-title">常用设置</summary>
+            <nav id="frequent-settings" class="frequent-settings" aria-label="常用设置">
+              <!-- Provider 配置是这一栏里最常点的（换线路、换模型都从它进），所以
+                   字重和颜色都比另外几行重一点，不是四个等价的入口。 -->
+              <button type="button" class="sidebar-setting-row is-primary" data-air-view="provider"><span>◈</span><span>Provider 配置</span></button>
+              <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span>外网穿透</span></button>
+              <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span>消息桥接</span></button>
+              <!-- 关盖运行是设置中心 › 全局配置里那个开关的快捷版：点一下直接切，
+                   不用先跳进设置。只在 macOS 且接口答得出状态时才出现（air.js
+                   的 loadLidSleepRow），其它平台/环境整行隐藏，不留一个点不动的坑。 -->
+              <button type="button" class="sidebar-setting-row" id="air-lid-sleep" hidden
+                      title="关盖时保持运行，不进入睡眠（点击切换）"><span>☾</span><span>关盖运行</span><span class="row-switch" aria-hidden="true"></span></button>
+            </nav>
+          </details>
+          <nav class="global-links side-group">
             <button type="button" data-air-view="docs">服务与文档</button>
             <button type="button" data-air-view="memory">记忆图谱</button>
             <button type="button" data-air-view="taskgraph">任务图谱</button>
@@ -90,11 +105,11 @@
           </nav>
           <!-- Deliberately outside the version row above: that row is a click target
                for the update check, and reading a timestamp should not fire a call. -->
-          <div class="ops-boot">
+          <div class="ops-boot side-group">
             <div class="ops-boot-row"><span class="ops-boot-label">最近启动</span><span id="air-boot-time">—</span></div>
             <div id="air-boot-uptime" class="ops-boot-uptime"></div>
           </div>
-          <nav class="ops-actions" aria-label="主机操作">
+          <nav class="ops-actions side-group" aria-label="主机操作">
             <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包">安装包</button>
             <button type="button" id="air-qr-btn" title="扫码在手机上打开">二维码</button>
             <button type="button" id="push-toggle" title="开启浏览器推送通知">推送通知</button>
