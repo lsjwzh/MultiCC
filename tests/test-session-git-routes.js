@@ -101,7 +101,7 @@ function createFixture(overrides = {}) {
   };
 }
 
-test('mountRoutes installs the nine routes once per app', () => {
+test('mountRoutes installs the ten routes once per app', () => {
   const fixture = createFixture();
   fixture.runtime.mountRoutes(fixture.app);
   assert.deepEqual(Object.keys(fixture.runtime).sort(), [
@@ -109,6 +109,7 @@ test('mountRoutes installs the nine routes once per app', () => {
   ]);
   assert.deepEqual([...fixture.app.routes.keys()].sort(), [
     'GET /api/git/commit-diff',
+    'GET /api/git/directory-status',
     'GET /api/git/log',
     'GET /api/sessions/:id/diff',
     'GET /api/sessions/:id/diff/file',
@@ -130,7 +131,7 @@ test('production host delegates the complete Git route surface through narrow po
   for (const route of [
     '/api/sessions/:id/merge-status', '/api/sessions/:id/diff',
     '/api/sessions/:id/diff/files', '/api/sessions/:id/diff/file',
-    '/api/git/log', '/api/git/commit-diff',
+    '/api/git/log', '/api/git/commit-diff', '/api/git/directory-status',
     '/api/sessions/:id/merge', '/api/sessions/:id/sync', '/api/sessions/:id/rebase',
   ]) {
     assert.equal(server.includes(route), false, `${route} is no longer inline in the host`);
@@ -424,6 +425,64 @@ test('commit-diff returns a clean empty diff for root commits (no parent)', asyn
   assert.equal(response.body.truncated, false);
   // rev-parse failed -> parent-range diff is never attempted
   assert.equal(fixture.calls.run.filter(c => c.args[0] === 'diff').length, 0);
+});
+
+test('directory-status reports unpushed commits and main-checkout dirty files', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args) => {
+        if (args[0] === 'rev-parse' && args.includes('HEAD')) return 'main\n';
+        if (args[0] === 'rev-parse') return 'origin/main\n';
+        if (args[0] === 'rev-list' && args[1] === '--count' && args[2] === 'origin/main..HEAD') return '2\n';
+        if (args[0] === 'rev-list' && args[1] === '--count' && args[2] === 'HEAD..origin/main') return '1\n';
+        if (args[0] === 'status') return 'M  README.md\n?? notes/scratch.md\n?? .multicc-worktrees/task-1/\n';
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/git/directory-status'), {
+    query: { dirId: 'd1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, {
+    branch: 'main', upstream: 'origin/main', baseBranch: 'main', ahead: 2, behind: 1,
+    dirtyFiles: [
+      { status: 'M', path: 'README.md' },
+      { status: '??', path: 'notes/scratch.md' },
+    ],
+  });
+  // The worktree subtree never reads as a pending change of the main checkout.
+  assert.equal(response.body.dirtyFiles.some(file => file.path.includes('.multicc-worktrees')), false);
+});
+
+test('directory-status falls back to the base branch without an upstream', async () => {
+  const fixture = createFixture({
+    directories: new Map([['d1', { id: 'd1', path: '/repo' }]]),
+    implementations: {
+      gitRunQueued: async (repo, args) => {
+        if (args[0] === 'rev-parse' && args.includes('HEAD')) return 'main\n';
+        if (args[0] === 'rev-parse') throw new Error("fatal: no upstream configured for branch 'main'");
+        if (args[0] === 'rev-list' && args[2] === 'fallback-main..HEAD') return '3\n';
+        return '';
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/git/directory-status'), {
+    query: { dirId: 'd1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.upstream, null);
+  assert.equal(response.body.baseBranch, 'fallback-main');
+  assert.equal(response.body.ahead, 3);
+  assert.deepEqual(response.body.dirtyFiles, []);
+});
+
+test('directory-status keeps the legacy 400/404 shape', async () => {
+  const fixture = createFixture();
+  assert.equal((await invoke(fixture.app.routes.get('GET /api/git/directory-status'), { query: {} })).statusCode, 400);
+  assert.equal((await invoke(fixture.app.routes.get('GET /api/git/directory-status'), { query: { dirId: 'nope' } })).statusCode, 404);
+  const missing = createFixture({ existsSync: () => false });
+  assert.equal((await invoke(missing.app.routes.get('GET /api/git/directory-status'), { query: { dirId: 'd1' } })).statusCode, 404);
 });
 
 test('active and classify gates block sync while force bypasses both', async () => {
