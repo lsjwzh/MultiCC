@@ -7,13 +7,38 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/onboarding_store.dart';
 import 'package:multicc_app/services/settings_service.dart';
+import 'package:multicc_app/widgets/air/air_sidebar.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
 import 'package:multicc_app/widgets/workspace_navigation_drawer.dart';
 
 /// 一份两目录两任务的快照：d1 里有一条未完成的、一条归档的，d2 空着。
 /// `/api/air/tasks/:id` 是另一套形状（多了 attribution / execution），单独给。
-MockClient _client(List<String> requests) => MockClient((request) async {
+MockClient _client(
+  List<String> requests, {
+  bool lidSleepAvailable = false,
+  bool lidSleepEnabled = false,
+  List<String>? lidSleepPosts,
+}) => MockClient((request) async {
   requests.add(request.url.path);
+  // 关盖运行（macOS 电源）：Web 侧栏「常用设置」那一行、以及设置中心 › 全局配置
+  // 那个开关，打的是同一条接口。默认这台主机没有这个能力（非 macOS 给的答案就是
+  // available:false），要测那一行时再把这个能力打开。
+  if (request.url.path == '/api/settings/power') {
+    var enabled = lidSleepEnabled;
+    if (request.method == 'POST') {
+      lidSleepPosts?.add(request.body);
+      enabled = (jsonDecode(request.body) as Map)['enabled'] == true;
+    }
+    return http.Response(
+      jsonEncode({
+        'ok': true,
+        'available': lidSleepAvailable,
+        'enabled': lidSleepAvailable && enabled,
+      }),
+      200,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
+  }
   if (request.url.path.startsWith('/api/air/tasks/')) {
     return http.Response(
       jsonEncode({
@@ -584,6 +609,214 @@ void main() {
     // 服务与文档 / 记忆图谱 / 任务图谱 / 设置中心。
     expect(find.byKey(const ValueKey('air-more-task-graph')), findsOneWidget);
     expect(find.text('任务图谱'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('常用设置：两列排布、Provider 加粗，四个入口一个不少', (tester) async {
+    final settings = await _settings();
+    final opened = <WorkspaceDestination>[];
+    final client = _client(
+      <String>[],
+      lidSleepAvailable: true,
+      lidSleepEnabled: false,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(
+          settings: settings,
+          httpClient: client,
+          onOpenDestination: opened.add,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
+
+    // Web 的 `#frequent-settings` 是四条：Provider 配置 / 外网穿透 / 消息桥接 /
+    // 关盖运行（最后一条只在 macOS 那台主机上出现）。
+    final provider = tester.getRect(
+      find.byKey(const ValueKey('air-more-provider')),
+    );
+    final tunnel = tester.getRect(find.byKey(const ValueKey('air-more-tunnel')));
+    final bridges = tester.getRect(
+      find.byKey(const ValueKey('air-more-bridges')),
+    );
+    final lid = tester.getRect(
+      find.byKey(const ValueKey('air-more-lid-sleep')),
+    );
+    // 两列：同行两格并排、下一格换行，每格只有半栏宽 —— 一列那套尺寸排不下
+    // 「Provider 配置」，两列才要求它窄到刚好一行。
+    expect(tunnel.left, greaterThan(provider.right - 1));
+    expect((tunnel.top - provider.top).abs(), lessThan(1));
+    expect(bridges.left, closeTo(provider.left, 1));
+    expect(bridges.top, greaterThan(provider.top + 10));
+    expect(lid.left, closeTo(tunnel.left, 1));
+    expect(provider.width, lessThan(AirSidebar.width / 2));
+    // Provider 配置是这一组里最重的一行：字重比旁边那格高，颜色也更实。
+    expect(
+      tester
+          .widget<Text>(
+            find.descendant(
+              of: find.byKey(const ValueKey('air-more-provider')),
+              matching: find.text('Provider 配置'),
+            ),
+          )
+          .style
+          ?.fontWeight,
+      FontWeight.w700,
+    );
+    expect(
+      tester
+          .widget<Text>(
+            find.descendant(
+              of: find.byKey(const ValueKey('air-more-tunnel')),
+              matching: find.text('外网穿透'),
+            ),
+          )
+          .style
+          ?.fontWeight,
+      FontWeight.w500,
+    );
+    // 点一下就交给宿主去开那一页（这几行就是老抽屉里的目的地）。
+    await tapInSidebar(tester, find.text('外网穿透'));
+    expect(opened, [WorkspaceDestination.tunnel]);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('更多与系统：每组各套一个框，全局页那四行自成一格', (tester) async {
+    final settings = await _settings();
+    final client = _client(<String>[], lidSleepAvailable: true);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(
+          settings: settings,
+          httpClient: client,
+          onOpenVoiceCall: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
+
+    for (final group in const [
+      'air-group-frequent',
+      'air-group-global',
+      'air-group-entries',
+      'air-group-terminal',
+      'air-group-host',
+    ]) {
+      expect(find.byKey(ValueKey(group)), findsOneWidget, reason: group);
+    }
+    // 「服务与文档 / 记忆图谱 / 任务图谱 / 设置中心」四行同框，别的一行都不在。
+    final global = tester.getRect(find.byKey(const ValueKey('air-group-global')));
+    for (final row in const [
+      'air-more-docs',
+      'air-more-memory',
+      'air-more-task-graph',
+      'air-more-settings',
+    ]) {
+      final rect = tester.getRect(find.byKey(ValueKey(row)));
+      expect(global.contains(rect.topLeft), isTrue, reason: row);
+      expect(global.contains(rect.bottomRight), isTrue, reason: row);
+    }
+    expect(
+      global.contains(
+        tester.getRect(find.byKey(const ValueKey('air-more-board'))).topLeft,
+      ),
+      isFalse,
+    );
+    // 每一格都套在各自那个框里：框比行宽，四边都留得下那一条淡边。
+    final provider = tester.getRect(
+      find.byKey(const ValueKey('air-more-provider')),
+    );
+    final frequent = tester.getRect(
+      find.byKey(const ValueKey('air-group-frequent')),
+    );
+    expect(frequent.left, lessThan(provider.left));
+    expect(frequent.right, greaterThan(provider.right));
+    // 五个框互不重叠地一路排下去（同一条竖线上，一个接一个）。
+    final boxes = [
+      'air-group-frequent',
+      'air-group-global',
+      'air-group-entries',
+      'air-group-terminal',
+      'air-group-host',
+    ].map((k) => tester.getRect(find.byKey(ValueKey(k)))).toList();
+    for (var i = 1; i < boxes.length; i++) {
+      expect(boxes[i].top, greaterThanOrEqualTo(boxes[i - 1].bottom - 1));
+    }
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('常用设置可以收起来：默认展开，点标题只剩一行', (tester) async {
+    final settings = await _settings();
+    final client = _client(<String>[]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
+
+    final tile = find.byKey(const ValueKey('air-more-frequent'));
+    final expanded = tester.getSize(tile).height;
+    await tapInSidebar(tester, find.text('常用设置'));
+    // 收起后这一栏只剩标题：里面那两行入口不再占高度（Web 那边量 checkVisibility，
+    // Flutter 这边量这一栏自己的高度，说的是同一件事）。
+    expect(tester.getSize(tile).height, lessThan(expanded - 40));
+    await tapInSidebar(tester, find.text('常用设置'));
+    expect(tester.getSize(tile).height, closeTo(expanded, 1));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('关盖运行：主机不是 macOS 就不出现，是 macOS 就能直接切', (tester) async {
+    // ① 非 macOS：整行不出现，不留一个点了没反应的开关。
+    final settings = await _settings();
+    final posts = <String>[];
+    var client = _client(<String>[], lidSleepPosts: posts);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
+    expect(find.byKey(const ValueKey('air-more-lid-sleep')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+
+    // ② macOS：这一行在，点一下就把开关翻过去（写的是取反后的值），回执落在
+    // 折叠区外那一行上 —— 和设置中心 › 全局配置里那个开关是同一条接口。
+    client = _client(<String>[], lidSleepAvailable: true, lidSleepPosts: posts);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
+    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-lid-sleep')));
+    expect(posts, ['{"enabled":true}']);
+    expect(find.text('已开启关盖保持运行'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
