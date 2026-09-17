@@ -67,15 +67,29 @@ function createStaticAssetsRoutes(rawDeps) {
         return res.redirect(`/manage.html?${legacy.toString()}`);
       }
       const requested = typeof req.query.view === 'string' ? req.query.view : 'overview';
-      const aliases = { cron: 'schedules', overview: 'overview', tasks: 'planner' };
+      const aliases = { cron: 'schedules', tasks: 'overview', planner: 'overview' };
       const allowed = new Set([
-        'overview', 'tasks', 'planner', 'schedules', 'docs', 'memory', 'settings', 'voice', 'goal',
+        'overview', 'schedules', 'docs', 'memory', 'settings', 'voice', 'goal',
         'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
       ]);
       const view = aliases[requested] || (allowed.has(requested) ? requested : 'overview');
       const params = new URLSearchParams({ view });
       if (typeof req.query.token === 'string' && req.query.token) params.set('token', req.query.token);
       if (typeof req.query.external === 'string' && req.query.external) params.set('external', req.query.external);
+      for (const key of ['dir', 'task']) {
+        if (typeof req.query[key] === 'string' && req.query[key]) params.set(key, req.query[key]);
+      }
+      return res.redirect(`/air?${params.toString()}`);
+    });
+
+    // The legacy task planner has been removed, including its embedded entry.
+    app.get(['/air', '/air.html', '/manage.html'], (req, res, next) => {
+      if (req.query.view !== 'planner'
+          && !(req.path === '/manage.html' && req.query.view === 'tasks')) return next();
+      const params = new URLSearchParams({ view: 'overview' });
+      for (const key of ['dir', 'task', 'token', 'external']) {
+        if (typeof req.query[key] === 'string' && req.query[key]) params.set(key, req.query[key]);
+      }
       return res.redirect(`/air?${params.toString()}`);
     });
 

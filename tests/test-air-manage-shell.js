@@ -23,9 +23,10 @@ test('Air owns the management home and exposes the management navigation', () =>
 
 test('native Air registry and compatibility panels preserve every former manage child', () => {
   const admin = read('public/air-admin.js');
-  for (const view of ['planner', 'memory', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage']) {
+  for (const view of ['memory', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage']) {
     assert.match(admin, new RegExp(`${view}: \\[`), `${view} should remain reachable inside Air`);
   }
+  assert.doesNotMatch(admin, /planner: \[/);
   assert.match(admin, /api\/docs-registry/);
   assert.match(admin, /MultiCCAirProvider/);
   assert.match(admin, /service-dialog/);
