@@ -62,6 +62,11 @@ class AirOpsStore extends ChangeNotifier {
 
   String receipt = '';
   String receiptTone = '';
+  /// 关盖运行：null = 还没读到（或读不到），false = 这台主机没这个能力。
+  /// 三态是必要的：还没问过就摆一个开关，用户点下去才发现这台机器根本不支持。
+  bool? lidSleepAvailable;
+  bool lidSleepOn = false;
+  bool lidSleepBusy = false;
 
   /// 正在跑的更新。null 表示没在跟任何一次更新。
   AirUpdateRun? updateRun;
@@ -93,6 +98,7 @@ class AirOpsStore extends ChangeNotifier {
       if (!updating) unawaited(checkVersion());
     });
     unawaited(loadBootTime());
+    unawaited(loadLidSleep());
     unawaited(checkVersion());
   }
 
@@ -205,6 +211,44 @@ class AirOpsStore extends ChangeNotifier {
       }
       await Future<void>.delayed(_pollInterval);
       if (_disposed) return;
+    }
+  }
+
+  /// 关盖运行的当前状态（Web `air.js` 的 loadLidSleepRow）。
+  ///
+  /// 读不到就保持 null（这一行先不出现），不写回执：侧栏不是报错的地方，而且
+  /// 主机连不上这件事本身有别的地方在说。只有服务端明确答 available=false
+  /// （非 macOS）才把这一行永久关掉。
+  Future<void> loadLidSleep() async {
+    try {
+      final status = await service.fetchMacLidSleep();
+      lidSleepAvailable = status.available;
+      lidSleepOn = status.enabled;
+    } catch (_) {
+      return;
+    }
+    _notify();
+  }
+
+  /// 点一下开关。先动界面再发请求：授权框是弹在 Mac 上的，用户在这台设备上按下去
+  /// 之后不该看到一个还停在旧状态的开关。失败退回服务端答的状态（Web 同款）。
+  Future<void> toggleLidSleep() async {
+    if (lidSleepBusy || lidSleepAvailable != true) return;
+    lidSleepBusy = true;
+    final wanted = !lidSleepOn;
+    lidSleepOn = wanted;
+    _notify();
+    try {
+      final status = await service.setMacLidSleep(wanted);
+      lidSleepAvailable = status.available;
+      lidSleepOn = status.enabled;
+      say(status.enabled ? '已开启关盖保持运行' : '已恢复关盖睡眠');
+    } catch (error) {
+      lidSleepOn = !wanted;
+      say('关盖运行设置失败：$error', tone: 'err');
+    } finally {
+      lidSleepBusy = false;
+      _notify();
     }
   }
 

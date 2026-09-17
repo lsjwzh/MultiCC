@@ -1184,6 +1184,7 @@ class _AirTasksViewState extends State<AirTasksView>
           _closeDrawer();
           unawaited(_openAllDestinations());
         },
+        onOpenDestination: _openDestination,
         ops: _ops,
         onOpenPush: () =>
             _push((_) => PushSettingsScreen(settings: widget.settings)),

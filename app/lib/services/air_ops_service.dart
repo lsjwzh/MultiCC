@@ -23,6 +23,24 @@ class AirServerInfo {
   bool get known => url.isNotEmpty || uptimeMs > 0;
 }
 
+/// 关盖运行（macOS 电源）。Web 侧栏「常用设置」那一行用的同一条接口
+/// （`GET/POST /api/settings/power`，见 `public/air.js` 的 loadLidSleepRow）。
+///
+/// [available] 是「这台主机有没有这个能力」：非 macOS 的服务端照样答 200，只是
+/// available=false。界面据此决定这一行出不出现 —— 不是一次失败，所以不能拿异常
+/// 当信号（那会把「这台主机没有」和「网断了」说成同一件事）。
+class AirMacLidSleep {
+  const AirMacLidSleep({required this.available, required this.enabled});
+
+  final bool available;
+  final bool enabled;
+
+  factory AirMacLidSleep.fromJson(Map<String, dynamic> data) => AirMacLidSleep(
+    available: data['available'] == true,
+    enabled: data['enabled'] == true,
+  );
+}
+
 class AirVersionInfo {
   const AirVersionInfo({
     required this.current,
@@ -257,6 +275,34 @@ class AirOpsService {
 
   String _absolute(String path) =>
       path.startsWith('http') ? path : _url(path.startsWith('/') ? path : '/$path');
+
+  /// 读当前状态。读不到就抛，由 [AirOpsStore] 接住当成「不知道」——那和「这台主机
+  /// 没这个能力」（available=false）是两件事，只有后者能让这一行永远消失。
+  Future<AirMacLidSleep> fetchMacLidSleep() async =>
+      AirMacLidSleep.fromJson(_decode(await _send('GET', '/api/settings/power')));
+
+  /// 切这个开关要在 Mac 上完成一次管理员授权（服务端跑 osascript），所以这条请求
+  /// 可能停很久：超时按服务端那 120s 给，否则 App 会在用户还没按下授权框时自己
+  /// 放弃，而 Mac 那边其实已经改了。
+  Future<AirMacLidSleep> setMacLidSleep(bool enabled) async {
+    final uri = Uri.parse(_url('/api/settings/power'));
+    final headers = _headers;
+    final body = jsonEncode({'enabled': enabled});
+    // 走注入的 client（生产留空时才是包级 http.post），和 [_send] 同一条路：
+    // 否则测试里这条请求绕过替身，真正发出去。
+    final client = httpClient;
+    final call = client == null
+        ? http.post(uri, headers: headers, body: body)
+        : client.post(uri, headers: headers, body: body);
+    final response = await call.timeout(const Duration(seconds: 120));
+    final status = AirMacLidSleep.fromJson(_decode(response));
+    // 失败是「设置没生效」，不是「开关现在是关的」。这里必须抛：返回一个看起来
+    // 正常的状态，界面就会把一次失败画成一次成功的切换。
+    if (response.statusCode >= 400) {
+      throw Exception('HTTP ${response.statusCode}');
+    }
+    return status;
+  }
 
   Future<AirRestartResult> restart() async {
     final response = await _send('POST', '/api/restart', body: const {});
