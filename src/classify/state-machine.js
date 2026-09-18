@@ -1002,10 +1002,13 @@ function createClassifyStateMachine(rawDeps) {
         latencyMs: Date.now() - startedAt,
       });
       // P2: the verdict is journalled before anything acts on it, and the
-      // configured mode says what may act. `shadow` and `suggest` end here —
-      // the row is durable, the turn's identity, name, phase and cursor are
-      // untouched, and a running turn was never a candidate. `auto` lets the
-      // host apply the change itself through the same durable journal.
+      // configured mode says what may act. A `suggest` verdict ends here: the
+      // durable row is the prompt, so the legacy separation dialog must not ask
+      // the same question a second time. `shadow` keeps its row (hidden) and
+      // then falls through to exactly the behaviour `off` has — a parity
+      // measurement that changed what the user sees would be measuring a
+      // different system. `auto` lets the host apply the change itself through
+      // the same durable journal.
       let decisionAction = 'none';
       if (!supersededReason && shellOwned
           && typeof getTaskContextHost().recordTaskAttributionDecision === 'function') {
@@ -1035,7 +1038,7 @@ function createClassifyStateMachine(rawDeps) {
           // is visible instead of silently dropping the turn's grouping.
           logger.warn?.('task_attribution_decision_failed', { sessionId: sessionName, turnId, error: error.message });
         }
-        if (decisionAction === 'record' || decisionAction === 'suggest') {
+        if (decisionAction === 'suggest') {
           annotateChatTurn(sessionName, turnId, { taskId: currentTaskId || undefined, auxRunId: runId }, { anchorMessageId });
           setTaskState(sessionName, { auxRunId: runId });
           return;

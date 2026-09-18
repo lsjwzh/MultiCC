@@ -106,7 +106,8 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.task-attribution-suggestion-accept, .task-attribution-suggestion-dismiss {
+.task-attribution-suggestion-accept, .task-attribution-suggestion-dismiss,
+.task-attribution-suggestion-defer, .task-attribution-suggestion-cancel {
   padding: 2px 8px;
   border: 1px solid var(--chat-line, #30363d);
   border-radius: 7px;
@@ -117,6 +118,8 @@
 }
 .task-attribution-suggestion-accept:hover { color: var(--chat-blue, #58a6ff); border-color: var(--chat-blue, #58a6ff); }
 .task-attribution-suggestion-dismiss:hover { color: var(--chat-muted, #8b949e); }
+.task-attribution-suggestion-defer:hover { color: var(--chat-muted, #8b949e); }
+.task-attribution-suggestion-cancel:hover { color: var(--chat-warning, #d29922); border-color: var(--chat-warning, #d29922); }
 /* A suggestion is worth noticing without opening the mode. */
 .task-attribution-toggle[data-suggestions]:not([data-suggestions="0"]) {
   color: var(--chat-warning, #d29922);

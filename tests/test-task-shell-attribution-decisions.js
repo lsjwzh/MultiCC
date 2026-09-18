@@ -13,6 +13,9 @@ const input = (clientMsgId, extra = {}) => ({ clientMsgId, text: clientMsgId, ..
 // says that turn belongs somewhere else.
 async function setup(t, { mode = 'suggest', turnId = 'turn-1' } = {}) {
   const f = fixture(t);
+  // Who is busy is what decides between "apply now" and "queue it"; tests flip
+  // this instead of re-building the whole host.
+  const busy = { value: false };
   // Adopting the session first is what makes the shell own a real execution:
   // the decision journal only ever speaks about turns a shell owns.
   f.runtime.adopt(f.a.id, 'a');
@@ -23,7 +26,7 @@ async function setup(t, { mode = 'suggest', turnId = 'turn-1' } = {}) {
     turnId, taskId: first.taskId, role: 'user', content: 'work' }]]]);
   const overlay = createTaskOperations({
     store: f.store, revisionOf: () => 'rev-1',
-    isTurnBusy: () => false,
+    isTurnBusy: () => busy.value,
     resolveTarget: async (_scope, taskId) => f.store.get('task', taskId),
     taskTitle: taskId => f.store.get('task', taskId)?.title || null,
     effectiveTaskOf: (sessionId, id) => (histories.get(sessionId) || []).find(m => m.turnId === id)?.taskId ?? null,
@@ -34,13 +37,13 @@ async function setup(t, { mode = 'suggest', turnId = 'turn-1' } = {}) {
     scopeOf: () => f.runtime.chatScope(f.a.id),
     settleAttribution: (...args) => f.runtime.settleAttribution(...args),
     restoreSettledCursor: (...args) => f.runtime.restoreSettledCursor(...args),
-    isTurnBusy: () => false,
+    isTurnBusy: () => busy.value,
     taskTitle: taskId => f.store.get('task', taskId)?.title || null,
     onAttributionChanged: (sessionId, detail) => events.push({ sessionId, ...detail }),
   });
   const record = (extra = {}) => decisions.record('a', first.receiptId,
     { mode, relation: 'same', taskName: 'Beta', turnId, ...extra });
-  return { f, first, shell, histories, overlay, decisions, record, events };
+  return { f, first, shell, histories, overlay, decisions, record, events, busy };
 }
 
 test('shadow records the verdict and changes nothing a reader can see', async t => {
@@ -205,4 +208,94 @@ test('the decisions HTTP surface exposes the defer route', async () => {
     { params: { shellId: 'sh_1', decisionId: 'dec_1' }, body: {} }, { json: value => { body = value; } });
   assert.deepEqual(calls, [['sh_1', 'dec_1']]);
   assert.equal(body.state, 'deferred');
+});
+
+test('accepting a suggestion for a running turn queues the change instead of refusing it', async t => {
+  const { f, decisions, record, busy, events } = await setup(t);
+  const second = await f.runtime.send(f.a.id, input('B', { newTask: true }));
+  const result = await record({ taskId: second.taskId });
+  busy.value = true;
+  const queued = await decisions.accept(f.a.id, result.decision.id, { clientMsgId: 'accept-queued' });
+  assert.equal(queued.state, 'queued', 'the decision is durable, not an error');
+  assert.equal(queued.queuedAt > 0, true);
+  assert.equal(decisions.list(f.a.id).filter(item => item.state === 'queued').length, 1,
+    'a queued change stays visible');
+  assert.equal(queued.apply, null, 'nothing was written while the turn is running');
+  assert.equal(events.some(event => event.kind === 'queued'), true, 'other pages are told');
+
+  // The turn closes and the server-side queue applies what the user accepted.
+  busy.value = false;
+  const drained = await decisions.drain();
+  assert.equal(drained.applied, 1);
+  const settled = decisions.list(f.a.id).find(item => item.id === result.decision.id);
+  assert.equal(settled.state, 'applied');
+  assert.equal(settled.apply.kind, 'overlay');
+});
+
+test('a queued change can be withdrawn, and a lost race stays queued instead of failing', async t => {
+  const { f, decisions, record, busy } = await setup(t);
+  const second = await f.runtime.send(f.a.id, input('B', { newTask: true }));
+  const result = await record({ taskId: second.taskId });
+  busy.value = true;
+  const queued = await decisions.accept(f.a.id, result.decision.id, { clientMsgId: 'accept-race' });
+  assert.equal(queued.state, 'queued');
+  // A turn that started again between the gate and the write is "not yet".
+  await decisions.drain();
+  assert.equal(decisions.list(f.a.id).find(item => item.id === result.decision.id).state, 'queued');
+  const dismissed = decisions.dismiss(f.a.id, result.decision.id);
+  assert.equal(dismissed.state, 'dismissed');
+  await decisions.drain();
+  assert.equal(decisions.list(f.a.id).find(item => item.id === result.decision.id).state, 'dismissed',
+    'a withdrawn change is never applied later');
+});
+
+test('a turn that starts again between the gate and the write stays queued, not failed', async t => {
+  const { f, decisions, record, busy, overlay } = await setup(t);
+  const second = await f.runtime.send(f.a.id, input('B', { newTask: true }));
+  const result = await record({ taskId: second.taskId });
+  busy.value = true;
+  await decisions.accept(f.a.id, result.decision.id, { clientMsgId: 'accept-restart' });
+  // The gate says "free" but the write itself meets a running turn: the request
+  // must go back to waiting, not be reported as a failure the user has to redo.
+  const realApply = overlay.apply;
+  overlay.apply = async () => { throw Object.assign(new Error('turn_busy'), { code: 'turn_busy' }); };
+  busy.value = false;
+  await decisions.drain();
+  const stillQueued = decisions.list(f.a.id).find(item => item.id === result.decision.id);
+  assert.equal(stillQueued.state, 'queued');
+  assert.equal(stillQueued.queueAttempts, 1);
+  overlay.apply = realApply;
+  await decisions.drain();
+  assert.equal(decisions.list(f.a.id).find(item => item.id === result.decision.id).state, 'applied');
+});
+
+test('a queued change that never becomes possible expires visibly', async t => {
+  const { f, decisions, record, busy } = await setup(t);
+  const second = await f.runtime.send(f.a.id, input('B', { newTask: true }));
+  const result = await record({ taskId: second.taskId });
+  busy.value = true;
+  await decisions.accept(f.a.id, result.decision.id, { clientMsgId: 'accept-expire' });
+  const row = f.store.get('attr-decision', result.decision.id);
+  f.store.set('attr-decision', row.id, { ...row, queuedAt: Date.now() - (25 * 60 * 60 * 1000) });
+  busy.value = false;
+  const drained = await decisions.drain();
+  assert.equal(drained.expired, 1);
+  const settled = decisions.list(f.a.id).find(item => item.id === result.decision.id);
+  assert.equal(settled.state, 'failed');
+  assert.equal(settled.lastError, 'queued_expired');
+});
+
+test('starting the queue advances what an earlier page left behind', async t => {
+  const { f, decisions, record, busy } = await setup(t);
+  const second = await f.runtime.send(f.a.id, input('B', { newTask: true }));
+  const result = await record({ taskId: second.taskId });
+  busy.value = true;
+  const queued = await decisions.accept(f.a.id, result.decision.id, { clientMsgId: 'accept-boot' });
+  assert.equal(queued.state, 'queued');
+  // Nobody reopens the page: the server owns the wait, and its first pass runs
+  // as soon as the queue is started (which the host does at mount).
+  busy.value = false;
+  await decisions.start(60 * 60 * 1000);
+  decisions.stop();
+  assert.equal(decisions.list(f.a.id).find(item => item.id === result.decision.id).state, 'applied');
 });

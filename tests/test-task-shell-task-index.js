@@ -119,3 +119,24 @@ test('index route reports a clean error envelope when the shell is unknown', asy
   assert.equal(body.ok, false);
   assert.equal(body.code, 'shell_not_found');
 });
+
+test('exactly one entry is marked as the shell current input target', () => {
+  const tasks = [{ id: 'tsk_a', title: 'Alpha' }, { id: 'tsk_b', title: 'Beta' }];
+  const index = buildTaskIndex({
+    shellId: 'sh_1',
+    messages: [message('m1', 'tsk_a'), message('m2', 'tsk_b')],
+    tasks, codeFor: codes(['tsk_a', 'tsk_b']),
+    capabilitiesOf: () => ({ canDetach: true, canSelectTarget: true }),
+    isTarget: taskId => taskId === 'tsk_b',
+  });
+  assert.deepEqual(index.tasks.map(task => [task.taskId, task.target]),
+    [['tsk_a', false], ['tsk_b', true]]);
+  // The cursor is not part of the scope revision: selecting a target must not
+  // invalidate a preview of the conversation's attribution.
+  const withoutTarget = buildTaskIndex({ shellId: 'sh_1',
+    messages: [message('m1', 'tsk_a'), message('m2', 'tsk_b')], tasks, codeFor: codes(['tsk_a', 'tsk_b']) });
+  assert.equal(index.scopeRevision, withoutTarget.scopeRevision);
+  const empty = buildTaskIndex({ shellId: 'sh_1', messages: [], tasks,
+    codeFor: codes(['tsk_a', 'tsk_b']), isTarget: taskId => taskId === 'tsk_a', includeEmpty: true });
+  assert.deepEqual(empty.tasks.map(task => [task.taskId, task.target]), [['tsk_a', true], ['tsk_b', false]]);
+});

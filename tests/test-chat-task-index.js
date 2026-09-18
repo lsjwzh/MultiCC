@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createController, createAnchorJump } = require('../public/chat-task-index');
+const { createController, createAnchorJump, currentCodeAt } = require('../public/chat-task-index');
 
 class FakeNode {
   constructor(tag) {
@@ -189,4 +189,104 @@ test('a jump that throws while paginating keeps trying the remaining anchors', a
   assert.equal(await jump({ id: 's1:a' }, entry), true);
   assert.deepEqual(errors, ['network']);
   assert.deepEqual(located, ['s1:b']);
+});
+
+test('the reading line picks the last measurable message above it', () => {
+  const node = (code, top) => ({ dataset: { taskShortCode: code }, getBoundingClientRect: () => ({ top }) });
+  const nodes = [node('A001', 0), node('B002', 120), { dataset: { taskShortCode: 'C003' } }, node('C003', 400)];
+  assert.equal(currentCodeAt(nodes, 200), 'B002', 'the last message above the line is the current one');
+  assert.equal(currentCodeAt(nodes, -10), '', 'nothing above the line yet');
+  assert.equal(currentCodeAt([{ dataset: { taskShortCode: 'A001' } }], 100), '',
+    'a node with no measurable rect is skipped, never guessed');
+});
+
+test('a long directory gets search and ID ordering, and both survive a reopen', async () => {
+  const f = fixture();
+  const tasks = Array.from({ length: 9 }, (_, index) => ({
+    taskId: `tsk_${index}`, shortCode: `T00${index}`.slice(-4).toUpperCase(),
+    title: `Topic ${index}`, capabilities: {}, segments: [{ firstMessageRef: { id: `s1:m${index}` } }],
+  })).reverse();
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    loadIndex: async () => ({ tasks }) });
+  await controller.reload();
+  const toggle = f.doc.body.children[0], rail = f.doc.body.children[1];
+  toggle.onclick();
+  const rows = () => rail.children.slice(1, rail.children.length - 1); // filter bar first, empty note last
+  const shown = () => rows().filter(row => row.hidden !== true).map(row => row.children[0].textContent);
+  assert.equal(rail.children.length, 11, 'filter bar + 9 rows + the empty note');
+  assert.equal(rail.children[0].className, 'task-index-filters');
+  assert.deepEqual(shown(),
+    ['T008', 'T007', 'T006', 'T005', 'T004', 'T003', 'T002', 'T001', 'T000'], 'conversation order by default');
+
+  rail.children[0].children[1].onclick();
+  assert.equal(f.storage.getItem('multicc:task-index-sort'), 'code');
+  assert.deepEqual(shown(),
+    ['T000', 'T001', 'T002', 'T003', 'T004', 'T005', 'T006', 'T007', 'T008'], 'ID order on request');
+
+  const search = rail.children[0].children[0];
+  search.value = 'topic 3';
+  search.oninput({ target: { value: 'topic 3' } });
+  assert.deepEqual(shown(), ['T003'],
+    'search matches the title, not only the code');
+  search.value = 'nope';
+  search.oninput({ target: { value: 'nope' } });
+  assert.deepEqual(shown(), [], 'nothing matches');
+  assert.equal(rail.hidden, false, 'a filter matching nothing must not drop the rail');
+  assert.equal(rail.children[rail.children.length - 1].className, 'task-index-empty');
+  assert.equal(rail.children[rail.children.length - 1].hidden, false, 'the empty note is shown');
+  search.value = '';
+  search.oninput({ target: { value: '' } });
+  assert.equal(shown().length, 9, 'clearing the filter restores every row without a rebuild');
+  assert.equal(rail.children[rail.children.length - 1].hidden, true);
+  controller.dispose();
+});
+
+test('choosing the next input target is an explicit action, never a side effect of locating', async () => {
+  const f = fixture(), calls = [], toasts = [];
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    loadIndex: async () => ({ tasks: [
+      { taskId: 'tsk_a', shortCode: 'A001', title: 'Alpha', target: true, capabilities: { canSelectTarget: true },
+        segments: [{ firstMessageRef: { id: 's1:m1' } }] },
+      { taskId: 'tsk_b', shortCode: 'B002', title: 'Beta', capabilities: { canSelectTarget: true },
+        segments: [{ firstMessageRef: { id: 's1:m2' } }] },
+    ] }),
+    selectTarget: { shellId: () => 'sh_1', alert: message => toasts.push(message),
+      request: async (path, body) => { calls.push({ path, body }); return { ok: true, taskId: body.taskId }; } } });
+  await controller.reload();
+  const toggle = f.doc.body.children[0], rail = f.doc.body.children[1];
+  toggle.onclick();
+  assert.equal(rail.children[0].dataset.target, 'true', 'the server says which task the next message goes to');
+  assert.equal(rail.children[0].children[1].className, 'task-index-target-mark');
+  assert.equal(rail.children[1].children[1].className, 'task-index-select');
+  rail.children[1].children[0].onclick();
+  assert.deepEqual(calls, [], 'locating a row must not move the send target');
+  rail.children[1].children[1].onclick({ stopPropagation() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, [{ path: '/api/task-shells/sh_1/select-target', body: { taskId: 'tsk_b' } }]);
+  assert.equal(rail.children[1].dataset.target, 'true');
+  assert.equal(rail.children[0].dataset.target, undefined);
+  assert.deepEqual(toasts, []);
+  controller.dispose();
+});
+
+test('a rejected target choice keeps the previous one and says why', async () => {
+  const f = fixture(), toasts = [];
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    loadIndex: async () => ({ tasks: [
+      { taskId: 'tsk_a', shortCode: 'A001', title: 'Alpha', target: true, capabilities: { canSelectTarget: true },
+        segments: [{ firstMessageRef: { id: 's1:m1' } }] },
+      { taskId: 'tsk_b', shortCode: 'B002', title: 'Beta', capabilities: { canSelectTarget: true },
+        segments: [{ firstMessageRef: { id: 's1:m2' } }] },
+    ] }),
+    selectTarget: { shellId: () => 'sh_1', alert: message => toasts.push(message),
+      request: async () => { throw Object.assign(new Error('stale_shell_cursor'), { code: 'stale_shell_cursor' }); } } });
+  await controller.reload();
+  const toggle = f.doc.body.children[0], rail = f.doc.body.children[1];
+  toggle.onclick();
+  rail.children[1].children[1].onclick({ stopPropagation() {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rail.children[1].dataset.target, undefined, 'a failed choice does not repaint the target');
+  assert.equal(rail.children[0].dataset.target, 'true');
+  assert.deepEqual(toasts, ['taskIndexTargetFailed']);
+  controller.dispose();
 });

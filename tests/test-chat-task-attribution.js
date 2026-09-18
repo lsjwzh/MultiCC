@@ -380,3 +380,36 @@ test('a broadcast about a decision this page just made is not replayed at itself
   assert.deepEqual(calls.filter(path => path === 'history'), [], 'and does not reload history twice');
   controller.dispose();
 });
+
+test('an accepted change that is still waiting for the turn stays visible and can be withdrawn', async () => {
+  let state = [{ id: 'dec_5', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending' }];
+  const calls = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: state.map(item => ({ ...item })) }),
+    request: async (method, path) => {
+      calls.push(path);
+      if (path.endsWith('/accept')) {
+        state = [{ ...state[0], state: 'queued', queuedAt: Date.now() }];
+        return { id: 'dec_5', state: 'queued', toTaskId: 'tsk_b' };
+      }
+      state = [{ ...state[0], state: 'dismissed' }];
+      return { id: 'dec_5', state: 'dismissed' };
+    },
+  });
+  await settle();
+  const toggle = f.doc.body.children[0];
+  const proposals = f.doc.body.children[1].children[0];
+  proposals.children[0].children[1].onclick();
+  await settle();
+  assert.deepEqual(calls, ['/api/task-shells/sh_1/attribution-decisions/dec_5/accept']);
+  assert.equal(toggle.dataset.suggestions, '1', 'a queued change is still waiting work, not done');
+  assert.equal(proposals.hidden, false);
+  assert.equal(proposals.children[0].children[0].textContent, 'taskAttributionQueued');
+  assert.equal(proposals.children[0].children[1].textContent, 'taskAttributionQueueCancel');
+  proposals.children[0].children[1].onclick();
+  await settle();
+  assert.deepEqual(calls[1], '/api/task-shells/sh_1/attribution-decisions/dec_5/dismiss',
+    'withdrawing a queued change uses the durable dismiss, not a second accept');
+  assert.equal(toggle.dataset.suggestions, '0');
+  controller.dispose();
+});
