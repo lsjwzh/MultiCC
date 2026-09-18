@@ -4,6 +4,10 @@ const { hash } = require('./context');
 
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
 const MAX_TURNS_PER_OPERATION = 50;
+// A server-expanded range selects one visible segment, which is routinely
+// longer than a hand-picked list. It gets its own bound so "select up to here"
+// never fails with a message about invalid turn references.
+const MAX_RANGE_TURNS = 500;
 const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 function entryKey(sessionId, turnId) { return `${sessionId}:${turnId}`; }
@@ -36,9 +40,9 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
   const overlay = createAttributionOverlay(store);
   const flights = new Map();
 
-  function normalizeTurns(turns) {
-    if (!Array.isArray(turns) || turns.length === 0 || turns.length > MAX_TURNS_PER_OPERATION) {
-      throw fail('invalid_turns', `turns must contain 1-${MAX_TURNS_PER_OPERATION} entries`, 400);
+  function normalizeTurns(turns, max = MAX_TURNS_PER_OPERATION) {
+    if (!Array.isArray(turns) || turns.length === 0 || turns.length > max) {
+      throw fail('invalid_turns', `turns must contain 1-${max} entries`, 400);
     }
     const seen = new Set();
     return turns.map(raw => {
@@ -58,17 +62,55 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
     return { taskId };
   }
 
+  // Effective attribution is indexed globally by sessionId:turnId, so a write is
+  // only legitimate for conversations that belong to the shell asking for it.
+  // `chatScope` already computes that scope and already refuses to cross it;
+  // failing closed here is what keeps one shell from re-attributing another
+  // conversation's turns.
+  function scopedSessions(scope) {
+    const ids = Array.isArray(scope?.sessionIds) ? scope.sessionIds.filter(id => typeof id === 'string' && id) : [];
+    if (!ids.length) throw fail('scope_incomplete', 'This conversation is not scoped to a task shell', 409);
+    return new Set(ids);
+  }
+
+  function assertInScope(scope, turns) {
+    const allowed = scopedSessions(scope);
+    const outside = turns.filter(turn => !allowed.has(turn.sessionId))
+      .map(turn => ({ sessionId: turn.sessionId, turnId: turn.turnId, reason: 'outside_conversation' }));
+    if (outside.length) {
+      throw Object.assign(fail('task_not_linked', 'Turns outside this conversation cannot be re-attributed', 403),
+        { conflicts: outside });
+    }
+    return turns;
+  }
+
   // 批量整理：一次选一整段（含两端）。区间在服务端按会话内轮次顺序解析，
   // 客户端不需要先把没加载的历史拉到页面上，也无法伪造不存在的轮次。
-  function expandRange(range) {
+  function expandRange(range, scope) {
     const sessionId = typeof range?.sessionId === 'string' ? range.sessionId.trim() : '';
     const from = typeof range?.fromTurnId === 'string' ? range.fromTurnId.trim() : '';
     const to = typeof range?.toTurnId === 'string' ? range.toTurnId.trim() : '';
     if (!sessionId || !from || !to || typeof turnOrderOf !== 'function') throw fail('invalid_range', 'a session and both turn ends are required', 400);
+    if (!scopedSessions(scope).has(sessionId)) {
+      throw Object.assign(fail('task_not_linked', 'Turns outside this conversation cannot be re-attributed', 403),
+        { conflicts: [{ sessionId, turnId: to, reason: 'outside_conversation' }] });
+    }
     const ordered = (turnOrderOf(sessionId) || []).filter(turnId => typeof turnId === 'string' && turnId);
     const start = ordered.indexOf(from), end = ordered.indexOf(to);
     if (start < 0 || end < 0) throw fail('range_not_found', 'A selected turn is no longer part of this conversation', 409);
-    return ordered.slice(Math.min(start, end), Math.max(start, end) + 1).map(turnId => ({ sessionId, turnId }));
+    const turns = ordered.slice(Math.min(start, end), Math.max(start, end) + 1).map(turnId => ({ sessionId, turnId }));
+    if (turns.length > MAX_RANGE_TURNS) {
+      throw Object.assign(fail('range_too_large', 'This range is too long to change in one step', 409),
+        { detail: { turns: turns.length, max: MAX_RANGE_TURNS } });
+    }
+    return turns;
+  }
+
+  // Both entry points resolve their targets the same way: an explicit list is
+  // bounded as user input, a server-expanded range is bounded as a segment, and
+  // neither may address a conversation this shell does not own.
+  function resolveTurns(scope, { range, turns } = {}) {
+    return assertInScope(scope, range ? expandRange(range, scope) : normalizeTurns(turns));
   }
 
   // Effects are computed from the same overlay the read layer uses, so the
@@ -100,7 +142,7 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
   }
 
   function preview({ scope, turns, target, range }) {
-    const normalizedTurns = normalizeTurns(range ? expandRange(range) : turns), normalizedTarget = normalizeTarget(target);
+    const normalizedTurns = resolveTurns(scope, { range, turns }), normalizedTarget = normalizeTarget(target);
     const revision = revisionOf(scope);
     const blocked = [...missingTurns(normalizedTurns), ...blockedTurns(normalizedTurns)];
     const effects = effectsOf(normalizedTurns, normalizedTarget);
@@ -123,7 +165,7 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
 
   async function apply({ scope, clientMsgId, previewToken, turns: rawTurns, target, expectedRevision, operationId, range }) {
     if (typeof clientMsgId !== 'string' || !/^[\w.:-]{1,160}$/.test(clientMsgId)) throw fail('invalid_input', 'invalid clientMsgId', 400);
-    const normalizedTurns = normalizeTurns(range ? expandRange(range) : rawTurns), normalizedTarget = normalizeTarget(target);
+    const normalizedTurns = resolveTurns(scope, { range, turns: rawTurns }), normalizedTarget = normalizeTarget(target);
     const key = opKey(scope.shellId, clientMsgId);
     const fingerprint = hash({ turns: normalizedTurns, target: normalizedTarget });
     const inFlight = flights.get(key);
@@ -149,7 +191,8 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
       await resolveTarget?.(scope, normalizedTarget.taskId);
       const effects = effectsOf(normalizedTurns, normalizedTarget);
       const previous = effects.map(effect => ({ sessionId: effect.sessionId, turnId: effect.turnId,
-        taskId: effect.fromTaskId ?? null }));
+        taskId: effect.fromTaskId ?? null,
+        taskName: effect.fromTaskId ? taskTitle?.(effect.fromTaskId) || null : null }));
       const record = { id: operationId || key, shellId: scope.shellId, kind: 'assign', status: 'applied',
         clientMsgId, fingerprint, targetTaskId: normalizedTarget.taskId, previous, effects,
         createdAt: existing?.createdAt || now(), appliedAt: now() };
@@ -198,8 +241,11 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
           const current = store.get('turn-attr', key);
           if (current?.operationId === record.id) store.remove('turn-attr', key);
         } else {
+          // Restoring the title too: an earlier attribution keeps its name even
+          // if the task has since been renamed or removed from the board.
           store.set('turn-attr', key, { sessionId: previous.sessionId, turnId: previous.turnId,
-            taskId: previous.taskId, taskName: null, operationId: `undo:${record.id}`, updatedAt: now() });
+            taskId: previous.taskId, taskName: previous.taskName || taskTitle?.(previous.taskId) || null,
+            operationId: `undo:${record.id}`, updatedAt: now() });
         }
       }
       store.set('task-op', opKey(record.shellId, record.clientMsgId),
@@ -208,7 +254,26 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
     return get(operationId);
   }
 
-  return { preview, apply, get, undo, overlay,
+  // Dropping a conversation drops the journal rows that conversation owns, and
+  // the overlay rows those operations wrote. Overlay rows are matched by
+  // operation id, so a session another shell still reads keeps overlays that
+  // are not ours.
+  function purgeShell(shellId) {
+    const records = store.list('task-op').filter(record => record.shellId === shellId);
+    let overlays = 0;
+    store.transaction(() => {
+      for (const record of records) {
+        store.remove('task-op', opKey(record.shellId, record.clientMsgId));
+        for (const previous of record.previous || []) {
+          const key = entryKey(previous.sessionId, previous.turnId);
+          if (store.get('turn-attr', key)?.operationId === record.id) { store.remove('turn-attr', key); overlays += 1; }
+        }
+      }
+    });
+    return { operations: records.length, overlays };
+  }
+
+  return { preview, apply, get, undo, overlay, purgeShell,
     list: shellId => store.list('task-op').filter(record => !shellId || record.shellId === shellId).map(publicOperation),
     expireOlderThan: cutoff => {
       const limit = cutoff || now() - WINDOW_MS;
@@ -220,4 +285,4 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
     } };
 }
 
-module.exports = { createAttributionOverlay, createTaskOperations, MAX_TURNS_PER_OPERATION };
+module.exports = { createAttributionOverlay, createTaskOperations, MAX_TURNS_PER_OPERATION, MAX_RANGE_TURNS };

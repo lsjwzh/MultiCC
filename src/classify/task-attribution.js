@@ -71,14 +71,27 @@ function parseTaskAttribution(text, { fallbackTaskId = null, allowedTaskIds = nu
   // Backward-compatible replay of historical three-line Aux output. Old runs
   // did not carry a relation, so they can refine the current task name but may
   // never invent a new identity during a backtest.
-  const lines = stripThinking(text).split('\n').map(line => line.trim()).filter(Boolean);
+  // Fallback for text that is not the JSON contract at all. The legacy
+  // three-line shape keeps working, but an answer that *tried* to be JSON and
+  // did not parse (or produced no usable name) is reported as `unclassified`
+  // instead of being silently recorded as a permanent `same`.
+  const cleaned = stripThinking(text);
+  const lines = cleaned.split('\n').map(line => line.trim()).filter(Boolean);
+  const taskName = cleanName((lines[0] || '').replace(/^(目标|task|goal)[:：]\s*/i, ''));
+  // "Tried to be JSON and did not parse" is the signal, not "contains a brace":
+  // a legacy three-line answer is allowed to mention {name} in its goal without
+  // being reclassified as unreadable.
+  const looksStructured = /^\s*[{[]/.test(cleaned) || /"(relation|taskId|taskName|goal)"\s*:/.test(cleaned);
   return {
-    taskName: cleanName((lines[0] || '').replace(/^(目标|task|goal)[:：]\s*/i, '')),
+    taskName,
     phase: PHASE_ALIASES[(lines[1] || '').replace(/^(阶段|phase)[:：]\s*/i, '').trim()] || null,
     relation: 'same',
     taskId: fallbackTaskId || null,
     relatedTaskId: null,
     memoryCandidate: null,
+    // Only present when the answer was unusable, so a legacy three-line verdict
+    // keeps exactly the shape existing readers expect.
+    ...(taskName && !looksStructured ? {} : { unclassified: true }),
   };
 }
 

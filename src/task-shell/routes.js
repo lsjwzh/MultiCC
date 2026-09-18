@@ -23,6 +23,11 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
       res.json(await handler(runtime, req));
     } catch (error) {
       if (!res.headersSent) res.status(error.status || 500).json({ ok: false, ...cleanError(error),
+        // Conflict/detail payloads are the actionable part of these refusals
+        // (which turns moved, how long the range was); cleanError only carries
+        // code+message, so they are projected here explicitly.
+        ...(Array.isArray(error.conflicts) ? { conflicts: error.conflicts } : {}),
+        ...(error.detail && typeof error.detail === 'object' ? { detail: error.detail } : {}),
         ...(error.receiptId ? { receiptId: error.receiptId, taskId: error.taskId, notDelivered: error.notDelivered === true } : {}) });
     }
   };

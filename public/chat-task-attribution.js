@@ -36,7 +36,6 @@
     const loadSuggestions = typeof options.loadSuggestions === 'function' ? options.loadSuggestions : null;
     const onApplied = typeof options.onApplied === 'function' ? options.onApplied : null;
     const confirmContinue = typeof options.confirmContinue === 'function' ? options.confirmContinue : null;
-    const openUrl = typeof options.openUrl === 'function' ? options.openUrl : null;
     const report = typeof options.report === 'function' ? options.report : () => {};
     const makeId = typeof options.makeId === 'function' ? options.makeId
       : () => `attr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -146,17 +145,25 @@
     }
 
     function renderSuggestions() {
-      const pending = suggestions.filter(item => item?.state === 'pending');
+      const pending = suggestions.filter(item => item?.state === 'pending' || item?.state === 'unclassified');
       proposals.hidden = pending.length === 0;
       proposals.replaceChildren(...pending.map(item => {
         const row = doc.createElement('div');
         row.className = 'task-attribution-suggestion';
         const label = doc.createElement('span');
         label.className = 'task-attribution-suggestion-label';
-        label.textContent = t('taskAttributionSuggestion')
-          .replace('{from}', taskLabel(item.fromTaskId)).replace('{to}', taskLabel(item.toTaskId));
+        // An unclassified verdict has no target, so it is only ever presented
+        // as "could not classify": offering accept would promise a change that
+        // cannot be written.
+        const unclassified = item?.state === 'unclassified';
+        label.textContent = unclassified
+          ? t('taskAttributionUnclassified').replace('{task}', taskLabel(item.fromTaskId))
+          : t('taskAttributionSuggestion')
+            .replace('{from}', taskLabel(item.fromTaskId)).replace('{to}', taskLabel(item.toTaskId));
         row.append(label);
-        for (const [key, action] of [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss']]) {
+        const actions = unclassified ? [['taskAttributionDismiss', 'dismiss']]
+          : [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss']];
+        for (const [key, action] of actions) {
           const button = doc.createElement('button');
           button.type = 'button';
           button.className = `task-attribution-suggestion-${action}`;
@@ -198,7 +205,10 @@
       try {
         const { shellId } = await scope();
         const data = await loadSuggestions(shellId);
-        suggestions = (Array.isArray(data?.decisions) ? data.decisions : []).filter(item => item?.state === 'pending');
+        // Unclassified rows are the verdicts the host could not read. They are
+        // shown so the turn is never silently treated as a permanent "same".
+        suggestions = (Array.isArray(data?.decisions) ? data.decisions : [])
+          .filter(item => item?.state === 'pending' || item?.state === 'unclassified');
       } catch (_) {
         suggestions = [];
       }
@@ -275,6 +285,8 @@
         case 'uncommitted_changes': return t('taskAttributionWaitDirty');
         case 'undelivered_changes': return t('taskAttributionWaitUndelivered');
         case 'capacity': return t('taskAttributionWaitCapacity');
+        case 'execution_shared': return t('taskAttributionWaitShared');
+        case 'role_snapshot_changed': return t('taskAttributionWaitRole');
         case 'workspace_missing': return t('taskAttributionWaitWorkspace');
         default: return text(reason) || t('taskAttributionWaitWorkspace');
       }
@@ -302,6 +314,15 @@
           setSummary(t('taskAttributionContinuePreparing').replace('{task}', label), 'warn');
           return operation;
         }
+        // `needs_attention` is not a failure: the request is durable and the
+        // reason is actionable (another task still owns this execution, the
+        // role snapshot moved). Reporting it as an error would invite a second
+        // request for something that only needs the condition cleared.
+        if (operation?.state === 'needs_attention') {
+          setSummary(t('taskAttributionContinueAttention')
+            .replace('{task}', label).replace('{reason}', reasonLabel(operation.reason)), 'warn');
+          return operation;
+        }
         if (operation?.state !== 'ready' && operation?.state !== 'applied') {
           throw Object.assign(new Error(operation?.reason || operation?.error?.code || 'continuation_failed'), { code: 'continuation_failed' });
         }
@@ -310,9 +331,12 @@
         }
         attempts.delete(taskId);
         setSummary('');
-        showToast(t('taskAttributionContinueApplied').replace('{task}', label), null);
+        // The result link goes inside the toast instead of being opened here:
+        // this runs after a network round-trip, and window.open at that point is
+        // exactly what browsers block as an unsolicited popup.
         const url = operation?.taskId ? `/air?task=${encodeURIComponent(operation.taskId)}` : '';
-        if (url) openUrl?.(url);
+        showToast(t('taskAttributionContinueApplied').replace('{task}', label), null,
+          url ? { url, label: t('taskAttributionOpenTask') } : null);
         onApplied?.(operation, { undone: false });
         return operation;
       } catch (error) {
@@ -416,7 +440,10 @@
       toast = null;
     }
 
-    function showToast(message, action) {
+    // `link` is rendered as a real anchor inside the toast. Anything that
+    // happens after an await must not rely on window.open: browsers block a
+    // popup that was not opened by the click itself.
+    function showToast(message, action, link) {
       closeToast();
       toast = doc.createElement('div');
       toast.className = 'task-attribution-toast';
@@ -424,6 +451,15 @@
       const label = doc.createElement('span');
       label.textContent = message;
       toast.append(label);
+      if (link && link.url) {
+        const anchor = doc.createElement('a');
+        anchor.className = 'task-attribution-link';
+        anchor.href = link.url;
+        anchor.target = '_blank';
+        anchor.rel = 'noopener';
+        anchor.textContent = link.label || link.url;
+        toast.append(anchor);
+      }
       if (action) {
         const button = doc.createElement('button');
         button.type = 'button';

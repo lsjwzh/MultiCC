@@ -24,8 +24,11 @@ function setup() {
   store.set('shell', 'sh_1', { id: 'sh_1', dirId: 'dir_1', sourceSessionId: 'conv-1' });
   for (const id of ['tsk_a', 'tsk_b', 'tsk_c']) {
     store.set('task', id, { id, dirId: 'dir_1', title: id.slice(-1).toUpperCase(), sessionId: `s-${id}` });
+    // A relation is between two tasks of one conversation, so both need a link.
+    store.set('link', `sh_1:${id}`, { shellId: 'sh_1', taskId: id });
   }
   store.set('task', 'tsk_other', { id: 'tsk_other', dirId: 'dir_2', title: 'Other', sessionId: 's-other' });
+  store.set('task', 'tsk_unlinked', { id: 'tsk_unlinked', dirId: 'dir_1', title: 'U', sessionId: 's-u' });
   const changed = [];
   const relations = createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
     onChanged: id => changed.push(id) });
@@ -39,6 +42,10 @@ test('a relation is an audited edge and replays under the same operation id', ()
   assert.equal(created.relation.kind, 'related');
   assert.equal(created.relation.fromTitle, 'A');
   assert.equal(created.relation.toTitle, 'B');
+  // The graph has to be able to tell a user-confirmed edge from a derived one.
+  assert.equal(created.relation.provenance, 'user');
+  assert.equal(created.relation.confirmed, true);
+  assert.equal(created.relation.revision, 1);
   const replay = relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_b', clientMsgId: 'm1' });
   assert.equal(replay.created, false);
   assert.equal(replay.relation.id, created.relation.id);
@@ -54,11 +61,13 @@ test('a relation is an audited edge and replays under the same operation id', ()
   assert.equal(store.list('relation').length, 2);
 });
 
-test('relations refuse self-edges, foreign projects and unknown tasks', () => {
+test('relations refuse self-edges, foreign projects, unlinked tasks and unknown tasks', () => {
   const { relations } = setup();
   assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_a', clientMsgId: 'm1' }), { code: 'invalid_input' });
   assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_other', clientMsgId: 'm2' }), { code: 'project_mismatch' });
   assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_missing', clientMsgId: 'm3' }), { code: 'task_not_found' });
+  // Same project but not part of this conversation: list(shellId) must not leak it.
+  assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_unlinked', clientMsgId: 'm3b' }), { code: 'task_not_linked' });
   assert.throws(() => relations.create('sh_1', { kind: 'owner', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', clientMsgId: 'm4' }), { code: 'invalid_input' });
   assert.throws(() => relations.create('sh_missing', { fromTaskId: 'tsk_a', toTaskId: 'tsk_b', clientMsgId: 'm5' }), { code: 'task_shell_not_found' });
   assert.throws(() => relations.create('sh_1', { fromTaskId: 'tsk_a', toTaskId: 'tsk_b', clientMsgId: 'bad id!' }), { code: 'invalid_input' });
@@ -73,6 +82,12 @@ test('removing a relation restores the graph without touching attribution', () =
   assert.equal(store.list('relation').length, 0);
   assert.equal(store.list('turn-attr').length, 0, 'relating never rewrites turn attribution');
   assert.equal(store.get('task', 'tsk_a').sessionId, 's-tsk_a', 'and never moves an execution');
+  // A retry of the *same* request is a replay, not a 404: a lost response must
+  // not be indistinguishable from "somebody else removed it".
+  const replayed = relations.remove('sh_1', { relationId: created.relation.id, clientMsgId: 'm2' });
+  assert.equal(replayed.removed, true);
+  assert.equal(replayed.replayed, true);
+  // A different request id for an already-removed edge is still a 404.
   assert.throws(() => relations.remove('sh_1', { relationId: created.relation.id, clientMsgId: 'm3' }), { code: 'relation_not_found' });
 });
 
@@ -101,6 +116,9 @@ test('the graph draws source and relation edges that carry no ownership', () => 
   assert.ok(types.includes('tsk_b->tsk_a:split_from'), `missing split edge in ${types.join(', ')}`);
   assert.ok(types.includes('tsk_c->tsk_a:fork_from'), `missing fork edge in ${types.join(', ')}`);
   assert.ok(types.includes('tsk_b->tsk_c:related'), `missing relation edge in ${types.join(', ')}`);
+  const provenance = graph.edges.map(edge => `${edge.type}:${edge.provenance}`);
+  assert.ok(provenance.includes('related:user'), `the user relation lost its provenance in ${provenance.join(', ')}`);
+  assert.ok(provenance.includes('split_from:derived'), `a derived edge must not claim user intent in ${provenance.join(', ')}`);
   const b = graph.nodes.find(node => node.id === 'tsk_b');
   assert.equal(b.independentFromSessionId, 's-2');
   assert.equal(b.parentTaskId, null, 'a source edge is not a parent edge');

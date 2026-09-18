@@ -1537,3 +1537,15 @@ test('production chat host wires question settlement and reconnect cleanup, not 
   assert.equal(state.pendingUserInputRequestId, null);
   assert.deepEqual(cleared, ['new']);
 });
+
+test('a refusal with its own reason is shown as prose instead of a bare code', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.state.isStreaming = true;
+  fixture.controller.handleEvent({ type: 'error', code: 'task_switching', error: 'task_switching',
+    message: '这个任务正在切换执行环境，请等切换结束后再发送这条消息。' }, generation);
+  const shown = fixture.calls.filter(call => Array.isArray(call) && call[0] === 'system').map(call => call[1]);
+  assert.ok(shown.some(value => value.startsWith('Error: taskSwitchingRefused')),
+    `the reader gets the reason, not the code: ${shown.join(' | ')}`);
+  assert.equal(fixture.state.isStreaming, false);
+});
