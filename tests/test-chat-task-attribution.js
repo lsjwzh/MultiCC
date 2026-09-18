@@ -290,11 +290,19 @@ test('a waiting independent-continue answer is reported as a state, not a failur
   controller.dispose();
 });
 
-test('a blocked preview disables apply and explains why', async () => {
-  const { f, controller } = controllerFor({
-    request: async (method, path, body) => (path.endsWith('/preview')
-      ? { previewToken: 'tok', scopeRevision: 'rev', changed: 1, blocked: [{ reason: 'turn_busy' }] }
-      : { id: 'op_1', status: 'applied', effects: body.turns }),
+test('a blocked preview explains why, and the change is queued instead of refused', async () => {
+  const queued = [];
+  const { f, calls, controller } = controllerFor({
+    request: async (method, path, body) => {
+      calls.push({ method, path, body });
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 1, blocked: [{ reason: 'turn_busy' }] };
+      if (path.includes('/task-operations') && method === 'POST') {
+        queued.push(body);
+        return { id: 'op_1', status: 'queued', turns: body.turns, targetTaskId: 'tsk_b', queuedAt: 1 };
+      }
+      if (path.includes('/task-operations') && method === 'GET') return { ok: true, operations: [] };
+      throw new Error(`unexpected ${method} ${path}`);
+    },
   });
   f.messages.children.push(turn('s1', 't1', 'tsk_a', 'A001'));
   controller.setEnabled(true);
@@ -304,9 +312,55 @@ test('a blocked preview disables apply and explains why', async () => {
   const bar = f.doc.body.children[1];
   const apply = bar.children.find(node => node.className === 'task-attribution-apply');
   const summary = bar.children.find(node => node.className === 'task-attribution-summary');
-  assert.equal(apply.disabled, true);
+  assert.equal(apply.disabled, false, 'a running turn queues the change instead of disabling the action');
   assert.equal(summary.textContent, 'taskAttributionBlocked');
   assert.equal(summary.dataset.tone, 'warn');
+  apply.onclick();
+  await settle();
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].queue, true, 'the preview already said these turns are busy');
+  assert.equal(queued[0].target.taskId, 'tsk_a', 'the request carries the picker\'s current target');
+  assert.equal(summary.textContent, 'taskAttributionQueuedTurns', 'the panel says what it is waiting for');
+  assert.equal(summary.dataset.tone, 'warn');
+  // A queued row is not an applied one: nothing was moved, and the user has not
+  // been told the change is done.
+  assert.equal(f.body.children.filter(node => node.className === 'task-attribution-toast').length, 1);
+  controller.dispose();
+});
+
+test('a queued multi-turn change shows up in the panel and can be withdrawn from there', async () => {
+  const calls = [];
+  let cancelled = false;
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: [] }),
+    // Two rows: only the one still waiting for its turn belongs in the queue.
+    loadOperations: async () => ({ operations: [
+      { id: 'op_q1', status: cancelled ? 'cancelled' : 'queued', targetTaskId: 'tsk_b', queuedAt: 1,
+        turns: [{ sessionId: 's1', turnId: 't1' }, { sessionId: 's1', turnId: 't2' }] },
+      { id: 'op_done', status: 'applied', targetTaskId: 'tsk_b', turns: [{ sessionId: 's1', turnId: 't3' }] },
+    ] }),
+    request: async (method, path, body) => {
+      calls.push({ method, path, body });
+      cancelled = true;
+      return { id: 'op_q1', status: 'cancelled' };
+    },
+  });
+  controller.setEnabled(true);
+  await settle();
+  const bar = f.doc.body.children[1];
+  const proposals = bar.children.find(node => node.className === 'task-attribution-suggestions');
+  assert.equal(proposals.hidden, false);
+  assert.equal(proposals.children.length, 1, 'an already-applied operation is not queued work');
+  const row = proposals.children[0];
+  assert.equal(row.dataset.state, 'queued');
+  assert.equal(row.children[0].textContent, 'taskAttributionQueuedTurns',
+    'a hand-picked batch says how many turns it will move');
+  const cancel = row.children.find(node => node.className === 'task-attribution-suggestion-cancel');
+  assert.ok(cancel, 'a queued change must be withdrawable from the panel, not only from its toast');
+  cancel.onclick();
+  await settle();
+  assert.deepEqual(calls.map(call => call.path), ['/api/task-operations/op_q1/cancel']);
+  assert.equal(proposals.children.length, 0, 'the withdrawn row leaves the queue');
   controller.dispose();
 });
 

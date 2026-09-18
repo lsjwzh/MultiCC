@@ -200,3 +200,120 @@ test('the retention sweep drops reverted journal rows and keeps live ones', asyn
   assert.equal(operations.list('sh_1').length, 0);
   assert.equal(store.list('task-op').length, 0);
 });
+
+// ── 在途轮次的排队（§6.1）：请求不再被 409 直接拒掉，而是落成 pending 行，
+//    由服务端在轮次结束后重验并应用。
+function queueFixture(extra = {}) {
+  const store = fakeStore();
+  const scope = { shellId: 'sh_1', sessionIds: ['s1'] };
+  const turns = [{ sessionId: 's1', turnId: 't1' }], target = { taskId: 'tsk_b' };
+  const state = { busy: extra.busy !== false, clock: 1000 };
+  const operations = createTaskOperations({
+    store, revisionOf: () => 'rev-1',
+    isTurnBusy: extra.isTurnBusy || (() => state.busy),
+    effectiveTaskOf: extra.effectiveTaskOf,
+    resolveTarget: async () => ({ id: 'tsk_b' }),
+    taskTitle: id => (id === 'tsk_b' ? 'Beta' : 'Alpha'),
+    scopeOf: () => scope,
+    now: () => state.clock,
+  });
+  return { store, operations, scope, turns, target, state };
+}
+
+test('a running turn queues the re-attribution instead of refusing it', async () => {
+  const { store, operations, scope, turns, target } = queueFixture();
+  await assert.rejects(operations.apply({ scope, clientMsgId: 'm1', turns, target }), { code: 'turn_busy' });
+  const queued = await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  assert.equal(queued.status, 'queued');
+  assert.deepEqual(queued.blocked, [{ sessionId: 's1', turnId: 't1', reason: 'turn_busy' }]);
+  assert.equal(queued.queuedAt, 1000);
+  assert.equal(queued.effects, null);
+  assert.equal(store.list('turn-attr').length, 0, 'queueing writes no attribution');
+  // The same request replayed is one row, not two.
+  const again = await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  assert.equal(again.id, queued.id);
+  assert.equal(operations.list('sh_1').length, 1);
+  // A different selection under the same operation id is still a conflict.
+  await assert.rejects(operations.apply({ scope, clientMsgId: 'm1',
+    turns: [{ sessionId: 's1', turnId: 't2' }], target, queue: true }), { code: 'idempotency_conflict' });
+});
+
+test('the queue advances on its own once the turn is free, and re-derives the change', async () => {
+  const { operations, scope, turns, target, state } = queueFixture();
+  const queued = await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  state.busy = true;
+  assert.deepEqual(await operations.drain(), { applied: 0, expired: 0, failed: 0, waiting: 1 });
+  assert.equal(operations.get(queued.id).status, 'queued', 'still not the moment');
+  state.busy = false;
+  assert.deepEqual(await operations.drain(), { applied: 1, expired: 0, failed: 0, waiting: 0 });
+  const applied = operations.get(queued.id);
+  assert.equal(applied.status, 'applied');
+  assert.equal(applied.queuedAt, queued.queuedAt, 'the queue time stays on the audit trail');
+  assert.deepEqual(applied.previous, [{ sessionId: 's1', turnId: 't1', taskId: null, taskName: null }]);
+  assert.equal(operations.overlay.get('s1', 't1').taskId, 'tsk_b');
+  assert.deepEqual(await operations.drain(), { applied: 0, expired: 0, failed: 0, waiting: 0 });
+  // Undo works on a queued-then-applied change like on any other.
+  assert.equal(operations.undo({ operationId: applied.id, clientMsgId: 'u1' }).status, 'reverted');
+  assert.equal(operations.overlay.get('s1', 't1'), null);
+});
+
+test('a queued change whose turn disappeared fails instead of waiting forever', async () => {
+  const { operations, scope, turns, target } = queueFixture({ effectiveTaskOf: () => null });
+  const queued = await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  assert.deepEqual(await operations.drain(), { applied: 0, expired: 0, failed: 1, waiting: 0 });
+  assert.equal(operations.get(queued.id).status, 'failed');
+  assert.equal(operations.get(queued.id).lastError, 'turn_not_found');
+});
+
+test('a queued request that outlives its window stops looking pending', async () => {
+  const { operations, scope, turns, target, state } = queueFixture();
+  const queued = await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  state.clock = 1000 + 24 * 60 * 60 * 1000 + 1;
+  assert.deepEqual(await operations.drain(), { applied: 0, expired: 1, failed: 0, waiting: 0 });
+  assert.equal(operations.get(queued.id).status, 'queued_expired');
+  assert.equal(operations.get(queued.id).lastError, 'queued_expired');
+  state.busy = false;
+  assert.deepEqual(await operations.drain(), { applied: 0, expired: 0, failed: 0, waiting: 0 });
+  assert.equal(operations.overlay.get('s1', 't1'), null, 'an expired request never lands late');
+});
+
+test('cancelling takes a queued request back and leaves applied ones to undo', async () => {
+  const { operations, scope, turns, target, state } = queueFixture();
+  const queued = await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  state.busy = false;
+  const applied = await operations.apply({ scope, clientMsgId: 'm2', turns, target });
+  assert.throws(() => operations.cancel({ operationId: applied.id }), { code: 'operation_not_queued' });
+  assert.equal(operations.cancel({ operationId: queued.id }).status, 'cancelled');
+  assert.equal(operations.cancel({ operationId: queued.id }).status, 'cancelled', 'cancel is idempotent');
+  assert.throws(() => operations.cancel({ operationId: 'nope' }), { code: 'operation_not_found' });
+  assert.equal(operations.overlay.get('s1', 't1').taskId, 'tsk_b', 'only the applied row wrote');
+  // Cancelled rows are terminal: never applied later, and the sweep may drop them.
+  assert.equal(operations.expireOlderThan(1000 + 31 * 24 * 60 * 60 * 1000), 1);
+  assert.deepEqual(operations.list('sh_1').map(row => row.status), ['applied'],
+    'a live attribution keeps its audit row');
+});
+
+test('a queued change that finally lands announces itself to the open pages', async () => {
+  const { store, operations, scope, turns, target, state } = queueFixture();
+  const notes = [];
+  const withNotify = createTaskOperations({ store, revisionOf: () => 'rev-1', isTurnBusy: () => state.busy,
+    resolveTarget: async () => ({ id: 'tsk_b' }), taskTitle: () => 'Beta', scopeOf: () => scope,
+    notify: (sessionId, detail) => notes.push({ sessionId, detail }) });
+  await withNotify.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  assert.deepEqual(notes, [], 'queueing is not a change yet');
+  state.busy = false;
+  await withNotify.drain();
+  assert.equal(notes.length, 1, 'the page that asked keeps its history in sync without a reload');
+  assert.equal(notes[0].sessionId, 's1');
+  assert.equal(notes[0].detail.kind, 'applied');
+  assert.equal(notes[0].detail.operationId, operations.list('sh_1')[0].id);
+});
+
+test('the queue is advanced by the server, so a closed page cannot lose a request', async () => {
+  const { operations, scope, turns, target, state } = queueFixture();
+  await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  state.busy = false;
+  await operations.start(1000);
+  assert.equal(operations.list('sh_1')[0].status, 'applied', 'mount drains before the first interval');
+  operations.stop();
+});
