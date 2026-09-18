@@ -4,8 +4,11 @@ const assert = require('assert');
 const {
   getLidSleepPrevention,
   isAvailable,
+  parseBatteryStatus,
   parseLidSleepPrevention,
+  readBattery,
   setLidSleepPrevention,
+  sleepNow,
 } = require('../plugins/utils/macos-power');
 
 assert.strictEqual(isAvailable('darwin'), true);
@@ -98,6 +101,49 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
     }),
     /pmset unavailable/
   );
+
+  // readBattery：pmset -g batt 解析 + 非 macOS 不可用。
+  assert.deepStrictEqual(await readBattery({ platform: 'linux' }), {
+    available: false,
+    source: null,
+    percent: null,
+  });
+
+  let battArgs;
+  assert.deepStrictEqual(await readBattery({
+    platform: 'darwin',
+    execFile(file, args, options, callback) {
+      battArgs = { file, args };
+      callback(null, "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t7%; discharging; present: true\n", '');
+    },
+  }), { available: true, source: 'battery', percent: 7 });
+  assert.deepStrictEqual(battArgs.args, ['-g', 'batt']);
+
+  assert.deepStrictEqual(parseBatteryStatus("Now drawing from 'AC Power'\n -InternalBattery-0\t100%; charged\n"), { source: 'ac', percent: 100 });
+
+  // sleepNow：三级回退 —— pmset 失败落到 System Events，再失败落到 Finder。
+  const sleepCalls = [];
+  const failPmset = {
+    platform: 'darwin',
+    execFile(file, args, options, callback) {
+      sleepCalls.push(file);
+      if (file === '/usr/bin/pmset') callback(new Error('not root'), '', '');
+      else callback(null, '', '');
+    },
+  };
+  assert.deepStrictEqual(await sleepNow(failPmset), { ok: true, method: 'system-events' });
+  assert.deepStrictEqual(sleepCalls, ['/usr/bin/pmset', '/usr/bin/osascript']);
+
+  const allFail = {
+    platform: 'darwin',
+    execFile(file, args, options, callback) {
+      sleepCalls.push(file + ':fail');
+      callback(new Error('nope'), '', '');
+    },
+  };
+  const failed = await sleepNow(allFail);
+  assert.strictEqual(failed.ok, false);
+  assert.equal(failed.errors.length, 3);
 
   console.log('macOS power settings tests passed');
 })().catch(error => {

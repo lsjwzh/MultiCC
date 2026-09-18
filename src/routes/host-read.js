@@ -201,7 +201,13 @@ function createPowerSettingsHandler(deps) {
       if (!deps.macosPower.isAvailable()) {
         return res.json({ available: false, enabled: false });
       }
-      return res.json(await deps.macosPower.getLidSleepPrevention());
+      const status = await deps.macosPower.getLidSleepPrevention();
+      // Optional companion: the in-process battery guard that sleeps the Mac
+      // when charge drops while lid-sleep prevention keeps it awake.
+      if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
+        status.batteryGuard = deps.batteryGuard.getStatus();
+      }
+      return res.json(status);
     } catch (error) {
       return next(error);
     }
