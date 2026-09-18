@@ -27,7 +27,31 @@ function aggregateTaskRunState(sessionIds, getSessionRunState) {
   return 'idle';
 }
 
-function buildBoardDto(board, getSessionRunState) {
+// 这张卡片名下的会话（Commander 单向路由由被派的 worker 执行，见 buildBoardDto）。
+function taskRunSessionIds(task) {
+  const sessionIds = [...new Set((task?.refs || []).map(ref => ref.sessionId).filter(Boolean))];
+  const routing = normalizeTaskRouting(task?.routing);
+  return routing?.oneWay && routing.workerSessionId ? [routing.workerSessionId] : sessionIds;
+}
+
+// 派发时卡片会先写上一个乐观的 runState（running / queued），真正有没有被受理只有
+// 会话侧知道：每一次调度事件都会把 queueState 落进会话记录，所以「名下所有会话都
+// 没有过 taskState」（会话记录已不存在同理）就是「这一轮连受理都没发生过」的证明。
+// 这种卡片永远不会被谁改回来，读出去就是「执行中」挂到天荒地老 —— 按空闲投影。
+//
+// 宽限只留给派发竞态：卡片写完到第一个调度事件落地之间（毫秒级）卡片上那个值是
+// 唯一的真相，这一瞬间不能把它闪成空闲。
+const DISPATCH_CLAIM_GRACE_MS = 60 * 1000;
+function deadDispatchClaim(task, hasTurnState, now = Date.now()) {
+  if (task?.runState !== 'running' && task?.runState !== 'queued') return false;
+  if (hasTurnState) return false;
+  const claimedAt = Number(task.runStateAt || task.updatedAt || task.createdAt || 0);
+  return claimedAt > 0 && now - claimedAt > DISPATCH_CLAIM_GRACE_MS;
+}
+
+function buildBoardDto(board, getSessionRunState, options = {}) {
+  const sessionHasTurn = typeof options.sessionHasTurn === 'function' ? options.sessionHasTurn : null;
+  const now = Number(options.now) || Date.now();
   const mergedCount = new Map();
   for (const task of Object.values(board.tasks)) {
     if (!task.mergedInto) continue;
@@ -45,9 +69,11 @@ function buildBoardDto(board, getSessionRunState) {
     const routing = normalizeTaskRouting(t.routing);
     // A Commander one-way route is executed by the admitted worker. Commander
     // is only the router and must not make a running worker appear "waiting".
-    const runSessionIds = routing?.oneWay && routing.workerSessionId
-      ? [routing.workerSessionId]
-      : sessionIds;
+    const runSessionIds = taskRunSessionIds(t);
+    // 读不到会话记录时按「有过」处理：修复只能靠证据，不能靠读失败。
+    const hasTurnState = !sessionHasTurn || runSessionIds.some(sid => {
+      try { return sessionHasTurn(sid) === true; } catch (_) { return true; }
+    });
     return {
       id: t.id,
       moduleId: t.moduleId,
@@ -64,9 +90,11 @@ function buildBoardDto(board, getSessionRunState) {
       mergedTaskCount: mergedCount.get(t.id) || 0,
       origin: TASK_ORIGINS.has(t.origin) ? t.origin : legacyTaskOrigin(t.id),
       ...planning.planningFields(t),
-      runState: TASK_RUN_STATES.has(t.runState)
-        ? t.runState
-        : aggregateTaskRunState(runSessionIds, getSessionRunState),
+      runState: deadDispatchClaim(t, hasTurnState, now)
+        ? 'idle'
+        : (TASK_RUN_STATES.has(t.runState)
+          ? t.runState
+          : aggregateTaskRunState(runSessionIds, getSessionRunState)),
       moduleAssignment: t.moduleAssignment ? {
         running: t.moduleAssignment.running === true,
         attempts: t.moduleAssignment.attempts || 0,
@@ -126,6 +154,9 @@ function buildBoardDto(board, getSessionRunState) {
 }
 
 module.exports = {
+  DISPATCH_CLAIM_GRACE_MS,
   aggregateTaskRunState,
   buildBoardDto,
+  deadDispatchClaim,
+  taskRunSessionIds,
 };
