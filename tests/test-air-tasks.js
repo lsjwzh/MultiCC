@@ -164,6 +164,38 @@ test('Air task entry exposes provider routing metadata without credentials', asy
   assert.equal(JSON.stringify(response).includes('must-not-leak'), false);
 });
 
+test('Air task entry resolves the pending route provider name instead of leaking the id', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  // 待生效的那份配置存的是 id：它是给人看的胶囊文字，必须由服务端换成名字。
+  const profile = { provider: 'provider-b', providerSelection: null, model: 'gpt-b', effort: 'low',
+    agent: null, subagent: null, rolePrompt: null };
+  const record = { id: 's', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'provider-a', model: 'gpt-a',
+    effectiveModel: 'gpt-a', pendingConfiguration: { cli: 'codex', fresh: false, profile,
+      updatedAt: '2026-09-18T00:00:00.000Z' } };
+  mountAirRoutes(app, {
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }),
+      deliveryEvidence: () => ({ run: null, integration: null }) },
+    records: new Map([['s', record]]), directories: new Map([['d1', { id: 'd1', path: '/repo' }]]),
+    shell: { taskEntry: async () => ({ ok: true, task: { id: 't', title: 'Task' }, sessionId: 's' }),
+      attributionCandidate: () => null, roleBindings: () => ({ version: 0, bindings: [] }) },
+    getBoard: () => ({ tasks: {} }), clis: ['codex'],
+    providerName: session => session.provider === 'provider-b' ? 'Backup Relay'
+      : (session.provider === 'provider-a' ? 'Main Relay' : null),
+    effectiveModel: () => 'gpt-a', effectiveEffort: () => 'low',
+  });
+  let response;
+  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, {
+    json: value => { response = value; }, status() { return this; },
+  });
+  assert.equal(response.configuration.providerName, 'Main Relay');
+  assert.equal(response.configuration.pendingConfiguration.providerName, 'Backup Relay');
+  // 只读的展示名落在 pending 上，不进 profile：应用这份配置时 profile 会被整体
+  // assign 进会话记录，写进去就成了永远不会再更新的陈旧副本。
+  assert.deepEqual(response.configuration.pendingConfiguration.profile, profile);
+  assert.equal('providerName' in profile, false);
+});
+
 test('a task pinned at creation keeps its sub-agent route in the runtime', async t => {
   const f = airFixture(t);
   const created = await f.runtime.createStandalone({ dirId: 'd1', title: 'Routed', clientMsgId: 'route-1',

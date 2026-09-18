@@ -755,13 +755,66 @@
   // a task created from here will run.
   function quickCli() { return quickRuntime.cli || data?.clis?.[0] || 'claude'; }
 
+  // 线路胶囊上那一串（CLI · 线路 · 模型 · 状态）会随着 provider 名字变长，而它
+  // 左边还压着「＋ 角色」——所以给它一个上限宽度，超出来的部分改成跑马灯一直走，
+  // 而不是被切掉（切掉的名字等于没有名字）。两个 composer 用同一份实现：胶囊的
+  // 皮是 composer.css 的，结构也由这里一处建出来，会话里的那颗和新任务那颗不会
+  // 长成两种东西。
+  const PILL_TEXT_CLASS = 'mc-composer__pill-text';
+  function pillTextHost(pill) {
+    let host = null;
+    for (const child of pill.children) if (child.classList.contains(PILL_TEXT_CLASS)) host = child;
+    if (!host) {
+      host = pill.ownerDocument.createElement('span');
+      host.className = PILL_TEXT_CLASS;
+      pill.replaceChildren(host);
+    }
+    if (!host.firstElementChild) {
+      const run = pill.ownerDocument.createElement('span');
+      run.className = PILL_TEXT_CLASS + '-run';
+      host.append(run);
+    }
+    return [host, host.firstElementChild];
+  }
+
+  function measurePillText(host) {
+    // 量的是文字自己的宽度，不是容器的：Range 量的是内容盒，和内联/块级写法都无关。
+    try {
+      const range = host.ownerDocument.createRange();
+      range.selectNodeContents(host);
+      return range.getBoundingClientRect().width;
+    } catch (_) { return 0; }
+  }
+
+  // 只在状态真的变了的时候动 class/变量：这条带子每 4 秒会随快照重画一次，而
+  // 「移除再添加」这个类（中间还读了一次 clientWidth，强制过一次样式重算）等于
+  // 每次都把动画从头来过 —— 屏幕上就是跑马灯走一下、弹回起点、再走一下。
+  function setPillText(pill, text) {
+    if (!pill) return;
+    const [host, run] = pillTextHost(pill);
+    if (run.textContent !== text) run.textContent = text;
+    // 折叠的/隐藏的胶囊量出来是 0 宽，那不算溢出 —— 等它露面时再量。
+    const width = host.clientWidth;
+    const reduceMotion = pill.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    const overflow = width && !pill.hidden ? Math.ceil(measurePillText(host)) - width : 0;
+    // 走得不快不慢：长一点的名字就多走一会儿，最短也要两秒才扫完一遍。
+    const shift = overflow >= 2 && !reduceMotion ? `-${overflow}px` : '';
+    const duration = shift ? `${Math.min(20, Math.max(2.4, overflow / 18 + 1.2)).toFixed(1)}s` : '';
+    for (const [name, value] of [['--mc-pill-marquee-shift', shift], ['--mc-pill-marquee-duration', duration]]) {
+      if ((pill.style.getPropertyValue(name) || '') === value) continue;
+      if (value) pill.style.setProperty(name, value); else pill.style.removeProperty(name);
+    }
+    const marquee = !!shift;
+    if (marquee !== pill.classList.contains('is-marquee')) pill.classList.toggle('is-marquee', marquee);
+  }
+
   function renderQuickPills() {
     const ai = $('quick-ai-pill'), role = $('quick-role-pill');
     if (!ai || !role) return;
     const route = quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
       : quickRuntime.providerName || quickRuntime.provider || '默认线路';
-    ai.textContent = [quickCli(), route, quickRuntime.model || '默认模型'].join(' · ');
+    setPillText(ai, [quickCli(), route, quickRuntime.model || '默认模型'].join(' · '));
     ai.title = '新任务的 AI 配置：CLI、线路与模型（创建后即生效）';
     role.textContent = quickRoles.length ? `${quickRoles.length} 个角色` : '＋ 角色';
     role.title = '新任务的角色上下文（写入第一条消息）';
@@ -1873,23 +1926,28 @@
     // `shown` is undefined for a task that carries no configuration at all — a
     // missing field must not take the whole render down with it, so every read
     // goes through `?.`.
+    // 待生效那份配置里的 provider 是 id；服务端随 pending 下发了解析好的
+    // providerName（见 src/workspace/air-routes.js），名字就在这儿用，没有名字
+    // 才退回 id —— 不然下一轮生效的那条线路在药丸上是一串 UUID。
     const routeName = shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
-      : (pending ? shown?.provider : shown?.providerName || shown?.provider) || '默认线路';
+      : (pending?.providerName || shown?.providerName || shown?.provider) || '默认线路';
     ai.hidden = !entry?.sessionId;
     ai.disabled = !entry || entry.readOnly;
-    ai.textContent = shown
-      ? [shown.cli, routeName,
-        (pending ? shown.model : shown.effectiveModel || shown.model) || '默认模型',
-        pending ? '下轮生效' : ''].filter(Boolean).join(' · ')
-      : '';
     ai.title = '任务 AI 配置：CLI、路由与模型（下一轮生效）';
     const roleCount = entry?.roleBindings?.bindings?.length || 0;
     role.hidden = !entry?.roleBindings;
     role.disabled = !entry || entry.readOnly;
     role.textContent = roleCount ? `${roleCount} 个角色` : '＋ 角色';
     role.title = '任务角色上下文';
+    // 先把这条带子显出来再量宽度：隐藏时量到的 clientWidth 是 0，那样跑马灯得
+    // 等到下一次轮询才启动，看上去就是「卡了一下」。
     setComposerBand(doc, row, !ai.hidden || !role.hidden);
+    setPillText(ai, shown
+      ? [shown.cli, routeName,
+        (pending ? shown.model : shown.effectiveModel || shown.model) || '默认模型',
+        pending ? '下轮生效' : ''].filter(Boolean).join(' · ')
+      : '');
   }
 
   function bindComposerControls() {

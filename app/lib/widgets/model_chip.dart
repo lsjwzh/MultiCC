@@ -12,6 +12,24 @@ import '../services/codex_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import 'ai_config_sheet.dart';
+import 'marquee_text.dart';
+
+/// 会话记录里存的是 Provider id，屏幕上要的是名字。catalog 里有就用 catalog 的
+/// （改名立刻跟着变），没有就用服务端随会话下发的解析名（`GET /api/sessions/:id`
+/// 的 `providerName`），最后才退回缩写的 id —— 一串 UUID 对用户没有任何意义，
+/// Web 的线路胶囊同样只认名字（src/workspace/air-routes.js 的 providerName）。
+String providerDisplayLabel(
+  String? id, {
+  required List<Map<String, dynamic>> providers,
+  String? resolved,
+}) {
+  if (id == null || id.isEmpty) return '默认登录';
+  for (final provider in providers) {
+    if (provider['id'] == id) return (provider['name'] as String?) ?? id;
+  }
+  if (resolved != null && resolved.isNotEmpty && resolved != id) return resolved;
+  return id.length > 8 ? id.substring(0, 8) : id;
+}
 
 /// Compact model indicator + switcher for the chat header. Reads the current
 /// per-session model AND provider from SessionManager; when a custom provider
@@ -84,13 +102,8 @@ class ModelChipState extends State<ModelChip> {
     } catch (_) {}
   }
 
-  String _providerLabel(String? id) {
-    if (id == null || id.isEmpty) return '默认登录';
-    for (final p in _providers) {
-      if (p['id'] == id) return (p['name'] as String?) ?? id;
-    }
-    return id.length > 8 ? id.substring(0, 8) : id;
-  }
+  String _providerLabel(String? id, {String? resolved}) =>
+      providerDisplayLabel(id, providers: _providers, resolved: resolved);
 
   /// The picked provider's aliasMap (tier → {model, name}), or null when absent.
   Map? _aliasMapFor(String? providerId) {
@@ -162,7 +175,10 @@ class ModelChipState extends State<ModelChip> {
         parts.add(modelDisplayName(runtime?.cli ?? widget.cli, actualModel));
       }
     } else {
-      parts.addAll([_providerLabel(runtime?.provider), _modelLabel(runtime)]);
+      parts.addAll([
+        _providerLabel(runtime?.provider, resolved: runtime?.providerName),
+        _modelLabel(runtime),
+      ]);
     }
     if (widget.cli.supportsEffort) parts.add(_effortLabel(runtime));
     final label = parts.join(' | ');
@@ -191,18 +207,17 @@ class ModelChipState extends State<ModelChip> {
               ),
               if (!widget.compact) ...[
                 const SizedBox(width: 4),
-                ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxWidth: widget.compact ? 110 : 220,
-                  ),
-                  child: Text(
-                    label,
-                    style: const TextStyle(
-                      color: Color(0xFF233249),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    overflow: TextOverflow.ellipsis,
+                // 线路名是用户数据（Provider 显示名可以很长），所以这枚 chip 有
+                // 上限宽度：装不下就走跑马灯，而不是让省略号把唯一有信息量的
+                // 那段吃掉 —— Web 的线路胶囊是同一套（composer.css 的
+                // .mc-composer__pill--ai）。
+                MarqueeText(
+                  text: label,
+                  maxWidth: widget.compact ? 110 : 220,
+                  style: const TextStyle(
+                    color: Color(0xFF233249),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
