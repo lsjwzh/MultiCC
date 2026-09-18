@@ -1,14 +1,40 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const core = require('../task-board/core');
 const { createAirPinRuntime } = require('./pins');
+
+// Air 是轮询页面：每 4 秒要把「任务板快照」（线上约 580KB、1069 张卡）和
+// 「当前任务详情」（实测 3.5MB，3.2MB 是消息正文）各拉一次，浏览器每轮都要
+// 解析近 4MB JSON 并把整块 DOM 重建一遍。绝大多数轮次内容根本没变，所以两个
+// 读接口支持条件请求：内容一样就回 304，客户端保留现有视图、不再解析。
+// ETag 由响应正文本身算出，不额外维护版本号，永远不会与正文脱节。
+function conditionalBody(req, res, payload) {
+  const body = JSON.stringify(payload);
+  const etag = `W/"${crypto.createHash('sha1').update(body).digest('base64url')}"`;
+  res.set('ETag', etag);
+  const sent = req?.headers?.['if-none-match'];
+  if (sent && String(sent).split(',').some(value => value.trim() === etag || value.trim() === '*')) {
+    res.status(304).end();
+    return undefined;
+  }
+  res.set('Content-Type', 'application/json; charset=utf-8');
+  res.send(body);
+  return undefined;
+}
 
 // Air reads canonical task records through the task-shell/board authority.
 // The client cannot mint a workspace permit, writer proof or attribution fact.
 function mountAirRoutes(app, deps) {
+  // 处理器可以直接写完响应（条件请求就是如此），也可以照旧返回一个对象。
   const route = fn => async (req, res) => {
-    try { res.json(await fn(req)); }
-    catch (error) { res.status(error.status || 500).json({ ok: false, code: error.code || 'air_request_failed', message: error.status ? error.message : 'Request failed' }); }
+    try {
+      const result = await fn(req, res);
+      if (!res.headersSent && result !== undefined) res.json(result);
+    } catch (error) {
+      if (res.headersSent || res.writableEnded) return;
+      res.status(error.status || 500).json({ ok: false, code: error.code || 'air_request_failed', message: error.status ? error.message : 'Request failed' });
+    }
   };
   // Pin 住的任务（页头顶上那排「齐刘海」/ 手机侧栏的置顶）。落盘位置默认跟
   // sessions.json 同一个数据目录，宿主也可以自己指一个（测试就是这样给的）。
@@ -38,7 +64,7 @@ function mountAirRoutes(app, deps) {
       lease: lease?.state || 'idle', capacityReason: workspace && !lease ? deps.admission.capacityReason(workspace.id) : null, reason: lease?.reason || null, pins: workspace?.pins || [],
       path: workspace?.path || record?.worktreePath || null, branch: workspace?.branch || record?.branch || null };
   }
-  app.get('/api/air', route(async () => {
+  async function airSnapshot() {
     const migration = await deps.shell.migrateTaskSessions?.();
     // 新任务输入框要「随时更新成最近用过的那套配置」，而不是每次都退回
     // 「默认线路 · 默认模型」。这里从会话记录里取 lastWorkAt 最新的 chat 会话
@@ -89,7 +115,8 @@ function mountAirRoutes(app, deps) {
       tasks, taskPins: pins().read(), budgets: admission.budgets, clis: deps.clis, migration, lastRuntime,
       sessions: [...deps.records.values()].filter(s => s.kind === 'terminal' && !['aux', 'gateway'].includes(s.type))
         .map(s => ({ id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli })) };
-  }));
+  }
+  app.get('/api/air', route(async (req, res) => conditionalBody(req, res, await airSnapshot())));
   app.get('/api/air/resolve', route(async req => {
     await deps.shell.migrateTaskSessions();
     let taskId = req.query.task;
@@ -101,15 +128,15 @@ function mountAirRoutes(app, deps) {
     return { ok: true, taskId, url: '/air?' + new URLSearchParams({ task: taskId, ...(dirId ? { dir: dirId } : {}) }) };
   }));
   app.post('/api/air/tasks', route(async req => { const result = await deps.shell.createTask(req.body); deps.admission.identify(result.sessionId); return result; }));
-  app.get('/api/air/tasks/:id', route(async req => {
-    const entry = await deps.shell.taskEntry(req.params.id);
+  async function taskDetail(taskId) {
+    const entry = await deps.shell.taskEntry(taskId);
     const record = deps.records.get(entry.sessionId);
-    const candidate = deps.shell.attributionCandidate(req.params.id);
-    const separation = deps.shell.taskSeparation?.(req.params.id) || null;
+    const candidate = deps.shell.attributionCandidate(taskId);
+    const separation = deps.shell.taskSeparation?.(taskId) || null;
     const attribution = await require('../task-routing/delivery-view').deliveryView({ sessionId: entry.sessionId,
-      taskId: req.params.id, candidate, separation, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
+      taskId, candidate, separation, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
     let roleBindings = null;
-    try { roleBindings = deps.shell.roleBindings(req.params.id); } catch (_) {}
+    try { roleBindings = deps.shell.roleBindings(taskId); } catch (_) {}
     // 下一轮才生效的那份配置里存的是 provider id，药丸要给人看名字。名字只有在
     // 这里解析得出来（provider store 在服务端），所以随 pending 一起下发一个只读
     // 的展示名；profile 本身保持原样，应用配置时不会被这个派生字段写回会话。
@@ -135,7 +162,8 @@ function mountAirRoutes(app, deps) {
       // Auto attribution needs real integration and writer-barrier receipts.
       // Do not expose a switch that would turn client assertions into proofs.
       attribution };
-  }));
+  }
+  app.get('/api/air/tasks/:id', route(async (req, res) => conditionalBody(req, res, await taskDetail(req.params.id))));
   app.post('/api/air/tasks/:id/delivery/reconcile', route(async req => {
     const entry = await deps.shell.taskEntry(req.params.id);
     return { ok: true, publications: await deps.admission.recoverEvidence(entry.sessionId) };

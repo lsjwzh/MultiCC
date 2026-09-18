@@ -1,6 +1,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
 const { fixture } = require('./helpers/task-shell');
+const { airResponse } = require('./helpers/air-response');
 function airFixture(t) {
   const f = fixture(t, { getDirectory: id => id === 'd1' ? { id } : null, unifiedAdmission: true });
   f.ports.createExecution = async task => {
@@ -63,7 +64,7 @@ test('Air list resolves legacy reference directories and never includes provider
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ modules: {}, tasks: { t: { id: 't', chatSessionId: 's', title: 'Legacy', recordType: 'planned', workflowStage: 'inbox', refs: [{ sessionId: 's', dirId: 'd1' }] } } }),
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
-  let response; await handlers.get('/api/air')({}, { json: v => { response = v; }, status() { return this; } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
   assert.equal(response.tasks[0].dirId, 'd1'); assert.equal(response.tasks[0].recordType, 'planned');
   assert.equal(response.tasks[0].workflowStage, 'inbox'); assert.equal(JSON.stringify(response).includes('private'), false);
 });
@@ -88,7 +89,7 @@ test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行�
         refs: [{ sessionId: 'live', dirId: 'd1' }] },
     } }),
     clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
-  let response; await handlers.get('/api/air')({}, { json: v => { response = v; }, status() { return this; } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
   const byId = Object.fromEntries(response.tasks.map(task => [task.id, task.runState]));
   assert.equal(byId.g, 'idle', '派发时的乐观值 + 会话从没受理过 → 空闲，不是执行中');
   assert.equal(byId.l, 'running', '会话有调度状态时不越权改判');
@@ -111,7 +112,7 @@ test('Air snapshot carries the most recently worked chat runtime as lastRuntime'
     getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'],
     shell: { taskAccess: () => ({ readOnly: true }) },
     providerName: record => record.provider === 'p-new' ? 'New Relay' : null });
-  let response; await handlers.get('/api/air')({}, { json: v => { response = v; }, status() { return this; } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
   assert.deepEqual(response.lastRuntime, { cli: 'codex', provider: 'p-new', providerName: 'New Relay',
     providerSelection: null, model: 'gpt-5.6', effort: 'high', subagent: null });
   assert.equal(JSON.stringify(response).includes('private'), false);
@@ -124,7 +125,7 @@ test('Air snapshot leaves lastRuntime null when no chat session has a cli', asyn
     records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', providerSecret: 'private' }]]),
     directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
     getBoard: () => ({ tasks: {} }), clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
-  let response; await handlers.get('/api/air')({}, { json: v => { response = v; }, status() { return this; } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
   assert.equal(response.lastRuntime, null);
 });
 
@@ -148,10 +149,9 @@ test('Air task entry exposes provider routing metadata without credentials', asy
     effectiveModel: () => 'gpt-a', effectiveEffort: () => 'high',
     serializeSubagent: sa => (sa ? { providerId: sa.providerId, model: sa.model, effectiveModel: 'gpt-b' } : null),
   });
-  let response;
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, {
-    json: value => { response = value; }, status() { return this; },
-  });
+  const res = airResponse();
+  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, res);
+  const response = JSON.parse(res.body);
   assert.deepEqual(response.configuration, {
     pendingConfiguration: null,
     cli: 'codex', model: 'gpt-alias', effectiveModel: 'gpt-a', effort: 'high', effectiveEffort: 'high',
@@ -159,8 +159,9 @@ test('Air task entry exposes provider routing metadata without credentials', asy
     // The task AI config panel reads the live sub-task route back, so a saved
     // tail survives reopening the dialog.
     subagent: { providerId: 'provider-b', model: 'gpt-b', effectiveModel: 'gpt-b' },
-    rolePresetId: undefined,
   });
+  // JSON 线路上没有 undefined 这个值：没设过角色预设就是没有这个键。
+  assert.equal('rolePresetId' in response.configuration, false);
   assert.equal(JSON.stringify(response).includes('must-not-leak'), false);
 });
 
@@ -184,10 +185,9 @@ test('Air task entry resolves the pending route provider name instead of leaking
       : (session.provider === 'provider-a' ? 'Main Relay' : null),
     effectiveModel: () => 'gpt-a', effectiveEffort: () => 'low',
   });
-  let response;
-  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, {
-    json: value => { response = value; }, status() { return this; },
-  });
+  const res = airResponse();
+  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, res);
+  const response = JSON.parse(res.body);
   assert.equal(response.configuration.providerName, 'Main Relay');
   assert.equal(response.configuration.pendingConfiguration.providerName, 'Backup Relay');
   // 只读的展示名落在 pending 上，不进 profile：应用这份配置时 profile 会被整体

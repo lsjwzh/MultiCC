@@ -11,6 +11,7 @@ const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { fixture } = require('./helpers/task-shell');
 const { mountAirRoutes } = require('../src/workspace/air-routes');
+const { airResponse } = require('./helpers/air-response');
 
 function storeFixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-index-'));
@@ -107,13 +108,87 @@ test('/api/air 一次请求只读一次 admission 快照（不再按卡片各读
     getBoard: () => board, clis: ['codex'],
     shell: { taskAccess: task => { accesses++; return { readOnly: true, ownerShellId: null, sourceSessionId: null, status: 'active' }; } },
   });
-  const response = await new Promise((resolve, reject) => {
-    handlers.get('/api/air')({}, { json: resolve, status: () => ({ json: reject }) });
-  });
+  const res = airResponse();
+  await handlers.get('/api/air')({}, res);
+  const response = JSON.parse(res.body);
   assert.equal(snapshots, 1, 'admission.snapshot 必须每请求一次');
   assert.equal(accesses, 25, '每张卡片仍各自解析一次权属');
   assert.equal(response.tasks.length, 25);
   assert.equal(response.tasks[0].resource.id, 'ws_1');
   assert.equal(response.tasks[0].resource.lease, 'running');
   assert.deepEqual(response.budgets, { residentLimit: 128 });
+});
+
+test('receipt-shell 索引：与 list(receipt).filter().slice(-N) 逐字段一致', t => {
+  const store = storeFixture(t);
+  const legacy = (shellId, limit = 100) => store.list('receipt').filter(r => r.shellId === shellId).slice(-limit);
+  assert.deepEqual(store.receiptsForShell('sh_1'), [], '没有收据的壳是空数组，不是「桶没建」');
+  for (let i = 0; i < 130; i++) {
+    store.set('receipt', `sr_${i}`, { id: `sr_${i}`, shellId: i % 2 ? 'sh_1' : 'sh_2',
+      payload: { clientMsgId: `c${i}`, intent: 'work' }, status: 'accepted' });
+  }
+  // 同一条收据会被反复改写（reserve→delivering→accepted，还带 contextSavings）：
+  // 更新既不能重复进桶，也不能把顺序挪到最后。
+  store.set('receipt', 'sr_1', { id: 'sr_1', shellId: 'sh_1', payload: { clientMsgId: 'c1', intent: 'work' },
+    status: 'failed', error: { code: 'x' }, contextSavings: { estimatedTokens: 12 } });
+  for (const shellId of ['sh_1', 'sh_2', 'sh_none']) {
+    assert.deepEqual(store.receiptsForShell(shellId), legacy(shellId), shellId + '：默认最后 100 条');
+    assert.deepEqual(store.receiptsForShell(shellId, 5), legacy(shellId, 5), shellId + '：最后 5 条');
+    assert.deepEqual(store.receiptsForShell(shellId, 1000), legacy(shellId, 1000), shellId + '：全量');
+  }
+  store.remove('receipt', 'sr_3');
+  store.set('receipt', 'sr_5', { id: 'sr_5', shellId: 'sh_2', payload: { clientMsgId: 'c5', intent: 'work' }, status: 'accepted' });
+  for (const shellId of ['sh_1', 'sh_2']) {
+    assert.deepEqual(store.receiptsForShell(shellId), legacy(shellId), shellId + '：删除与改绑后仍然一致');
+  }
+});
+
+test('receipt-shell 索引：老库首次读取扫一次补桶并落标记，缺行时自愈', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-index-'));
+  const file = path.join(dir, 'shell.sqlite');
+  const store = createTaskShellStore(file);
+  t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  // 直接写库：模拟索引机制上线前就存在的收据行（store.set 会顺手建索引，绕开它）。
+  const Database = require('better-sqlite3');
+  const raw = new Database(file);
+  for (let i = 0; i < 6; i++) {
+    raw.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?)').run('receipt', `sr_${i}`,
+      JSON.stringify({ id: `sr_${i}`, shellId: i < 4 ? 'sh_a' : null, status: 'accepted', payload: { clientMsgId: `c${i}`, intent: 'work' } }));
+  }
+  raw.close();
+  assert.equal(store.get('receipt-index-meta', 'v1'), null, '还没建过索引');
+  assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_0', 'sr_1', 'sr_2', 'sr_3']);
+  assert.ok(store.get('receipt-index-meta', 'v1'), '补桶后必须落标记，否则每个空壳都要再扫一次全表');
+  assert.deepEqual(store.receiptsForShell('sh_none'), []);
+  store.set('receipt', 'sr_new', { id: 'sr_new', shellId: 'sh_a', status: 'accepted', payload: { clientMsgId: 'new' } });
+  assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_0', 'sr_1', 'sr_2', 'sr_3', 'sr_new']);
+  // 索引行不是权威数据：库里的行被别的写法删掉后，读出来仍然是现存的那几条。
+  const raw2 = new Database(file);
+  raw2.prepare("DELETE FROM shell_records WHERE kind = 'receipt' AND id = ?").run('sr_2');
+  raw2.close();
+  assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_0', 'sr_1', 'sr_3', 'sr_new']);
+});
+
+test('view() 按壳读收据：不再整表 list(receipt)，投影与旧实现一致', t => {
+  const f = fixture(t);
+  const shellId = f.a.id;
+  for (let i = 0; i < 120; i++) {
+    f.store.set('receipt', `sr_${i}`, { id: `sr_${i}`, shellId, payload: { clientMsgId: `c${i}`, intent: i === 119 ? 'work' : 'steer' },
+      status: 'accepted', contextSavings: i === 119 ? { estimatedTokens: 42 } : null });
+  }
+  const legacy = f.store.list('receipt').filter(r => r.shellId === shellId).slice(-100).map(r => ({
+    id: r.id, clientMsgId: r.payload.clientMsgId, taskId: r.taskId, intent: r.payload.intent,
+    status: r.status, error: r.error || null, contextSavings: r.contextSavings || null,
+  }));
+  // 收据表线上有 31MB：view() 里任何 list('receipt') 都应该立刻炸掉，而不是慢慢读。
+  const origList = f.store.list;
+  f.store.list = kind => {
+    if (kind === 'receipt') throw new Error('view() 不该整表读 receipt');
+    return origList(kind);
+  };
+  t.after(() => { f.store.list = origList; });
+  const view = f.runtime.view(shellId);
+  assert.equal(view.receipts.length, 100, '仍然只投影最后 100 条');
+  assert.deepEqual(view.receipts, legacy);
+  assert.deepEqual(view.tokenSavings, { estimatedTokens: 42 });
 });

@@ -384,7 +384,10 @@ function createTaskShellRuntime(ports) {
       s.currentTaskId = s.defaultTaskId;
       saveShell(s.id, s);
     }
-    const receipts = store.list('receipt').filter(r => r.shellId === s.id).slice(-100);
+    // 只读这个壳自己的收据（索引见 store.js 的 receipt-shell）：收据表是任务壳
+    // 最大的一张（线上约 31MB），整表 list() 再按 shellId 过滤，等于为了 100 行
+    // 解析所有人的行，单次 /api/task-shells/:id 要 0.35s。
+    const receipts = store.receiptsForShell(s.id, 100);
     const latestWork = [...receipts].reverse().find(receipt => receipt.payload.intent === 'work' && receipt.status === 'accepted');
     return { ...s, enabled: true, tasks: linkedTasks(s),
       availableTasks: store.list('task').filter(t => t.dirId === s.dirId).map(t => ({ id: t.id, title: t.title })),
