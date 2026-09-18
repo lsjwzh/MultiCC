@@ -80,6 +80,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     server = spawn(process.execPath, ['server.js'], {
       cwd: path.join(__dirname, '..'), env: { ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: token,
         NODE_OPTIONS: '--require ' + preload, MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS: '0', MULTICC_DATA_DIR: dataDir, MULTICC_MEMORY_ROOT: path.join(dataDir, 'memories'), MULTICC_TASK_SHELLS: enabled,
+        MULTICC_ENV_FILE: path.join(dataDir, '.env'),
         MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100', CODEX_CMD: fake,
         CLAUDE_CMD: path.join(root, 'missing-claude'), OPENCODE_CMD: path.join(root, 'missing-opencode'), QODER_CMD: path.join(root, 'missing-qoder') },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -161,6 +162,18 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     /revision|changed/i);
     const undone = await api(`/api/task-operations/${appliedChange.id}/undo`, { clientMsgId: 'undo-1' });
     assert.equal(undone.status, 'reverted');
+    // Automatic attribution (P2): the ladder is a host setting, the journal is
+    // readable, and a suggestion that was never recorded cannot be accepted.
+    const ladder = await api('/api/settings/task-attribution');
+    assert.deepEqual(ladder.modes, ['off', 'shadow', 'suggest', 'auto']);
+    assert.equal((await api('/api/settings/task-attribution', { mode: 'auto' })).mode, 'auto');
+    assert.equal((await api('/api/settings/task-attribution')).mode, 'auto');
+    await api('/api/settings/task-attribution', { mode: 'nonsense' }, 400);
+    assert.equal((await api('/api/settings/task-attribution', { mode: 'suggest' })).mode, 'suggest');
+    const decisions = await api(`/api/task-shells/${sb.id}/attribution-decisions`);
+    assert.deepEqual(decisions.decisions, []);
+    await api(`/api/task-shells/${sb.id}/attribution-decisions/dec_missing/accept`, { clientMsgId: 'x' }, 404);
+    await api(`/api/task-shells/${sb.id}/attribution-decisions/dec_missing/dismiss`, {}, 404);
     const restored = await api(`/api/task-shells/${sb.id}/task-index`);
     assert.equal(restored.scopeRevision, taskIndex.scopeRevision);
     const restoredHistory = await api(`/api/task-shells/${sb.id}/history?historyScope=archive&limit=100`);
