@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createIndependentContinuation } = require('../src/task-shell/independent-continue');
+const { hash } = require('../src/task-shell/context');
 
 function fakeStore(seed = {}) {
   const data = new Map();
@@ -45,7 +46,7 @@ function setup(overrides = {}) {
     store,
     getRecord: id => records.get(id) || null,
     getHistory: id => history[id] || [],
-    getExecution: async () => ({ ...execution }),
+    getExecution: async id => (overrides.getExecution ? overrides.getExecution(id) : { ...execution }),
     createExecution: async (task, source) => {
       created.push({ taskId: task.id, sessionId: task.sessionId, baseline: task.forkBaseline, source });
       records.set(task.sessionId, { id: task.sessionId, dirId: task.dirId, kind: 'chat', taskBoundTaskId: task.id,
@@ -54,7 +55,7 @@ function setup(overrides = {}) {
     },
     indexTask: async () => ({ ok: true }),
     ownerOf: () => store.get('shell', 'sh_1'),
-    roles: { snapshot: () => 'roles-1' },
+    roles: overrides.roles || { snapshot: () => 'roles-1' },
     hasCapacity: async () => overrides.hasCapacity ? overrides.hasCapacity() : true,
     ports: {
       captureIndependentBaseline: async () => (overrides.baseline ? overrides.baseline() : { ...baseline }),
@@ -189,7 +190,7 @@ test('a restart during preparation re-reads the world and never creates twice', 
   assert.equal(first.created.length, 1);
 });
 
-test('a shared execution is refused, a linked-but-foreign task is not addressable', async () => {
+test('a linked-but-foreign task is not addressable', async () => {
   const { runtime, store } = setup();
   await assert.rejects(async () => runtime.request('sh_1', 'tsk_missing', { clientMsgId: 'm1' }), { code: 'task_not_linked' });
   await assert.rejects(async () => runtime.request('sh_9', 'tsk_a', { clientMsgId: 'm1' }), { code: 'task_shell_not_found' });
@@ -208,4 +209,76 @@ test('a running turn that ends later is picked up by the server-side tick', asyn
   await runtime.tick();
   assert.equal(store.get('independent', op.id).state, 'ready');
   assert.equal(created.length, 1);
+});
+
+test('switching one task out of a shared conversation leaves the others on the old execution', async () => {
+  const f = setup();
+  // A second logical task of the same conversation still runs on conv-1. That is
+  // a supported state, not a blocker: only this task's own binding moves.
+  f.store.set('task', 'tsk_b', { id: 'tsk_b', dirId: 'dir_1', sessionId: 'conv-1', ownerShellId: 'sh_1', title: 'Beta', ready: true });
+  f.store.set('link', 'sh_1:tsk_b', { shellId: 'sh_1', taskId: 'tsk_b' });
+  assert.deepEqual(f.runtime.tasksUsingExecution('conv-1', { excludeTaskId: 'tsk_a' }), ['tsk_b']);
+  const op = await f.runtime.request('sh_1', 'tsk_a', { clientMsgId: 'm1' });
+  assert.equal(op.state, 'ready', 'a shared execution is not by itself a reason to wait');
+  const applied = await f.runtime.apply(op.id);
+  assert.equal(applied.state, 'applied');
+  assert.equal(f.store.get('task', 'tsk_a').sessionId, op.targetSessionId);
+  assert.equal(f.store.get('task', 'tsk_b').sessionId, 'conv-1', 'the other task keeps the old execution');
+  assert.equal(f.records.has('conv-1'), true, 'the shared session itself is never taken away');
+  assert.deepEqual(f.store.get('task', 'tsk_a').previousExecutions.map(entry => entry.sessionId), ['conv-1']);
+  assert.deepEqual(f.runtime.tasksUsingExecution(op.targetSessionId, { excludeTaskId: 'tsk_a' }), [],
+    'the new execution belongs to this task only');
+});
+
+test('cancel keeps an environment another task is bound to', async () => {
+  const f = setup();
+  const op = await f.runtime.request('sh_1', 'tsk_a', { clientMsgId: 'm1' });
+  const target = f.store.get('independent', op.id).targetSessionId;
+  // Another logical task adopts the prepared environment after it was created.
+  f.store.set('task', 'tsk_c', { id: 'tsk_c', dirId: 'dir_1', sessionId: target, ownerShellId: 'sh_1', title: 'Gamma' });
+  const cancelled = await f.runtime.cancel(op.id);
+  assert.equal(cancelled.state, 'cancelled');
+  assert.equal(cancelled.cleanup, 'kept');
+  assert.deepEqual(cancelled.detail, { tasks: ['tsk_c'] }, 'the reason names what is still using it');
+  assert.deepEqual(f.discarded, [], 'an environment another task uses is never deleted');
+  assert.equal(f.records.has(target), true);
+});
+
+test('a role snapshot that moved since preparation becomes an attention state', async () => {
+  const roles = { current: () => ({ version: 1, bindings: [] }),
+    snapshot: taskId => 'role_' + hash(roles.current(taskId)) };
+  const f = setup({ roles });
+  const op = await f.runtime.request('sh_1', 'tsk_a', { clientMsgId: 'm1' });
+  assert.equal(op.state, 'ready');
+  assert.equal(op.manifest.roleSnapshotId, 'role_' + hash({ version: 1, bindings: [] }));
+  roles.current = () => ({ version: 2, bindings: [{ name: 'reviewer', prompt: 'review' }] });
+  const blocked = await f.runtime.apply(op.id);
+  assert.equal(blocked.state, 'needs_attention');
+  assert.equal(blocked.reason, 'role_snapshot_changed');
+  assert.equal(blocked.capabilities.retry, true);
+  assert.equal(f.store.get('task', 'tsk_a').sessionId, 'conv-1', 'nothing switched on a stale authorization');
+  // Retrying re-freezes the manifest against the bindings that exist now.
+  const retried = await f.runtime.retry(op.id);
+  assert.equal(retried.state, 'ready');
+  assert.equal(retried.manifest.roleSnapshotId, 'role_' + hash({ version: 2, bindings: [{ name: 'reviewer', prompt: 'review' }] }));
+  const applied = await f.runtime.apply(op.id);
+  assert.equal(applied.state, 'applied');
+});
+
+test('admission is held off for the source execution across the whole switch', async () => {
+  const observed = [];
+  let runtime = null;
+  const f = setup({ getExecution: async id => {
+    observed.push({ id, switching: runtime.isSwitching('conv-1') });
+    return { busy: false, pending: null, queue: { queued: [] } };
+  } });
+  runtime = f.runtime;
+  const op = await f.runtime.request('sh_1', 'tsk_a', { clientMsgId: 'm1' });
+  assert.equal(op.state, 'ready');
+  observed.length = 0;
+  const applied = await f.runtime.apply(op.id);
+  assert.equal(applied.state, 'applied');
+  assert.deepEqual(observed, [{ id: 'conv-1', switching: true }],
+    'the check→write span is marked as switching');
+  assert.equal(f.runtime.isSwitching('conv-1'), false, 'and the mark is released afterwards');
 });

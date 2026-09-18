@@ -2055,7 +2055,6 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   taskGraphContext: taskGraphContextOf,
   onStateTargetChanged: id => workspaceRuntime.publishSessionView(id), onSeparationChanged: id => chatBroadcast(id, { type: 'task_separation_updated' }),
   onAttributionChanged: id => chatBroadcast(id, { type: 'task_attribution_updated' }),
-  taskAttribution: { writeEnv: writeEnvFile, reportFailure: reportHostControlFailure, isLocalRequest },
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
   loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),

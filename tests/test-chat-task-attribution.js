@@ -201,10 +201,8 @@ test('the target picker offers every task in the shell and re-previews on switch
 
 test('independent continue asks once, applies a ready request, and reuses one operation id', async () => {
   const seen = [];
-  const opened = [];
   const { f, controller } = controllerFor({
     confirmContinue: async () => true,
-    openUrl: url => { opened.push(url); return true; },
     request: async (method, path, body) => {
       seen.push({ method, path, body });
       if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
@@ -223,7 +221,14 @@ test('independent continue asks once, applies a ready request, and reuses one op
   assert.deepEqual(seen.map(call => call.path), ['/api/task-shells/sh_1/tasks/tsk_a/independent-continue',
     '/api/task-continuations/ind_1/apply']);
   assert.match(seen[0].body.clientMsgId, /^attr-/);
-  assert.deepEqual(opened, ['/air?task=tsk_a']);
+  // The link is rendered into the toast: this code runs after an await, so a
+  // window.open here would be an unsolicited popup the browser blocks.
+  const toast = f.doc.body.children.find(node => node.className === 'task-attribution-toast');
+  assert.ok(toast, 'the applied continuation reports its result');
+  const link = toast.children.find(node => node.className === 'task-attribution-link');
+  assert.equal(link?.href, '/air?task=tsk_a');
+  assert.equal(link?.target, '_blank');
+  assert.equal(link?.rel, 'noopener');
   controller.dispose();
 });
 
@@ -266,5 +271,30 @@ test('a blocked preview disables apply and explains why', async () => {
   assert.equal(apply.disabled, true);
   assert.equal(summary.textContent, 'taskAttributionBlocked');
   assert.equal(summary.dataset.tone, 'warn');
+  controller.dispose();
+});
+
+test('a needs-attention continuation is reported as a condition, not a failure', async () => {
+  const { f, controller } = controllerFor({
+    confirmContinue: async () => true,
+    request: async (method, path) => {
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.endsWith('/independent-continue')) {
+        return { id: 'ind_1', taskId: 'tsk_a', state: 'needs_attention', reason: 'execution_shared',
+          detail: { tasks: ['tsk_b'] } };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+  });
+  f.messages.children.push(turn('s1', 't1', 'tsk_a', 'A001'));
+  controller.setEnabled(true);
+  await settle();
+  const bar = f.doc.body.children[1];
+  const summary = bar.children.find(node => node.className === 'task-attribution-summary');
+  await controller.continueTask();
+  assert.equal(summary.textContent, 'taskAttributionContinueAttention');
+  assert.equal(summary.dataset.tone, 'warn', 'attention is a state to clear, not an error to report');
+  assert.equal(bar.children.find(node => node.className === 'task-attribution-continue').disabled, false,
+    'the same request can be re-asked once the condition clears');
   controller.dispose();
 });

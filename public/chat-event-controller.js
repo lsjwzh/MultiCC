@@ -737,7 +737,11 @@
             host.warn?.('[multicc/chat] suppressed recoverable codex reconnect');
             break;
           }
-          host.addSystemMsg?.(`Error: ${message.error || 'Unknown chat error'}`);
+          // A refusal that carries its own reason is shown as prose: the bare
+          // code tells the person waiting to send nothing they can act on.
+          host.addSystemMsg?.(`Error: ${message.error === 'task_switching'
+            ? host.translate?.('taskSwitchingRefused') || message.error
+            : (message.error || 'Unknown chat error')}`);
           state.isStreaming = false;
           finishStreaming();
           host.stopTitleAnimation?.();

@@ -418,6 +418,11 @@
       .filter(k => types.has(k))
       .map(k => `<span class="lg" style="opacity:.85">—<span style="color:${EDGE[k].c}">${escapeHtml(EDGE[k].label)}</span></span>`)
       .join('');
+    // 用户手动建立的关系与推导出来的边分开标注：图上看起来都是「同组」，
+    // 但只有前者是用户意图。
+    if (G && G.edges.some(e => e.provenance === 'user')) {
+      html += '<span class="lg" style="opacity:.85">手动关系（虚线=相关，实线=同组）</span>';
+    }
     box.innerHTML = html;
   }
   function showEmpty(msg) {
@@ -483,8 +488,8 @@
     linksBox.innerHTML = '';
     const out = [], inc = [];
     for (const e of G.edges) {
-      if (e.source === id) out.push({ n: e.t, type: e.type });
-      else if (e.target === id) inc.push({ n: e.s, type: e.type });
+      if (e.source === id) out.push({ n: e.t, type: e.type, user: e.provenance === 'user' });
+      else if (e.target === id) inc.push({ n: e.s, type: e.type, user: e.provenance === 'user' });
     }
     const section = (title, arr, arrow) => {
       if (!arr.length) return;
@@ -492,7 +497,7 @@
       for (const it of arr) {
         const b = document.createElement('button');
         b.className = 'mn-link';
-        const typeLabel = edgeOf(it.type).label;
+        const typeLabel = edgeOf(it.type).label + (it.user ? '（手动）' : '');
         b.textContent = `${arrow} [${typeLabel}] ${it.n.title || it.n.id}`;
         b.onclick = () => { tgNodeModalOpen(it.n.id); focusNode(it.n); };
         linksBox.appendChild(b);

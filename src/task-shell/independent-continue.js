@@ -34,6 +34,12 @@ const MAX_MANIFEST_MESSAGES = 10;
 function createIndependentContinuation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf, roles, hasCapacity }) {
   const now = ports.now || (() => Date.now());
   const flights = new Map();
+  // Source sessions whose execution binding is being switched right now. The
+  // switch is the one moment where "which execution does this task talk to" is
+  // ambiguous, so admission is refused for that session until it is over —
+  // otherwise a message admitted in the window lands on the old execution while
+  // the task already points at the new one.
+  const switching = new Set();
   let timer = null;
 
   const idOf = (taskId, clientMsgId) => `ind_${hash([taskId, clientMsgId]).slice(0, 32)}`;
@@ -54,6 +60,10 @@ function createIndependentContinuation({ store, getRecord, getHistory, getExecut
     const events = (Array.isArray(op.events) ? op.events : []).slice(-20);
     return { id: op.id, taskId: op.taskId, shellId: op.shellId, state: op.state, phase: op.phase || null,
       reason: op.reason || null, sourceSessionId: op.sourceSessionId, targetSessionId: op.targetSessionId || null,
+      // The reason alone is not actionable for `execution_shared` /
+      // `undelivered_changes`: the UI needs the tasks or the commit count to
+      // explain the wait, so the structured detail travels with the row.
+      detail: op.detail || null,
       epoch: op.epoch || 1, manifest: op.manifest || null, events, cleanup: op.cleanup || null,
       error: op.error || null, createdAt: op.createdAt, updatedAt: op.updatedAt,
       appliedAt: op.appliedAt || null, cancelledAt: op.cancelledAt || null,
@@ -80,6 +90,25 @@ function createIndependentContinuation({ store, getRecord, getHistory, getExecut
   // conversation itself runs on.
   function isIndependent(task, owner = ownerOf(task)) {
     return !!(owner && task.sessionId && task.sessionId !== owner.sourceSessionId);
+  }
+
+  // Several logical tasks sharing one execution is a supported state (that is
+  // what a shared conversation context is), so it must not block a switch: only
+  // this task's own binding moves and the shared session is left alone for the
+  // others. What it does block is *reclaiming* an environment somebody else can
+  // still be using — a prepared execution another task is bound to must be kept
+  // and reported instead of deleted.
+  function tasksUsingExecution(sessionId, { excludeTaskId = null } = {}) {
+    const id = String(sessionId || '');
+    if (!id) return [];
+    if (typeof ports.executionUsers === 'function') return (ports.executionUsers(id, excludeTaskId) || []).slice(0, 10);
+    const users = store.list('task')
+      .filter(other => other.id !== excludeTaskId && other.sessionId === id)
+      .filter(other => !ports.isDeletedTask?.(other.id))
+      .map(other => other.id);
+    const bound = getRecord(id)?.taskBoundTaskId;
+    if (bound && bound !== excludeTaskId && !users.includes(bound)) users.push(bound);
+    return users.slice(0, 10);
   }
 
   // The gates are read again before every attempt and once more inside the
@@ -191,24 +220,38 @@ function createIndependentContinuation({ store, getRecord, getHistory, getExecut
     if (task.sessionId !== op.sourceSessionId) throw fail('continuation_source_changed', 'This task already moved to another execution', 409);
     // The switch is only allowed across a boundary: no running turn, no
     // unanswered control, no frozen queue. Anything admitted before it keeps
-    // the execution it was routed to.
-    const state = (await getExecution(task.sessionId)) || {};
-    if (state.pending || state.busy !== false || (state.queue?.queued || []).length) throw fail('turn_busy', 'Wait for the running work to finish before switching', 409);
-    const target = getRecord(op.targetSessionId);
-    if (!target || target.taskBoundTaskId !== task.id) throw fail('continuation_target_missing', 'The prepared execution is gone', 409);
-    const applied = store.transaction(() => {
-      const fresh = store.get('task', task.id);
-      if (!fresh || fresh.sessionId !== op.sourceSessionId) throw fail('continuation_source_changed', 'This task already moved to another execution', 409);
-      const previous = [...(Array.isArray(fresh.previousExecutions) ? fresh.previousExecutions : []).slice(-4),
-        { sessionId: op.sourceSessionId, at: now(), reason: 'independent-continue' }];
-      store.set('task', fresh.id, { ...fresh, sessionId: op.targetSessionId, ready: true,
-        executionEpoch: op.epoch, independentAt: now(), previousExecutions: previous,
-        independentFrom: { sessionId: op.sourceSessionId, codeCommit: op.manifest?.codeCommit || null,
-          sourceWorkspace: op.manifest?.sourceWorkspace || null },
-        ...(fresh.chatSessionId === op.sourceSessionId ? { chatSessionId: op.targetSessionId } : {}) });
-      store.set('link', `${op.shellId}:${fresh.id}`, { shellId: op.shellId, taskId: fresh.id });
-      return save({ ...op, state: 'applied', phase: 'applied', appliedAt: now(), reason: null, error: null }, { type: 'applied' });
-    });
+    // the execution it was routed to. Admission is held off for the whole
+    // check→write span, so nothing can be admitted into the gap between them.
+    switching.add(op.sourceSessionId);
+    let applied;
+    try {
+      const state = (await getExecution(task.sessionId)) || {};
+      if (state.pending || state.busy !== false || (state.queue?.queued || []).length) throw fail('turn_busy', 'Wait for the running work to finish before switching', 409);
+      const target = getRecord(op.targetSessionId);
+      if (!target || target.taskBoundTaskId !== task.id) throw fail('continuation_target_missing', 'The prepared execution is gone', 409);
+      // The manifest authorized a specific role configuration. If the task's
+      // bindings moved since the freeze, the manifest no longer describes what
+      // would run, so it becomes an attention state (retry re-freezes it)
+      // instead of silently switching with a stale authorization.
+      if (op.manifest?.roleSnapshotId && typeof roles?.current === 'function'
+          && 'role_' + hash(roles.current(task.id)) !== op.manifest.roleSnapshotId) {
+        return publicOp(save({ ...op, state: 'needs_attention', phase: 'snapshot_conflict',
+          reason: 'role_snapshot_changed', error: { code: 'role_snapshot_changed' } }, { type: 'snapshot_conflict' }));
+      }
+      applied = store.transaction(() => {
+        const fresh = store.get('task', task.id);
+        if (!fresh || fresh.sessionId !== op.sourceSessionId) throw fail('continuation_source_changed', 'This task already moved to another execution', 409);
+        const previous = [...(Array.isArray(fresh.previousExecutions) ? fresh.previousExecutions : []).slice(-4),
+          { sessionId: op.sourceSessionId, at: now(), reason: 'independent-continue' }];
+        store.set('task', fresh.id, { ...fresh, sessionId: op.targetSessionId, ready: true,
+          executionEpoch: op.epoch, independentAt: now(), previousExecutions: previous,
+          independentFrom: { sessionId: op.sourceSessionId, codeCommit: op.manifest?.codeCommit || null,
+            sourceWorkspace: op.manifest?.sourceWorkspace || null },
+          ...(fresh.chatSessionId === op.sourceSessionId ? { chatSessionId: op.targetSessionId } : {}) });
+        store.set('link', `${op.shellId}:${fresh.id}`, { shellId: op.shellId, taskId: fresh.id });
+        return save({ ...op, state: 'applied', phase: 'applied', appliedAt: now(), reason: null, error: null }, { type: 'applied' });
+      });
+    } finally { switching.delete(op.sourceSessionId); }
     try { await indexTask(store.get('task', task.id)); }
     catch (error) { console.warn('[task-continuation] re-index failed', error.message); }
     return publicOp(applied);
@@ -218,15 +261,20 @@ function createIndependentContinuation({ store, getRecord, getHistory, getExecut
   // using: a planned execution with no history and no live work. Anything else
   // is reported as kept, because the alternative is deleting user work.
   async function cancel(id) {
-    const op = get(id);
+    let op = get(id);
     if (op.state === 'cancelled') return publicOp(op);
     if (op.state === 'applied') throw fail('continuation_applied', 'An applied switch is not cancelled', 409);
     let cleanup = 'none';
     if (op.targetSessionId && op.created === true) {
       const record = getRecord(op.targetSessionId);
       const state = record ? ((await getExecution(op.targetSessionId)) || {}) : null;
-      const used = !record || state.busy !== false || state.pending || (state.queue?.queued || []).length
-        || (getHistory(op.targetSessionId) || []).length > 0;
+      // "Still used by another task" counts as used: the prepared environment
+      // may have been adopted by another logical task, and deleting it would
+      // take that task's execution away.
+      const users = tasksUsingExecution(op.targetSessionId, { excludeTaskId: op.taskId });
+      const used = !record || users.length > 0 || state.busy !== false || state.pending
+        || (state.queue?.queued || []).length || (getHistory(op.targetSessionId) || []).length > 0;
+      if (users.length) op = { ...op, detail: { tasks: users } };
       if (used) cleanup = 'kept';
       else {
         const result = await ports.discardExecution?.(op.targetSessionId, { taskId: op.taskId });
@@ -241,7 +289,9 @@ function createIndependentContinuation({ store, getRecord, getHistory, getExecut
   async function retry(id) {
     const op = get(id);
     if (op.state !== 'needs_attention') throw fail('continuation_not_retryable', 'Only a blocked request can be retried', 409);
-    save({ ...op, state: 'requested', phase: 'requested', reason: null, error: null }, { type: 'retry' });
+    // The old detail described the previous blocker; keeping it would show a
+    // stale explanation under a request that is being re-evaluated.
+    save({ ...op, state: 'requested', phase: 'requested', reason: null, error: null, detail: null }, { type: 'retry' });
     return publicOp(await advance(op.id));
   }
 
@@ -261,7 +311,12 @@ function createIndependentContinuation({ store, getRecord, getHistory, getExecut
   }
   function stop() { if (timer) clearInterval(timer); timer = null; }
 
-  return { request, advance, prepare, apply, cancel, retry, tick, start, stop, list, get, publicOp, isIndependent };
+  // Admission asks this before accepting work for a session whose binding is
+  // mid-switch; see the switching set above.
+  function isSwitching(sessionId) { return switching.has(String(sessionId || '')); }
+
+  return { request, advance, prepare, apply, cancel, retry, tick, start, stop, list, get, publicOp,
+    isIndependent, isSwitching, tasksUsingExecution };
 }
 
 module.exports = { createIndependentContinuation, TERMINAL };

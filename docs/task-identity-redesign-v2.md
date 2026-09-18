@@ -334,6 +334,34 @@ P1 上线后已能整理对话并看到多个码；P2 实现“尽量把不同�
 | P3 | 独立继续（持久挂起队列） | `src/task-shell/independent-continue.js`：requested → waiting → preparing → ready → applied（+ needs_attention / failed / cancelled），manifest 冻结 commit 与授权消息，apply 只在边界处切换执行绑定，cancel 只回收本次创建且无人使用的资源，重启按实物恢复。 |
 | P4 | 批量区间、关联编辑、来源边 | 整段区间在服务端展开；`relations` 存 related/group 边（不改归属、不授予上下文权）；图谱画出 split_from / fork_from / related，与 parent 边区分。 |
 
+### 13.1 第一批的对标复审与加固（2026-09-18 同一轮）
+
+按第 5、6、7、9 节逐条复核 P1–P4 的实现后修掉的差距。每条都在同一批测试里
+有对应用例，不能只靠注释声称：
+
+| 条款 | 差距 | 修法 |
+| --- | --- | --- |
+| §6.2 版本/范围 | preview/apply 此前不校验 `turn.sessionId` 是否属于本壳的 `chatScope.sessionIds`，而 `turn-attr` 覆盖层是按 `sessionId:turnId` 全局索引的 → 任一壳可改写其它会话的归属 | `task-operations` 新增 `scopedSessions/assertInScope`：`task_not_linked`(403) + `conflicts`，`range` 与显式轮次列表走同一个 `resolveTurns` |
+| §6.1 整段区间 | 服务端展开的区间受 50 轮「手选上限」约束，长区间点「到这里」直接 400 `invalid_turns` | 区间单独上限 `MAX_RANGE_TURNS=500`（`range_too_large` 带 `detail`），手选列表仍 50 |
+| §6.2/6.3 事务 | 撤销不恢复被替换轮次的标题（改名后归回丢名） | `previous[]` 记录 `taskName`，undo 优先还原记录值、其次当前标题 |
+| §6.3/§5 保留期 | `expireOlderThan` 定义了但无人调用；壳被删除时 `attr-decision/relation/relation-op/independent` 残留 | `host` 在 mount 时立即扫一次 + 每日一次（unref 定时器，close 清理）；`runtime.remove` 按 shellId 清四类日志，`turn-attr` 由 `task-operations.purgeShell` 按 operationId 回收（只删自己写的覆盖行） |
+| §5 规则 6 | 判不出目标的 verdict 无处落地，等于悄悄变成永久 `same` | `parseTaskAttribution` 对「像 JSON 却读不出」或「没有可用名称」标 `unclassified`；`state-machine` 记 `attr-decision`（`path:'none'`、可忽略、不改身份）；`accept` 对该行 fail-closed `attribution_verdict_unavailable`，`dismiss` 仍可用；同一轮的 pending 行原地刷新（`revisions+1`）而不是叠第二条 |
+| §7.1 持久状态 | `apply()` 的「检查→切绑定」之间没有锁，且不校验 manifest 的角色快照 | apply 全程持有 `switching` 标记（同时挡住这段窗口的新投递，返回 `task_switching`），并比对 `role_` 快照哈希，变了转 `needs_attention/role_snapshot_changed`（retry 会重新冻结 manifest） |
+| §7.1 资源回收 | 取消时不检查「环境已被其他任务使用」，可能删掉别人在用的执行 | `tasksUsingExecution`：target 被别的任务绑定（或记录 `taskBoundTaskId` 指向别人）时 `cleanup='kept'` 并在 `detail.tasks` 里报告；**不**因此挡住切换——同一执行被多个逻辑任务共用是受支持状态，切换只动本任务自己的绑定（新增用例覆盖所有者任务场景） |
+| §9.3 已知缺口 | 结果用 `window.open` 打开，晚于点击的网络往返会被浏览器当弹窗拦截 | 结果链接改为 toast 内真实 `<a target="_blank" rel="noopener">`（i18n `taskAttributionOpenTask`） |
+| §8 provenance | 关系边缺少 `provenance/confirmed/revision`，用户建的 `group` 与推导分组无法区分；删除不幂等 | `relations` 记录与 DTO 补齐三字段；`create` 要求两侧都 `link` 在本壳（`task_not_linked`）；`remove` 用 `relation-op` 重放同一条已删边 |
+| §7.1 呈现 | `needs_attention` 被前端当失败报，`execution_shared` 之类原因对用户不可读 | 前端单独呈现 `needs_attention`（warn、可重问）；`detail` 随 DTO 下发；`task_switching` 由 `chat-event-controller` 翻成人话（i18n `taskSwitchingRefused`） |
+| §10 错误投影 | 403/409 的 `conflicts`/`detail` 被 `cleanError` 吃掉，调用方拿不到可操作信息 | `routes.js` 显式投影 `conflicts` 与 `detail` |
+
+同轮的一致性清理：自动归属档位的 `.env` 写入只保留 `src/routes/host-write.js`
+一个写者（`attribution-settings` 退化为纯值切换，`server.js` 不再注入
+`writeEnv/reportFailure`），`src/routes/task-graph.js` 里混入的真实 NUL 字节改为
+字面转义。
+
+注意 P3 的角色快照校验以 `roles.snapshot()` 的同一算法重算
+（`'role_' + hash(roles.current(taskId))`），而不是另建一套指纹；否则冻结值与
+校验值不同形，正常切换会被误判成快照冲突。
+
 尚未实施（有意留后）：全身份合并的 refs/分组/标题恢复（第 6 节）、P2 的分目录灰度
 指标面板、P3 独立环境准备完成后的「打开独立任务」入口之外的高级编排、Flutter 端
 对应界面。

@@ -20,10 +20,11 @@ function createTaskShellHost(deps) {
   // it lives with the other host settings so a restart can neither widen nor
   // narrow it by accident. The host owns it because it is the only layer that
   // may change task identity.
-  const attributionSettings = createAttributionSettingsFromEnv({
-    writeEnv: deps.taskAttribution?.writeEnv,
-    reportFailure: deps.taskAttribution?.reportFailure,
-  });
+  //
+  // Value only: the .env write belongs to src/routes/host-write.js, which owns
+  // the local-only check and the persist→apply→rollback order. Persisting here
+  // as well would be a second writer for one setting.
+  const attributionSettings = createAttributionSettingsFromEnv();
   const shortText = (value, limit = 500) => {
     if (value == null) return '';
     let text;
@@ -78,6 +79,9 @@ function createTaskShellHost(deps) {
       onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
       onSeparationChanged: id => deps.onSeparationChanged?.(id),
       onRelationChanged: id => deps.onRelationChanged?.(id),
+      // Deleting a shell also drops the re-attribution journal rows it owns;
+      // task-operations owns the overlay keys, so it does that half.
+      purgeShellAttribution: shellId => taskOperations().purgeShell(shellId),
       getHistory: deps.loadHistory,
       // Read-only view of manual re-attribution. Missing overlay ports (tests,
       // older hosts) simply keep the canonical annotation.
@@ -343,6 +347,21 @@ function createTaskShellHost(deps) {
     return attributionDecisionsRuntime;
   }
   let attributionDecisionsRuntime = null;
+  // Manual re-attribution keeps an audit trail, so its rows outlive the change
+  // by a retention window instead of being deleted with the turn. That window is
+  // only real if something enforces it: this is the only caller of
+  // `expireOlderThan`, and it runs once at mount and then daily.
+  let sweepTimer = null;
+  function sweepAttributionLog() {
+    const sweep = () => {
+      try { taskOperations().expireOlderThan(); }
+      catch (error) { console.warn('[task-attribution] sweep failed', error.message); }
+    };
+    sweep();
+    if (sweepTimer) return;
+    sweepTimer = setInterval(sweep, 24 * 60 * 60 * 1000);
+    if (typeof sweepTimer.unref === 'function') sweepTimer.unref();
+  }
   return {
     mountRoutes: app => {
       mountTaskShellRoutes(app, { getRuntime, open,
@@ -361,6 +380,8 @@ function createTaskShellHost(deps) {
       attributionSettings.mount(app);
       // 独立继续的等待队列由服务端推进：重启后恢复，不依赖页面开着。
       getRuntime().independent.start();
+      // 归属操作日志的保留期清理同样由服务端推进，页面关着也生效。
+      sweepAttributionLog();
     },
     taskIndex,
     taskOperations,
@@ -428,7 +449,11 @@ function createTaskShellHost(deps) {
     prepareContext: (id, options) => owns(id) ? getRuntime().prepareContext(id, options) : null,
     contextSent: (...args) => getRuntime().contextSent(...args),
     contextComplete: (...args) => getRuntime().contextComplete(...args),
-    close: () => { try { runtime?.independent?.stop(); } catch (_) {} store?.close(); },
+    close: () => {
+      try { runtime?.independent?.stop(); } catch (_) {}
+      if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+      store?.close();
+    },
   };
 }
 

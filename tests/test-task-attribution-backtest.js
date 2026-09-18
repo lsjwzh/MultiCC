@@ -174,3 +174,17 @@ test('CLI corpus loader accepts the JSONL shape written by aux-run-log', () => {
   assert.equal(corpus.cases[0].id, 'r1');
   assert.match(corpus.responses.r1, /旧任务/);
 });
+
+test('an answer that reads like JSON but yields no name is unclassified, not a permanent same', () => {
+  const broken = parseTaskAttribution('{"taskName":"登录页","relation":"same"', { fallbackTaskId: 'tsk-login' });
+  assert.equal(broken.unclassified, true);
+  assert.equal(broken.relation, 'same');
+  assert.equal(broken.taskId, 'tsk-login', 'the admitted identity is still preserved');
+  // A legacy three-line answer may mention braces in its goal without becoming
+  // "unreadable": only a failed structured answer is unclassified.
+  const prose = parseTaskAttribution('目标: 修复 {name} 占位符渲染\n阶段: 实现中\nC', { fallbackTaskId: 'tsk-login' });
+  assert.equal(prose.unclassified, undefined);
+  assert.equal(prose.taskName, '修复 {name} 占位符渲染');
+  // And an answer with no usable name at all is also unclassified.
+  assert.equal(parseTaskAttribution('D', { fallbackTaskId: 'tsk-login' }).unclassified, true);
+});

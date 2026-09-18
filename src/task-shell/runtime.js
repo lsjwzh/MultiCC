@@ -367,7 +367,15 @@ function createTaskShellRuntime(ports) {
     store.transaction(() => {
       store.remove('shell', s.id);
       for (const link of store.list('link').filter(l => l.shellId === s.id)) store.remove('link', `${s.id}:${link.taskId}`);
+      // Only a real delete drops the shell's journal rows (the archive path
+      // above keeps them, so an archived conversation can still be inspected).
+      // turn-attr has no shellId: the overlay owner reclaims it by operationId.
+      for (const kind of ['attr-decision', 'relation', 'relation-op', 'independent']) {
+        for (const row of store.list(kind).filter(record => record.shellId === s.id)) store.remove(kind, row.id);
+      }
     });
+    try { ports.purgeShellAttribution?.(s.id); }
+    catch (error) { console.warn('[task-shell] attribution purge failed', error.message); }
     return { ok: true };
   }
   function view(shellId) {
@@ -722,6 +730,14 @@ function createTaskShellRuntime(ports) {
     // Host-owned retry/callback carries originContinue; web clients never get
     // to set it. It resumes exactly this execution, with the immutable task ID.
     if (options.originContinue === true) { options.taskId = task.id; return null; }
+    // Control/continuation paths above resume an already-routed execution, so
+    // they may pass. New work must not: while the binding is being switched, a
+    // message admitted here would be routed to the old execution even though
+    // the task already points at the new one.
+    if (independent.isSwitching(sessionId)) {
+      return { ok: false, code: 'task_switching',
+        message: '这个任务正在切换执行环境，请等这次切换结束后再发送。' };
+    }
     return { ok: false, code: 'task_shell_route_required' };
   }
   // Task-level directory move (Air 任务「移动」): the board relocates the
