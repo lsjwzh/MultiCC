@@ -1894,6 +1894,7 @@ mountHostWriteRoutes(app, {
     process.env.CLAUDE_OFFICIAL_VIA_PROXY = enabled ? '1' : '0';
   },
   macosPower, batteryGuard: batteryGuardRuntime,
+  taskAttributionMode: { get: () => taskShellHost.attributionSettings().getMode(), set: mode => taskShellHost.attributionSettings().setMode(mode) },
   log: message => console.log(message),
   reportFailure: (stage, category) => reportHostControlFailure('host_write', stage, category),
 });

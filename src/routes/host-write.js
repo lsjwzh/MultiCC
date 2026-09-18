@@ -390,6 +390,19 @@ function mountHostWriteRoutes(app, rawDeps) {
     logMessage: enabled => `[multicc/proxy] official-via-proxy (OAuth replay) ${enabled ? 'enabled' : 'disabled'} via UI`,
   }));
   app.post('/api/settings/power', createPowerSettingsHandler(deps));
+  // 自动归属档位是主机策略：只在服务端持有的档位阶梯，改动只允许本机发起，
+  // 并且先落 .env 再切运行时值（失败按 env 回滚）。
+  if (deps.taskAttributionMode) app.post('/api/settings/task-attribution', (req, res) => {
+    if (!requireLocal(deps, req)) return undefined;
+    const previous = deps.taskAttributionMode.get();
+    try {
+      persistThenApply(deps, { MULTICC_TASK_ATTRIBUTION_MODE: String(req.body?.mode ?? '').trim().toLowerCase() },
+        () => deps.taskAttributionMode.set(req.body?.mode), () => deps.taskAttributionMode.set(previous), 'task_attribution');
+      return res.json({ ok: true, mode: deps.taskAttributionMode.get() });
+    } catch (error) {
+      return res.status(error?.status || 500).json({ error: error?.message || 'failed', code: error?.code || 'task_attribution_failed' });
+    }
+  });
 }
 
 module.exports = {
