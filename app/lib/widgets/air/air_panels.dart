@@ -7,6 +7,7 @@ import '../../services/attachment_picker.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../../utils/status_presentation.dart';
+import '../marquee_text.dart';
 import '../voice_input_button.dart';
 import 'air_role_editor.dart';
 import 'air_task_config.dart';
@@ -862,6 +863,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                   label: _runtime.routeLabel,
                   icon: Icons.tune_rounded,
                   active: _runtime.provider.isNotEmpty || _runtime.isAuto,
+                  labelMaxWidth: 240,
                   onTap: widget.busy ? null : _editRuntime,
                 ),
               ),
@@ -1105,6 +1107,12 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   }
 }
 
+const TextStyle _pillLabelStyle = TextStyle(
+  color: AppColors.text,
+  fontSize: 12.5,
+  fontWeight: FontWeight.w500,
+);
+
 class _Pill extends StatelessWidget {
   const _Pill({
     super.key,
@@ -1112,12 +1120,18 @@ class _Pill extends StatelessWidget {
     required this.icon,
     required this.onTap,
     this.active = false,
+    this.labelMaxWidth,
   });
 
   final String label;
   final IconData icon;
   final VoidCallback? onTap;
   final bool active;
+
+  /// 线路那颗药丸的文字上限（Web `.mc-composer__pill--ai` 的 `min(68%, 320px)`）。
+  /// 线路名是用户数据，长了就把旁边的按钮挤走 —— 超过上限就走跑马灯，见
+  /// [MarqueeText]。别的药丸（CLI、角色）文字短且固定，不需要上限。
+  final double? labelMaxWidth;
 
   @override
   Widget build(BuildContext context) => Material(
@@ -1139,14 +1153,14 @@ class _Pill extends StatelessWidget {
           children: [
             Icon(icon, size: 15, color: AppColors.muted),
             const SizedBox(width: 6),
-            Text(
-              label,
-              style: const TextStyle(
-                color: AppColors.text,
-                fontSize: 12.5,
-                fontWeight: FontWeight.w500,
+            if (labelMaxWidth == null)
+              Text(label, style: _pillLabelStyle)
+            else
+              MarqueeText(
+                text: label,
+                maxWidth: labelMaxWidth!,
+                style: _pillLabelStyle,
               ),
-            ),
           ],
         ),
       ),

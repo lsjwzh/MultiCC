@@ -352,10 +352,36 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // 子任务跟着同一笔 PATCH 落库（模型为空就等于没设 → null，随主）。
     assert.deepEqual(configPatches[1], { model: 'gpt-5.6-sol', effort: 'high', subagent: { providerId: 'codex-lab', model: 'gpt-5.5' } });
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('Backup Responses') && ${composerPill('air-ai-pill')}.textContent.includes('gpt-5.6-sol')`));
-    entry.configuration.pendingConfiguration = { cli: 'codex', profile: { provider: 'codex-lab', model: 'gpt-5.5', effort: 'low' } };
+    // 待生效的那份配置由服务端补上 providerName（src/workspace/air-routes.js 从
+    // provider store 解析）。药丸说的是下一轮真正要跑的那条线路，所以它必须写名字
+    // 而不是 id —— 以前这里给的就是 id，屏幕上于是出现一串 UUID，刷新也不会变。
+    entry.configuration.pendingConfiguration = { cli: 'codex', providerName: 'Lab Responses',
+      profile: { provider: 'codex-lab', model: 'gpt-5.5', effort: 'low' } };
     await reloadConversation();
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('下轮生效')`));
-    assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('gpt-5.5') && !${composerPill('air-ai-pill')}.textContent.includes('Backup Responses')`), true);
+    assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('gpt-5.5') && ${composerPill('air-ai-pill')}.textContent.includes('Lab Responses') && !${composerPill('air-ai-pill')}.textContent.includes('Backup Responses')`), true);
+    // 线路名会比别的字段长，所以这颗胶囊有上限宽度，超出部分走跑马灯：文字待在一个
+    // 不动的 ◆ / 边框里横向来回，而不是被切掉（切掉的名字等于没有名字）。
+    entry.configuration.pendingConfiguration.providerName = 'Lab Responses via a very long relay account name that cannot fit';
+    await reloadConversation();
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.classList.contains('is-marquee')`), '长线路名切成跑马灯');
+    const marquee = await page.evaluate(`(()=>{const el=${composerPill('air-ai-pill')};const run=el.querySelector('.mc-composer__pill-text-run');const s=el.ownerDocument.defaultView.getComputedStyle(run);return {pill:el.getBoundingClientRect().width,shift:el.style.getPropertyValue('--mc-pill-marquee-shift'),animation:s.animationName,duration:s.animationDuration,mark:el.ownerDocument.defaultView.getComputedStyle(el,'::before').content};})()`);
+    assert.ok(marquee.pill <= 321, `胶囊不超过上限宽度：${marquee.pill}`);
+    assert.ok(parseFloat(marquee.shift) <= -2, `跑马灯位移来自真实溢出：${marquee.shift}`);
+    assert.equal(marquee.animation, 'mc-pill-marquee');
+    assert.equal(marquee.mark, '"◆"');
+    // 跑马灯是视觉效果：断言只能证明类名、位移和上限宽度，形状得留一张图给人看。
+    const bandBox = await page.evaluate(`(()=>{const f=document.getElementById('conversation');const r=${frame}.getElementById('air-composer-meta').getBoundingClientRect();const o=f.getBoundingClientRect();return {x:o.x+r.x-8,y:o.y+r.y-6,width:r.width+16,height:r.height+12};})()`);
+    const bandShot = await page.send('Page.captureScreenshot', { format: 'png', clip: { ...bandBox, scale: 2 }, captureBeyondViewport: false });
+    fs.mkdirSync(screenshotDir, { recursive: true });
+    const bandFile = path.join(screenshotDir, `composer-pill-marquee-${process.pid}-${Date.now()}.png`);
+    fs.writeFileSync(bandFile, Buffer.from(bandShot.data, 'base64'));
+    screenshots.push(bandFile);
+    // 短名字不跑：量出来没溢出就不该有动画（否则每颗胶囊都在动）。
+    entry.configuration.pendingConfiguration.providerName = 'Lab Responses';
+    await reloadConversation();
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('Lab Responses')`));
+    assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.classList.contains('is-marquee')`), false);
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')?.value==='codex-lab'`));
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="推理强度"]').value`), 'low');
