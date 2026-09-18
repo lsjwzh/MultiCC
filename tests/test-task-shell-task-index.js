@@ -136,6 +136,15 @@ test('exactly one entry is marked as the shell current input target', () => {
   const withoutTarget = buildTaskIndex({ shellId: 'sh_1',
     messages: [message('m1', 'tsk_a'), message('m2', 'tsk_b')], tasks, codeFor: codes(['tsk_a', 'tsk_b']) });
   assert.equal(index.scopeRevision, withoutTarget.scopeRevision);
+  // The cursor version travels with the markers but stays out of the revision:
+  // it is what a page hands back for a conditional write, not history.
+  assert.equal(index.cursorVersion, 0, 'an unknown cursor reads as zero, never as a guess');
+  const withCursor = buildTaskIndex({ shellId: 'sh_1',
+    messages: [message('m1', 'tsk_a'), message('m2', 'tsk_b')], tasks, codeFor: codes(['tsk_a', 'tsk_b']),
+    isTarget: taskId => taskId === 'tsk_b', cursorVersion: 3 });
+  assert.equal(withCursor.cursorVersion, 3);
+  assert.equal(withCursor.scopeRevision, index.scopeRevision,
+    'selecting a target must not invalidate an attribution preview');
   const empty = buildTaskIndex({ shellId: 'sh_1', messages: [], tasks,
     codeFor: codes(['tsk_a', 'tsk_b']), isTarget: taskId => taskId === 'tsk_a', includeEmpty: true });
   assert.deepEqual(empty.tasks.map(task => [task.taskId, task.target]), [['tsk_a', true], ['tsk_b', false]]);

@@ -36,7 +36,8 @@ function taskTitle(task, entry) {
 
 // status is display-only: it says whether the index should offer an entry, not
 // whether the underlying execution is running. Execution state stays on turns.
-function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf, isTarget, includeEmpty = false, now = Date.now() }) {
+function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf, isTarget, cursorVersion,
+  includeEmpty = false, now = Date.now() }) {
   const list = (Array.isArray(messages) ? messages : []).filter(message => message && typeof message === 'object');
   const byId = new Map();
   const ordered = [];
@@ -140,6 +141,12 @@ function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf
     version: 1,
     shellId: identifier(shellId) || null,
     scopeRevision: revision,
+    // The shell's input cursor, paired with the `target` markers above so a
+    // page can hand it back as a conditional write instead of overwriting a
+    // choice another page made in the meantime. Deliberately outside
+    // `scopeRevision`: moving the target must not invalidate an attribution
+    // preview (see the note in the contract doc).
+    cursorVersion: Number.isFinite(Number(cursorVersion)) ? Number(cursorVersion) : 0,
     generatedAt: Number(now) || Date.now(),
     truncated,
     taskCount: entries.length,
@@ -155,7 +162,8 @@ function collectTaskIndex(scope, readMessages, getState, options = {}) {
     { includeHidden: true, overlay: options.overlay });
   return buildTaskIndex({ shellId: scope?.shellId || scope?.id, messages, now: options.now,
     tasks: options.tasks, codeFor: options.codeFor, capabilitiesOf: options.capabilitiesOf,
-    isTarget: options.isTarget, includeEmpty: options.includeEmpty === true });
+    isTarget: options.isTarget, cursorVersion: options.cursorVersion,
+    includeEmpty: options.includeEmpty === true });
 }
 
 module.exports = { buildTaskIndex, collectTaskIndex, MAX_TASKS, MAX_SEGMENTS_PER_TASK };

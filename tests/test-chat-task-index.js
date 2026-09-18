@@ -281,7 +281,7 @@ test('a rejected target choice keeps the previous one and says why', async () =>
         segments: [{ firstMessageRef: { id: 's1:m2' } }] },
     ] }),
     selectTarget: { shellId: () => 'sh_1', alert: message => toasts.push(message),
-      request: async () => { throw Object.assign(new Error('stale_shell_cursor'), { code: 'stale_shell_cursor' }); } } });
+      request: async () => { throw Object.assign(new Error('task_archived'), { code: 'task_archived' }); } } });
   await controller.reload();
   const toggle = f.doc.body.children[0], rail = f.doc.body.children[1];
   toggle.onclick();
@@ -374,5 +374,64 @@ test('a directory with no multi-segment task does not render the nav row', async
   await controller.reload();
   const rail = f.doc.body.children[1];
   assert.equal(rail.children[0].className, 'task-index-row', 'one segment per row needs no stepper');
+  controller.dispose();
+});
+
+// ── 条件写：目录里读到的 cursorVersion 要随选择一起回传，别页刚挪过目标时
+//    这里必须失败并重新读，而不是悄悄盖掉别人的选择。
+function cursorFixture(extra = {}) {
+  const f = fixture(), calls = [], toasts = [];
+  let loads = 0;
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    loadIndex: async () => {
+      loads += 1;
+      return { cursorVersion: 4, tasks: [
+        { taskId: 'tsk_a', shortCode: 'A001', title: 'Alpha', target: true, capabilities: { canSelectTarget: true },
+          segments: [{ firstMessageRef: { id: 's1:m1' } }] },
+        { taskId: 'tsk_b', shortCode: 'B002', title: 'Beta', capabilities: { canSelectTarget: true },
+          segments: [{ firstMessageRef: { id: 's1:m2' } }] },
+      ] };
+    },
+    selectTarget: { shellId: () => 'sh_1', alert: message => toasts.push(message),
+      request: async (path, body) => { calls.push({ path, body }); return extra.answer ? extra.answer(body) : { ok: true }; } } });
+  return { f, calls, toasts, controller, loads: () => loads,
+    // The toggle and the mount both start a read; the rows only exist once it
+    // has landed, so every test waits for it before touching a row.
+    open: async () => { f.doc.body.children[0].onclick(); await new Promise(resolve => setImmediate(resolve)); },
+    row: index => f.doc.body.children[1].children[index],
+    click: node => { node.onclick({ stopPropagation() {} }); return new Promise(resolve => setImmediate(resolve)); } };
+}
+
+test('choosing a target carries the cursor version the directory was read with', async () => {
+  const { calls, toasts, controller, open, row, click } = cursorFixture({
+    answer: body => ({ ok: true, taskId: body.taskId, cursorVersion: 5 }) });
+  await controller.reload();
+  await open();
+  const select = row(1).children[1];
+  assert.equal(select.className, 'task-index-select');
+  await click(select);
+  assert.deepEqual(calls[0].body, { taskId: 'tsk_b', expectedCursorVersion: 4 },
+    'the conditional write is what stops one page from overwriting another');
+  assert.deepEqual(toasts, []);
+  // The accepted write answers with the new version, so the next choice on this
+  // page is conditional on that, not on the read the row was built from.
+  const back = row(0).children[1];
+  assert.equal(back.className, 'task-index-select', 'the row that lost the target can offer it again');
+  await click(back);
+  assert.deepEqual(calls[1].body, { taskId: 'tsk_a', expectedCursorVersion: 5 });
+  controller.dispose();
+});
+
+test('a target another page already moved is not overwritten', async () => {
+  const { toasts, controller, loads, open, row, click } = cursorFixture({
+    answer: () => { throw Object.assign(new Error('The current task changed'), { code: 'stale_shell_cursor' }); } });
+  await controller.reload();
+  await open();
+  const reads = loads();
+  await click(row(1).children[1]);
+  assert.deepEqual(toasts, ['taskIndexTargetStale'], 'the page says why instead of failing silently');
+  assert.equal(loads(), reads + 1, 'and reads the directory again, so the shown target is the real one');
+  assert.equal(row(0).dataset.target, 'true', 'the target still shown is the one the server reports');
+  assert.equal(row(1).dataset.target, undefined, 'the refused choice never repainted the rail');
   controller.dispose();
 });
