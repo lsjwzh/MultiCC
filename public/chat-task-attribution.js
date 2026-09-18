@@ -35,6 +35,7 @@
     const loadIndex = typeof options.loadIndex === 'function' ? options.loadIndex : null;
     const loadSuggestions = typeof options.loadSuggestions === 'function' ? options.loadSuggestions : null;
     const onApplied = typeof options.onApplied === 'function' ? options.onApplied : null;
+    const onExternalApply = typeof options.onExternalApply === 'function' ? options.onExternalApply : null;
     const confirmContinue = typeof options.confirmContinue === 'function' ? options.confirmContinue : null;
     const report = typeof options.report === 'function' ? options.report : () => {};
     const makeId = typeof options.makeId === 'function' ? options.makeId
@@ -50,6 +51,9 @@
     let suggestions = [];
     let toast = null;
     let toastTimer = null;
+    // Decisions made on this page are already reflected locally; the broadcast
+    // exists for the other pages that had the same card open.
+    const resolvedHere = new Set();
 
     const toggle = doc.createElement('button');
     toggle.type = 'button';
@@ -123,9 +127,10 @@
       toggle.classList.toggle('active', enabled);
       // The toggle carries the count so a suggestion is visible without
       // entering the mode at all.
-      toggle.dataset.suggestions = String(suggestions.length);
-      toggle.title = suggestions.length
-        ? `${t('taskAttributionToggle')} · ${t('taskAttributionSuggestions').replace('{n}', String(suggestions.length))}`
+      const waiting = unresolved().length;
+      toggle.dataset.suggestions = String(waiting);
+      toggle.title = waiting
+        ? `${t('taskAttributionToggle')} · ${t('taskAttributionSuggestions').replace('{n}', String(waiting))}`
         : t('taskAttributionToggle');
       count.textContent = t('taskAttributionSelected').replace('{n}', String(selected.size));
       hint.textContent = t('taskAttributionHint');
@@ -144,10 +149,21 @@
       return task ? labelOf(task) : text(taskId).slice(-4).toUpperCase();
     }
 
+    // Everything the user has not decided yet, including what they postponed.
+    function unresolved() {
+      return suggestions.filter(item => item?.state === 'pending' || item?.state === 'unclassified'
+        || item?.state === 'deferred');
+    }
+
     function renderSuggestions() {
-      const pending = suggestions.filter(item => item?.state === 'pending' || item?.state === 'unclassified');
-      proposals.hidden = pending.length === 0;
-      proposals.replaceChildren(...pending.map(item => {
+      const open = suggestions.filter(item => item?.state === 'pending' || item?.state === 'unclassified');
+      // `deferred` is the user's "later": still unresolved and still counted on
+      // the toggle, but folded out of the way until the bar is open — the bar is
+      // the durable pending entry a postponed card collapses into.
+      const deferred = suggestions.filter(item => item?.state === 'deferred');
+      const listed = enabled ? [...open, ...deferred] : open;
+      proposals.hidden = listed.length === 0;
+      proposals.replaceChildren(...listed.map(item => {
         const row = doc.createElement('div');
         row.className = 'task-attribution-suggestion';
         const label = doc.createElement('span');
@@ -161,8 +177,11 @@
           : t('taskAttributionSuggestion')
             .replace('{from}', taskLabel(item.fromTaskId)).replace('{to}', taskLabel(item.toTaskId));
         row.append(label);
-        const actions = unclassified ? [['taskAttributionDismiss', 'dismiss']]
-          : [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss']];
+        const actions = unclassified
+          ? [['taskAttributionDismiss', 'dismiss']]
+          : item?.state === 'deferred'
+            ? [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss']]
+            : [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss'], ['taskAttributionLater', 'defer']];
         for (const [key, action] of actions) {
           const button = doc.createElement('button');
           button.type = 'button';
@@ -186,10 +205,15 @@
         const path = `/api/task-shells/${encodeURIComponent(shellId)}/attribution-decisions/${encodeURIComponent(item.id)}/${action}`;
         const result = await request('POST', path, action === 'accept' ? { clientMsgId: makeId() } : {});
         closeToast();
+        const postponed = action === 'defer';
+        resolvedHere.add(item.id);
         showToast(action === 'accept'
           ? t('taskAttributionApplied').replace('{n}', '1').replace('{task}', taskLabel(result?.toTaskId || item.toTaskId))
-          : t('taskAttributionDismissed'));
-        suggestions = suggestions.filter(entry => entry.id !== item.id);
+          : postponed ? t('taskAttributionDeferred') : t('taskAttributionDismissed'));
+        // A postponed row stays in the queue; only accept/dismiss clear it.
+        suggestions = postponed
+          ? suggestions.map(entry => entry.id === item.id ? { ...entry, state: 'deferred' } : entry)
+          : suggestions.filter(entry => entry.id !== item.id);
         onApplied?.(result, { undone: false });
       } catch (error) {
         setSummary(t('taskAttributionFailed').replace('{error}', text(error?.message || error)), 'error');
@@ -207,13 +231,25 @@
         const data = await loadSuggestions(shellId);
         // Unclassified rows are the verdicts the host could not read. They are
         // shown so the turn is never silently treated as a permanent "same".
+        // Postponed rows stay in the queue too — "later" is not a decision.
         suggestions = (Array.isArray(data?.decisions) ? data.decisions : [])
-          .filter(item => item?.state === 'pending' || item?.state === 'unclassified');
+          .filter(item => item?.state === 'pending' || item?.state === 'unclassified'
+            || item?.state === 'deferred');
       } catch (_) {
         suggestions = [];
       }
       renderSuggestions();
       return suggestions;
+    }
+
+    // Server broadcast: the same suggestion may have been decided on another
+    // page, and an applied/undone change also moved a turn, so the other page's
+    // history projection is stale. Announcing both is what makes two open tabs
+    // agree without either one guessing.
+    function onBroadcast(message) {
+      if (message?.decisionId && resolvedHere.has(message.decisionId)) return;
+      void refreshSuggestions();
+      if (message?.kind === 'applied' || message?.kind === 'reverted') onExternalApply?.();
     }
 
     function blockedText(blocked) {
@@ -538,6 +574,7 @@
         void loadTasks().then(decorate);
         void refreshSuggestions();
       }
+      renderSuggestions();
       decorate();
       renderBar();
       return enabled;
@@ -567,6 +604,7 @@
       turns: () => picks.size,
       suggestions: () => [...suggestions],
       refreshSuggestions,
+      onBroadcast,
       applyNow,
       continueTask,
       dispose() { closeToast(); observer?.disconnect(); toggle.remove(); bar.remove(); },

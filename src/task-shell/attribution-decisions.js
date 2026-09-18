@@ -29,13 +29,23 @@ function createAttributionDecisions(deps) {
       taskName: record.taskName || null, relation: record.relation, mode: record.mode, action: record.action,
       path: record.path, state: record.state, hidden: record.hidden === true, reason: record.reason,
       createdAt: record.createdAt, updatedAt: record.updatedAt || null, revisions: Number(record.revisions) || 0,
-      resolvedAt: record.resolvedAt || null, apply: record.apply || null, lastError: record.lastError || null };
+      resolvedAt: record.resolvedAt || null, deferredAt: record.deferredAt || null,
+      apply: record.apply || null, lastError: record.lastError || null };
   }
 
-  function notify(sessionId) {
-    try { deps.onAttributionChanged?.(sessionId); } catch (error) {
+  // The detail is what lets another page tell "the card I am showing was just
+  // resolved" apart from "an applied change moved a turn's task", without a
+  // second read and without guessing.
+  function notify(sessionId, detail) {
+    try { deps.onAttributionChanged?.(sessionId, detail || {}); } catch (error) {
       console.warn('[task-attribution] notification failed', error.message);
     }
+  }
+
+  // A suggestion is still actionable after the user postponed it: `deferred`
+  // is a durable "later", not a rejection, so accept/dismiss must still work.
+  function isOpen(row) {
+    return row.state === 'pending' || row.state === 'unclassified' || row.state === 'deferred';
   }
 
   // Recording is idempotent per (conversation, turn): re-running the same Aux
@@ -66,7 +76,7 @@ function createAttributionDecisions(deps) {
         updatedAt: now(), revisions: Number(existing?.revisions) || 0,
         runId: input.runId || null, anchorMessageId: input.anchorMessageId || null };
       store.set('attr-decision', id, row);
-      notify(sessionId);
+      notify(sessionId, { decisionId: row.id, state: row.state, kind: 'recorded' });
       return { action: 'none', decision: publicDecision(row) };
     }
     if (plan.action === 'none') return { action: 'none', decision: null };
@@ -87,8 +97,10 @@ function createAttributionDecisions(deps) {
         revisions: (Number(existing.revisions) || 0) + 1 }
       : next;
     store.set('attr-decision', id, row);
-    notify(sessionId);
-    if (row.action !== 'apply') return { action: row.action, decision: publicDecision(row) };
+    if (row.action !== 'apply') {
+      notify(sessionId, { decisionId: row.id, state: row.state, kind: 'recorded' });
+      return { action: row.action, decision: publicDecision(row) };
+    }
     // `auto` applies here, inside the runtime that owns the write, so the caller
     // never has to repeat a transaction whose end it cannot see.
     const applied = await applyRow(row, { clientMsgId: `auto_${row.id}` });
@@ -102,23 +114,30 @@ function createAttributionDecisions(deps) {
           taskId: row.toTaskId, taskName: row.taskName, relatedTaskId: row.relatedTaskId,
         });
         if (!result?.ok) throw fail(result?.code || 'attribution_not_applied', result?.code || 'attribution_not_applied', 409);
-        return store.transaction(() => {
+        const settled = await store.transaction(() => {
           store.set('attr-decision', row.id, { ...row, state: 'applied', resolvedAt: now(),
             apply: { kind: 'identity', taskId: result.taskId, clientMsgId } });
           return store.get('attr-decision', row.id);
         });
+        notify(row.sessionId, { decisionId: settled.id, state: settled.state, kind: 'applied',
+          toTaskId: settled.toTaskId, fromTaskId: settled.fromTaskId });
+        return settled;
       }
       const scope = deps.scopeOf?.(row.shellId);
       if (!scope) throw fail('task_shell_not_found', 'Task shell not found', 404);
       const operation = await operations.apply({ scope, clientMsgId,
         turns: [{ sessionId: row.sessionId, turnId: row.turnId }], target: { taskId: row.toTaskId } });
-      return store.transaction(() => {
+      const settled = await store.transaction(() => {
         store.set('attr-decision', row.id, { ...row, state: operation.status === 'applied' ? 'applied' : 'reverted',
           resolvedAt: now(), apply: { kind: 'overlay', operationId: operation.id, clientMsgId } });
         return store.get('attr-decision', row.id);
       });
+      notify(row.sessionId, { decisionId: settled.id, state: settled.state, kind: 'applied',
+        toTaskId: settled.toTaskId, fromTaskId: settled.fromTaskId });
+      return settled;
     } catch (error) {
       store.set('attr-decision', row.id, { ...row, state: 'failed', lastError: String(error.message).slice(0, 200) });
+      notify(row.sessionId, { decisionId: row.id, state: 'failed', kind: 'failed' });
       throw error;
     }
   }
@@ -147,7 +166,7 @@ function createAttributionDecisions(deps) {
     // moving nothing (and an overlay row without a turn cannot be written).
     // `unclassified` is unresolved but unusable, so it reports its own reason
     // instead of the misleading "already resolved".
-    if (row.state !== 'pending' && row.state !== 'unclassified') {
+    if (!isOpen(row)) {
       throw fail('attribution_decision_resolved', 'This suggestion is already resolved', 409);
     }
     if (row.path === 'none' || !row.toTaskId) {
@@ -174,11 +193,25 @@ function createAttributionDecisions(deps) {
     if (row.state === 'dismissed') return publicDecision(row);
     // `unclassified` is dismissible: it is the one action that verdict can
     // offer, and dropping it is how the user clears the notice.
-    if (row.state !== 'pending' && row.state !== 'unclassified') {
+    if (!isOpen(row)) {
       throw fail('attribution_decision_resolved', 'This suggestion is already resolved', 409);
     }
     store.set('attr-decision', row.id, { ...row, state: 'dismissed', resolvedAt: now() });
-    notify(row.sessionId);
+    notify(row.sessionId, { decisionId: row.id, state: 'dismissed', kind: 'dismissed' });
+    return publicDecision(store.get('attr-decision', row.id));
+  }
+
+  // "Later" is a durable postponement, not a rejection: the row stays
+  // unresolved, keeps counting as pending work, and survives a refresh or
+  // another device, so only an explicit accept/dismiss clears it.
+  function defer(shellId, decisionId) {
+    const row = get(shellId, decisionId);
+    if (row.state === 'deferred') return publicDecision(row);
+    if (!isOpen(row)) {
+      throw fail('attribution_decision_resolved', 'This suggestion is already resolved', 409);
+    }
+    store.set('attr-decision', row.id, { ...row, state: 'deferred', deferredAt: now() });
+    notify(row.sessionId, { decisionId: row.id, state: 'deferred', kind: 'deferred' });
     return publicDecision(store.get('attr-decision', row.id));
   }
 
@@ -198,11 +231,11 @@ function createAttributionDecisions(deps) {
       }
     }
     store.set('attr-decision', row.id, { ...row, state: 'reverted', resolvedAt: now() });
-    notify(row.sessionId);
+    notify(row.sessionId, { decisionId: row.id, state: 'reverted', kind: 'reverted' });
     return publicDecision(store.get('attr-decision', row.id));
   }
 
-  return { record, list, publicDecision, accept, dismiss, undo };
+  return { record, list, publicDecision, accept, dismiss, defer, undo };
 }
 
 module.exports = { createAttributionDecisions };
