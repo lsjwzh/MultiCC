@@ -125,6 +125,9 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
   }
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
   app.post('/api/task-shells/:shellId/links', route((runtime, req) => runtime.link(req.params.shellId, req.body?.taskId)));
+  // 「选为下一条输入目标」：移动输入游标，不划分轮次、不改身份。
+  app.post('/api/task-shells/:shellId/select-target', route((runtime, req) => runtime.selectTarget(req.params.shellId, {
+    taskId: req.body?.taskId, expectedCursorVersion: req.body?.expectedCursorVersion })));
   app.post('/api/task-shells/:shellId/tasks/resolve', route((runtime, req) => runtime.resolveTask(req.params.shellId, {
     taskId: req.body?.taskId,
     taskText: req.body?.taskText,

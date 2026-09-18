@@ -564,6 +564,9 @@ const chatTaskIndex = window.MultiCCTaskIndex?.createController({
   loadIndex: () => shellChatView.shellId
     ? chatApi.json(withToken(`/api/task-shells/${encodeURIComponent(shellChatView.shellId)}/task-index`)) : null,
   onDetach: isReadOnly() ? null : detachIndexedTask,
+  // 索引里唯一会改发送目标的动作：滚动/点击历史只定位，只有这个按钮移动游标。
+  selectTarget: isReadOnly() ? null : { shellId: () => shellChatView.shellId, alert: message => _chatAlert(message, { danger: true }),
+    request: (path, body) => chatApi.json(withToken(path), { method: 'POST', json: body }) },
 });
 const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusController({
   targetId: _targetMessageId,

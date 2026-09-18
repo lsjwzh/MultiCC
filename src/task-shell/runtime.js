@@ -722,6 +722,32 @@ function createTaskShellRuntime(ports) {
       return { ok: true, taskId: fromTaskId, previousTaskId: toTaskId };
     });
   }
+  // 索引里的「选为下一条输入目标」：只移动输入游标，不划分轮次、不改身份、
+  // 不创建执行。带 cursorVersion 的条件更新是多页面同开时的保护——另一个页面
+  // 已经把目标挪走时这里必须失败，而不是悄悄覆盖它的选择。
+  function selectTarget(shellId, { taskId, expectedCursorVersion } = {}) {
+    const s = shell(shellId);
+    const id = identifier(taskId, 'taskId');
+    if (s.standalone && s.currentTaskId && id !== s.currentTaskId) throw failure('standalone_task_identity_locked');
+    if (!store.get('link', `${s.id}:${id}`)) throw failure('task_not_linked', 'This task is not part of the conversation', 403);
+    const task = store.get('task', id);
+    if (!task || task.dirId !== s.dirId) throw failure('task_not_found', 'Task not found', 404);
+    const indexed = indexedTask(id);
+    if (ports.isDeletedTask?.(id)) throw failure('task_deleted');
+    if (indexed?.deleting) throw failure('task_deleting');
+    if (indexed?.status === 'archived') throw failure('task_archived');
+    if (expectedCursorVersion != null && Number(expectedCursorVersion) !== (s.cursorVersion || 0)) {
+      throw failure('stale_shell_cursor', 'The current task changed; refresh before choosing another one');
+    }
+    if (s.currentTaskId === id) return { ok: true, taskId: id, cursorVersion: s.cursorVersion || 0, changed: false };
+    return store.transaction(() => {
+      s.currentTaskId = id;
+      s.cursorVersion = (s.cursorVersion || 0) + 1;
+      s.cursorReceiptId = null;
+      saveShell(s.id, s);
+      return { ok: true, taskId: id, cursorVersion: s.cursorVersion, changed: true };
+    });
+  }
   function guardAdmission(sessionId, text, options = {}) {
     const task = owns(sessionId);
     if (!task) return null;
@@ -778,7 +804,7 @@ function createTaskShellRuntime(ports) {
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
-    resolveTask, sendExplicit, relocateTask, independent, relations,
+    resolveTask, selectTarget, sendExplicit, relocateTask, independent, relations,
   };
 }
 

@@ -76,3 +76,44 @@ test('browser transport allows correcting a definitively rejected unreserved req
   await assert.rejects(client.send('shell', { text: 'work' }));
   assert.equal(client.pending(), null);
 });
+
+test('the index can move the next-input target with a cursor CAS, and never by accident', async t => {
+  const f = fixture(t), app = express(); app.use(express.json());
+  mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const api = async (route, body) => {
+    const response = await fetch(base + route, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    return { status: response.status, data: await response.json() };
+  };
+  const first = await api(`/api/task-shells/${f.a.id}/messages`, { text: 'work', clientMsgId: 'w1', intent: 'work' });
+  const second = await api(`/api/task-shells/${f.a.id}/messages`, { text: 'other', clientMsgId: 'w2', intent: 'work', newTask: true });
+  const secondTaskId = second.data.taskId;
+  assert.notEqual(first.data.taskId, secondTaskId, 'the second message really is another task');
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, secondTaskId);
+
+  const moved = await api(`/api/task-shells/${f.a.id}/select-target`, { taskId: first.data.taskId });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.data.ok, true);
+  assert.equal(moved.data.changed, true);
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, first.data.taskId);
+  // The cursor CAS is what keeps two open pages from overwriting each other.
+  const stale = await api(`/api/task-shells/${f.a.id}/select-target`,
+    { taskId: secondTaskId, expectedCursorVersion: moved.data.cursorVersion - 1 });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.data.code, 'stale_shell_cursor');
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, first.data.taskId, 'a stale write changes nothing');
+  const same = await api(`/api/task-shells/${f.a.id}/select-target`, { taskId: first.data.taskId });
+  assert.equal(same.data.changed, false, 'choosing the current target is a no-op, not a cursor bump');
+  assert.equal(f.runtime.view(f.a.id).cursorVersion, moved.data.cursorVersion);
+
+  // Identity, attribution and the task itself are untouched: this is a cursor.
+  const other = await api(`/api/task-shells/${f.b.id}/select-target`, { taskId: first.data.taskId });
+  assert.equal(other.status, 403);
+  assert.equal(other.data.code, 'task_not_linked');
+  const missing = await api(`/api/task-shells/${f.a.id}/select-target`, { taskId: 'tsk_missing' });
+  assert.equal(missing.status, 403);
+});

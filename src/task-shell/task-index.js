@@ -36,7 +36,7 @@ function taskTitle(task, entry) {
 
 // status is display-only: it says whether the index should offer an entry, not
 // whether the underlying execution is running. Execution state stays on turns.
-function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf, includeEmpty = false, now = Date.now() }) {
+function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf, isTarget, includeEmpty = false, now = Date.now() }) {
   const list = (Array.isArray(messages) ? messages : []).filter(message => message && typeof message === 'object');
   const byId = new Map();
   const ordered = [];
@@ -102,6 +102,10 @@ function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf
       lastMessageRef: entry.lastMessageRef,
       truncated: entry.segmentTruncated === true,
       segments: entry.segments,
+      // `target` is the shell's current input cursor: the task the next message
+      // is sent to unless the user picks another one. It is a display hint for
+      // the index, not a property of the task's own history.
+      target: typeof isTarget === 'function' ? isTarget(entry.taskId) === true : false,
       capabilities: {
         canDetach: capabilities.canDetach === true,
         canSelectTarget: capabilities.canSelectTarget === true,
@@ -121,6 +125,7 @@ function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf
       status: identifier(task?.status, 40) || 'active', state: identifier(task?.state, 40) || null,
       turnCount: 0, messageCount: 0, empty: true, firstMessageRef: null, lastMessageRef: null,
       truncated: false, segments: [],
+      target: typeof isTarget === 'function' ? isTarget(taskId) === true : false,
       capabilities: { canDetach: capabilities.canDetach === true, canSelectTarget: capabilities.canSelectTarget === true },
     });
   }
@@ -150,7 +155,7 @@ function collectTaskIndex(scope, readMessages, getState, options = {}) {
     { includeHidden: true, overlay: options.overlay });
   return buildTaskIndex({ shellId: scope?.shellId || scope?.id, messages, now: options.now,
     tasks: options.tasks, codeFor: options.codeFor, capabilitiesOf: options.capabilitiesOf,
-    includeEmpty: options.includeEmpty === true });
+    isTarget: options.isTarget, includeEmpty: options.includeEmpty === true });
 }
 
 module.exports = { buildTaskIndex, collectTaskIndex, MAX_TASKS, MAX_SEGMENTS_PER_TASK };
