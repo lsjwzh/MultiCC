@@ -51,6 +51,7 @@ const ttsService = require('./src/voice/tts-service');
 const cronTasks = require('./plugins/cron/cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./plugins/utils/macos-power');
+const batteryGuardRuntime = require('./src/battery-guard').createBatteryGuardRuntime({ macosPower, logger: console }).start(); // 掉电保护，详见 src/battery-guard.js 头注
 const gitPush = require('./plugins/utils/git-push');
 const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git/queue');
 
@@ -1871,7 +1872,7 @@ mountHostReadRoutes(app, {
   getAccessToken: () => ACCESS_TOKEN,
   isLocalRequest,
   getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
-  macosPower,
+  macosPower, batteryGuard: batteryGuardRuntime,
 });
 
 // Mutable host settings use the matching narrow boundary. Durable .env/config
@@ -1895,7 +1896,7 @@ mountHostWriteRoutes(app, {
     CLAUDE_OFFICIAL_VIA_PROXY = enabled;
     process.env.CLAUDE_OFFICIAL_VIA_PROXY = enabled ? '1' : '0';
   },
-  macosPower,
+  macosPower, batteryGuard: batteryGuardRuntime,
   log: message => console.log(message),
   reportFailure: (stage, category) => reportHostControlFailure('host_write', stage, category),
 });

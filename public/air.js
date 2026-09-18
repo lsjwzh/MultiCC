@@ -2037,8 +2037,8 @@
     lidSleepRow.classList.toggle('on', !!enabled);
     lidSleepRow.setAttribute('aria-pressed', String(!!enabled));
     lidSleepRow.title = enabled
-      ? '关盖时保持运行，不进入睡眠（点击恢复关盖睡眠）'
-      : '关盖时保持运行（点击开启，需要在 Mac 上完成管理员授权）';
+      ? '关盖时保持运行，不进入睡眠；电池降到 5% 以下会自动睡眠保护，插电或回充到 8% 后恢复（点击恢复关盖睡眠）'
+      : '关盖时保持运行（点击开启，需要在 Mac 上完成管理员授权；开启后附带 5% 掉电自动睡眠保护）';
   }
   async function loadLidSleepRow() {
     if (!lidSleepRow) return;
