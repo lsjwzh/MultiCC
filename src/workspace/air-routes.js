@@ -28,8 +28,9 @@ function mountAirRoutes(app, deps) {
     const board = deps.getBoard?.() || {};
     return Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId && !board.deletedTaskIds?.includes(t.id));
   }
-  function resource(sessionId) {
-    const snapshot = deps.admission.snapshot();
+  // 一次请求只读一次 admission 快照：这是整表读（workspace:record + lease），
+  // 按卡片各读一次时 1069 张卡片要多花约 0.4s 的 CPU 与等量 JSON 解析。
+  function resource(sessionId, snapshot = deps.admission.snapshot()) {
     const record = deps.records.get(sessionId);
     const workspace = snapshot.workspaces.find(w => w.ownerId === (record?.workspaceOwnerSessionId || sessionId));
     const lease = workspace && snapshot.leases.find(l => l.workspaceId === workspace.id);
@@ -68,6 +69,7 @@ function mountAirRoutes(app, deps) {
       return !!(record && record.taskState);
     };
     const projectNow = Date.now();
+    const admission = deps.admission.snapshot();
     const tasks = boardTasks().map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
       const access = deps.shell.taskAccess(t);
@@ -81,10 +83,10 @@ function mountAirRoutes(app, deps) {
         // 自愈：证明这一轮从没被受理过的卡片按空闲投影，而不是永久「执行中」。
         runState: core.deadDispatchClaim(t, core.taskRunSessionIds(t).some(hasTurnState), projectNow)
           ? 'idle' : (t.runState || null),
-        resource: resource(sessionId) };
+        resource: resource(sessionId, admission) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({ id: d.id, name: d.name, path: d.path })),
-      tasks, taskPins: pins().read(), budgets: deps.admission.snapshot().budgets, clis: deps.clis, migration, lastRuntime,
+      tasks, taskPins: pins().read(), budgets: admission.budgets, clis: deps.clis, migration, lastRuntime,
       sessions: [...deps.records.values()].filter(s => s.kind === 'terminal' && !['aux', 'gateway'].includes(s.type))
         .map(s => ({ id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli })) };
   }));

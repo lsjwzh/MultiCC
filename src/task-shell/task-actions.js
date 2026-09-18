@@ -16,7 +16,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
   }
   function ownerOf(task) {
     if (task.ownerShellId) return shell(task.ownerShellId);
-    const link = store.list('link').find(l => l.taskId === task.id);
+    const link = store.linkByTask(task.id);
     if (link) return shell(link.shellId);
     const sid = task.sessionId || task.chatSessionId || task.refs?.find(r => getRecord(r.sessionId))?.sessionId;
     const record = sid && getRecord(sid);
