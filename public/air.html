@@ -133,6 +133,12 @@
         <h1 id="task-title">工作目录</h1>
         <button id="task-state" type="button" aria-controls="task-details" aria-expanded="false" disabled></button>
       </div>
+      <!-- Pin 住的任务：一排从页头顶上垂下来的小卡片（「齐刘海」），正好占着标题
+           和工具之间那块空白。默认缩略（状态图标 + 标题开头），鼠标停在上面才展开
+           成完整的一张（标题 + 目录 + 阶段）。只在桌面出现 —— 手机上页头一行都嫌
+           贵，那边这些任务直接置顶在侧栏「最近任务」的最上面（air.js 的
+           sidebarTasks）。最多 5 个，清单在服务端，Web 和 App 读的是同一份。 -->
+      <nav id="task-pins" aria-label="Pin 住的任务" hidden></nav>
       <!-- 手机上工具收进这一层浮层（air.css 的 760px 块），标题那一行就只剩
            ☰ / 标题 / 状态 / ⋯，页头整条少一行 —— 手机上一行消息值 23px，这一行
            是整屏里最贵的几行之一。桌面上它不出现，工具本来就摆得下。 -->
@@ -159,6 +165,9 @@
         <button id="quick-auto-commit" type="button" hidden aria-pressed="false"
                 title="自动提交：每轮执行成功后自动提交并合并回基分支" aria-label="自动提交"><span class="air-tool-icon" aria-hidden="true">⇡</span><span class="air-tool-name">自动提交</span></button>
         <button id="quick-share" type="button" hidden title="把此任务分享到外部" aria-label="分享此任务"><span class="air-tool-icon" aria-hidden="true">↗</span><span class="air-tool-name">分享此任务</span></button>
+        <!-- Pin 是「这件事我要一直看着」的唯一开关：桌面上页头那排 tab 是它的落点，
+             手机上（没有 page 头那排 tab）是侧栏最近任务置顶的开关。 -->
+        <button id="pin-task" type="button" hidden aria-pressed="false" title="Pin 到页顶" aria-label="Pin 到页顶"><span class="air-tool-icon" aria-hidden="true">📌</span><span class="air-tool-name">Pin 到页顶</span></button>
         <button id="details-toggle" type="button" aria-expanded="false" aria-controls="task-details" hidden><span class="air-tool-icon-panel" aria-hidden="true">ⓘ</span>详情</button>
         <button id="chat-more" type="button" aria-haspopup="menu" aria-expanded="false" hidden><span class="air-tool-icon-panel" aria-hidden="true">⋯</span>更多</button>
         <!-- 这个按钮一直挂着（不随视图藏），所以它没有 hidden。 -->

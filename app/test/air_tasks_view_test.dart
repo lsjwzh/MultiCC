@@ -229,6 +229,67 @@ MockClient _createFromSheetClient(
   );
 });
 
+/// Pin 住的任务：那份清单住在服务端（`air-pins.json`），Web 和 App 读同一份。
+/// 这个桩把两件事分开说清楚 —— 快照里的 `taskPins` 是「钉了哪些」，POST
+/// `/api/air/pins/toggle` 是唯一的写。第 6 个回 409，让界面把话原样说给用户。
+MockClient _pinsClient(
+  List<String> calls,
+  List<Map<String, dynamic>> bodies, {
+  required List<String> pins,
+  List<String>? afterToggle,
+  int toggleStatus = 200,
+  String toggleMessage = '最多只能 Pin 5 个任务',
+}) {
+  const headers = {'content-type': 'application/json; charset=utf-8'};
+  var current = pins;
+  return MockClient((request) async {
+    calls.add('${request.method} ${request.url.path}');
+    if (request.url.path == '/api/air/pins/toggle') {
+      bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+      if (toggleStatus >= 400) {
+        return http.Response(
+          jsonEncode({'ok': false, 'code': 'pin_limit_reached', 'message': toggleMessage}),
+          toggleStatus,
+          headers: headers,
+        );
+      }
+      current = afterToggle ?? pins;
+      return http.Response(
+        jsonEncode({'ok': true, 'taskIds': current}),
+        200,
+        headers: headers,
+      );
+    }
+    // 六条任务：t1 最新，t6 最旧。pin 的那几条必须排在最前面，跟 updatedAt 无关。
+    return http.Response(
+      jsonEncode({
+        'ok': true,
+        'clis': const ['codex'],
+        'directories': const [
+          {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
+        ],
+        'taskPins': current,
+        'tasks': [
+          for (var i = 1; i <= 6; i++)
+            {
+              'id': 't$i',
+              'dirId': 'd1',
+              'title': '任务 $i',
+              'status': 'active',
+              'recordType': 'planned',
+              'workflowStage': 'inbox',
+              'runState': null,
+              'updatedAt': 1000 - i,
+              'resource': const {'residency': 'planned', 'lease': 'idle'},
+            },
+        ],
+      }),
+      200,
+      headers: headers,
+    );
+  });
+}
+
 Future<SettingsService> _settings({bool onboarded = true}) async {
   SharedPreferences.setMockInitialValues({
     'multicc_host': 'http://localhost:3000',
@@ -427,6 +488,130 @@ void main() {
     // 最近打开过的任务优先：这次会话没打开过任何任务，补位的是当前目录里
     // 最近更新过的那条。
     expect(find.byKey(const ValueKey('air-side-task-t1')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  // Pin 住的任务在 App 里就是侧栏「最近任务」的最上面那几条（Web 是页头顶上那排
+  // tab；手机宽度的 Web 也是走这一份列表）。上限 5 个由服务端把着，界面不自己算。
+  testWidgets('Pin 住的任务排在最近任务的最前面，并带着钉标记', (tester) async {
+    final settings = await _settings();
+    final client = _pinsClient(<String>[], [], pins: const ['t5']);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+
+    // 钉住的 t5 排在 t1 上面 —— t1 才是 updatedAt 最新的那一条。
+    final pinnedRow = find.byKey(const ValueKey('air-side-task-t5'));
+    final newestRow = find.byKey(const ValueKey('air-side-task-t1'));
+    expect(pinnedRow, findsOneWidget);
+    expect(
+      tester.getTopLeft(pinnedRow).dy < tester.getTopLeft(newestRow).dy,
+      isTrue,
+      reason: 'pin 住的那条排在最近任务的最上面',
+    );
+    expect(
+      find.descendant(of: pinnedRow, matching: find.byIcon(Icons.push_pin_rounded)),
+      findsOneWidget,
+    );
+    // 没钉住的那条没有标记（标记说的是「它为什么排在这儿」）。
+    expect(
+      find.descendant(of: newestRow, matching: find.byIcon(Icons.push_pin_rounded)),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('点任务行上的 📌 会写服务端，顺序按服务端回来的清单走', (tester) async {
+    final settings = await _settings();
+    final calls = <String>[];
+    final bodies = <Map<String, dynamic>>[];
+    final client = _pinsClient(
+      calls,
+      bodies,
+      pins: const ['t4'],
+      afterToggle: const ['t4', 't1'],
+    );
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-task-pin-t1')));
+    await tester.pumpAndSettle();
+    expect(calls, contains('POST /api/air/pins/toggle'));
+    expect(bodies.single, {'taskId': 't1'});
+    expect(find.text('已 Pin 住「任务 1」'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('air-menu-button')));
+    await tester.pumpAndSettle();
+    // 服务端回来的顺序是 [t4, t1]，不是客户端按 updatedAt 排的 [t1, t4]。
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('air-side-task-t4'))).dy <
+          tester.getTopLeft(find.byKey(const ValueKey('air-side-task-t1'))).dy,
+      isTrue,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('air-side-task-t1')),
+        matching: find.byIcon(Icons.push_pin_rounded),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('第六个 pin 被服务端拒绝：那句话原样说给用户，按钮不装成已钉', (tester) async {
+    final settings = await _settings();
+    final calls = <String>[];
+    final bodies = <Map<String, dynamic>>[];
+    final client = _pinsClient(
+      calls,
+      bodies,
+      // 五条已经钉满；t1 是没钉的那一条（也是首页第一行，一定在屏上）。
+      pins: const ['t2', 't3', 't4', 't5', 't6'],
+      toggleStatus: 409,
+    );
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('air-task-pin-t1')));
+    await tester.pumpAndSettle();
+    expect(find.text('最多只能 Pin 5 个任务'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('air-task-pin-t1')),
+        matching: find.byIcon(Icons.push_pin_outlined),
+      ),
+      findsOneWidget,
+      reason: '被拒绝的那条不该变成「已钉」',
+    );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();

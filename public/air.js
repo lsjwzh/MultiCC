@@ -33,6 +33,10 @@
   let paletteItems = [];
   let paletteIndex = 0;
   let data = null;
+  // Pin 住的任务（服务端 air-pins.json 那份清单，顺序就是页头从左到右的顺序）。
+  // 页头那排「齐刘海」和手机上侧栏的置顶读的都是它，写只有一条路：togglePin。
+  let taskPins = [];
+  let pinSignature = '';
   let directoryId = initialParams.get('dir');
   let taskId = initialParams.get('task');
   let entry = null;
@@ -1132,8 +1136,134 @@
     } catch (error) { notice(`删除失败：${error.message}`); }
   }
 
-  function visibleTasks() {
-    return recentPool();
+  /** 侧栏「最近任务」那一条带子。单独抽出来是因为它有两个调用点：整页 render，
+   *  以及 pin 变了的时候 —— 后者只动了侧栏和页头那排 tab，没必要把整页（含对话
+   *  帧）重画一遍。 */
+  function renderSidebarTasks() {
+    const tasks = sidebarTasks();
+    $('task-list-title').textContent = '最近任务';
+    $('task-count').textContent = tasks.length;
+    $('tasks').replaceChildren(...tasks.map(task => {
+      const elsewhere = task.dirId !== directoryId;
+      const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : ''].filter(Boolean).join(' '));
+      button.dataset.task = task.id;
+      applyRing(button, isRunningTask(task));
+      // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
+      // 的类型/阶段/资源去向。目录作为标签跟在同一行里 —— 「最近」这条带子本来就
+      // 是跨目录的（我打开过的任务 + 当前目录的几个），所以每一行都自报家门，
+      // 而不是只给「不在当前目录」的那几行加标记：一份一半带标签一半不带的列表，
+      // 读的人得先知道哪一半是什么规则。
+      const meta = node('small', null, 'task-meta');
+      meta.append(statusBadge(task));
+      meta.append(node('em', directoryName(task.dirId), 'task-dir'));
+      // 手机上 pin 住的那几条就排在这份列表的最上面，标记说明它们为什么在那儿。
+      if (isPinned(task.id)) meta.append(node('span', '📌', 'task-pin'));
+      const stage = task.recordType === 'planned' ? `计划 · ${label(task.workflowStage || task.status)}` : '';
+      // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
+      const badgeText = label(taskStatus(task));
+      const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
+      button.append(node('strong', task.title), meta);
+      if (extra) button.append(node('small', extra, 'task-note'));
+      button.onclick = () => navigate(task.dirId, task.id);
+      return button;
+    }));
+    if (!tasks.length) $('tasks').append(node('small', '还没有打开过任务。这个目录里的任务会出现在这里。', 'empty-list'));
+  }
+
+  // ── Pin 住的任务 ────────────────────────────────────────────────────────
+  // 「这件活我要一直看着」—— 和「最近打开过」不是一回事：最近会掉出列表，pin 不会。
+  // 上限 5 个由服务端把着（第 6 个回 pin_limit_reached），界面只负责把它说清楚。
+  const PIN_LIMIT = 5;
+  const phoneLayout = () => matchMedia('(max-width: 760px)').matches;
+  /** 按 pin 的顺序取出任务本身；已经被删掉的那种自然就不在列表里了。 */
+  const pinnedTasks = () => taskPins
+    .map(id => (data?.tasks || []).find(task => task.id === id))
+    .filter(Boolean);
+  const isPinned = id => !!id && taskPins.includes(id);
+
+  /** 侧栏那份列表：手机上 pin 住的排在最前面，剩下的照旧（最近 + 当前目录）。 */
+  function sidebarTasks() {
+    const pool = recentPool();
+    const pinned = pinnedTasks();
+    // 桌面上 pin 的任务已经在页头顶上了，侧栏再排一遍就是同一件事说两遍。
+    if (!phoneLayout() || !pinned.length) return pool;
+    const taken = new Set(pinned.map(task => task.id));
+    return [...pinned, ...pool.filter(task => !taken.has(task.id)).slice(0, Math.max(RECENT_LIMIT - pinned.length, 0))];
+  }
+
+  async function togglePin(taskId) {
+    if (!taskId) return;
+    const known = (data?.tasks || []).find(task => task.id === taskId);
+    if (!isPinned(taskId) && taskPins.length >= PIN_LIMIT) {
+      notice(`最多只能 Pin ${PIN_LIMIT} 个任务，先取消一个再钉。`);
+      return;
+    }
+    try {
+      const result = await api('/api/air/pins/toggle', { taskId });
+      taskPins = Array.isArray(result.taskIds) ? result.taskIds.slice() : [];
+      pinSignature = '';
+      renderPins();
+      renderSidebarTasks();
+      paintPinButton();
+      notice(isPinned(taskId) ? `已 Pin 住「${known?.title || taskId}」` : '已取消 Pin');
+    } catch (error) {
+      notice(`Pin 失败：${error.message}`);
+    }
+  }
+
+  /** 页头那排「齐刘海」：缩略是状态 + 标题，悬停/聚焦展开成标题 + 目录 + 阶段。 */
+  function renderPins() {
+    const container = $('task-pins');
+    if (!container) return;
+    // 手机上这一排整个不出现（air.css 的 760px 块也是这么说的）：那边 pin 的任务
+    // 置顶在侧栏。两处都判一次是因为这里还决定要不要建 DOM。
+    if (phoneLayout() || !taskPins.length) { container.replaceChildren(); container.hidden = true; pinSignature = ''; return; }
+    // 4 秒一次的轮询不许把悬停中的那张卡拆掉：内容没变就不重建（悬停本身不改内容）。
+    const tasks = pinnedTasks();
+    const signature = tasks.map(task => [task.id, task.title, taskStatus(task), isRunningTask(task), directoryName(task.dirId), task.workflowStage || ''].join('\u0001')).join('\u0002');
+    container.hidden = false;
+    if (signature === pinSignature) return;
+    pinSignature = signature;
+    container.replaceChildren(...tasks.map(task => {
+      const tab = node('div', null, 'pin-tab');
+      tab.dataset.task = task.id;
+      applyRing(tab, isRunningTask(task));
+      const open = node('button', null, 'pin-open');
+      open.type = 'button';
+      const stage = label(task.workflowStage || task.status);
+      open.title = `${task.title || '未命名任务'} · ${directoryName(task.dirId)}${stage ? ` · ${stage}` : ''}`;
+      open.setAttribute('aria-label', `打开任务 ${task.title || '未命名任务'}`);
+      const status = node('span', null, 'pin-status');
+      status.append(statusBadge(task));
+      const copy = node('span', null, 'pin-copy');
+      copy.append(node('strong', task.title || '未命名任务', 'pin-title'));
+      const meta = node('span', null, 'pin-meta');
+      meta.append(node('em', directoryName(task.dirId), 'task-dir'));
+      if (stage) meta.append(node('span', stage));
+      copy.append(meta);
+      open.append(status, copy);
+      open.onclick = () => navigate(task.dirId, task.id);
+      const remove = node('button', '×', 'pin-x');
+      remove.type = 'button';
+      remove.title = '取消 Pin';
+      remove.setAttribute('aria-label', `取消 Pin ${task.title || '未命名任务'}`);
+      remove.onclick = event => { event.stopPropagation(); void togglePin(task.id); };
+      tab.append(open, remove);
+      return tab;
+    }));
+  }
+
+  /** 工具条上那颗 📌：说的就是当前打开的这个任务在不在 pin 里。 */
+  function paintPinButton() {
+    const button = $('pin-task');
+    if (!button) return;
+    const on = isPinned(taskId);
+    button.setAttribute('aria-pressed', String(on));
+    button.title = on ? '取消 Pin' : 'Pin 到页顶';
+    button.setAttribute('aria-label', on ? '取消 Pin' : 'Pin 到页顶');
+    const name = button.querySelector('.air-tool-name');
+    // 手机浮层里图标旁边是要跟名字的，这个名字得跟着状态走（桌面上它不显示）。
+    if (name) name.textContent = on ? '取消 Pin' : 'Pin 到页顶';
   }
 
   function applyTaskTitleEditing(task = null) {
@@ -1204,8 +1334,9 @@
       $('task-state').textContent = dir?.path || '添加目录后即可创建任务。';
     }
     applyTaskTitleEditing(selectedEntry?.task || null);
-    for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share',
+    for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share', 'pin-task',
       'details-toggle', 'chat-more']) $(id).hidden = !taskId;
+    paintPinButton();
     $('task-state').disabled = !taskId;
     if (!taskId) { $('task-state').classList.remove('attention'); $('task-state').removeAttribute('title'); }
     // 「正在跑」这件事，页头也是需要说清的地方之一：当前这条任务在跑的时候，
@@ -1377,31 +1508,8 @@
     $('console-badge').hidden = !urgent.length;
     $('console-badge').textContent = urgent.length ? String(urgent.length) : '';
 
-    const tasks = visibleTasks();
-    $('task-list-title').textContent = '最近任务';
-    $('task-count').textContent = tasks.length;
-    $('tasks').replaceChildren(...tasks.map(task => {
-      const elsewhere = task.dirId !== directoryId;
-      const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : ''].filter(Boolean).join(' '));
-      applyRing(button, isRunningTask(task));
-      // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
-      // 的类型/阶段/资源去向。目录作为标签跟在同一行里 —— 「最近」这条带子本来就
-      // 是跨目录的（我打开过的任务 + 当前目录的几个），所以每一行都自报家门，
-      // 而不是只给「不在当前目录」的那几行加标记：一份一半带标签一半不带的列表，
-      // 读的人得先知道哪一半是什么规则。
-      const meta = node('small', null, 'task-meta');
-      meta.append(statusBadge(task));
-      meta.append(node('em', directoryName(task.dirId), 'task-dir'));
-      const stage = task.recordType === 'planned' ? `计划 · ${label(task.workflowStage || task.status)}` : '';
-      // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
-      const badgeText = label(taskStatus(task));
-      const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
-      button.append(node('strong', task.title), meta);
-      if (extra) button.append(node('small', extra, 'task-note'));
-      button.onclick = () => navigate(task.dirId, task.id);
-      return button;
-    }));
-    if (!tasks.length) $('tasks').append(node('small', '还没有打开过任务。这个目录里的任务会出现在这里。', 'empty-list'));
+    renderSidebarTasks();
+    renderPins();
 
     // 面板打开时才渲染它的内容：控制台不是页面，所以它不是「当前视图」。
     if (consoleOpen) {
@@ -2026,6 +2134,9 @@
     loading = true;
     try {
       data = await api('/api/air');
+      // Pin 的清单随快照一起来（不用为它多打一次接口）。顺序就是页头从左到右的顺序。
+      taskPins = Array.isArray(data.taskPins) ? data.taskPins.slice() : [];
+      pinSignature = '';
       // 「随时更新成最近使用」的落点：每次快照都把 lastRuntime 灌进新任务胶囊，
       // 除非用户面前正摆着一份手挑的配置（quickRuntimeDirty）。刷新可能来自任何
       // 地方的任何动作，不能因为它把人刚选好的线路冲回几小时前那套。
@@ -2184,7 +2295,10 @@
     // 否则横竖屏一切回来列表长度还是旧的那个。但只有目录首页用得上这个数 ——
     // 任务开着的时候那一页没渲染，而这一趟 render 会拿列表里的任务重画页头，
     // 把只在详情里才有的东西（本轮归属那一段）抹掉。
+    // 760px 这条线还管着两件事：页头那排 pin tab 在手机宽度整个藏掉、pin 的任务
+    // 改在侧栏置顶。这两个都不用重画页头那一段（也就不会碰 title），单独刷。
     if (!taskId) render();
+    else { renderPins(); renderSidebarTasks(); }
   });
   $('add-directory').onclick = () => window.MultiCCAirSettings.directory(async directory => { await refresh(); navigate(directory.id); });
   // 首启配置卡的两个入口各自直达对应设置页；跳过只藏卡，配置状态仍以下一次
@@ -2264,6 +2378,7 @@
   $('quick-merge').onclick = () => clickFrameAction('merge-btn');
   $('quick-auto-commit').onclick = () => clickFrameAction('auto-commit-btn');
   $('quick-share').onclick = () => clickFrameAction('share-btn');
+  $('pin-task').onclick = () => { void togglePin(taskId); };
   $('details-toggle').onclick = () => toggleDetails();
   // The conversation frame's chat page owns the More menu (items, handlers,
   // popover layer). The task-header trigger just reaches into that same-origin

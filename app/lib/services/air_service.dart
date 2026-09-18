@@ -42,6 +42,10 @@ const Map<String, String> airStateNames = {
 String airLabel(String? value) =>
     (value == null || value.isEmpty) ? '' : (airStateNames[value] ?? value);
 
+/// 页头顶上那排「齐刘海」最多放得下几个。上限由服务端把着（第 6 个回
+/// `pin_limit_reached`），这里这个数只用来先把话说在前面。
+const int airPinLimit = 5;
+
 /// 任务生命周期动作（归档/恢复、移动、删除）的错误码 → 文案，逐条对着 Web
 /// `public/air.js` 的 `TASK_ACTION_ERRORS` 抄。
 ///
@@ -293,6 +297,7 @@ class AirSnapshot {
     required this.tasks,
     required this.clis,
     required this.sessions,
+    this.taskPins = const [],
     this.externalFleets = const [],
   });
 
@@ -302,6 +307,11 @@ class AirSnapshot {
 
   /// 终端会话（Air 侧栏的 TERMINAL 一组）。只有移动端要用的字段。
   final List<AirSession> sessions;
+
+  /// Pin 住的任务 id，顺序就是用户钉的顺序（Web 页头从左到右 / 侧栏从上到下）。
+  /// 清单住在服务端（`air-pins.json`），所以 Web、这台手机、另一台手机看到的是
+  /// 同一份 —— 这也是它不放在 SharedPreferences 里的原因。
+  final List<String> taskPins;
 
   /// 导入进来的远端工作区。它们同时也以 [AirDirectory] 的样子出现在
   /// [directories] 里 —— 这里额外留一份原始记录，好知道「别名、分享链接、
@@ -325,8 +335,15 @@ class AirSnapshot {
     sessions: ((json['sessions'] as List?) ?? [])
         .map((e) => AirSession.fromJson((e as Map).cast<String, dynamic>()))
         .toList(),
+    taskPins: ((json['taskPins'] as List?) ?? const [])
+        .map((e) => '$e')
+        .toList(),
     externalFleets: externalFleets,
   );
+
+  /// 这个任务被 pin 住了吗。
+  bool isPinned(String? taskId) =>
+      taskId != null && taskPins.contains(taskId);
 
   AirDirectory? directoryOf(String? id) {
     for (final directory in directories) {
@@ -602,6 +619,15 @@ class AirService {
   /// 未合并提交时服务端会拒绝（错误码见 [airTaskActionErrors]）。
   Future<void> deleteTask(String taskId) =>
       _lifecycle('DELETE', '/api/task-board/tasks/${Uri.encodeComponent(taskId)}');
+
+  /// 钉住 / 取消钉住一个任务，返回钉住之后的整份清单（顺序就是显示顺序）。
+  ///
+  /// 单点 toggle 而不是「客户端算好整份再提交」：两台设备同时点的时候，只有
+  /// 服务端知道该以谁为准（Web 的 `public/air.js` 走的是同一条路）。
+  Future<List<String>> toggleTaskPin(String taskId) async {
+    final result = await _post('/api/air/pins/toggle', {'taskId': taskId});
+    return ((result['taskIds'] as List?) ?? const []).map((e) => '$e').toList();
+  }
 
   /// 建任务。第一条消息由 [sendFirstMessage] 单独发出，中途失败时任务已经存在
   /// —— Web Air 会退回目录并把草稿留在会话存储里，这里用同样的顺序。
