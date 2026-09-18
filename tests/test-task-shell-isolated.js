@@ -180,6 +180,15 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     await api('/api/task-continuations/ind_missing', undefined, 404);
     await api('/api/task-continuations/ind_missing/apply', {}, 404);
     await api('/api/task-continuations/ind_missing/cancel', {}, 404);
+    // 关联编辑与整段批量整理（P4）：写路径受项目与 shell 约束。
+    assert.deepEqual((await api(`/api/task-shells/${sb.id}/relations`)).relations, []);
+    await api(`/api/task-shells/${sb.id}/relations`, { fromTaskId: first.taskId, toTaskId: second.taskId, clientMsgId: 'rel-1' });
+    const related = (await api(`/api/task-shells/${sb.id}/relations`)).relations;
+    assert.equal(related.length, 1);
+    assert.equal(related[0].kind, 'related');
+    await api(`/api/task-shells/${sb.id}/relations/remove`, { relationId: related[0].id, clientMsgId: 'rel-2' });
+    assert.deepEqual((await api(`/api/task-shells/${sb.id}/relations`)).relations, []);
+    await api(`/api/task-shells/${sb.id}/relations`, { fromTaskId: first.taskId, toTaskId: first.taskId, clientMsgId: 'rel-3' }, 400);
     const restored = await api(`/api/task-shells/${sb.id}/task-index`);
     assert.equal(restored.scopeRevision, taskIndex.scopeRevision);
     const restoredHistory = await api(`/api/task-shells/${sb.id}/history?historyScope=archive&limit=100`);
