@@ -22,7 +22,7 @@ test('Air owns the management home and exposes the management navigation', () =>
   assert.match(html, /id="air-lid-sleep"[\s\S]*?关盖运行/);
   assert.equal((html.match(/side-group"/g) || []).length, 4, '四组各一个框');
   assert.match(read('public/air.js'), /\/api\/settings\/power/);
-  assert.match(read('public/air.css'), /\.frequent-settings \{ display: grid; grid-template-columns: 1fr 1fr/);
+  assert.match(read('public/air.css'), /\.frequent-settings \{ display: grid; grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/);
   assert.match(html, /src="air-admin\.js"/);
   assert.match(html, /src="air-provider\.js"/);
   assert.match(js, /adminModes\.has\(requested\)/);
