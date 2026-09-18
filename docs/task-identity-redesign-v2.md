@@ -449,5 +449,23 @@ P1 上线后已能整理对话并看到多个码；P2 实现“尽量把不同�
 | 保留期 | 终态行只有 `reverted` 会被清理 | `expireOlderThan` 一并清理 `cancelled`/`queued_expired`/`failed`（按 `resolvedAt`/`queuedAt`），`applied` 仍然保留——它还是当前归属的审计线索 |
 | 撤回与写盘的竞态 | `drain` 先按 `status==='queued'` 挑行，真正的写发生在若干 await 之后；这中间的取消（或删壳 purge）会被晚到的尝试覆盖 | 写回前重新读一次行：`apply` 的事务里若发现「进来时是 queued、现在已不是 queued」就抛 `operation_cancelled`（取消赢），事务不落 overlay；`drain` 的失败分支与 `missing` 分支都只在行**仍然是 queued** 时才写 `failed`，否则原样保留用户/清理留下的终态 |
 
-仍然留后：建议卡的贴段呈现（§9.1 原始形态）；`select-target` 的 `expectedCursorVersion`
-条件写仍未被界面使用（服务端能力保留，理由见 §13.4）。
+### 13.6 第六批：建议卡贴在它说的那一段旁边（2026-09-19 同一轮）
+
+§13.5 留后的第一条。此前一条建议只以 `⇄` 徽标计数、展开工具栏后才出现在列表里，
+而 §9.1 要的是「消息段附近出现一条紧凑建议」——建议说的是**某一段对话**，
+读者却在另一个位置才会看到它。
+
+| 条款 | 差距 | 修法 |
+| --- | --- | --- |
+| §9.1 贴段呈现 | 建议只在工具栏的 `proposals` 列表里 | `renderInlineCards()` 把 `state==='pending'` 的裁决渲染成 `.task-attribution-inline`，插在该轮**最后一个气泡之后**（`sessionId:turnId` → `messagesEl.querySelectorAll(TURN_SELECTOR)` 的末条），文案 `taskAttributionInline`「这段可以单独记为：{task}」，动作与工具栏一致：采纳 / 忽略 / 稍后 |
+| 不遮挡、不阻断 | — | 卡片是消息流里的一个普通块（border-left 加粗提示），不覆盖正文、不改滚动位置、不拦下一条消息；`role=group` + 动作按钮就是全部交互 |
+| 与工具栏的关系 | 工具栏是「稍后」折叠后的常驻入口 | **只**渲染 `pending`：`deferred`/`queued` 留在工具栏（§9.1 的「收进常驻待处理入口」），本轮不在页面上的建议也只在工具栏计数——贴段是**追加**，永远不替代待处理入口 |
+| 标题来源 | 索引只在打开模式时才拉取，贴段卡片会拿不到标题 | 新增 `suggestionTaskLabel()`：先用裁决自带的 `toTaskTitle`，再退回本地索引，最后才是 4 字尾码——不开模式也能读出人话 |
+| 重复渲染 / observer 回环 | `MutationObserver` 监听 `messages`，卡片插进 DOM 会再触发一次 `decorate()` | 每张卡记 `{signature, card}`，位置用「上一张卡 / 锚点」逐个推导（`tails`），一致就**不碰 DOM**。同一轮的多条建议因此能稳定排队，不会互相顶替形成死循环 |
+| 生命周期 | — | `dispose()` 一并摘掉卡片；页面重渲染消息后由 `decorate()` 重新贴回 |
+
+验证：`test-chat-task-attribution` 19（+5：贴段、稍后收进工具栏、本轮之外只计数、
+重复 decorate 稳定（含同轮两条建议不互相顶替）、dispose 清场），均先验证过没有实现时会失败。
+
+仍然留后：§9.1 的「自动模式落地后显示『已划为 #ABCD · 撤销』」（auto 档未开）；
+`select-target` 的 `expectedCursorVersion` 条件写仍未被界面使用（服务端能力保留，理由见 §13.4）。

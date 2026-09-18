@@ -1245,6 +1245,7 @@
   "taskAttributionNoShell": "This conversation has no task shell yet, so attribution cannot be changed.",
   "taskAttributionSuggestions": "{n} attribution suggestions to confirm",
   "taskAttributionSuggestion": "Suggested: {from} → {to}",
+  "taskAttributionInline": "This stretch could be its own task: {task}",
   "taskAttributionAccept": "Accept",
   "taskAttributionDismiss": "Dismiss",
   "taskAttributionDismissed": "Suggestion dismissed",
