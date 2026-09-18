@@ -2,7 +2,8 @@
 
 日期：2026-09-18
 
-状态：设计评审稿；本次仅产出文档，未实施策略、数据迁移或运行行为变更。
+状态：P0–P2 已实施并合入 main；P3（独立继续）后端与入口已实施；P4 已实施
+批量区间、显式关联与来源边，全身份合并仍按第 6 节留作独立后续。实施状态见文末。
 
 依据：上一版「三层身份 + 双档拆分 + 图谱折叠」、本任务完整历史、当前分支源码。历史统计来自同日诊断快照，本轮未重跑生产数据统计。
 
@@ -322,3 +323,17 @@ P1 上线后已能整理对话并看到多个码；P2 实现“尽量把不同�
 本轮不声称：生产样本数量仍等于旧报告；所有候选永远不可用；所有源码风险已在浏览器复现；旧合并接口从未成功使用；轻量划分能够隔离已经进入原生模型的上下文。
 
 设计建议：以 P0 + P1 为第一实施批次，P2 的自动模式在读写一致性与手动修正完整之后启用。原用户的三个目标仍作为整体交付目标保留，独立执行的持久挂起明确纳入 P3，不以改一个弹窗替代。
+
+## 13. 实施状态（2026-09-18）
+
+| 阶段 | 已实施 | 说明 |
+| --- | --- | --- |
+| P0 | 读契约、全历史索引、非阻断挂起 | `GET /api/task-shells/:shellId/task-index` 只返回元数据（scopeRevision、分段锚点、capabilities，缺省 fail-closed）；分离建议有持久 defer。 |
+| P1 | 手动整轮划分、归回/撤销、事务日志 | `src/task-shell/task-operations.js`：preview/apply/get/undo/list，`turn-attr` 覆盖层 + `task-op` 事务日志，previewToken/expectedRevision/turn_busy 守卫；前端 `chat-task-attribution` 勾选整轮并归回。 |
+| P2 | 档位阶梯 + 决策日志 | `MULTICC_TASK_ATTRIBUTION_MODE` = off / shadow / suggest / auto（默认 suggest），`attr-decision` 日志对四档写出同一行；shadow/suggest 不改身份，auto 只在目标已知时动手，撤销走 `restoreSettledCursor`。 |
+| P3 | 独立继续（持久挂起队列） | `src/task-shell/independent-continue.js`：requested → waiting → preparing → ready → applied（+ needs_attention / failed / cancelled），manifest 冻结 commit 与授权消息，apply 只在边界处切换执行绑定，cancel 只回收本次创建且无人使用的资源，重启按实物恢复。 |
+| P4 | 批量区间、关联编辑、来源边 | 整段区间在服务端展开；`relations` 存 related/group 边（不改归属、不授予上下文权）；图谱画出 split_from / fork_from / related，与 parent 边区分。 |
+
+尚未实施（有意留后）：全身份合并的 refs/分组/标题恢复（第 6 节）、P2 的分目录灰度
+指标面板、P3 独立环境准备完成后的「打开独立任务」入口之外的高级编排、Flutter 端
+对应界面。
