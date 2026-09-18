@@ -118,6 +118,19 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     }, 'formal history missing');
     assert.equal(detail.task.parentTaskId, null);
     assert.equal(detail.task.baseline, null, 'planned task does not preallocate a baseline');
+    // Full-history task index: metadata only, conversation order, anchored
+    // segments, and a revision that both clients can compare before writing.
+    const taskIndex = await api(`/api/task-shells/${sb.id}/task-index`);
+    assert.equal(taskIndex.version, 1);
+    assert.equal(taskIndex.shellId, sb.id);
+    assert.match(taskIndex.scopeRevision, /^[0-9a-f]{8,}$/);
+    assert.deepEqual(taskIndex.tasks.map(task => task.taskId), [first.taskId, second.taskId]);
+    assert.equal(taskIndex.tasks[0].segments[0].firstMessageRef.sourceSessionId, first.sessionId);
+    assert.ok(taskIndex.tasks[1].segments[0].firstMessageRef.sourceMessageId);
+    assert.equal(typeof taskIndex.tasks[0].capabilities.canDetach, 'boolean');
+    assert.equal(JSON.stringify(taskIndex).includes('HOLD_ORIGINAL'), false, 'index must not leak message bodies');
+    const reopened = await api(`/api/task-shells/${sb.id}/task-index`);
+    assert.equal(reopened.scopeRevision, taskIndex.scopeRevision);
     // Fork at a message in the middle, through the same API used by chat.html.
     // The copied task annotations must not be adopted as the fork's identity.
     const rawHistory = (await api(`/api/sessions/${second.sessionId}/history?limit=100`)).messages;

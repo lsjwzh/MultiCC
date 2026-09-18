@@ -18,6 +18,7 @@ class FakeNode {
   scrollIntoView() { this.scrolls += 1; }
   querySelectorAll(selector) {
     if (selector === '.msg[data-task-short-code]') return this.children.filter(node => node.className === 'msg' && node.dataset.taskShortCode);
+    if (selector === '.msg[data-msg-id]') return this.children.filter(node => node.dataset?.msgId);
     return [];
   }
 }
@@ -55,4 +56,50 @@ test('toggle preference is persisted and detach action is omitted when no task i
   f.messages.children.push(message); controller.refresh();
   assert.equal(f.doc.body.children[1].hidden, false);
   assert.equal(f.doc.body.children[1].children[0].children.length, 1);
+});
+
+test('server index drives the rail in conversation order and jumps to an unloaded turn', async () => {
+  const f = fixture(), navigated = [];
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    navigate: ref => navigated.push(ref),
+    loadIndex: async () => ({ scopeRevision: 'r1', tasks: [
+      { taskId: 'tsk_b', shortCode: 'B002', title: 'Beta', segments: [{ firstMessageRef: { id: 's1:m9' } }], capabilities: {} },
+      { taskId: 'tsk_a', shortCode: 'A001', title: 'Alpha', segments: [{ firstMessageRef: { id: 's1:m1' } }], capabilities: {} },
+    ] }) });
+  assert.equal(f.doc.body.children[0].hidden, true);
+  await controller.reload();
+  const toggle = f.doc.body.children[0], rail = f.doc.body.children[1];
+  assert.equal(toggle.hidden, false);
+  toggle.onclick();
+  assert.equal(rail.hidden, false);
+  // Appearance order, not alphabetical: the list must match scrolling.
+  assert.deepEqual(rail.children.map(row => row.children[0].textContent), ['B002', 'A001']);
+  rail.children[0].children[0].onclick();
+  assert.deepEqual(navigated, [{ id: 's1:m9' }]);
+  const anchor = new FakeNode('article'); anchor.className = 'msg'; anchor.dataset = { msgId: 's1:m9' };
+  f.messages.children.push(anchor);
+  controller.markLocated('s1:m9');
+  assert.equal(anchor.scrolls, 1);
+  assert.ok(anchor.classList.contains('task-index-target'));
+  controller.dispose();
+});
+
+test('a multi-segment task exposes per-segment jumps and read-only entries hide detach', () => {
+  const f = fixture(), navigated = [], detached = [];
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    onDetach: entry => detached.push(entry), navigate: ref => navigated.push(ref),
+    loadIndex: async () => ({ tasks: [
+      { taskId: 'tsk_a', shortCode: 'A001', title: 'Alpha', capabilities: { canDetach: true }, segments: [
+        { firstMessageRef: { id: 's1:m1' } }, { firstMessageRef: { id: 's1:m7' } }] },
+      { taskId: 'tsk_c', shortCode: 'C003', title: 'Gamma', capabilities: { canDetach: false }, segments: [
+        { firstMessageRef: { id: 's1:m3' } }, { firstMessageRef: { id: 's1:m5' } }] },
+    ] }) });
+  return controller.reload().then(() => {
+    const rail = f.doc.body.children[1];
+    assert.equal(rail.children[0].children.length, 3); // code + segment strip + detach
+    assert.equal(rail.children[1].children.length, 2); // code + strip, no detach
+    rail.children[0].children[1].children[1].onclick({ stopPropagation() {} });
+    assert.deepEqual(navigated, [{ id: 's1:m7' }]);
+    controller.dispose();
+  });
 });

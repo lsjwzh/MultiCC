@@ -7,6 +7,11 @@
     return typeof value === 'string' ? value : value == null ? '' : String(value);
   }
 
+  function codeOf(value) {
+    const code = text(value).trim().toUpperCase();
+    return CODE_RE.test(code) ? code : '';
+  }
+
   function createController(options = {}) {
     const doc = options.document || root.document;
     const messages = options.messagesEl;
@@ -15,10 +20,16 @@
     const translate = typeof options.translate === 'function'
       ? options.translate : key => key === 'taskIndexToggle' ? '任务索引' : key;
     const detach = typeof options.onDetach === 'function' ? options.onDetach : null;
+    const loadIndex = typeof options.loadIndex === 'function' ? options.loadIndex : null;
+    const navigate = typeof options.navigate === 'function' ? options.navigate : null;
     let open = false;
     try { open = storage?.getItem('multicc:task-index-open') === '1'; } catch (_) {}
     let highlighted = null;
     let timer = null;
+    let index = null;
+    let loading = null;
+    let pendingRef = null;
+    let signature = '';
 
     const toggle = doc.createElement('button');
     toggle.type = 'button';
@@ -42,33 +53,77 @@
       highlighted = null;
     }
 
-    function entries() {
+    function nodeFor(messageId) {
+      if (!messageId) return null;
+      const found = messages.querySelectorAll?.('.msg[data-msg-id]') || [];
+      for (const node of found) if (node?.dataset?.msgId === messageId) return node;
+      return null;
+    }
+
+    function domEntries() {
       const found = new Map();
       for (const node of messages.querySelectorAll('.msg[data-task-short-code]')) {
-        const code = text(node.dataset.taskShortCode).trim().toUpperCase();
-        if (!CODE_RE.test(code) || found.has(code)) continue;
-        found.set(code, {
-          code,
-          node,
-          taskId: text(node.dataset.taskId).trim(),
-          title: text(node.dataset.taskName).trim(),
-        });
+        const code = codeOf(node.dataset?.taskShortCode);
+        if (!code || found.has(code)) continue;
+        found.set(code, { code, node, taskId: text(node.dataset?.taskId).trim(),
+          title: text(node.dataset?.taskName).trim(), segments: [], capabilities: {} });
       }
       return [...found.values()].sort((a, b) => a.code.localeCompare(b.code));
     }
 
-    function focus(entry) {
-      if (!entry?.node) return;
+    // Server entries keep the conversation order (first appearance) so the list
+    // matches scrolling; the DOM fallback keeps its historical code order.
+    function serverEntries() {
+      const tasks = Array.isArray(index?.tasks) ? index.tasks : [];
+      return tasks
+        .filter(task => task && (codeOf(task.shortCode) || task.taskId))
+        .map(task => ({
+          code: codeOf(task.shortCode) || text(task.taskId).slice(-4).toUpperCase(),
+          taskId: text(task.taskId).trim(),
+          title: text(task.title).trim(),
+          segments: Array.isArray(task.segments) ? task.segments : [],
+          capabilities: task.capabilities && typeof task.capabilities === 'object' ? task.capabilities : {},
+          stale: task.stale === true,
+          node: null,
+        }));
+    }
+
+    function entries() {
+      return index && Array.isArray(index.tasks) ? serverEntries() : domEntries();
+    }
+
+    function refId(ref) {
+      return text(ref?.id || ref?.sourceMessageId || '').trim();
+    }
+
+    function activate(node) {
+      if (!node) return false;
       clearHighlight();
-      highlighted = entry.node;
+      highlighted = node;
       highlighted.classList.add('task-index-target');
       highlighted.scrollIntoView?.({ block: 'center', inline: 'nearest', behavior: 'smooth' });
       timer = setTimeout(clearHighlight, 3200);
       if (timer && typeof timer.unref === 'function') timer.unref();
+      return true;
+    }
+
+    function locate(entry, segment) {
+      const ref = segment?.firstMessageRef || entry?.segments?.[0]?.firstMessageRef || null;
+      const direct = entry?.node || nodeFor(refId(ref));
+      if (direct) { pendingRef = null; return activate(direct); }
+      if (!ref || !navigate) return false;
+      pendingRef = ref;
+      try { navigate(ref); } catch (_) { pendingRef = null; return false; }
+      return true;
     }
 
     function render() {
       const list = entries();
+      const next = JSON.stringify(list.map(entry => [entry.code, entry.taskId, entry.title,
+        entry.stale === true, entry.capabilities?.canDetach === true, entry.segments.length]));
+      if (next === signature) { toggle.hidden = list.length === 0; rail.hidden = !open || list.length === 0;
+        toggle.setAttribute('aria-expanded', String(!rail.hidden)); return; }
+      signature = next;
       toggle.hidden = list.length === 0;
       rail.hidden = !open || list.length === 0;
       toggle.setAttribute('aria-expanded', String(!rail.hidden));
@@ -80,9 +135,23 @@
         button.textContent = entry.code;
         button.title = entry.title ? `${entry.code} · ${entry.title}` : entry.code;
         button.setAttribute('aria-label', button.title);
-        button.onclick = () => focus(entry);
+        button.onclick = () => locate(entry, null);
         row.append(button);
-        if (entry.taskId && detach) {
+        if (entry.segments.length > 1) {
+          const strip = doc.createElement('span');
+          strip.className = 'task-index-segments';
+          entry.segments.forEach((segment, position) => {
+            const dot = doc.createElement('button');
+            dot.type = 'button'; dot.className = 'task-index-segment';
+            dot.textContent = '·';
+            dot.title = translate('taskIndexSegmentLabel').replace('{n}', String(position + 1));
+            dot.setAttribute('aria-label', `${entry.code} ${dot.title}`);
+            dot.onclick = event => { event.stopPropagation?.(); locate(entry, segment); };
+            strip.append(dot);
+          });
+          row.append(strip);
+        }
+        if (entry.taskId && detach && entry.capabilities?.canDetach !== false) {
           const action = doc.createElement('button');
           action.type = 'button'; action.className = 'task-index-detach';
           action.textContent = '⤴';
@@ -95,29 +164,94 @@
       }));
     }
 
+    function reload() {
+      if (!loadIndex) return null;
+      if (loading) return loading;
+      loading = Promise.resolve().then(loadIndex).then(value => {
+        if (value && Array.isArray(value.tasks)) { index = value; render(); }
+        return value;
+      }).catch(() => null).finally(() => { loading = null; });
+      return loading;
+    }
+
     toggle.onclick = () => {
       open = !open;
       try { storage?.setItem('multicc:task-index-open', open ? '1' : '0'); } catch (_) {}
+      if (open) void reload();
       render();
     };
     doc.body.append(toggle, rail);
     const Observer = root.MutationObserver;
-    const observer = typeof Observer === 'function'
-      ? new Observer(() => render()) : null;
+    const observer = typeof Observer === 'function' ? new Observer(() => {
+      if (pendingRef) {
+        const node = nodeFor(refId(pendingRef));
+        if (node) { pendingRef = null; activate(node); }
+      }
+      render();
+    }) : null;
     observer?.observe(messages, { childList: true, subtree: true, attributes: true,
-      attributeFilter: ['data-task-short-code', 'data-task-id', 'data-task-name'] });
+      attributeFilter: ['data-task-short-code', 'data-task-id', 'data-task-name', 'data-msg-id'] });
     render();
+    if (open) void reload();
 
     return Object.freeze({
       refresh: render,
+      reload,
       dispose() { observer?.disconnect(); clearHighlight(); toggle.remove(); rail.remove(); },
       toggle() { toggle.click(); },
-      focusCode(code) { const value = entries().find(entry => entry.code === text(code).toUpperCase()); focus(value); },
+      focusCode(code) {
+        const value = entries().find(entry => entry.code === codeOf(code));
+        return locate(value, null);
+      },
+      // Called by the host once an anchor fetched through history pagination is
+      // in the DOM, so a jump to an unloaded turn still lands and highlights.
+      markLocated(messageId) {
+        const node = nodeFor(messageId);
+        if (!node) return false;
+        pendingRef = null;
+        return activate(node);
+      },
       isOpen: () => open,
+      index: () => index,
     });
   }
 
-  const api = { createController };
+  // Fork action for one index entry. The operation id is minted once per
+  // attempt and reused on retry, so a lost response cannot create a duplicate
+  // copy; the server dedupes on the same clientMsgId.
+  function createDetachAction({ request, openUrl, confirm, alert, translate = key => key }) {
+    const attempts = new Map();
+    return async function detach(entry) {
+      const taskId = text(entry?.taskId).trim();
+      if (!taskId) return false;
+      const code = codeOf(entry?.code) || taskId.slice(-4).toUpperCase();
+      if (typeof confirm === 'function'
+        && !(await confirm(translate('taskIndexDetachConfirm').replace('{code}', code), { okText: translate('taskIndexDetach') }))) return false;
+      let clientMsgId = attempts.get(taskId);
+      if (!clientMsgId) {
+        clientMsgId = `index-${taskId}-${Date.now().toString(36)}`;
+        attempts.set(taskId, clientMsgId);
+      }
+      try {
+        const result = await request(`/api/task-shell-tasks/${encodeURIComponent(taskId)}/fork`, { clientMsgId });
+        attempts.delete(taskId);
+        const url = text(result?.url) || (result?.taskId ? `/air?task=${encodeURIComponent(result.taskId)}` : '');
+        if (url) {
+          if (typeof openUrl !== 'function' || !openUrl(url)) {
+            alert?.(translate('taskIndexDetachOpen').replace('{url}', url));
+          }
+        }
+        return true;
+      } catch (error) {
+        // The attempt id is intentionally kept for retry, so a response lost in
+        // transit resolves to the same server-side operation instead of a copy.
+        alert?.(translate('taskIndexDetachFailed').replace('{error}', text(error?.message || error)));
+        return false;
+      }
+    };
+  }
+
+  const api = { createController, createDetachAction };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.MultiCCTaskIndex = api;
 })(typeof window !== 'undefined' ? window : globalThis);
