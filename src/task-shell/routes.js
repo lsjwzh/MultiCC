@@ -15,7 +15,7 @@ function pageTaskHistory(rawMessages, options = {}) {
     ...(options.around ? { found: true, hasNewer: end < messages.length } : {}) };
 }
 
-function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry, taskIndex }) {
+function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry, taskIndex, taskOperations }) {
   const route = handler => async (req, res) => {
     try {
       const runtime = getRuntime();
@@ -60,7 +60,21 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
     before: req.query.before, around: req.query.around, limit: req.query.limit,
     includeHidden: req.query.historyScope === 'archive',
   })));
-  if (taskIndex) app.get('/api/task-shells/:shellId/task-index', route((_runtime, req) => taskIndex(req.params.shellId)));
+  if (taskIndex) app.get('/api/task-shells/:shellId/task-index', route((_runtime, req) =>
+    taskIndex(req.params.shellId, { includeEmpty: req.query?.includeEmpty === '1' })));
+  if (taskOperations) {
+    app.get('/api/task-shells/:shellId/task-operations', route((_runtime, req) => ({
+      ok: true, operations: taskOperations().list(req.params.shellId) })));
+    app.post('/api/task-shells/:shellId/task-operations/preview', route((runtime, req) => taskOperations().preview({
+      scope: runtime.chatScope(req.params.shellId), turns: req.body?.turns, target: req.body?.target })));
+    app.post('/api/task-shells/:shellId/task-operations', route((runtime, req) => taskOperations().apply({
+      scope: runtime.chatScope(req.params.shellId), clientMsgId: req.body?.clientMsgId,
+      previewToken: req.body?.previewToken, expectedRevision: req.body?.expectedRevision,
+      turns: req.body?.turns, target: req.body?.target })));
+    app.get('/api/task-operations/:operationId', route((_runtime, req) => taskOperations().get(req.params.operationId)));
+    app.post('/api/task-operations/:operationId/undo', route((_runtime, req) => taskOperations().undo({
+      operationId: req.params.operationId, clientMsgId: req.body?.clientMsgId })));
+  }
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
   app.post('/api/task-shells/:shellId/links', route((runtime, req) => runtime.link(req.params.shellId, req.body?.taskId)));
   app.post('/api/task-shells/:shellId/tasks/resolve', route((runtime, req) => runtime.resolveTask(req.params.shellId, {

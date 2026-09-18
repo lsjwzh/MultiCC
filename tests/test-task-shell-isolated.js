@@ -131,6 +131,41 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     assert.equal(JSON.stringify(taskIndex).includes('HOLD_ORIGINAL'), false, 'index must not leak message bodies');
     const reopened = await api(`/api/task-shells/${sb.id}/task-index`);
     assert.equal(reopened.scopeRevision, taskIndex.scopeRevision);
+    // Manual whole-turn re-attribution (P1): the overlay moves a turn without
+    // touching the transcript, is idempotent, and can be reverted.
+    const originalTurn = taskIndex.tasks[1].segments[0].firstMessageRef;
+    const turnId = (await api(`/api/task-shells/${sb.id}/history?historyScope=archive&limit=100`)).messages
+      .find(m => m.sourceSessionId === originalTurn.sourceSessionId && m.turnId)?.turnId;
+    assert.ok(turnId, 'the second task must expose a turn id');
+    const change = { turns: [{ sessionId: originalTurn.sourceSessionId, turnId }], target: { taskId: first.taskId } };
+    const changePreview = await api(`/api/task-shells/${sb.id}/task-operations/preview`, change);
+    assert.equal(changePreview.changed, 1);
+    assert.equal(changePreview.scopeRevision, taskIndex.scopeRevision);
+    const applyInput = { ...change, clientMsgId: 'reattribute-1', previewToken: changePreview.previewToken,
+      expectedRevision: changePreview.scopeRevision };
+    const appliedChange = await api(`/api/task-shells/${sb.id}/task-operations`, applyInput);
+    assert.equal(appliedChange.status, 'applied');
+    assert.deepEqual(await api(`/api/task-shells/${sb.id}/task-operations`, applyInput), appliedChange, 'replay must be idempotent');
+    const moved = await api(`/api/task-shells/${sb.id}/task-index`);
+    assert.notEqual(moved.scopeRevision, taskIndex.scopeRevision);
+    assert.equal(moved.tasks.find(task => task.taskId === first.taskId).turnCount, 2);
+    assert.equal(moved.tasks.find(task => task.taskId === second.taskId)?.turnCount || 0, 0);
+    const movedHistory = await api(`/api/task-shells/${sb.id}/history?historyScope=archive&limit=100`);
+    const movedMessage = movedHistory.messages.find(message => message.sourceSessionId === originalTurn.sourceSessionId
+      && message.turnId === turnId);
+    assert.equal(movedMessage.taskId, first.taskId, 'the turn must answer to its new task');
+    const withEmpty = await api(`/api/task-shells/${sb.id}/task-index?includeEmpty=1`);
+    assert.equal(withEmpty.tasks.find(task => task.taskId === second.taskId).empty, true);
+    await assert.rejects(async () => api(`/api/task-shells/${sb.id}/task-operations`,
+      { ...change, clientMsgId: 'reattribute-stale', expectedRevision: taskIndex.scopeRevision }),
+    /revision|changed/i);
+    const undone = await api(`/api/task-operations/${appliedChange.id}/undo`, { clientMsgId: 'undo-1' });
+    assert.equal(undone.status, 'reverted');
+    const restored = await api(`/api/task-shells/${sb.id}/task-index`);
+    assert.equal(restored.scopeRevision, taskIndex.scopeRevision);
+    const restoredHistory = await api(`/api/task-shells/${sb.id}/history?historyScope=archive&limit=100`);
+    assert.equal(restoredHistory.messages.find(message => message.sourceSessionId === originalTurn.sourceSessionId
+      && message.turnId === turnId).taskId, second.taskId);
     // Fork at a message in the middle, through the same API used by chat.html.
     // The copied task annotations must not be adopted as the fork's identity.
     const rawHistory = (await api(`/api/sessions/${second.sessionId}/history?limit=100`)).messages;
