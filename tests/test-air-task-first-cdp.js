@@ -149,13 +149,15 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.navigate('/task-entry.html?session=old-role');
     assert.ok(await page.waitFor(`location.pathname==='/air' && document.getElementById('task-title')?.textContent==='完善任务协作体验'`));
     assert.equal(await page.evaluate(`document.getElementById('sidebar').contains(document.getElementById('task-sidebar'))`), true);
-    // ── Pin：页头最上面那条「收藏栏」 ───────────────────────────────────
-    // 一排居中的快捷标签横在页头最上面（像浏览器的收藏栏），标题和工具那一行排在
-    // 它下面。内容跟侧栏任务卡一样（状态、标题、目录、阶段），默认缩略、鼠标停上去
-    // 才展开成完整的一张。两件事必须一直成立：它是「横」的一行 —— 全局那条
+    // ── Pin：页头最顶上浮着的那条「收藏栏」 ─────────────────────────────
+    // 一排居中的快捷标签浮在页头最顶上（像浏览器的收藏快捷链接），每一颗都是
+    // 「状态 + 标题 + 目录 + 阶段」，默认缩略、鼠标停上去才展开成完整的一条。
+    // 三件事必须一直成立：① 它是「横」的一行 —— 全局那条
     // `nav { flex-direction: column }` 漏进来过一次，几个 pin 被竖着摞成一列；
-    // 它是「居中」的 —— 挂在标题和工具中间那块空档时，pin 一多先被压掉的是标题自己。
+    // ② 它是「居中」的；③ 它「不占行」—— 浮着，页头高度跟没有 pin 时一模一样
+    // （自己占一行要多 38px，用户不要）。
     assert.equal(await page.evaluate(`document.getElementById('task-pins').hidden`), true, '还没 pin 的时候这一排不占位');
+    const headerHeightWithoutPins = await page.evaluate(`Math.round(document.getElementById('task-header').getBoundingClientRect().height)`);
     assert.equal(await page.evaluate(`document.getElementById('pin-task').hidden`), false, '打开着任务时才给这颗 📌');
     const settlePins = async name => {
       await page.screenshot(name);
@@ -167,27 +169,28 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.deepEqual(pinPosts, ['tsk_a'], '单点 toggle 打的是服务端那条路由');
     assert.equal(await page.evaluate(`document.getElementById('pin-task').getAttribute('aria-pressed')`), 'true');
     // 再 pin 一条别的目录里的任务：两个 pin 必须并排在同一行（这一条就是竖排那个
-    // bug 的守卫），整排仍然居中，而且整排都在标题那一行上面。
+    // bug 的守卫），整排仍然居中，整排浮在页头最上面，而且不占行。
     taskPins = ['tsk_a', 'tsk_far'];
     await page.evaluate(`document.getElementById('refresh').click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#task-pins .pin-tab').length===2`));
     const pinPair = await page.evaluate(`(()=>{
       const tabs=[...document.querySelectorAll('#task-pins .pin-tab')].map(tab=>tab.getBoundingClientRect());
       const header=document.getElementById('task-header').getBoundingClientRect();
-      const crumb=document.querySelector('#task-header .breadcrumb').getBoundingClientRect();
+      const title=document.getElementById('task-title').getBoundingClientRect();
       const pins=document.getElementById('task-pins');
       return { dir:getComputedStyle(pins).flexDirection, justify:getComputedStyle(pins).justifyContent,
         tops:tabs.map(r=>Math.round(r.top)), rowCenter:Math.round((tabs[0].left+tabs[1].right)/2),
         headerCenter:Math.round(header.left+header.width/2), headerTop:Math.round(header.top),
-        pinBottom:Math.round(tabs[0].bottom), crumbTop:Math.round(crumb.top) };})()`);
+        headerHeight:Math.round(header.height), pinBottom:Math.round(tabs[0].bottom), titleTop:Math.round(title.top) };})()`);
     assert.equal(pinPair.dir, 'row', '这一排是横排的（nav 的 flex-direction:column 不许漏进来）');
     assert.equal(pinPair.justify, 'center', '整排居中');
     assert.equal(pinPair.tops[0], pinPair.tops[1], '两个 pin 并排在同一行：' + JSON.stringify(pinPair.tops));
     assert.ok(Math.abs(pinPair.rowCenter - pinPair.headerCenter) <= 1,
       `这排的中心就是页头的中心（${pinPair.rowCenter} vs ${pinPair.headerCenter}）`);
-    assert.ok(pinPair.tops[0] >= pinPair.headerTop, '不越出页头顶边');
-    assert.ok(pinPair.pinBottom <= pinPair.crumbTop,
-      `它自己占页头第一行，标题在下面（${pinPair.pinBottom} ≤ ${pinPair.crumbTop}）`);
+    assert.equal(pinPair.tops[0], pinPair.headerTop, '浮在页头最顶上');
+    assert.equal(pinPair.headerHeight, headerHeightWithoutPins, 'pin 不占行：页头高度跟没有 pin 时一样');
+    assert.ok(pinPair.pinBottom <= pinPair.titleTop,
+      `浮着的那条不盖住标题（${pinPair.pinBottom} ≤ ${pinPair.titleTop}）`);
     await settlePins('task-pins-row');
     // 回到「只 pin 一条」，接着量缩略态和 hover。
     taskPins = ['tsk_a'];
@@ -205,8 +208,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(pinCollapsed.meta, 'none', '缩略态只有状态和标题，没有目录/阶段那一行');
     assert.equal(pinCollapsed.label, 'none', '缩略态的状态只留图标');
     assert.ok(pinCollapsed.width < 140 && pinCollapsed.width >= 46, '缩略态是一条窄标签：' + pinCollapsed.width);
-    assert.ok(pinCollapsed.top > pinCollapsed.headerTop && pinCollapsed.bottom < pinCollapsed.headerTop + 88,
-      '它落在页头第一行里（内边距之下、页头之内）');
+    assert.equal(pinCollapsed.top, pinCollapsed.headerTop, '浮在页头最顶上（不占行，所以贴着顶边）');
+    assert.equal(pinCollapsed.headerHeight, headerHeightWithoutPins, 'pin 不占行：页头高度跟没有 pin 时一样');
     assert.ok(pinCollapsed.width < pinCollapsed.pinLeft, '它排在工具条左边那一整条线上');
     // 先留一张缩略态的图（默认长这样），再进 hover 展开。
     await settlePins('task-pins-collapsed');
