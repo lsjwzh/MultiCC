@@ -123,6 +123,22 @@ function createTaskShellHost(deps) {
       isDeletedTask: id => deps.getTaskBoard?.()?.getBoard?.().deletedTaskIds?.includes(id),
       isTaskLifecycleBusy: id => deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(id),
       prepareExecution: workspace.prepareExecution, captureForkBaseline: workspace.captureForkBaseline,
+      captureIndependentBaseline: workspace.captureIndependentBaseline,
+      // Cancelling a prepared-but-unused execution reclaims only what this
+      // request created: a planned record with no history and no live work.
+      // Anything else is left to the user and reported as kept.
+      discardExecution: async (sessionId, { taskId } = {}) => {
+        const record = deps.records.get(sessionId);
+        if (!record || record.taskBoundTaskId !== taskId) return { ok: false, code: 'not_created_here' };
+        if ((deps.loadHistory?.(sessionId) || []).length) return { ok: false, code: 'has_history' };
+        const dir = deps.directories.get(record.dirId);
+        if (record.worktreePath && record.branch && dir) {
+          await require('../git/service').gitWorktreeRollbackCreate(dir.path, record.worktreePath, record.branch, { sessionId });
+        }
+        deps.persistRecords('task-shell.independent-cancel', map => map.delete(sessionId));
+        deps.resetChatState?.(sessionId);
+        return { ok: true };
+      },
       deliveryEvidence: (id, turnId) => deps.getWorkspaceAdmission?.()?.deliveryEvidence(id, turnId),
       verifyDeliveryBaseline: (integration, id) => {
         const record = deps.records.get(id), cwd = record && deps.directories.get(record.dirId)?.path;
@@ -330,6 +346,7 @@ function createTaskShellHost(deps) {
         taskIndex: (id, options) => taskIndex(id, options),
         taskOperations: () => taskOperations(),
         attributionDecisions: () => attributionDecisions(),
+        independent: () => getRuntime().independent,
         artifacts: async id => {
           const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
           return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
@@ -337,6 +354,8 @@ function createTaskShellHost(deps) {
         history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
           deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) });
       attributionSettings.mount(app);
+      // 独立继续的等待队列由服务端推进：重启后恢复，不依赖页面开着。
+      getRuntime().independent.start();
     },
     taskIndex,
     taskOperations,
@@ -403,7 +422,7 @@ function createTaskShellHost(deps) {
     prepareContext: (id, options) => owns(id) ? getRuntime().prepareContext(id, options) : null,
     contextSent: (...args) => getRuntime().contextSent(...args),
     contextComplete: (...args) => getRuntime().contextComplete(...args),
-    close: () => store?.close(),
+    close: () => { try { runtime?.independent?.stop(); } catch (_) {} store?.close(); },
   };
 }
 
