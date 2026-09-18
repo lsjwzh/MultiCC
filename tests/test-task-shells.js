@@ -381,6 +381,18 @@ test('missing or zero legacy switch cannot disable the host', t => {
   }
 });
 
+test('the classifier journal is reachable before any shell resolves and fails safe', async t => {
+  const f = fixture(t);
+  const host = createTaskShellHost({ file: f.file, records: f.records,
+    loadHistory: id => f.histories.get(id) || [], getChatState: () => null });
+  t.after(() => host.close());
+  // A verdict about a receipt this host cannot see is not a verdict. It must
+  // come back as "nothing happened" rather than throwing inside the classifier.
+  assert.deepEqual(await host.recordAttributionDecision('unknown', null, { relation: 'new', taskId: 'tsk_x' }),
+    { action: 'none', decision: null });
+  assert.deepEqual(host.attributionDecisions().list('missing'), []);
+});
+
 test('goal limits survive normalized receipt retry without changing the message key', async t => {
   let fail = true;
   const seen = [];

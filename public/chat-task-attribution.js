@@ -33,6 +33,7 @@
     const request = typeof options.request === 'function' ? options.request : null;
     const scope = typeof options.scope === 'function' ? options.scope : null;
     const loadIndex = typeof options.loadIndex === 'function' ? options.loadIndex : null;
+    const loadSuggestions = typeof options.loadSuggestions === 'function' ? options.loadSuggestions : null;
     const onApplied = typeof options.onApplied === 'function' ? options.onApplied : null;
     const report = typeof options.report === 'function' ? options.report : () => {};
     const makeId = typeof options.makeId === 'function' ? options.makeId
@@ -45,6 +46,7 @@
     let preview = null;
     let targetId = '';
     let tasks = [];
+    let suggestions = [];
     let toast = null;
     let toastTimer = null;
 
@@ -83,7 +85,13 @@
     cancel.type = 'button';
     cancel.className = 'task-attribution-cancel';
     cancel.textContent = t('taskAttributionCancel');
-    bar.append(hint, count, select, summary, apply, cancel);
+    // Automatic suggestions (P2 `suggest` tier) live above the picker: they are
+    // the same verdict the picker would produce by hand, already recorded and
+    // waiting for a yes or no.
+    const proposals = doc.createElement('div');
+    proposals.className = 'task-attribution-suggestions';
+    proposals.hidden = true;
+    bar.append(proposals, hint, count, select, summary, apply, cancel);
 
     function labelOf(task) {
       const code = text(task?.shortCode).trim().toUpperCase();
@@ -105,12 +113,84 @@
       bar.hidden = !enabled;
       toggle.setAttribute('aria-expanded', String(enabled));
       toggle.classList.toggle('active', enabled);
+      // The toggle carries the count so a suggestion is visible without
+      // entering the mode at all.
+      toggle.dataset.suggestions = String(suggestions.length);
+      toggle.title = suggestions.length
+        ? `${t('taskAttributionToggle')} · ${t('taskAttributionSuggestions').replace('{n}', String(suggestions.length))}`
+        : t('taskAttributionToggle');
       count.textContent = t('taskAttributionSelected').replace('{n}', String(selected.size));
       hint.textContent = t('taskAttributionHint');
       select.hidden = tasks.length === 0;
       apply.disabled = busy || !preview || preview.changed === 0 || (preview.blocked || []).length > 0
         || selected.size === 0 || !targetId;
       cancel.disabled = busy;
+    }
+
+    function taskLabel(taskId) {
+      const task = tasks.find(entry => text(entry.taskId) === text(taskId));
+      return task ? labelOf(task) : text(taskId).slice(-4).toUpperCase();
+    }
+
+    function renderSuggestions() {
+      const pending = suggestions.filter(item => item?.state === 'pending');
+      proposals.hidden = pending.length === 0;
+      proposals.replaceChildren(...pending.map(item => {
+        const row = doc.createElement('div');
+        row.className = 'task-attribution-suggestion';
+        const label = doc.createElement('span');
+        label.className = 'task-attribution-suggestion-label';
+        label.textContent = t('taskAttributionSuggestion')
+          .replace('{from}', taskLabel(item.fromTaskId)).replace('{to}', taskLabel(item.toTaskId));
+        row.append(label);
+        for (const [key, action] of [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss']]) {
+          const button = doc.createElement('button');
+          button.type = 'button';
+          button.className = `task-attribution-suggestion-${action}`;
+          button.textContent = t(key);
+          button.onclick = () => { void decideSuggestion(item, action, button); };
+          row.append(button);
+        }
+        return row;
+      }));
+      renderBar();
+    }
+
+    async function decideSuggestion(item, action, button) {
+      if (busy || !scope || !request) return;
+      busy = true;
+      if (button) button.disabled = true;
+      renderBar();
+      try {
+        const { shellId } = await scope();
+        const path = `/api/task-shells/${encodeURIComponent(shellId)}/attribution-decisions/${encodeURIComponent(item.id)}/${action}`;
+        const result = await request('POST', path, action === 'accept' ? { clientMsgId: makeId() } : {});
+        closeToast();
+        showToast(action === 'accept'
+          ? t('taskAttributionApplied').replace('{n}', '1').replace('{task}', taskLabel(result?.toTaskId || item.toTaskId))
+          : t('taskAttributionDismissed'));
+        suggestions = suggestions.filter(entry => entry.id !== item.id);
+        onApplied?.(result, { undone: false });
+      } catch (error) {
+        setSummary(t('taskAttributionFailed').replace('{error}', text(error?.message || error)), 'error');
+        report(error);
+      } finally {
+        busy = false;
+        await refreshSuggestions();
+      }
+    }
+
+    async function refreshSuggestions() {
+      if (!loadSuggestions || !scope) { suggestions = []; renderSuggestions(); return []; }
+      try {
+        const { shellId } = await scope();
+        const data = await loadSuggestions(shellId);
+        suggestions = (Array.isArray(data?.decisions) ? data.decisions : []).filter(item => item?.state === 'pending');
+      } catch (_) {
+        suggestions = [];
+      }
+      renderSuggestions();
+      return suggestions;
     }
 
     function blockedText(blocked) {
@@ -344,6 +424,7 @@
         picks.clear();
       } else {
         void loadTasks().then(decorate);
+        void refreshSuggestions();
       }
       decorate();
       renderBar();
@@ -356,6 +437,9 @@
     select.onchange = () => { targetId = text(select.value); clearPreview(); renderBar(); void refreshPreview(); };
 
     doc.body.append(toggle, bar);
+    // Suggestions are visible (and counted on the toggle) even while the mode
+    // is off: the whole point of the suggest tier is not needing to look.
+    void refreshSuggestions();
     const Observer = root.MutationObserver;
     const observer = typeof Observer === 'function' ? new Observer(() => decorate()) : null;
     observer?.observe(messages, { childList: true, subtree: true, attributes: true,
@@ -368,6 +452,8 @@
       isEnabled: () => enabled,
       selected: () => [...selected],
       turns: () => picks.size,
+      suggestions: () => [...suggestions],
+      refreshSuggestions,
       applyNow,
       dispose() { closeToast(); observer?.disconnect(); toggle.remove(); bar.remove(); },
     };

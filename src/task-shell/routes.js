@@ -15,7 +15,8 @@ function pageTaskHistory(rawMessages, options = {}) {
     ...(options.around ? { found: true, hasNewer: end < messages.length } : {}) };
 }
 
-function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry, taskIndex, taskOperations }) {
+function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry, taskIndex,
+  taskOperations, attributionDecisions }) {
   const route = handler => async (req, res) => {
     try {
       const runtime = getRuntime();
@@ -74,6 +75,19 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
     app.get('/api/task-operations/:operationId', route((_runtime, req) => taskOperations().get(req.params.operationId)));
     app.post('/api/task-operations/:operationId/undo', route((_runtime, req) => taskOperations().undo({
       operationId: req.params.operationId, clientMsgId: req.body?.clientMsgId })));
+  }
+  if (attributionDecisions) {
+    // `?includeHidden=1` is the shadow-parity view: the rows `suggest` would
+    // show, plus the ones it deliberately does not.
+    app.get('/api/task-shells/:shellId/attribution-decisions', route((_runtime, req) => ({
+      ok: true, decisions: attributionDecisions().list(req.params.shellId,
+        { includeHidden: req.query?.includeHidden === '1' }) })));
+    app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/accept', route((_runtime, req) =>
+      attributionDecisions().accept(req.params.shellId, req.params.decisionId, { clientMsgId: req.body?.clientMsgId })));
+    app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/dismiss', route((_runtime, req) =>
+      attributionDecisions().dismiss(req.params.shellId, req.params.decisionId)));
+    app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/undo', route((_runtime, req) =>
+      attributionDecisions().undo(req.params.shellId, req.params.decisionId)));
   }
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
   app.post('/api/task-shells/:shellId/links', route((runtime, req) => runtime.link(req.params.shellId, req.body?.taskId)));

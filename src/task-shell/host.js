@@ -11,10 +11,20 @@ const {
 } = require('./context');
 const { mountTaskShellRoutes } = require('./routes');
 const { shellHistoryPage, watchShellHistory } = require('./chat-history');
+const { createAttributionSettingsFromEnv } = require('./attribution-settings');
 
 function createTaskShellHost(deps) {
   let runtime, store, candidates;
   const workspace = require('./workspace').createShellWorkspaceHost(deps);
+  // Automatic attribution (P2) is a host policy switch, not a per-call flag:
+  // it lives with the other host settings so a restart can neither widen nor
+  // narrow it by accident. The host owns it because it is the only layer that
+  // may change task identity.
+  const attributionSettings = createAttributionSettingsFromEnv({
+    writeEnv: deps.taskAttribution?.writeEnv,
+    reportFailure: deps.taskAttribution?.reportFailure,
+    isLocalRequest: deps.taskAttribution?.isLocalRequest,
+  });
   const shortText = (value, limit = 500) => {
     if (value == null) return '';
     let text;
@@ -47,9 +57,15 @@ function createTaskShellHost(deps) {
     // must not expose that ended turn as a valid cancel/steer target.
     return live?.isStreaming || live?.claudeProc ? live._activeTurn?.turnId || null : null;
   }
+  // Reading the store must not require the whole runtime: the decision journal
+  // is reachable from the classifier before any shell has been resolved.
+  function ensureStore() {
+    if (!store) store = createTaskShellStore(deps.file);
+    return store;
+  }
   function getRuntime() {
     if (runtime) return runtime;
-    store = createTaskShellStore(deps.file);
+    ensureStore();
     candidates = require('../task-routing/candidates').createCandidateStore(store);
     runtime = createTaskShellRuntime({
       store,
@@ -281,19 +297,50 @@ function createTaskShellHost(deps) {
     return taskOperationsRuntime;
   }
   let taskOperationsRuntime = null;
-  return {
-    mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open,
-      taskEntry: id => getRuntime().bindPlannedTask(id),
-      taskIndex: (id, options) => taskIndex(id, options),
-      taskOperations: () => taskOperations(),
-      artifacts: async id => {
-        const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
-        return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
+  // Automatic attribution (P2): the classifier's verdict is journalled, and the
+  // mode decides whether the host is allowed to act on it. The journal and the
+  // manual overlay share one store and one write path, so "who moved this turn"
+  // is always answerable from the same place.
+  function attributionDecisions() {
+    if (attributionDecisionsRuntime) return attributionDecisionsRuntime;
+    ensureStore();
+    attributionDecisionsRuntime = require('./attribution-decisions').createAttributionDecisions({
+      store,
+      operations: taskOperations(),
+      scopeOf: shellId => getRuntime().chatScope(shellId),
+      settleAttribution: (sessionId, receiptId, attribution) =>
+        getRuntime().settleAttribution(sessionId, receiptId, attribution),
+      restoreSettledCursor: (shellId, options) => getRuntime().restoreSettledCursor(shellId, options),
+      isTurnBusy: (sessionId, turnId) => {
+        const record = deps.records.get(sessionId);
+        const pending = record?.taskState?.pendingUserInput;
+        if (pending && pending.resolved !== true && pending.turnId === turnId) return true;
+        return currentTurn(sessionId) === turnId;
       },
-      history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
-        deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) }),
+      taskTitle: taskId => store.get('task', taskId)?.title || null,
+      onAttributionChanged: id => deps.onAttributionChanged?.(id),
+    });
+    return attributionDecisionsRuntime;
+  }
+  let attributionDecisionsRuntime = null;
+  return {
+    mountRoutes: app => {
+      mountTaskShellRoutes(app, { getRuntime, open,
+        taskEntry: id => getRuntime().bindPlannedTask(id),
+        taskIndex: (id, options) => taskIndex(id, options),
+        taskOperations: () => taskOperations(),
+        attributionDecisions: () => attributionDecisions(),
+        artifacts: async id => {
+          const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
+          return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
+        },
+        history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
+          deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) });
+      attributionSettings.mount(app);
+    },
     taskIndex,
     taskOperations,
+    attributionDecisions,
     chatScope: (id, sessionId) => getRuntime().chatScope(id, sessionId),
     chatHistory: (id, options) => shellHistoryPage(getRuntime().chatScope(id, options.activeSessionId),
       deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }),
@@ -338,6 +385,15 @@ function createTaskShellHost(deps) {
     taskSeparation: id => getRuntime().separation.forTask(id),
     proposeAttribution: (id, receiptId, result) => { getRuntime(); return candidates.propose(id, receiptId, result); },
     attributionCandidate: id => { getRuntime(); return candidates.latest(id); },
+    // The classifier reports what it saw; the mode decides what may happen.
+    // Returning the planned action lets the caller stop before touching
+    // identity, which is what makes shadow and suggest genuinely non-mutating.
+    recordAttributionDecision: (id, receiptId, result = {}) => {
+      ensureStore();
+      return attributionDecisions().record(id, receiptId, {
+        ...result, mode: attributionSettings.getMode(),
+      });
+    },
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
     createTask: input => getRuntime().createStandalone(input),
     roleBindings: id => getRuntime().roles.current(id), updateRoleBindings: (id, input) => getRuntime().roles.update(id, input),
