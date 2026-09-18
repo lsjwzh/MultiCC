@@ -118,18 +118,14 @@ fs.mkdirSync(projA, { recursive: true });
   const listA = Array.isArray(r.j) ? r.j.find(d => d.id === dirA.id) : null;
   ok(r.status === 200 && !!listA, 'GET list contains registered dir');
   ok(listA && listA.counts && typeof listA.counts.claude_chat === 'number', 'list entry has session counts');
-  ok(listA && Object.entries(listA.counts).some(([key, count]) => key.endsWith('_chat') && count >= 1),
-    'commander chat session auto-seeded on an available compatible CLI');
+  // Task-first: a directory owns tasks, not roles — registering one must not
+  // seed a Commander (or any other role execution) into the fleet.
+  ok(listA && Object.values(listA.counts).every(count => count === 0),
+    'registering a directory seeds no session');
   ok(listA && listA.pushState && typeof listA.pushState === 'object', 'list entry has pushState');
   r = await api('GET', '/api/sessions');
-  const commanders = Array.isArray(r.j)
-    ? r.j.filter(session => session.dirId === dirA.id && /Agent Commander/.test(session.label || ''))
-    : [];
-  ok(commanders.length === 1, 'exactly one commander session is seeded per fleet (D1)');
-  ok(commanders.every(session => session.type === 'commander'),
-    'seeded commander carries type=commander');
-  ok(commanders.every(session => typeof session.rolePrompt === 'string' && session.rolePrompt.length > 100),
-    'commander session receives the complete preset role prompt');
+  const seeded = Array.isArray(r.j) ? r.j.filter(session => session.dirId === dirA.id) : [];
+  ok(seeded.length === 0, 'a fresh fleet has no Commander to hop through');
 
   // ── PATCH /api/directories/:id ──
   r = await api('PATCH', '/api/directories/no-such-id', { name: 'x' });
@@ -165,14 +161,30 @@ fs.mkdirSync(projA, { recursive: true });
   ok(r.status === 404, 'push unknown dir → 404');
 
   // ── DELETE ──
+  // A hand-created session is a hidden task-bound chat room; it is what makes
+  // the directory non-empty for the guards below.
+  r = await api('POST', `/api/directories/${dirA.id}/sessions`, {
+    cli: 'codex', kind: 'chat', label: '任务A',
+  });
+  ok(r.status === 200 && r.j.id && r.j.taskBoundTaskId, 'creating a session binds it to a task');
+  ok(r.j.cliSessionId === null, 'a new bound session has no native identity yet');
+  const boundSessionId = r.j.id;
+  r = await api('GET', '/api/sessions');
+  ok(!r.j.some(session => session.id === boundSessionId), 'a task-bound session stays out of the Fleet list');
   r = await api('DELETE', `/api/directories/no-such-id`);
   ok(r.status === 404, 'DELETE unknown id → 404');
   r = await api('DELETE', `/api/directories/${dirA.id}`);
   ok(r.status === 400 && /session\(s\); pass \?force=1/.test(r.j.error) && Array.isArray(r.j.sessions), 'DELETE with sessions, no force → 400 + session list');
+  // The task reference outlives ?force=1 on purpose: a fleet is never deleted
+  // from under a task that still points at its session/history.
   r = await api('DELETE', `/api/directories/${dirA.id}?force=1`);
-  ok(r.status === 200 && r.j.ok === true && r.j.removedSessions >= 1, 'DELETE force → ok + removedSessions');
+  ok(r.status === 400 && r.j.code === 'TASK_HISTORY_REFERENCED' && r.j.blocked === true,
+    'DELETE force does not bypass a task reference → 400 TASK_HISTORY_REFERENCED');
   r = await api('GET', '/api/directories');
-  ok(r.status === 200 && !r.j.find(d => d.id === dirA.id), 'deleted dir gone from list');
+  ok(r.status === 200 && !!r.j.find(d => d.id === dirA.id), 'refused delete leaves the fleet intact');
+  r = await api('DELETE', `/api/directories/${dirA.id}`);
+  ok(r.status === 400 && Array.isArray(r.j.sessions) && r.j.sessions.includes(boundSessionId),
+    'refused delete leaves the bound session intact');
   r = await api('DELETE', `/api/directories/${dirB.id}?force=1`);
   ok(r.status === 200 && r.j.ok === true, 'cleanup dir B');
 
