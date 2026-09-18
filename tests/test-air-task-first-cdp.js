@@ -209,13 +209,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     const pinCollapsed = await page.evaluate(`(()=>{const tab=document.querySelector('#task-pins .pin-tab'),r=tab.getBoundingClientRect(),h=document.getElementById('task-header').getBoundingClientRect(),p=document.getElementById('pin-task').getBoundingClientRect();
       const label=tab.querySelector('.pin-status .mc-status-label');
       return { task:tab.dataset.task, title:tab.querySelector('.pin-title').textContent,
-        top:Math.round(r.top), bottom:Math.round(r.bottom), width:Math.round(r.width),
+        top:Math.round(r.top), bottom:Math.round(r.bottom), left:Math.round(r.left), width:Math.round(r.width),
         headerTop:Math.round(h.top), headerHeight:Math.round(h.height), headerRight:Math.round(h.right), pinLeft:Math.round(p.left),
-        meta:getComputedStyle(tab.querySelector('.pin-meta')).display, label:getComputedStyle(label).display,
+        panel:getComputedStyle(tab.querySelector('.pin-panel')).display, label:getComputedStyle(label).display,
         cx:Math.round(r.left+r.width/2), cy:Math.round(r.top+r.height/2) };})()`);
     assert.equal(pinCollapsed.task, 'tsk_a');
     assert.equal(pinCollapsed.title, '完善任务协作体验');
-    assert.equal(pinCollapsed.meta, 'none', '缩略态只有状态和标题，没有目录/阶段那一行');
+    assert.equal(pinCollapsed.panel, 'none', '缩略态那张详情卡片是收着的');
     assert.equal(pinCollapsed.label, 'none', '缩略态的状态只留图标');
     assert.ok(pinCollapsed.width < 140 && pinCollapsed.width >= 46, '缩略态是一条窄标签：' + pinCollapsed.width);
     assert.equal(pinCollapsed.top, pinCollapsed.headerTop, '浮在页头最顶上（不占行，所以贴着顶边）');
@@ -223,29 +223,51 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(pinCollapsed.width < pinCollapsed.pinLeft, '它排在工具条左边那一整条线上');
     // 先留一张缩略态的图（默认长这样），再进 hover 展开。
     await settlePins('task-pins-collapsed');
-    // 悬停展开：状态标签、目录、阶段一起出来，卡片变宽。
+    // 悬停展开：详情往【下】挂一张卡，胶囊自己一个像素都不动。原来是同一行往右
+    // 长到 400px，把旁边几条 pin 一起推着挪 —— 用户看到的就是那个「晃眼」的动画。
     await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pinCollapsed.cx, y: pinCollapsed.cy, buttons: 0 });
     await settlePins('task-pins-hover-probe');
-    // 展开态曾经是「标题一行 + 目录/阶段一行」两行塞进 30px 的胶囊 —— 两行加起来
-    // 比胶囊还高，字从上下两边一起冒出去。所以这里连「三块内容都在胶囊里面」和
-    // 「展开不让胶囊长高、页头也不动」一起量。
-    const pinOpen = await page.evaluate(`(()=>{const tab=document.querySelector('#task-pins .pin-tab'),tr=tab.getBoundingClientRect();
-      const inside=e=>{const b=e.getBoundingClientRect();return b.top>=tr.top-0.6&&b.bottom<=tr.bottom+0.6&&b.left>=tr.left-0.6&&b.right<=tr.right+0.6;};
-      return { width:Math.round(tr.width), height:Math.round(tr.height),
+    const pinOpen = await page.evaluate(`(()=>{const tab=document.querySelector('#task-pins .pin-tab'),tr=tab.getBoundingClientRect(),panel=tab.querySelector('.pin-panel'),pr=panel.getBoundingClientRect();
+      const label=tab.querySelector('.pin-status .mc-status-label');
+      return { width:Math.round(tr.width), left:Math.round(tr.left), height:Math.round(tr.height),
         headerHeight:Math.round(document.getElementById('task-header').getBoundingClientRect().height),
-        statusInside:inside(tab.querySelector('.pin-status')), titleInside:inside(tab.querySelector('.pin-title')), metaInside:inside(tab.querySelector('.pin-meta')),
-        meta:tab.querySelector('.pin-meta').textContent, label:tab.querySelector('.pin-status .mc-status-label').textContent };})()`);
-    assert.ok(pinOpen.width > pinCollapsed.width, `展开要比缩略宽（${pinCollapsed.width} → ${pinOpen.width}）`);
-    assert.ok(pinOpen.meta.includes('MultiCC'), '展开里有目录：' + pinOpen.meta);
-    assert.ok(pinOpen.meta.includes('进行中'), '展开里有阶段：' + pinOpen.meta);
-    assert.ok(pinOpen.label.length > 0, '展开的状态带着中文标签');
-    assert.equal(pinOpen.statusInside && pinOpen.titleInside && pinOpen.metaInside, true,
-      `展开的内容都落在胶囊里：${JSON.stringify(pinOpen)}`);
-    assert.equal(pinOpen.height, pinCollapsed.bottom - pinCollapsed.top, '展开不改变胶囊高度（两行的旧排版会把它撑破）');
+        panelDisplay:getComputedStyle(panel).display, panelTop:Math.round(pr.top), panelBottom:Math.round(pr.bottom), panelLeft:Math.round(pr.left), panelRight:Math.round(pr.right),
+        viewportWidth:window.innerWidth, panelText:panel.textContent, label:getComputedStyle(label).display,
+        headerBottom:Math.round(document.getElementById('task-header').getBoundingClientRect().bottom),
+        panelIsTop:[[pr.top+6],[(pr.top+pr.bottom)/2],[pr.bottom-6]].every(([y])=>
+          document.elementFromPoint(Math.round(pr.left+pr.width/2), Math.round(y))?.closest('.pin-panel')===panel) };})()`);
+    assert.equal(pinOpen.panelDisplay, 'flex', '悬停时详情挂在下面');
+    assert.equal(pinOpen.width, pinCollapsed.width,
+      `展开时胶囊宽度不许变（横向生长就是那个晃眼的动画）：${pinCollapsed.width} → ${pinOpen.width}`);
+    assert.equal(pinOpen.left, pinCollapsed.left, '胶囊自己在原地不动：旁边几条 pin 也不会被推走');
+    assert.ok(pinOpen.panelTop >= pinCollapsed.bottom, `卡片挂在胶囊下面（${pinOpen.panelTop} ≥ ${pinCollapsed.bottom}）`);
+    assert.ok(pinOpen.panelText.includes('MultiCC') && pinOpen.panelText.includes('进行中'),
+      '卡片里有目录和阶段：' + pinOpen.panelText);
+    assert.equal(pinOpen.label, 'none', '胶囊里仍旧只留状态图标：带上字就又把胶囊撑长了');
+    assert.ok(pinOpen.panelLeft >= 0 && pinOpen.panelRight <= pinOpen.viewportWidth,
+      `卡片不出视口：${pinOpen.panelLeft}..${pinOpen.panelRight} / ${pinOpen.viewportWidth}`);
+    assert.equal(pinOpen.panelIsTop, true, '卡片盖在下面那些内容之上（不能被对话区压住）');
+    // 卡片本来就要挂到页头外面去（页头只有 105px）：下面那半截必须盖在对话区之上，
+    // 否则页头那条底边会把它整整齐齐地切掉 —— 看着就像卡片只有一半。
+    assert.ok(pinOpen.panelBottom > pinOpen.headerBottom,
+      `卡片确实伸到页头下面（${pinOpen.panelBottom} > ${pinOpen.headerBottom}），所以这条守卫是有效的`);
+    assert.equal(pinOpen.height, pinCollapsed.bottom - pinCollapsed.top, '展开不改变胶囊高度');
     assert.equal(pinOpen.headerHeight, pinCollapsed.headerHeight, '展开不动页头的高度');
     screenshots.push(await page.screenshot('task-pins-desktop'));
-    // 点这张卡就是打开那条任务（这里已经打开着它，地址不变）。
+    // 点一下把卡片钉住：鼠标挪开也还在；点页面别处才收。打开任务挪进卡片里那颗
+    // （点一下就跳走的话，这份详情根本来不及看）。
     await page.evaluate(`document.querySelector('#task-pins .pin-open').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#task-pins .pin-tab').classList.contains('is-open')`));
+    assert.equal(await page.evaluate(`document.querySelector('#task-pins .pin-open').getAttribute('aria-expanded')`), 'true');
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 8, y: 600, buttons: 0 });
+    await page.evaluate(`new Promise(done => setTimeout(done, 250))`);
+    assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#task-pins .pin-panel')).display`), 'flex',
+      '点开后鼠标挪走，卡片还钉在那儿');
+    await page.evaluate(`document.body.click()`);
+    assert.equal(await page.evaluate(`!!document.querySelector('#task-pins .pin-tab.is-open')`), false, '点别处收起来');
+    await page.evaluate(`document.querySelector('#task-pins .pin-open').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#task-pins .pin-tab').classList.contains('is-open')`));
+    await page.evaluate(`document.querySelector('#task-pins .pin-panel-open').click()`);
     assert.ok(await page.waitFor(`new URLSearchParams(location.search).get('task')==='tsk_a'`));
     // 取消 pin：× 是独立的一颗按钮（不能套在打开按钮里面 —— 那不是一个合法的按钮）。
     assert.equal(await page.evaluate(`document.querySelectorAll('#task-pins .pin-open .pin-x').length`), 0);
