@@ -1010,14 +1010,25 @@ function createClassifyStateMachine(rawDeps) {
       if (!supersededReason && shellOwned
           && typeof getTaskContextHost().recordTaskAttributionDecision === 'function') {
         try {
-          const decision = await getTaskContextHost().recordTaskAttributionDecision(sessionName, shellReceiptId, {
-            relation: res.relation,
-            taskId: res.relation === 'new' ? resolvedTaskId
-              : (res.taskId && res.taskId !== currentTaskId ? res.taskId : null),
-            taskName: res.taskName, relatedTaskId: res.relatedTaskId,
-            turnId, anchorMessageId, runId, currentTaskId,
-          });
-          decisionAction = decision?.action || 'none';
+          if (res.unclassified === true && !identityLocked) {
+            // The verdict could not be read. Journalling it keeps the turn from
+            // silently becoming a permanent "same": it is visible as
+            // unclassified, dismissible, and never moves an identity. The
+            // legacy settle below still runs, so the turn keeps whatever task
+            // it was admitted under.
+            await getTaskContextHost().recordTaskAttributionDecision(sessionName, shellReceiptId, {
+              unclassified: true, turnId, anchorMessageId, runId, currentTaskId,
+            });
+          } else {
+            const decision = await getTaskContextHost().recordTaskAttributionDecision(sessionName, shellReceiptId, {
+              relation: res.relation,
+              taskId: res.relation === 'new' ? resolvedTaskId
+                : (res.taskId && res.taskId !== currentTaskId ? res.taskId : null),
+              taskName: res.taskName, relatedTaskId: res.relatedTaskId,
+              turnId, anchorMessageId, runId, currentTaskId,
+            });
+            decisionAction = decision?.action || 'none';
+          }
         } catch (error) {
           // A failed journal write must not be mistaken for a verdict. Falling
           // back to the legacy path keeps attribution working, and the failure

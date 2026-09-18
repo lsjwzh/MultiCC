@@ -128,4 +128,75 @@ test('undo restores a turn that had its own overlay before the change', async ()
   assert.equal(store.get('turn-attr', 's1:t1').taskId, 'tsk_b');
   operations.undo({ operationId: applied.id, clientMsgId: 'u1' });
   assert.equal(store.get('turn-attr', 's1:t1').taskId, 'tsk_a');
+  assert.equal(store.get('turn-attr', 's1:t1').taskName, 'Alpha', 'undo restores the title it replaced');
+});
+
+test('re-attribution cannot reach a conversation outside this shell', async () => {
+  const store = fakeStore();
+  const operations = createTaskOperations({ store, revisionOf: () => 'rev-1', isTurnBusy: () => false,
+    resolveTarget: async () => ({ id: 'tsk_b' }), taskTitle: () => 'Beta',
+    effectiveTaskOf: (sessionId, turnId) => ({ s1: { t1: 'tsk_a' }, s2: { x1: 'tsk_z' } }[sessionId]?.[turnId] ?? null),
+    turnOrderOf: sessionId => ({ s1: ['t1'], s2: ['x1'] }[sessionId] || []) });
+  const scope = { shellId: 'sh_1', sessionIds: ['s1'] };
+  // The overlay is keyed by sessionId:turnId globally, so naming another
+  // conversation must be refused before anything is written.
+  assert.throws(() => operations.preview({ scope, turns: [{ sessionId: 's2', turnId: 'x1' }], target: { taskId: 'tsk_b' } }),
+    { code: 'task_not_linked' });
+  await assert.rejects(operations.apply({ scope, clientMsgId: 'm1',
+    turns: [{ sessionId: 's2', turnId: 'x1' }], target: { taskId: 'tsk_b' } }), { code: 'task_not_linked' });
+  // A range carries its own session id, so it needs the same check.
+  assert.throws(() => operations.preview({ scope, range: { sessionId: 's2', fromTurnId: 'x1', toTurnId: 'x1' },
+    target: { taskId: 'tsk_b' } }), { code: 'task_not_linked' });
+  assert.equal(store.list('turn-attr').length, 0, 'a refused write leaves no overlay behind');
+  assert.equal(store.list('task-op').length, 0);
+  // A caller that forgot to scope the conversation must not be treated as global.
+  assert.throws(() => operations.preview({ scope: { shellId: 'sh_1' },
+    turns: [{ sessionId: 's1', turnId: 't1' }], target: { taskId: 'tsk_b' } }), { code: 'scope_incomplete' });
+  // The in-scope write is unaffected.
+  const ok = await operations.apply({ scope, clientMsgId: 'm2', turns: [{ sessionId: 's1', turnId: 't1' }],
+    target: { taskId: 'tsk_b' } });
+  assert.equal(ok.status, 'applied');
+});
+
+test('a whole-range selection is bounded as a segment, not as a hand-picked list', async () => {
+  const store = fakeStore();
+  const order = Array.from({ length: 600 }, (_, index) => `t${index}`);
+  const operations = createTaskOperations({ store, revisionOf: () => 'rev-1', isTurnBusy: () => false,
+    resolveTarget: async () => ({ id: 'tsk_b' }), taskTitle: () => 'B',
+    effectiveTaskOf: () => 'tsk_a', turnOrderOf: () => order });
+  const scope = { shellId: 'sh_1', sessionIds: ['s1'] };
+  const long = operations.preview({ scope, range: { sessionId: 's1', fromTurnId: 't0', toTurnId: 't119' },
+    target: { taskId: 'tsk_b' } });
+  assert.equal(long.effects.length, 120, 'a long segment is a normal selection, not invalid input');
+  assert.equal(long.capabilities.applicable, true);
+  assert.throws(() => operations.preview({ scope, range: { sessionId: 's1', fromTurnId: 't0', toTurnId: 't599' },
+    target: { taskId: 'tsk_b' } }), { code: 'range_too_large', detail: { turns: 600, max: 500 } });
+  const many = Array.from({ length: 51 }, (_, index) => ({ sessionId: 's1', turnId: `t${index}` }));
+  assert.throws(() => operations.preview({ scope, turns: many, target: { taskId: 'tsk_b' } }), { code: 'invalid_turns' });
+});
+
+test('deleting a conversation reclaims its journal and only its own overlays', async () => {
+  const { operations, store, scope, turns, target } = setup();
+  await operations.apply({ scope, clientMsgId: 'm1', turns, target });
+  // Another shell's overlay on an unrelated turn must survive: overlays are
+  // matched by the operation id that wrote them, not by session.
+  store.set('turn-attr', 's9:z9', { sessionId: 's9', turnId: 'z9', taskId: 'tsk_other', operationId: 'op_other' });
+  const purged = operations.purgeShell('sh_1');
+  assert.equal(purged.operations, 1);
+  assert.equal(purged.overlays, 1);
+  assert.equal(store.list('task-op').length, 0);
+  assert.equal(store.get('turn-attr', 's1:t1'), null);
+  assert.equal(store.get('turn-attr', 's9:z9').operationId, 'op_other');
+});
+
+test('the retention sweep drops reverted journal rows and keeps live ones', async () => {
+  const { operations, store, scope, turns, target } = setup();
+  const applied = await operations.apply({ scope, clientMsgId: 'm1', turns, target });
+  assert.equal(operations.expireOlderThan(Date.now() + 1000), 0,
+    'an applied operation is still the audit trail for a live attribution');
+  operations.undo({ operationId: applied.id, clientMsgId: 'u1' });
+  assert.equal(operations.list('sh_1').length, 1);
+  assert.equal(operations.expireOlderThan(Date.now() + 1000), 1);
+  assert.equal(operations.list('sh_1').length, 0);
+  assert.equal(store.list('task-op').length, 0);
 });

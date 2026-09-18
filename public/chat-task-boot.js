@@ -82,7 +82,6 @@ function mountTaskAttribution() {
     makeId: () => newClientMsgId(),
     // 独立继续是写路径：确认后由服务端持有请求，页面只是发起者。
     confirmContinue: message => _chatConfirm(message, { okText: tt('taskAttributionContinue') }),
-    openUrl: url => !!window.open(url, '_blank', 'noopener'),
     onApplied: () => refreshShellHistory(),
     report: error => dbg('history', `task attribution failed: ${error.message}`),
   }) || null;
