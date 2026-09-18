@@ -4,6 +4,11 @@ const { hash } = require('./context');
 const { planAttributionAction } = require('../task-routing/attribution-mode');
 
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
+// A queued apply is a durable request, not a retry loop: it waits for the turn
+// that made it busy to end, and gives up (visibly) instead of holding a row
+// forever if that never happens.
+const QUEUE_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_QUEUE_INTERVAL_MS = 5000;
 
 // Durable journal for what the automatic classifier wanted, and what the host
 // was allowed to do about it.
@@ -16,6 +21,7 @@ function createAttributionDecisions(deps) {
   const { store, operations } = deps;
   const now = deps.now || (() => Date.now());
   const flights = new Map();
+  let timer = null;
 
   function idOf(shellId, receiptId, turnId) {
     return `dec_${hash([shellId, receiptId, turnId || '']).slice(0, 32)}`;
@@ -30,6 +36,7 @@ function createAttributionDecisions(deps) {
       path: record.path, state: record.state, hidden: record.hidden === true, reason: record.reason,
       createdAt: record.createdAt, updatedAt: record.updatedAt || null, revisions: Number(record.revisions) || 0,
       resolvedAt: record.resolvedAt || null, deferredAt: record.deferredAt || null,
+      queuedAt: record.queuedAt || null, queueAttempts: Number(record.queueAttempts) || 0,
       apply: record.apply || null, lastError: record.lastError || null };
   }
 
@@ -44,8 +51,12 @@ function createAttributionDecisions(deps) {
 
   // A suggestion is still actionable after the user postponed it: `deferred`
   // is a durable "later", not a rejection, so accept/dismiss must still work.
+  // `queued` is the same kind of open state: the user already accepted it, the
+  // host is only waiting for the turn to close, and dismissing/deferring it is
+  // how that waiting request is withdrawn.
   function isOpen(row) {
-    return row.state === 'pending' || row.state === 'unclassified' || row.state === 'deferred';
+    return row.state === 'pending' || row.state === 'unclassified'
+      || row.state === 'deferred' || row.state === 'queued';
   }
 
   // Recording is idempotent per (conversation, turn): re-running the same Aux
@@ -177,7 +188,11 @@ function createAttributionDecisions(deps) {
     if (pending) { await pending; return publicDecision(get(shellId, decisionId)); }
     const run = (async () => {
       if (deps.isTurnBusy?.(row.sessionId, row.turnId) === true) {
-        throw fail('turn_busy', 'Wait for the running turn to finish before changing its attribution', 409);
+        // Not an error: the user already decided, and the only thing missing is
+        // that the turn has not closed yet. Recording the request durably is
+        // what makes the card non-blocking — the page can be closed, another
+        // message can be sent, and the change still lands once it is safe.
+        return publicDecision(queueRow(row, clientMsgId));
       }
       const shell = store.get('shell', shellId);
       const existing = store.get('task', row.toTaskId);
@@ -187,6 +202,72 @@ function createAttributionDecisions(deps) {
     flights.set(row.id, run);
     try { return await run; } finally { flights.delete(row.id); }
   }
+
+  // The accepted-but-not-yet-applied state. It keeps the client's operation id
+  // so the eventual write stays idempotent with the click that asked for it.
+  function queueRow(row, clientMsgId, note = 'queued') {
+    const queued = store.transaction(() => {
+      store.set('attr-decision', row.id, { ...row, state: 'queued', queuedAt: row.queuedAt || now(),
+        updatedAt: now(), queueAttempts: Number(row.queueAttempts) || 0,
+        queueClientMsgId: row.queueClientMsgId || clientMsgId || `queued_${row.id}` });
+      return store.get('attr-decision', row.id);
+    });
+    notify(row.sessionId, { decisionId: queued.id, state: queued.state, kind: note });
+    return queued;
+  }
+
+  // Retrying a queued row re-reads the busy gate and the cursor CAS inside
+  // `applyRow`, so "the turn closed" is a re-validation, never a blind write.
+  // Only the row this request queued is retried; a row that failed for any
+  // other reason stays failed instead of being resurrected.
+  async function drain() {
+    let applied = 0, expired = 0;
+    for (const row of store.list('attr-decision').filter(value => value.state === 'queued')) {
+      if ((now() - (row.queuedAt || 0)) > QUEUE_TTL_MS) {
+        store.set('attr-decision', row.id, { ...row, state: 'failed', resolvedAt: now(),
+          lastError: 'queued_expired' });
+        notify(row.sessionId, { decisionId: row.id, state: 'failed', kind: 'failed' });
+        expired += 1;
+        continue;
+      }
+      if (flights.has(row.id)) continue;
+      if (deps.isTurnBusy?.(row.sessionId, row.turnId) === true) continue;
+      const run = (async () => applyRow(row, { clientMsgId: row.queueClientMsgId || `queued_${row.id}` }))();
+      flights.set(row.id, run);
+      try {
+        await run;
+        applied += 1;
+      } catch (error) {
+        // A turn that started again between the gate and the write is "still
+        // not yet", not a failure of what the user asked for.
+        if (error?.code === 'turn_busy' || error?.code === 'task_switching') {
+          const current = store.get('attr-decision', row.id);
+          if (current?.state === 'failed') {
+            store.set('attr-decision', row.id, { ...current, state: 'queued', lastError: null,
+              queueAttempts: (Number(current.queueAttempts) || 0) + 1 });
+          }
+        } else {
+          console.warn('[task-attribution] queued apply failed', error.code || error.message);
+        }
+      } finally {
+        flights.delete(row.id);
+      }
+    }
+    return { applied, expired };
+  }
+
+  // The queue is advanced by the server, not by the page that created it: the
+  // user may have closed the tab (or the whole browser) before the turn ended.
+  // The first pass runs immediately, so a row queued just before a restart is
+  // picked up at mount instead of waiting a full interval.
+  function start(intervalMs = DEFAULT_QUEUE_INTERVAL_MS) {
+    const first = drain().catch(() => {});
+    if (timer) return first;
+    timer = setInterval(() => { void drain().catch(() => {}); }, Math.max(1000, Number(intervalMs) || DEFAULT_QUEUE_INTERVAL_MS));
+    if (typeof timer.unref === 'function') timer.unref();
+    return first;
+  }
+  function stop() { if (timer) clearInterval(timer); timer = null; }
 
   function dismiss(shellId, decisionId) {
     const row = get(shellId, decisionId);
@@ -235,7 +316,7 @@ function createAttributionDecisions(deps) {
     return publicDecision(store.get('attr-decision', row.id));
   }
 
-  return { record, list, publicDecision, accept, dismiss, defer, undo };
+  return { record, list, publicDecision, accept, dismiss, defer, undo, drain, start, stop };
 }
 
-module.exports = { createAttributionDecisions };
+module.exports = { createAttributionDecisions, QUEUE_TTL_MS };
