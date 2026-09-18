@@ -1,5 +1,7 @@
 'use strict';
 
+const core = require('../task-board/core');
+
 // Air reads canonical task records through the task-shell/board authority.
 // The client cannot mint a workspace permit, writer proof or attribution fact.
 function mountAirRoutes(app, deps) {
@@ -39,17 +41,27 @@ function mountAirRoutes(app, deps) {
       subagent: deps.serializeSubagent?.(lastUsed.record.subagent) || null,
     };
     const board = deps.getBoard();
+    // 与任务板同一条自愈规则（见 task-board/view.js 的 deadDispatchClaim）：派发时
+    // 写下的乐观 runState，如果名下会话从来没有过 taskState，就证明这一轮从没被受理
+    // 过 —— 不把这类卡片继续报成「执行中」（否则它会挂在控制台上直到天荒地老）。
+    const hasTurnState = sessionId => {
+      const record = deps.records.get(sessionId);
+      return !!(record && record.taskState);
+    };
+    const projectNow = Date.now();
     const tasks = Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId && !board.deletedTaskIds?.includes(t.id)).map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
       const access = deps.shell.taskAccess(t);
-      return { id: t.id, dirId: require('../task-board/core').taskDirId(board, t) || deps.records.get(sessionId)?.dirId, title: t.title, status: t.status,
+      return { id: t.id, dirId: core.taskDirId(board, t) || deps.records.get(sessionId)?.dirId, title: t.title, status: t.status,
         recordType: t.recordType || null, workflowStage: t.workflowStage || null, updatedAt: t.updatedAt || t.createdAt,
         sessionId, ...access,
         // 这一轮到底在不在跑，是队列事件折出来的事实（src/task-board/normalize.js
         // TASK_RUN_STATES），不是客户端能从 status 猜出来的：status 只有
         // active/done/archived 三个人为的生命周期取值，「执行中」根本不在里面。
         // 客户端只读它，不推断它。
-        runState: t.runState || null,
+        // 自愈：证明这一轮从没被受理过的卡片按空闲投影，而不是永久「执行中」。
+        runState: core.deadDispatchClaim(t, core.taskRunSessionIds(t).some(hasTurnState), projectNow)
+          ? 'idle' : (t.runState || null),
         resource: resource(sessionId) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({ id: d.id, name: d.name, path: d.path })),

@@ -68,6 +68,32 @@ test('Air list resolves legacy reference directories and never includes provider
   assert.equal(response.tasks[0].workflowStage, 'inbox'); assert.equal(JSON.stringify(response).includes('private'), false);
 });
 
+test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行中', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  const stale = Date.now() - 10 * 60 * 1000;
+  mountAirRoutes(app, {
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([
+      // 会话记录在，但从头到尾没有任何 taskState：这一轮连受理都没发生过。
+      ['ghost', { id: 'ghost', dirId: 'd1', kind: 'chat' }],
+      // 会话有调度状态：卡片自报什么就是什么。
+      ['live', { id: 'live', dirId: 'd1', kind: 'chat', taskState: { queueState: 'running' } }],
+    ]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ modules: {}, tasks: {
+      g: { id: 'g', title: '新任务', status: 'active', runState: 'running', runStateAt: stale, updatedAt: stale,
+        refs: [{ sessionId: 'ghost', dirId: 'd1' }] },
+      l: { id: 'l', title: '真在跑', status: 'active', runState: 'running', runStateAt: stale, updatedAt: stale,
+        refs: [{ sessionId: 'live', dirId: 'd1' }] },
+    } }),
+    clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
+  let response; await handlers.get('/api/air')({}, { json: v => { response = v; }, status() { return this; } });
+  const byId = Object.fromEntries(response.tasks.map(task => [task.id, task.runState]));
+  assert.equal(byId.g, 'idle', '派发时的乐观值 + 会话从没受理过 → 空闲，不是执行中');
+  assert.equal(byId.l, 'running', '会话有调度状态时不越权改判');
+});
+
 test('Air snapshot carries the most recently worked chat runtime as lastRuntime', async () => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
