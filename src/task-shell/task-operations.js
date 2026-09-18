@@ -227,6 +227,12 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
       // One transaction covers the overlay writes and the audit record, so a
       // crash can never leave half a re-attribution behind.
       store.transaction(() => {
+        // A row that was still queued may have been withdrawn (or purged) while
+        // this attempt was waiting on the busy gate: the user's cancel wins.
+        const current = store.get('task-op', key);
+        if (existing?.status === 'queued' && current?.status !== 'queued') {
+          throw fail('operation_cancelled', 'This queued change was withdrawn', 409);
+        }
         for (const effect of effects) {
           store.set('turn-attr', entryKey(effect.sessionId, effect.turnId), {
             sessionId: effect.sessionId, turnId: effect.turnId, taskId: normalizedTarget.taskId,
@@ -280,13 +286,20 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
         // Still busy, or the turn started again between the gate and the write:
         // that is "not yet", not a failure of what the user asked for.
         if (error?.code === 'turn_busy' || error?.code === 'task_switching') { waiting += 1; continue; }
-        store.set('task-op', key, { ...(store.get('task-op', key) || record), status: 'failed',
+        // Withdrawn while this attempt was in flight: leave the terminal row
+        // exactly as the user (or the purge) left it.
+        if (error?.code === 'operation_cancelled') continue;
+        const current = store.get('task-op', key) || record;
+        if (current.status !== 'queued') continue;
+        store.set('task-op', key, { ...current, status: 'failed',
           resolvedAt: now(), lastError: String(error?.code || 'failed') });
         console.warn('[task-attribution] queued change failed', error?.code || error?.message);
         failed += 1;
         continue;
       }
-      store.set('task-op', key, { ...record, status: 'failed', resolvedAt: now(),
+      const current = store.get('task-op', key) || record;
+      if (current.status !== 'queued') continue;
+      store.set('task-op', key, { ...current, status: 'failed', resolvedAt: now(),
         lastError: missing.length ? 'turn_not_found' : 'queue_unavailable' });
       failed += 1;
     }

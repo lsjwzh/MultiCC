@@ -447,6 +447,7 @@ P1 上线后已能整理对话并看到多个码；P2 实现“尽量把不同�
 | 落地广播 | 服务端替用户应用后，还开着的页面历史是旧的 | `task-operations` 新增 `notify` 端口（host 接 `onAttributionChanged`）：排队行落地时按 `kind='applied'` 广播，页面复用既有的 `task_attribution_updated` 处理（刷新建议列表 + 重取当前页），不需要新协议 |
 | 界面 | 「应用」在有轮次在跑时被禁用，排队后也看不见自己排了什么 | 预览 `blocked` 时不再禁用「应用」：提交带 `queue`，返回 `queued` 时摘要写明「已排队：{n} 轮将在当前轮次结束后移到 {task}」，toast 给「取消排队」。面板的待处理列表现在同时读 `attribution-decisions` 与 `task-operations`，把两种排队行并排显示（都能取消），关掉面板也能找回来 |
 | 保留期 | 终态行只有 `reverted` 会被清理 | `expireOlderThan` 一并清理 `cancelled`/`queued_expired`/`failed`（按 `resolvedAt`/`queuedAt`），`applied` 仍然保留——它还是当前归属的审计线索 |
+| 撤回与写盘的竞态 | `drain` 先按 `status==='queued'` 挑行，真正的写发生在若干 await 之后；这中间的取消（或删壳 purge）会被晚到的尝试覆盖 | 写回前重新读一次行：`apply` 的事务里若发现「进来时是 queued、现在已不是 queued」就抛 `operation_cancelled`（取消赢），事务不落 overlay；`drain` 的失败分支与 `missing` 分支都只在行**仍然是 queued** 时才写 `failed`，否则原样保留用户/清理留下的终态 |
 
 仍然留后：建议卡的贴段呈现（§9.1 原始形态）；`select-target` 的 `expectedCursorVersion`
 条件写仍未被界面使用（服务端能力保留，理由见 §13.4）。

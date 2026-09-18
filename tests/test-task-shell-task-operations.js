@@ -212,7 +212,7 @@ function queueFixture(extra = {}) {
     store, revisionOf: () => 'rev-1',
     isTurnBusy: extra.isTurnBusy || (() => state.busy),
     effectiveTaskOf: extra.effectiveTaskOf,
-    resolveTarget: async () => ({ id: 'tsk_b' }),
+    resolveTarget: extra.resolveTarget || (async () => ({ id: 'tsk_b' })),
     taskTitle: id => (id === 'tsk_b' ? 'Beta' : 'Alpha'),
     scopeOf: () => scope,
     now: () => state.clock,
@@ -316,4 +316,59 @@ test('the queue is advanced by the server, so a closed page cannot lose a reques
   await operations.start(1000);
   assert.equal(operations.list('sh_1')[0].status, 'applied', 'mount drains before the first interval');
   operations.stop();
+});
+
+// ── 排队行在 drain 途中被撤回（§5 竞态加固）：取消是终态，晚到的尝试不得改写。
+test('a request withdrawn while the drain pass is writing keeps the cancel', async () => {
+  const holder = {};
+  // The target lookup is the last await before the write, so withdrawing the row
+  // inside it is exactly the window the write has to re-check.
+  const { operations, scope, turns, target, state } = queueFixture({
+    resolveTarget: async () => { holder.operations.cancel({ operationId: holder.queuedId }); return { id: 'tsk_b' }; },
+  });
+  holder.operations = operations;
+  const queued = await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  holder.queuedId = queued.id;
+  state.busy = false;
+  assert.deepEqual(await operations.drain(), { applied: 0, expired: 0, failed: 0, waiting: 0 });
+  assert.equal(operations.get(queued.id).status, 'cancelled', 'the user took it back, so it is not applied');
+  assert.equal(operations.get(queued.id).lastError, null, 'the terminal row keeps the cancel, not an error');
+  assert.equal(operations.overlay.get('s1', 't1'), null, 'a withdrawn request writes no attribution');
+});
+
+test('a failure raised for a withdrawn row does not rewrite it as failed', async () => {
+  const holder = {};
+  const { operations, scope, turns, target, state } = queueFixture({
+    resolveTarget: async () => {
+      holder.operations.cancel({ operationId: holder.queuedId });
+      throw Object.assign(new Error('target unavailable'), { code: 'target_unavailable' });
+    },
+  });
+  holder.operations = operations;
+  const queued = await operations.apply({ scope, clientMsgId: 'm1', turns, target, queue: true });
+  holder.queuedId = queued.id;
+  state.busy = false;
+  assert.deepEqual(await operations.drain(), { applied: 0, expired: 0, failed: 0, waiting: 0 });
+  assert.equal(operations.get(queued.id).status, 'cancelled', 'no failure may resurrect a withdrawn row');
+  assert.equal(operations.get(queued.id).lastError, null);
+});
+
+test('a row withdrawn while an earlier row drained is not failed for a missing turn', async () => {
+  const holder = {};
+  const { operations, scope, target, state } = queueFixture({
+    effectiveTaskOf: (sessionId, turnId) => (turnId === 't2' ? null : 'tsk_a'),
+    resolveTarget: async () => { holder.operations.cancel({ operationId: holder.queuedId }); return { id: 'tsk_b' }; },
+  });
+  holder.operations = operations;
+  const first = await operations.apply({ scope, clientMsgId: 'm1',
+    turns: [{ sessionId: 's1', turnId: 't1' }], target, queue: true });
+  const second = await operations.apply({ scope, clientMsgId: 'm2',
+    turns: [{ sessionId: 's1', turnId: 't2' }], target, queue: true });
+  holder.queuedId = second.id;
+  state.busy = false;
+  assert.deepEqual(await operations.drain(), { applied: 1, expired: 0, failed: 0, waiting: 0 });
+  assert.equal(operations.get(first.id).status, 'applied');
+  assert.equal(operations.get(second.id).status, 'cancelled', 'the earlier row finishing is not this row failing');
+  assert.equal(operations.get(second.id).lastError, null);
+  assert.equal(operations.overlay.get('s1', 't2'), null);
 });
