@@ -153,8 +153,17 @@ function createSkillSyncRuntime(rawDeps) {
         const source = path.join(sourceRoot, name);
         if (!isSkillDir(source)) continue;
         const destination = path.join(agentsSkillsDir, name);
-        if (fs.existsSync(destination)
-            && readSkillVersion(destination) === readSkillVersion(source)) continue;
+        if (fs.existsSync(destination)) {
+          const destinationVersion = readSkillVersion(destination);
+          if (destinationVersion === readSkillVersion(source)) continue;
+          if (destinationVersion === null) {
+            // No .skill-version marker means installBundledSkills never wrote this
+            // directory — it is user-created content that happens to share the
+            // bundled name. Never clobber it; make the conflict visible instead.
+            logger.warn(`[multicc/skills] bundled ${name} skipped: ${destination} exists without .skill-version (user content not overwritten)`);
+            continue;
+          }
+        }
         fs.mkdirSync(agentsSkillsDir, { recursive: true });
         fs.rmSync(destination, { recursive: true, force: true });
         fs.cpSync(source, destination, { recursive: true });
