@@ -23,7 +23,6 @@ function createTaskShellHost(deps) {
   const attributionSettings = createAttributionSettingsFromEnv({
     writeEnv: deps.taskAttribution?.writeEnv,
     reportFailure: deps.taskAttribution?.reportFailure,
-    isLocalRequest: deps.taskAttribution?.isLocalRequest,
   });
   const shortText = (value, limit = 500) => {
     if (value == null) return '';
@@ -365,6 +364,7 @@ function createTaskShellHost(deps) {
     },
     taskIndex,
     taskOperations,
+    attributionSettings: () => attributionSettings,
     attributionDecisions,
     chatScope: (id, sessionId) => getRuntime().chatScope(id, sessionId),
     chatHistory: (id, options) => shellHistoryPage(getRuntime().chatScope(id, options.activeSessionId),
