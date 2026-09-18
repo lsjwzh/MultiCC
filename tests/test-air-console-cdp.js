@@ -139,7 +139,9 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(await page.evaluate(`document.getElementById('activity')===null`), true, '跨目录活动入口已移除');
     assert.equal(await page.evaluate(`[...document.querySelectorAll('#sidebar .nav-row')].map(el=>el.textContent.replace(/\\s+/g,'').replace(/\\d+$/,'')).join('|')`), '◫控制台|◴定时任务');
     assert.ok(await page.waitFor(`document.getElementById('console-badge').hidden===false`), '控制台行带常驻徽标');
-    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '2', '徽标数 = 别处在等 + 正在跑');
+    // 徽标数 = 要我动手的任务（现场里只有一条等回答的）。在跑的那条不算 ——
+    // 它不需要我操作，不该在侧栏催我。
+    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '1', '徽标数 = 等我处理的任务');
 
     // 作用域开关、搜索框、状态筛选都从侧栏撤了：它们是给「完整列表」用的，
     // 而完整列表现在住在控制台的「全部任务」里。
@@ -327,7 +329,10 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(ringed.length, 1, JSON.stringify(ringed));
     assert.ok(ringed[0].includes('登录页空状态文案'), '在跑的那条任务带圈');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.admin-directory-row.ring-running')].map(el=>el.querySelector('strong').textContent)`), ['Gapasea'], '任务对应的目录也带圈');
-    assert.equal(await page.evaluate(`document.querySelector('.console-attention .admin-recent-row.ring-running')!==null`), true, '「谁在等我」里在跑的那条也带圈');
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.console-attention .admin-recent-row strong')].map(el=>el.textContent)`),
+      ['结算页金额四舍五入错误'], '「谁在等我」只留要我动手的那条，在跑的不进来');
+    assert.equal(await page.evaluate(`document.querySelector('.console-attention .admin-recent-row.ring-running')!==null`), false,
+      '「谁在等我」里不该出现正在执行的任务');
     await page.screenshot('02-console-all-tasks');
 
     // 从面板里点走一条在跑的任务：面板自己让开，落到那个目录，而且落到哪儿都得
@@ -507,7 +512,7 @@ test('directory all-tasks expands in place with filters, fixed height and delete
   });
 });
 
-// 控制台的第一格是「谁在等我」，它一长就把下面整片推走。这里用一个 8 条待办的
+// 控制台的第一格是「谁在等我」，它一长就把下面整片推走。这里用一个 6 条待办的
 // 现场确认三件事：面板里只画最近更新的 5 条、总数照报、完整清单在它自己的页上（而那一页
 // 是个能直接打开、能返回、地址里留得住的真页面）。顺带把「统计读数带压扁了」钉住 ——
 // 它是这次「留更多空间给任务」的兑现方式，光看截图不算数。
@@ -536,19 +541,21 @@ test('the console shows only the 5 most recently updated waits and hands the res
   const task = (id, dirId, title, status, runState, updatedAt, resource) => ({ id, dirId, title, recordType: 'planned', workflowStage: 'doing',
     status, runState, updatedAt, resource: resource || { residency: 'planned', lease: 'idle' }, configuration });
   const live = { residency: 'materialized', lease: 'running' };
-  // 时间顺序和紧急度顺序在这里**故意不一致**：最新的一条是在跑的任务（r1），而一条
-  // 等回答的任务（w2）是最久没动过的。两种排法会给出不同的前 5 条 —— 前 5 条是
-  // r1 e1 w1 r2 e2，于是「按紧急度先分层」这条旧规则一旦回来，w2 就会挤掉 r2，
-  // 断言当场失败。这就是这份夹具存在的意义。
+  // 现场里「要我动手的」6 条（e1 w1 e2 w2 e3 w3），另外三条不是：最新的一条是在跑
+  // 的任务（r1），还有一条也在跑（r2）、一条已完成（done1）。时间顺序和紧急度顺序
+  // **故意不一致**：最新的是 r1（不该进清单），而最久没动的 w3 是一条等回答的任务。
+  // 按时间留下的 5 条是 e1 w1 e2 w2 e3，落选 w3；「按紧急度先分层」这条旧规则一旦
+  // 回来，前 5 条会变成 w1 w2 w3 e1 e2，而 r1 还会挤进第一行 —— 断言当场失败。
+  // 这就是这份夹具存在的意义。
   const airTasks = [
-    task('r1', 'd1', '在跑：登录页空状态', 'active', 'running', 900, live),
+    task('r1', 'd1', '在跑：登录页空状态', 'active', 'running', 990, live),
     task('e1', 'd1', '出错：导出失败重试', 'active', 'error', 850, null),
     task('w1', 'd1', '等回答：发布口径', 'active', 'waiting', 800, null),
-    task('r2', 'd2', '在跑：投放日报', 'active', 'running', 750, live),
-    task('e2', 'd2', '出错：兼容矩阵', 'active', 'error', 700, null),
-    task('w2', 'd2', '等回答：结算页文案', 'active', 'waiting', 100, null),
-    task('r3', 'd1', '在跑：图谱回填', 'active', 'running', 90, live),
-    task('r4', 'd2', '在跑：目录巡检', 'active', 'running', 80, live),
+    task('e2', 'd2', '出错：兼容矩阵', 'active', 'error', 750, null),
+    task('w2', 'd2', '等回答：结算页文案', 'active', 'waiting', 700, null),
+    task('e3', 'd1', '出错：图谱回填', 'active', 'error', 650, null),
+    task('w3', 'd2', '等回答：目录巡检', 'active', 'waiting', 100, null),
+    task('r2', 'd2', '在跑：投放日报', 'active', 'running', 90, live),
     task('done1', 'd1', '已完成：收口控制台', 'done', 'succeeded', 50, null),
   ];
   routes['/api/air'] = () => json({ ok: true, directories, clis: ['codex'], migration: { errors: [] }, tasks: airTasks, sessions: [] });
@@ -594,19 +601,22 @@ test('the console shows only the 5 most recently updated waits and hands the res
     // ── ② 面板里只画最近更新的 5 条，总数照报 ──────────────────────────────
     assert.equal(await page.evaluate(`document.querySelectorAll('.console-attention .admin-recent-row').length`), 5, '面板第一格只留 5 条');
     const shown = await page.evaluate(`[...document.querySelectorAll('.console-attention .admin-recent-row strong')].map(el=>el.textContent)`);
-    // 最新的一条是在跑的任务，而最久没动过的恰好是一条等回答的任务 —— 所以这份顺序
-    // 本身就是「按时间倒序」的证据，不是碰巧和紧急度排成一样。
-    assert.deepEqual(shown, ['在跑：登录页空状态', '出错：导出失败重试', '等回答：发布口径', '在跑：投放日报', '出错：兼容矩阵'],
+    // 这份顺序本身就是「按时间倒序」的证据：最新的 r1 在跑、不进清单，而唯一被挤
+    // 出去的是最久没动的 w3 —— 它偏偏是一条等回答的任务，紧急度分层会把它留下。
+    assert.deepEqual(shown, ['出错：导出失败重试', '等回答：发布口径', '出错：兼容矩阵', '等回答：结算页文案', '出错：图谱回填'],
       '留下的应是最近更新的那几条');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.console-attention .mc-status-label')].map(el=>el.textContent)`),
-      ['执行中', '执行异常', '等待回答', '执行中', '执行异常']);
-    assert.equal(await page.evaluate(`document.querySelector('.console-attention .admin-panel-note').textContent`), '8 条 · 显示最近更新的 5 条',
+      ['执行异常', '等待回答', '执行异常', '等待回答', '执行异常']);
+    assert.equal(await page.evaluate(`document.querySelector('.console-attention .admin-panel-note').textContent`), '6 条 · 显示最近更新的 5 条',
       '封顶不等于假装只有这几条，总数要照报');
-    // 被挤出去的那条是「等回答」的 w2：紧急度不再让一条三小时没动的任务插队。
-    assert.equal(await page.evaluate(`document.querySelector('.console-attention').innerText.includes('等回答：结算页文案')`), false,
+    // 正在跑的从不进这份清单：r1 是最新的一条，r2 也在跑 —— 两条都不该露头。
+    assert.equal(await page.evaluate(`document.querySelector('.console-attention').innerText.includes('在跑')`), false,
+      '执行中的任务不是待办，不该出现在「谁在等我」里');
+    // 被挤出去的那条是「等回答」的 w3：紧急度不再让一条久未更新的任务插队。
+    assert.equal(await page.evaluate(`document.querySelector('.console-attention').innerText.includes('等回答：目录巡检')`), false,
       '久未更新的高紧急度任务不该顶掉刚动过的那条');
-    // 侧栏那颗徽标数的是全部 8 条，不是面板里画出来的 5 条 —— 两处说的是同一件事。
-    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '8', '徽标仍是全部待办数');
+    // 侧栏那颗徽标数的是全部 6 条，不是面板里画出来的 5 条 —— 两处说的是同一件事。
+    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '6', '徽标仍是全部待办数');
     await page.screenshot('06-console-attention-capped');
 
     // ── ③ 「查看全部」进独立页：面板让开，地址留住，清单给全 ───────────────
@@ -615,27 +625,28 @@ test('the console shows only the 5 most recently updated waits and hands the res
       if (!button) return null;
       const text = button.textContent; button.click(); return text;
     })()`);
-    assert.equal(entry, '查看全部 8 条 ›');
+    assert.equal(entry, '查看全部 6 条 ›');
     assert.ok(await page.waitFor(`document.body.classList.contains('console-open')===false`), '进整页时控制台让开');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='谁在等我'`), '页头换成整页自己的标题');
     assert.equal(await page.evaluate(`document.getElementById('task-breadcrumb').textContent`), 'MultiCC Air › 控制台');
     assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'attention', '整页有自己的地址');
     assert.equal(await page.evaluate(`location.search.includes('task=')`), false, '整页不是某个任务的任务页');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-content .admin-recent-row strong')].map(el=>el.textContent)`),
-      ['在跑：登录页空状态', '出错：导出失败重试', '等回答：发布口径', '在跑：投放日报', '出错：兼容矩阵', '等回答：结算页文案', '在跑：图谱回填', '在跑：目录巡检'],
-      '整页给全 8 条，顺序与面板那一格一致');
+      ['出错：导出失败重试', '等回答：发布口径', '出错：兼容矩阵', '等回答：结算页文案', '出错：图谱回填', '等回答：目录巡检'],
+      '整页给全 6 条，顺序与面板那一格一致');
     assert.equal(await page.evaluate(`document.getElementById('admin-content').innerText.includes('已完成：收口控制台')`), false, '已完成的不进这份清单');
-    assert.equal(await page.evaluate(`document.querySelector('#admin-content .admin-panel-note').textContent`), '8 条 · 按最近更新排序，点击直达');
+    assert.equal(await page.evaluate(`document.getElementById('admin-content').innerText.includes('在跑：')`), false, '执行中的也不进这份清单');
+    assert.equal(await page.evaluate(`document.querySelector('#admin-content .admin-panel-note').textContent`), '6 条 · 按最近更新排序，点击直达');
     await page.screenshot('07-attention-page');
 
     // 地址可直达：刷新/分享这条链接都落到同一页，不经过控制台。
     await page.navigate('/air?view=attention');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='谁在等我'`));
     assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false, '直接打开整页不会顺手弹出控制台');
-    assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .admin-recent-row').length`), 8);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#admin-content .admin-recent-row').length`), 6);
 
     // 整页里点一条任务：落到任务页，不是回到控制台。
-    await page.evaluate(`document.querySelectorAll('#admin-content .admin-recent-row')[5].click()`);
+    await page.evaluate(`document.querySelectorAll('#admin-content .admin-recent-row')[3].click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='等回答：结算页文案'`), '整页里点一条直达该任务');
     assert.equal(await page.evaluate(`location.search.includes('task=w2')`), true);
     assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false);
@@ -656,14 +667,14 @@ test('the console shows only the 5 most recently updated waits and hands the res
       tasks: airTasks.filter(entry => ['w1', 'e1', 'r1'].includes(entry.id)), sessions: [] });
     await page.navigate('/air?view=overview');
     assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
-    assert.ok(await page.waitFor(`document.querySelectorAll('.console-attention .admin-recent-row').length===3`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.console-attention .admin-recent-row').length===2`));
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.console-attention .admin-recent-row strong')].map(el=>el.textContent)`),
-      ['在跑：登录页空状态', '出错：导出失败重试', '等回答：发布口径'], '没封顶时同样是最近更新在前');
+      ['出错：导出失败重试', '等回答：发布口径'], '没封顶时同样是最近更新在前，在跑的不算');
     assert.equal(await page.evaluate(`document.querySelector('.console-attention .admin-panel-note').textContent`), '按最近更新排序，点击直达',
       '没封顶就不改说明文案');
     assert.equal(await page.evaluate(`[...document.querySelectorAll('.console-attention .admin-panel-head button')].some(b => b.textContent.includes('查看全部'))`), false,
       '没超过就不该有一个点了没反应的「查看全部」');
-    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '3');
+    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '2');
     await page.screenshot('08-console-attention-short');
 
     // ── 窄屏：压扁后的读数带和整页都不能横向溢出 ───────────────────────────
