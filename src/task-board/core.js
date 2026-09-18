@@ -70,6 +70,8 @@ module.exports = {
   extractTaskMarker: routing.extractTaskMarker,
   messageText: routing.messageText,
   buildBoardDto: view.buildBoardDto,
+  taskRunSessionIds: view.taskRunSessionIds,
+  deadDispatchClaim: view.deadDispatchClaim,
   normalizeTaskRouting: normalize.normalizeTaskRouting,
   setTaskRouting: normalize.setTaskRouting,
 };
