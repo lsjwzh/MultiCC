@@ -26,11 +26,14 @@
     null: { c: '#8b949e', label: '无 classify' },
   };
   const classifyOf = (s) => CLASSIFY[s] || CLASSIFY.null;
-  // 边类型配色：parent 橙 / group 青 / merged 红虚线 / shell-link 灰。
+  // 边类型配色：parent 橙 / group 青 / merged 红虚线 / 来源边蓝虚线 / shell-link 灰。
   const EDGE = {
     parent: { c: '#f0883e', dash: '', label: '父任务' },
     group: { c: '#3ad6c5', dash: '', label: '同组' },
     merged: { c: '#f85149', dash: '4 3', label: '合并' },
+    split_from: { c: '#58a6ff', dash: '5 3', label: '分离来源' },
+    fork_from: { c: '#a371f7', dash: '5 3', label: '复制来源' },
+    related: { c: '#d29922', dash: '3 3', label: '相关' },
     'shell-link': { c: '#6e7681', dash: '2 2', label: '任务壳' },
   };
   const edgeOf = (t) => EDGE[t] || EDGE['shell-link'];
@@ -202,7 +205,8 @@
       let dx = b.x - a.x, dy = b.y - a.y;
       const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
       // 父子/合并比 group/shell-link 更强，家族靠得更近。
-      const w = e.type === 'parent' || e.type === 'merged' ? 2.4 : e.type === 'group' ? 1.4 : 1;
+      const w = e.type === 'parent' || e.type === 'merged' ? 2.4
+        : e.type === 'group' || e.type === 'split_from' || e.type === 'fork_from' ? 1.4 : 1;
       const f = (d * d) / k * (0.6 + w * 0.1);
       const ux = dx / d, uy = dy / d;
       a.fx += ux * f; a.fy += uy * f;
@@ -458,6 +462,9 @@
     if (nd.parentTaskId) lines.push(`父任务：${nd.parentTaskId}`);
     if (nd.groupId) lines.push(`任务组：${nd.groupId}`);
     if (nd.mergedInto) lines.push(`已合并进：${nd.mergedInto}`);
+    if (nd.separatedFromTaskId) lines.push(`分离自：${nd.separatedFromTaskId}`);
+    if (nd.forkedFromTaskId) lines.push(`复制自：${nd.forkedFromTaskId}`);
+    if (nd.independentFromSessionId) lines.push(`独立继续来源：${nd.independentFromSessionId}`);
     if (nd.chatSessionId || nd.sessionId) lines.push(`绑定会话：${nd.chatSessionId || nd.sessionId}`);
     if (nd.kind !== 'shell' && nd.sources && nd.sources.length) {
       lines.push(`记录来源：${nd.sources.join(' + ')}`);

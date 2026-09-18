@@ -78,6 +78,7 @@ function createTaskShellHost(deps) {
       getRecord: id => deps.records.get(id),
       onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
       onSeparationChanged: id => deps.onSeparationChanged?.(id),
+      onRelationChanged: id => deps.onRelationChanged?.(id),
       getHistory: deps.loadHistory,
       // Read-only view of manual re-attribution. Missing overlay ports (tests,
       // older hosts) simply keep the canonical annotation.
@@ -309,6 +310,10 @@ function createTaskShellHost(deps) {
         return taskOperationsRuntime.overlay.get(sessionId, turnId)?.taskId ?? message.taskId ?? null;
       },
       taskTitle: taskId => store.get('task', taskId)?.title || null,
+      // 整段批量整理（P4）：区间由服务端按会话内轮次顺序展开，客户端无需先
+      // 把没加载的历史拉到页面上，也无法引用不存在的轮次。
+      turnOrderOf: sessionId => (deps.displayHistory || deps.loadHistory)(sessionId)
+        .filter(message => message?.turnId).map(message => message.turnId),
     });
     return taskOperationsRuntime;
   }
@@ -345,7 +350,8 @@ function createTaskShellHost(deps) {
         taskEntry: id => getRuntime().bindPlannedTask(id),
         taskIndex: (id, options) => taskIndex(id, options),
         taskOperations: () => taskOperations(),
-        attributionDecisions: () => attributionDecisions(),
+    attributionDecisions: () => attributionDecisions(),
+        relations: () => getRuntime().relations,
         independent: () => getRuntime().independent,
         artifacts: async id => {
           const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');

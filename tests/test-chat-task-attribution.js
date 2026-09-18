@@ -199,6 +199,56 @@ test('the target picker offers every task in the shell and re-previews on switch
   controller.dispose();
 });
 
+test('independent continue asks once, applies a ready request, and reuses one operation id', async () => {
+  const seen = [];
+  const opened = [];
+  const { f, controller } = controllerFor({
+    confirmContinue: async () => true,
+    openUrl: url => { opened.push(url); return true; },
+    request: async (method, path, body) => {
+      seen.push({ method, path, body });
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.endsWith('/independent-continue')) return { id: 'ind_1', taskId: 'tsk_a', state: 'ready' };
+      if (path.endsWith('/apply')) return { id: 'ind_1', taskId: 'tsk_a', state: 'applied' };
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+  });
+  f.messages.children.push(turn('s1', 't1', 'tsk_a', 'A001'));
+  controller.setEnabled(true);
+  await settle();
+  const bar = f.doc.body.children[1];
+  const resume = bar.children.find(node => node.className === 'task-attribution-continue');
+  assert.equal(resume.disabled, false, 'the selected target is enough to ask for an independent environment');
+  await controller.continueTask();
+  assert.deepEqual(seen.map(call => call.path), ['/api/task-shells/sh_1/tasks/tsk_a/independent-continue',
+    '/api/task-continuations/ind_1/apply']);
+  assert.match(seen[0].body.clientMsgId, /^attr-/);
+  assert.deepEqual(opened, ['/air?task=tsk_a']);
+  controller.dispose();
+});
+
+test('a waiting independent-continue answer is reported as a state, not a failure', async () => {
+  const { f, controller } = controllerFor({
+    confirmContinue: async () => true,
+    request: async (method, path) => {
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.endsWith('/independent-continue')) return { id: 'ind_1', taskId: 'tsk_a', state: 'waiting', reason: 'turn_busy' };
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+  });
+  f.messages.children.push(turn('s1', 't1', 'tsk_a', 'A001'));
+  controller.setEnabled(true);
+  await settle();
+  const bar = f.doc.body.children[1];
+  const summary = bar.children.find(node => node.className === 'task-attribution-summary');
+  await controller.continueTask();
+  assert.equal(summary.textContent, 'taskAttributionContinueWaiting');
+  assert.equal(summary.dataset.tone, 'warn');
+  assert.equal(bar.children.find(node => node.className === 'task-attribution-continue').disabled, false,
+    'a suspended request can be asked about again');
+  controller.dispose();
+});
+
 test('a blocked preview disables apply and explains why', async () => {
   const { f, controller } = controllerFor({
     request: async (method, path, body) => (path.endsWith('/preview')

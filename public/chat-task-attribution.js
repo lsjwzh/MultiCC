@@ -35,6 +35,8 @@
     const loadIndex = typeof options.loadIndex === 'function' ? options.loadIndex : null;
     const loadSuggestions = typeof options.loadSuggestions === 'function' ? options.loadSuggestions : null;
     const onApplied = typeof options.onApplied === 'function' ? options.onApplied : null;
+    const confirmContinue = typeof options.confirmContinue === 'function' ? options.confirmContinue : null;
+    const openUrl = typeof options.openUrl === 'function' ? options.openUrl : null;
     const report = typeof options.report === 'function' ? options.report : () => {};
     const makeId = typeof options.makeId === 'function' ? options.makeId
       : () => `attr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -85,13 +87,20 @@
     cancel.type = 'button';
     cancel.className = 'task-attribution-cancel';
     cancel.textContent = t('taskAttributionCancel');
+    // 独立继续（P3）作用于选中的目标任务本身，与「移动哪些轮次」无关，
+    // 所以它自己的按钮不参与勾选状态。
+    const resume = doc.createElement('button');
+    resume.type = 'button';
+    resume.className = 'task-attribution-continue';
+    resume.textContent = t('taskAttributionContinue');
+    resume.disabled = true;
     // Automatic suggestions (P2 `suggest` tier) live above the picker: they are
     // the same verdict the picker would produce by hand, already recorded and
     // waiting for a yes or no.
     const proposals = doc.createElement('div');
     proposals.className = 'task-attribution-suggestions';
     proposals.hidden = true;
-    bar.append(proposals, hint, count, select, summary, apply, cancel);
+    bar.append(proposals, hint, count, select, summary, apply, cancel, resume);
 
     function labelOf(task) {
       const code = text(task?.shortCode).trim().toUpperCase();
@@ -125,6 +134,10 @@
       apply.disabled = busy || !preview || preview.changed === 0 || (preview.blocked || []).length > 0
         || selected.size === 0 || !targetId;
       cancel.disabled = busy;
+      resume.disabled = busy || !targetId || !request || !scope;
+      resume.title = targetId
+        ? t('taskAttributionContinueConfirm').replace('{task}', targetLabel())
+        : t('taskAttributionContinue');
     }
 
     function taskLabel(taskId) {
@@ -247,6 +260,69 @@
 
     function taskOfTurn(key) {
       return picks.get(key)?.taskId || '';
+    }
+
+    // Independent continuation never waits on the browser: the request is a
+    // durable server-side operation, and a `waiting` answer is an outcome, not
+    // an error. The operation id is minted once per task and reused on retry,
+    // so a lost response cannot prepare two environments.
+    const attempts = new Map();
+    function reasonLabel(reason) {
+      switch (text(reason)) {
+        case 'turn_busy': return t('taskAttributionWaitTurnBusy');
+        case 'awaiting_answer': return t('taskAttributionWaitAnswer');
+        case 'queued_work': return t('taskAttributionWaitQueued');
+        case 'uncommitted_changes': return t('taskAttributionWaitDirty');
+        case 'undelivered_changes': return t('taskAttributionWaitUndelivered');
+        case 'capacity': return t('taskAttributionWaitCapacity');
+        case 'workspace_missing': return t('taskAttributionWaitWorkspace');
+        default: return text(reason) || t('taskAttributionWaitWorkspace');
+      }
+    }
+
+    async function continueTask() {
+      if (busy || !targetId || !request || !scope) return null;
+      const taskId = targetId;
+      const label = targetLabel();
+      if (confirmContinue && !(await confirmContinue(t('taskAttributionContinueConfirm').replace('{task}', label)))) return null;
+      busy = true;
+      renderBar();
+      try {
+        const { shellId } = await scope();
+        let clientMsgId = attempts.get(taskId);
+        if (!clientMsgId) { clientMsgId = makeId(); attempts.set(taskId, clientMsgId); }
+        const base = `/api/task-shells/${encodeURIComponent(shellId)}/tasks/${encodeURIComponent(taskId)}`;
+        let operation = await request('POST', `${base}/independent-continue`, { clientMsgId });
+        if (operation?.state === 'waiting' || operation?.state === 'requested') {
+          setSummary(t('taskAttributionContinueWaiting')
+            .replace('{task}', label).replace('{reason}', reasonLabel(operation.reason)), 'warn');
+          return operation;
+        }
+        if (operation?.state === 'preparing') {
+          setSummary(t('taskAttributionContinuePreparing').replace('{task}', label), 'warn');
+          return operation;
+        }
+        if (operation?.state !== 'ready' && operation?.state !== 'applied') {
+          throw Object.assign(new Error(operation?.reason || operation?.error?.code || 'continuation_failed'), { code: 'continuation_failed' });
+        }
+        if (operation.state === 'ready') {
+          operation = await request('POST', `/api/task-continuations/${encodeURIComponent(operation.id)}/apply`, {});
+        }
+        attempts.delete(taskId);
+        setSummary('');
+        showToast(t('taskAttributionContinueApplied').replace('{task}', label), null);
+        const url = operation?.taskId ? `/air?task=${encodeURIComponent(operation.taskId)}` : '';
+        if (url) openUrl?.(url);
+        onApplied?.(operation, { undone: false });
+        return operation;
+      } catch (error) {
+        setSummary(t('taskAttributionContinueFailed').replace('{error}', text(error?.message || error)), 'error');
+        report(error);
+        return null;
+      } finally {
+        busy = false;
+        renderBar();
+      }
     }
 
     async function refreshPreview() {
@@ -434,6 +510,7 @@
     toggle.onclick = () => setEnabled(!enabled);
     cancel.onclick = () => setEnabled(false);
     apply.onclick = () => { void applyNow(); };
+    resume.onclick = () => { void continueTask(); };
     select.onchange = () => { targetId = text(select.value); clearPreview(); renderBar(); void refreshPreview(); };
 
     doc.body.append(toggle, bar);
@@ -455,6 +532,7 @@
       suggestions: () => [...suggestions],
       refreshSuggestions,
       applyNow,
+      continueTask,
       dispose() { closeToast(); observer?.disconnect(); toggle.remove(); bar.remove(); },
     };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
