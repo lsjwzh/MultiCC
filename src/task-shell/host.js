@@ -11,10 +11,19 @@ const {
 } = require('./context');
 const { mountTaskShellRoutes } = require('./routes');
 const { shellHistoryPage, watchShellHistory } = require('./chat-history');
+const { createAttributionSettingsFromEnv } = require('./attribution-settings');
 
 function createTaskShellHost(deps) {
   let runtime, store, candidates;
   const workspace = require('./workspace').createShellWorkspaceHost(deps);
+  // Automatic attribution (P2) is a host policy switch, not a per-call flag:
+  // it lives with the other host settings so a restart can neither widen nor
+  // narrow it by accident. The host owns it because it is the only layer that
+  // may change task identity.
+  const attributionSettings = createAttributionSettingsFromEnv({
+    writeEnv: deps.taskAttribution?.writeEnv,
+    reportFailure: deps.taskAttribution?.reportFailure,
+  });
   const shortText = (value, limit = 500) => {
     if (value == null) return '';
     let text;
@@ -47,9 +56,15 @@ function createTaskShellHost(deps) {
     // must not expose that ended turn as a valid cancel/steer target.
     return live?.isStreaming || live?.claudeProc ? live._activeTurn?.turnId || null : null;
   }
+  // Reading the store must not require the whole runtime: the decision journal
+  // is reachable from the classifier before any shell has been resolved.
+  function ensureStore() {
+    if (!store) store = createTaskShellStore(deps.file);
+    return store;
+  }
   function getRuntime() {
     if (runtime) return runtime;
-    store = createTaskShellStore(deps.file);
+    ensureStore();
     candidates = require('../task-routing/candidates').createCandidateStore(store);
     runtime = createTaskShellRuntime({
       store,
@@ -62,6 +77,7 @@ function createTaskShellHost(deps) {
       getRecord: id => deps.records.get(id),
       onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
       onSeparationChanged: id => deps.onSeparationChanged?.(id),
+      onRelationChanged: id => deps.onRelationChanged?.(id),
       getHistory: deps.loadHistory,
       // Read-only view of manual re-attribution. Missing overlay ports (tests,
       // older hosts) simply keep the canonical annotation.
@@ -107,6 +123,22 @@ function createTaskShellHost(deps) {
       isDeletedTask: id => deps.getTaskBoard?.()?.getBoard?.().deletedTaskIds?.includes(id),
       isTaskLifecycleBusy: id => deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(id),
       prepareExecution: workspace.prepareExecution, captureForkBaseline: workspace.captureForkBaseline,
+      captureIndependentBaseline: workspace.captureIndependentBaseline,
+      // Cancelling a prepared-but-unused execution reclaims only what this
+      // request created: a planned record with no history and no live work.
+      // Anything else is left to the user and reported as kept.
+      discardExecution: async (sessionId, { taskId } = {}) => {
+        const record = deps.records.get(sessionId);
+        if (!record || record.taskBoundTaskId !== taskId) return { ok: false, code: 'not_created_here' };
+        if ((deps.loadHistory?.(sessionId) || []).length) return { ok: false, code: 'has_history' };
+        const dir = deps.directories.get(record.dirId);
+        if (record.worktreePath && record.branch && dir) {
+          await require('../git/service').gitWorktreeRollbackCreate(dir.path, record.worktreePath, record.branch, { sessionId });
+        }
+        deps.persistRecords('task-shell.independent-cancel', map => map.delete(sessionId));
+        deps.resetChatState?.(sessionId);
+        return { ok: true };
+      },
       deliveryEvidence: (id, turnId) => deps.getWorkspaceAdmission?.()?.deliveryEvidence(id, turnId),
       verifyDeliveryBaseline: (integration, id) => {
         const record = deps.records.get(id), cwd = record && deps.directories.get(record.dirId)?.path;
@@ -277,23 +309,63 @@ function createTaskShellHost(deps) {
         return taskOperationsRuntime.overlay.get(sessionId, turnId)?.taskId ?? message.taskId ?? null;
       },
       taskTitle: taskId => store.get('task', taskId)?.title || null,
+      // 整段批量整理（P4）：区间由服务端按会话内轮次顺序展开，客户端无需先
+      // 把没加载的历史拉到页面上，也无法引用不存在的轮次。
+      turnOrderOf: sessionId => (deps.displayHistory || deps.loadHistory)(sessionId)
+        .filter(message => message?.turnId).map(message => message.turnId),
     });
     return taskOperationsRuntime;
   }
   let taskOperationsRuntime = null;
-  return {
-    mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open,
-      taskEntry: id => getRuntime().bindPlannedTask(id),
-      taskIndex: (id, options) => taskIndex(id, options),
-      taskOperations: () => taskOperations(),
-      artifacts: async id => {
-        const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
-        return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
+  // Automatic attribution (P2): the classifier's verdict is journalled, and the
+  // mode decides whether the host is allowed to act on it. The journal and the
+  // manual overlay share one store and one write path, so "who moved this turn"
+  // is always answerable from the same place.
+  function attributionDecisions() {
+    if (attributionDecisionsRuntime) return attributionDecisionsRuntime;
+    ensureStore();
+    attributionDecisionsRuntime = require('./attribution-decisions').createAttributionDecisions({
+      store,
+      operations: taskOperations(),
+      scopeOf: shellId => getRuntime().chatScope(shellId),
+      settleAttribution: (sessionId, receiptId, attribution) =>
+        getRuntime().settleAttribution(sessionId, receiptId, attribution),
+      restoreSettledCursor: (shellId, options) => getRuntime().restoreSettledCursor(shellId, options),
+      isTurnBusy: (sessionId, turnId) => {
+        const record = deps.records.get(sessionId);
+        const pending = record?.taskState?.pendingUserInput;
+        if (pending && pending.resolved !== true && pending.turnId === turnId) return true;
+        return currentTurn(sessionId) === turnId;
       },
-      history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
-        deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) }),
+      taskTitle: taskId => store.get('task', taskId)?.title || null,
+      onAttributionChanged: id => deps.onAttributionChanged?.(id),
+    });
+    return attributionDecisionsRuntime;
+  }
+  let attributionDecisionsRuntime = null;
+  return {
+    mountRoutes: app => {
+      mountTaskShellRoutes(app, { getRuntime, open,
+        taskEntry: id => getRuntime().bindPlannedTask(id),
+        taskIndex: (id, options) => taskIndex(id, options),
+        taskOperations: () => taskOperations(),
+    attributionDecisions: () => attributionDecisions(),
+        relations: () => getRuntime().relations,
+        independent: () => getRuntime().independent,
+        artifacts: async id => {
+          const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
+          return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
+        },
+        history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
+          deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) });
+      attributionSettings.mount(app);
+      // 独立继续的等待队列由服务端推进：重启后恢复，不依赖页面开着。
+      getRuntime().independent.start();
+    },
     taskIndex,
     taskOperations,
+    attributionSettings: () => attributionSettings,
+    attributionDecisions,
     chatScope: (id, sessionId) => getRuntime().chatScope(id, sessionId),
     chatHistory: (id, options) => shellHistoryPage(getRuntime().chatScope(id, options.activeSessionId),
       deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }),
@@ -338,6 +410,15 @@ function createTaskShellHost(deps) {
     taskSeparation: id => getRuntime().separation.forTask(id),
     proposeAttribution: (id, receiptId, result) => { getRuntime(); return candidates.propose(id, receiptId, result); },
     attributionCandidate: id => { getRuntime(); return candidates.latest(id); },
+    // The classifier reports what it saw; the mode decides what may happen.
+    // Returning the planned action lets the caller stop before touching
+    // identity, which is what makes shadow and suggest genuinely non-mutating.
+    recordAttributionDecision: (id, receiptId, result = {}) => {
+      ensureStore();
+      return attributionDecisions().record(id, receiptId, {
+        ...result, mode: attributionSettings.getMode(),
+      });
+    },
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
     createTask: input => getRuntime().createStandalone(input),
     roleBindings: id => getRuntime().roles.current(id), updateRoleBindings: (id, input) => getRuntime().roles.update(id, input),
@@ -347,7 +428,7 @@ function createTaskShellHost(deps) {
     prepareContext: (id, options) => owns(id) ? getRuntime().prepareContext(id, options) : null,
     contextSent: (...args) => getRuntime().contextSent(...args),
     contextComplete: (...args) => getRuntime().contextComplete(...args),
-    close: () => store?.close(),
+    close: () => { try { runtime?.independent?.stop(); } catch (_) {} store?.close(); },
   };
 }
 

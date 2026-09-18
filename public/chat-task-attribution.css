@@ -82,6 +82,60 @@
   font-size: 12px;
   box-shadow: var(--chat-shadow, 0 12px 28px rgba(0,0,0,.34));
 }
+/* Automatic suggestions: recorded verdicts waiting for a yes or no. They sit
+   above the manual controls because acting on one is the shorter path. */
+.task-attribution-suggestions {
+  flex: 1 0 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--chat-line, #30363d);
+}
+.task-attribution-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.task-attribution-suggestion-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--chat-warning, #d29922);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.task-attribution-suggestion-accept, .task-attribution-suggestion-dismiss {
+  padding: 2px 8px;
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 7px;
+  background: var(--chat-soft, #21262d);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.task-attribution-suggestion-accept:hover { color: var(--chat-blue, #58a6ff); border-color: var(--chat-blue, #58a6ff); }
+.task-attribution-suggestion-dismiss:hover { color: var(--chat-muted, #8b949e); }
+/* A suggestion is worth noticing without opening the mode. */
+.task-attribution-toggle[data-suggestions]:not([data-suggestions="0"]) {
+  color: var(--chat-warning, #d29922);
+  border-color: var(--chat-warning, #d29922);
+}
+/* 独立继续是任务级动作，和「移动轮次」不是一回事：给它一条竖线，别看起来像
+   第二个应用按钮。 */
+.task-attribution-continue {
+  padding: 2px 9px;
+  border: 1px solid var(--chat-line, #30363d);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--chat-soft, #21262d);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.task-attribution-continue:hover:not(:disabled) { color: var(--chat-warning, #d29922); border-color: var(--chat-warning, #d29922); }
+.task-attribution-continue:disabled { opacity: .55; cursor: default; }
 .task-attribution-hint { color: var(--chat-muted, #8b949e); }
 .task-attribution-count { font-weight: 600; white-space: nowrap; }
 .task-attribution-summary { flex: 1 1 160px; min-width: 0; color: var(--chat-muted, #8b949e); }

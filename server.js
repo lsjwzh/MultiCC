@@ -76,7 +76,7 @@ const { createCliAdapters } = require('./src/cli-adapters');
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
-const { composeMessage, renderPrompt } = require('./src/message-composer');
+const { renderPrompt } = require('./src/message-composer');
 const {
   applyCuratedMemoryAction,
   atomicWrite: atomicWriteMemoryFile,
@@ -183,7 +183,7 @@ const { recordAdapterUserInput, createUserInputSignalHost } = require('./src/cla
 const { createHostPrompts } = require('./src/chat/host-prompts');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
-const { createSafeProgressReducer, createDispatchProgressSubscription } = require('./src/dispatch/progress');
+const { createDispatchProgressSubscription } = require('./src/dispatch/progress');
 const { createClassifyStateMachine } = require('./src/classify/state-machine');
 const { createAuxRunLog, createAuxRunRoutes } = require('./src/routes/aux-runs');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
@@ -202,7 +202,6 @@ const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost, createTaskRunStreamEmitter } = require('./src/task-context-host');
 const { createSessionWorkHost } = require('./src/session-work/host');
 const {
-  TurnRequestError,
   normalizeTurnRequest,
   planTurnAdmission,
   createDurableMessageProof,
@@ -954,7 +953,6 @@ function cwdForSession(session) {
 // chat state, effort and the canonical busy predicate.
 //
 const {
-  dispatchableSessionsFor,
   dispatchTargetHintFor,
   buildDispatchContextPrompt,
 } = createDispatchTargeting({ records: persistedSessions, chatSessions, normalizeEffort, isTargetBusy: dispatchTargetBusy, boundTaskTitleFor: id => taskBoardRuntime?.getBoard()?.tasks?.[id]?.title || '' });
@@ -1409,7 +1407,6 @@ const classifyStateMachine = createClassifyStateMachine({
   }),
 });
 const {
-  recordTaskBoardGoal,
   dispatchStateAction,
   isInjectedOrJunkGoal,
   isSystemInjectedMsg,
@@ -1897,6 +1894,7 @@ mountHostWriteRoutes(app, {
     process.env.CLAUDE_OFFICIAL_VIA_PROXY = enabled ? '1' : '0';
   },
   macosPower, batteryGuard: batteryGuardRuntime,
+  taskAttributionMode: { get: () => taskShellHost.attributionSettings().getMode(), set: mode => taskShellHost.attributionSettings().setMode(mode) },
   log: message => console.log(message),
   reportFailure: (stage, category) => reportHostControlFailure('host_write', stage, category),
 });
@@ -2056,6 +2054,8 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   defaultTaskRuntime: () => ({ cli: SUPPORTED_CHAT_CLIS.find(cli => cliAvailabilitySummary()[cli]?.available) || 'claude' }), taskShortCode,
   taskGraphContext: taskGraphContextOf,
   onStateTargetChanged: id => workspaceRuntime.publishSessionView(id), onSeparationChanged: id => chatBroadcast(id, { type: 'task_separation_updated' }),
+  onAttributionChanged: id => chatBroadcast(id, { type: 'task_attribution_updated' }),
+  taskAttribution: { writeEnv: writeEnvFile, reportFailure: reportHostControlFailure, isLocalRequest },
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
   loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),

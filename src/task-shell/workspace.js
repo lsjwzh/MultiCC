@@ -75,6 +75,28 @@ function createShellWorkspaceHost(deps) {
       return { commit: snapshot.head, branch: snapshot.branch, sourceSessionId: sid, sourceWorkspace: record.worktreePath, ...(captureHistory ? { history: await captureHistory() } : {}) };
     } finally { forkLocks.delete(key); }
   }
-  return { group, busy, prepareExecution, captureForkBaseline };
+  // Independent continuation needs the same facts the fork path proves, but as
+  // data rather than exceptions: "not yet" is a waiting reason here, not a
+  // failure the user has to act on. Nothing is copied — the caller only freezes
+  // a baseline commit and the task's own records.
+  async function captureIndependentBaseline(task) {
+    const sid = [task.sessionId, task.chatSessionId].find(id => deps.records.has(id));
+    const record = sid && deps.records.get(sid);
+    if (!record?.worktreePath || !record.branch) return { ok: false, reason: 'workspace_missing' };
+    const dir = deps.directories.get(task.dirId);
+    if (!dir) return { ok: false, reason: 'directory_missing' };
+    try {
+      return await defaultRepoActor.run(dir.path, 'task-independent-baseline', async ({ execGit }) => {
+        const dirty = (await execGit(record.worktreePath, ['status', '--porcelain', '--untracked-files=all'])) || '';
+        const ahead = Number(await execGit(record.worktreePath, ['rev-list', '--count', `${dir.baseBranch}..HEAD`])) || 0;
+        const head = (await execGit(record.worktreePath, ['rev-parse', 'HEAD'])).trim();
+        return { ok: true, commit: head, branch: record.branch, dirty: !!dirty, ahead,
+          sourceSessionId: sid, sourceWorkspace: record.worktreePath, baseBranch: dir.baseBranch };
+      }, { sessionId: sid });
+    } catch (error) {
+      return { ok: false, reason: 'workspace_unreadable' };
+    }
+  }
+  return { group, busy, prepareExecution, captureForkBaseline, captureIndependentBaseline };
 }
 module.exports = { sharedWorkspace, createShellWorkspaceHost };

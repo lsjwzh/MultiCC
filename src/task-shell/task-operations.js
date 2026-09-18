@@ -32,7 +32,7 @@ function createAttributionOverlay(store) {
   return { get, apply };
 }
 
-function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, taskTitle, effectiveTaskOf, now = () => Date.now() }) {
+function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, taskTitle, effectiveTaskOf, turnOrderOf, now = () => Date.now() }) {
   const overlay = createAttributionOverlay(store);
   const flights = new Map();
 
@@ -56,6 +56,19 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
     const taskId = typeof target?.taskId === 'string' ? target.taskId.trim() : '';
     if (!taskId || taskId.length > 200) throw fail('invalid_target', 'a linked target task is required', 400);
     return { taskId };
+  }
+
+  // 批量整理：一次选一整段（含两端）。区间在服务端按会话内轮次顺序解析，
+  // 客户端不需要先把没加载的历史拉到页面上，也无法伪造不存在的轮次。
+  function expandRange(range) {
+    const sessionId = typeof range?.sessionId === 'string' ? range.sessionId.trim() : '';
+    const from = typeof range?.fromTurnId === 'string' ? range.fromTurnId.trim() : '';
+    const to = typeof range?.toTurnId === 'string' ? range.toTurnId.trim() : '';
+    if (!sessionId || !from || !to || typeof turnOrderOf !== 'function') throw fail('invalid_range', 'a session and both turn ends are required', 400);
+    const ordered = (turnOrderOf(sessionId) || []).filter(turnId => typeof turnId === 'string' && turnId);
+    const start = ordered.indexOf(from), end = ordered.indexOf(to);
+    if (start < 0 || end < 0) throw fail('range_not_found', 'A selected turn is no longer part of this conversation', 409);
+    return ordered.slice(Math.min(start, end), Math.max(start, end) + 1).map(turnId => ({ sessionId, turnId }));
   }
 
   // Effects are computed from the same overlay the read layer uses, so the
@@ -86,8 +99,8 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
       .map(({ sessionId, turnId }) => ({ sessionId, turnId, reason: 'turn_busy' }));
   }
 
-  function preview({ scope, turns, target }) {
-    const normalizedTurns = normalizeTurns(turns), normalizedTarget = normalizeTarget(target);
+  function preview({ scope, turns, target, range }) {
+    const normalizedTurns = normalizeTurns(range ? expandRange(range) : turns), normalizedTarget = normalizeTarget(target);
     const revision = revisionOf(scope);
     const blocked = [...missingTurns(normalizedTurns), ...blockedTurns(normalizedTurns)];
     const effects = effectsOf(normalizedTurns, normalizedTarget);
@@ -108,9 +121,9 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
       undoneAt: record.undoneAt || null, lastError: record.lastError || null };
   }
 
-  async function apply({ scope, clientMsgId, previewToken, turns, target, expectedRevision, operationId }) {
+  async function apply({ scope, clientMsgId, previewToken, turns: rawTurns, target, expectedRevision, operationId, range }) {
     if (typeof clientMsgId !== 'string' || !/^[\w.:-]{1,160}$/.test(clientMsgId)) throw fail('invalid_input', 'invalid clientMsgId', 400);
-    const normalizedTurns = normalizeTurns(turns), normalizedTarget = normalizeTarget(target);
+    const normalizedTurns = normalizeTurns(range ? expandRange(range) : rawTurns), normalizedTarget = normalizeTarget(target);
     const key = opKey(scope.shellId, clientMsgId);
     const fingerprint = hash({ turns: normalizedTurns, target: normalizedTarget });
     const inFlight = flights.get(key);

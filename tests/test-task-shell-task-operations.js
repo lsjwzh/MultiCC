@@ -31,6 +31,26 @@ function setup(extra = {}) {
   return { store, operations, scope, turns, target, bump: () => { revision = 'rev-2'; } };
 }
 
+test('a whole-range selection is expanded on the server, in conversation order', async () => {
+  const store = fakeStore();
+  const operations = createTaskOperations({ store, revisionOf: () => 'rev-1',
+    isTurnBusy: () => false, resolveTarget: async () => ({ id: 'tsk_b' }), taskTitle: () => 'Beta',
+    turnOrderOf: sessionId => (sessionId === 's1' ? ['t1', 't2', 't3', 't4'] : []) });
+  const scope = { shellId: 'sh_1', sessionIds: ['s1'] };
+  // Range edges may be given in either direction; the resolved set is the same
+  // whole segment, so a user clicking the wrong end cannot get half a change.
+  const preview = operations.preview({ scope, range: { sessionId: 's1', fromTurnId: 't3', toTurnId: 't2' }, target: { taskId: 'tsk_b' } });
+  assert.deepEqual(preview.effects.map(effect => effect.turnId), ['t2', 't3']);
+  const applied = await operations.apply({ scope, clientMsgId: 'm1', range: { sessionId: 's1', fromTurnId: 't1', toTurnId: 't4' },
+    target: { taskId: 'tsk_b' } });
+  assert.deepEqual(applied.effects.map(effect => effect.turnId), ['t1', 't2', 't3', 't4']);
+  assert.equal(operations.overlay.get('s1', 't4').taskId, 'tsk_b');
+  await assert.rejects(async () => operations.apply({ scope, clientMsgId: 'm2',
+    range: { sessionId: 's1', fromTurnId: 't1', toTurnId: 'gone' }, target: { taskId: 'tsk_b' } }), { code: 'range_not_found' });
+  assert.throws(() => operations.preview({ scope, range: { sessionId: 's1', fromTurnId: 't1' }, target: { taskId: 'tsk_b' } }),
+    { code: 'invalid_range' });
+});
+
 test('preview describes the change without writing anything', () => {
   const { store, operations, scope, turns, target } = setup();
   const preview = operations.preview({ scope, turns, target });

@@ -70,6 +70,66 @@ function controllerFor(extra = {}) {
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
+test('recorded automatic suggestions are counted on the toggle and can be accepted', async () => {
+  // The fake server keeps its own state, so the refresh after a decision has to
+  // see the same resolved queue a real host would return.
+  const state = [
+    { id: 'dec_1', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending', taskName: 'Beta' },
+    { id: 'dec_2', fromTaskId: 'tsk_a', toTaskId: 'tsk_c', state: 'dismissed' },
+  ];
+  const decide = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: state.map(item => ({ ...item })) }),
+    request: async (method, path, body) => {
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.includes('/attribution-decisions/')) {
+        decide.push({ path, body });
+        state[0] = { ...state[0], state: 'applied' };
+        return { id: 'dec_1', state: 'applied', toTaskId: 'tsk_b', apply: { kind: 'overlay' } };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+  });
+  await settle();
+  const toggle = f.doc.body.children[0];
+  assert.equal(toggle.dataset.suggestions, '1', 'only pending suggestions are counted');
+  const bar = f.doc.body.children[1];
+  const proposals = bar.children[0];
+  assert.equal(proposals.hidden, false);
+  assert.equal(proposals.children.length, 1, 'a dismissed suggestion is not offered again');
+  assert.equal(proposals.children[0].children[0].textContent, 'taskAttributionSuggestion');
+  proposals.children[0].children[1].onclick();
+  await settle();
+  assert.equal(decide.length, 1);
+  assert.equal(decide[0].path, '/api/task-shells/sh_1/attribution-decisions/dec_1/accept');
+  assert.match(decide[0].body.clientMsgId, /^attr-/);
+  assert.equal(toggle.dataset.suggestions, '0', 'an accepted suggestion leaves the queue');
+  assert.equal(proposals.hidden, true);
+  assert.deepEqual(proposals.children, []);
+  controller.dispose();
+});
+
+test('dismissing a suggestion never previews or applies anything', async () => {
+  let pending = [{ id: 'dec_9', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending' }];
+  const calls = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: pending.map(item => ({ ...item })) }),
+    request: async (method, path) => {
+      calls.push(path);
+      pending = [{ id: 'dec_9', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'dismissed' }];
+      return { id: 'dec_9', state: 'dismissed' };
+    },
+  });
+  await settle();
+  const proposals = f.doc.body.children[1].children[0];
+  proposals.children[0].children[2].onclick();
+  await settle();
+  assert.deepEqual(calls, ['/api/task-shells/sh_1/attribution-decisions/dec_9/dismiss']);
+  assert.equal(f.doc.body.children[0].dataset.suggestions, '0');
+  assert.equal(proposals.hidden, true);
+  controller.dispose();
+});
+
 test('the toggle stays hidden until a movable turn exists', () => {
   const { f, controller } = controllerFor();
   const toggle = f.doc.body.children[0];
@@ -136,6 +196,56 @@ test('the target picker offers every task in the shell and re-previews on switch
   const summary = f.doc.body.children[1].children.find(node => node.className === 'task-attribution-summary');
   assert.equal(summary.textContent, 'taskAttributionPreview');
   assert.equal(summary.dataset.tone, 'ok');
+  controller.dispose();
+});
+
+test('independent continue asks once, applies a ready request, and reuses one operation id', async () => {
+  const seen = [];
+  const opened = [];
+  const { f, controller } = controllerFor({
+    confirmContinue: async () => true,
+    openUrl: url => { opened.push(url); return true; },
+    request: async (method, path, body) => {
+      seen.push({ method, path, body });
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.endsWith('/independent-continue')) return { id: 'ind_1', taskId: 'tsk_a', state: 'ready' };
+      if (path.endsWith('/apply')) return { id: 'ind_1', taskId: 'tsk_a', state: 'applied' };
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+  });
+  f.messages.children.push(turn('s1', 't1', 'tsk_a', 'A001'));
+  controller.setEnabled(true);
+  await settle();
+  const bar = f.doc.body.children[1];
+  const resume = bar.children.find(node => node.className === 'task-attribution-continue');
+  assert.equal(resume.disabled, false, 'the selected target is enough to ask for an independent environment');
+  await controller.continueTask();
+  assert.deepEqual(seen.map(call => call.path), ['/api/task-shells/sh_1/tasks/tsk_a/independent-continue',
+    '/api/task-continuations/ind_1/apply']);
+  assert.match(seen[0].body.clientMsgId, /^attr-/);
+  assert.deepEqual(opened, ['/air?task=tsk_a']);
+  controller.dispose();
+});
+
+test('a waiting independent-continue answer is reported as a state, not a failure', async () => {
+  const { f, controller } = controllerFor({
+    confirmContinue: async () => true,
+    request: async (method, path) => {
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.endsWith('/independent-continue')) return { id: 'ind_1', taskId: 'tsk_a', state: 'waiting', reason: 'turn_busy' };
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+  });
+  f.messages.children.push(turn('s1', 't1', 'tsk_a', 'A001'));
+  controller.setEnabled(true);
+  await settle();
+  const bar = f.doc.body.children[1];
+  const summary = bar.children.find(node => node.className === 'task-attribution-summary');
+  await controller.continueTask();
+  assert.equal(summary.textContent, 'taskAttributionContinueWaiting');
+  assert.equal(summary.dataset.tone, 'warn');
+  assert.equal(bar.children.find(node => node.className === 'task-attribution-continue').disabled, false,
+    'a suspended request can be asked about again');
   controller.dispose();
 });
 

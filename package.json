@@ -46,7 +46,7 @@
     "test:git-push": "node tests/test-git-push.js",
     "test:repo-actor": "node --test tests/test-repo-actor.js tests/test-git-safety.js",
     "test:power": "node tests/test-macos-power.js",
-    "test:task-shells": "node --test tests/test-task-shells.js tests/test-task-shell-http.js tests/test-shell-chat-continuity.js tests/test-task-shell-ownership.js tests/test-task-shell-transitions.js tests/test-task-separation.js tests/test-chat-task-separation.js tests/test-chat-task-index.js tests/test-chat-task-attribution.js tests/test-task-shell-task-index.js tests/test-task-shell-task-operations.js tests/test-context-plan.js tests/test-task-graph-context.js tests/test-chat-usage-readout.js",
+    "test:task-shells": "node --test tests/test-task-shells.js tests/test-task-shell-http.js tests/test-shell-chat-continuity.js tests/test-task-shell-ownership.js tests/test-task-shell-transitions.js tests/test-task-separation.js tests/test-chat-task-separation.js tests/test-chat-task-index.js tests/test-chat-task-attribution.js tests/test-task-shell-task-index.js tests/test-task-shell-task-operations.js tests/test-task-shell-attribution-decisions.js tests/test-task-shell-independent-continue.js tests/test-task-shell-relations.js tests/test-context-plan.js tests/test-task-graph-context.js tests/test-chat-usage-readout.js",
     "test:task-shells:isolated": "node tests/test-task-shell-isolated.js && node tests/test-task-shell-context-isolation.js",
     "test:task-first:cdp": "node --test tests/test-air-task-first-cdp.js",
     "test:task-first:isolated": "node tests/test-task-first-isolated.js",
@@ -57,7 +57,7 @@
     "lab:down": "docker compose -f docker/task-shell/compose.yaml down",
     "lab:logs": "docker compose -f docker/task-shell/compose.yaml logs --tail=100 lab",
     "test:release:clean-install": "node scripts/build-task-shell-image.js --clean-install && docker run --rm --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --memory=3g --shm-size=256m multicc-clean-install-test:local",
-    "test:task-first": "node --test tests/test-task-attribution-eligibility.js tests/test-task-attribution-facts.js tests/test-workspace-inventory.js tests/test-workspace-admission.js tests/test-air-tasks.js tests/test-air-pins.js tests/test-air-manage-shell.js tests/test-air-ops.js tests/test-air-usage.js tests/test-delivery-evidence.js tests/test-task-role-bindings.js tests/test-task-first-migration.js tests/test-task-first-entry.js tests/test-cron-task-first.js"
+    "test:task-first": "node --test tests/test-task-attribution-eligibility.js tests/test-task-attribution-facts.js tests/test-attribution-mode.js tests/test-workspace-inventory.js tests/test-workspace-admission.js tests/test-air-tasks.js tests/test-air-pins.js tests/test-air-manage-shell.js tests/test-air-ops.js tests/test-air-usage.js tests/test-delivery-evidence.js tests/test-task-role-bindings.js tests/test-task-first-migration.js tests/test-task-first-entry.js tests/test-cron-task-first.js"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",
