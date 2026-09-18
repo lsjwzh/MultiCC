@@ -2054,7 +2054,8 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   defaultTaskRuntime: () => ({ cli: SUPPORTED_CHAT_CLIS.find(cli => cliAvailabilitySummary()[cli]?.available) || 'claude' }), taskShortCode,
   taskGraphContext: taskGraphContextOf,
   onStateTargetChanged: id => workspaceRuntime.publishSessionView(id), onSeparationChanged: id => chatBroadcast(id, { type: 'task_separation_updated' }),
-  onAttributionChanged: id => chatBroadcast(id, { type: 'task_attribution_updated' }),
+  onAttributionChanged: (id, detail) => chatBroadcast(id, {
+    ...(detail && typeof detail === 'object' ? detail : {}), type: 'task_attribution_updated' }),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
   loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),

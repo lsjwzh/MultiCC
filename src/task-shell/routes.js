@@ -91,6 +91,8 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
       attributionDecisions().accept(req.params.shellId, req.params.decisionId, { clientMsgId: req.body?.clientMsgId })));
     app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/dismiss', route((_runtime, req) =>
       attributionDecisions().dismiss(req.params.shellId, req.params.decisionId)));
+    app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/defer', route((_runtime, req) =>
+      attributionDecisions().defer(req.params.shellId, req.params.decisionId)));
     app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/undo', route((_runtime, req) =>
       attributionDecisions().undo(req.params.shellId, req.params.decisionId)));
   }
