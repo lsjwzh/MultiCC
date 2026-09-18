@@ -16,6 +16,20 @@
     return text(ref?.id || ref?.sourceMessageId || '').trim();
   }
 
+  // Reading line for the scroll-spy: the last rendered message whose top is
+  // above 34% of the viewport is the one the reader is on. Pure on purpose, so
+  // the rule is testable without a layout engine; nodes with no measurable rect
+  // are skipped instead of guessed.
+  function currentCodeAt(nodes, lineY) {
+    let code = '';
+    for (const node of nodes || []) {
+      const rect = typeof node?.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
+      if (!rect || !Number.isFinite(rect.top) || rect.top > lineY) continue;
+      code = codeOf(node?.dataset?.taskShortCode) || code;
+    }
+    return code;
+  }
+
   // Page-level glue for an index jump, kept here so the fallback order is
   // testable: the requested segment's anchor first, then the task's own
   // boundaries — when a message was deleted, the nearest still-visible record is
@@ -57,14 +71,33 @@
     const loadIndex = typeof options.loadIndex === 'function' ? options.loadIndex : null;
     const navigate = typeof options.navigate === 'function' ? options.navigate : null;
     const onMissing = typeof options.onMissing === 'function' ? options.onMissing : null;
+    // 「选为下一条输入目标」是显式动作：滚动与点击历史都只定位，不悄悄改发送
+    // 目标。只有拿到这条配置时才渲染这个按钮。
+    const selectTarget = options.selectTarget && typeof options.selectTarget === 'object'
+      ? createTargetAction({ ...options.selectTarget, translate }) : null;
     let open = false;
     try { open = storage?.getItem('multicc:task-index-open') === '1'; } catch (_) {}
+    let sortMode = 'order';
+    try { sortMode = storage?.getItem('multicc:task-index-sort') === 'code' ? 'code' : 'order'; } catch (_) {}
     let highlighted = null;
     let timer = null;
     let index = null;
     let loading = null;
     let pendingRef = null;
     let signature = '';
+    let filterText = '';
+    let currentCode = '';
+    let targetCode = '';
+    // Set by a choice the server already accepted. It wins until the next reload,
+    // so a read taken before that write cannot repaint the old target over it.
+    let chosenTarget = '';
+    let rendered = [];
+    let filterBarNode = null;
+    let emptyNote = null;
+    let sampled = false;
+    // Search only appears once the directory is long enough to need it, so a
+    // three-entry index stays a plain list.
+    const MIN_FILTER_ENTRIES = 8;
     // Codes whose anchors could not be located in this conversation. They stay
     // in the directory (the task exists) but must not keep looking live.
     const dead = new Set();
@@ -132,12 +165,38 @@
           segments: Array.isArray(task.segments) ? task.segments : [],
           capabilities: task.capabilities && typeof task.capabilities === 'object' ? task.capabilities : {},
           stale: task.stale === true,
+          target: task.target === true,
           node: null,
         }));
     }
 
     function entries() {
       return index && Array.isArray(index.tasks) ? serverEntries() : domEntries();
+    }
+
+    // 「按 4 字 ID 排序」只改呈现顺序，不改目录内容；默认仍是对话顺序，因为
+    // 它对应滚动位置。
+    function ordered() {
+      const list = entries();
+      return sortMode === 'code' ? [...list].sort((a, b) => a.code.localeCompare(b.code)) : list;
+    }
+
+    function matches(entry) {
+      const needle = filterText.trim().toLowerCase();
+      return !needle || `${entry.code} ${entry.title}`.toLowerCase().includes(needle);
+    }
+
+    // Filtering hides rows in place instead of rebuilding the rail: removing the
+    // focused input from the document (which a re-render would do) blurs it, and
+    // a directory you cannot type in would be worse than no search at all.
+    function applyFilter() {
+      let shown = 0;
+      for (const item of rendered) {
+        const keep = matches(item.entry);
+        item.row.hidden = !keep;
+        if (keep) shown += 1;
+      }
+      if (emptyNote) emptyNote.hidden = shown > 0;
     }
 
     function activate(node) {
@@ -184,61 +243,200 @@
       return true;
     }
 
-    function render() {
-      const list = entries();
-      const next = JSON.stringify(list.map(entry => [entry.code, entry.taskId, entry.title,
-        isStale(entry), entry.capabilities?.canDetach === true, entry.segments.length]));
-      if (next === signature) { toggle.hidden = list.length === 0; rail.hidden = !open || list.length === 0;
-        toggle.setAttribute('aria-expanded', String(!rail.hidden)); return; }
-      signature = next;
-      toggle.hidden = list.length === 0;
-      rail.hidden = !open || list.length === 0;
-      toggle.setAttribute('aria-expanded', String(!rail.hidden));
-      rail.replaceChildren(...list.map(entry => {
-        const row = doc.createElement('div');
-        row.className = 'task-index-row';
-        // A task whose history was trimmed or whose anchors were deleted still
-        // belongs in the directory, but its row must not look like a live one.
-        if (isStale(entry)) row.dataset.stale = 'true';
-        const button = doc.createElement('button');
-        button.type = 'button'; button.className = 'task-index-item';
-        button.textContent = entry.code;
-        button.title = entry.title ? `${entry.code} · ${entry.title}` : entry.code;
-        button.setAttribute('aria-label', button.title);
-        button.onclick = () => locate(entry, null);
-        row.append(button);
-        if (entry.segments.length > 1) {
-          const strip = doc.createElement('span');
-          strip.className = 'task-index-segments';
-          entry.segments.forEach((segment, position) => {
-            const dot = doc.createElement('button');
-            dot.type = 'button'; dot.className = 'task-index-segment';
-            dot.textContent = '·';
-            dot.title = translate('taskIndexSegmentLabel').replace('{n}', String(position + 1));
-            dot.setAttribute('aria-label', `${entry.code} ${dot.title}`);
-            dot.onclick = event => { event.stopPropagation?.(); locate(entry, segment); };
-            strip.append(dot);
-          });
-          row.append(strip);
-        }
-        if (entry.taskId && detach && entry.capabilities?.canDetach !== false) {
+    // The search box is built once per directory change and is only ever
+    // re-inserted as part of a fresh row set, never on a keystroke.
+    function filterBar() {
+      if (filterBarNode) return filterBarNode;
+      const bar = doc.createElement('div');
+      bar.className = 'task-index-filters';
+      const input = doc.createElement('input');
+      input.type = 'search';
+      input.className = 'task-index-search';
+      input.value = filterText;
+      input.placeholder = translate('taskIndexSearch');
+      input.setAttribute('aria-label', translate('taskIndexSearch'));
+      input.oninput = event => { filterText = text(event?.target?.value ?? input.value); applyFilter(); };
+      const sort = doc.createElement('button');
+      sort.type = 'button';
+      sort.className = 'task-index-sort';
+      sort.textContent = '⇅';
+      sort.dataset.sort = sortMode;
+      sort.title = translate(sortMode === 'code' ? 'taskIndexSortCode' : 'taskIndexSortOrder');
+      sort.setAttribute('aria-label', sort.title);
+      sort.setAttribute('aria-pressed', String(sortMode === 'code'));
+      sort.onclick = () => {
+        sortMode = sortMode === 'code' ? 'order' : 'code';
+        try { storage?.setItem('multicc:task-index-sort', sortMode); } catch (_) {}
+        sort.dataset.sort = sortMode;
+        sort.title = translate(sortMode === 'code' ? 'taskIndexSortCode' : 'taskIndexSortOrder');
+        sort.setAttribute('aria-label', sort.title);
+        sort.setAttribute('aria-pressed', String(sortMode === 'code'));
+        render();
+      };
+      bar.append(input, sort);
+      filterBarNode = bar;
+      return bar;
+    }
+
+    function buildRow(entry) {
+      const row = doc.createElement('div');
+      row.className = 'task-index-row';
+      // A task whose history was trimmed or whose anchors were deleted still
+      // belongs in the directory, but its row must not look like a live one.
+      if (isStale(entry)) row.dataset.stale = 'true';
+      // `targetCode` already folds in the server's answer and the local choice.
+      const isTarget = !!entry.code && !!targetCode && entry.code === targetCode;
+      if (isTarget) row.dataset.target = 'true';
+      const button = doc.createElement('button');
+      button.type = 'button'; button.className = 'task-index-item';
+      button.textContent = entry.code;
+      button.title = entry.title ? `${entry.code} · ${entry.title}` : entry.code;
+      button.setAttribute('aria-label', button.title);
+      button.onclick = () => locate(entry, null);
+      row.append(button);
+      let strip = null;
+      if (entry.segments.length > 1) {
+        strip = doc.createElement('span');
+        strip.className = 'task-index-segments';
+        entry.segments.forEach((segment, position) => {
+          const dot = doc.createElement('button');
+          dot.type = 'button'; dot.className = 'task-index-segment';
+          dot.textContent = '·';
+          dot.title = translate('taskIndexSegmentLabel').replace('{n}', String(position + 1));
+          dot.setAttribute('aria-label', `${entry.code} ${dot.title}`);
+          dot.onclick = event => { event.stopPropagation?.(); locate(entry, segment); };
+          strip.append(dot);
+        });
+        row.append(strip);
+      }
+      if (entry.taskId && selectTarget && entry.capabilities?.canSelectTarget !== false) {
+        if (isTarget) {
+          const mark = doc.createElement('span');
+          mark.className = 'task-index-target-mark';
+          mark.textContent = '◎';
+          mark.title = translate('taskIndexIsTarget').replace('{code}', entry.code);
+          mark.setAttribute('aria-label', mark.title);
+          row.append(mark);
+        } else {
           const action = doc.createElement('button');
-          action.type = 'button'; action.className = 'task-index-detach';
-          action.textContent = '⤴';
-          action.title = translate('taskIndexDetach');
-          action.setAttribute('aria-label', `${translate('taskIndexDetach')} ${entry.code}`);
-          action.onclick = event => { event.stopPropagation(); void detach(entry); };
+          action.type = 'button'; action.className = 'task-index-select';
+          action.textContent = '◎';
+          action.title = translate('taskIndexSetTarget');
+          action.setAttribute('aria-label', `${translate('taskIndexSetTarget')} ${entry.code}`);
+          action.onclick = event => { event.stopPropagation(); void chooseTarget(entry); };
           row.append(action);
         }
-        return row;
-      }));
+      }
+      if (entry.taskId && detach && entry.capabilities?.canDetach !== false) {
+        const action = doc.createElement('button');
+        action.type = 'button'; action.className = 'task-index-detach';
+        action.textContent = '⤴';
+        action.title = translate('taskIndexDetach');
+        action.setAttribute('aria-label', `${translate('taskIndexDetach')} ${entry.code}`);
+        action.onclick = event => { event.stopPropagation(); void detach(entry); };
+        row.append(action);
+      }
+      return { row, entry, strip, segment: -1 };
+    }
+
+    async function chooseTarget(entry) {
+      // The action reports its own failure; a failed choice must leave the
+      // previous target (and the row that shows it) untouched.
+      if (await selectTarget(entry) === false) return;
+      chosenTarget = entry.code;
+      targetCode = chosenTarget;
+      render();
+    }
+
+    // Which segment of a task the reader is inside: the last of its anchors that
+    // is already above the reading line. Anchors that are not loaded (or were
+    // deleted) simply cannot win, so the highlight never jumps to a hidden one.
+    function segmentIndexAt(entry, lineY) {
+      let index = -1;
+      (entry?.segments || []).forEach((segment, position) => {
+        const node = nodeFor(refId(segment.firstMessageRef));
+        const rect = typeof node?.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
+        if (rect && Number.isFinite(rect.top) && rect.top <= lineY) index = position;
+      });
+      return index;
+    }
+
+    function applyCurrent() {
+      if (!rendered.length) return;
+      for (const item of rendered) {
+        const isCurrent = !!currentCode && item.entry.code === currentCode;
+        item.row.classList[isCurrent ? 'add' : 'remove']('task-index-current');
+        if (!item.strip) continue;
+        [...(item.strip.children || [])].forEach((dot, position) => {
+          dot.classList[isCurrent && position === item.segment ? 'add' : 'remove']('task-index-current');
+        });
+      }
+    }
+
+    function sampleCurrent() {
+      if (!open || rail.hidden || !rendered.length) return;
+      const rect = typeof messages.getBoundingClientRect === 'function' ? messages.getBoundingClientRect() : null;
+      const lineY = rect && Number.isFinite(rect.top) && Number.isFinite(rect.height)
+        ? rect.top + rect.height * 0.34 : (Number(root.innerHeight) || 0) * 0.34;
+      const nodes = messages.querySelectorAll?.('.msg[data-task-short-code]') || [];
+      const code = currentCodeAt(nodes, lineY);
+      if (!code) return;
+      currentCode = code;
+      const item = rendered.find(value => value.entry.code === code);
+      if (item) item.segment = segmentIndexAt(item.entry, lineY);
+      applyCurrent();
+    }
+
+    function scheduleSample() {
+      if (sampled) return;
+      sampled = true;
+      const run = () => { sampled = false; sampleCurrent(); };
+      if (typeof root.requestAnimationFrame === 'function') root.requestAnimationFrame(run);
+      else setTimeout(run, 120);
+    }
+
+    function render() {
+      const all = ordered();
+      const list = all;
+      const showFilters = all.length >= MIN_FILTER_ENTRIES;
+      const next = JSON.stringify([sortMode, showFilters, targetCode, list.map(entry => [entry.code, entry.taskId, entry.title,
+        isStale(entry), entry.target === true, entry.capabilities?.canDetach === true,
+        entry.capabilities?.canSelectTarget === true, entry.segments.length])]);
+      if (next !== signature) {
+        signature = next;
+        const serverTarget = all.find(entry => entry.target === true);
+        targetCode = chosenTarget || serverTarget?.code || '';
+        rendered = list.map(buildRow);
+        const nodes = rendered.map(item => item.row);
+        if (showFilters) {
+          nodes.unshift(filterBar());
+          emptyNote = doc.createElement('div');
+          emptyNote.className = 'task-index-empty';
+          emptyNote.textContent = translate('taskIndexNoMatch');
+          emptyNote.hidden = true;
+          nodes.push(emptyNote);
+        } else emptyNote = null;
+        rail.replaceChildren(...nodes);
+      }
+      toggle.hidden = all.length === 0;
+      rail.hidden = !open || all.length === 0;
+      toggle.setAttribute('aria-expanded', String(!rail.hidden));
+      applyFilter();
+      applyCurrent();
+      if (!rail.hidden) sampleCurrent();
     }
 
     function reload() {
       if (!loadIndex) return null;
       if (loading) return loading;
       loading = Promise.resolve().then(loadIndex).then(value => {
-        if (value && Array.isArray(value.tasks)) { index = value; render(); }
+        if (value && Array.isArray(value.tasks)) {
+          index = value;
+          // A fresh read is authoritative again: whatever it says about the
+          // shell's input cursor replaces the local choice that asked for it.
+          chosenTarget = '';
+          render();
+        }
         return value;
       }).catch(() => null).finally(() => { loading = null; });
       return loading;
@@ -251,6 +449,8 @@
       render();
     };
     doc.body.append(toggle, rail);
+    // 滚动高亮当前段：滚动本身不改归属、不改发送目标，只是让目录跟着正文走。
+    messages.addEventListener?.('scroll', scheduleSample, { passive: true });
     const Observer = root.MutationObserver;
     const observer = typeof Observer === 'function' ? new Observer(() => {
       if (pendingRef) {
@@ -267,7 +467,11 @@
     return Object.freeze({
       refresh: render,
       reload,
-      dispose() { observer?.disconnect(); clearHighlight(); toggle.remove(); rail.remove(); },
+      dispose() {
+        observer?.disconnect();
+        messages.removeEventListener?.('scroll', scheduleSample);
+        clearHighlight(); toggle.remove(); rail.remove();
+      },
       toggle() { toggle.click(); },
       focusCode(code) {
         const value = entries().find(entry => entry.code === codeOf(code));
@@ -321,7 +525,25 @@
     };
   }
 
-  const api = { createController, createDetachAction, createAnchorJump };
+  // Explicit "the next message goes to this task". Separate from locate(): the
+  // click that scrolls history must never move the input cursor by accident.
+  function createTargetAction({ shellId, request, notify, alert, translate = key => key }) {
+    return async function selectTarget(entry) {
+      const taskId = text(entry?.taskId).trim();
+      if (!taskId || !request) return false;
+      const id = text(typeof shellId === 'function' ? shellId() : shellId);
+      if (!id) { alert?.(translate('taskAttributionNoShell')); return false; }
+      try {
+        const result = await request(`/api/task-shells/${encodeURIComponent(id)}/select-target`, { taskId });
+        notify?.(entry, result);
+        return true;
+      } catch (error) {
+        alert?.(translate('taskIndexTargetFailed').replace('{error}', text(error?.message || error)));
+        return false;
+      }
+    };
+  }
+  const api = { createController, createDetachAction, createAnchorJump, createTargetAction, currentCodeAt };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.MultiCCTaskIndex = api;
 })(typeof window !== 'undefined' ? window : globalThis);

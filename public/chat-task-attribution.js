@@ -152,7 +152,7 @@
     // Everything the user has not decided yet, including what they postponed.
     function unresolved() {
       return suggestions.filter(item => item?.state === 'pending' || item?.state === 'unclassified'
-        || item?.state === 'deferred');
+        || item?.state === 'deferred' || item?.state === 'queued');
     }
 
     function renderSuggestions() {
@@ -161,27 +161,37 @@
       // the toggle, but folded out of the way until the bar is open — the bar is
       // the durable pending entry a postponed card collapses into.
       const deferred = suggestions.filter(item => item?.state === 'deferred');
-      const listed = enabled ? [...open, ...deferred] : open;
+      // `queued` is an accepted change the host is holding until the turn that
+      // made it busy closes. It stays visible with a way to withdraw it, because
+      // "already accepted, not applied yet" must never look like "done".
+      const queued = suggestions.filter(item => item?.state === 'queued');
+      const listed = enabled ? [...open, ...queued, ...deferred] : [...open, ...queued];
       proposals.hidden = listed.length === 0;
       proposals.replaceChildren(...listed.map(item => {
         const row = doc.createElement('div');
         row.className = 'task-attribution-suggestion';
+        row.dataset.state = text(item?.state);
         const label = doc.createElement('span');
         label.className = 'task-attribution-suggestion-label';
         // An unclassified verdict has no target, so it is only ever presented
         // as "could not classify": offering accept would promise a change that
         // cannot be written.
         const unclassified = item?.state === 'unclassified';
+        const waiting = item?.state === 'queued';
         label.textContent = unclassified
           ? t('taskAttributionUnclassified').replace('{task}', taskLabel(item.fromTaskId))
-          : t('taskAttributionSuggestion')
-            .replace('{from}', taskLabel(item.fromTaskId)).replace('{to}', taskLabel(item.toTaskId));
+          : waiting
+            ? t('taskAttributionQueued').replace('{task}', taskLabel(item.toTaskId))
+            : t('taskAttributionSuggestion')
+              .replace('{from}', taskLabel(item.fromTaskId)).replace('{to}', taskLabel(item.toTaskId));
         row.append(label);
         const actions = unclassified
           ? [['taskAttributionDismiss', 'dismiss']]
-          : item?.state === 'deferred'
-            ? [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss']]
-            : [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss'], ['taskAttributionLater', 'defer']];
+          : waiting
+            ? [['taskAttributionQueueCancel', 'cancel']]
+            : item?.state === 'deferred'
+              ? [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss']]
+              : [['taskAttributionAccept', 'accept'], ['taskAttributionDismiss', 'dismiss'], ['taskAttributionLater', 'defer']];
         for (const [key, action] of actions) {
           const button = doc.createElement('button');
           button.type = 'button';
@@ -202,17 +212,25 @@
       renderBar();
       try {
         const { shellId } = await scope();
-        const path = `/api/task-shells/${encodeURIComponent(shellId)}/attribution-decisions/${encodeURIComponent(item.id)}/${action}`;
-        const result = await request('POST', path, action === 'accept' ? { clientMsgId: makeId() } : {});
+        // Withdrawing a queued change is the same durable "dismiss": the row
+        // stops counting as waiting work and the host never applies it.
+        const call = action === 'cancel' ? 'dismiss' : action;
+        const result = await request('POST',
+          `/api/task-shells/${encodeURIComponent(shellId)}/attribution-decisions/${encodeURIComponent(item.id)}/${call}`,
+          call === 'accept' ? { clientMsgId: makeId() } : {});
         closeToast();
         const postponed = action === 'defer';
+        const queued = action === 'accept' && result?.state === 'queued';
         resolvedHere.add(item.id);
-        showToast(action === 'accept'
-          ? t('taskAttributionApplied').replace('{n}', '1').replace('{task}', taskLabel(result?.toTaskId || item.toTaskId))
-          : postponed ? t('taskAttributionDeferred') : t('taskAttributionDismissed'));
-        // A postponed row stays in the queue; only accept/dismiss clear it.
-        suggestions = postponed
-          ? suggestions.map(entry => entry.id === item.id ? { ...entry, state: 'deferred' } : entry)
+        showToast(queued
+          ? t('taskAttributionQueued').replace('{task}', taskLabel(result?.toTaskId || item.toTaskId))
+          : action === 'accept'
+            ? t('taskAttributionApplied').replace('{n}', '1').replace('{task}', taskLabel(result?.toTaskId || item.toTaskId))
+            : postponed ? t('taskAttributionDeferred')
+              : action === 'cancel' ? t('taskAttributionQueueCancelled') : t('taskAttributionDismissed'));
+        // A postponed or queued row stays in the queue; accept/dismiss clear it.
+        suggestions = postponed || queued
+          ? suggestions.map(entry => entry.id === item.id ? { ...entry, state: queued ? 'queued' : 'deferred' } : entry)
           : suggestions.filter(entry => entry.id !== item.id);
         onApplied?.(result, { undone: false });
       } catch (error) {
@@ -234,7 +252,7 @@
         // Postponed rows stay in the queue too — "later" is not a decision.
         suggestions = (Array.isArray(data?.decisions) ? data.decisions : [])
           .filter(item => item?.state === 'pending' || item?.state === 'unclassified'
-            || item?.state === 'deferred');
+            || item?.state === 'deferred' || item?.state === 'queued');
       } catch (_) {
         suggestions = [];
       }

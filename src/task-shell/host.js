@@ -269,9 +269,12 @@ function createTaskShellHost(deps) {
     const runtime = getRuntime();
     const scope = runtime.chatScope(id);
     const tasks = runtime.listTasks().filter(task => scope.sessionIds.includes(task.sessionId));
+    const shell = store.get('shell', id) || {};
+    const currentTarget = shell.currentTaskId || shell.defaultTaskId || null;
     return require('./task-index').collectTaskIndex(scope, deps.displayHistory || deps.loadHistory, deps.getChatState, {
       tasks,
       codeFor: deps.taskShortCode,
+      isTarget: taskId => currentTarget === taskId,
       includeEmpty: options.includeEmpty === true,
       overlay: taskOperations().overlay.apply,
       // Capabilities are advisory read-model hints. Every write still re-checks
@@ -380,6 +383,9 @@ function createTaskShellHost(deps) {
       attributionSettings.mount(app);
       // 独立继续的等待队列由服务端推进：重启后恢复，不依赖页面开着。
       getRuntime().independent.start();
+      // 被「本轮还在跑」挡下的归属建议同样由服务端推进：用户接受后页面就可以
+      // 关掉，轮次一结束再重新校验并应用（或按 CAS 失败并留下原因）。
+      attributionDecisions().start(deps.attributionQueueIntervalMs);
       // 归属操作日志的保留期清理同样由服务端推进，页面关着也生效。
       sweepAttributionLog();
     },
