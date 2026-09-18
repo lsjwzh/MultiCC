@@ -1053,6 +1053,13 @@ class _AirTasksViewState extends State<AirTasksView>
     if (data == null) return const [];
     final rows = <AirTask>[];
     final seen = <String>{};
+    // 手机上 pin 住的那几条排在最前面（Web 那边是页头顶上那排 tab，手机宽度下
+    // 它整个藏掉、改成置顶在这一份列表里，见 public/air.js 的 sidebarTasks）。
+    // 「最近」会掉出列表，pin 不会 —— 这两件事必须分开。
+    for (final id in data.taskPins) {
+      final task = data.taskOf(id);
+      if (task != null && seen.add(task.id)) rows.add(task);
+    }
     for (final id in _store?.recentTasks ?? const <String>[]) {
       final task = data.taskOf(id);
       if (task != null && seen.add(task.id)) rows.add(task);
@@ -1062,7 +1069,8 @@ class _AirTasksViewState extends State<AirTasksView>
       if (seen.add(task.id)) rows.add(task);
       if (rows.length >= 30) break;
     }
-    return rows;
+    // 30 是长尾的闸门，不是「一屏」；截的是尾巴，pin 住的那几条在最前面，动不到。
+    return rows.length > 30 ? rows.sublist(0, 30) : rows;
   }
 
   /// 首页这块是 Web 的「最近任务」（`air.js` 的 `renderDirectoryOverview`）：
@@ -1145,6 +1153,7 @@ class _AirTasksViewState extends State<AirTasksView>
         data: data,
         directoryId: _directoryId,
         recentTasks: _sidebarTasks(),
+        pinnedTaskIds: data?.taskPins.toSet() ?? const <String>{},
         advancedMode: widget.settings.advancedMode.value,
         serverLabel: widget.settings.host,
         onSelectDirectory: _selectDirectory,
@@ -1572,40 +1581,89 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
-  Widget _directoryTaskTile(AirTask task) => AirTaskTile(
-    key: ValueKey('air-directory-task-${task.id}'),
-    task: task,
-    showTime: MediaQuery.sizeOf(context).width > 380,
-    onTap: () => unawaited(_open(task)),
-    trailing: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        IconButton(
-          key: ValueKey('air-task-details-${task.id}'),
-          onPressed: () => unawaited(_openDetails(task)),
-          iconSize: 18,
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-          padding: EdgeInsets.zero,
-          tooltip: '任务详情',
-          icon: const Icon(Icons.info_outline_rounded, color: AppColors.faint),
-        ),
-        IconButton(
-          key: ValueKey('air-task-delete-${task.id}'),
-          onPressed: () => unawaited(_deleteTaskFromList(task)),
-          iconSize: 18,
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-          padding: EdgeInsets.zero,
-          tooltip: '删除任务',
-          icon: const Icon(
-            Icons.delete_outline_rounded,
-            color: AppColors.danger,
+  Widget _directoryTaskTile(AirTask task) {
+    final pinned = _data?.isPinned(task.id) ?? false;
+    return AirTaskTile(
+      key: ValueKey('air-directory-task-${task.id}'),
+      task: task,
+      showTime: MediaQuery.sizeOf(context).width > 380,
+      onTap: () => unawaited(_open(task)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Pin 的开关在 App 里落在这一处（Web 是页头那颗 📌）：打开任务在 App 里
+          // 是把聊天页整张升起来盖住 Air 首页的，页头那排工具那时点不到 —— 这一行
+          // 是任务在「列表里的样子」，钉住/取消钉住正好属于它。
+          IconButton(
+            key: ValueKey('air-task-pin-${task.id}'),
+            onPressed: () => unawaited(_togglePin(task)),
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+            padding: EdgeInsets.zero,
+            tooltip: pinned ? '取消 Pin' : 'Pin 到任务列表顶部',
+            icon: Icon(
+              pinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+              color: pinned ? AppColors.accent : AppColors.faint,
+            ),
           ),
+          IconButton(
+            key: ValueKey('air-task-details-${task.id}'),
+            onPressed: () => unawaited(_openDetails(task)),
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+            padding: EdgeInsets.zero,
+            tooltip: '任务详情',
+            icon: const Icon(Icons.info_outline_rounded, color: AppColors.faint),
+          ),
+          IconButton(
+            key: ValueKey('air-task-delete-${task.id}'),
+            onPressed: () => unawaited(_deleteTaskFromList(task)),
+            iconSize: 18,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+            padding: EdgeInsets.zero,
+            tooltip: '删除任务',
+            icon: const Icon(
+              Icons.delete_outline_rounded,
+              color: AppColors.danger,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 钉住 / 取消钉住一个任务，清单落在服务端（`air-pins.json`）—— 和 Web 读的
+  /// 是同一份，所以手机上钉住的任务在电脑的页头顶上也会出现。
+  ///
+  /// 满了不是把按钮变灰：那颗灰按钮什么都不解释。点下去让服务端说话（第 6 个回
+  /// `pin_limit_reached`，文案是「最多只能 Pin 5 个任务」），用户知道该先拔一个。
+  Future<void> _togglePin(AirTask task) async {
+    final wasPinned = _data?.isPinned(task.id) ?? false;
+    try {
+      await _service.toggleTaskPin(task.id);
+      if (!mounted) return;
+      await _refresh();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            wasPinned ? '已取消 Pin「${task.title}」' : '已 Pin 住「${task.title}」',
+          ),
+          duration: const Duration(seconds: 2),
         ),
-      ],
-    ),
-  );
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.toString().replaceFirst('Exception: ', '')),
+        ),
+      );
+    }
+  }
 
   Future<void> _deleteTaskFromList(AirTask task) async {
     final deleted = await deleteAirTaskWithConfirmation(
