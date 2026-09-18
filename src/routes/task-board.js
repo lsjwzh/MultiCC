@@ -1504,12 +1504,20 @@ function createTaskBoardRuntime(deps) {
     return true;
   }
 
+  // 卡片自愈的证据：会话记录里连 taskState 都没有 = 这一轮从来没被受理过（见
+  // task-board/view.js 的 deadDispatchClaim）。读侧把这类卡片的乐观「执行中」
+  // 投影成空闲 —— 只影响这一份 DTO，卡片本身与落盘数据都不动。
+  const sessionHasTurn = sessionId => {
+    const record = records.get(sessionId);
+    return !!(record && record.taskState);
+  };
+
   function taskDto(task) {
     const dto = core.buildBoardDto({
       modules: board.modules,
       tasks: { [task.id]: task },
       taskGroups: board.taskGroups,
-    }, getSessionRunState).tasks[0];
+    }, getSessionRunState, { sessionHasTurn }).tasks[0];
     dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1); Object.assign(dto, taskFields(task, deps.taskShortCode));
     const body = canonicalTaskBody(task);
     if (dto.title === core.PENDING_TASK_TITLE && body.text) {
@@ -1561,7 +1569,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   function handleBoard(req, res) {
-    const dto = core.buildBoardDto(board, getSessionRunState);
+    const dto = core.buildBoardDto(board, getSessionRunState, { sessionHasTurn });
     const labels = {};
     for (const t of dto.tasks) {
       const body = canonicalTaskBody(board.tasks[t.id]);

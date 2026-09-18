@@ -628,6 +628,36 @@ test('buildBoardDto aggregates counts, sessions and sorts by recency', () => {
   assert.deepEqual(dto.tasks[0].sessionIds, ['s2']);
 });
 
+test('a dispatch claim nobody ever admitted reads idle instead of 执行中 forever', () => {
+  const board = core.createEmptyBoard();
+  const now = 1_000_000_000;
+  const [taskId] = core.applyTagResult(board, [{ id: 'new', title: '新任务', module: 'M', areas: [] }],
+    mkRef({ sessionId: 'killed-shell', ts: now - 10 * 60 * 1000 }), now - 10 * 60 * 1000);
+  const task = board.tasks[taskId];
+  // 派发时卡片写下的乐观值（createPendingTask / onMessagePersisted 都会这么写）。
+  task.runState = 'running';
+  task.runStateAt = now - 10 * 60 * 1000;
+
+  // 会话记录里从来没有过 taskState = 这一轮连受理都没发生过（烟测/被杀掉的会话）。
+  const local = name => name === 'killed-shell' ? 'idle' : null;
+  let dto = core.buildBoardDto(board, local, { sessionHasTurn: () => false, now }).tasks[0];
+  assert.equal(dto.runState, 'idle', '证明这一轮从没被受理过 → 按空闲投影，不冒充执行中');
+
+  // 会话有过 taskState（哪怕此刻是空闲）就说明受理过 —— 卡片自报什么就是什么。
+  dto = core.buildBoardDto(board, local, { sessionHasTurn: () => true, now }).tasks[0];
+  assert.equal(dto.runState, 'running');
+
+  // 派发竞态：卡片刚写完、第一个调度事件还没落地，宽限期内不许闪成空闲。
+  task.runStateAt = now - 1000;
+  task.updatedAt = now - 1000;
+  dto = core.buildBoardDto(board, local, { sessionHasTurn: () => false, now }).tasks[0];
+  assert.equal(dto.runState, 'running', '宽限期内保持派发时的乐观值');
+
+  // 不传 sessionHasTurn（老调用方）时一枚字节都不改。
+  dto = core.buildBoardDto(board, local, { now }).tasks[0];
+  assert.equal(dto.runState, 'running');
+});
+
 test('routing retries append attempts on one task and replayed operations stay idempotent', () => {
   const task = {
     id: 'tsk-stable', title: 'T', status: 'active', areas: [], refs: [],
