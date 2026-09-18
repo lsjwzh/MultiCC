@@ -33,8 +33,8 @@
   let paletteItems = [];
   let paletteIndex = 0;
   let data = null;
-  // Pin 住的任务（服务端 air-pins.json 那份清单，顺序就是页头从左到右的顺序）。
-  // 页头那排「齐刘海」和手机上侧栏的置顶读的都是它，写只有一条路：togglePin。
+  // Pin 住的任务（服务端 air-pins.json 那份清单，顺序就是页头那排收藏栏从左到右的
+  // 顺序）。页头那条横排和手机上侧栏的置顶读的都是它，写只有一条路：togglePin。
   let taskPins = [];
   let pinSignature = '';
   let directoryId = initialParams.get('dir');
@@ -1211,7 +1211,7 @@
     }
   }
 
-  /** 页头那排「齐刘海」：缩略是状态 + 标题，悬停/聚焦展开成标题 + 目录 + 阶段。 */
+  /** 页头最上面那排收藏栏：缩略是状态 + 标题，悬停/聚焦展开成标题 + 目录 + 阶段。 */
   function renderPins() {
     const container = $('task-pins');
     if (!container) return;
