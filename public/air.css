@@ -386,19 +386,25 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* hidden 属性是 UA 的 display:none，挡不住上面那条 display:flex。 */
 #task-pins[hidden] { display: none; }
 .pin-tab { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 46px; max-width: 118px;
-  height: 30px; padding: 0 3px 0 10px; border: 1px solid var(--line); border-radius: 15px;
+  gap: 6px; height: 30px; padding: 0 4px 0 10px; border: 1px solid var(--line); border-radius: 15px;
   background: rgba(255, 255, 255, .9); box-shadow: 0 4px 12px #35577d0f;
   transition: max-width .18s ease, background .18s ease; }
-.pin-tab:hover, .pin-tab:focus-within { max-width: 320px; background: #fff; }
+.pin-tab:hover, .pin-tab:focus-within { max-width: 400px; background: #fff; }
 /* 全局那条 `button{min-height:38px}` 会把两件东西顶出这张 30px 高的卡片：打开
    按钮撑到 38px、取消按钮撑到 38px。min-height 比 height 硬，所以得显式归零。 */
 .pin-tab .pin-open { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 0; flex: 1 1 auto; height: 100%;
   padding: 0; border: 0; border-radius: 0; background: transparent; text-align: left; }
-.pin-tab .pin-copy { min-width: 0; display: grid; gap: 1px; }
-.pin-tab .pin-title { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #35536d; font-size: 11.5px; font-weight: 600; line-height: 1.25; }
-/* 目录和阶段是展开态才有的第二行 —— 缩略态只有状态和标题，那才是「缩略」。 */
-.pin-tab .pin-meta { display: none; align-items: center; gap: 5px; min-width: 0; color: #7b8ea1; font-size: 9.5px; white-space: nowrap; }
+/* 展开态是同一行上更长的一条：状态（图标 + 中文）· 标题 · 目录 · 阶段。原来是
+   「标题一行 + 目录/阶段一行」两行塞进 30px 的胶囊 —— 两行加起来比胶囊还高，字
+   从上下两边一起冒出去（用户看到的就是这个）。所以它不换行：宽度按内容长到 400px
+   上限，装不下的是标题自己收省略号，旁边那几段（状态、目录、阶段）都是定宽小块，
+   跟着图标一样居中排在同一条基线上。 */
+.pin-tab .pin-copy { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.pin-tab .pin-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #35536d; font-size: 11.5px; font-weight: 600; line-height: 1.25; }
+.pin-tab .pin-meta { display: none; align-items: center; gap: 7px; min-width: 0; color: #7b8ea1; font-size: 9.5px; white-space: nowrap; }
 .pin-tab:hover .pin-meta, .pin-tab:focus-within .pin-meta { display: flex; }
+/* 目录和阶段之间那一点：「MultiCC 进行中」连排着读会当成一个词。 */
+.pin-tab .pin-meta > * + *::before { content: "·"; margin-right: 6px; color: #c3d0dc; }
 .pin-tab .pin-status { display: flex; flex: 0 0 auto; }
 .pin-tab .pin-status .mc-status { font-size: 11px; }
 /* 缩略态只留状态图标：一行标题本来就窄，再带上「执行中」三个字就只剩两三个字
