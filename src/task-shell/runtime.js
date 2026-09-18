@@ -34,6 +34,8 @@ function createTaskShellRuntime(ports) {
   const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles });
   const independent = require('./independent-continue').createIndependentContinuation({ store, getRecord, getHistory,
     getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles, hasCapacity });
+  const relations = require('./relations').createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
+    onChanged: id => ports.onRelationChanged?.(id) });
   const taskFirst = require('./task-first').createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports });
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
@@ -749,11 +751,12 @@ function createTaskShellRuntime(ports) {
     contextComplete: (id, receipt, turn, success) => { const task = owns(id); if (task) contextPlanner.complete(task, receipt, turn, success); },
     separation, roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
     // 任务图谱的只读快照：壳、持久任务、link 三张表一次拉全，供路由层聚合。
-    taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link') }),
+    taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link'),
+      relations: store.list('relation') }),
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
-    resolveTask, sendExplicit, relocateTask, independent,
+    resolveTask, sendExplicit, relocateTask, independent, relations,
   };
 }
 

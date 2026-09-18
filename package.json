@@ -46,7 +46,7 @@
     "test:git-push": "node tests/test-git-push.js",
     "test:repo-actor": "node --test tests/test-repo-actor.js tests/test-git-safety.js",
     "test:power": "node tests/test-macos-power.js",
-    "test:task-shells": "node --test tests/test-task-shells.js tests/test-task-shell-http.js tests/test-shell-chat-continuity.js tests/test-task-shell-ownership.js tests/test-task-shell-transitions.js tests/test-task-separation.js tests/test-chat-task-separation.js tests/test-chat-task-index.js tests/test-chat-task-attribution.js tests/test-task-shell-task-index.js tests/test-task-shell-task-operations.js tests/test-task-shell-attribution-decisions.js tests/test-task-shell-independent-continue.js tests/test-context-plan.js tests/test-task-graph-context.js tests/test-chat-usage-readout.js",
+    "test:task-shells": "node --test tests/test-task-shells.js tests/test-task-shell-http.js tests/test-shell-chat-continuity.js tests/test-task-shell-ownership.js tests/test-task-shell-transitions.js tests/test-task-separation.js tests/test-chat-task-separation.js tests/test-chat-task-index.js tests/test-chat-task-attribution.js tests/test-task-shell-task-index.js tests/test-task-shell-task-operations.js tests/test-task-shell-attribution-decisions.js tests/test-task-shell-independent-continue.js tests/test-task-shell-relations.js tests/test-context-plan.js tests/test-task-graph-context.js tests/test-chat-usage-readout.js",
     "test:task-shells:isolated": "node tests/test-task-shell-isolated.js && node tests/test-task-shell-context-isolation.js",
     "test:task-first:cdp": "node --test tests/test-air-task-first-cdp.js",
     "test:task-first:isolated": "node tests/test-task-first-isolated.js",
