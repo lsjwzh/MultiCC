@@ -347,10 +347,9 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 
 #nav-scrim { position: fixed; z-index: 20; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .26); }
 main { min-width: 0; flex: 1; display: flex; flex-direction: column; background: rgba(255, 255, 255, .8); }
-/* 允许换行只为一件事：pin 那排标签（basis 100%）自己占第一行，标题和工具在下面
-   一行。它换行不会把标题挤到第二行 —— .breadcrumb 的 basis 是 0，永远不会因为
-   自己太宽而把工具顶下去。没有 pin 的时候这里跟一条不换行的 flex 行没区别。 */
-#task-header { min-height: 88px; flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 13px 24px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .82); backdrop-filter: blur(20px); }
+/* position: relative 只服务一件事：让页头顶上那排 pin（#task-pins）有地方绝对定位。
+   它们不参与这一行的排布，页头永远只有「标题 + 工具」这一行。 */
+#task-header { position: relative; min-height: 88px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 13px 24px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .82); backdrop-filter: blur(20px); }
 .breadcrumb { min-width: 0; flex: 1; }
 .breadcrumb .caption { margin: 0 0 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #task-title { overflow-wrap: anywhere; }
@@ -365,14 +364,17 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    一个小胶囊；只在跑的时候多出的那几像素缩进，本身也是「它变了」的一个提示。 */
 #task-state.ring-running { padding-inline: 7px; border-radius: 8px; }
 
-/* ── Pin 住的任务：页头最上面那条「收藏栏」 ──────────────────────────────
-   一排居中的快捷标签横在页头最上面（浏览器的收藏栏就是这么一条），标题和工具
-   那一行排在它下面。默认缩略（状态图标 + 标题开头），鼠标停在上面才展开成完整
-   的一张（标题 + 目录 + 阶段）。
-   为什么单占一行、而不是缩在标题和工具中间那块空档：最多 5 个，横排要 600 多
-   像素，挤在两个 flex 邻居中间时先被压掉的是标题自己（曾经的竖排更是连工具都
-   挡上了）。单独一行谁也不抢，居中排开一眼能看全；[hidden] 时整条不在，页头
-   还是原来那一行高。
+/* ── Pin 住的任务：页头最顶上浮着的那条「收藏栏」 ────────────────────────
+   一排居中的快捷标签浮在页头最顶上（像浏览器的收藏快捷链接），不占行 —— 页头
+   永远还是「标题 + 工具」那一行、105px，没人 pin 的时候整条不出现（[hidden]）。
+   默认缩略（状态图标 + 标题开头），鼠标停在上面才展开成完整的一条（状态 +
+   标题 + 目录 + 阶段）。
+   浮着就得自己看住碰撞：它是绝对的居中，宽度上限两侧各留 160px（不压左边那行
+   面包屑），标签本身还能再收窄（min-width 46px）到装得下为止；出现的那一条
+   只横向长、不变高，所以展开时页头也不会跳。
+   为什么不自己占一行 / 不缩在标题和工具中间：占一行要多花 38px 页头高度；缩在
+   中间当 flex 邻居时，5 个 pin 要 600 多像素，先被压掉的是标题自己（曾经的竖排
+   更是连工具都挡上了）。
    只在桌面出现（760px 以下整条藏掉，见那一块里的 #task-pins）：手机页头一行都
    嫌贵，那边的 pin 改成置顶在侧栏的最近任务里（air.js 的 sidebarTasks）。
    这一条不决定「谁被 pin 了」：那份清单在服务端（air-pins.json），Web 和 App
@@ -381,12 +383,14 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    flex-direction 必须显式写 row：上面全局那条 `nav { flex-direction: column }`
    是按元素名命中的，而这一条是 <nav> —— 只写 display:flex 的话，id 选择器赢得过
    nav 的 display，却赢不过它没写的 flex-direction，几个 pin 会竖着摞起来。 */
-#task-pins { display: flex; flex-direction: row; justify-content: center; align-items: center;
-  flex: 0 0 100%; order: -1; gap: 8px; min-width: 0; }
+#task-pins { position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 2;
+  display: flex; flex-direction: row; justify-content: center; align-items: center;
+  width: max-content; max-width: calc(100% - 320px); gap: 8px; min-width: 0; }
 /* hidden 属性是 UA 的 display:none，挡不住上面那条 display:flex。 */
 #task-pins[hidden] { display: none; }
 .pin-tab { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 46px; max-width: 118px;
-  gap: 6px; height: 30px; padding: 0 4px 0 10px; border: 1px solid var(--line); border-radius: 15px;
+  gap: 6px; overflow: hidden; height: 30px; padding: 0 4px 0 11px; border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 14px 14px;
   background: rgba(255, 255, 255, .9); box-shadow: 0 4px 12px #35577d0f;
   transition: max-width .18s ease, background .18s ease; }
 .pin-tab:hover, .pin-tab:focus-within { max-width: 400px; border-color: #c7dcf1; background: #fff; box-shadow: 0 8px 20px #35577d24; }
