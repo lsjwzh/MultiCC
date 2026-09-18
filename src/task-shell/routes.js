@@ -15,7 +15,7 @@ function pageTaskHistory(rawMessages, options = {}) {
     ...(options.around ? { found: true, hasNewer: end < messages.length } : {}) };
 }
 
-function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry }) {
+function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry, taskIndex }) {
   const route = handler => async (req, res) => {
     try {
       const runtime = getRuntime();
@@ -60,6 +60,7 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
     before: req.query.before, around: req.query.around, limit: req.query.limit,
     includeHidden: req.query.historyScope === 'archive',
   })));
+  if (taskIndex) app.get('/api/task-shells/:shellId/task-index', route((_runtime, req) => taskIndex(req.params.shellId)));
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
   app.post('/api/task-shells/:shellId/links', route((runtime, req) => runtime.link(req.params.shellId, req.body?.taskId)));
   app.post('/api/task-shells/:shellId/tasks/resolve', route((runtime, req) => runtime.resolveTask(req.params.shellId, {

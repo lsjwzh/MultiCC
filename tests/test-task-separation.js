@@ -53,6 +53,26 @@ test('keep is durable and idempotent; another client cannot later separate the s
   await assert.rejects(restarted.separation.decide('a', p.id, 'separate'), { code: 'separation_already_resolved' });
   assert.equal(f.store.list('task').length, 1);
 });
+test('defer keeps the suggestion pending across restarts and only dismissible once stale', async t => {
+  const f = await setup(t), p = f.propose();
+  assert.deepEqual(await f.runtime.separation.decide('a', p.id, 'defer'),
+    { ok: true, decision: 'defer', id: p.id, deferred: true });
+  // Deferral is a state, not a decision: no task, identity or cursor change.
+  assert.equal(f.store.list('task').length, 1);
+  const restarted = createTaskShellRuntime(f.ports).separation.latest('a');
+  assert.equal(restarted.id, p.id);
+  assert.equal(restarted.deferred, true);
+  assert.equal(restarted.stale, false);
+  // Once the conversation moves on the deferred entry stays findable, but the
+  // accept path still revalidates and refuses the stale source.
+  f.histories.get('a').push({ id: 'u2', role: 'user', content: 'Next goal', turnId: 'turn-2', taskId: f.source.id });
+  const stale = createTaskShellRuntime(f.ports).separation.latest('a');
+  assert.equal(stale.deferred, true);
+  assert.equal(stale.stale, true);
+  await assert.rejects(createTaskShellRuntime(f.ports).separation.decide('a', p.id, 'separate'), { code: 'separation_stale' });
+  assert.deepEqual(await createTaskShellRuntime(f.ports).separation.decide('a', p.id, 'keep'), { ok: true, decision: 'keep' });
+  assert.equal(createTaskShellRuntime(f.ports).separation.latest('a'), null);
+});
 test('confirmed separation creates one independent task and imports only this exchange with provenance', async t => {
   const f = await setup(t), p = f.propose(), before = JSON.stringify(f.histories.get('a'));
   f.runtime.roles.update(f.source.id, { expectedVersion: 0, clientMsgId: 'roles-1',

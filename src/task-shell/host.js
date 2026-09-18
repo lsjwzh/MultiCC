@@ -221,15 +221,36 @@ function createTaskShellHost(deps) {
     return { id, dirId: task.dirId, title: lifecycle.title || task.title, status: lifecycle.status || access.status,
       readOnly: access.readOnly, sessionId: task.sessionId, runtime };
   }
+  // Full-history task directory for the conversation index. Metadata only: it
+  // returns task identity and message anchors, never message bodies, and it
+  // never selects a routing target.
+  function taskIndex(id) {
+    const runtime = getRuntime();
+    const scope = runtime.chatScope(id);
+    const tasks = runtime.listTasks().filter(task => scope.sessionIds.includes(task.sessionId));
+    return require('./task-index').collectTaskIndex(scope, deps.displayHistory || deps.loadHistory, deps.getChatState, {
+      tasks,
+      codeFor: deps.taskShortCode,
+      // Capabilities are advisory read-model hints. Every write still re-checks
+      // access, lifecycle and ownership on the server.
+      capabilitiesOf: task => {
+        const access = runtime.taskAccess(task) || {};
+        const writable = access.readOnly !== true && task?.ready !== false;
+        return { canDetach: writable, canSelectTarget: writable };
+      },
+    });
+  }
   return {
     mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open,
       taskEntry: id => getRuntime().bindPlannedTask(id),
+      taskIndex: id => taskIndex(id),
       artifacts: async id => {
         const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
         return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
       },
       history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
         deps.displayHistory || deps.loadHistory, deps.getChatState, options) }),
+    taskIndex,
     chatScope: (id, sessionId) => getRuntime().chatScope(id, sessionId),
     chatHistory: (id, options) => shellHistoryPage(getRuntime().chatScope(id, options.activeSessionId),
       deps.displayHistory || deps.loadHistory, deps.getChatState, options),
