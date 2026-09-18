@@ -342,7 +342,7 @@ function createTaskShellHost(deps) {
         return currentTurn(sessionId) === turnId;
       },
       taskTitle: taskId => store.get('task', taskId)?.title || null,
-      onAttributionChanged: id => deps.onAttributionChanged?.(id),
+      onAttributionChanged: (id, detail) => deps.onAttributionChanged?.(id, detail),
     });
     return attributionDecisionsRuntime;
   }
