@@ -70,6 +70,66 @@ function controllerFor(extra = {}) {
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
+test('recorded automatic suggestions are counted on the toggle and can be accepted', async () => {
+  // The fake server keeps its own state, so the refresh after a decision has to
+  // see the same resolved queue a real host would return.
+  const state = [
+    { id: 'dec_1', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending', taskName: 'Beta' },
+    { id: 'dec_2', fromTaskId: 'tsk_a', toTaskId: 'tsk_c', state: 'dismissed' },
+  ];
+  const decide = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: state.map(item => ({ ...item })) }),
+    request: async (method, path, body) => {
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.includes('/attribution-decisions/')) {
+        decide.push({ path, body });
+        state[0] = { ...state[0], state: 'applied' };
+        return { id: 'dec_1', state: 'applied', toTaskId: 'tsk_b', apply: { kind: 'overlay' } };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+  });
+  await settle();
+  const toggle = f.doc.body.children[0];
+  assert.equal(toggle.dataset.suggestions, '1', 'only pending suggestions are counted');
+  const bar = f.doc.body.children[1];
+  const proposals = bar.children[0];
+  assert.equal(proposals.hidden, false);
+  assert.equal(proposals.children.length, 1, 'a dismissed suggestion is not offered again');
+  assert.equal(proposals.children[0].children[0].textContent, 'taskAttributionSuggestion');
+  proposals.children[0].children[1].onclick();
+  await settle();
+  assert.equal(decide.length, 1);
+  assert.equal(decide[0].path, '/api/task-shells/sh_1/attribution-decisions/dec_1/accept');
+  assert.match(decide[0].body.clientMsgId, /^attr-/);
+  assert.equal(toggle.dataset.suggestions, '0', 'an accepted suggestion leaves the queue');
+  assert.equal(proposals.hidden, true);
+  assert.deepEqual(proposals.children, []);
+  controller.dispose();
+});
+
+test('dismissing a suggestion never previews or applies anything', async () => {
+  let pending = [{ id: 'dec_9', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending' }];
+  const calls = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: pending.map(item => ({ ...item })) }),
+    request: async (method, path) => {
+      calls.push(path);
+      pending = [{ id: 'dec_9', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'dismissed' }];
+      return { id: 'dec_9', state: 'dismissed' };
+    },
+  });
+  await settle();
+  const proposals = f.doc.body.children[1].children[0];
+  proposals.children[0].children[2].onclick();
+  await settle();
+  assert.deepEqual(calls, ['/api/task-shells/sh_1/attribution-decisions/dec_9/dismiss']);
+  assert.equal(f.doc.body.children[0].dataset.suggestions, '0');
+  assert.equal(proposals.hidden, true);
+  controller.dispose();
+});
+
 test('the toggle stays hidden until a movable turn exists', () => {
   const { f, controller } = controllerFor();
   const toggle = f.doc.body.children[0];

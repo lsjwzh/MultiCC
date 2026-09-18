@@ -680,6 +680,25 @@ function createTaskShellRuntime(ports) {
     if (!receipt || receipt.shellId !== s.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
     return sendInput(s.id, receipt.payload);
   }
+  // Undoing an accepted identity change puts the shell cursor back where it
+  // was. It refuses once another turn has moved the cursor: that turn was
+  // routed under the new identity, and silently re-pointing it would rewrite
+  // the history a reader already saw.
+  function restoreSettledCursor(shellId, { fromTaskId = null, toTaskId = null } = {}) {
+    const s = shell(shellId);
+    const previous = fromTaskId && store.get('task', fromTaskId);
+    if (!previous || !toTaskId || s.currentTaskId !== toTaskId
+        || !store.get('link', `${s.id}:${fromTaskId}`) || !store.get('link', `${s.id}:${toTaskId}`)) {
+      return { ok: false, code: 'attribution_undo_conflict' };
+    }
+    return store.transaction(() => {
+      s.currentTaskId = fromTaskId;
+      s.defaultTaskId = fromTaskId;
+      s.cursorVersion = (s.cursorVersion || 0) + 1;
+      saveShell(s.id, s);
+      return { ok: true, taskId: fromTaskId, previousTaskId: toTaskId };
+    });
+  }
   function guardAdmission(sessionId, text, options = {}) {
     const task = owns(sessionId);
     if (!task) return null;
@@ -726,8 +745,8 @@ function createTaskShellRuntime(ports) {
     taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link') }),
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
-    guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
-    relocateTask,
+    guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
+    resolveTask, sendExplicit, relocateTask,
   };
 }
 

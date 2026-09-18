@@ -949,7 +949,7 @@ function createClassifyStateMachine(rawDeps) {
         sessionName, sessionId, runId, turnId, manual, identityLocked,
         anchorMessageId, taskId: currentTaskId,
       },
-    }).then(result => {
+    }).then(async result => {
       const requestSuperseded = cs._classifyTaskId !== requestId;
       if (!requestSuperseded) cs._classifyTaskId = null;
       if (result.cancelled) {
@@ -1001,7 +1001,38 @@ function createClassifyStateMachine(rawDeps) {
         supersededReason,
         latencyMs: Date.now() - startedAt,
       });
-      if (!supersededReason && shellOwned && ['turn-end', 'manual'].includes(runSource)) {
+      // P2: the verdict is journalled before anything acts on it, and the
+      // configured mode says what may act. `shadow` and `suggest` end here —
+      // the row is durable, the turn's identity, name, phase and cursor are
+      // untouched, and a running turn was never a candidate. `auto` lets the
+      // host apply the change itself through the same durable journal.
+      let decisionAction = 'none';
+      if (!supersededReason && shellOwned
+          && typeof getTaskContextHost().recordTaskAttributionDecision === 'function') {
+        try {
+          const decision = await getTaskContextHost().recordTaskAttributionDecision(sessionName, shellReceiptId, {
+            relation: res.relation,
+            taskId: res.relation === 'new' ? resolvedTaskId
+              : (res.taskId && res.taskId !== currentTaskId ? res.taskId : null),
+            taskName: res.taskName, relatedTaskId: res.relatedTaskId,
+            turnId, anchorMessageId, runId, currentTaskId,
+          });
+          decisionAction = decision?.action || 'none';
+        } catch (error) {
+          // A failed journal write must not be mistaken for a verdict. Falling
+          // back to the legacy path keeps attribution working, and the failure
+          // is visible instead of silently dropping the turn's grouping.
+          logger.warn?.('task_attribution_decision_failed', { sessionId: sessionName, turnId, error: error.message });
+        }
+        if (decisionAction === 'record' || decisionAction === 'suggest') {
+          annotateChatTurn(sessionName, turnId, { taskId: currentTaskId || undefined, auxRunId: runId }, { anchorMessageId });
+          setTaskState(sessionName, { auxRunId: runId });
+          return;
+        }
+      }
+      // An applied decision already reached the separation dialog's conclusion:
+      // asking the user again would be a second prompt for one verdict.
+      if (decisionAction !== 'apply' && !supersededReason && shellOwned && ['turn-end', 'manual'].includes(runSource)) {
         // Two signals feed the same user-confirmed separation dialog:
         // contextRelevance=low is an explicit split suggestion, while
         // relation=new means the model judged this turn an independent
@@ -1029,7 +1060,7 @@ function createClassifyStateMachine(rawDeps) {
           return;
         }
       }
-      if (!supersededReason && shellOwned && resolvedTaskId !== currentTaskId
+      if (decisionAction !== 'apply' && !supersededReason && shellOwned && resolvedTaskId !== currentTaskId
           && getTaskContextHost().proposeTaskShellAttribution) {
         getTaskContextHost().proposeTaskShellAttribution(sessionName, shellReceiptId, {
           taskId: resolvedTaskId, taskName: res.taskName, turnId, anchorMessageId,
@@ -1042,7 +1073,10 @@ function createClassifyStateMachine(rawDeps) {
         resolvedTaskId, anchorMessageId,
         anchorStatus, supersededReason, shellReceiptId,
       });
-      if (!supersededReason && shellOwned) {
+      // An applied decision moved the cursor inside its own transaction; the
+      // receipt is superseded by then, so settling again would only log a
+      // conflict for a change that already happened.
+      if (!supersededReason && shellOwned && decisionAction !== 'apply') {
         try {
           getTaskContextHost().settleTaskShellAttribution(sessionName, shellReceiptId, {
             taskId: resolvedTaskId,
