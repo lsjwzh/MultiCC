@@ -4,7 +4,7 @@ const { buildReplayMessages } = require('../routes/chat-history');
 
 // A shell is a display projection, not another transcript writer. Canonical
 // messages, visibility decisions and native contexts remain owned by executions.
-function shellHistoryPage(scope, readMessages, getState, options = {}) {
+function projectShellMessages(scope, readMessages, getState, options = {}) {
   const messages = [];
   const now = Date.now();
   for (const sessionId of scope.sessionIds) {
@@ -20,6 +20,11 @@ function shellHistoryPage(scope, readMessages, getState, options = {}) {
   }
   messages.sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0)
     || Number(a.streaming) - Number(b.streaming));
+  return messages;
+}
+
+function shellHistoryPage(scope, readMessages, getState, options = {}) {
+  const messages = projectShellMessages(scope, readMessages, getState, options);
   const limit = Math.max(1, Math.min(100, parseInt(options.limit, 10) || 5));
   const target = options.around || options.before;
   const cursor = target ? messages.findIndex(m => m.id === target || m.sourceMessageId === target) : -1;
@@ -58,4 +63,4 @@ function watchShellHistory(scope, activeSessionId, { subscribe, readMessages, ge
   return () => { unsubscribe(); clearTimeout(timer); pending.clear(); };
 }
 
-module.exports = { shellHistoryPage, watchShellHistory };
+module.exports = { projectShellMessages, shellHistoryPage, watchShellHistory };

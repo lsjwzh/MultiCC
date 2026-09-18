@@ -537,43 +537,45 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   attachQuoteButton,
   warn: (...args) => console.warn(...args),
 });
-async function detachIndexedTask(entry) {
-  if (!entry?.taskId || isReadOnly()) return;
-  const code = entry.code || entry.taskId.slice(-4).toUpperCase();
-  const go = await _chatConfirm(tt('taskIndexDetachConfirm', { code }), {
-    okText: tt('taskIndexDetach'),
-  });
-  if (!go) return;
+const detachIndexedTask = window.MultiCCTaskIndex?.createDetachAction({
+  translate: tt, confirm: _chatConfirm, request: (path, body) => chatApi.json(withToken(path), { method: 'POST', json: body }),
+  alert: message => _chatAlert(message, { danger: true }),
+  openUrl: url => !!window.open(url, '_blank', 'noopener'),
+});
+async function fetchAroundPage(messageId) {
+  return chatApi.json(withToken(`${shellChatView.historyUrl()}?around=${encodeURIComponent(messageId)}&limit=31&historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}`));
+}
+function mergeAroundPage(messages, page) {
+  // The around window becomes the pagination anchor; existing newer DOM stays.
+  const inserted = chatHistoryView.prependMessages(messages);
+  chatHistoryStore.reset();
+  chatHistoryStore.acceptHistory({ messages, hasMore: !!page.hasMore }, chatHistoryView.visibleIds());
+  return inserted;
+}
+// Index jumps may target an unloaded turn, so they paginate like deep links.
+async function jumpToIndexAnchor(ref) {
+  const id = typeof ref?.id === 'string' ? ref.id : (typeof ref?.sourceMessageId === 'string' ? ref.sourceMessageId : '');
+  if (!id) return;
   try {
-    const clientMsgId = `index-${newClientMsgId()}`;
-    const result = await chatApi.json(withToken(`/api/task-shell-tasks/${encodeURIComponent(entry.taskId)}/fork`), {
-      method: 'POST', json: { clientMsgId },
-    });
-    if (result.url) window.open(result.url, '_blank', 'noopener');
-    else if (result.taskId) window.open(`/air?task=${encodeURIComponent(result.taskId)}`, '_blank', 'noopener');
-  } catch (error) {
-    _chatAlert(tt('taskIndexDetachFailed', { error: chatApi.errorText(error) }), { danger: true });
-  }
+    if (!chatHistoryView.findById(id)) {
+      const page = await fetchAroundPage(id);
+      if (page?.found !== true) return;
+      mergeAroundPage(page.messages, page);
+    }
+    chatTaskIndex?.markLocated(id);
+  } catch (error) { dbg('history', `task index jump failed: ${error.message}`); }
 }
 const chatTaskIndex = window.MultiCCTaskIndex?.createController({
-  document, messagesEl, translate: tt, onDetach: detachIndexedTask,
+  document, messagesEl, translate: tt, navigate: ref => void jumpToIndexAnchor(ref),
+  loadIndex: () => shellChatView.shellId
+    ? chatApi.json(withToken(`/api/task-shells/${encodeURIComponent(shellChatView.shellId)}/task-index`)) : null,
+  onDetach: isReadOnly() ? null : detachIndexedTask,
 });
 const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusController({
   targetId: _targetMessageId,
   findById: id => chatHistoryView.findById(id),
-  async fetchAround(messageId) {
-    const url = withToken(`${shellChatView.historyUrl()}?around=${encodeURIComponent(messageId)}&limit=31&historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}`);
-    return chatApi.json(url);
-  },
-  mergeMessages(messages, page) {
-    const inserted = chatHistoryView.prependMessages(messages);
-    // The around window becomes the pagination anchor. Existing newer DOM is
-    // intentionally retained, while subsequent "older" loads continue before
-    // this window instead of using the former latest-page cursor.
-    chatHistoryStore.reset();
-    chatHistoryStore.acceptHistory({ messages, hasMore: !!page.hasMore }, chatHistoryView.visibleIds());
-    return inserted;
-  },
+  fetchAround: fetchAroundPage,
+  mergeMessages: mergeAroundPage,
   onError: error => dbg('history', `message focus failed: ${error.message}`),
 });
 let _loadingOlderSentinel = null; // DOM node inserted at top while loading, also scroll anchor
@@ -2990,7 +2992,7 @@ bootChatEntry();
 const taskSeparation = window.MultiCCTaskSeparation.createController({
   getSession: () => SHARE_MODE || _params.get('readOnly') === '1' ? null : _sessionName,
   request: (url, options) => chatApi.json(withToken(url), options),
-  show: window.MultiCCTaskSeparation.showDialog,
+  show: window.MultiCCTaskSeparation.showDialog, showPill: window.MultiCCTaskSeparation.showPill,
   navigate: url => { (window.top || window).location.href = url; },
   report: error => console.warn('Task separation:', error.message),
 });
