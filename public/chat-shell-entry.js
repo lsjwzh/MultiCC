@@ -139,9 +139,13 @@
     return Object.freeze({ ingest, replayPending, send, state });
   }
 
-  function createShellView({ sourceSessionId, taskId = null, disabled = false, request, onSession = () => {} }) {
+  function createShellView({ sourceSessionId, taskId = null, disabled = false, request, onSession = () => {}, onTarget = () => {} }) {
     let shellId = null, activeSessionId = sourceSessionId, unsupported = disabled || !sourceSessionId;
     let opening = null;
+    // The shell's input cursor as a display handle: which task the next message
+    // goes to ("下一条发给 #ABCD"). A read of the scope response, never a
+    // second request, and never a change to where a message is delivered.
+    let target = null;
     async function prepare() {
       if (unsupported) return activeSessionId;
       if (!shellId) {
@@ -157,8 +161,10 @@
       }
       const scope = await request(`/api/task-shells/${encodeURIComponent(shellId)}/chat`);
       activeSessionId = scope.activeSessionId;
+      target = { taskId: scope.taskId || null, code: scope.taskShortCode || '' };
       root.MultiCCTaskArtifacts?.setScope({ shellId });
       onSession(activeSessionId);
+      onTarget(target);
       return activeSessionId;
     }
     function record(message, origin = activeSessionId) {
@@ -176,6 +182,7 @@
       return message;
     }
     return { prepare, event, get shellId() { return shellId; }, get activeSessionId() { return activeSessionId; },
+      get target() { return target; },
       historyUrl: () => disabled && taskId ? `/api/task-shell-tasks/${encodeURIComponent(taskId)}/history`
         : shellId ? `/api/task-shells/${encodeURIComponent(shellId)}/history`
         : `/api/sessions/${encodeURIComponent(activeSessionId)}/history` };

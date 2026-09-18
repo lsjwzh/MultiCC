@@ -122,6 +122,23 @@ test('browser reopens the same shell source, follows execution and reconciles na
   assert.equal(await reopened.prepare(), 'b');
 });
 
+test('the shell view publishes the input cursor so the composer can show where a message goes', async () => {
+  const targets = [], sessions = [];
+  const view = createShellView({ sourceSessionId: 'a', onSession: id => sessions.push(id),
+    onTarget: target => targets.push(target),
+    request: async (_url, options) => options ? { id: 'shell' }
+      : ({ activeSessionId: 'a', taskId: 'tsk_a', taskShortCode: 'A1B2' }) });
+  await view.prepare();
+  assert.deepEqual(targets, [{ taskId: 'tsk_a', code: 'A1B2' }]);
+  assert.deepEqual(view.target, { taskId: 'tsk_a', code: 'A1B2' });
+  // A scope without a cursor (no task yet, or an older server) is not an error:
+  // the chip simply stays hidden.
+  const empty = createShellView({ sourceSessionId: 'a', request: async (_url, options) => options ? { id: 'shell' }
+    : ({ activeSessionId: 'a' }) });
+  await empty.prepare();
+  assert.deepEqual(empty.target, { taskId: null, code: '' });
+});
+
 test('passive shell subscription delivers background progress and releases listeners', async () => {
   let listener, removed = false;
   const events = [];

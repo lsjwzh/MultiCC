@@ -87,12 +87,15 @@
     let signature = '';
     let filterText = '';
     let currentCode = '';
+    // 当前阅读位置所在的段（配合 currentCode 定位导航的起点）。
+    let currentSegment = -1;
     let targetCode = '';
     // Set by a choice the server already accepted. It wins until the next reload,
     // so a read taken before that write cannot repaint the old target over it.
     let chosenTarget = '';
     let rendered = [];
     let filterBarNode = null;
+    let navBarNode = null;
     let emptyNote = null;
     let sampled = false;
     // Search only appears once the directory is long enough to need it, so a
@@ -197,6 +200,7 @@
         if (keep) shown += 1;
       }
       if (emptyNote) emptyNote.hidden = shown > 0;
+      updateNav();
     }
 
     function activate(node) {
@@ -275,6 +279,72 @@
       };
       bar.append(input, sort);
       filterBarNode = bar;
+      return bar;
+    }
+
+    // 上一段 / 下一段：按当前显示顺序（筛选与排序都算数）在「段」之间移动。
+    // 它只做定位——滚动正文、高亮那一段——绝不移动输入游标。
+    function segmentSteps() {
+      const steps = [];
+      for (const item of rendered) {
+        if (item.row.hidden === true) continue;
+        (item.entry.segments || []).forEach((segment, position) => steps.push({ entry: item.entry, segment, position }));
+      }
+      return steps;
+    }
+
+    function currentStep(steps) {
+      if (!currentCode) return -1;
+      const exact = steps.findIndex(step => step.entry.code === currentCode && step.position === currentSegment);
+      return exact >= 0 ? exact : steps.findIndex(step => step.entry.code === currentCode);
+    }
+
+    function updateNav() {
+      if (!navBarNode) return;
+      const steps = segmentSteps();
+      const at = currentStep(steps);
+      navBarNode.children[0].disabled = !(at > 0);
+      navBarNode.children[2].disabled = at < 0 ? steps.length === 0 : at >= steps.length - 1;
+      navBarNode.children[1].textContent = `${at < 0 ? '-' : at + 1}/${steps.length}`;
+    }
+
+    function stepSegment(delta) {
+      const steps = segmentSteps();
+      const at = currentStep(steps);
+      const next = at < 0 ? (delta > 0 ? 0 : -1) : at + delta;
+      if (next < 0 || next >= steps.length) return false;
+      const step = steps[next];
+      const item = rendered.find(value => value.entry.code === step.entry.code);
+      if (item) item.segment = step.position;
+      currentCode = step.entry.code;
+      currentSegment = step.position;
+      applyCurrent();
+      updateNav();
+      return locate(step.entry, step.segment) !== false;
+    }
+
+    // 只有当真有一项拥有多段时才渲染（DOM 回退模式没有段边界，不会出现它）；
+    // 一行一段的目录里「下一段」和点下一行是同一件事，加按钮只是噪音。
+    function navBar() {
+      if (navBarNode) return navBarNode;
+      const bar = doc.createElement('div');
+      bar.className = 'task-index-nav';
+      const step = (name, label) => {
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'task-index-step';
+        button.dataset.step = name;
+        button.textContent = name === 'prev' ? '‹' : '›';
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        button.onclick = () => { stepSegment(name === 'prev' ? -1 : 1); };
+        return button;
+      };
+      const position = doc.createElement('span');
+      position.className = 'task-index-segpos';
+      bar.append(step('prev', translate('taskIndexPrevSegment')), position,
+        step('next', translate('taskIndexNextSegment')));
+      navBarNode = bar;
       return bar;
     }
 
@@ -384,7 +454,9 @@
       currentCode = code;
       const item = rendered.find(value => value.entry.code === code);
       if (item) item.segment = segmentIndexAt(item.entry, lineY);
+      currentSegment = item ? item.segment : -1;
       applyCurrent();
+      updateNav();
     }
 
     function scheduleSample() {
@@ -399,6 +471,7 @@
       const all = ordered();
       const list = all;
       const showFilters = all.length >= MIN_FILTER_ENTRIES;
+      const showNav = list.some(entry => (entry.segments || []).length > 1);
       const next = JSON.stringify([sortMode, showFilters, targetCode, list.map(entry => [entry.code, entry.taskId, entry.title,
         isStale(entry), entry.target === true, entry.capabilities?.canDetach === true,
         entry.capabilities?.canSelectTarget === true, entry.segments.length])]);
@@ -416,6 +489,9 @@
           emptyNote.hidden = true;
           nodes.push(emptyNote);
         } else emptyNote = null;
+        // `order:-2` puts the nav above the filters on screen; inserting it in
+        // the same order keeps the document and the layout telling one story.
+        if (showNav) nodes.unshift(navBar());
         rail.replaceChildren(...nodes);
       }
       toggle.hidden = all.length === 0;
@@ -424,6 +500,7 @@
       applyFilter();
       applyCurrent();
       if (!rail.hidden) sampleCurrent();
+      updateNav();
     }
 
     function reload() {
