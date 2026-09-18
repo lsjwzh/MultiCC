@@ -571,8 +571,9 @@ function discoverProviderSkills(providerName) {
 // Called before forward sync to ensure canonical store is complete.
 function importAllProviderSkills() {
   const results = [];
-  // Don't import from Claude — Claude IS canonical format, and Claude-only
-  // skills are user-installed and may not be intended for sharing.
+  // Import from all providers. multicc-managed symlinks are skipped naturally:
+  // readdir(withFileTypes) reports them as symlinks, not directories, so only
+  // real (user-installed) directories become import candidates.
   for (const provName of ['claude', 'codex', 'hermes']) {
     const candidates = discoverProviderSkills(provName);
     for (const cand of candidates) {
