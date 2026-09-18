@@ -77,6 +77,8 @@ function mountTaskAttribution() {
     },
     loadIndex: shellId => chatApi.json(withToken(
       `/api/task-shells/${encodeURIComponent(shellId)}/task-index?includeEmpty=1`)),
+    loadSuggestions: shellId => chatApi.json(withToken(
+      `/api/task-shells/${encodeURIComponent(shellId)}/attribution-decisions`)),
     makeId: () => newClientMsgId(),
     onApplied: () => refreshShellHistory(),
     report: error => dbg('history', `task attribution failed: ${error.message}`),
