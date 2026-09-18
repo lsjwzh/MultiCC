@@ -21,6 +21,18 @@ class FakeNode {
     const index = before ? this.children.indexOf(before) : -1;
     if (index < 0) this.children.unshift(node); else this.children.splice(index, 0, node);
   }
+  // Real-node navigation: the in-place suggestion card is positioned relative to
+  // the turn's last bubble, so the fake needs the same two lookups.
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const index = this.parentNode.children.indexOf(this);
+    return index < 0 ? null : this.parentNode.children[index + 1] || null;
+  }
+  get previousSibling() {
+    if (!this.parentNode) return null;
+    const index = this.parentNode.children.indexOf(this);
+    return index <= 0 ? null : this.parentNode.children[index - 1];
+  }
   remove() { const parent = this.parentNode; this.removed = true; if (parent) parent.children = parent.children.filter(c => c !== this); }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   addEventListener(name, fn) { this.listeners[name] = fn; }
@@ -466,4 +478,102 @@ test('an accepted change that is still waiting for the turn stays visible and ca
     'withdrawing a queued change uses the durable dismiss, not a second accept');
   assert.equal(toggle.dataset.suggestions, '0');
   controller.dispose();
+});
+
+// ── §9.1：建议不只躺在工具栏里，也贴在它说的那一轮对话旁边。
+function judged(extra = {}) {
+  let state = extra.state || [{ id: 'dec_5', sessionId: 's1', turnId: 't1', fromTaskId: 'tsk_a',
+    toTaskId: 'tsk_b', toTaskTitle: 'Beta', state: 'pending' }];
+  const calls = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: state.map(item => ({ ...item })) }),
+    request: async (method, path, body) => {
+      calls.push({ method, path, body });
+      // …/<decision id>/<action>
+      const id = decodeURIComponent(path.split('/').slice(-2)[0]);
+      if (path.includes('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.includes('/attribution-decisions/')) {
+        const next = path.endsWith('/defer') ? 'deferred' : path.endsWith('/dismiss') ? 'dismissed' : 'applied';
+        state = state.map(item => (item.id === id ? { ...item, state: next } : item));
+        return { id, state: next, toTaskId: 'tsk_b' };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    },
+    ...extra.options,
+  });
+  return { f, calls, controller, setState: next => { state = next; } };
+}
+
+test('a fresh suggestion is offered next to the turn it is about, and accepting clears it', async () => {
+  const { f, controller } = judged();
+  f.messages.append(turn('s1', 't1', 'tsk_a', 'A001'), turn('s1', 't2', 'tsk_a', 'A001'));
+  await settle();
+  const card = f.messages.children[1];
+  assert.equal(card.className, 'task-attribution-inline');
+  assert.equal(card.parentNode, f.messages, 'the card sits in the transcript, not in an overlay');
+  assert.equal(card.dataset.decision, 'dec_5');
+  assert.equal(f.messages.children.length, 3, 'it lands right after the turn, before the next one');
+  assert.equal(card.children[0].textContent, 'taskAttributionInline');
+  assert.equal(card.children.length, 4, 'a label plus accept / dismiss / later');
+  card.children[1].onclick();
+  await settle();
+  assert.deepEqual(f.messages.children.map(node => node.className), ['msg', 'msg'],
+    'accepting takes the in-place card away with the queue row');
+  controller.dispose();
+});
+
+test('postponing a suggestion folds the in-place card into the bar', async () => {
+  const { f, controller } = judged();
+  f.messages.append(turn('s1', 't1', 'tsk_a', 'A001'));
+  await settle();
+  const card = f.messages.children[1];
+  card.children[3].onclick();
+  await settle();
+  assert.equal(f.messages.children.length, 1, 'a postponed card is not left lying in the transcript');
+  assert.equal(f.doc.body.children[0].dataset.suggestions, '1', 'but it is still open work');
+  controller.dispose();
+});
+
+test('a suggestion whose turn is not on this page stays in the bar only', async () => {
+  const { f, controller } = judged();
+  f.messages.append(turn('s1', 't7', 'tsk_a', 'A001'));
+  await settle();
+  assert.equal(f.messages.children.length, 1, 'no card without its turn on screen');
+  assert.equal(f.doc.body.children[0].dataset.suggestions, '1');
+  // Loading the turn it refers to (an older page) brings the card in.
+  f.messages.insertBefore(turn('s1', 't1', 'tsk_a', 'A001'), f.messages.children[0]);
+  controller.refresh();
+  assert.equal(f.messages.children.length, 3);
+  assert.equal(f.messages.children[1].className, 'task-attribution-inline');
+  controller.dispose();
+});
+
+test('re-decorating leaves the in-place cards exactly where they are', async () => {
+  const state = [
+    { id: 'dec_1', sessionId: 's1', turnId: 't1', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending' },
+    { id: 'dec_2', sessionId: 's1', turnId: 't1', fromTaskId: 'tsk_b', toTaskId: 'tsk_c', state: 'pending' },
+    { id: 'dec_3', sessionId: 's1', turnId: 't2', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending' },
+  ];
+  const { f, controller } = judged({ state });
+  f.messages.append(turn('s1', 't1', 'tsk_a', 'A001'), turn('s1', 't2', 'tsk_b', 'B002'));
+  await settle();
+  const seen = f.messages.children.map(node => node.dataset?.decision || node.className);
+  assert.deepEqual(seen, ['msg', 'dec_1', 'dec_2', 'msg', 'dec_3'],
+    'two verdicts for one turn stack in order instead of leapfrogging');
+  const nodes = f.messages.children.slice();
+  // The observer above fires on every DOM change, so a renderer that rewrites
+  // these nodes unconditionally would never settle.
+  controller.refresh(); controller.refresh(); controller.refresh();
+  assert.deepEqual(f.messages.children, nodes, 'the same nodes, in the same order');
+  assert.deepEqual(f.messages.children.map(node => node.dataset?.decision || node.className), seen);
+  controller.dispose();
+});
+
+test('disposing takes the in-place cards with it', async () => {
+  const { f, controller } = judged();
+  f.messages.append(turn('s1', 't1', 'tsk_a', 'A001'));
+  await settle();
+  assert.equal(f.messages.children.length, 2);
+  controller.dispose();
+  assert.equal(f.messages.children.length, 1, 'nothing is left in the transcript');
 });
