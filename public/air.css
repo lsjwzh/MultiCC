@@ -38,8 +38,8 @@
 }
 
 /* ── 运行中的彩虹圈 ──────────────────────────────────────────────────────
-   老看板（manage.html 的 .card-border-rainbow）那套动画原样搬过来：8 段色相、
-   3s 一轮，圈和光晕同色一起走。三处必要的改动：
+   老看板（manage.html 的 .card-border-rainbow）那套动画搬过来：色相 3s 转一轮，
+   圈和光晕同色一起走。四处必要的改动：
      · 画在 box-shadow 上而不是 border-color 上 —— Air 的行本身带边框，而边框在
        这套界面里是有话要说的（选中、跨目录的虚线），让彩虹去改它会把话搅乱；
      · 用 inset —— 任务行住在 #tasks、目录行住在 overflow:hidden 的网格里，向外的
@@ -51,18 +51,16 @@
        右三条边整条消失，只剩下面那一条 —— 就是「彩虹圈只有半边，有时候又是好的」。
        覆盖层是自己生成的子元素，画在所有后代之上，不是兄弟层级谁也盖不住它。
        用 ::before 而不是 ::after，是因为 #task-state 已经拿 ::after 画「 ›」箭头。
+     · 圈和光晕是【一次性画好的静态 box-shadow】，3s 里唯一动的是 hue-rotate ——
+       老看板那版逐帧改 box-shadow 的色值，而 box-shadow（尤其带 14px 模糊的那层
+       光晕）不在合成器能接管的属性里：每一帧都要把整个元素重新栅格化一遍。控制台
+       上挂十几个圈时这一条就吃满一个核（实测 7 个圈 0.35 核 → 换 hue-rotate 后
+       0.13 核，已经和不带动画的底噪齐平），用户侧的观感就是「页面很卡、CPU 很高」。
+       hue-rotate 是滤镜，动画交给合成器，静态层只栅格化一次；色相扫过整个色轮，
+       和原来那 8 段（红→橙→黄→绿→蓝→蓝紫→紫→红）看到的是同一件事，只是更连续。
    谁拿到这个类不由这里决定：air-admin.js 问 status-presentation.js 要 spinner，
    注册表只给 running 设了它 —— 「出错的任务绝不动画」因此是一条规则。 */
-@keyframes air-rainbow-ring {
-  0%   { box-shadow: inset 0 0 0 2px #ff0000, inset 0 0 14px #ff000055; }
-  14%  { box-shadow: inset 0 0 0 2px #ff8800, inset 0 0 14px #ff880055; }
-  28%  { box-shadow: inset 0 0 0 2px #ffff00, inset 0 0 14px #ffff0055; }
-  42%  { box-shadow: inset 0 0 0 2px #00ff00, inset 0 0 14px #00ff0055; }
-  57%  { box-shadow: inset 0 0 0 2px #0088ff, inset 0 0 14px #0088ff55; }
-  71%  { box-shadow: inset 0 0 0 2px #0000ff, inset 0 0 14px #0000ff55; }
-  85%  { box-shadow: inset 0 0 0 2px #8800ff, inset 0 0 14px #8800ff55; }
-  100% { box-shadow: inset 0 0 0 2px #ff0000, inset 0 0 14px #ff000055; }
-}
+@keyframes air-rainbow-hue { to { filter: hue-rotate(360deg); } }
 .ring-running { position: relative; }
 .ring-running::before {
   content: "";
@@ -74,7 +72,9 @@
   border-radius: inherit;
   /* 盖在最上面，但点击得穿过去：卡片要能展开、行要能点开、箭头要能按。 */
   pointer-events: none;
-  animation: air-rainbow-ring 3s linear infinite;
+  /* 静态的起手色（色相 0° = 红），hue-rotate 从它开始扫完整圈。 */
+  box-shadow: inset 0 0 0 2px #ff0000, inset 0 0 14px #ff000055;
+  animation: air-rainbow-hue 3s linear infinite;
 }
 
 /* 圈要看得出来是个圈。卡片和侧栏行本来就圆角，拿来就能用；列表里的行是方的
