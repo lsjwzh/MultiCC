@@ -73,11 +73,16 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
       ok: true, operations: taskOperations().list(req.params.shellId) })));
     app.post('/api/task-shells/:shellId/task-operations/preview', route((runtime, req) => taskOperations().preview({
       scope: runtime.chatScope(req.params.shellId), turns: req.body?.turns, range: req.body?.range, target: req.body?.target })));
+    // `queue: true` 是「这一轮还在跑就先排队」：请求落成 pending 行，由服务端在
+    // 轮次结束后重验并应用，不再用 409 把用户挡回去。
     app.post('/api/task-shells/:shellId/task-operations', route((runtime, req) => taskOperations().apply({
       scope: runtime.chatScope(req.params.shellId), clientMsgId: req.body?.clientMsgId,
       previewToken: req.body?.previewToken, expectedRevision: req.body?.expectedRevision,
-      turns: req.body?.turns, range: req.body?.range, target: req.body?.target })));
+      turns: req.body?.turns, range: req.body?.range, target: req.body?.target,
+      queue: req.body?.queue === true })));
     app.get('/api/task-operations/:operationId', route((_runtime, req) => taskOperations().get(req.params.operationId)));
+    app.post('/api/task-operations/:operationId/cancel', route((_runtime, req) =>
+      taskOperations().cancel({ operationId: req.params.operationId, clientMsgId: req.body?.clientMsgId })));
     app.post('/api/task-operations/:operationId/undo', route((_runtime, req) => taskOperations().undo({
       operationId: req.params.operationId, clientMsgId: req.body?.clientMsgId })));
   }

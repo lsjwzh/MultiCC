@@ -1251,6 +1251,8 @@
   "taskAttributionLater": "稍后",
   "taskAttributionDeferred": "已稍后处理，随时可以回来确认",
   "taskAttributionQueued": "已接受：本轮结束后会自动把这一轮移到 {task}",
+  "taskAttributionQueuedTurns": "已排队：{n} 轮将在当前轮次结束后移到 {task}",
+  "taskAttributionQueuedToast": "已排队，当前轮次结束后自动生效",
   "taskAttributionQueueCancel": "取消排队",
   "taskAttributionQueueCancelled": "已取消排队的归属调整",
   "taskAttributionContinue": "独立继续",
