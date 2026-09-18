@@ -48,6 +48,41 @@ async function bootShareEntry() {
 // Task-board links resolve their bound execution once, then use the exact same
 // full chat renderer as every ordinary conversation. Task-shell routing is a
 // transport concern and must never replace the UI.
+// 归属调整（P1）：模块本身不认任何页面状态，作用域、HTTP 和重绘都从这里接。
+// 这走的是写路径，所以分享页与只读页根本不挂载。
+async function refreshShellHistory() {
+  try {
+    const url = withToken(`${shellChatView.historyUrl()}?historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}&limit=50`);
+    const page = await chatApi.json(url);
+    // 归属变了，分页锚点和任务徽标都要按新归属重建：重新取当前页比在本地
+    // 逐条改 DOM 更省事，也不会和分页游标脱节。
+    resetHistoryPagination();
+    chatHistoryView.clearMessages();
+    applyHistoryPlan(chatHistoryStore.acceptHistory(page, []));
+    void chatTaskIndex?.reload?.();
+  } catch (error) {
+    dbg('history', `task attribution refresh failed: ${error.message}`);
+  }
+}
+
+function mountTaskAttribution() {
+  if (SHARE_MODE || isReadOnly()) return null;
+  return window.MultiCCTaskAttribution?.createController({
+    document, messagesEl, translate: tt,
+    request: (method, path, body) => chatApi.json(withToken(path), { method, json: body }),
+    scope: async () => {
+      try { await shellChatView.prepare(); } catch (_) {}
+      if (!shellChatView.shellId) throw new Error(tt('taskAttributionNoShell'));
+      return { shellId: shellChatView.shellId };
+    },
+    loadIndex: shellId => chatApi.json(withToken(
+      `/api/task-shells/${encodeURIComponent(shellId)}/task-index?includeEmpty=1`)),
+    makeId: () => newClientMsgId(),
+    onApplied: () => refreshShellHistory(),
+    report: error => dbg('history', `task attribution failed: ${error.message}`),
+  }) || null;
+}
+
 async function bootChatEntry() {
   if (window.MultiCCShareMode?.active()) return bootShareEntry();
   if (_params.get('readOnly') === '1') {
@@ -74,6 +109,7 @@ async function bootChatEntry() {
     }
     return;
   }
+  mountTaskAttribution();
   if (!_taskId) {
     connect();
     return;
