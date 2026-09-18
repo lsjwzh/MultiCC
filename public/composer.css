@@ -130,10 +130,47 @@
 .mc-composer__pill:hover { border-color: #b9d6f0; background: #eef6ff; }
 .mc-composer__pill[hidden] { display: none; }
 .mc-composer__pill:disabled { opacity: .55; cursor: default; }
-/* The route pill leads the band: it names what the next turn will run on. */
-.mc-composer__pill--ai { flex: 0 1 auto; max-width: 68%; color: #2468b5; border-color: #d2e6fb; background: #eaf3ff; }
+/* The route pill leads the band: it names what the next turn will run on. It is
+   also the one pill whose text grows without bound — a provider's display name
+   is user data — so it takes a width cap and hands whatever does not fit to the
+   marquee below. 68% still governs a narrow phone; 320px is the ceiling on a
+   wide window, where the band has room the pill should not spend. */
+.mc-composer__pill--ai { flex: 0 1 auto; max-width: min(68%, 320px); color: #2468b5; border-color: #d2e6fb; background: #eaf3ff; }
 .mc-composer__pill--ai::before { content: '◆'; margin-right: 6px; font-size: 9px; vertical-align: 1px; }
 .mc-composer__pill--role { flex: 0 0 auto; }
+
+/* The route text is one inner box so it can be scrolled inside a pill that never
+   moves: the ◆, the padding and the border stay put while the words travel.
+   min-width:0 is what lets the box shrink under its own content — without it the
+   flex item refuses to go below max-content and the pill just grows instead.
+   ellipsis is the fallback for the frames where nothing has measured yet (and
+   for prefers-reduced-motion, where air.js leaves the marquee off). */
+.mc-composer__pill-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* air.js adds `is-marquee` only after measuring a real overflow, and hands the
+   distance in as a custom property so the keyframes stay width-agnostic. */
+.mc-composer__pill--ai.is-marquee .mc-composer__pill-text { text-overflow: clip; }
+.mc-composer__pill--ai.is-marquee .mc-composer__pill-text-run {
+  display: inline-block;
+  animation: mc-pill-marquee var(--mc-pill-marquee-duration, 6s) ease-in-out infinite alternate;
+}
+/* Hovering is how someone reads the whole thing without waiting for the loop:
+   the pill already carries the full text as its tooltip, this just stops the
+   motion long enough to be read. */
+.mc-composer__pill--ai.is-marquee:hover .mc-composer__pill-text-run { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  .mc-composer__pill--ai.is-marquee .mc-composer__pill-text-run { animation: none; }
+  .mc-composer__pill--ai.is-marquee .mc-composer__pill-text { text-overflow: ellipsis; }
+}
+@keyframes mc-pill-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(var(--mc-pill-marquee-shift, -100%)); }
+}
 
 /* The new-task form's band closes the card: flush with the bottom edge, no
    radius of its own, the card's clipping rounds the corners. */

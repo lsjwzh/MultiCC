@@ -89,8 +89,15 @@ function mountAirRoutes(app, deps) {
       taskId: req.params.id, candidate, separation, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
     let roleBindings = null;
     try { roleBindings = deps.shell.roleBindings(req.params.id); } catch (_) {}
+    // 下一轮才生效的那份配置里存的是 provider id，药丸要给人看名字。名字只有在
+    // 这里解析得出来（provider store 在服务端），所以随 pending 一起下发一个只读
+    // 的展示名；profile 本身保持原样，应用配置时不会被这个派生字段写回会话。
+    const pending = record?.pendingConfiguration || null;
+    const pendingProviderName = pending
+      ? deps.providerName?.({ cli: pending.cli || record?.cli, provider: pending.profile?.provider || null }) || null
+      : null;
     return { ...entry, resource: resource(entry.sessionId), configuration: {
-      pendingConfiguration: record?.pendingConfiguration || null,
+      pendingConfiguration: pending ? { ...pending, providerName: pendingProviderName } : null,
       cli: record?.cli,
       model: record?.model,
       effectiveModel: deps.effectiveModel?.(record) || record?.model || null,
