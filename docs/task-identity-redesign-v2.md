@@ -432,3 +432,21 @@ P1 上线后已能整理对话并看到多个码；P2 实现“尽量把不同�
 仍只有预览期 `blocked`，没有 queued 状态与取消入口）、`select-target` 的
 `expectedCursorVersion` 条件写仍未被界面使用（服务端能力保留；因为 `cursorVersion` 会随每次
 投递前进，界面一旦带上它就必须先拿到最新游标，属于另一条独立的读契约）。
+
+### 13.5 第五批：手选多轮的归属调整也排队（2026-09-19 同一轮）
+
+第 13.4 节留后三条里的第二条本轮落地。第 13.3 节只给「建议卡采纳」做了持久挂起，
+手动多轮的整段调整仍然在预览阶段就按 `blocked` 禁用应用 —— 用户点一次被挡一次，
+正是这一轮改造要消掉的那种阻断，只是换了个入口。
+
+| 条款 | 差距 | 修法 |
+| --- | --- | --- |
+| §6.1 在途轮次（手选路径） | `task-operations.apply` 遇到运行中的轮次直接 409 `turn_busy`，界面据此把「应用」按钮禁用 | `apply` 增加显式 `queue: true`：轮次还在跑时落一行 `status='queued'`（记下 `turns`/`targetTaskId`/`blocked`/`queuedAt`）而不报错；同一 `clientMsgId` 重放仍只产生一行。不带 `queue` 的调用保持原样 409，接口契约不变 |
+| 队列推进 | — | `task-operations.drain()` 由 host 在挂载时立即跑一次、之后每 5s（同一 `attributionQueueIntervalMs`，`unref`）推进。每次尝试都重走 `apply` 本体，所以作用域校验、忙判定、`previous` 重算、`previewToken`/revision 语义全都与手动应用一致；仍在忙就是「还没到时候」（留在队列），轮次消失落 `failed`（`turn_not_found`），超过 24h 落 `queued_expired` |
+| 撤销与取消 | — | 排队行是用户的申请，只能「取消」：`POST /api/task-operations/:operationId/cancel`（幂等，应用于 `queued` 以外的状态返回 409 `operation_not_queued`）。真正落地之后仍走原来的 `undo`；队列行落地时把 `queuedAt` 带进 `applied` 记录，"什么时候提的"不会因为等了很久而消失 |
+| 落地广播 | 服务端替用户应用后，还开着的页面历史是旧的 | `task-operations` 新增 `notify` 端口（host 接 `onAttributionChanged`）：排队行落地时按 `kind='applied'` 广播，页面复用既有的 `task_attribution_updated` 处理（刷新建议列表 + 重取当前页），不需要新协议 |
+| 界面 | 「应用」在有轮次在跑时被禁用，排队后也看不见自己排了什么 | 预览 `blocked` 时不再禁用「应用」：提交带 `queue`，返回 `queued` 时摘要写明「已排队：{n} 轮将在当前轮次结束后移到 {task}」，toast 给「取消排队」。面板的待处理列表现在同时读 `attribution-decisions` 与 `task-operations`，把两种排队行并排显示（都能取消），关掉面板也能找回来 |
+| 保留期 | 终态行只有 `reverted` 会被清理 | `expireOlderThan` 一并清理 `cancelled`/`queued_expired`/`failed`（按 `resolvedAt`/`queuedAt`），`applied` 仍然保留——它还是当前归属的审计线索 |
+
+仍然留后：建议卡的贴段呈现（§9.1 原始形态）；`select-target` 的 `expectedCursorVersion`
+条件写仍未被界面使用（服务端能力保留，理由见 §13.4）。

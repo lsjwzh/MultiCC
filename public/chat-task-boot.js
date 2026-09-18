@@ -95,6 +95,9 @@ function mountTaskAttribution() {
       `/api/task-shells/${encodeURIComponent(shellId)}/task-index?includeEmpty=1`)),
     loadSuggestions: shellId => chatApi.json(withToken(
       `/api/task-shells/${encodeURIComponent(shellId)}/attribution-decisions`)),
+    // 手选多轮的排队行与归属建议同屏：关掉面板也还能找回来并取消。
+    loadOperations: shellId => chatApi.json(withToken(
+      `/api/task-shells/${encodeURIComponent(shellId)}/task-operations`)),
     makeId: () => newClientMsgId(),
     // 独立继续是写路径：确认后由服务端持有请求，页面只是发起者。
     confirmContinue: message => _chatConfirm(message, { okText: tt('taskAttributionContinue') }),

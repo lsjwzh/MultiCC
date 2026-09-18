@@ -1251,6 +1251,8 @@
   "taskAttributionLater": "Later",
   "taskAttributionDeferred": "Postponed — you can confirm it any time",
   "taskAttributionQueued": "Accepted: this turn will move to {task} as soon as the running turn ends",
+  "taskAttributionQueuedTurns": "Queued: {n} turns will move to {task} once the running turn ends",
+  "taskAttributionQueuedToast": "Queued; it applies as soon as the running turn ends",
   "taskAttributionQueueCancel": "Cancel queued change",
   "taskAttributionQueueCancelled": "Queued attribution change cancelled",
   "taskAttributionContinue": "Continue independently",
