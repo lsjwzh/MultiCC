@@ -1,10 +1,11 @@
 'use strict';
 
-// Process-level proof for the real task ingress (#38): board input binds a
-// hidden task-bound chat session and the turn runs there — no Commander hop,
-// no pooled execution slot, no TaskRun ledger row. The server owns a temporary
-// data root and the bound session runs a deterministic fake Codex; no live
-// task, chat history, project, or AI provider is touched.
+// Process-level proof of the task-first ingress (#38) and of the retired
+// Commander-anchored board endpoints: board input owns a hidden task-bound
+// chat session and the turn runs there — no Commander hop, no pooled execution
+// slot, no TaskRun ledger row. The server owns a temporary data root and the
+// bound session runs a deterministic fake Codex; no live task, chat history,
+// project, or AI provider is touched.
 
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
@@ -17,8 +18,8 @@ const { assertTestDir, createPaths } = require('../src/paths');
 const { readJson } = require('../src/state/store');
 
 const ROOT = path.join(__dirname, '..');
-const TOKEN = 'commander-routing-isolated';
-const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-commander-route-'));
+const TOKEN = 'board-routing-isolated';
+const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-board-route-'));
 const dataRoot = assertTestDir(path.join(testRoot, 'data'));
 const project = path.join(testRoot, 'project');
 const fakeCodex = path.join(testRoot, 'fake-codex.js');
@@ -27,56 +28,23 @@ fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(project, { recursive: true });
 fs.writeFileSync(fakeCodex, `#!/usr/bin/env node
 const fs = require('node:fs');
+const path = require('node:path');
 async function main() {
   const args = process.argv.slice(2);
   const sessionId = process.env.MULTICC_SESSION_ID || 'unknown';
+  const threadId = 'fake-' + sessionId;
+  // A resumable native identity: the product refuses to continue a Codex
+  // session whose rollout is missing, so the stand-in keeps one per session.
+  const sessionsDir = path.join(process.env.CODEX_HOME || path.join(require('node:os').homedir(), '.codex'), 'sessions');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.writeFileSync(path.join(sessionsDir, 'rollout-' + threadId + '.jsonl'),
+    JSON.stringify({ type: 'session_meta', payload: { id: threadId, cwd: process.cwd() } }) + '\\n');
   fs.appendFileSync(${JSON.stringify(invocationFile)}, JSON.stringify({ cwd: process.cwd(), args, sessionId }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'fake-' + sessionId }) + '\\n');
-  const base = process.env.MULTICC_BASE_URL;
-  const headers = process.env.ACCESS_TOKEN
-    ? { Authorization: 'Bearer ' + process.env.ACCESS_TOKEN }
-    : {};
-  const sessionsResponse = await fetch(base + '/api/sessions', { headers });
-  const sessions = await sessionsResponse.json();
-  const current = sessions.find(session => session.id === sessionId);
-  if (current && current.type === 'commander') {
-    const target = sessions.find(session => session.dirId === current.dirId
-      && session.type !== 'commander'
-      && String(session.label || '').startsWith('全栈工程师'));
-    if (!target) throw new Error('fake Commander could not resolve a worker');
-    const payload = String(args[args.length - 1] || '');
-    const knownTasks = ['实现一个隔离测试功能', '从任务面板进入统一通道', '补充同一任务的验收细节'];
-    const message = knownTasks.find(value => payload.includes(value)) || payload.slice(-2000);
-    const toolResponse = await fetch(base + '/api/internal/router-tools/route_task', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-multicc-router-capability': process.env.MULTICC_ROUTER_CAPABILITY || '',
-      },
-      body: JSON.stringify({ arguments: { target_session_id: target.id, message } }),
-    });
-    const toolBody = await toolResponse.json();
-    if (!toolResponse.ok || !toolBody.ok) throw new Error('route_task failed: ' + JSON.stringify(toolBody));
-    process.stdout.write(JSON.stringify({
-      type: 'item.started',
-      item: { type: 'mcp_tool_call', id: 'route-call', tool: 'mcp__multicc_router__route_task',
-        arguments: JSON.stringify({ target_session_id: target.id, message }) },
-    }) + '\\n');
-    process.stdout.write(JSON.stringify({
-      type: 'item.completed',
-      item: { type: 'mcp_tool_call', id: 'route-call', status: 'completed',
-        result: { content: [{ type: 'text', text: JSON.stringify(toolBody.result) }] } },
-    }) + '\\n');
-    process.stdout.write(JSON.stringify({
-      type: 'item.completed',
-      item: { type: 'agent_message', text: 'FAKE-COMMANDER-ROUTED' },
-    }) + '\\n');
-  } else {
-    process.stdout.write(JSON.stringify({
-      type: 'item.completed',
-      item: { type: 'agent_message', text: 'FAKE-WORKER-DONE' },
-    }) + '\\n');
-  }
+  process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: threadId }) + '\\n');
+  process.stdout.write(JSON.stringify({
+    type: 'item.completed',
+    item: { type: 'agent_message', text: 'FAKE-WORKER-DONE' },
+  }) + '\\n');
   process.stdout.write(JSON.stringify({
     type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 },
   }) + '\\n');
@@ -133,6 +101,7 @@ async function waitUntil(check, message, attempts = 100) {
       MULTICC_DATA_DIR: dataRoot,
       MULTICC_MEMORY_ROOT: path.join(dataRoot, 'memories'),
       MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100',
+      MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS: '0',
       CLAUDE_CMD: path.join(testRoot, 'missing-claude'),
       CODEX_CMD: fakeCodex,
       OPENCODE_CMD: path.join(testRoot, 'missing-opencode'),
@@ -143,7 +112,7 @@ async function waitUntil(check, message, attempts = 100) {
   server.stdout.on('data', chunk => { output = (output + chunk).slice(-50000); });
   server.stderr.on('data', chunk => { output = (output + chunk).slice(-50000); });
 
-  async function api(method, route, body) {
+  async function api(method, route, body, expected = 200) {
     const response = await fetch(base + route, {
       method,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
@@ -151,7 +120,9 @@ async function waitUntil(check, message, attempts = 100) {
     });
     const raw = await response.text();
     const data = raw ? JSON.parse(raw) : null;
-    if (!response.ok) throw new Error(`${method} ${route}: HTTP ${response.status} ${raw}`);
+    if (response.status !== expected) {
+      throw new Error(`${method} ${route}: HTTP ${response.status} ${raw}`);
+    }
     return data;
   }
 
@@ -163,37 +134,68 @@ async function waitUntil(check, message, attempts = 100) {
     if (server.exitCode === null && server.signalCode === null) server.kill('SIGKILL');
   }
 
+  const invocationRows = () => {
+    if (!fs.existsSync(invocationFile)) return [];
+    return fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
+  };
+  const execRows = () => invocationRows().filter(row => row.args[0] === 'exec');
+
   try {
-    await waitUntil(async () => (await fetch(`${base}/readyz`)).status === 200, 'isolated Commander server did not become ready', 300);
+    await waitUntil(async () => (await fetch(`${base}/readyz`)).status === 200, 'isolated board-routing server did not become ready', 300);
     const directory = await api('POST', '/api/directories', {
-      name: 'Commander routing', path: project, create: true,
+      name: 'Task-first board ingress', path: project, create: true,
     });
     let sessions = await api('GET', '/api/sessions');
-    const commander = sessions.find(session => session.dirId === directory.id && session.type === 'commander');
-    assert.ok(commander, 'directory creation seeds a typed Commander');
+    // Task-first: a directory owns tasks, not roles. Registering one must not
+    // seed a Commander or any other role execution/worktree.
+    assert.equal(sessions.some(session => session.dirId === directory.id), false,
+      'registering a directory seeds no role session');
 
-    for (const ordinal of [1, 2]) {
-      await api('POST', `/api/directories/${directory.id}/sessions`, {
-        cli: 'codex', kind: 'chat', label: `全栈工程师 ${ordinal}`,
-        rolePrompt: `# 角色：全栈工程师 ${ordinal}\n执行工程任务`,
-      });
-    }
-    const specialist = await api('POST', `/api/directories/${directory.id}/sessions`, {
-      cli: 'codex', kind: 'chat', label: '架构师', rolePrompt: '# 角色：架构师\n只接受用户手工任务',
+    // The retired Commander-anchored directory composer must fail closed
+    // rather than invent a worker for a fleet that has no typed Commander.
+    const legacyDir = await fetch(base + '/api/task-board/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ dirId: directory.id, text: '从任务面板进入统一通道', clientMsgId: 'panel-isolated-1' }),
     });
-    sessions = await api('GET', '/api/sessions');
-    const pristineWorkers = sessions.filter(session => session.dirId === directory.id
-      && String(session.label || '').startsWith('全栈工程师'));
-    assert.equal(pristineWorkers.length, 2);
-    assert.equal(pristineWorkers.every(session => !session.cliSessionId), true,
-      'new workers have no native CLI session before route_task');
-    const pristinePaths = createPaths({ dataDir: dataRoot });
-    assert.equal(pristineWorkers.every(session =>
-      !fs.existsSync(path.join(pristinePaths.chatHistoryDir, `${session.id}.json`))), true,
-    'new workers have no chat history or manual initialization before route_task');
+    assert.equal(legacyDir.status, 409, 'the legacy dir-level board ingress is retired, never silent');
+    assert.equal((await legacyDir.json()).error, 'commander_not_found');
 
+    // A session created by hand is task-first too: it becomes a hidden
+    // task-bound chat room with its own worktree, never a fleet-visible role.
+    const observer = await api('POST', `/api/directories/${directory.id}/sessions`, {
+      cli: 'codex', kind: 'chat', label: '旁观任务',
+    });
+    const target = await api('POST', `/api/directories/${directory.id}/sessions`, {
+      cli: 'codex', kind: 'chat', label: '目标任务',
+    });
+    const paths = createPaths({ dataDir: dataRoot });
+    for (const record of [observer, target]) {
+      assert.ok(record.id && record.taskBoundTaskId, 'a new session is a task-bound chat room');
+      assert.equal(record.cliSessionId, null,
+        'a new session has no native CLI session before its first turn');
+      assert.equal(fs.existsSync(path.join(paths.chatHistoryDir, `${record.id}.json`)), false,
+        'a new session has no chat history before its first turn');
+    }
+    assert.notEqual(observer.taskBoundTaskId, target.taskBoundTaskId);
+
+    sessions = await api('GET', '/api/sessions');
+    assert.equal(sessions.some(session => session.id === observer.id || session.id === target.id), false,
+      'task-bound sessions stay out of the ordinary Fleet list');
+    assert.equal(sessions.some(session => session.dirId === directory.id && session.type === 'commander'), false,
+      'no Commander session exists to hop through');
+
+    const persisted = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
+    const durableTarget = persisted.find(session => session.id === target.id);
+    assert.ok(durableTarget, 'the bound session is a durable record, not an ephemeral slot');
+    assert.equal(durableTarget.taskBoundTaskId, target.taskBoundTaskId,
+      'the 1:1 binding is persisted on the record');
+    assert.notEqual(durableTarget.type, 'commander');
+    assert.equal(durableTarget.taskExecutionSlot === true, false, 'no pooled execution slot is created');
+
+    // The observer socket proves the turn never leaks into another room.
     const events = [];
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(commander.id)}&token=${TOKEN}`);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(observer.id)}&token=${TOKEN}`);
     await new Promise((resolve, reject) => {
       socket.on('open', resolve);
       socket.on('message', raw => {
@@ -204,72 +206,47 @@ async function waitUntil(check, message, attempts = 100) {
       socket.on('error', reject);
     });
 
-    const panelFirst = await api('POST', '/api/task-board/send', {
-      dirId: directory.id,
-      text: '从任务面板进入统一通道',
-      clientMsgId: 'panel-isolated-1',
-    });
-    const panelReplay = await api('POST', '/api/task-board/send', {
-      dirId: directory.id,
-      text: '从任务面板进入统一通道',
-      clientMsgId: 'panel-isolated-1',
-    });
+    // #38 · the ONLY admission path is the task-bound chat session: the shell
+    // receipt names it, and the card owns that same session.
+    const shell = await api('POST', '/api/task-shells', { sessionId: target.id });
+    const shellId = shell.id;
+    assert.equal(shell.sourceSessionId, target.id);
+    const sendInput = {
+      text: '从任务面板进入统一通道', clientMsgId: 'panel-isolated-1', intent: 'work',
+    };
+    const panelFirst = await api('POST', `/api/task-shells/${shellId}/messages`, sendInput);
+    assert.equal(panelFirst.sessionId, target.id, 'the receipt names the bound session');
+    assert.equal(panelFirst.taskId, target.taskBoundTaskId);
+    const panelReplay = await api('POST', `/api/task-shells/${shellId}/messages`, sendInput);
+    assert.deepEqual(panelReplay, panelFirst, 'replay is an idempotent re-delivery');
+
+    const invocationRowsSeen = await waitUntil(() => (execRows().length === 1 ? invocationRows() : null),
+      'the board turn did not trigger exactly one bound-session execution', 200);
+    assert.equal(invocationRowsSeen.every(row => row.sessionId === target.id), true,
+      'only the task-bound session executes a model turn for board input');
+    assert.equal(fs.realpathSync(execRows()[0].cwd), fs.realpathSync(durableTarget.worktreePath));
+    // The replay above raced the first execution: prove it never added a run.
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    assert.equal(execRows().length, 1, 'a replay never opens a second execution');
+
     const panelCard = await waitUntil(async () => {
       const value = await api('GET', '/api/task-board');
-      return value.tasks.find(task => task.body === '从任务面板进入统一通道') || null;
-    }, 'panel task did not project from its bound session history');
+      return value.tasks.find(task => task.id === panelFirst.taskId) || null;
+    }, 'the task did not project from its bound session history');
+    assert.equal(panelCard.chatSessionId, target.id, 'the durable card owns its bound session');
     assert.equal(panelCard.body, '从任务面板进入统一通道');
     assert.equal(panelCard.legacy, false);
-
-    // #38 · the ONLY admission path is the task-bound chat session: no
-    // Commander hop, no pooled execution slot, no TaskRun ledger row.
-    assert.equal(panelFirst.taskBound, true);
-    assert.equal(panelFirst.routingMode, 'task-bound');
-    assert.equal(panelFirst.commanderSessionId, null, 'the Commander is not a dispatch hop');
-    const boundId = panelFirst.target;
-    assert.ok(boundId, 'the receipt names the bound session');
-    assert.notEqual(boundId, commander.id);
-    assert.equal(panelFirst.workerSessionId, boundId);
-    assert.equal(panelReplay.taskId, panelFirst.taskId);
-    assert.equal(panelReplay.target, boundId);
-    assert.equal(panelReplay.duplicate, true, 'panel replay is an idempotent re-delivery');
-    assert.equal((await api('GET', '/api/task-board')).tasks.filter(task => task.id === panelCard.id).length, 1);
-
-    const paths = createPaths({ dataDir: dataRoot });
-    const persistedBoard = JSON.parse(fs.readFileSync(paths.taskBoardFile, 'utf8'));
-    const projectedTask = persistedBoard.tasks[panelCard.id];
-    assert.equal(projectedTask.chatSessionId, boundId, 'the durable card owns its bound session');
-    assert.equal(projectedTask.routing?.workerSessionId, boundId);
-    assert.equal(projectedTask.routing?.oneWay, true);
-    assert.notEqual(projectedTask.routing?.workerSessionId, specialist.id, 'specialist is never auto-routed');
-    assert.equal(Object.hasOwn(projectedTask, 'body'), false);
-    assert.equal(Object.hasOwn(projectedTask, 'taskText'), false,
+    assert.equal(Object.hasOwn(panelCard, 'taskText'), false,
       'task board index may keep a derived title but never a second canonical body');
-
-    const invocationRows = await waitUntil(() => {
-      if (!fs.existsSync(invocationFile)) return null;
-      const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
-      return rows.filter(row => row.args[0] === 'exec').length === 1 ? rows : null;
-    }, 'panel task did not trigger exactly one bound-session execution', 200);
-    const persisted = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
-    const durableCommander = persisted.find(session => session.id === commander.id);
-    const durableBound = persisted.find(session => session.id === boundId);
-    assert.ok(durableBound, 'the bound session is a durable record, not an ephemeral slot');
-    assert.equal(durableBound.taskBoundTaskId, panelCard.id, 'the 1:1 binding is persisted on the record');
-    assert.notEqual(durableBound.type, 'commander');
-    assert.equal(durableBound.taskExecutionSlot === true, false, 'no pooled execution slot is created');
-    assert.ok(invocationRows.find(row =>
-      fs.realpathSync(row.cwd) === fs.realpathSync(durableBound.worktreePath)));
-    assert.equal(invocationRows.some(row =>
-      fs.realpathSync(row.cwd) === fs.realpathSync(durableCommander.worktreePath)), false,
-    'Commander never executes a model turn for board input');
-    assert.equal((await api('GET', '/api/sessions')).some(session => session.id === boundId), false,
-      'the bound session stays out of the ordinary Fleet list');
+    const readOnlyBoard = JSON.parse(fs.readFileSync(paths.taskBoardFile, 'utf8'));
+    const projectedTask = readOnlyBoard.tasks[panelCard.id];
+    assert.equal(Object.hasOwn(projectedTask, 'body'), false);
+    assert.notEqual(projectedTask.chatSessionId, observer.id, 'the observer room never receives the card');
 
     // The empty-room regression this path exists to prevent: the user's own
     // text and the reply live in the bound session's history — the very file
     // the chat view opens when the card is clicked.
-    const boundHistoryFile = path.join(paths.chatHistoryDir, boundId + '.json');
+    const boundHistoryFile = path.join(paths.chatHistoryDir, target.id + '.json');
     const boundHistory = await waitUntil(() => {
       const rows = readTranscript(boundHistoryFile);
       return rows.some(message => message.role === 'assistant'
@@ -296,28 +273,22 @@ async function waitUntil(check, message, attempts = 100) {
       || text.includes('[MultiCC 任务运行上下文')), false,
     'a bound turn carries no transport wrapper and no compiled ledger context');
 
-    // The old task-send ingress cannot bypass shell ownership. The canonical
-    // shell continues the same idle execution and native identity.
+    // The old per-task send ingress cannot bypass shell ownership.
     const retired = await fetch(base + '/api/task-board/tasks/' + panelCard.id + '/send', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
       body: JSON.stringify({ text: 'blocked old ingress', clientMsgId: 'retired' }),
     });
     assert.equal(retired.status, 409);
     assert.equal((await retired.json()).error, 'task_shell_route_required');
-    const shell = await api('POST', '/api/task-shells', { sessionId: boundId });
-    await waitUntil(async () => !(await api('GET', `/api/task-shells/${shell.id}/tasks/${panelCard.id}`)).execution.busy,
-      'bound task did not become idle');
-    const continued = await api('POST', `/api/task-shells/${shell.id}/messages`, {
+
+    // The same shell continues the same idle execution and native identity.
+    const continued = await api('POST', `/api/task-shells/${shellId}/messages`, {
       taskId: panelCard.id, text: '补充同一任务的验收细节', clientMsgId: 'panel-isolated-2', intent: 'work',
     });
-    assert.equal(continued.decision, 'continue');
-    assert.equal(continued.sessionId, boundId);
-    const followupExecs = await waitUntil(() => {
-      const rows = fs.readFileSync(invocationFile, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
-      const execs = rows.filter(row => row.args[0] === 'exec');
-      return execs.length === 2 ? execs : null;
-    }, 'follow-up did not trigger a second bound-session execution', 200);
-    assert.equal(fs.realpathSync(followupExecs[1].cwd), fs.realpathSync(durableBound.worktreePath),
+    assert.equal(continued.sessionId, target.id);
+    const followupExecs = await waitUntil(() => (execRows().length === 2 ? execRows() : null),
+      'follow-up did not trigger a second bound-session execution', 250);
+    assert.equal(fs.realpathSync(followupExecs[1].cwd), fs.realpathSync(durableTarget.worktreePath),
       'the follow-up runs in the bound session worktree, never a fresh slot');
     const followupPayload = String(followupExecs[1].args[followupExecs[1].args.length - 1] || '');
     assert.ok(followupPayload.includes('补充同一任务的验收细节'),
@@ -337,19 +308,19 @@ async function waitUntil(check, message, attempts = 100) {
     assert.equal(followupTexts.filter(text => text === '补充同一任务的验收细节').length, 1,
       'follow-up admission appears exactly once in the projection');
 
-    const commanderHistoryFile = path.join(paths.chatHistoryDir, commander.id + '.json');
-    const commanderHistory = readTranscript(commanderHistoryFile);
-    assert.equal(JSON.stringify(commanderHistory).includes('从任务面板进入统一通道'), false,
-      'board input never enters the Commander chat history');
-
+    const observerHistory = readTranscript(path.join(paths.chatHistoryDir, observer.id + '.json'));
+    assert.equal(JSON.stringify(observerHistory).includes('从任务面板进入统一通道'), false,
+      'board input never enters another session history');
     await new Promise(resolve => setTimeout(resolve, 500));
-    assert.equal(events.some(event => event.type === 'assistant'), false, 'Commander never runs a model turn for board input');
-    assert.equal(events.some(event => event.type === 'dispatch.result'), false, 'no worker result flows back to the Commander');
-    sessions = await api('GET', '/api/sessions');
-    assert.equal(sessions.find(session => session.id === specialist.id).type, null, 'specialist metadata remains manual-only');
+    assert.equal(events.some(event => event.type === 'assistant'), false,
+      'the observed task-bound room never runs a model turn for board input');
+    assert.equal(events.some(event => event.type === 'dispatch.result'), false,
+      'no worker result flows back to the observer socket');
+    assert.equal(fs.existsSync(path.join(paths.chatHistoryDir, observer.id + '.json')), false,
+      'the observed room keeps no history at all');
     socket.terminate();
     await stop();
-    console.log('board send → task-bound chat session → real CLI turn: passed');
+    console.log('board input → task-bound shell session → real CLI turn: passed');
   } catch (error) {
     await stop();
     throw Object.assign(error, { message: `${error.message}\n${output}` });
