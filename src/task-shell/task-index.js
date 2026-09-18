@@ -36,7 +36,7 @@ function taskTitle(task, entry) {
 
 // status is display-only: it says whether the index should offer an entry, not
 // whether the underlying execution is running. Execution state stays on turns.
-function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf, now = Date.now() }) {
+function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf, includeEmpty = false, now = Date.now() }) {
   const list = (Array.isArray(messages) ? messages : []).filter(message => message && typeof message === 'object');
   const byId = new Map();
   const ordered = [];
@@ -108,6 +108,22 @@ function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf
       },
     };
   });
+  // A task linked to this conversation can keep its directory row even when
+  // every turn currently belongs to another task; it then has no anchor to jump
+  // to. Manager views ask for those rows explicitly, the in-chat index does not
+  // (an empty row would be a code that jumps nowhere).
+  for (const [taskId, task] of includeEmpty ? records : []) {
+    if (byId.has(taskId) || entries.length >= MAX_TASKS) continue;
+    const code = typeof codeFor === 'function' ? String(codeFor(taskId) || '').trim().toUpperCase() : '';
+    const capabilities = (typeof capabilitiesOf === 'function' ? capabilitiesOf(task, taskId) : null) || {};
+    entries.push({
+      taskId, shortCode: SHORT_CODE_RE.test(code) ? code : '', title: taskTitle(task, { taskName: null }),
+      status: identifier(task?.status, 40) || 'active', state: identifier(task?.state, 40) || null,
+      turnCount: 0, messageCount: 0, empty: true, firstMessageRef: null, lastMessageRef: null,
+      truncated: false, segments: [],
+      capabilities: { canDetach: capabilities.canDetach === true, canSelectTarget: capabilities.canSelectTarget === true },
+    });
+  }
 
   const revision = hash(JSON.stringify({
     shellId: shellId || null,
@@ -130,9 +146,11 @@ function buildTaskIndex({ shellId, messages, tasks = [], codeFor, capabilitiesOf
 // Read-only shell projection: the same message ordering and identity rules the
 // chat view uses, projected into task segments instead of pages.
 function collectTaskIndex(scope, readMessages, getState, options = {}) {
-  const messages = projectShellMessages(scope, readMessages, getState, { includeHidden: true });
+  const messages = projectShellMessages(scope, readMessages, getState,
+    { includeHidden: true, overlay: options.overlay });
   return buildTaskIndex({ shellId: scope?.shellId || scope?.id, messages, now: options.now,
-    tasks: options.tasks, codeFor: options.codeFor, capabilitiesOf: options.capabilitiesOf });
+    tasks: options.tasks, codeFor: options.codeFor, capabilitiesOf: options.capabilitiesOf,
+    includeEmpty: options.includeEmpty === true });
 }
 
 module.exports = { buildTaskIndex, collectTaskIndex, MAX_TASKS, MAX_SEGMENTS_PER_TASK };

@@ -63,6 +63,11 @@ function createTaskShellHost(deps) {
       onStateTargetChanged: id => deps.onStateTargetChanged?.(id),
       onSeparationChanged: id => deps.onSeparationChanged?.(id),
       getHistory: deps.loadHistory,
+      // Read-only view of manual re-attribution. Missing overlay ports (tests,
+      // older hosts) simply keep the canonical annotation.
+      applyAttributionOverlay: messages => {
+        try { return taskOperations().overlay.apply(messages); } catch (_) { return messages; }
+      },
       getLiveState: deps.getChatState,
       getExecution: async id => {
         const host = deps.getWorkHost();
@@ -224,13 +229,15 @@ function createTaskShellHost(deps) {
   // Full-history task directory for the conversation index. Metadata only: it
   // returns task identity and message anchors, never message bodies, and it
   // never selects a routing target.
-  function taskIndex(id) {
+  function taskIndex(id, options = {}) {
     const runtime = getRuntime();
     const scope = runtime.chatScope(id);
     const tasks = runtime.listTasks().filter(task => scope.sessionIds.includes(task.sessionId));
     return require('./task-index').collectTaskIndex(scope, deps.displayHistory || deps.loadHistory, deps.getChatState, {
       tasks,
       codeFor: deps.taskShortCode,
+      includeEmpty: options.includeEmpty === true,
+      overlay: taskOperations().overlay.apply,
       // Capabilities are advisory read-model hints. Every write still re-checks
       // access, lifecycle and ownership on the server.
       capabilitiesOf: task => {
@@ -240,20 +247,56 @@ function createTaskShellHost(deps) {
       },
     });
   }
+  // Manual re-attribution (P1): a durable operation journal plus a read-only
+  // overlay. Nothing here creates an execution, moves code or re-routes a turn.
+  function taskOperations() {
+    if (taskOperationsRuntime) return taskOperationsRuntime;
+    const runtime = getRuntime();
+    taskOperationsRuntime = require('./task-operations').createTaskOperations({
+      store,
+      revisionOf: scope => taskIndex(scope.shellId).scopeRevision,
+      isTurnBusy: (sessionId, turnId) => {
+        const record = deps.records.get(sessionId);
+        const pending = record?.taskState?.pendingUserInput;
+        if (pending && pending.resolved !== true && pending.turnId === turnId) return true;
+        return currentTurn(sessionId) === turnId;
+      },
+      resolveTarget: async (scope, taskId) => {
+        const task = store.get('task', taskId);
+        if (!task) throw Object.assign(new Error('task_not_found'), { code: 'task_not_found', status: 404 });
+        if (!store.get('link', `${scope.shellId}:${taskId}`)) {
+          throw Object.assign(new Error('task_not_linked'), { code: 'task_not_linked', status: 403 });
+        }
+        runtime.assertBoardWritable?.(taskId);
+        return task;
+      },
+      effectiveTaskOf: (sessionId, turnId) => {
+        const messages = (deps.displayHistory || deps.loadHistory)(sessionId) || [];
+        const message = messages.find(value => value?.turnId === turnId);
+        if (!message) return null;
+        return taskOperationsRuntime.overlay.get(sessionId, turnId)?.taskId ?? message.taskId ?? null;
+      },
+      taskTitle: taskId => store.get('task', taskId)?.title || null,
+    });
+    return taskOperationsRuntime;
+  }
+  let taskOperationsRuntime = null;
   return {
     mountRoutes: app => mountTaskShellRoutes(app, { getRuntime, open,
       taskEntry: id => getRuntime().bindPlannedTask(id),
-      taskIndex: id => taskIndex(id),
+      taskIndex: (id, options) => taskIndex(id, options),
+      taskOperations: () => taskOperations(),
       artifacts: async id => {
         const { collectTaskArtifacts, artifactFileExists } = require('./artifacts');
         return collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists);
       },
       history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
-        deps.displayHistory || deps.loadHistory, deps.getChatState, options) }),
+        deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) }),
     taskIndex,
+    taskOperations,
     chatScope: (id, sessionId) => getRuntime().chatScope(id, sessionId),
     chatHistory: (id, options) => shellHistoryPage(getRuntime().chatScope(id, options.activeSessionId),
-      deps.displayHistory || deps.loadHistory, deps.getChatState, options),
+      deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }),
     watchChatHistory: (id, activeSessionId, emit) => watchShellHistory(getRuntime().chatScope(id, activeSessionId), activeSessionId,
       { subscribe: deps.subscribeChat, readMessages: deps.displayHistory || deps.loadHistory, getState: deps.getChatState, emit }),
     guardAdmission: (id, text, options = {}) => {

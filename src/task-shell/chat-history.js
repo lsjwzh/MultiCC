@@ -20,7 +20,10 @@ function projectShellMessages(scope, readMessages, getState, options = {}) {
   }
   messages.sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0)
     || Number(a.streaming) - Number(b.streaming));
-  return messages;
+  // Effective attribution (manual re-attribution overlay) is applied here so
+  // every projection — page, index, task detail — agrees on which task a turn
+  // currently answers to. The canonical transcript is never rewritten.
+  return typeof options.overlay === 'function' ? options.overlay(messages) : messages;
 }
 
 function shellHistoryPage(scope, readMessages, getState, options = {}) {
