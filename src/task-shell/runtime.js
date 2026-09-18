@@ -380,7 +380,8 @@ function createTaskShellRuntime(ports) {
   async function detail(shellId, taskId) {
     const task = taskFor(shell(shellId), taskId);
     const execution = task.ready ? await getExecution(task.sessionId) : { busy: true, status: 'preparing' };
-    const messages = shellRecords(chatScope(shellId), getHistory)
+    const records = shellRecords(chatScope(shellId), getHistory);
+    const messages = (ports.applyAttributionOverlay?.(records) || records)
       .filter(m => m.taskId === taskId || (!m.taskId && m.sourceSessionId === task.sessionId)).slice(-200);
     return { task: displayTask(task, ports.taskShortCode), execution,
       messages: displayMessages(messages, task, { getTask: id => store.get('task', id) || getTask(id), codeFor: ports.taskShortCode }),
