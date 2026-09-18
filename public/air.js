@@ -491,6 +491,8 @@
   // 任务体系之外直接改的文件。提交列表与 diff 走 /api/git/log 和
   // /api/git/commit-diff，同旧控制台（manage.html 的 git 树）那两条接口，
   // 展开才取，首屏只有一份轻量状态。
+  // 「↑ N 个提交未推送」那颗还能按：点开确认一次，然后走目录的 push 接口
+  // （POST /api/directories/:id/push —— 和旧控制台 ⋯ 菜单里那个 Push 同一条）。
   const directoryGitView = {
     dirId: null, status: null, error: '', fetchedAt: 0,
     logOpen: false, commits: null, logError: '', openHash: null,
@@ -523,6 +525,59 @@
     paintDirectoryGit();
   }
 
+  /** 「↑ N 个提交未推送」那颗胶囊点开的确认框：确认后把主检出推到上游。
+   *  只推已经提交的内容（push 不改工作区），所以这里是「确认一次」而不是
+   *  「选一堆选项」；失败留在框里说原因，成功了收框 + 立刻重读一次状态。 */
+  async function openPushRepoDialog() {
+    const status = directoryGitView.status;
+    const dirId = directoryId;
+    if (!status || !dirId || document.querySelector('.push-repo-dialog')) return;
+    if (!status.upstream) { notice('这个仓库没有上游分支，先设好 remote/上游再推。'); return; }
+    if (!status.ahead) { notice('没有待推送的提交。'); return; }
+    const ahead = status.ahead;
+    const branch = status.branch || '当前分支';
+    const dialog = node('dialog', null, 'push-repo-dialog');
+    const form = node('form');
+    form.append(node('span', 'GIT PUSH', 'eyebrow'), node('h2', '推送到远端？'));
+    form.append(node('p', `把 ${branch} 上的 ${ahead} 个提交推送到 ${status.upstream}。只推已经提交的内容，工作区里的文件不动。`));
+    const error = node('p', '', 'push-repo-error');
+    error.setAttribute('role', 'alert');
+    const footer = node('div', null, 'push-repo-footer');
+    const cancel = node('button', '取消');
+    cancel.type = 'button';
+    cancel.onclick = () => dialog.close();
+    const confirm = node('button', `推送 ${ahead} 个提交`);
+    confirm.type = 'submit';
+    confirm.classList.add('primary');
+    footer.append(cancel, confirm);
+    form.append(error, footer);
+    form.onsubmit = async event => {
+      event.preventDefault();
+      cancel.disabled = true;
+      confirm.disabled = true;
+      error.textContent = '';
+      try {
+        const result = await api(`/api/directories/${encodeURIComponent(dirId)}/push`, {});
+        dialog.close();
+        notice(result.pushed
+          ? `已推送 ${result.before?.ahead ?? ahead} 个提交到 ${status.upstream}。`
+          : '没有待推送的提交。');
+        // 推完这一颗就该变成「已与上游同步」：作废时间戳，让下一笔重新读。
+        directoryGitView.fetchedAt = 0;
+        await loadDirectoryGit();
+      } catch (cause) {
+        error.textContent = `Push 失败：${cause.message}`;
+        cancel.disabled = false;
+        confirm.disabled = false;
+      }
+    };
+    dialog.onclose = () => dialog.remove();
+    dialog.append(form);
+    document.body.append(dialog);
+    dialog.showModal();
+    confirm.focus();
+  }
+
   function paintDirectoryGit() {
     const brief = $('directory-git-brief');
     if (!brief) return;
@@ -547,11 +602,25 @@
     // 有上游就说「没 push」，没有上游的仓库退到基分支：说的还是「这些提交
     // 只存在于本地」，只是对齐的对象从远端换成了基分支。
     const target = status.upstream || status.baseBranch;
+    // 有上游、而且真的领先时这一颗能按：点开确认 → POST /api/directories/:id/push
+    // （和旧控制台 ⋯ 菜单里那个 Push 是同一条接口）。没有上游（那句退化成「未合入
+    // 基分支」）或本来就没落后时它是颗死标签 —— 那时没有「推送」这件事可做。
+    const pushable = !!status.upstream && status.ahead > 0;
     if (target) {
-      chips.append(chip(status.upstream
+      const aheadText = status.upstream
         ? (status.ahead ? `↑ ${status.ahead} 个提交未推送` : '已与上游同步')
-        : (status.ahead ? `↑ ${status.ahead} 个提交未合入 ${status.baseBranch}` : `与基分支 ${status.baseBranch} 一致`),
-      status.ahead ? 'warn' : 'ok'));
+        : (status.ahead ? `↑ ${status.ahead} 个提交未合入 ${status.baseBranch}` : `与基分支 ${status.baseBranch} 一致`);
+      if (pushable) {
+        const push = node('button', null, 'directory-git-chip warn is-action');
+        push.type = 'button';
+        push.title = `把这 ${status.ahead} 个提交推送到 ${status.upstream}`;
+        push.setAttribute('aria-label', push.title);
+        push.append(node('span', aheadText), node('span', '推送', 'directory-git-chip-hint'));
+        push.onclick = () => void openPushRepoDialog();
+        chips.append(push);
+      } else {
+        chips.append(chip(aheadText, status.ahead ? 'warn' : 'ok'));
+      }
       if (status.upstream && status.behind) chips.append(chip(`↓ 落后上游 ${status.behind} 个提交`, 'warn'));
     }
     chips.append(chip(status.dirtyFiles?.length
