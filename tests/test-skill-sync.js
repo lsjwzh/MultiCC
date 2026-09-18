@@ -168,6 +168,19 @@ test('bundled artifact rule installs and upgrades with its relative references i
   }
 });
 
+test('bundled install never clobbers a same-named user skill without a version marker', t => {
+  const h = createHarness(t);
+  const source = path.join(__dirname, '../skills/multicc-artifact');
+  fs.cpSync(source, path.join(h.rootDir, 'skills/multicc-artifact'), { recursive: true });
+  const destination = path.join(h.agentsSkillsDir, 'multicc-artifact');
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, 'SKILL.md'), '---\nname: multicc-artifact\ndescription: user version\n---\nuser content');
+  assert.equal(h.runtime.installBundledSkills(), 0, 'unmarked destination is skipped');
+  assert.match(fs.readFileSync(path.join(destination, 'SKILL.md'), 'utf8'), /user content/);
+  assert.ok(h.state.warnings.some(w => w.includes('user content not overwritten')),
+    'the conflict is surfaced as a warning');
+});
+
 test('real Codex and Hermes conversion copies the shared registration rule', t => {
   const h = createHarness(t);
   // Isolate the converter's OS-owned canonical directory without touching HOME.
