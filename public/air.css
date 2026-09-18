@@ -486,6 +486,16 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-git-chip { padding: 4px 10px; border-radius: 13px; background: #eef4fa; color: #47607a; font-size: 11px; }
 .directory-git-chip.warn { background: #fdf3e4; color: #9a6b1f; }
 .directory-git-chip.ok { background: #e9f7f0; color: #2c7d5c; }
+/* 「↑ N 个提交未推送」这颗是能按的（点开确认 → push）。样子跟旁边几颗一样是
+   胶囊，只是把「按得下去」画出来：手型、hover 深一档、focus 有圈，右边再挂一个
+   浅一点的「推送」。全局那条 button 的 min-height/padding/border 得清掉，否则
+   它会比旁边的胶囊高一截。 */
+.directory-git-chip.is-action { display: inline-flex; align-items: center; min-height: 0; padding: 4px 11px;
+  border: 1px solid #f0dcbc; font-size: 11px; line-height: 1.4; }
+.directory-git-chip.is-action:hover { border-color: #e4c184; background: #fbe9cf; color: #85591a; }
+.directory-git-chip.is-action:focus-visible { outline: 2px solid #8fc3f4; outline-offset: 2px; }
+.directory-git-chip-hint { margin-left: 6px; opacity: .75; }
+.directory-git-chip.is-action:hover .directory-git-chip-hint { opacity: .9; }
 .directory-git-actions { display: flex; gap: 8px; }
 .directory-git-actions button { min-height: 28px; padding: 4px 10px; font-size: 11px; }
 .directory-git-files { border: 1px solid #f0d9c8; border-radius: 11px; background: #fdf7f1; }
@@ -1219,6 +1229,10 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 .move-task-dialog .move-task-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .move-task-dialog .move-task-footer button.primary { color: #146dcc; background: #eaf4ff; }
 .rename-task-dialog { max-width: 470px; }
+.push-repo-dialog { max-width: 470px; }
+.push-repo-dialog .push-repo-error { min-height: 18px; margin: 9px 0 0; }
+.push-repo-dialog .push-repo-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.push-repo-dialog .push-repo-footer button.primary { color: #146dcc; background: #eaf4ff; }
 .rename-task-dialog input { width: 100%; }
 .rename-task-dialog .rename-task-error { min-height: 18px; margin: 9px 0 0; }
 .rename-task-dialog .rename-task-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }

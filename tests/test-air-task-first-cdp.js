@@ -106,7 +106,17 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/api/task-shells/shell-a/chat'] = () => json({ activeSessionId: 'task-a', taskId: 'tsk_a' });
   routes['/api/sessions/task-a/merge-status'] = () => json({ branch: 'multicc/task-a', baseBranch: 'main', behind: 2 });
   // 目录首页的 Git 状态卡：主检出的未推送提交与 worktree 之外的脏文件。
-  routes['/api/git/directory-status'] = () => json({ branch: 'main', upstream: 'origin/main', baseBranch: 'main', ahead: 2, behind: 1,
+  // 「未推送」那颗点开确认后打的是目录 push 接口，pushes 记下这次调用，gitAhead
+  // 归零 —— 卡片刷新后应该自己变成「已与上游同步」。
+  let gitAhead = 2;
+  const gitPushes = [];
+  routes['POST /api/directories/d1/push'] = ({ body, url }) => {
+    gitPushes.push(String(body || '').trim() || url);
+    const before = { branch: 'main', upstream: 'origin/main', ahead: gitAhead, behind: 1 };
+    gitAhead = 0;
+    return json({ ok: true, pushed: true, before, after: { ...before, ahead: 0 } });
+  };
+  routes['/api/git/directory-status'] = () => json({ branch: 'main', upstream: 'origin/main', baseBranch: 'main', ahead: gitAhead, behind: 1,
     dirtyFiles: [{ status: 'M', path: 'README.md' }, { status: '??', path: 'notes/scratch.md' }] });
   routes['/api/git/log'] = () => json({ repoPath: '/projects/multicc', commits: [
     { hash: 'c2'.repeat(20), short: 'c2c2c2c', author: 'green', date: '2026-09-17T10:00:00+08:00', subject: 'Air 目录首页加 Git 状态', refs: 'HEAD -> main' },
@@ -562,6 +572,32 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-git-list .directory-git-commit').length===2`));
     await page.evaluate(`document.querySelectorAll('#directory-git-list .directory-git-commit-head')[0].click()`);
     assert.ok(await page.waitFor(`document.getElementById('directory-git-list').textContent.includes('+新增一行')`));
+    // 「↑ 2 个提交未推送」那颗是能按的：点开确认框，取消不推，确认才 POST
+    // /api/directories/:id/push，推完这颗自己变成「已与上游同步」。
+    const pushChip = `document.querySelector('.directory-git-chips .directory-git-chip.is-action')`;
+    assert.equal(await page.evaluate(`${pushChip}.tagName`), 'BUTTON', '未推送那颗是可点按钮');
+    assert.equal(await page.evaluate(`${pushChip}.textContent.includes('推送')`), true, '按钮上写着「推送」');
+    screenshots.push(await page.screenshot('push-repo-chip-desktop'));
+    await page.evaluate(`${pushChip}.click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.push-repo-dialog')?.open===true`));
+    const pushDialogText = await page.evaluate(`document.querySelector('.push-repo-dialog').textContent`);
+    assert.ok(pushDialogText.includes('2 个提交') && pushDialogText.includes('origin/main'),
+      '确认框说清推什么、推到哪：' + pushDialogText);
+    assert.equal(await page.evaluate(`document.querySelector('.push-repo-dialog').querySelector('h2').textContent`), '推送到远端？');
+    screenshots.push(await page.screenshot('push-repo-dialog-desktop'));
+    await page.evaluate(`document.querySelectorAll('.push-repo-dialog .push-repo-footer button')[0].click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.push-repo-dialog')===null`));
+    assert.deepEqual(gitPushes, [], '取消不推');
+    assert.equal(await page.evaluate(`${pushChip}.tagName`), 'BUTTON', '取消后那颗还在、还能再点');
+    await page.evaluate(`${pushChip}.click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.push-repo-dialog')?.open===true`));
+    await page.evaluate(`document.querySelectorAll('.push-repo-dialog .push-repo-footer button')[1].click()`);
+    assert.ok(await page.waitFor(`document.getElementById('directory-git').textContent.includes('已与上游同步')`));
+    assert.equal(gitPushes.length, 1, '确认后打了一次目录 push 接口');
+    assert.equal(await page.evaluate(`document.getElementById('notice').textContent.includes('已推送 2 个提交')`), true,
+      '回执在页面状态行说了一句：' + await page.evaluate(`document.getElementById('notice').textContent`));
+    assert.equal(await page.evaluate(`!!document.querySelector('.directory-git-chips .directory-git-chip.is-action')`), false,
+      '推完就不再是可点状态');
     // 旧任务列表的跳转已删：侧栏不再渲染 TERMINAL 折叠组。
     assert.equal(await page.evaluate(`document.getElementById('legacy-sessions')===null`), true);
     // The new-task composer reuses the chat's two composers instead of growing
