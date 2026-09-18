@@ -197,7 +197,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       const label=tab.querySelector('.pin-status .mc-status-label');
       return { task:tab.dataset.task, title:tab.querySelector('.pin-title').textContent,
         top:Math.round(r.top), bottom:Math.round(r.bottom), width:Math.round(r.width),
-        headerTop:Math.round(h.top), headerRight:Math.round(h.right), pinLeft:Math.round(p.left),
+        headerTop:Math.round(h.top), headerHeight:Math.round(h.height), headerRight:Math.round(h.right), pinLeft:Math.round(p.left),
         meta:getComputedStyle(tab.querySelector('.pin-meta')).display, label:getComputedStyle(label).display,
         cx:Math.round(r.left+r.width/2), cy:Math.round(r.top+r.height/2) };})()`);
     assert.equal(pinCollapsed.task, 'tsk_a');
@@ -213,12 +213,23 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // 悬停展开：状态标签、目录、阶段一起出来，卡片变宽。
     await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pinCollapsed.cx, y: pinCollapsed.cy, buttons: 0 });
     await settlePins('task-pins-hover-probe');
-    const pinOpen = await page.evaluate(`(()=>{const tab=document.querySelector('#task-pins .pin-tab');return { width:Math.round(tab.getBoundingClientRect().width),
-      meta:tab.querySelector('.pin-meta').textContent, label:tab.querySelector('.pin-status .mc-status-label').textContent };})()`);
+    // 展开态曾经是「标题一行 + 目录/阶段一行」两行塞进 30px 的胶囊 —— 两行加起来
+    // 比胶囊还高，字从上下两边一起冒出去。所以这里连「三块内容都在胶囊里面」和
+    // 「展开不让胶囊长高、页头也不动」一起量。
+    const pinOpen = await page.evaluate(`(()=>{const tab=document.querySelector('#task-pins .pin-tab'),tr=tab.getBoundingClientRect();
+      const inside=e=>{const b=e.getBoundingClientRect();return b.top>=tr.top-0.6&&b.bottom<=tr.bottom+0.6&&b.left>=tr.left-0.6&&b.right<=tr.right+0.6;};
+      return { width:Math.round(tr.width), height:Math.round(tr.height),
+        headerHeight:Math.round(document.getElementById('task-header').getBoundingClientRect().height),
+        statusInside:inside(tab.querySelector('.pin-status')), titleInside:inside(tab.querySelector('.pin-title')), metaInside:inside(tab.querySelector('.pin-meta')),
+        meta:tab.querySelector('.pin-meta').textContent, label:tab.querySelector('.pin-status .mc-status-label').textContent };})()`);
     assert.ok(pinOpen.width > pinCollapsed.width, `展开要比缩略宽（${pinCollapsed.width} → ${pinOpen.width}）`);
     assert.ok(pinOpen.meta.includes('MultiCC'), '展开里有目录：' + pinOpen.meta);
     assert.ok(pinOpen.meta.includes('进行中'), '展开里有阶段：' + pinOpen.meta);
     assert.ok(pinOpen.label.length > 0, '展开的状态带着中文标签');
+    assert.equal(pinOpen.statusInside && pinOpen.titleInside && pinOpen.metaInside, true,
+      `展开的内容都落在胶囊里：${JSON.stringify(pinOpen)}`);
+    assert.equal(pinOpen.height, pinCollapsed.bottom - pinCollapsed.top, '展开不改变胶囊高度（两行的旧排版会把它撑破）');
+    assert.equal(pinOpen.headerHeight, pinCollapsed.headerHeight, '展开不动页头的高度');
     screenshots.push(await page.screenshot('task-pins-desktop'));
     // 点这张卡就是打开那条任务（这里已经打开着它，地址不变）。
     await page.evaluate(`document.querySelector('#task-pins .pin-open').click()`);
