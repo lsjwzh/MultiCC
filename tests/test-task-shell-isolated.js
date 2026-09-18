@@ -191,6 +191,22 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     await api(`/api/task-shells/${sb.id}/relations`, { fromTaskId: first.taskId, toTaskId: first.taskId, clientMsgId: 'rel-3' }, 400);
     const restored = await api(`/api/task-shells/${sb.id}/task-index`);
     assert.equal(restored.scopeRevision, taskIndex.scopeRevision);
+    // 目录读出来的输入游标版本要和 target 标记配对下发，页面才能把它当作条件写
+    // 回传给 select-target，而不是猜「现在谁才是目标」。
+    assert.equal(Number.isInteger(restored.cursorVersion), true, 'the directory carries the input cursor');
+    const currentTarget = restored.tasks.find(task => task.target === true)?.taskId || null;
+    const otherTarget = restored.tasks.map(task => task.taskId).find(taskId => taskId !== currentTarget);
+    const chosen = await api(`/api/task-shells/${sb.id}/select-target`,
+      { taskId: otherTarget, expectedCursorVersion: restored.cursorVersion });
+    assert.equal(chosen.changed, true);
+    const afterChoice = await api(`/api/task-shells/${sb.id}/task-index`);
+    assert.equal(afterChoice.cursorVersion, chosen.cursorVersion, 'the read reports the cursor the write returned');
+    assert.deepEqual(afterChoice.tasks.filter(task => task.target === true).map(task => task.taskId), [otherTarget]);
+    assert.equal(afterChoice.scopeRevision, restored.scopeRevision,
+      'moving the input cursor must not invalidate a preview of the history');
+    // Put the cursor back so the rest of the flow starts where it did.
+    await api(`/api/task-shells/${sb.id}/select-target`,
+      { taskId: currentTarget, expectedCursorVersion: afterChoice.cursorVersion });
     const restoredHistory = await api(`/api/task-shells/${sb.id}/history?historyScope=archive&limit=100`);
     assert.equal(restoredHistory.messages.find(message => message.sourceSessionId === originalTurn.sourceSessionId
       && message.turnId === turnId).taskId, second.taskId);

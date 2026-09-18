@@ -73,8 +73,17 @@
     const onMissing = typeof options.onMissing === 'function' ? options.onMissing : null;
     // 「选为下一条输入目标」是显式动作：滚动与点击历史都只定位，不悄悄改发送
     // 目标。只有拿到这条配置时才渲染这个按钮。
+    // The shell's cursor version travels with the directory read, so the write
+    // can be conditional: two open pages choosing different targets must not
+    // silently overwrite each other (the losing one is told to look again).
+    let targetCursor = null;
     const selectTarget = options.selectTarget && typeof options.selectTarget === 'object'
-      ? createTargetAction({ ...options.selectTarget, translate }) : null;
+      ? createTargetAction({ ...options.selectTarget, translate,
+        cursor: () => targetCursor,
+        // Keep the version we hold unless the answer carries a newer one: an
+        // unknown cursor must not turn the next write unconditional.
+        onCursor: value => { if (Number.isFinite(Number(value))) targetCursor = Number(value); },
+        onStale: () => reload() }) : null;
     let open = false;
     try { open = storage?.getItem('multicc:task-index-open') === '1'; } catch (_) {}
     let sortMode = 'order';
@@ -509,6 +518,7 @@
       loading = Promise.resolve().then(loadIndex).then(value => {
         if (value && Array.isArray(value.tasks)) {
           index = value;
+          targetCursor = Number.isFinite(Number(value.cursorVersion)) ? Number(value.cursorVersion) : null;
           // A fresh read is authoritative again: whatever it says about the
           // shell's input cursor replaces the local choice that asked for it.
           chosenTarget = '';
@@ -604,17 +614,30 @@
 
   // Explicit "the next message goes to this task". Separate from locate(): the
   // click that scrolls history must never move the input cursor by accident.
-  function createTargetAction({ shellId, request, notify, alert, translate = key => key }) {
+  function createTargetAction({ shellId, request, notify, alert, translate = key => key, cursor, onCursor, onStale }) {
     return async function selectTarget(entry) {
       const taskId = text(entry?.taskId).trim();
       if (!taskId || !request) return false;
       const id = text(typeof shellId === 'function' ? shellId() : shellId);
       if (!id) { alert?.(translate('taskAttributionNoShell')); return false; }
       try {
-        const result = await request(`/api/task-shells/${encodeURIComponent(id)}/select-target`, { taskId });
+        const known = typeof cursor === 'function' ? cursor() : null;
+        // Only a page that read the directory may make a conditional write; a
+        // caller without that read keeps the unconditional contract.
+        const result = await request(`/api/task-shells/${encodeURIComponent(id)}/select-target`,
+          known == null ? { taskId } : { taskId, expectedCursorVersion: known });
+        onCursor?.(result?.cursorVersion);
         notify?.(entry, result);
         return true;
       } catch (error) {
+        // Someone moved the target first. That is not a failure of the choice:
+        // read the directory again so the page shows the real current target,
+        // and say so — a silent overwrite is what the server refused.
+        if (text(error?.code) === 'stale_shell_cursor' && typeof onStale === 'function') {
+          await onStale();
+          alert?.(translate('taskIndexTargetStale'));
+          return false;
+        }
         alert?.(translate('taskIndexTargetFailed').replace('{error}', text(error?.message || error)));
         return false;
       }
