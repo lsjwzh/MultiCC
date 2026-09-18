@@ -361,6 +361,40 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* 这一处只有 22px 高、11px 的字，圈会直接贴在笔画上。给点横向内边距让它变成
    一个小胶囊；只在跑的时候多出的那几像素缩进，本身也是「它变了」的一个提示。 */
 #task-state.ring-running { padding-inline: 7px; border-radius: 8px; }
+
+/* ── Pin 住的任务：页头顶上的「齐刘海」 ────────────────────────────────────
+   一排小卡片从页头最上面垂下来，占的正是标题和工具之间那块空白。默认缩略
+   （状态图标 + 标题开头），鼠标停在上面才展开成完整的一张（标题 + 目录 + 阶段）
+   —— 平时它就只有一条标签那么宽，不跟标题抢地方。
+   只在桌面出现（760px 以下整条藏掉，见那一块里的 #task-pins）：手机页头一行都
+   嫌贵，那边的 pin 改成置顶在侧栏的最近任务里（air.js 的 sidebarTasks）。
+   这一条不决定「谁被 pin 了」：那份清单在服务端（air-pins.json），Web 和 App
+   读的是同一份，上限也由服务端把着（超了会回 pin_limit_reached）。 */
+#task-pins { display: flex; align-items: flex-start; align-self: stretch; gap: 6px; min-width: 0; margin-block: -13px; }
+/* hidden 属性是 UA 的 display:none，挡不住上面那条 display:flex。 */
+#task-pins[hidden] { display: none; }
+.pin-tab { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 46px; max-width: 118px;
+  height: 34px; padding: 0 2px 0 9px; border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 12px 12px; background: rgba(255, 255, 255, .88); box-shadow: 0 4px 12px #35577d0f;
+  transition: max-width .18s ease, background .18s ease; }
+.pin-tab:hover, .pin-tab:focus-within { max-width: 320px; background: #fff; }
+/* 全局那条 `button{min-height:38px}` 会把两件东西顶出这张 34px 高的卡片：打开
+   按钮撑到 38px、取消按钮撑到 38px。min-height 比 height 硬，所以得显式归零。 */
+.pin-tab .pin-open { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 0; flex: 1 1 auto; height: 100%;
+  padding: 0; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.pin-tab .pin-copy { min-width: 0; display: grid; gap: 1px; }
+.pin-tab .pin-title { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #35536d; font-size: 11.5px; font-weight: 600; line-height: 1.25; }
+/* 目录和阶段是展开态才有的第二行 —— 缩略态只有状态和标题，那才是「缩略」。 */
+.pin-tab .pin-meta { display: none; align-items: center; gap: 5px; min-width: 0; color: #7b8ea1; font-size: 9.5px; white-space: nowrap; }
+.pin-tab:hover .pin-meta, .pin-tab:focus-within .pin-meta { display: flex; }
+.pin-tab .pin-status { display: flex; flex: 0 0 auto; }
+.pin-tab .pin-status .mc-status { font-size: 11px; }
+/* 缩略态只留状态图标：一行标题本来就窄，再带上「执行中」三个字就只剩两三个字
+   的标题了。徽标自己还是那一枚（status-badge.css 的 .mc-status-label 藏起来）。 */
+.pin-tab:not(:hover):not(:focus-within) .pin-status .mc-status-label { display: none; }
+.pin-tab .pin-x { flex: 0 0 auto; min-width: 20px; min-height: 0; width: 20px; height: 20px; padding: 0;
+  border: 0; border-radius: 7px; background: transparent; color: #9aabbb; font-size: 13px; line-height: 1; }
+.pin-tab .pin-x:hover { color: #b64e43; border-color: transparent; background: #fbeeec; }
 .task-tools { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 /* 手机上工具收进「⋯」浮层，浮层里每一行都是「图标 + 名字」两列（见 760px 块）。
    所以图标和名字各占一个 span：.air-tool-icon 是这个按钮桌面也显示的符号（「＋
@@ -372,9 +406,12 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* The AI 配置 capsule and 角色 moved onto the composer card (chat-air.css).
    What stays here are the round's most-used actions as compact icons; the More
    menu still carries the full list. */
-#quick-merge, #quick-auto-commit, #quick-share { min-width: 38px; padding: 6px; color: #47647f; font-size: 16px; line-height: 1.2; }
+#quick-merge, #quick-auto-commit, #quick-share, #pin-task { min-width: 38px; padding: 6px; color: #47647f; font-size: 16px; line-height: 1.2; }
 #quick-merge.is-ready { color: #1d7a55; border-color: #bfe0d1; background: #eaf8f1; }
 #quick-auto-commit.is-on { color: #176bc0; border-color: #cfe3f8; background: var(--blue-soft); }
+/* Pin 开着的读法只有一种：这颗按钮被按下去的样子（aria-pressed 是给读屏的，
+   这里给它同一条事实的像素）。 */
+#pin-task[aria-pressed="true"] { color: #176bc0; border-color: #cfe3f8; background: var(--blue-soft); }
 #details-toggle, #refresh { font-size: 12px; }
 #refresh { min-width: 38px; padding: 7px; }
 #mobile-nav { display: none; }
@@ -911,6 +948,9 @@ body.console-open #console-panel { transform: none; visibility: visible; }
    边框和本目录的行分开 —— 否则「本目录」就不再是一个能读出来的事实。 */
 #tasks button.elsewhere { border-style: dashed; border-color: #cfdced; background: rgba(255, 255, 255, .45); }
 .task-dir { display: inline-block; width: auto; padding: 1px 6px; color: #4d7ba6; border-radius: 6px; background: #eaf3fc; font-size: 9px; font-style: normal; }
+/* 侧栏任务行上的「已 Pin」标记：手机上的 pin 就是靠它把「为什么这几个排在最上面」
+   说出来（桌面那边页头那排 tab 已经把话说完了，但这几行也带着标记并不冲突）。 */
+.task-pin { font-size: 9px; line-height: 1; }
 
 /* ── ⌘K 命令面板：目录和任务一起搜 ─────────────────────────────────────── */
 #palette-scrim { position: fixed; z-index: 50; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .3); backdrop-filter: blur(6px); }
@@ -962,6 +1002,10 @@ body.console-open #console-panel { transform: none; visibility: visible; }
      142px，等于先花掉屏幕的六分之一才看见对话。面包屑收进侧栏抽屉 ——
      那儿的工作目录卡片本来就回答「在哪个目录」，页头只留标题 + 状态 + 按钮。 */
   #task-breadcrumb { display: none; }
+  /* Pin 的那排 tab 是桌面页头才有的东西：手机上它要么把标题挤掉，要么自己折成
+     第二行 —— 两条都比它带来的信息贵。同一批任务在侧栏置顶（air.js 的
+     sidebarTasks），这件事一件没丢。 */
+  #task-pins { display: none; }
   /* 页头要压在对话上面：它自己有个 backdrop-filter，那已经是一个层叠上下文 ——
      浮层在里面的 z-index 再大，也只管这一层内部，整条页头仍然排在 #task-layout
      前面。进详情的 15 之上、抽屉遮罩的 20 之下。 */

@@ -38,7 +38,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   let syncFailure = true;
   const directory = { id: 'd1', name: 'MultiCC', path: '/projects/multicc' };
   const otherDirectory = { id: 'd2', name: 'Design Lab', path: '/projects/design-lab' };
-  const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource }];
+  const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource },
+    // 另一个目录里、这次会话从没打开过的一条：用来证明「pin 会把它拉到侧栏最
+    // 上面」—— 它本来既不在最近记录里，也不在当前目录里。
+    { id: 'tsk_far', dirId: 'd2', title: '远端目录里的任务', status: 'active', recordType: 'planned',
+      workflowStage: 'doing', runState: null, updatedAt: Date.now() - 86400000, resource: { residency: 'resident', lease: 'idle' } }];
+  let taskPins = [];
   const newEntry = { ...structuredClone(entry), task: { id: 'tsk_new', title: '从目录首页创建任务' }, sessionId: 'task-new', ownerShellId: 'shell-new', messages: [] };
   for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } };
   for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) routes['/shared/' + file] = {
@@ -48,8 +53,18 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
   routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'claude'], migration: { errors: [] },
-    tasks: airTasks,
+    tasks: airTasks, taskPins,
     sessions: [{ id: 'old-role', dirId: 'd1', kind: 'chat', label: 'FIXED_ROLE_MUST_NOT_SHOW' }, { id: 'term', dirId: 'd1', kind: 'terminal', label: '终端' }] });
+  // Pin：页头顶上那排「齐刘海」。清单住在服务端（air-pins.json），Web 和 App 读
+  // 的是同一份 —— 这里就按服务端那两条路由的行为来桩：单点 toggle、整份替换。
+  const pinPosts = [];
+  routes['POST /api/air/pins/toggle'] = ({ body }) => {
+    const { taskId } = JSON.parse(body);
+    pinPosts.push(taskId);
+    taskPins = taskPins.includes(taskId) ? taskPins.filter(id => id !== taskId) : [...taskPins, taskId];
+    return json({ ok: true, taskIds: taskPins });
+  };
+  routes['POST /api/air/pins'] = ({ body }) => { taskPins = JSON.parse(body).taskIds || []; return json({ ok: true, taskIds: taskPins }); };
   routes['/api/cron'] = () => json([{ id: 'cron-a', name: '每日体验巡检', dirId: 'd1', dirName: 'MultiCC',
     cli: 'codex', provider: 'codex-lab', model: 'gpt-5.6-sol', prompt: '检查 Air 任务体验并记录结果。', cron: '0 9 * * *', enabled: true,
     taskId: 'tsk_a', taskTitle: entry.task.title, taskStatus: 'active', taskUrl: '/air?task=tsk_a&dir=d1',
@@ -134,6 +149,62 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.navigate('/task-entry.html?session=old-role');
     assert.ok(await page.waitFor(`location.pathname==='/air' && document.getElementById('task-title')?.textContent==='完善任务协作体验'`));
     assert.equal(await page.evaluate(`document.getElementById('sidebar').contains(document.getElementById('task-sidebar'))`), true);
+    // ── Pin：页头顶上那排「齐刘海」 ─────────────────────────────────────
+    // 占的是标题和工具之间那块空档，内容跟侧栏任务卡一样（状态、标题、目录、
+    // 阶段），默认缩略、鼠标停上去才展开成完整的一张。最上面那条边贴着页头
+    // 顶边（这就是「齐刘海」），所以它看起来是「挂」在页头下面的。
+    assert.equal(await page.evaluate(`document.getElementById('task-pins').hidden`), true, '还没 pin 的时候这一排不占位');
+    assert.equal(await page.evaluate(`document.getElementById('pin-task').hidden`), false, '打开着任务时才给这颗 📌');
+    const settlePins = async name => {
+      await page.screenshot(name);
+      await page.evaluate(`new Promise(done => setTimeout(done, 400))`);
+      await page.screenshot(name);
+    };
+    await page.evaluate(`document.getElementById('pin-task').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('#task-pins .pin-tab').length===1`));
+    assert.deepEqual(pinPosts, ['tsk_a'], '单点 toggle 打的是服务端那条路由');
+    assert.equal(await page.evaluate(`document.getElementById('pin-task').getAttribute('aria-pressed')`), 'true');
+    const pinCollapsed = await page.evaluate(`(()=>{const tab=document.querySelector('#task-pins .pin-tab'),r=tab.getBoundingClientRect(),h=document.getElementById('task-header').getBoundingClientRect(),p=document.getElementById('pin-task').getBoundingClientRect();
+      const label=tab.querySelector('.pin-status .mc-status-label');
+      return { task:tab.dataset.task, title:tab.querySelector('.pin-title').textContent,
+        top:Math.round(r.top), bottom:Math.round(r.bottom), width:Math.round(r.width),
+        headerTop:Math.round(h.top), headerRight:Math.round(h.right), pinLeft:Math.round(p.left),
+        meta:getComputedStyle(tab.querySelector('.pin-meta')).display, label:getComputedStyle(label).display,
+        cx:Math.round(r.left+r.width/2), cy:Math.round(r.top+r.height/2) };})()`);
+    assert.equal(pinCollapsed.task, 'tsk_a');
+    assert.equal(pinCollapsed.title, '完善任务协作体验');
+    assert.equal(pinCollapsed.top, pinCollapsed.headerTop, '上边贴着页头最上面（齐刘海）');
+    assert.equal(pinCollapsed.meta, 'none', '缩略态只有状态和标题，没有目录/阶段那一行');
+    assert.equal(pinCollapsed.label, 'none', '缩略态的状态只留图标');
+    assert.ok(pinCollapsed.width < 140 && pinCollapsed.width >= 46, '缩略态是一条窄标签：' + pinCollapsed.width);
+    assert.ok(pinCollapsed.bottom > pinCollapsed.headerTop + 30, '它是从顶上垂下来的一张卡，不是一个点');
+    assert.ok(pinCollapsed.width < pinCollapsed.pinLeft, '它排在工具条左边，占的正是标题后面那块空档');
+    // 先留一张缩略态的图（默认长这样），再进 hover 展开。
+    await settlePins('task-pins-collapsed');
+    // 悬停展开：状态标签、目录、阶段一起出来，卡片变宽。
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pinCollapsed.cx, y: pinCollapsed.cy, buttons: 0 });
+    await settlePins('task-pins-hover-probe');
+    const pinOpen = await page.evaluate(`(()=>{const tab=document.querySelector('#task-pins .pin-tab');return { width:Math.round(tab.getBoundingClientRect().width),
+      meta:tab.querySelector('.pin-meta').textContent, label:tab.querySelector('.pin-status .mc-status-label').textContent };})()`);
+    assert.ok(pinOpen.width > pinCollapsed.width, `展开要比缩略宽（${pinCollapsed.width} → ${pinOpen.width}）`);
+    assert.ok(pinOpen.meta.includes('MultiCC'), '展开里有目录：' + pinOpen.meta);
+    assert.ok(pinOpen.meta.includes('进行中'), '展开里有阶段：' + pinOpen.meta);
+    assert.ok(pinOpen.label.length > 0, '展开的状态带着中文标签');
+    screenshots.push(await page.screenshot('task-pins-desktop'));
+    // 点这张卡就是打开那条任务（这里已经打开着它，地址不变）。
+    await page.evaluate(`document.querySelector('#task-pins .pin-open').click()`);
+    assert.ok(await page.waitFor(`new URLSearchParams(location.search).get('task')==='tsk_a'`));
+    // 取消 pin：× 是独立的一颗按钮（不能套在打开按钮里面 —— 那不是一个合法的按钮）。
+    assert.equal(await page.evaluate(`document.querySelectorAll('#task-pins .pin-open .pin-x').length`), 0);
+    await page.evaluate(`document.querySelector('#task-pins .pin-x').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-pins').hidden===true`));
+    assert.deepEqual(pinPosts, ['tsk_a', 'tsk_a'], '取消 pin 走的是同一条 toggle');
+    assert.equal(await page.evaluate(`document.getElementById('pin-task').getAttribute('aria-pressed')`), 'false');
+    // 页头下面那条 #notice 是页面的状态行，pin 的回执在这儿说一句 —— 真机上 4 秒
+    // 一次的轮询会把它擦掉，但这个后台 target 不产帧、轮询不跑。后面那些断言量的
+    // 是「页头和对话之间什么都没有」，所以这里把它收干净。
+    await page.evaluate(`document.getElementById('notice').textContent=''`);
+
     const frame = `document.getElementById('conversation').contentDocument`;
     // AI 配置 and 角色 live on the composer card inside the conversation frame;
     // the host page renders them there (air.js → renderComposerControls), so
@@ -535,6 +606,31 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       await page.evaluate(`(()=>{const i=document.getElementById('quick-task-input');i.value='';i.dispatchEvent(new Event('input',{bubbles:true}))})()`);
     }
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
+    // ── Pin 的手机形态 ──────────────────────────────────────────────────
+    // 页头那排 tab 整个不出现（手机页头一行都嫌贵），同一批任务置顶在侧栏的
+    // 「最近任务」里。tsk_far 在另一个目录、这次会话也从没打开过 —— 它本来
+    // 既不在最近记录里、也不在当前目录里，能排到第一条只可能是 pin。
+    taskPins = ['tsk_far'];
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 900, deviceScaleFactor: 1, mobile: true });
+    await page.screenshot('task-pins-mobile-probe');
+    await page.evaluate(`document.getElementById('refresh').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-pins').hidden===true`), '手机上页头没有这一排');
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('task-pins')).display`), 'none');
+    assert.ok(await page.waitFor(`document.querySelector('#tasks > button[data-task="tsk_far"]')`));
+    const mobilePins = await page.evaluate(`(()=>{const rows=[...document.querySelectorAll('#tasks > button')];
+      const first=rows[0];return { first: first && first.dataset.task, mark: first && first.querySelector('.task-pin') && first.querySelector('.task-pin').textContent,
+        count: rows.length, overflow: document.documentElement.scrollWidth<=innerWidth };})()`);
+    assert.equal(mobilePins.first, 'tsk_far', JSON.stringify(mobilePins));
+    assert.equal(mobilePins.mark, '📌');
+    assert.equal(mobilePins.overflow, true);
+    // 抽屉打开着拍一张：置顶那一条、目录标签和 📌 都留在图里。
+    await page.evaluate(`document.getElementById('mobile-nav').click()`);
+    await page.screenshot('task-pins-mobile-drawer');
+    screenshots.push(await page.screenshot('task-pins-mobile'));
+    await page.evaluate(`document.getElementById('mobile-nav').click()`);
+    taskPins = [];
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.evaluate(`document.getElementById('refresh').click()`);
     // 侧栏那颗「＋ 新任务」开的不是另一张表单，是把这**同一个**输入框模块搬进
     // #quick-task-dialog（air.js 的 openNewTaskComposer）。全站只有一份
     // #quick-task-form —— 下面那次创建仍然由它发出，所以这里顺带锁住了「搬到
@@ -740,8 +836,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         assert.equal(panel.h, closedHeight, '浮层不占位：开着的时候页头还是那一行高');
         // 右边跟「⋯」那件按钮对齐（页头内边距 10px），左边留在屏里。
         assert.ok(panel.left >= 0 && Math.abs(panel.right - (390 - 10)) <= 1, JSON.stringify(panel));
-        assert.deepEqual(panel.icons, ['⎇', '⇡', '↗', '⋯', '↻'], JSON.stringify(panel));
-        assert.deepEqual(panel.names, ['合并回基分支', '自动提交', '分享此任务', '更多', '刷新'], JSON.stringify(panel));
+        // 📌 是 pin 的开关：桌面上它排在标题后面那排 tab 右边，手机上没有那排 tab，
+        // 钉住/取消钉住就只剩这一处 —— 它必须在浮层里（名字跟着状态变，见 air.js 的
+        // paintPinButton）。
+        assert.deepEqual(panel.icons, ['⎇', '⇡', '↗', '📌', '⋯', '↻'], JSON.stringify(panel));
+        assert.deepEqual(panel.names, ['合并回基分支', '自动提交', '分享此任务', 'Pin 到页顶', '更多', '刷新'], JSON.stringify(panel));
         // 图标一列、名字一列：每一行的名字都从同一条竖线开始，不会有的行有图标、
         // 有的行没有，也不会 ⎇ 宽 ↻ 窄把名字推得参差不齐。
         assert.equal(panel.iconLefts.length, 1, '图标都在同一列：' + JSON.stringify(panel));

@@ -27,6 +27,7 @@ class AirSidebar extends StatelessWidget {
     required this.data,
     required this.directoryId,
     required this.recentTasks,
+    required this.pinnedTaskIds,
     required this.advancedMode,
     required this.serverLabel,
     required this.onSelectDirectory,
@@ -62,6 +63,10 @@ class AirSidebar extends StatelessWidget {
   final AirSnapshot? data;
   final String? directoryId;
   final List<AirTask> recentTasks;
+
+  /// Pin 住的任务 id。它们已经排在 [recentTasks] 的最前面（`air_tasks_view.dart`
+  /// 的 `_sidebarTasks`），这里留着只是为了在行上把「为什么它排在最上面」说出来。
+  final Set<String> pinnedTaskIds;
   final bool advancedMode;
   final String serverLabel;
   final ValueChanged<String> onSelectDirectory;
@@ -257,7 +262,11 @@ class AirSidebar extends StatelessWidget {
                 padding: EdgeInsets.zero,
                 children: [
                   for (final task in recentTasks)
-                    _TaskRow(task: task, onTap: () => onOpenTask(task)),
+                    _TaskRow(
+                      task: task,
+                      pinned: pinnedTaskIds.contains(task.id),
+                      onTap: () => onOpenTask(task),
+                    ),
                   if (recentTasks.isEmpty)
                     const Padding(
                       padding: EdgeInsets.fromLTRB(6, 10, 6, 4),
@@ -604,10 +613,18 @@ class _Caption extends StatelessWidget {
 }
 
 class _TaskRow extends StatelessWidget {
-  const _TaskRow({required this.task, required this.onTap});
+  const _TaskRow({
+    required this.task,
+    required this.onTap,
+    this.pinned = false,
+  });
 
   final AirTask task;
   final VoidCallback onTap;
+
+  /// Pin 住的那几条排在这份列表的最上面（Web 桌面是页头顶上那排 tab，手机宽度
+  /// 和 App 就是这一份列表的置顶）。标记说明它们为什么在那儿。
+  final bool pinned;
 
   @override
   Widget build(BuildContext context) {
@@ -654,6 +671,15 @@ class _TaskRow extends StatelessWidget {
                 ],
               ),
             ),
+            if (pinned)
+              const Padding(
+                padding: EdgeInsets.only(left: 6),
+                child: Icon(
+                  Icons.push_pin_rounded,
+                  size: 12,
+                  color: AppColors.accent,
+                ),
+              ),
           ],
         ),
       ),
