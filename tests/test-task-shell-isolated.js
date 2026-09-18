@@ -174,6 +174,12 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     assert.deepEqual(decisions.decisions, []);
     await api(`/api/task-shells/${sb.id}/attribution-decisions/dec_missing/accept`, { clientMsgId: 'x' }, 404);
     await api(`/api/task-shells/${sb.id}/attribution-decisions/dec_missing/dismiss`, {}, 404);
+    // 独立继续（P3）：申请是持久请求，未知目标与未知操作都 fail-closed。
+    assert.deepEqual((await api(`/api/task-shells/${sb.id}/task-continuations`)).continuations, []);
+    await api(`/api/task-shells/${sb.id}/tasks/tsk_missing/independent-continue`, { clientMsgId: 'ic-1' }, 403);
+    await api('/api/task-continuations/ind_missing', undefined, 404);
+    await api('/api/task-continuations/ind_missing/apply', {}, 404);
+    await api('/api/task-continuations/ind_missing/cancel', {}, 404);
     const restored = await api(`/api/task-shells/${sb.id}/task-index`);
     assert.equal(restored.scopeRevision, taskIndex.scopeRevision);
     const restoredHistory = await api(`/api/task-shells/${sb.id}/history?historyScope=archive&limit=100`);
