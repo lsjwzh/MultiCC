@@ -25,6 +25,7 @@ function createTaskShellStore(file) {
   const allWithIds = db.prepare('SELECT id, body FROM shell_records WHERE kind = ? ORDER BY rowid');
   const allWithRowids = db.prepare('SELECT rowid AS rid, id, body FROM shell_records WHERE kind = ? ORDER BY rowid');
   const rowidOf = db.prepare('SELECT rowid AS rid FROM shell_records WHERE kind = ? AND id = ?');
+  const receiptWatermarkStmt = db.prepare("SELECT max(rowid) AS mx FROM shell_records WHERE kind = 'receipt'");
   const put = db.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?) ON CONFLICT(kind, id) DO UPDATE SET body = excluded.body');
   const remove = db.prepare('DELETE FROM shell_records WHERE kind = ? AND id = ?');
   const get = (kind, id) => { const row = select.get(kind, id); return row ? JSON.parse(row.body) : null; };
@@ -84,6 +85,18 @@ function createTaskShellStore(file) {
       return;
     }
     writeReceiptItems(shellId, [...items, { id: receiptId, rowid }]);
+    bumpReceiptWatermark(rowid);
+  }
+  // meta 里的 watermark 是本进程已经记进桶的最大收据 rowid。库里出现了比它更大的
+  // 行，就说明有人绕过本进程写过收据（老代码进程在重启交接窗口里补写），这时桶不再
+  // 可信，必须重建一次 —— 否则那几条收据会永久不出现在 view() 里。
+  function receiptWatermark() {
+    return receiptWatermarkStmt.get().mx ?? 0;
+  }
+  function bumpReceiptWatermark(rowid) {
+    const meta = indexRow(RECEIPT_INDEX_META, 'v1');
+    if (!meta || !rowid || rowid <= (meta.watermark || 0)) return;
+    put.run(RECEIPT_INDEX_META, 'v1', JSON.stringify({ ...meta, watermark: rowid }));
   }
   function dropReceiptIndex(shellId, receiptId) {
     if (!shellId) return;
@@ -92,8 +105,8 @@ function createTaskShellStore(file) {
     if (next.length !== items.length) writeReceiptItems(shellId, next);
   }
   // 一次全表扫描把所有壳的桶补齐（老库首次读取时走一次），并落 meta 标记。
-  const buildReceiptIndex = db.transaction(() => {
-    if (indexRow(RECEIPT_INDEX_META, 'v1')) return;
+  const buildReceiptIndex = db.transaction(force => {
+    if (!force && indexRow(RECEIPT_INDEX_META, 'v1')) return;
     const grouped = new Map();
     for (const row of allWithRowids.all('receipt')) {
       const shellId = JSON.parse(row.body)?.shellId;
@@ -102,7 +115,7 @@ function createTaskShellStore(file) {
       grouped.get(shellId).push({ id: row.id, rowid: row.rid });
     }
     for (const [shellId, items] of grouped) writeReceiptItems(shellId, items);
-    put.run(RECEIPT_INDEX_META, 'v1', JSON.stringify({ builtAt: Date.now(), shells: grouped.size }));
+    put.run(RECEIPT_INDEX_META, 'v1', JSON.stringify({ builtAt: Date.now(), watermark: receiptWatermark(), shells: grouped.size }));
   });
   const putIndexed = db.transaction((kind, id, body, previous) => {
     // 先写源行、再维护派生索引：收据桶要记录源行的 rowid（顺序就是它），
@@ -169,7 +182,9 @@ function createTaskShellStore(file) {
     // 一个壳最后 limit 条收据，顺序与 list('receipt').filter(…).slice(-limit) 完全一致。
     receiptsForShell(shellId, limit = 100) {
       if (!shellId) return [];
-      if (!indexRow(RECEIPT_INDEX_META, 'v1')) buildReceiptIndex();
+      const meta = indexRow(RECEIPT_INDEX_META, 'v1');
+      if (!meta) buildReceiptIndex(false);
+      else if (receiptWatermark() > (meta.watermark || 0)) buildReceiptIndex(true);
       const items = [...receiptItemsFor(shellId)].sort((a, b) => (a.rowid ?? 0) - (b.rowid ?? 0));
       const slice = limit > 0 ? items.slice(-limit) : items;
       const out = [];
