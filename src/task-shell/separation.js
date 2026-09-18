@@ -50,8 +50,16 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
   }
   function latest(sessionId) {
     const suggestion = store.list('task-separation').filter(s => s.sessionId === sessionId).at(-1);
-    if (!suggestion || suggestion.state !== 'pending' || (!suggestion.taskId && !current(suggestion))) return null;
-    return suggestion;
+    if (!suggestion || suggestion.state !== 'pending') return null;
+    // The normal pending shape stays byte-identical for existing clients; only
+    // the deferred/stale states add fields.
+    if (suggestion.taskId) return suggestion.deferredAt ? { ...suggestion, deferred: true, stale: false } : suggestion;
+    const valid = current(suggestion);
+    // An explicitly deferred suggestion stays in the durable tray even after
+    // the conversation moves on, but it is then only dismissible: the accept
+    // path still revalidates and rejects a stale source.
+    if (!valid) return suggestion.deferredAt ? { ...suggestion, deferred: true, stale: true } : null;
+    return suggestion.deferredAt ? { ...suggestion, deferred: true, stale: false } : suggestion;
   }
   function forTask(taskId) {
     return store.list('task-separation').filter(s => s.sourceTaskId === taskId || s.taskId === taskId).at(-1) || null;
@@ -73,10 +81,18 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
     return { ...evidence, baseline, codeChanged };
   }
   async function decide(sessionId, id, decision) {
-    if (!['separate', 'keep'].includes(decision)) throw fail('invalid_input', 'decision must be separate or keep', 400);
+    if (!['separate', 'keep', 'defer'].includes(decision)) throw fail('invalid_input', 'decision must be separate, keep or defer', 400);
     let suggestion = store.get('task-separation', id);
     if (!suggestion || suggestion.sessionId !== sessionId) throw fail('separation_not_found', 'Separation suggestion not found', 404);
     if (flights.has(id)) { await flights.get(id); return decide(sessionId, id, decision); }
+    // "Later" is a durable deferral, not a decision: the suggestion stays
+    // pending for every device and the conversation is never blocked by it.
+    if (decision === 'defer') {
+      store.set('task-separation', id, { ...suggestion, deferredAt: suggestion.deferredAt || Date.now(),
+        deferCount: (suggestion.deferCount || 0) + 1 });
+      changed(sessionId);
+      return { ok: true, decision: 'defer', id, deferred: true };
+    }
     if (suggestion.state === 'separated') {
       if (decision !== 'separate') throw fail('separation_already_resolved');
       return suggestion.result;
@@ -85,7 +101,11 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
       if (decision !== 'keep') throw fail('separation_already_resolved');
       return { ok: true, decision: 'keep' };
     }
-    if (!suggestion.taskId && !current(suggestion)) throw fail('separation_stale', 'The conversation has advanced; this suggestion has expired');
+    // Only accepting is blocked by a stale source. Dismissing (keep) a stale or
+    // deferred entry stays available: it resolves the suggestion without
+    // creating, moving or re-routing anything.
+    if (decision === 'separate' && !suggestion.taskId
+        && !current(suggestion)) throw fail('separation_stale', 'The conversation has advanced; this suggestion has expired');
     if (decision === 'keep') {
       if (suggestion.taskId) throw fail('separation_already_confirmed', 'Separation was already confirmed; retry to finish creating the task');
       store.set('task-separation', id, { ...suggestion, state: 'kept', resolvedAt: Date.now() });
