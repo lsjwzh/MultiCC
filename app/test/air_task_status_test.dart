@@ -96,15 +96,47 @@ void main() {
       expect(airTaskUrgency(_task(status: 'archived')), 5);
     });
 
-    test('空闲和已结束的不算「在等我」，同紧急度按更新时间新的在前', () {
+    test('只有要我动手的才算「在等我」：在跑的不列，空闲 / 已结束的也不列', () {
+      expect(airNeedsAttention(_task(runState: 'waiting')), isTrue);
+      expect(airNeedsAttention(_task(runState: 'error')), isTrue);
+      // 拿不到执行名额同样要我去处理。
+      expect(
+        airNeedsAttention(
+          _task(
+            runState: 'idle',
+            resource: const {'capacityReason': 'workspace_execution_capacity'},
+          ),
+        ),
+        isTrue,
+      );
+      // 跑着的东西不是待办：它不需要我操作。
+      expect(airNeedsAttention(_task(runState: 'running')), isFalse);
+      expect(
+        airNeedsAttention(_task(resource: const {'lease': 'starting'})),
+        isFalse,
+      );
+      expect(airNeedsAttention(_task(runState: 'idle')), isFalse);
+      expect(airNeedsAttention(_task(status: 'done')), isFalse);
+      expect(airNeedsAttention(_task(status: 'archived')), isFalse);
+
       final rows = airUrgentTasks([
         _task(id: 'idle', runState: 'idle'),
         _task(id: 'done', status: 'done'),
-        _task(id: 'old', runState: 'waiting', updatedAt: 100),
-        _task(id: 'new', runState: 'waiting', updatedAt: 200),
-        _task(id: 'bad', runState: 'error', updatedAt: 999),
+        _task(id: 'run', runState: 'running', updatedAt: 999),
+        _task(id: 'wait', runState: 'waiting', updatedAt: 100),
+        _task(id: 'bad', runState: 'error', updatedAt: 200),
       ]);
-      expect(rows.map((t) => t.id).toList(), ['new', 'old', 'bad']);
+      expect(rows.map((t) => t.id).toList(), ['bad', 'wait']);
+    });
+
+    test('清单是纯时间倒序：刚动过的最靠前，不按紧急度分层（同 Web）', () {
+      final rows = airUrgentTasks([
+        _task(id: 'old', runState: 'waiting', updatedAt: 100),
+        _task(id: 'err', runState: 'error', updatedAt: 999),
+        _task(id: 'new', runState: 'waiting', updatedAt: 200),
+      ]);
+      // 按紧急度分层会得到 new · old · err；纯时间只会是 err · new · old。
+      expect(rows.map((t) => t.id).toList(), ['err', 'new', 'old']);
     });
 
     test('有任务在跑的目录才带标记', () {

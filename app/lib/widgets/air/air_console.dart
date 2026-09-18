@@ -78,8 +78,8 @@ class AirConsoleScreen extends StatefulWidget {
 const int _taskListLimit = 60;
 
 /// 「谁在等我」是控制台的第一格，也是打开这一页第一眼要看的东西，所以它只留
-/// 最急的几条：一屏扫完，剩下的交给它自己的整页（这一格的「查看全部」）。不封顶
-/// 的话，跑起来的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
+/// 最近更新的几条：一屏扫完，剩下的交给它自己的整页（这一格的「查看全部」）。不封顶
+/// 的话，等我的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
 /// 控制台变成一份清单的滚动条（同 Web `ATTENTION_LIMIT`）。
 const int _attentionLimit = 5;
 
@@ -196,7 +196,7 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
     final tasks = _tasks;
     final active = tasks.where((task) => !task.closed).toList();
     final executing = active.where(airTaskRunning).toList();
-    final waiting = active.where((task) => airTaskUrgency(task) < 3).toList();
+    final waiting = active.where(airNeedsAttention).toList();
     final running = airRunningDirectories(tasks);
     final enabledSchedules = (_schedules ?? const <CronTask>[])
         .where((task) => task.enabled)
@@ -290,11 +290,11 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
               _Panel(
                 eyebrow: 'ACROSS ALL WORKSPACES',
                 title: '谁在等我',
-                // 清单本来就按紧急度排过，所以「只显示前几条」砍掉的是最不急着处理的
-                // 那些，留下的仍是眼下最该看的人。总数照报，别让封顶看起来像「就这么几条」。
+                // 清单本来就按最近更新排过，所以「只显示前几条」砍掉的是最久没动过的
+                // 那些，留下的仍是眼下最近有动静的人。总数照报，别让封顶看起来像「就这么几条」。
                 note: urgent.length > _attentionLimit
-                    ? '${urgent.length} 条 · 显示最急的 $_attentionLimit 条'
-                    : '按紧急度排序，点击直达',
+                    ? '${urgent.length} 条 · 显示最近更新的 $_attentionLimit 条'
+                    : '按最近更新排序，点击直达',
                 // 没超过就没有第二页可去，出口不出现 —— 按钮跟着「有地方可去」出现，
                 // 而不是常驻一个点了没反应的「全部」。
                 action: urgent.length > _attentionLimit
@@ -328,7 +328,7 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                           onTap: () => widget.onOpenTask(task),
                         ),
                       ),
-                    if (urgent.isEmpty) const _Empty('没有正在等待或正在执行的任务。'),
+                    if (urgent.isEmpty) const _Empty('没有正在等我的任务。'),
                   ],
                 ),
               ),

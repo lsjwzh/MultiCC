@@ -6,11 +6,11 @@ import 'air_panels.dart';
 
 /// 「谁在等我」的整页。
 ///
-/// 控制台那一格只放最急的几条，完整清单在这里。对应 Web `public/air-admin.js`
+/// 控制台那一格只放最近更新的几条，完整清单在这里。对应 Web `public/air-admin.js`
 /// 的 `renderAttention`（`?view=attention`）：同一份清单、同一个顺序、同一句总数。
 ///
 /// 清单由调用方用 `airUrgentTasks` 取好再传进来 —— 和 Web 两边共用同一份
-/// 「谁更急」的判定，所以控制台那一格和这一页不可能排成两个样子。
+/// 「算不算在等我」的判定，所以控制台那一格和这一页不可能排成两个样子。
 class AirAttentionScreen extends StatelessWidget {
   const AirAttentionScreen({
     super.key,
@@ -19,7 +19,7 @@ class AirAttentionScreen extends StatelessWidget {
     required this.onOpenTask,
   });
 
-  /// 已经按紧急度排好的完整清单（`airUrgentTasks` 的返回值）。
+  /// 已经按最近更新排好的完整清单（`airUrgentTasks` 的返回值）。
   final List<AirTask> tasks;
 
   /// 跨目录的清单要把「它在哪个目录」写在行上。
@@ -90,7 +90,7 @@ class AirAttentionScreen extends StatelessWidget {
                       child: Text(
                         tasks.isEmpty
                             ? '当前没有要处理的事'
-                            : '${tasks.length} 条 · 按紧急度排序，点击直达',
+                            : '${tasks.length} 条 · 按最近更新排序，点击直达',
                         style: const TextStyle(
                           color: AppColors.faint,
                           fontSize: 10.5,
@@ -113,7 +113,7 @@ class AirAttentionScreen extends StatelessWidget {
                       onTap: () => onOpenTask(task),
                     ),
                   ),
-                if (tasks.isEmpty) const _Empty('没有正在等待或正在执行的任务。'),
+                if (tasks.isEmpty) const _Empty('没有正在等我的任务。'),
               ],
             ),
           ),
