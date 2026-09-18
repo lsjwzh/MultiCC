@@ -192,3 +192,22 @@ test('view() 按壳读收据：不再整表 list(receipt)，投影与旧实现�
   assert.deepEqual(view.receipts, legacy);
   assert.deepEqual(view.tokenSavings, { estimatedTokens: 42 });
 });
+
+test('receipt-shell 索引：绕过本进程写入的收据（重启交接窗口）会被察觉并重建', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-index-'));
+  const file = path.join(dir, 'shell.sqlite');
+  const store = createTaskShellStore(file);
+  t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  store.set('receipt', 'sr_1', { id: 'sr_1', shellId: 'sh_a', status: 'accepted', payload: { clientMsgId: 'c1' } });
+  assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_1']);
+  // 老代码进程不维护这个索引：交接窗口里它写的收据必须在下次读取时被看见。
+  const raw = new (require('better-sqlite3'))(file);
+  raw.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?)').run('receipt', 'sr_2',
+    JSON.stringify({ id: 'sr_2', shellId: 'sh_a', status: 'accepted', payload: { clientMsgId: 'c2' } }));
+  raw.close();
+  assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_1', 'sr_2'], '水位线之后的行要触发重建');
+  // 再写一条走正常路径：bucket 与水位线保持同步，不重复重建。
+  store.set('receipt', 'sr_3', { id: 'sr_3', shellId: 'sh_a', status: 'accepted', payload: { clientMsgId: 'c3' } });
+  assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_1', 'sr_2', 'sr_3']);
+  assert.equal(store.get('receipt-index-meta', 'v1').watermark >= 3, true);
+});
