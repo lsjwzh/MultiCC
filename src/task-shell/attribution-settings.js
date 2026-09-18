@@ -7,7 +7,7 @@ const { MODES, DEFAULT_MODE, normalizeAttributionMode } = require('../task-routi
 // persisted next to the other host settings. A restart can then neither widen
 // nor narrow it by accident, and an unknown value falls back to the safe tier
 // instead of the most permissive one.
-function createAttributionSettings({ initial = null, persist = null, reportFailure = null, isLocalRequest = null } = {}) {
+function createAttributionSettings({ initial = null, persist = null, reportFailure = null } = {}) {
   let mode = normalizeAttributionMode(initial, DEFAULT_MODE);
 
   function getMode() { return mode; }
@@ -30,18 +30,12 @@ function createAttributionSettings({ initial = null, persist = null, reportFailu
     return { mode, changed: true, previous };
   }
 
+  // Only the read route lives here. The write is a host setting: it belongs to
+  // src/routes/host-write.js, which owns the local-only check and the
+  // persist→apply→rollback order, so there is exactly one such layer.
   function mount(app) {
     app.get('/api/settings/task-attribution', (_req, res) =>
       res.json({ mode: getMode(), modes: [...MODES], default: DEFAULT_MODE }));
-    app.post('/api/settings/task-attribution', (req, res, next) => {
-      if (isLocalRequest && !isLocalRequest(req)) return res.status(403).json({ error: '仅可在本机修改' });
-      try {
-        return res.json({ ok: true, ...setMode(req.body?.mode) });
-      } catch (error) {
-        if (error.status) return res.status(error.status).json({ error: error.message, code: error.code });
-        return next(error);
-      }
-    });
   }
 
   return { getMode, setMode, mount };
@@ -50,12 +44,11 @@ function createAttributionSettings({ initial = null, persist = null, reportFailu
 // Composition helper: the host only supplies the ports it already owns (the
 // .env writer, its control-failure reporter and the locality check), so the
 // switch never grows a second writer or a second notion of "local".
-function createAttributionSettingsFromEnv({ writeEnv = null, reportFailure = null, isLocalRequest = null } = {}) {
+function createAttributionSettingsFromEnv({ writeEnv = null, reportFailure = null } = {}) {
   return createAttributionSettings({
     initial: process.env.MULTICC_TASK_ATTRIBUTION_MODE,
     persist: writeEnv || null,
     reportFailure: reportFailure ? error => reportFailure('attribution_settings', 'persist', error?.message || 'failed') : null,
-    isLocalRequest,
   });
 }
 
