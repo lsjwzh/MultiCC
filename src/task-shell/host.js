@@ -275,6 +275,7 @@ function createTaskShellHost(deps) {
       tasks,
       codeFor: deps.taskShortCode,
       isTarget: taskId => currentTarget === taskId,
+      cursorVersion: shell.cursorVersion || 0,
       includeEmpty: options.includeEmpty === true,
       overlay: taskOperations().overlay.apply,
       // Capabilities are advisory read-model hints. Every write still re-checks
