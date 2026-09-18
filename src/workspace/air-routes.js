@@ -1,6 +1,7 @@
 'use strict';
 
 const core = require('../task-board/core');
+const { createAirPinRuntime } = require('./pins');
 
 // Air reads canonical task records through the task-shell/board authority.
 // The client cannot mint a workspace permit, writer proof or attribution fact.
@@ -9,6 +10,24 @@ function mountAirRoutes(app, deps) {
     try { res.json(await fn(req)); }
     catch (error) { res.status(error.status || 500).json({ ok: false, code: error.code || 'air_request_failed', message: error.status ? error.message : 'Request failed' }); }
   };
+  // Pin 住的任务（页头顶上那排「齐刘海」/ 手机侧栏的置顶）。落盘位置默认跟
+  // sessions.json 同一个数据目录，宿主也可以自己指一个（测试就是这样给的）。
+  // 懒建：没碰过 pin 的实例不该为它做任何磁盘动作。
+  let pinRuntime = null;
+  const pins = () => {
+    if (!pinRuntime) {
+      pinRuntime = createAirPinRuntime({
+        file: deps.pinsFile, listTaskIds: () => boardTasks().map(task => task.id),
+        logger: deps.logger || console,
+      });
+    }
+    return pinRuntime;
+  };
+  /** 任务板现在的活任务集（合并掉的和已删的不算）—— pin 的存在性以它为准。 */
+  function boardTasks() {
+    const board = deps.getBoard?.() || {};
+    return Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId && !board.deletedTaskIds?.includes(t.id));
+  }
   function resource(sessionId) {
     const snapshot = deps.admission.snapshot();
     const record = deps.records.get(sessionId);
@@ -49,7 +68,7 @@ function mountAirRoutes(app, deps) {
       return !!(record && record.taskState);
     };
     const projectNow = Date.now();
-    const tasks = Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId && !board.deletedTaskIds?.includes(t.id)).map(t => {
+    const tasks = boardTasks().map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
       const access = deps.shell.taskAccess(t);
       return { id: t.id, dirId: core.taskDirId(board, t) || deps.records.get(sessionId)?.dirId, title: t.title, status: t.status,
@@ -65,7 +84,7 @@ function mountAirRoutes(app, deps) {
         resource: resource(sessionId) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({ id: d.id, name: d.name, path: d.path })),
-      tasks, budgets: deps.admission.snapshot().budgets, clis: deps.clis, migration, lastRuntime,
+      tasks, taskPins: pins().read(), budgets: deps.admission.snapshot().budgets, clis: deps.clis, migration, lastRuntime,
       sessions: [...deps.records.values()].filter(s => s.kind === 'terminal' && !['aux', 'gateway'].includes(s.type))
         .map(s => ({ id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli })) };
   }));
@@ -120,5 +139,6 @@ function mountAirRoutes(app, deps) {
     return { ok: true, publications: await deps.admission.recoverEvidence(entry.sessionId) };
   }));
   app.post('/api/air/tasks/:id/roles', route(req => ({ ok: true, roleBindings: deps.shell.updateRoleBindings(req.params.id, req.body) })));
+  pins().mountRoutes(app);
 }
 module.exports = { mountAirRoutes };

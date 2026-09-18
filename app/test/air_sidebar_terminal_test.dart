@@ -54,6 +54,7 @@ void main() {
             data: data,
             directoryId: directoryId,
             recentTasks: const [],
+            pinnedTaskIds: const <String>{},
             advancedMode: false,
             serverLabel: 'localhost:3000',
             onSelectDirectory: (_) {},
