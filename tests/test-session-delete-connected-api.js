@@ -133,6 +133,10 @@ function waitForFrame(socket, type) {
   });
   assert.equal(response.status, 200);
   const sessionId = response.data.id;
+  // Creating a chat room through the directory route mints the board task that
+  // 1:1-owns it; that task is the room's supported disposal path.
+  const sessionTaskId = response.data.taskId;
+  assert.equal(typeof sessionTaskId, 'string');
 
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(sessionId)}`);
   await waitForOpen(socket);
@@ -143,29 +147,40 @@ function waitForFrame(socket, type) {
   assert.equal(response.data.clients, 1);
   assert.equal(response.data.active, true);
 
+  // A bare DELETE never touches a task-bound room: the room is the task's resume
+  // file, so a sweep script must not be able to orphan the task's chat history.
   response = await api('DELETE', `/api/sessions/${sessionId}`);
+  assert.equal(response.status, 400);
+  assert.equal(response.data.code, 'task_bound_session');
+  assert.equal(response.data.taskId, sessionTaskId);
+  response = await api('GET', `/api/sessions/${sessionId}`);
+  assert.equal(response.status, 200, 'a refused delete leaves the attached page intact');
+  assert.equal(response.data.clients, 1);
+
+  // force=1 clears that guard but not retention: the archive still owns this
+  // room's history, so the physical delete stays refused.
+  response = await api('DELETE', `/api/sessions/${sessionId}?force=1`);
+  assert.equal(response.status, 409);
+  assert.equal(response.data.code, 'TASK_HISTORY_REFERENCED');
+  response = await api('GET', `/api/sessions/${sessionId}`);
+  assert.equal(response.status, 200, 'retention refusal leaves the room addressable');
+
+  // The owning task is the room's disposal path; deleting it must dispose the
+  // room and close any page still attached to it.
+  response = await api('DELETE', `/api/task-board/tasks/${sessionTaskId}`);
   assert.equal(response.status, 200);
-  assert.equal(response.data.ok, true);
-  assert.equal(response.data.forced, false);
+  assert.equal(response.data.deleted, true);
   await waitForClose(socket);
 
   response = await api('GET', `/api/sessions/${sessionId}`);
   assert.equal(response.status, 404);
 
+  // A second, independent room for the durable-evidence scenarios below.
   response = await api('POST', `/api/directories/${directoryId}/sessions`, {
     cli: 'opencode', kind: 'chat', label: 'dirty worktree',
   });
   assert.equal(response.status, 200);
   const dirtySessionId = response.data.id;
-  response = await api('GET', `/api/sessions/${dirtySessionId}`);
-  assert.equal(response.status, 200);
-  fs.writeFileSync(path.join(response.data.cwd, 'uncommitted.txt'), 'preserve me\n');
-
-  response = await api('DELETE', `/api/sessions/${dirtySessionId}`);
-  assert.equal(response.status, 409);
-  assert.equal(response.data.blocked, true);
-  response = await api('GET', `/api/sessions/${dirtySessionId}`);
-  assert.equal(response.status, 200, 'dirty worktree protection remains independent from runtime activity');
 
   // Seed durable task evidence while this isolated server is stopped. Never
   // send a prompt: the fixture needs no native CLI or external AI provider.
@@ -179,6 +194,8 @@ function waitForFrame(socket, type) {
   history.write(dirtySessionId, original);
   const originalBytes = fs.readFileSync(history.fileFor(dirtySessionId), 'utf8');
   fs.writeFileSync(path.join(dataDir, 'task_board.json'), JSON.stringify({
+    // The board store refuses a hand-written file without its schema envelope.
+    schemaVersion: 2, revision: 2,
     modules: {}, tasks: { 'retained-task': {
       id: 'retained-task', title: 'retain task evidence', status: 'done', chatSessionId: dirtySessionId,
       refs: [{ sessionId: dirtySessionId, dirId: directoryId, userMsgId: 'task-user', assistantMsgId: 'task-answer', ts: 1 }],
@@ -188,10 +205,16 @@ function waitForFrame(socket, type) {
   const historySocket = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(dirtySessionId)}`);
   const initialPage = waitForFrame(historySocket, 'chat_history');
   await waitForOpen(historySocket);
-  assert.equal((await initialPage).messages.length, 2);
-  const reset = waitForFrame(historySocket, 'chat_history_reset');
-  historySocket.send(JSON.stringify({ type: 'clear_history', keep: 0 }));
-  assert.deepEqual((await reset).messages, []);
+  const seeded = (await initialPage).messages;
+  assert.equal(seeded.length, 2);
+  // A task-bound room's transport is the task shell, so the bare WS
+  // clear_history is refused by design and the display-only hide has to go
+  // through the HTTP compatibility route. Either way it must hide the view
+  // without touching the original bytes.
+  for (const message of seeded) {
+    response = await api('DELETE', `/api/sessions/${dirtySessionId}/messages/${encodeURIComponent(message.id)}`);
+    assert.equal(response.status, 200);
+  }
   historySocket.terminate();
   response = await api('GET', `/api/sessions/${dirtySessionId}/history`);
   assert.deepEqual(response.data.messages, []);

@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 const WebSocket = require('ws');
+const { randomUUID } = require('node:crypto');
 const { assertTestDir } = require('../src/paths');
 const { _loadDatabaseState } = require('../src/orchestration/sqlite-store');
 
@@ -22,13 +23,17 @@ const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-dispatch-loop-')
 const dataRoot = path.join(testRoot, 'data');
 const project = path.join(testRoot, 'project');
 const fakeCli = path.join(testRoot, 'fake-cli.js');
+const homeRoot = path.join(testRoot, 'home');
+fs.mkdirSync(homeRoot, { recursive: true });
 const slaveLog = path.join(testRoot, 'slave-prompts.jsonl');
+const invocationLog = path.join(testRoot, 'cli-invocations.jsonl');
 fs.mkdirSync(dataRoot, { recursive: true });
 fs.mkdirSync(project, { recursive: true });
 
 // Fake CLI: master calls dispatch_master; slave calls dispatch_slave.
 fs.writeFileSync(fakeCli, `#!/usr/bin/env node
 const fs = require('node:fs');
+const path = require('node:path');
 async function main() {
   const base = process.env.MULTICC_BASE_URL;
   const capability = process.env.MULTICC_ROUTER_CAPABILITY || '';
@@ -39,10 +44,18 @@ async function main() {
     ...(process.env.ACCESS_TOKEN ? { Authorization: 'Bearer ' + process.env.ACCESS_TOKEN } : {}),
   };
   process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'fake-' + sessionId }) + '\\n');
-  const sessionsRes = await fetch(base + '/api/sessions', { headers });
-  const sessions = await sessionsRes.json();
-  const me = sessions.find(s => s.id === sessionId);
+  // Task-first: a directory-created chat session is a task-bound hidden room, so
+  // the fleet list never contains it. Address it directly instead of listing.
+  const meRes = await fetch(base + '/api/sessions/' + encodeURIComponent(sessionId), { headers });
+  const me = meRes.ok ? ((await meRes.json()) || null) : null;
   const label = me && me.label || '';
+  const sessionsDir = path.join(process.env.HOME || require('node:os').homedir(), '.codex', 'sessions');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.writeFileSync(path.join(sessionsDir, 'rollout-fake-' + sessionId + '.jsonl'),
+    JSON.stringify({ type: 'session_meta', payload: { id: 'fake-' + sessionId, cwd: process.cwd() } }) + '\\n');
+  fs.appendFileSync(${JSON.stringify(invocationLog)}, JSON.stringify({
+    sessionId, label, args: process.argv.slice(2), cwd: process.cwd(),
+  }) + '\\n');
 
   if (label.includes('master')) {
     const args = process.argv.slice(2);
@@ -53,7 +66,12 @@ async function main() {
         item: { type: 'agent_message', text: 'BACKFLOW_RECEIVED:' + prompt },
       }) + '\\n');
     } else {
-      const slave = sessions.find(s => s.dirId === me.dirId && String(s.label||'').includes('slave'));
+      // The slave is an ordinary fleet session: foreign dispatch must never
+      // target another task's dedicated room, which is 1:1-owned by its task and
+      // only accepts that task's own deliveries.
+      const fleetRes = await fetch(base + '/api/sessions', { headers });
+      const fleet = await fleetRes.json();
+      const slave = fleet.find(s => s.dirId === me.dirId && String(s.label||'').includes('slave'));
       if (!slave) throw new Error('no slave found');
       const mode = prompt.includes('FAIL_MODE') ? 'failed' : 'completed';
       const body = {
@@ -140,7 +158,8 @@ function sendWsMessage(port, sessionId, text) {
       resolve({ ok: false, assistantText, error: 'timeout' });
     }, 60000);
     ws.on('open', () => {
-      ws.send(JSON.stringify({ type: 'user_message', text }));
+      // Task-bound rooms only accept the task-shell inbox envelope.
+      ws.send(JSON.stringify({ type: 'user_message', text, taskShell: true, clientMsgId: randomUUID() }));
     });
     ws.on('message', raw => {
       try {
@@ -183,6 +202,8 @@ function sendWsMessage(port, sessionId, text) {
       MULTICC_DATA_DIR: dataRoot,
       MULTICC_MEMORY_ROOT: path.join(dataRoot, 'memories'),
       MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100',
+      // The codex rollout guard walks $HOME/.codex; keep it inside the test root.
+      HOME: path.join(testRoot, 'home'),
       CLAUDE_CMD: fakeCli,
       CODEX_CMD: fakeCli,
       OPENCODE_CMD: path.join(testRoot, 'missing-opencode'),
@@ -239,9 +260,15 @@ function sendWsMessage(port, sessionId, text) {
     const master = await api('POST', `/api/directories/${directory.id}/sessions`, {
       cli: 'codex', kind: 'chat', label: 'master-session',
     });
-    const slave = await api('POST', `/api/directories/${directory.id}/sessions`, {
-      cli: 'codex', kind: 'chat', label: 'slave-session',
+    // A directory-created chat is a task-bound hidden room owned 1:1 by a board
+    // task. Foreign dispatch must not target another task's room, and a room's
+    // task identity can never be inherited by an unrelated router operation, so
+    // the dispatchable slave is an ordinary fleet session — here the fork of the
+    // master — exactly like the addressable workers the router targets list.
+    const fork = await api('POST', `/api/sessions/${master.id}/fork`, {
+      label: 'slave-session', includeMemory: false,
     });
+    const slave = { id: fork.sessionId };
     assert.ok(master.id, 'master session created');
     assert.ok(slave.id, 'slave session created');
 
@@ -307,7 +334,11 @@ function sendWsMessage(port, sessionId, text) {
     console.log('  S3: slave prompt contains dispatch_slave callback instruction ✓');
   } catch (error) {
     await stop();
-    throw Object.assign(error, { message: `${error.message}\n--- server output ---\n${output.slice(-5000)}` });
+    let invocations = '';
+    try { invocations = fs.readFileSync(invocationLog, 'utf8'); } catch (_) {}
+    throw Object.assign(error, {
+      message: `${error.message}\n--- cli invocations ---\n${invocations}\n--- server output ---\n${output.slice(-5000)}`,
+    });
   } finally {
     assertTestDir(testRoot);
     fs.rmSync(testRoot, { recursive: true, force: true });

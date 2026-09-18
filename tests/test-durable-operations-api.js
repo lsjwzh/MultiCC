@@ -108,6 +108,7 @@ function readOrchestration(file) {
   });
   assert.equal(response.status, 200);
   const parentId = response.data.id;
+  const parentTaskId = response.data.taskId;
   response = await api('POST', `/api/directories/${directoryId}/sessions`, {
     cli: 'opencode', kind: 'chat', label: 'worker',
   });
@@ -156,7 +157,13 @@ function readOrchestration(file) {
   assert.equal(durableText.includes('retired-v1-dispatch'), false);
   assert.equal(durableText.includes('raw-detached-capability'), false);
 
+  // A task-bound room is its task's resume file: retention refuses a
+  // permanent delete even with force while the owning task still archives it.
   response = await api('DELETE', `/api/sessions/${parentId}?force=1`);
+  assert.equal(response.status, 409);
+  assert.equal(response.data.code, 'TASK_HISTORY_REFERENCED');
+  // Disposing the owning task disposes the room and must cancel its work.
+  response = await api('DELETE', `/api/task-board/tasks/${parentTaskId}`);
   assert.equal(response.status, 200);
   const snapshot = readOrchestration(orchestrationFile);
   assert.equal(snapshot.operations[detached.data.operationId].status, 'cancelled');
