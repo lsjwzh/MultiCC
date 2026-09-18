@@ -33,13 +33,21 @@
   function showDialog(suggestion, decide) {
     const t = root.t || (key => key), doc = root.document;
     const dialog = doc.createElement('dialog');
-    dialog.style.cssText = 'max-width:440px;width:calc(100% - 40px);padding:24px;border:1px solid var(--border,#ddd);border-radius:14px;background:var(--bg,#fff);color:var(--text,#222);margin:auto;';
+    dialog.className = 'task-separation-dialog';
+    dialog.setAttribute('aria-modal', 'false');
+    dialog.setAttribute('aria-live', 'polite');
+    // This is intentionally a non-modal dialog. A separation suggestion is a
+    // durable, optional decision; it must not make the conversation or header
+    // controls inert while the user is still working.
+    dialog.style.cssText = 'max-width:440px;width:calc(100% - 40px);padding:20px;border:1px solid var(--chat-line,#30363d);border-radius:14px;background:var(--chat-surface,#161b22);color:var(--chat-text,#c9d1d9);position:fixed;right:16px;bottom:92px;margin:0;z-index:10000;box-shadow:var(--chat-shadow,0 16px 40px rgba(0,0,0,.35));';
     const title = doc.createElement('h3'); title.textContent = t('taskSeparationTitle');
     const description = doc.createElement('p'); description.textContent = t('taskSeparationBody');
     const names = doc.createElement('p'); names.textContent = `${suggestion.sourceTitle || ''} → ${suggestion.title}`;
     const reason = doc.createElement('p'); reason.textContent = suggestion.reason || '';
+    const hint = doc.createElement('p'); hint.className = 'task-separation-hint';
+    hint.textContent = t('taskSeparationPendingHint');
     const error = doc.createElement('p'); error.setAttribute('role', 'alert'); error.style.color = 'var(--red,#c33)';
-    dialog.append(title, description, names, reason, error);
+    dialog.append(title, description, names, reason, hint, error);
     const buttons = [];
     async function submit(decision) {
       buttons.forEach(button => { button.disabled = true; }); error.textContent = '';
@@ -51,8 +59,12 @@
       const button = doc.createElement('button'); button.className = 'hdr-btn'; button.style.marginRight = '8px';
       button.textContent = t(key); button.onclick = () => void submit(decision); dialog.append(button); buttons.push(button);
     }
-    dialog.addEventListener('cancel', event => { event.preventDefault(); if (!buttons[0].disabled) void submit('keep'); });
-    doc.body.append(dialog); dialog.showModal();
+    // Escape should not silently choose "keep". The card remains pending until
+    // the user makes an explicit choice or the server marks it stale.
+    dialog.addEventListener('cancel', event => { event.preventDefault(); });
+    doc.body.append(dialog);
+    if (typeof dialog.show === 'function') dialog.show();
+    else if (typeof dialog.showModal === 'function') dialog.showModal();
     return () => { dialog.close(); dialog.remove(); };
   }
   root.MultiCCTaskSeparation = { createController, showDialog };
