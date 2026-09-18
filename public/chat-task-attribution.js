@@ -56,6 +56,10 @@
     // Decisions made on this page are already reflected locally; the broadcast
     // exists for the other pages that had the same card open.
     const resolvedHere = new Set();
+    // §9.1: a fresh verdict is also offered next to the stretch of conversation
+    // it is about. The bar stays the durable entry (that is where "later" folds
+    // into); these cards are the same decision, shown in place.
+    const inlineCards = new Map();  // decision id → { card, signature }
 
     const toggle = doc.createElement('button');
     toggle.type = 'button';
@@ -151,6 +155,16 @@
       return task ? labelOf(task) : text(taskId).slice(-4).toUpperCase();
     }
 
+    // The task index is only fetched when the mode is opened, but a suggestion
+    // has to read well before that — otherwise the in-place card would name its
+    // target by a bare id. The title the verdict itself carries comes first.
+    function suggestionTaskLabel(item) {
+      const task = tasks.find(entry => text(entry.taskId) === text(item?.toTaskId));
+      if (task) return labelOf(task);
+      const title = text(item?.toTaskTitle).trim();
+      return [title, text(item?.toTaskId).slice(-4).toUpperCase()].filter(Boolean).join(' · ');
+    }
+
     // Everything the user has not decided yet, including what they postponed.
     function unresolved() {
       return suggestions.filter(item => item?.state === 'pending' || item?.state === 'unclassified'
@@ -209,7 +223,80 @@
         }
         return row;
       }));
+      renderInlineCards();
       renderBar();
+    }
+
+    // The anchor is the last bubble of the turn, so the card reads as "this
+    // stretch could be its own task" instead of cutting a reply in half.
+    function inlineAnchorOf(turnKey, nodes) {
+      let last = null;
+      for (const node of nodes) if (turnKeyOf(node) === turnKey) last = node;
+      return last;
+    }
+
+    function inlineSignature(item) {
+      return [item.id, item.fromTaskId, item.toTaskId, item.toTaskTitle || item.taskName || ''].join('|');
+    }
+
+    function fillInlineCard(card, item) {
+      card.replaceChildren();
+      const label = doc.createElement('span');
+      label.className = 'task-attribution-inline-label';
+      label.textContent = t('taskAttributionInline').replace('{task}', suggestionTaskLabel(item));
+      card.append(label);
+      for (const [key, action] of [['taskAttributionAccept', 'accept'],
+        ['taskAttributionDismiss', 'dismiss'], ['taskAttributionLater', 'defer']]) {
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.className = `task-attribution-inline-${action}`;
+        button.textContent = t(key);
+        button.onclick = () => { void decideSuggestion(item, action, button); };
+        card.append(button);
+      }
+    }
+
+    // Only a fresh verdict is shown in place: "later" and "queued" belong to the
+    // bar, and a turn that is not on this page keeps its row there too — the
+    // card is an addition to the pending entry, never a replacement for it.
+    function renderInlineCards() {
+      const nodes = messages.querySelectorAll?.(TURN_SELECTOR) || [];
+      const wanted = suggestions.filter(item => item?.state === 'pending' && item.sessionId && item.turnId);
+      const live = new Set();
+      // Where the next card for this anchor has to go: right after the turn, or
+      // under the card already placed for it. Without this, two cards for one
+      // turn would take turns leapfrogging each other forever.
+      const tails = new Map();
+      for (const item of wanted) {
+        const anchor = inlineAnchorOf(`${text(item.sessionId)}:${text(item.turnId)}`, nodes);
+        if (!anchor || !anchor.parentNode) continue;
+        live.add(item.id);
+        const signature = inlineSignature(item);
+        const previous = tails.get(anchor) || anchor;
+        const entry = inlineCards.get(item.id);
+        // Nothing changed and the card is still where it belongs: leave the DOM
+        // alone. This is what keeps the observer below from looping on us.
+        if (entry && entry.signature === signature && entry.card.parentNode === anchor.parentNode
+          && entry.card.previousSibling === previous) { tails.set(anchor, entry.card); continue; }
+        const card = entry?.card || doc.createElement('div');
+        card.className = 'task-attribution-inline';
+        card.dataset.decision = text(item.id);
+        card.setAttribute('role', 'group');
+        card.setAttribute('aria-label', t('taskAttributionToggle'));
+        fillInlineCard(card, item);
+        // Placed right after the turn's last bubble. A second card for the same
+        // turn stacks below it instead of landing on top of it.
+        const after = previous.nextSibling ?? null;
+        if (after) previous.parentNode.insertBefore(card, after);
+        else previous.parentNode.append(card);
+        tails.set(anchor, card);
+        inlineCards.set(item.id, { card, signature });
+      }
+      for (const [id, entry] of [...inlineCards]) {
+        if (live.has(id)) continue;
+        entry.card.remove();
+        inlineCards.delete(id);
+      }
     }
 
     async function decideSuggestion(item, action, button) {
@@ -470,6 +557,7 @@
         picks.clear();
         selected.clear();
         toggle.hidden = first.size === 0;
+        renderInlineCards();
         renderBar();
         return;
       }
@@ -505,6 +593,7 @@
         picks.set(key, { node, pick: control, taskId: text(node.dataset?.taskId).trim() });
       }
       toggle.hidden = picks.size === 0 && first.size === 0;
+      renderInlineCards();
       renderBar();
     }
 
@@ -677,7 +766,14 @@
       onBroadcast,
       applyNow,
       continueTask,
-      dispose() { closeToast(); observer?.disconnect(); toggle.remove(); bar.remove(); },
+      dispose() {
+        closeToast();
+        observer?.disconnect();
+        for (const [, entry] of inlineCards) entry.card.remove();
+        inlineCards.clear();
+        toggle.remove();
+        bar.remove();
+      },
     };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     return api;

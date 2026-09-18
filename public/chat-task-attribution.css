@@ -120,6 +120,44 @@
 .task-attribution-suggestion-dismiss:hover { color: var(--chat-muted, #8b949e); }
 .task-attribution-suggestion-defer:hover { color: var(--chat-muted, #8b949e); }
 .task-attribution-suggestion-cancel:hover { color: var(--chat-warning, #d29922); border-color: var(--chat-warning, #d29922); }
+/* §9.1: the same suggestion, next to the stretch of conversation it is about.
+   Compact and in flow — it never overlays the transcript, never moves the
+   scroll position and never blocks the next message. */
+.task-attribution-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 2px 0 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--chat-warning, #d29922);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--chat-soft, #21262d);
+  font-size: 12px;
+}
+.task-attribution-inline-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--chat-warning, #d29922);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.task-attribution-inline-accept, .task-attribution-inline-dismiss,
+.task-attribution-inline-defer {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 7px;
+  background: var(--chat-surface, #161b22);
+  color: var(--chat-text, #c9d1d9);
+  font: inherit;
+  cursor: pointer;
+}
+.task-attribution-inline-accept:hover { color: var(--chat-blue, #58a6ff); border-color: var(--chat-blue, #58a6ff); }
+.task-attribution-inline-dismiss:hover, .task-attribution-inline-defer:hover { color: var(--chat-muted, #8b949e); }
+
 /* A suggestion is worth noticing without opening the mode. */
 .task-attribution-toggle[data-suggestions]:not([data-suggestions="0"]) {
   color: var(--chat-warning, #d29922);
