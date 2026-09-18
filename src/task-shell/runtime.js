@@ -32,6 +32,8 @@ function createTaskShellRuntime(ports) {
   const roles = require('./role-bindings').createRoleBindings(store, { getRecord, getDirectory: ports.getDirectory, assertWritable });
   const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope });
   const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles });
+  const independent = require('./independent-continue').createIndependentContinuation({ store, getRecord, getHistory,
+    getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles, hasCapacity });
   const taskFirst = require('./task-first').createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports });
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
@@ -41,6 +43,11 @@ function createTaskShellRuntime(ports) {
     const occupied = new Set(states.filter(s => s.busy !== false).map(s => s.id));
     for (const id of launching) if (id !== task.id && store.get('task', id)?.dirId === task.dirId) occupied.add(id);
     if (occupied.size >= maxConcurrent) throw failure('task_shell_capacity', `At most ${maxConcurrent} occupied tasks per project; retry this delivery when capacity is available`, 429);
+  }
+  // The same capacity rule the delivery path enforces, asked as a question:
+  // "independent continue" waits for a free slot instead of failing a delivery.
+  async function hasCapacity(task) {
+    try { await checkCapacity(task); return true; } catch (_) { return false; }
   }
 
   // P3 图谱上下文：宿主注入 ports.taskGraphContext（父任务记忆 / 同组摘要 /
@@ -746,7 +753,7 @@ function createTaskShellRuntime(ports) {
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
-    resolveTask, sendExplicit, relocateTask,
+    resolveTask, sendExplicit, relocateTask, independent,
   };
 }
 
