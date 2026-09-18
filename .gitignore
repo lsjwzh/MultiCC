@@ -30,6 +30,7 @@ task-run-transcripts/
 task_board.json
 task_board.planning-v2.json
 task_board.pre-planning-v1.json
+air-pins.json
 task-short-codes.json
 task-short-codes.json.bak-*
 shares.json
