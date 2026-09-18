@@ -41,8 +41,8 @@ MockClient _client(
 });
 
 /// 四条任务，四种处境：
-///   t1 等我回答（最急）· t2 出错（其次）· t3 空闲（不进「谁在等我」）·
-///   t4 已归档（默认筛选里不出现）。
+///   t1 等我回答 · t2 出错（两条都要我动手，t2 更新得更晚）·
+///   t3 空闲（不进「谁在等我」）· t4 已归档（默认筛选里不出现）。
 const List<Map<String, dynamic>> _tasks = [
   {
     'id': 't1',
@@ -173,18 +173,21 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('air-console-ai-assistant')));
     expect(openedAssistant, 1);
 
-    // 「谁在等我」按紧急度排：等回答的在前，出错的在后，空闲 / 归档的不进来。
+    // 「谁在等我」只留等我回答 / 出错要处理 / 卡资源的，空闲和归档不进来。
     expect(find.byKey(const ValueKey('air-console-urgent-t1')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-console-urgent-t2')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-console-urgent-t3')), findsNothing);
     expect(find.byKey(const ValueKey('air-console-urgent-t4')), findsNothing);
+    // 顺序是纯时间倒序，不是紧急度分层：t2 出错但动得更晚，就该排在等回答的
+    // t1 上面（夹具故意让「更急的」更旧 —— 紧急度分层一旦回来，这两行就翻面）。
     expect(
-      tester.getTopLeft(find.byKey(const ValueKey('air-console-urgent-t1'))).dy,
+      tester.getTopLeft(find.byKey(const ValueKey('air-console-urgent-t2'))).dy,
       lessThan(
         tester
-            .getTopLeft(find.byKey(const ValueKey('air-console-urgent-t2')))
+            .getTopLeft(find.byKey(const ValueKey('air-console-urgent-t1')))
             .dy,
       ),
+      reason: '最近动过的排在前面',
     );
     // 行上一眼能看出它在等我回答 / 出错了（同一条任务在两个分区里各一行）。
     expect(find.text('等待中'), findsWidgets);
@@ -585,31 +588,35 @@ void main() {
       reason: '全部任务在固定高度容器内滚动，不再把控制台无限拉长',
     );
     // 全部空闲，没有一条要我去处理。
-    expect(find.text('没有正在等待或正在执行的任务。'), findsOneWidget);
+    expect(find.text('没有正在等我的任务。'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
 
-  testWidgets('「谁在等我」只留最急的 5 条，其余交给它自己的整页', (tester) async {
+  testWidgets('「谁在等我」只留最近更新的 5 条，其余交给它自己的整页', (tester) async {
     _tallCanvas(tester);
     final settings = await _settings();
     final requests = <String>[];
     final opened = <String>[];
-    // 紧急度分层：等回答(0) → 出错(1) → 在跑(3)，同层里按更新时间倒序。所以
-    // 「最急的 5 条」是确定的：w1 w2 e1 e2 r1，落选的正是 r2 r3 r4。
+    // 七条要我动手的（等回答 / 出错），外加两条「最新但不用我动手」的：在跑的
+    // r1、空闲的 i1。这两条的时间戳比谁都新 —— 一旦「正在跑」又被算进这份清单，
+    // 头一行立刻是 r1，断言当场失败。留下的 5 条是最近动过的 w1 w2 e1 e2 w3，
+    // 落选的是更久没动的 e3 e4。
     final client = _client(
       requests,
       tasks: [
         for (final (id, runState, updatedAt, lease) in const [
+          ('i1', 'idle', 950, 'idle'),
+          ('r1', 'running', 900, 'running'),
           ('w1', 'waiting', 800, 'idle'),
           ('w2', 'waiting', 700, 'idle'),
           ('e1', 'error', 600, 'idle'),
           ('e2', 'error', 500, 'idle'),
-          ('r1', 'running', 400, 'running'),
-          ('r2', 'running', 300, 'running'),
-          ('r3', 'running', 200, 'running'),
-          ('r4', 'running', 100, 'running'),
+          ('w3', 'waiting', 400, 'idle'),
+          ('e3', 'error', 300, 'idle'),
+          ('e4', 'error', 200, 'idle'),
+          ('r2', 'running', 100, 'running'),
         ])
           {
             'id': id,
@@ -643,46 +650,63 @@ void main() {
     );
     await _pumpFrames(tester);
 
-    // ① 封顶：留下最急的 5 条，落选的不进这一格。
-    expect(find.text('8 条 · 显示最急的 5 条'), findsOneWidget);
-    for (final id in const ['w1', 'w2', 'e1', 'e2', 'r1']) {
+    // ① 封顶：留下最近更新的 5 条，落选的不进这一格。
+    expect(find.text('7 条 · 显示最近更新的 5 条'), findsOneWidget);
+    for (final id in const ['w1', 'w2', 'e1', 'e2', 'w3']) {
       expect(
         find.byKey(ValueKey('air-console-urgent-$id')),
         findsOneWidget,
-        reason: '$id 是最急的五条之一，该在控制台这一格里',
+        reason: '$id 是最近更新的五条之一，该在控制台这一格里',
       );
     }
-    for (final id in const ['r2', 'r3', 'r4']) {
+    for (final id in const ['e3', 'e4']) {
       expect(
         find.byKey(ValueKey('air-console-urgent-$id')),
         findsNothing,
         reason: '$id 被封顶挡在整页上，不该还留在控制台这一格',
       );
     }
+    // 执行中的、空闲的从不进这份清单 —— 哪怕它们是最新的两条。
+    for (final id in const ['r1', 'r2', 'i1']) {
+      expect(
+        find.byKey(ValueKey('air-console-urgent-$id')),
+        findsNothing,
+        reason: '$id 不需要我动手，不属于「谁在等我」',
+      );
+    }
     // 封顶不等于假装只有这几条：总数照报，出口带着同一个数。
-    expect(find.text('查看全部 8 条 ›'), findsOneWidget);
+    expect(find.text('查看全部 7 条 ›'), findsOneWidget);
 
-    // ② 整页：同一份清单铺开，先答的排在最前。
+    // ② 整页：同一份清单铺开，最近更新的排在最前。
     await tester.tap(find.byKey(const ValueKey('air-console-attention-all')));
     await _pumpFrames(tester);
     expect(find.byKey(const ValueKey('air-attention')), findsOneWidget);
-    expect(find.text('8 条 · 按紧急度排序，点击直达'), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-attention-task-r4')), findsOneWidget);
+    expect(find.text('7 条 · 按最近更新排序，点击直达'), findsOneWidget);
+    for (final id in const ['e3', 'e4']) {
+      expect(find.byKey(ValueKey('air-attention-task-$id')), findsOneWidget);
+    }
+    for (final id in const ['r1', 'r2', 'i1']) {
+      expect(
+        find.byKey(ValueKey('air-attention-task-$id')),
+        findsNothing,
+        reason: '整页是同一份清单，执行中的不该在这里冒出来',
+      );
+    }
+    // 顺序是纯时间的证据：e2(500) 是一条出错的任务，w3(400) 比它旧但在等我回答
+    // —— 按紧急度分层会把 w3 提到前面，纯时间不会。
     expect(
-      tester.getTopLeft(find.byKey(const ValueKey('air-attention-task-w1'))).dy,
+      tester.getTopLeft(find.byKey(const ValueKey('air-attention-task-e2'))).dy,
       lessThan(
-        tester
-            .getTopLeft(find.byKey(const ValueKey('air-attention-task-e1')))
-            .dy,
+        tester.getTopLeft(find.byKey(const ValueKey('air-attention-task-w3'))).dy,
       ),
-      reason: '等回答的排在出错的上面 —— 顺序和控制台那一格是同一份',
+      reason: '最近更新的排在前面，不按紧急度分层',
     );
     expect(opened, isEmpty, reason: '只是打开清单，不该顺手开一条任务');
 
     // ③ 整页里点一条：先把整页收掉，再由宿主导航（否则控制台会留在屏幕上）。
-    await tester.tap(find.byKey(const ValueKey('air-attention-task-r3')));
+    await tester.tap(find.byKey(const ValueKey('air-attention-task-e3')));
     await _pumpFrames(tester);
-    expect(opened, ['r3']);
+    expect(opened, ['e3']);
     expect(
       find.byKey(const ValueKey('air-attention')),
       findsNothing,
@@ -717,7 +741,7 @@ void main() {
     await _pumpFrames(tester);
 
     // 默认现场只有 2 条（t1 等回答、t2 出错），远没到封顶。
-    expect(find.text('按紧急度排序，点击直达'), findsOneWidget);
+    expect(find.text('按最近更新排序，点击直达'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('air-console-attention-all')),
       findsNothing,

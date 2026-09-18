@@ -38,8 +38,11 @@ const Set<String> airRunningLeases = {
   'uncertain',
 };
 
-/// 「谁在等我」的排序权重，越小越急：
+/// 「谁在等我」的分级权重，越小越急：
 /// 等我回答 → 出错要我去处理 → 卡在资源 → 正在跑。故障排在任何乐观信号前面。
+///
+/// 这份权重只用来判断「算不算在等我」（见 [airNeedsAttention]），不再决定谁排
+/// 在前面 —— 排序是纯时间，和 Web 一致。
 int airTaskUrgency(AirTask task) {
   final status = airTaskStatus(task);
   if (status == CanonicalStatus.waiting) return 0;
@@ -56,14 +59,19 @@ int airTaskUrgency(AirTask task) {
   return 4;
 }
 
-/// 跨所有目录、正在跑或等着我的任务。这条信号原来由侧栏的「跨目录活动」承担，
-/// 现在是控制台的第一个分区，也是侧栏入口上的那个数字 —— 一处定义，两处显示。
+/// 「在等我」的分界线：0 等我回答 · 1 出错要我去处理 · 2 卡在资源 —— 这三类都得
+/// 我动手。3（正在跑）不列进来：跑着的东西不是待办，它不需要我操作。控制台那张
+/// 「等待处理」统计卡走的是同一条线，两处口径必须一致。
+bool airNeedsAttention(AirTask task) => airTaskUrgency(task) < 3;
+
+/// 跨所有目录、需要我动手的任务。这条信号原来由侧栏的「跨目录活动」承担，现在
+/// 是控制台的第一个分区，也是侧栏入口上的那个数字 —— 一处定义，两处显示。
+///
+/// 顺序是纯时间倒序（最近动过的最靠前），和 Web 的 `urgentTasks` 一致：刚有动静
+/// 的任务才是眼下要接手的那条。
 List<AirTask> airUrgentTasks(Iterable<AirTask> tasks) =>
-    tasks.where((task) => airTaskUrgency(task) < 4).toList()
-      ..sort((a, b) {
-        final byUrgency = airTaskUrgency(a) - airTaskUrgency(b);
-        return byUrgency != 0 ? byUrgency : b.updatedAt.compareTo(a.updatedAt);
-      });
+    tasks.where(airNeedsAttention).toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
 /// 任务行的第二层信息：状态徽标已经说了「在不在跑」，这里补记录类型、阶段和
 /// 资源去向（同 Web 的 `taskDetail`）。

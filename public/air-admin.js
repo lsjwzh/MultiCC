@@ -43,11 +43,11 @@
   const TASK_LIST_LIMIT = 60;
   // 「谁在等我」是面板的第一格，也是打开控制台第一眼要看的东西，所以它只留最近更新的
   // 几条：一屏扫完，剩下的交给它自己的整页（这一格的「查看全部」）。不封顶的话，
-  // 跑起来的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
+  // 等我的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
   // 控制台变成一份清单的滚动条。
   //
   // 「最近更新」是纯时间倒序，不按紧急度分层：刚动过的那几条才是我脑子里还挂着的事，
-  // 而一条三小时前出错、此后没人碰过的任务，即使更「急」也排不到刚跑起来的前面。
+  // 而一条三小时前出错、此后没人碰过的任务，即使更「急」也排不到刚接手的前面。
   const ATTENTION_LIMIT = 5;
 
   // 手机上页头的工具都收进「⋯」浮层，浮层里每一行都摆成「图标 + 名字」两列
@@ -198,12 +198,13 @@
     return row;
   }
 
-  // 「谁在等我」：跨所有目录、正在跑或等着我的任务。这条信号原来由侧栏的
-  // 「跨目录活动」承担，现在它是控制台面板的第一个分区，也是入口徽标的数字 ——
-  // 一处定义，两处显示，不会再各说各话。
+  // 「谁在等我」：跨所有目录、**需要我动手**的任务。正在跑的不算 —— 它在跑，
+  // 不需要我做任何事，混进清单只会把真正等我的那几条挤下去（这一格只留 5 条）。
+  // 这条信号原来由侧栏的「跨目录活动」承担，现在它是控制台面板的第一个分区，
+  // 也是入口徽标的数字 —— 一处定义，两处显示，不会再各说各话。
   //
-  // 分级只用来判断「算不算在等我」这件事（见 urgentTasks 的筛选与上面那张
-  // 「等待处理」的统计），不再决定谁排在前面 —— 排序是纯时间。
+  // 分级只用来判断「算不算在等我」这件事（见 needsAttention），不再决定谁排在前
+  // 面 —— 排序是纯时间。
   function taskUrgency(task) {
     const status = taskStatus(task);
     if (status === 'waiting') return 0;
@@ -213,11 +214,15 @@
     if (status === 'done' || status === 'archived') return 5;
     return 4;
   }
-  // 谁是「在等我」由分级筛出来（等我回答 / 出错 / 卡资源 / 正在跑），排在最前面的
-  // 是谁最近动过。最近更新最靠前 —— 刚有动静的任务才是眼下要接手的那条。
+  // 「在等我」的分界线：0 等我回答 · 1 出错要我去处理 · 2 卡在资源 —— 这三类都得
+  // 我动手。3（正在跑）不列进来：跑着的东西不是待办，它不需要我操作。上面那张
+  // 「等待处理」统计卡走的是同一条线，两处口径必须一致。
+  function needsAttention(task) { return taskUrgency(task) < 3; }
+  // 谁在等我由上面那条线筛出来，排在最前面的是最近动过的那条 —— 刚有动静的
+  // 任务才是眼下要接手的那条。
   function urgentTasks(data) {
     return (data?.tasks || [])
-      .filter(task => taskUrgency(task) < 4)
+      .filter(needsAttention)
       .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
   }
 
@@ -234,7 +239,7 @@
     const directories = data?.directories || [];
     const active = tasks.filter(task => task.status !== 'done' && task.status !== 'archived');
     const executing = active.filter(isRunning);
-    const waiting = active.filter(task => taskUrgency(task) < 3);
+    const waiting = active.filter(needsAttention);
     const enabledSchedules = (scheduleTasks || []).filter(task => task.enabled);
     const running = runningDirectories(data);
     // The overview lives in the console panel; `#admin-content` is the fallback
@@ -286,7 +291,7 @@
     const attentionList = make('div', null, 'admin-recent-list');
     // 从面板里点走一条任务时，面板自己让开（onOpen），否则它盖住的正是刚落上去的那一页。
     for (const task of urgent.slice(0, ATTENTION_LIMIT)) attentionList.append(taskRow(task, context, { onOpen: () => context.closeConsole?.() }));
-    if (!attentionList.children.length) attentionList.append(make('p', '没有正在等待或正在执行的任务。', 'admin-empty'));
+    if (!attentionList.children.length) attentionList.append(make('p', '没有正在等我的任务。', 'admin-empty'));
     attention.append(attentionHead, attentionList);
 
     const split = make('div', null, 'admin-overview-grid');
@@ -419,7 +424,7 @@
     // 这一页本身就是完整清单，点走一条不用收掉任何浮层 —— 直接把 navigate 交给
     // taskRow 的默认行为，不套控制台那层 onOpen。
     for (const task of urgent) list.append(taskRow(task, context));
-    if (!urgent.length) list.append(make('p', '没有正在等待或正在执行的任务。', 'admin-empty'));
+    if (!urgent.length) list.append(make('p', '没有正在等我的任务。', 'admin-empty'));
     panel.append(head, list);
     el('admin-content').replaceChildren(panel);
   }

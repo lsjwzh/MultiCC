@@ -1103,7 +1103,7 @@
     const selectedEntry = entry?.task?.id === taskId ? entry : null;
     const adminHeadings = {
       // 「谁在等我」的整页。控制台那一格只放最近更新的几条，这里是完整清单。
-      attention: ['MultiCC Air › 控制台', '谁在等我', '跨所有工作目录：谁在等我回答、出错或正在跑。'],
+      attention: ['MultiCC Air › 控制台', '谁在等我', '跨所有工作目录：等我回答、出错要处理或卡在资源的任务。'],
       docs: ['MultiCC Air › 系统工具', '服务与文档', 'Agent 产物、本地页面和服务登记。'],
       memory: ['MultiCC Air › 系统工具', '记忆图谱', '项目记忆、会话记忆与文件编辑。'],
       taskgraph: ['MultiCC Air › 系统工具', '任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接。'],
