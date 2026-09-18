@@ -1280,7 +1280,24 @@
     }
   }
 
-  /** 页头最上面那排收藏栏：缩略是状态 + 标题，悬停/聚焦展开成标题 + 目录 + 阶段。 */
+  /** 点一下把详情卡片钉住（再点收起来），一次只开一张。悬停那半截由 CSS 管
+   *  （:hover / :focus-within），这里只管「点开」这半截：鼠标移开、卡片还在，
+   *  直到点别处、按 Esc、或者去悬停别的 pin。 */
+  function closePinPanels(except = null) {
+    for (const tab of document.querySelectorAll('#task-pins .pin-tab.is-open')) {
+      if (tab === except) continue;
+      tab.classList.remove('is-open');
+      tab.querySelector('.pin-open')?.setAttribute('aria-expanded', 'false');
+    }
+  }
+  function setPinPanelOpen(tab, on) {
+    closePinPanels(tab);
+    tab.classList.toggle('is-open', on);
+    tab.querySelector('.pin-open')?.setAttribute('aria-expanded', String(on));
+  }
+
+  /** 页头最上面那排收藏栏：缩略是一条只有状态图标 + 标题的短胶囊；鼠标停上去、
+   *  聚焦、或点一下，完整标题 / 目录 / 阶段挂在这条胶囊的【下面】。 */
   function renderPins() {
     const container = $('task-pins');
     if (!container) return;
@@ -1301,23 +1318,35 @@
       open.type = 'button';
       const stage = label(task.workflowStage || task.status);
       open.title = `${task.title || '未命名任务'} · ${directoryName(task.dirId)}${stage ? ` · ${stage}` : ''}`;
-      open.setAttribute('aria-label', `打开任务 ${task.title || '未命名任务'}`);
+      open.setAttribute('aria-label', `展开 ${task.title || '未命名任务'} 的详情`);
+      // 缩略态只有「状态图标 + 标题」；完整标题、目录、阶段、状态中文全在下面
+      // 那张卡片里。胶囊自己的宽度不动 —— 横向伸长会把旁边几个 pin 推着一起
+      // 挪（用户说的「晃眼」就是这个），卡片绝对定位，别人一步都不动。
+      const panel = node('div', null, 'pin-panel');
+      panel.id = `pin-panel-${task.id}`;
+      const panelMeta = node('div', null, 'pin-panel-meta');
+      panelMeta.append(statusBadge(task), node('em', directoryName(task.dirId), 'task-dir'));
+      if (stage) panelMeta.append(node('span', stage));
+      const go = node('button', '打开任务', 'pin-panel-open');
+      go.type = 'button';
+      go.onclick = () => navigate(task.dirId, task.id);
+      panel.append(node('strong', task.title || '未命名任务', 'pin-panel-title'), panelMeta, go);
+      open.setAttribute('aria-expanded', 'false');
+      open.setAttribute('aria-controls', panel.id);
       const status = node('span', null, 'pin-status');
       status.append(statusBadge(task));
       const copy = node('span', null, 'pin-copy');
       copy.append(node('strong', task.title || '未命名任务', 'pin-title'));
-      const meta = node('span', null, 'pin-meta');
-      meta.append(node('em', directoryName(task.dirId), 'task-dir'));
-      if (stage) meta.append(node('span', stage));
-      copy.append(meta);
       open.append(status, copy);
-      open.onclick = () => navigate(task.dirId, task.id);
+      open.onclick = () => setPinPanelOpen(tab, !tab.classList.contains('is-open'));
       const remove = node('button', '×', 'pin-x');
       remove.type = 'button';
       remove.title = '取消 Pin';
       remove.setAttribute('aria-label', `取消 Pin ${task.title || '未命名任务'}`);
       remove.onclick = event => { event.stopPropagation(); void togglePin(task.id); };
-      tab.append(open, remove);
+      // 悬停到别的 pin 上时，把点开着的那张收掉：两张卡片同时挂着很吵。
+      tab.onmouseenter = () => closePinPanels(tab);
+      tab.append(open, remove, panel);
       return tab;
     }));
   }
@@ -2466,6 +2495,8 @@
     $('chat-more').setAttribute('aria-expanded', String(!wasOpen));
   };
   document.addEventListener('click', event => {
+    // 点开的 pin 详情卡片：点别处就收（点自己那一条不算，那由 .pin-open 自己收）。
+    if (!event.target.closest('#task-pins .pin-tab')) closePinPanels();
     if (event.target.closest('#chat-more')) return;
     const controller = frameMoreController();
     if (controller?.close) controller.close();
@@ -2507,6 +2538,7 @@
       if (paletteOpen) { closePalette(); return; }
       if (consoleOpen) { setConsole(false); return; }
       if ($('task-header').classList.contains('options-open')) { closeOptions(); return; }
+      if (document.querySelector('#task-pins .pin-tab.is-open')) { closePinPanels(); return; }
       closeNav(); closeDetails(); frameMoreController()?.close(); $('chat-more').setAttribute('aria-expanded', 'false');
     }
   });
