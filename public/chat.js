@@ -566,6 +566,7 @@ const chatTaskIndex = window.MultiCCTaskIndex?.createController({
   onDetach: isReadOnly() ? null : detachIndexedTask,
   // 索引里唯一会改发送目标的动作：滚动/点击历史只定位，只有这个按钮移动游标。
   selectTarget: isReadOnly() ? null : { shellId: () => shellChatView.shellId, alert: message => _chatAlert(message, { danger: true }),
+    notify: (entry, result) => window.MultiCCTaskTargetRuntime?.applySelection?.(entry, result),
     request: (path, body) => chatApi.json(withToken(path), { method: 'POST', json: body }) },
 });
 const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusController({
@@ -614,7 +615,7 @@ const shellChatView = SHARE_MODE
   })
   : window.MultiCCChatShellEntry.createShellView({
     sourceSessionId: _shellSourceSession, taskId: _taskId, disabled: _params.get('readOnly') === '1',
-    request: (url, options) => chatApi.json(url, options),
+    request: (url, options) => chatApi.json(url, options), onTarget: target => window.MultiCCTaskTargetRuntime?.update?.(target),
     onSession: id => { if (_sessionName !== id) { _sessionName = id; sessionId = null; } },
   });
 const chatTransport = window.MultiCCChatTransport.createTransport({
@@ -672,6 +673,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     try {
       const message = JSON.parse(data);
       if (['task_state', 'system', 'chat_msg_meta', 'task_separation_updated'].includes(message.type)) taskSeparation?.refresh();
+      if (message.type === 'task_state') window.MultiCCTaskTargetRuntime?.sync?.(message.stateSource);
       if (message.type === 'task_attribution_updated') window.MultiCCTaskAttributionRuntime?.onBroadcast?.(message);
       if (message.type === 'shell_history_update') {
         chatHistoryView.commitSourcePage(message.sourceSessionId, message.messages || []);
@@ -1262,7 +1264,6 @@ messagesEl.addEventListener('scroll', () => {
     loadOlderHistory();
   }
 }, { passive: true });
-
 
 function escHtml(s) {
   const d = document.createElement('div');

@@ -104,6 +104,19 @@ function mountTaskAttribution() {
   }) || null;
 }
 
+// 「下一条发给 #ABCD」常驻提示：只读壳作用域的输入游标，点它打开任务索引。
+// 目标被别的页面改掉时这里独立回读一次作用域 —— 不碰这条页面的 WS 会话绑定。
+function mountComposerTarget() {
+  if (SHARE_MODE || isReadOnly()) return null;
+  return window.MultiCCTaskTarget?.createComposerTarget({
+    document, translate: tt,
+    element: document.getElementById('next-task-target'),
+    load: () => shellChatView.shellId
+      ? chatApi.json(withToken(`/api/task-shells/${encodeURIComponent(shellChatView.shellId)}/chat`)) : null,
+    openIndex: () => chatTaskIndex?.toggle?.(),
+  }) || null;
+}
+
 async function bootChatEntry() {
   if (window.MultiCCShareMode?.active()) return bootShareEntry();
   if (_params.get('readOnly') === '1') {
@@ -133,6 +146,7 @@ async function bootChatEntry() {
   // chat.js's transport sees the server's attribution broadcast; the controller
   // that can react to it lives here, so hand it over instead of guessing scope.
   window.MultiCCTaskAttributionRuntime = mountTaskAttribution();
+  window.MultiCCTaskTargetRuntime = mountComposerTarget();
   if (!_taskId) {
     connect();
     return;

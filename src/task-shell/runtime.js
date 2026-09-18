@@ -138,7 +138,13 @@ function createTaskShellRuntime(ports) {
       .filter(id => getRecord(id)?.dirId === s.dirId);
     if (sessionId && !sessionIds.includes(sessionId)) throw failure('task_not_linked', 'Execution is outside this shell', 403);
     const target = shellTarget(s);
-    return { ...target, sessionIds, activeSessionId: target.executionSessionId };
+    // The chat page needs the input cursor as a display handle ("下一条发给
+    // #ABCD"), not just its id: mint the code here so the page never has to
+    // guess one from a taskId suffix. It is a read of the same cursor the
+    // index already marks with `target`.
+    const code = target.taskId ? String(ports.taskShortCode?.(target.taskId) || '').trim().toUpperCase() : '';
+    return { ...target, sessionIds, activeSessionId: target.executionSessionId,
+      taskShortCode: /^[0-9A-Z]{4}$/.test(code) ? code : '' };
   }
   function contextSnapshots(s, excludedTaskId = null) {
     const snapshots = [];

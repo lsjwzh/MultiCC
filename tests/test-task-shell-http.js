@@ -51,6 +51,25 @@ test('HTTP routes execute and preserve structured errors, links and receipt owne
   assert.equal(detail.data.execution.busy, true);
 });
 
+test('the shell scope hands the browser the input cursor as a display handle', async t => {
+  const f = fixture(t, { taskShortCode: id => (id === '' ? '' : 'CURR') });
+  const app = express(); app.use(express.json());
+  mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const scope = async () => (await fetch(`${base}/api/task-shells/${f.a.id}/chat`)).json();
+  const before = await scope();
+  assert.equal(before.taskId, null, 'a shell with no current task has no cursor to show');
+  assert.equal(before.taskShortCode, '');
+  const sent = await (await fetch(`${base}/api/task-shells/${f.a.id}/messages`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'work', clientMsgId: 'first', intent: 'work' }) })).json();
+  const after = await scope();
+  assert.equal(after.taskId, sent.taskId, 'the cursor the chat page shows is the one a message is attributed to');
+  assert.equal(after.taskShortCode, 'CURR');
+});
+
 test('browser transport preserves payload and key after timeout/reload; no silent reroute', async () => {
   const values = new Map(), requests = [];
   const storage = { getItem: k => values.get(k), setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) };
