@@ -1226,6 +1226,7 @@
   "taskTargetChip": "Next message goes to {code}",
   "taskTargetChipTitle": "Open the task index; ◎ marks the current target {code}",
   "taskIndexTargetFailed": "Could not change the send target: {error}",
+  "taskIndexTargetStale": "Another page just moved the send target, so the list was re-read; pick again to confirm.",
   "taskAttributionToggle": "Change task attribution",
   "taskAttributionHint": "Pick whole turns and move them to another task; the originals stay.",
   "taskAttributionSelected": "{n} turns selected",

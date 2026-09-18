@@ -467,5 +467,24 @@ P1 上线后已能整理对话并看到多个码；P2 实现“尽量把不同�
 验证：`test-chat-task-attribution` 19（+5：贴段、稍后收进工具栏、本轮之外只计数、
 重复 decorate 稳定（含同轮两条建议不互相顶替）、dispose 清场），均先验证过没有实现时会失败。
 
+### 13.7 第七批：把输入游标的条件写真正用起来（2026-09-19 同一轮）
+
+§13.4/§13.5/§13.6 都留后的一条：服务端 `select-target` 早就有
+`expectedCursorVersion` 的条件写（`stale_shell_cursor`），但界面从没传过——
+凡是两个页面同开，后点的那次就是无声覆盖，条件写等于死代码。
+
+| 条款 | 差距 | 修法 |
+| --- | --- | --- |
+| 读契约 | 目录 `GET /api/task-shells/:shellId/task-index` 只给 `target` 标记，页面拿不到与它配对的游标版本 | 载荷新增顶层 `cursorVersion`（host 传 `shell.cursorVersion`）；**不进 `scopeRevision` 哈希**，所以「移动目标」不会让归属预览失效（这条不变量本轮有测试守着） |
+| 写契约 | 索引的 ◎ 无条件写 | `createTargetAction` 把读到的版本回传：`{ taskId, expectedCursorVersion }`。没有版本（旧数据/旧服务器）时保持无条件调用，接口契约不变 |
+| 冲突处理 | 冲突只会得到一句泛化错误 | `stale_shell_cursor` 不是「失败」而是「过期的选择」：重新读一次目录（`onStale` → `reload()`）让页面显示服务端真正的当前目标，并提示 `taskIndexTargetStale`；本次选择不落地、不涂改行 |
+| 版本推进 | — | 成功的写入带回新版本（`result.cursorVersion`），页面在自己的认知里记住它，同页再选一次不用重新读；回读失败/无版本时**保留旧值**（宁可下一次被判过期，也不把条件写降级成覆盖） |
+
+验证：`test-chat-task-index` 18（+2：回传读到的版本并在成功后被推进、别页挪过的目标不被覆盖且会重读）、
+`test-task-shell-task-index` 8（`cursorVersion` 与 `scopeRevision` 解耦）、
+`test-task-shell-http` 7（`select-target` 的 CAS 路由语义）、
+`tests/test-task-shell-isolated.js`（真服务器：目录下发的版本 = 写入返回的版本，
+`target` 标记跟随，且 `scopeRevision` 不变）。新测试均先验证过没有实现时会失败。
+
 仍然留后：§9.1 的「自动模式落地后显示『已划为 #ABCD · 撤销』」（auto 档未开）；
-`select-target` 的 `expectedCursorVersion` 条件写仍未被界面使用（服务端能力保留，理由见 §13.4）。
+Flutter 端与 Web 的对应界面（贴段建议卡、四字码索引、输入目标胶囊）。
