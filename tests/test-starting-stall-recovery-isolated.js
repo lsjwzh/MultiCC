@@ -9,6 +9,7 @@
 
 const assert = require('node:assert/strict');
 const { spawn, execFileSync, execSync } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
@@ -122,7 +123,11 @@ async function main() {
       ws.once('open', () => { clearTimeout(timer); resolve(); });
       ws.once('error', reject);
     });
-    ws.send(JSON.stringify({ type: 'user_message', text: 'hello, please hang in starting phase' }));
+    // Task-bound rooms only accept the task-shell inbox envelope.
+    ws.send(JSON.stringify({
+      type: 'user_message', text: 'hello, please hang in starting phase',
+      taskShell: true, clientMsgId: randomUUID(),
+    }));
 
     // The fake runner must actually spawn and stay silent.
     await new Promise(r => setTimeout(r, 3_000));

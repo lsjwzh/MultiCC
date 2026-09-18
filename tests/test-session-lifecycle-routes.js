@@ -329,22 +329,32 @@ test('restart-spawn force-archives the codex rollout and drops cliSessionId', as
 });
 
 test('DELETE refuses a task-bound session without force and tears nothing down', async () => {
-  // A task-bound hidden session is the task's resume file. The fleet never
-  // lists it, so a DELETE reaching this route is a sweep script, not a UI
-  // click — default-refuse so bulk cleanup cannot orphan task chat history.
+  // A task-bound hidden session is the task's resume file and the only copy of
+  // that task's chat evidence. The fleet never lists it, so a DELETE reaching
+  // this route is a sweep script, not a UI click — default-refuse so bulk
+  // cleanup cannot orphan task chat history. The refusal must also send the
+  // operator to the supported disposal (delete the owning task), because a
+  // force=1 hard reset is still refused by task-history retention while that
+  // task archives the room.
   const persisted = { id: 's1', kind: 'chat', dirId: 'd1', taskBoundTaskId: 't-1' };
   const { deleteHandler, calls, persistedSessions } = fixture({ persisted });
   const res = await invoke(deleteHandler, { params: { id: 's1' } });
   assert.equal(res.statusCode, 400);
+  assert.equal(res.body.code, 'task_bound_session');
+  assert.equal(res.body.taskId, 't-1');
   assert.match(res.body.error, /task-bound/);
+  assert.match(res.body.error, /所属任务/);
   assert.match(res.body.error, /force=1/);
   assert.deepEqual(calls, [], 'a refused delete must not cascade');
   assert.ok(persistedSessions.has('s1'), 'the record survives');
 });
 
-test('DELETE force=1 proceeds on a task-bound session (operator hard reset)', async () => {
-  // force=1 is the deliberate escape hatch: the board re-creates the session
-  // on next use and the cold-start seed re-walls it from the task ledger.
+test('DELETE force=1 reaches the cascade for a task-bound session (route-level escape hatch)', async () => {
+  // Route-level contract only: force clears THIS guard. Retention is a separate
+  // service and still refuses (409 TASK_HISTORY_REFERENCED) while the owning
+  // task archives the room, which is why the orphaned-binding case — not the
+  // live-task case — is what force is for. The stub cascade below returns ok,
+  // so this test pins the guard semantics, not the retention outcome.
   const persisted = { id: 's1', kind: 'chat', dirId: 'd1', taskBoundTaskId: 't-1' };
   const { deleteHandler, calls, persistedSessions } = fixture({ persisted });
   const res = await invoke(deleteHandler, { params: { id: 's1' }, query: { force: '1' } });

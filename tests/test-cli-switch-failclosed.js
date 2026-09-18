@@ -5,14 +5,16 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
+const { randomUUID } = require('crypto');
 const { assertTestDir } = require('../src/paths');
 
 const ROOT = path.join(__dirname, '..');
-const PORT = 3996;
-const BASE = `http://127.0.0.1:${PORT}`;
+let PORT = 0;
+let BASE = '';
 const TOKEN = 'cli-switch-failclosed-test';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-cli-failclosed-'));
 const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
@@ -61,6 +63,22 @@ let server;
 let dirId;
 let sessionId;
 let stderr = '';
+const ownedTaskIds = [];
+
+// Ports must be dynamic: the isolated chain can run concurrently with a sibling
+// run on a shared developer machine, and a fixed port then fails as
+// listen EADDRINUSE before the server can answer /readyz.
+async function allocatePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.unref();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const port = probe.address().port;
+      probe.close(() => resolve(port));
+    });
+  });
+}
 
 async function api(method, route, body) {
   const response = await fetch(BASE + route, {
@@ -98,7 +116,12 @@ function runTurn(text, timeoutMs = 10000) {
       else resolve({ assistant, errors });
     };
     const timer = setTimeout(() => finish(new Error('turn timeout')), timeoutMs);
-    ws.on('open', () => ws.send(JSON.stringify({ type: 'user_message', text })));
+    // Task-bound rooms only accept the task-shell inbox: bare user_message is
+    // refused with task_shell_route_required. taskShell:true + clientMsgId is
+    // the production envelope.
+    ws.on('open', () => ws.send(JSON.stringify({
+      type: 'user_message', text, taskShell: true, clientMsgId: randomUUID(),
+    })));
     ws.on('message', raw => {
       let event;
       try { event = JSON.parse(raw.toString()); } catch (_) { return; }
@@ -122,6 +145,11 @@ async function stopServer() {
 }
 
 async function cleanup() {
+  // Task-bound rooms are 1:1-owned by a board task: only deleting the task
+  // releases the room, after which force=1 can drop the directory.
+  for (const taskId of ownedTaskIds.splice(0)) {
+    try { await api('DELETE', `/api/task-board/tasks/${taskId}`); } catch (_) {}
+  }
   try { if (dirId) await api('DELETE', `/api/directories/${dirId}?force=1`); } catch (_) {}
   await stopServer();
   assertTestDir(tmpRoot);
@@ -129,6 +157,8 @@ async function cleanup() {
 }
 
 (async () => {
+  PORT = await allocatePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
@@ -149,6 +179,7 @@ async function cleanup() {
   dirId = directory.id;
   const session = await api('POST', `/api/directories/${dirId}/sessions`, { cli: 'opencode', kind: 'chat' });
   sessionId = session.id;
+  ownedTaskIds.push(session.taskId);
 
   const first = await runTurn('first');
   if (!first.assistant.includes('FIRST-OK')) throw new Error('fake source turn did not complete');
@@ -168,6 +199,7 @@ async function cleanup() {
 
   const claudeSession = await api('POST', `/api/directories/${dirId}/sessions`, { cli: 'claude', kind: 'chat' });
   sessionId = claudeSession.id;
+  ownedTaskIds.push(claudeSession.taskId);
   const firstClaude = await runTurn('first Claude turn');
   if (!firstClaude.assistant.includes('CLAUDE-FIRST-OK')) throw new Error('fake Claude source turn did not complete');
   await api('POST', `/api/sessions/${sessionId}/switch-cli`, { cli: 'codex' });

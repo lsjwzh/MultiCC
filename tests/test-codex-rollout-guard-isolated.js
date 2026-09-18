@@ -12,10 +12,12 @@
 
 const assert = require('node:assert/strict');
 const { spawn, execSync } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
 const { assertTestDir } = require('../src/paths');
 const WebSocket = require('ws');
 
@@ -25,6 +27,14 @@ const dataDir = assertTestDir(path.join(testRoot, 'data'));
 const homeDir = path.join(testRoot, 'home');
 fs.mkdirSync(dataDir, { recursive: true });
 fs.mkdirSync(homeDir, { recursive: true });
+// Routed codex keeps native history in a per-session home, so the rollout the
+// guard inspects is not under $HOME/.codex. Derive it with the product runtime
+// instead of hard-coding the fingerprint scheme.
+const codexSessionHome = createCodexSessionHomeRuntime({
+  sessionHomesDir: path.join(homeDir, '.multicc', 'codex-session-homes'),
+  codexHomesDir: path.join(homeDir, '.multicc', 'codex-homes'),
+  globalCodexHome: path.join(homeDir, '.codex'),
+}).codexSessionHome;
 
 const THREAD_ID = 'fake-thread-guard-e2e';
 const fakeCodex = path.join(testRoot, 'fake-codex-guard.sh');
@@ -55,12 +65,30 @@ async function waitReady(base) {
   throw new Error('isolated rollout-guard server did not become ready');
 }
 
-async function persistedCliSessionId(base, sid) {
-  const res = await fetch(`${base}/api/sessions`);
-  const body = await res.json();
-  const list = Array.isArray(body) ? body : (body.sessions || []);
-  const hit = list.find(s => s.id === sid);
-  return hit ? (hit.cliSessionId || null) : null;
+// The public session contract redacts native-CLI ids (src/session-dto.js
+// SENSITIVE_KEY) and this task-bound room is unlisted by design, so the durable
+// sessions store is the only place a test can observe the persisted native id —
+// which is exactly what the next spawn reads back.
+function persistedCliSessionId(sid) {
+  try {
+    const document = JSON.parse(fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8'));
+    const records = Array.isArray(document) ? document : (document.data || []);
+    const hit = records.find(record => record && record.id === sid);
+    return hit ? (hit.cliSessionId || null) : null;
+  } catch (_) { return null; }
+}
+
+// Task-shell admissions are queued and claimed by the session scheduler, so a
+// send is not synchronous: liveness can still read 'idle' for a moment after it.
+// Wait for the observable effect of the turn instead of sampling once.
+async function waitFor(check, message, tries = 60, delayMs = 500) {
+  for (let i = 0; i < tries; i += 1) {
+    let value = null;
+    try { value = await check(); } catch (_) { value = null; }
+    if (value) return value;
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  throw new Error(message);
 }
 
 async function waitIdle(base, sid, tries = 30) {
@@ -83,7 +111,11 @@ async function main() {
       PORT: String(port),
       HOME: homeDir, // guard walks $HOME/.codex — never the real one
       MULTICC_DATA_DIR: dataDir,
-      MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000',
+      // Task-shell turns are scheduler-mediated: a queued user message whose
+      // first delivery attempt lands while the workspace is still occupied is
+      // retried on the next orchestration tick. Keep the tick short or the
+      // retry looks like a permanently dropped turn.
+      MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100',
       CODEX_CMD: fakeCodex,
       MULTICC_CODEX_ROLLOUT_MAX_BYTES: '1024',
     },
@@ -130,34 +162,48 @@ async function main() {
     });
 
     // Turn 1: fake codex establishes the native thread; server persists it.
-    ws.send(JSON.stringify({ type: 'user_message', text: 'first turn' }));
+    ws.send(JSON.stringify({ type: 'user_message', text: 'first turn', taskShell: true, clientMsgId: randomUUID() }));
+    const captured = await waitFor(
+      () => persistedCliSessionId(sid) === THREAD_ID,
+      'turn 1 never captured the fake native session id',
+    ).catch(() => null);
     await waitIdle(base, sid);
-    check('turn 1 captured the fake native session id',
-      (await persistedCliSessionId(base, sid)) === THREAD_ID);
+    check('turn 1 captured the fake native session id', captured === true);
 
     // Plant an over-budget rollout for that thread (budget is 1KB in this run).
-    const sessionsDir = path.join(homeDir, '.codex', 'sessions', '2026', '01', '01');
+    const sessionHome = codexSessionHome(sid);
+    const sessionsDir = path.join(sessionHome, 'sessions', '2026', '01', '01');
     fs.mkdirSync(sessionsDir, { recursive: true });
     const rollout = path.join(sessionsDir, `rollout-2026-01-01T00-00-00-${THREAD_ID}.jsonl`);
     fs.writeFileSync(rollout, 'x'.repeat(4096));
 
     // Turn 2: the guard must fire before the spawn decision.
-    ws.send(JSON.stringify({ type: 'user_message', text: 'second turn must not resume' }));
+    ws.send(JSON.stringify({ type: 'user_message', text: 'second turn must not resume', taskShell: true, clientMsgId: randomUUID() }));
+    await waitFor(
+      () => serverOut.includes('codex_rollout_archived'),
+      'the codex rollout guard never fired for turn 2',
+    ).catch(() => null);
     await waitIdle(base, sid);
 
     check('server logged codex_rollout_archived', serverOut.includes('codex_rollout_archived'));
     check('oversized rollout removed from sessions tree', !fs.existsSync(rollout));
-    const archived = path.join(homeDir, '.codex', 'multicc-archived-rollouts', path.basename(rollout));
+    const archived = path.join(sessionHome, 'multicc-archived-rollouts', path.basename(rollout));
     check('rollout preserved in archive dir', fs.existsSync(archived));
-    const afterArchive = serverOut.slice(serverOut.indexOf('codex_rollout_archived'));
+    // indexOf === -1 must not silently degrade slice() into a one-char tail and
+    // turn the two post-archive checks vacuous.
+    const archiveIndex = serverOut.indexOf('codex_rollout_archived');
+    const afterArchive = archiveIndex === -1 ? '' : serverOut.slice(archiveIndex);
     check('no spawn after the archive resumes the old thread',
-      !afterArchive.includes(`resume ${THREAD_ID}`));
+      archiveIndex !== -1 && !afterArchive.includes(`resume ${THREAD_ID}`));
     check('the post-archive turn spawned as a fresh first turn',
       /Spawning codex \(turn \d+, first=true/.test(afterArchive));
     // The fake codex reports the SAME thread id again, so the server captures
     // it anew — exactly what a real fresh codex thread would produce.
-    check('the fresh thread id was captured back',
-      (await persistedCliSessionId(base, sid)) === THREAD_ID);
+    const recaptured = await waitFor(
+      () => persistedCliSessionId(sid) === THREAD_ID,
+      'the fresh thread id was never captured back',
+    ).catch(() => null);
+    check('the fresh thread id was captured back', recaptured === true);
   } finally {
     try { if (ws) ws.close(); } catch (_) {}
     child.kill('SIGKILL');
