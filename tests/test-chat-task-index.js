@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createController } = require('../public/chat-task-index');
+const { createController, createAnchorJump } = require('../public/chat-task-index');
 
 class FakeNode {
   constructor(tag) {
@@ -102,4 +102,91 @@ test('a multi-segment task exposes per-segment jumps and read-only entries hide 
     assert.deepEqual(navigated, [{ id: 's1:m7' }]);
     controller.dispose();
   });
+});
+
+test('a stale entry is dimmed, a dead anchor reports instead of failing silently', async () => {
+  const f = fixture(), navigated = [], missing = [];
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    onMissing: entry => missing.push(entry.code),
+    navigate: ref => { navigated.push(ref.id); return ref.id === 's1:m1'; },
+    loadIndex: async () => ({ tasks: [
+      { taskId: 'tsk_a', shortCode: 'A001', title: 'Alpha', stale: true, capabilities: {},
+        segments: [{ firstMessageRef: { id: 's1:m1' } }] },
+      { taskId: 'tsk_b', shortCode: 'B002', title: 'Beta', capabilities: {},
+        segments: [{ firstMessageRef: { id: 's1:m2' } }] },
+    ] }) });
+  await controller.reload();
+  const rail = f.doc.body.children[1];
+  assert.equal(rail.children[0].dataset.stale, 'true', 'a trimmed task must not look live');
+  assert.equal(rail.children[1].dataset.stale, undefined);
+  rail.children[0].children[0].onclick();
+  assert.deepEqual(navigated, ['s1:m1']);
+  assert.deepEqual(missing, [], 'a landed jump reports nothing');
+  rail.children[1].children[0].onclick();
+  assert.deepEqual(navigated, ['s1:m1', 's1:m2']);
+  assert.deepEqual(missing, ['B002'], 'a jump that cannot land says so');
+  // The row stays, but a code that cannot be located must not keep looking live.
+  assert.equal(rail.children[1].dataset.stale, 'true');
+  assert.equal(rail.children[0].dataset.stale, 'true', 'the server-side stale flag is preserved');
+  controller.dispose();
+});
+
+test('an entry with no anchor at all reports missing without a navigation', () => {
+  const f = fixture(), missing = [], navigated = [];
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    onMissing: entry => missing.push(entry.code), navigate: ref => { navigated.push(ref.id); return true; },
+    loadIndex: async () => ({ tasks: [
+      { taskId: 'tsk_z', shortCode: 'Z009', title: 'Zeta', capabilities: {}, segments: [] },
+    ] }) });
+  return controller.reload().then(() => {
+    f.doc.body.children[1].children[0].children[0].onclick();
+    assert.deepEqual(navigated, []);
+    assert.deepEqual(missing, ['Z009']);
+    controller.dispose();
+  });
+});
+
+test('a jump falls back from a deleted segment anchor to the task boundary', async () => {
+  const loaded = [], located = [];
+  const jump = createAnchorJump({
+    findById: () => false,
+    fetchAround: async id => (id === 's1:gone' ? { found: false } : { found: true, messages: [{ id }] }),
+    merge: messages => loaded.push(...messages.map(message => message.id)),
+    locate: id => { located.push(id); return true; },
+  });
+  const entry = { segments: [{ firstMessageRef: { id: 's1:gone' } }],
+    firstMessageRef: { id: 's1:m1' }, lastMessageRef: { id: 's1:m9' } };
+  assert.equal(await jump({ id: 's1:gone' }, entry), true);
+  assert.deepEqual(loaded, ['s1:m1'], 'the first visible boundary record is what lands');
+  assert.deepEqual(located, ['s1:m1']);
+});
+
+test('a jump reports failure only after every anchor missed, and never repeats one', async () => {
+  const fetched = [];
+  const located = [];
+  const jump = createAnchorJump({
+    findById: () => false,
+    fetchAround: async id => { fetched.push(id); return { found: true, messages: [] }; },
+    merge: () => {},
+    locate: id => { located.push(id); return false; },
+  });
+  const entry = { segments: [{ firstMessageRef: { id: 's1:a' } }],
+    firstMessageRef: { id: 's1:a' }, lastMessageRef: { id: 's1:b' } };
+  assert.equal(await jump({ id: 's1:a' }, entry), false);
+  assert.deepEqual(fetched, ['s1:a', 's1:b'], 'the segment anchor is not fetched twice');
+  assert.deepEqual(located, ['s1:a', 's1:b']);
+});
+
+test('a jump that throws while paginating keeps trying the remaining anchors', async () => {
+  const errors = [], located = [];
+  const jump = createAnchorJump({
+    findById: () => false,
+    fetchAround: async id => { if (id === 's1:a') throw new Error('network'); return { found: true, messages: [] }; },
+    merge: () => {}, locate: id => { located.push(id); return true; },
+    report: error => errors.push(error.message),
+  });
+  const entry = { firstMessageRef: { id: 's1:a' }, lastMessageRef: { id: 's1:b' } };
+  assert.equal(await jump({ id: 's1:a' }, entry), true);
+  assert.deepEqual(errors, ['network']);
+  assert.deepEqual(located, ['s1:b']);
 });

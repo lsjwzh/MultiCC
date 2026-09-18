@@ -130,6 +130,42 @@ test('dismissing a suggestion never previews or applies anything', async () => {
   controller.dispose();
 });
 
+test('postponing a suggestion keeps it pending, folds it away, and still allows a later accept', async () => {
+  let state = [{ id: 'dec_7', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending' }];
+  const calls = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: state.map(item => ({ ...item })) }),
+    request: async (method, path) => {
+      calls.push(path);
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      if (path.endsWith('/defer')) { state = [{ ...state[0], state: 'deferred' }]; return { id: 'dec_7', state: 'deferred' }; }
+      state = [{ ...state[0], state: 'applied' }];
+      return { id: 'dec_7', state: 'applied', toTaskId: 'tsk_b' };
+    },
+  });
+  await settle();
+  const toggle = f.doc.body.children[0];
+  const proposals = f.doc.body.children[1].children[0];
+  assert.equal(proposals.children[0].children.length, 4, 'accept, dismiss and later are offered');
+  proposals.children[0].children[3].onclick();
+  await settle();
+  assert.deepEqual(calls.filter(path => path.includes('attribution-decisions')),
+    ['/api/task-shells/sh_1/attribution-decisions/dec_7/defer']);
+  assert.equal(toggle.dataset.suggestions, '1', 'a postponed suggestion is still open work');
+  assert.equal(proposals.hidden, true, 'the closed bar does not keep the postponed card on screen');
+  // The bar is the durable pending entry the card collapses into: opening it is
+  // the way back to a postponed suggestion.
+  controller.setEnabled(true);
+  await settle();
+  assert.equal(proposals.hidden, false);
+  assert.equal(proposals.children[0].children.length, 3, 'a postponed card no longer offers "later" again');
+  proposals.children[0].children[1].onclick();
+  await settle();
+  assert.equal(calls.filter(path => path.endsWith('/accept')).length, 1);
+  assert.equal(toggle.dataset.suggestions, '0', 'accepting clears the postponed row');
+  controller.dispose();
+});
+
 test('the toggle stays hidden until a movable turn exists', () => {
   const { f, controller } = controllerFor();
   const toggle = f.doc.body.children[0];
@@ -296,5 +332,51 @@ test('a needs-attention continuation is reported as a condition, not a failure',
   assert.equal(summary.dataset.tone, 'warn', 'attention is a state to clear, not an error to report');
   assert.equal(bar.children.find(node => node.className === 'task-attribution-continue').disabled, false,
     'the same request can be re-asked once the condition clears');
+  controller.dispose();
+});
+
+test('a broadcast from another page clears the card and only an applied change reloads history', async () => {
+  let pending = [{ id: 'dec_5', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending' }];
+  const calls = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: pending.map(item => ({ ...item })) }),
+    onExternalApply: () => calls.push('history'),
+    request: async (method, path) => { calls.push(path); return {}; },
+  });
+  await settle();
+  const proposals = f.doc.body.children[1].children[0];
+  assert.equal(proposals.children.length, 1, 'the card is on screen before the other page decides');
+  pending = [];
+  controller.onBroadcast({ decisionId: 'dec_5', kind: 'dismissed', state: 'dismissed' });
+  await settle();
+  assert.equal(proposals.hidden, true, 'another page dismissing it removes the card here too');
+  assert.deepEqual(calls, [], 'a dismissal moved nothing, so history is not re-read');
+  controller.onBroadcast({ decisionId: 'dec_6', kind: 'applied', state: 'applied' });
+  await settle();
+  assert.deepEqual(calls, ['history'], 'an applied change does re-read the projection');
+  controller.dispose();
+});
+
+test('a broadcast about a decision this page just made is not replayed at itself', async () => {
+  let pending = [{ id: 'dec_8', fromTaskId: 'tsk_a', toTaskId: 'tsk_b', state: 'pending' }];
+  const calls = [];
+  const { f, controller } = controllerFor({
+    loadSuggestions: async () => ({ decisions: pending.map(item => ({ ...item })) }),
+    onExternalApply: () => calls.push('history'),
+    request: async (method, path) => {
+      calls.push(path);
+      if (path.endsWith('/preview')) return { previewToken: 'tok', scopeRevision: 'rev', changed: 0, blocked: [] };
+      pending = [];
+      return { id: 'dec_8', state: 'applied', toTaskId: 'tsk_b' };
+    },
+  });
+  await settle();
+  f.doc.body.children[1].children[0].children[0].children[1].onclick();
+  await settle();
+  const before = calls.length;
+  controller.onBroadcast({ decisionId: 'dec_8', kind: 'applied' });
+  await settle();
+  assert.equal(calls.length, before, 'the deciding page does not re-fetch on its own broadcast');
+  assert.deepEqual(calls.filter(path => path === 'history'), [], 'and does not reload history twice');
   controller.dispose();
 });

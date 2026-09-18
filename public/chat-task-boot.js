@@ -50,7 +50,23 @@ async function bootShareEntry() {
 // transport concern and must never replace the UI.
 // 归属调整（P1）：模块本身不认任何页面状态，作用域、HTTP 和重绘都从这里接。
 // 这走的是写路径，所以分享页与只读页根本不挂载。
-async function refreshShellHistory() {
+// Re-attribution can be decided from another tab, and the broadcast that says so
+// reaches this tab too: two refreshes racing would clear and repaint the same
+// page twice. Concurrent callers therefore share one pass, with a single
+// follow-up when a change arrived while it was running.
+let _shellHistoryRefresh = null;
+let _shellHistoryRefreshAgain = false;
+function refreshShellHistory() {
+  if (_shellHistoryRefresh) { _shellHistoryRefreshAgain = true; return _shellHistoryRefresh; }
+  _shellHistoryRefresh = refreshShellHistoryOnce().then(() => {
+    _shellHistoryRefresh = null;
+    if (_shellHistoryRefreshAgain) { _shellHistoryRefreshAgain = false; return refreshShellHistory(); }
+    return undefined;
+  });
+  return _shellHistoryRefresh;
+}
+
+async function refreshShellHistoryOnce() {
   try {
     const url = withToken(`${shellChatView.historyUrl()}?historyScope=${HISTORY_ARCHIVE ? 'archive' : 'display'}&limit=50`);
     const page = await chatApi.json(url);
@@ -83,6 +99,7 @@ function mountTaskAttribution() {
     // 独立继续是写路径：确认后由服务端持有请求，页面只是发起者。
     confirmContinue: message => _chatConfirm(message, { okText: tt('taskAttributionContinue') }),
     onApplied: () => refreshShellHistory(),
+    onExternalApply: () => void refreshShellHistory(),
     report: error => dbg('history', `task attribution failed: ${error.message}`),
   }) || null;
 }
@@ -113,7 +130,9 @@ async function bootChatEntry() {
     }
     return;
   }
-  mountTaskAttribution();
+  // chat.js's transport sees the server's attribution broadcast; the controller
+  // that can react to it lives here, so hand it over instead of guessing scope.
+  window.MultiCCTaskAttributionRuntime = mountTaskAttribution();
   if (!_taskId) {
     connect();
     return;

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { fixture } = require('./helpers/task-shell');
 const { createTaskOperations } = require('../src/task-shell/task-operations');
 const { createAttributionDecisions } = require('../src/task-shell/attribution-decisions');
+const { mountTaskShellRoutes } = require('../src/task-shell/routes');
 
 const input = (clientMsgId, extra = {}) => ({ clientMsgId, text: clientMsgId, ...extra });
 
@@ -27,6 +28,7 @@ async function setup(t, { mode = 'suggest', turnId = 'turn-1' } = {}) {
     taskTitle: taskId => f.store.get('task', taskId)?.title || null,
     effectiveTaskOf: (sessionId, id) => (histories.get(sessionId) || []).find(m => m.turnId === id)?.taskId ?? null,
   });
+  const events = [];
   const decisions = createAttributionDecisions({
     store: f.store, operations: overlay,
     scopeOf: () => f.runtime.chatScope(f.a.id),
@@ -34,10 +36,11 @@ async function setup(t, { mode = 'suggest', turnId = 'turn-1' } = {}) {
     restoreSettledCursor: (...args) => f.runtime.restoreSettledCursor(...args),
     isTurnBusy: () => false,
     taskTitle: taskId => f.store.get('task', taskId)?.title || null,
+    onAttributionChanged: (sessionId, detail) => events.push({ sessionId, ...detail }),
   });
   const record = (extra = {}) => decisions.record('a', first.receiptId,
     { mode, relation: 'same', taskName: 'Beta', turnId, ...extra });
-  return { f, first, shell, histories, overlay, decisions, record };
+  return { f, first, shell, histories, overlay, decisions, record, events };
 }
 
 test('shadow records the verdict and changes nothing a reader can see', async t => {
@@ -157,4 +160,49 @@ test('a re-judged turn refreshes its pending suggestion instead of stacking a se
   assert.equal(second.decision.taskName, 'Second');
   assert.equal(second.decision.createdAt, first.decision.createdAt, 'the row keeps its origin');
   assert.equal(decisions.list(f.a.id).length, 1, 'one turn never asks twice');
+});
+
+test('a postponed suggestion stays open across re-judging and still tells other pages', async t => {
+  const { f, decisions, record, events } = await setup(t);
+  const first = await record({ relation: 'new', taskId: 'tsk_candidate', taskName: 'Beta' });
+  const deferred = decisions.defer(f.a.id, first.decision.id);
+  assert.equal(deferred.state, 'deferred');
+  assert.ok(deferred.deferredAt, 'the postponement is durable, not just hidden');
+  assert.equal(decisions.list(f.a.id).length, 1, 'a postponed row stays in the directory');
+  assert.deepEqual(events.at(-1), { sessionId: 'a', decisionId: first.decision.id, state: 'deferred', kind: 'deferred' });
+  // Deferring twice is a no-op, and a fresh verdict for the same turn must not
+  // reopen a row the user already postponed.
+  assert.equal(decisions.defer(f.a.id, first.decision.id).state, 'deferred');
+  const again = await record({ relation: 'new', taskId: 'tsk_candidate', taskName: 'Beta' });
+  assert.equal(again.decision.state, 'deferred');
+  assert.equal(decisions.list(f.a.id).length, 1);
+  // "Later" is not a decision: the user can still accept it, and the broadcast
+  // says exactly what happened so another page knows whether to re-read history.
+  const accepted = await decisions.accept(f.a.id, first.decision.id, { clientMsgId: 'accept-deferred' });
+  assert.equal(accepted.state, 'applied');
+  assert.deepEqual(events.at(-1), { sessionId: 'a', decisionId: first.decision.id, state: 'applied',
+    kind: 'applied', toTaskId: 'tsk_candidate', fromTaskId: first.decision.fromTaskId });
+});
+
+test('a resolved suggestion cannot be postponed', async t => {
+  const { f, decisions, record } = await setup(t);
+  const first = await record({ relation: 'new', taskId: 'tsk_candidate' });
+  decisions.dismiss(f.a.id, first.decision.id);
+  assert.throws(() => decisions.defer(f.a.id, first.decision.id), { code: 'attribution_decision_resolved' });
+});
+
+test('the decisions HTTP surface exposes the defer route', async () => {
+  const handlers = new Map();
+  const app = { get: (path, handler) => handlers.set(`GET ${path}`, handler),
+    post: (path, handler) => handlers.set(`POST ${path}`, handler),
+    delete: (path, handler) => handlers.set(`DELETE ${path}`, handler) };
+  const calls = [];
+  const decisions = { list: () => [], accept: () => ({}), dismiss: () => ({}), undo: () => ({}),
+    defer: (shellId, decisionId) => { calls.push([shellId, decisionId]); return { id: decisionId, state: 'deferred' }; } };
+  mountTaskShellRoutes(app, { getRuntime: () => ({}), attributionDecisions: () => decisions });
+  let body = null;
+  await handlers.get('POST /api/task-shells/:shellId/attribution-decisions/:decisionId/defer')(
+    { params: { shellId: 'sh_1', decisionId: 'dec_1' }, body: {} }, { json: value => { body = value; } });
+  assert.deepEqual(calls, [['sh_1', 'dec_1']]);
+  assert.equal(body.state, 'deferred');
 });

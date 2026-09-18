@@ -12,6 +12,40 @@
     return CODE_RE.test(code) ? code : '';
   }
 
+  function refId(ref) {
+    return text(ref?.id || ref?.sourceMessageId || '').trim();
+  }
+
+  // Page-level glue for an index jump, kept here so the fallback order is
+  // testable: the requested segment's anchor first, then the task's own
+  // boundaries — when a message was deleted, the nearest still-visible record is
+  // one of those. Returns false only when nothing could be located, which is the
+  // signal that the row should be reported as dead instead of looking live.
+  function createAnchorJump({ findById, fetchAround, merge, locate, report = () => {} }) {
+    return async function jump(ref, entry) {
+      const anchors = [];
+      const push = value => {
+        const id = refId(value);
+        if (id && !anchors.includes(id)) anchors.push(id);
+      };
+      push(ref);
+      push(entry?.segments?.[0]?.firstMessageRef);
+      push(entry?.firstMessageRef);
+      push(entry?.lastMessageRef);
+      for (const id of anchors) {
+        try {
+          if (!findById(id)) {
+            const page = await fetchAround(id);
+            if (page?.found !== true) continue;
+            merge(page.messages, page);
+          }
+          if (locate(id) === true) return true;
+        } catch (error) { report(error); }
+      }
+      return false;
+    };
+  }
+
   function createController(options = {}) {
     const doc = options.document || root.document;
     const messages = options.messagesEl;
@@ -22,6 +56,7 @@
     const detach = typeof options.onDetach === 'function' ? options.onDetach : null;
     const loadIndex = typeof options.loadIndex === 'function' ? options.loadIndex : null;
     const navigate = typeof options.navigate === 'function' ? options.navigate : null;
+    const onMissing = typeof options.onMissing === 'function' ? options.onMissing : null;
     let open = false;
     try { open = storage?.getItem('multicc:task-index-open') === '1'; } catch (_) {}
     let highlighted = null;
@@ -30,6 +65,19 @@
     let loading = null;
     let pendingRef = null;
     let signature = '';
+    // Codes whose anchors could not be located in this conversation. They stay
+    // in the directory (the task exists) but must not keep looking live.
+    const dead = new Set();
+
+    function isStale(entry) {
+      return entry?.stale === true || (entry?.code ? dead.has(entry.code) : false);
+    }
+
+    function markDead(entry) {
+      if (!entry?.code || dead.has(entry.code)) return;
+      dead.add(entry.code);
+      render();
+    }
 
     const toggle = doc.createElement('button');
     toggle.type = 'button';
@@ -92,10 +140,6 @@
       return index && Array.isArray(index.tasks) ? serverEntries() : domEntries();
     }
 
-    function refId(ref) {
-      return text(ref?.id || ref?.sourceMessageId || '').trim();
-    }
-
     function activate(node) {
       if (!node) return false;
       clearHighlight();
@@ -111,16 +155,39 @@
       const ref = segment?.firstMessageRef || entry?.segments?.[0]?.firstMessageRef || null;
       const direct = entry?.node || nodeFor(refId(ref));
       if (direct) { pendingRef = null; return activate(direct); }
-      if (!ref || !navigate) return false;
+      if (!ref || !navigate) { markDead(entry); onMissing?.(entry); return false; }
       pendingRef = ref;
-      try { navigate(ref); } catch (_) { pendingRef = null; return false; }
+      let result;
+      try { result = navigate(ref, entry); }
+      catch (_) { pendingRef = null; markDead(entry); onMissing?.(entry); return false; }
+      // The host paginates asynchronously: a jump into unloaded history only
+      // proves it landed once the fetch says so. Reporting "missing" here is
+      // what turns a silent dead click into something the user can understand.
+      if (result && typeof result.then === 'function') {
+        const attempt = pendingRef;
+        void Promise.resolve(result).then(ok => {
+          if (ok !== false) return;
+          if (pendingRef === attempt) pendingRef = null;
+          markDead(entry);
+          onMissing?.(entry);
+        }).catch(() => {
+          if (pendingRef === attempt) pendingRef = null;
+          markDead(entry);
+          onMissing?.(entry);
+        });
+      } else if (result === false) {
+        pendingRef = null;
+        markDead(entry);
+        onMissing?.(entry);
+        return false;
+      }
       return true;
     }
 
     function render() {
       const list = entries();
       const next = JSON.stringify(list.map(entry => [entry.code, entry.taskId, entry.title,
-        entry.stale === true, entry.capabilities?.canDetach === true, entry.segments.length]));
+        isStale(entry), entry.capabilities?.canDetach === true, entry.segments.length]));
       if (next === signature) { toggle.hidden = list.length === 0; rail.hidden = !open || list.length === 0;
         toggle.setAttribute('aria-expanded', String(!rail.hidden)); return; }
       signature = next;
@@ -130,6 +197,9 @@
       rail.replaceChildren(...list.map(entry => {
         const row = doc.createElement('div');
         row.className = 'task-index-row';
+        // A task whose history was trimmed or whose anchors were deleted still
+        // belongs in the directory, but its row must not look like a live one.
+        if (isStale(entry)) row.dataset.stale = 'true';
         const button = doc.createElement('button');
         button.type = 'button'; button.className = 'task-index-item';
         button.textContent = entry.code;
@@ -251,7 +321,7 @@
     };
   }
 
-  const api = { createController, createDetachAction };
+  const api = { createController, createDetachAction, createAnchorJump };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.MultiCCTaskIndex = api;
 })(typeof window !== 'undefined' ? window : globalThis);

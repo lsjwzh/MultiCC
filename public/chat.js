@@ -553,20 +553,14 @@ function mergeAroundPage(messages, page) {
   return inserted;
 }
 // Index jumps may target an unloaded turn, so they paginate like deep links.
-async function jumpToIndexAnchor(ref) {
-  const id = typeof ref?.id === 'string' ? ref.id : (typeof ref?.sourceMessageId === 'string' ? ref.sourceMessageId : '');
-  if (!id) return;
-  try {
-    if (!chatHistoryView.findById(id)) {
-      const page = await fetchAroundPage(id);
-      if (page?.found !== true) return;
-      mergeAroundPage(page.messages, page);
-    }
-    chatTaskIndex?.markLocated(id);
-  } catch (error) { dbg('history', `task index jump failed: ${error.message}`); }
-}
+const jumpToIndexAnchor = window.MultiCCTaskIndex?.createAnchorJump?.({
+  findById: id => chatHistoryView.findById(id), fetchAround: fetchAroundPage, merge: mergeAroundPage,
+  locate: id => chatTaskIndex?.markLocated(id) === true,
+  report: error => dbg('history', `task index jump failed: ${error.message}`),
+});
 const chatTaskIndex = window.MultiCCTaskIndex?.createController({
-  document, messagesEl, translate: tt, navigate: ref => void jumpToIndexAnchor(ref),
+  document, messagesEl, translate: tt, navigate: jumpToIndexAnchor,
+  onMissing: entry => addSystemMsg(tt('taskIndexAnchorMissing').replace('{code}', entry?.code || '')),
   loadIndex: () => shellChatView.shellId
     ? chatApi.json(withToken(`/api/task-shells/${encodeURIComponent(shellChatView.shellId)}/task-index`)) : null,
   onDetach: isReadOnly() ? null : detachIndexedTask,
@@ -675,6 +669,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     try {
       const message = JSON.parse(data);
       if (['task_state', 'system', 'chat_msg_meta', 'task_separation_updated'].includes(message.type)) taskSeparation?.refresh();
+      if (message.type === 'task_attribution_updated') window.MultiCCTaskAttributionRuntime?.onBroadcast?.(message);
       if (message.type === 'shell_history_update') {
         chatHistoryView.commitSourcePage(message.sourceSessionId, message.messages || []);
         maybeScrollToBottom(); return;
