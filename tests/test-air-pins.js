@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { airResponse } = require('./helpers/air-response');
 
 const { PIN_LIMIT, normalizePins, createAirPinRuntime } = require('../src/workspace/pins');
 const { mountAirRoutes } = require('../src/workspace/air-routes');
@@ -127,7 +128,7 @@ test('/api/air 快照带着 pin，客户端不用为它多打一次接口', asyn
     shell: { taskAccess: () => ({ readOnly: false }) },
   });
   call(handlers.get('/api/air/pins/toggle'), { body: { taskId: 't1' } });
-  let snapshot; await handlers.get('/api/air')({}, { json: v => { snapshot = v; }, status() { return this; } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const snapshot = JSON.parse(res.body);
   assert.deepEqual(snapshot.taskPins, ['t1']);
   assert.equal(snapshot.tasks.some(t => t.id === 't2'), false);
 });
