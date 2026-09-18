@@ -15,7 +15,8 @@ function pageTaskHistory(rawMessages, options = {}) {
     ...(options.around ? { found: true, hasNewer: end < messages.length } : {}) };
 }
 
-function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry, taskIndex, taskOperations }) {
+function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry, taskIndex,
+  taskOperations, attributionDecisions, independent, relations }) {
   const route = handler => async (req, res) => {
     try {
       const runtime = getRuntime();
@@ -66,14 +67,54 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
     app.get('/api/task-shells/:shellId/task-operations', route((_runtime, req) => ({
       ok: true, operations: taskOperations().list(req.params.shellId) })));
     app.post('/api/task-shells/:shellId/task-operations/preview', route((runtime, req) => taskOperations().preview({
-      scope: runtime.chatScope(req.params.shellId), turns: req.body?.turns, target: req.body?.target })));
+      scope: runtime.chatScope(req.params.shellId), turns: req.body?.turns, range: req.body?.range, target: req.body?.target })));
     app.post('/api/task-shells/:shellId/task-operations', route((runtime, req) => taskOperations().apply({
       scope: runtime.chatScope(req.params.shellId), clientMsgId: req.body?.clientMsgId,
       previewToken: req.body?.previewToken, expectedRevision: req.body?.expectedRevision,
-      turns: req.body?.turns, target: req.body?.target })));
+      turns: req.body?.turns, range: req.body?.range, target: req.body?.target })));
     app.get('/api/task-operations/:operationId', route((_runtime, req) => taskOperations().get(req.params.operationId)));
     app.post('/api/task-operations/:operationId/undo', route((_runtime, req) => taskOperations().undo({
       operationId: req.params.operationId, clientMsgId: req.body?.clientMsgId })));
+  }
+  if (attributionDecisions) {
+    // `?includeHidden=1` is the shadow-parity view: the rows `suggest` would
+    // show, plus the ones it deliberately does not.
+    app.get('/api/task-shells/:shellId/attribution-decisions', route((_runtime, req) => ({
+      ok: true, decisions: attributionDecisions().list(req.params.shellId,
+        { includeHidden: req.query?.includeHidden === '1' }) })));
+    app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/accept', route((_runtime, req) =>
+      attributionDecisions().accept(req.params.shellId, req.params.decisionId, { clientMsgId: req.body?.clientMsgId })));
+    app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/dismiss', route((_runtime, req) =>
+      attributionDecisions().dismiss(req.params.shellId, req.params.decisionId)));
+    app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/undo', route((_runtime, req) =>
+      attributionDecisions().undo(req.params.shellId, req.params.decisionId)));
+  }
+  if (independent) {
+    // 独立继续（P3）：申请立即返回操作 ID，等待条件由服务端持有，
+    // 页面关掉、断网或服务重启都不会让申请丢失。
+    app.post('/api/task-shells/:shellId/tasks/:taskId/independent-continue', route((_runtime, req) =>
+      independent().request(req.params.shellId, req.params.taskId, { clientMsgId: req.body?.clientMsgId })));
+    app.get('/api/task-shells/:shellId/task-continuations', route((_runtime, req) => ({
+      ok: true, continuations: independent().list({ shellId: req.params.shellId }).map(item => independent().publicOp(item)) })));
+    app.get('/api/task-continuations/:continuationId', route((_runtime, req) =>
+      independent().publicOp(independent().get(req.params.continuationId))));
+    app.post('/api/task-continuations/:continuationId/apply', route((_runtime, req) =>
+      independent().apply(req.params.continuationId)));
+    app.post('/api/task-continuations/:continuationId/cancel', route((_runtime, req) =>
+      independent().cancel(req.params.continuationId)));
+    app.post('/api/task-continuations/:continuationId/retry', route((_runtime, req) =>
+      independent().retry(req.params.continuationId)));
+  }
+  if (relations) {
+    // 关联编辑（P4）：图上可见的关系边，纯展示与检索；新边默认不授予任何
+    // 上下文读取权。批量整理走的仍是 task-operations 的整段区间。
+    app.get('/api/task-shells/:shellId/relations', route((_runtime, req) => ({
+      ok: true, relations: relations().list(req.params.shellId) })));
+    app.post('/api/task-shells/:shellId/relations', route((_runtime, req) => relations().create(req.params.shellId, {
+      kind: req.body?.kind, fromTaskId: req.body?.fromTaskId, toTaskId: req.body?.toTaskId,
+      clientMsgId: req.body?.clientMsgId })));
+    app.post('/api/task-shells/:shellId/relations/remove', route((_runtime, req) => relations().remove(req.params.shellId, {
+      relationId: req.body?.relationId, clientMsgId: req.body?.clientMsgId })));
   }
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
   app.post('/api/task-shells/:shellId/links', route((runtime, req) => runtime.link(req.params.shellId, req.body?.taskId)));

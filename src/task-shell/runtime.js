@@ -32,6 +32,10 @@ function createTaskShellRuntime(ports) {
   const roles = require('./role-bindings').createRoleBindings(store, { getRecord, getDirectory: ports.getDirectory, assertWritable });
   const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope });
   const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles });
+  const independent = require('./independent-continue').createIndependentContinuation({ store, getRecord, getHistory,
+    getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles, hasCapacity });
+  const relations = require('./relations').createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
+    onChanged: id => ports.onRelationChanged?.(id) });
   const taskFirst = require('./task-first').createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports });
   const launching = new Set();
   const maxConcurrent = Number.isInteger(ports.maxConcurrent) && ports.maxConcurrent > 0 ? ports.maxConcurrent : 4;
@@ -41,6 +45,11 @@ function createTaskShellRuntime(ports) {
     const occupied = new Set(states.filter(s => s.busy !== false).map(s => s.id));
     for (const id of launching) if (id !== task.id && store.get('task', id)?.dirId === task.dirId) occupied.add(id);
     if (occupied.size >= maxConcurrent) throw failure('task_shell_capacity', `At most ${maxConcurrent} occupied tasks per project; retry this delivery when capacity is available`, 429);
+  }
+  // The same capacity rule the delivery path enforces, asked as a question:
+  // "independent continue" waits for a free slot instead of failing a delivery.
+  async function hasCapacity(task) {
+    try { await checkCapacity(task); return true; } catch (_) { return false; }
   }
 
   // P3 图谱上下文：宿主注入 ports.taskGraphContext（父任务记忆 / 同组摘要 /
@@ -680,6 +689,25 @@ function createTaskShellRuntime(ports) {
     if (!receipt || receipt.shellId !== s.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
     return sendInput(s.id, receipt.payload);
   }
+  // Undoing an accepted identity change puts the shell cursor back where it
+  // was. It refuses once another turn has moved the cursor: that turn was
+  // routed under the new identity, and silently re-pointing it would rewrite
+  // the history a reader already saw.
+  function restoreSettledCursor(shellId, { fromTaskId = null, toTaskId = null } = {}) {
+    const s = shell(shellId);
+    const previous = fromTaskId && store.get('task', fromTaskId);
+    if (!previous || !toTaskId || s.currentTaskId !== toTaskId
+        || !store.get('link', `${s.id}:${fromTaskId}`) || !store.get('link', `${s.id}:${toTaskId}`)) {
+      return { ok: false, code: 'attribution_undo_conflict' };
+    }
+    return store.transaction(() => {
+      s.currentTaskId = fromTaskId;
+      s.defaultTaskId = fromTaskId;
+      s.cursorVersion = (s.cursorVersion || 0) + 1;
+      saveShell(s.id, s);
+      return { ok: true, taskId: fromTaskId, previousTaskId: toTaskId };
+    });
+  }
   function guardAdmission(sessionId, text, options = {}) {
     const task = owns(sessionId);
     if (!task) return null;
@@ -723,11 +751,12 @@ function createTaskShellRuntime(ports) {
     contextComplete: (id, receipt, turn, success) => { const task = owns(id); if (task) contextPlanner.complete(task, receipt, turn, success); },
     separation, roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
     // 任务图谱的只读快照：壳、持久任务、link 三张表一次拉全，供路由层聚合。
-    taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link') }),
+    taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link'),
+      relations: store.list('relation') }),
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
-    guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, locateOrCreate, resolveTask, sendExplicit,
-    relocateTask,
+    guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
+    resolveTask, sendExplicit, relocateTask, independent, relations,
   };
 }
 
