@@ -98,6 +98,9 @@ async function startServer() {
   response = await api('POST', `/api/directories/${dirId}/sessions`, { cli: 'opencode', kind: 'chat' });
   ok(response.status === 200 && response.data.id, 'chat creation failed');
   const sessionId = response.data.id;
+  // Production creation APIs mint a board task that 1:1-owns this room, and the
+  // retention contract makes that task the only way to dispose of the room.
+  const taskId = response.data.taskId;
 
   response = await api('GET', `/api/sessions/${sessionId}/memory`);
   ok(response.status === 200 && response.data.own.files.length && response.data.shared.files.length,
@@ -155,6 +158,8 @@ async function startServer() {
   ok(fs.readFileSync(sharedMemoryFile, 'utf8') === upgradedMemory,
     'second startup must not duplicate the rule');
 
+  response = await api('DELETE', `/api/task-board/tasks/${taskId}`);
+  ok(response.status === 200, 'task cleanup API failed');
   response = await api('DELETE', `/api/directories/${dirId}?force=1`);
   ok(response.status === 200, 'directory cleanup API failed');
 

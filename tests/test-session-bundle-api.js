@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 const { promisify } = require('util');
 const { assertTestDir } = require('../src/paths');
+const createLegacySession = require('./helpers/legacy-task-session');
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.join(__dirname, '..');
@@ -53,14 +54,7 @@ async function waitForServer() {
   throw new Error('isolated server did not start');
 }
 
-async function stopServer() {
-  if (!server || server.exitCode !== null) return;
-  const exited = new Promise(resolve => server.once('exit', resolve));
-  server.kill('SIGTERM');
-  await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5000))]);
-}
-
-(async () => {
+async function startServer() {
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot },
@@ -68,14 +62,30 @@ async function stopServer() {
   });
   server.stderr.on('data', chunk => { stderr += chunk.toString(); });
   await waitForServer();
+}
+
+async function stopServer() {
+  if (!server || server.exitCode !== null) return;
+  const exited = new Promise(resolve => server.once('exit', resolve));
+  server.kill('SIGTERM');
+  await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5000))]);
+  server = null;
+}
+
+(async () => {
+  await startServer();
 
   let response = await api('POST', '/api/directories', { name: 'Bundle API', path: project });
   assert.equal(response.status, 200, JSON.stringify(response.data));
   const dirId = response.data.id;
 
-  response = await api('POST', `/api/directories/${dirId}/sessions`, { cli: 'claude', kind: 'chat' });
-  assert.equal(response.status, 200, JSON.stringify(response.data));
-  const sourceId = response.data.id;
+  // Production chat creation mints a board task whose workspace only
+  // materializes on the first delivery, and this fixture needs a real Git
+  // worktree before any turn runs. Seed the ordinary conversation the way an
+  // upgraded install holds one: written while the server is stopped, so boot
+  // builds its worktree and adopts it into a board task.
+  const sourceId = 'bundle-source';
+  await createLegacySession({ dataDir: dataRoot, dirId, id: sourceId, cli: 'claude', stop: stopServer, start: startServer });
   const sourceWorktree = path.join(project, '.multicc-worktrees', sourceId);
   await fs.promises.writeFile(path.join(sourceWorktree, 'session-feature.txt'), 'session feature\n');
   await git(sourceWorktree, ['add', '-A']);
@@ -106,6 +116,15 @@ async function stopServer() {
   assert.equal(await fs.promises.readFile(path.join(importedWorktree, 'new-main.txt'), 'utf8'), 'new main\n');
   assert.equal(await git(importedWorktree, ['status', '--porcelain']), '');
 
+  // The seeded room was adopted into a board task at boot, and task teardown
+  // refuses an unmerged workspace — so release the fixture's branch first, then
+  // dispose the task that owns the room, then the directory.
+  await git(sourceWorktree, ['reset', '--hard', await git(project, ['rev-parse', 'HEAD'])]);
+  const board = await api('GET', '/api/task-board');
+  const ownerTask = Object.values(board.data.tasks || {}).find(task => task.chatSessionId === sourceId);
+  assert.ok(ownerTask, 'the seeded room was adopted into a board task');
+  response = await api('DELETE', `/api/task-board/tasks/${ownerTask.id}`);
+  assert.equal(response.status, 200, JSON.stringify(response.data));
   response = await api('DELETE', `/api/directories/${dirId}?force=1`);
   assert.equal(response.status, 200, JSON.stringify(response.data));
   await stopServer();

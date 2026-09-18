@@ -7,6 +7,7 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
@@ -14,8 +15,8 @@ const { assertTestDir } = require('../src/paths');
 const { _loadDatabaseState } = require('../src/orchestration/sqlite-store');
 
 const ROOT = path.join(__dirname, '..');
-const PORT = 3996;
-const BASE = `http://127.0.0.1:${PORT}`;
+let PORT = 0;
+let BASE = '';
 const ACCESS_TOKEN = 'durable-wait-api-test';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-wait-api-'));
 const dataDir = path.join(root, 'data');
@@ -26,6 +27,21 @@ assertTestDir(dataDir);
 
 let server;
 let stderr = '';
+
+// Ports must be dynamic: the isolated chain can run concurrently with a sibling
+// run on a shared developer machine, and a fixed port then fails as
+// listen EADDRINUSE before the server can answer /readyz.
+async function allocatePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.unref();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const port = probe.address().port;
+      probe.close(() => resolve(port));
+    });
+  });
+}
 
 async function api(method, route, body, token = ACCESS_TOKEN) {
   const response = await fetch(BASE + route, {
@@ -77,6 +93,8 @@ function readOrchestration(file) {
 }
 
 (async () => {
+  PORT = await allocatePort();
+  BASE = `http://127.0.0.1:${PORT}`;
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
