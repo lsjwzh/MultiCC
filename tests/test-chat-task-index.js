@@ -96,9 +96,11 @@ test('a multi-segment task exposes per-segment jumps and read-only entries hide 
     ] }) });
   return controller.reload().then(() => {
     const rail = f.doc.body.children[1];
-    assert.equal(rail.children[0].children.length, 3); // code + segment strip + detach
-    assert.equal(rail.children[1].children.length, 2); // code + strip, no detach
-    rail.children[0].children[1].children[1].onclick({ stopPropagation() {} });
+    // A multi-segment directory leads with the segment nav, then one row per task.
+    assert.equal(rail.children[0].className, 'task-index-nav');
+    assert.equal(rail.children[1].children.length, 3); // code + segment strip + detach
+    assert.equal(rail.children[2].children.length, 2); // code + strip, no detach
+    rail.children[1].children[1].children[1].onclick({ stopPropagation() {} });
     assert.deepEqual(navigated, [{ id: 's1:m7' }]);
     controller.dispose();
   });
@@ -223,7 +225,7 @@ test('a long directory gets search and ID ordering, and both survive a reopen', 
   assert.deepEqual(shown(),
     ['T000', 'T001', 'T002', 'T003', 'T004', 'T005', 'T006', 'T007', 'T008'], 'ID order on request');
 
-  const search = rail.children[0].children[0];
+  const search = rail.children[0].children[0];  // no nav row in this directory
   search.value = 'topic 3';
   search.oninput({ target: { value: 'topic 3' } });
   assert.deepEqual(shown(), ['T003'],
@@ -288,5 +290,89 @@ test('a rejected target choice keeps the previous one and says why', async () =>
   assert.equal(rail.children[1].dataset.target, undefined, 'a failed choice does not repaint the target');
   assert.equal(rail.children[0].dataset.target, 'true');
   assert.deepEqual(toasts, ['taskIndexTargetFailed']);
+  controller.dispose();
+});
+
+test('prev/next segment buttons walk the visible segments and never move the send target', async () => {
+  const f = fixture(), navigated = [], calls = [];
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    navigate: ref => { navigated.push(ref.id); return true; },
+    loadIndex: async () => ({ tasks: [
+      { taskId: 'tsk_a', shortCode: 'A001', title: 'Alpha', target: true, capabilities: { canSelectTarget: true }, segments: [
+        { firstMessageRef: { id: 's1:m1' } }, { firstMessageRef: { id: 's1:m5' } }] },
+      { taskId: 'tsk_b', shortCode: 'B002', title: 'Beta', capabilities: { canSelectTarget: true }, segments: [
+        { firstMessageRef: { id: 's1:m9' } }] },
+    ] }),
+    selectTarget: { shellId: () => 'sh_1', alert: () => {},
+      request: async (path, body) => { calls.push({ path, body }); return { ok: true, taskId: body.taskId }; } } });
+  await controller.reload();
+  const toggle = f.doc.body.children[0], rail = f.doc.body.children[1];
+  toggle.onclick();
+  const nav = rail.children[0];
+  assert.equal(nav.className, 'task-index-nav');
+  const [prev, position, next] = nav.children;
+  assert.deepEqual(navigated, [], 'nothing moves before a click');
+  assert.equal(position.textContent, '-/3', 'the reader has not been located yet');
+  assert.equal(prev.disabled, true);
+  next.onclick();
+  assert.deepEqual(navigated, ['s1:m1'], 'next from an unknown position starts at the first segment');
+  assert.equal(position.textContent, '1/3');
+  assert.equal(prev.disabled, true, 'the first segment has nothing above it');
+  next.onclick();
+  assert.deepEqual(navigated, ['s1:m1', 's1:m5'], 'the second segment of the same task comes next');
+  assert.equal(position.textContent, '2/3');
+  assert.equal(prev.disabled, false, 'the way back opens once we are past the first segment');
+  next.onclick();
+  assert.deepEqual(navigated, ['s1:m1', 's1:m5', 's1:m9']);
+  assert.equal(position.textContent, '3/3');
+  assert.equal(next.disabled, true, 'the last segment is the end of the directory');
+  prev.onclick();
+  assert.deepEqual(navigated.slice(-1), ['s1:m5']);
+  assert.equal(position.textContent, '2/3');
+  assert.deepEqual(calls, [], 'stepping only locates; it must never choose a send target');
+  assert.equal(rail.children[1].dataset.target, 'true', 'the target stays where the server put it');
+  controller.dispose();
+});
+
+test('a one-segment-per-task directory has no segment nav, filters narrow it when it exists', async () => {
+  const f = fixture(), navigated = [];
+  const tasks = Array.from({ length: 9 }, (_, index) => ({ taskId: `tsk_${index}`,
+    shortCode: `T00${index}`.slice(-4).toUpperCase(), title: `Topic ${index}`, capabilities: {},
+    segments: [{ firstMessageRef: { id: `s1:m${index * 2}` } }] }));
+  tasks[0].segments.push({ firstMessageRef: { id: 's1:m99' } });
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    navigate: ref => { navigated.push(ref.id); return true; }, loadIndex: async () => ({ tasks }) });
+  await controller.reload();
+  const toggle = f.doc.body.children[0], rail = f.doc.body.children[1];
+  toggle.onclick();
+  // The nav leads (both in the DOM and, via `order`, on screen), then the filter bar.
+  const nav = rail.children[0];
+  assert.equal(nav.className, 'task-index-nav');
+  assert.equal(rail.children[1].className, 'task-index-filters');
+  nav.children[2].onclick();
+  assert.deepEqual(navigated, ['s1:m0'], 'conversation order starts with the first task');
+  nav.children[2].onclick();
+  assert.deepEqual(navigated, ['s1:m0', 's1:m99'], 'its second segment follows before the next task');
+  const search = rail.children[1].children[0];
+  search.value = 'topic 3';
+  search.oninput({ target: { value: 'topic 3' } });
+  assert.equal(nav.children[1].textContent, '-/1', 'only the matching segment is reachable');
+  nav.children[2].onclick();
+  assert.deepEqual(navigated.slice(-1), ['s1:m6']);
+  assert.equal(nav.children[2].disabled, true, 'one visible segment is both ends');
+  assert.equal(nav.children[0].disabled, true);
+  controller.dispose();
+});
+
+test('a directory with no multi-segment task does not render the nav row', async () => {
+  const f = fixture();
+  const controller = createController({ document: f.doc, messagesEl: f.messages, storage: f.storage,
+    navigate: () => true, loadIndex: async () => ({ tasks: [
+      { taskId: 'tsk_a', shortCode: 'A001', title: 'Alpha', capabilities: {}, segments: [{ firstMessageRef: { id: 's1:m1' } }] },
+      { taskId: 'tsk_b', shortCode: 'B002', title: 'Beta', capabilities: {}, segments: [{ firstMessageRef: { id: 's1:m2' } }] },
+    ] }) });
+  await controller.reload();
+  const rail = f.doc.body.children[1];
+  assert.equal(rail.children[0].className, 'task-index-row', 'one segment per row needs no stepper');
   controller.dispose();
 });
