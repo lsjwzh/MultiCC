@@ -101,7 +101,7 @@ function createTaskShellRuntime(ports) {
     const source = getRecord(sessionId);
     const owner = owns(sessionId);
     if (owner && !owner.adopted) {
-      const origin = owner.ownerShellId ? { shellId: owner.ownerShellId } : store.list('link').find(l => l.taskId === owner.id);
+      const origin = owner.ownerShellId ? { shellId: owner.ownerShellId } : store.linkByTask(owner.id);
       const parent = origin && store.get('shell', origin.shellId);
       if (parent?.dirId === source?.dirId) return parent;
     }
@@ -597,7 +597,10 @@ function createTaskShellRuntime(ports) {
       },
     });
   }
-  function owns(sessionId) { return store.list('task').find(t => t.sessionId === sessionId) || null; }
+  // 单点查询走索引行（见 store.js 的派生索引）：这曾经是 list('task').find(...)，
+  // 每次全表读 + 逐行 JSON.parse，而任务板读投影是按卡片逐个问的 —— 1069 张卡片
+  // 触发 511 次全表读（约 490MB），把 /api/air 的 CPU 从几十毫秒推到 3 秒以上。
+  function owns(sessionId) { return store.taskBySession(sessionId); }
   function recentTasks(sessionId, receiptId = null) {
     const task = owns(sessionId);
     if (!task) return [];
