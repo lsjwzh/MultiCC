@@ -16,7 +16,7 @@ function pageTaskHistory(rawMessages, options = {}) {
 }
 
 function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(id), history, artifacts, taskEntry, taskIndex,
-  taskOperations, attributionDecisions }) {
+  taskOperations, attributionDecisions, independent }) {
   const route = handler => async (req, res) => {
     try {
       const runtime = getRuntime();
@@ -88,6 +88,22 @@ function mountTaskShellRoutes(app, { getRuntime, open = id => getRuntime().open(
       attributionDecisions().dismiss(req.params.shellId, req.params.decisionId)));
     app.post('/api/task-shells/:shellId/attribution-decisions/:decisionId/undo', route((_runtime, req) =>
       attributionDecisions().undo(req.params.shellId, req.params.decisionId)));
+  }
+  if (independent) {
+    // 独立继续（P3）：申请立即返回操作 ID，等待条件由服务端持有，
+    // 页面关掉、断网或服务重启都不会让申请丢失。
+    app.post('/api/task-shells/:shellId/tasks/:taskId/independent-continue', route((_runtime, req) =>
+      independent().request(req.params.shellId, req.params.taskId, { clientMsgId: req.body?.clientMsgId })));
+    app.get('/api/task-shells/:shellId/task-continuations', route((_runtime, req) => ({
+      ok: true, continuations: independent().list({ shellId: req.params.shellId }).map(item => independent().publicOp(item)) })));
+    app.get('/api/task-continuations/:continuationId', route((_runtime, req) =>
+      independent().publicOp(independent().get(req.params.continuationId))));
+    app.post('/api/task-continuations/:continuationId/apply', route((_runtime, req) =>
+      independent().apply(req.params.continuationId)));
+    app.post('/api/task-continuations/:continuationId/cancel', route((_runtime, req) =>
+      independent().cancel(req.params.continuationId)));
+    app.post('/api/task-continuations/:continuationId/retry', route((_runtime, req) =>
+      independent().retry(req.params.continuationId)));
   }
   app.delete('/api/task-shells/:shellId', route((runtime, req) => runtime.remove(req.params.shellId)));
   app.post('/api/task-shells/:shellId/links', route((runtime, req) => runtime.link(req.params.shellId, req.body?.taskId)));
