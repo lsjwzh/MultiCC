@@ -316,6 +316,11 @@ function createTaskShellHost(deps) {
         return taskOperationsRuntime.overlay.get(sessionId, turnId)?.taskId ?? message.taskId ?? null;
       },
       taskTitle: taskId => store.get('task', taskId)?.title || null,
+      // 排队行的推进需要一个作用域（会话归属、shell 归属都在里面），而 drain 只
+      // 拿得到 shellId——作用域必须现成地重算，不能从记录里拼。
+      scopeOf: shellId => getRuntime().chatScope(shellId),
+      // 排队行真正落地时也要广播：申请它的页面可能还开着，历史已经是旧的。
+      notify: (id, detail) => deps.onAttributionChanged?.(id, detail),
       // 整段批量整理（P4）：区间由服务端按会话内轮次顺序展开，客户端无需先
       // 把没加载的历史拉到页面上，也无法引用不存在的轮次。
       turnOrderOf: sessionId => (deps.displayHistory || deps.loadHistory)(sessionId)
@@ -386,6 +391,8 @@ function createTaskShellHost(deps) {
       // 被「本轮还在跑」挡下的归属建议同样由服务端推进：用户接受后页面就可以
       // 关掉，轮次一结束再重新校验并应用（或按 CAS 失败并留下原因）。
       attributionDecisions().start(deps.attributionQueueIntervalMs);
+      // 手选多轮的归属调整同样在服务端排队：轮次一结束就重验并应用。
+      taskOperations().start(deps.attributionQueueIntervalMs);
       // 归属操作日志的保留期清理同样由服务端推进，页面关着也生效。
       sweepAttributionLog();
     },

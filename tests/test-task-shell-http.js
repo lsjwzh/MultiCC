@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const express = require('express');
 const { fixture } = require('./helpers/task-shell');
 const { mountTaskShellRoutes, pageTaskHistory } = require('../src/task-shell/routes');
+const { createTaskOperations } = require('../src/task-shell/task-operations');
 const { createClient } = require('../public/task-shell-client');
 
 test('read-only task history pages keep exact task messages and stable cursors', () => {
@@ -68,6 +69,40 @@ test('the shell scope hands the browser the input cursor as a display handle', a
   const after = await scope();
   assert.equal(after.taskId, sent.taskId, 'the cursor the chat page shows is the one a message is attributed to');
   assert.equal(after.taskShortCode, 'CURR');
+});
+
+test('a re-attribution over a running turn is queued and can be taken back over HTTP', async t => {
+  const f = fixture(t);
+  const operations = createTaskOperations({
+    store: f.store, revisionOf: () => 'rev-1', isTurnBusy: () => true,
+    resolveTarget: async () => ({ id: 'tsk_x' }), taskTitle: id => `Task ${id}`,
+    scopeOf: shellId => f.runtime.chatScope(shellId),
+  });
+  const app = express(); app.use(express.json());
+  mountTaskShellRoutes(app, { getRuntime: () => f.runtime, taskOperations: () => operations });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const api = async (route, body) => {
+    const response = await fetch(base + route, { method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    return { status: response.status, data: await response.json() };
+  };
+  const turns = [{ sessionId: 'a', turnId: 'turn-1' }], target = { taskId: 'tsk_x' };
+  const refused = await api(`/api/task-shells/${f.a.id}/task-operations`, { turns, target, clientMsgId: 'm1' });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.data.code, 'turn_busy', 'without `queue` the caller still gets a refusal');
+  const queued = await api(`/api/task-shells/${f.a.id}/task-operations`, { turns, target, clientMsgId: 'm1', queue: true });
+  assert.equal(queued.status, 200);
+  assert.equal(queued.data.status, 'queued');
+  assert.equal(queued.data.queuedAt > 0, true);
+  assert.deepEqual(f.store.list('turn-attr'), [], 'queueing writes no attribution');
+  const listed = await api(`/api/task-shells/${f.a.id}/task-operations`);
+  assert.deepEqual(listed.data.operations.map(row => row.status), ['queued']);
+  const cancelled = await api(`/api/task-operations/${queued.data.id}/cancel`, { clientMsgId: 'c1' });
+  assert.equal(cancelled.data.status, 'cancelled');
+  assert.equal((await api(`/api/task-operations/${queued.data.id}/cancel`, {})).data.status, 'cancelled');
 });
 
 test('browser transport preserves payload and key after timeout/reload; no silent reroute', async () => {

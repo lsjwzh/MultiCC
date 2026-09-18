@@ -34,6 +34,8 @@
     const scope = typeof options.scope === 'function' ? options.scope : null;
     const loadIndex = typeof options.loadIndex === 'function' ? options.loadIndex : null;
     const loadSuggestions = typeof options.loadSuggestions === 'function' ? options.loadSuggestions : null;
+    // 手选多轮的排队行与归属建议共用这张列表（同一个「排队中」状态）。
+    const loadOperations = typeof options.loadOperations === 'function' ? options.loadOperations : null;
     const onApplied = typeof options.onApplied === 'function' ? options.onApplied : null;
     const onExternalApply = typeof options.onExternalApply === 'function' ? options.onExternalApply : null;
     const confirmContinue = typeof options.confirmContinue === 'function' ? options.confirmContinue : null;
@@ -135,8 +137,8 @@
       count.textContent = t('taskAttributionSelected').replace('{n}', String(selected.size));
       hint.textContent = t('taskAttributionHint');
       select.hidden = tasks.length === 0;
-      apply.disabled = busy || !preview || preview.changed === 0 || (preview.blocked || []).length > 0
-        || selected.size === 0 || !targetId;
+      // 「这一轮还在跑」不再禁用应用：服务端会把它排成 pending，轮次结束后生效。
+      apply.disabled = busy || !preview || preview.changed === 0 || selected.size === 0 || !targetId;
       cancel.disabled = busy;
       resume.disabled = busy || !targetId || !request || !scope;
       resume.title = targetId
@@ -178,10 +180,15 @@
         // cannot be written.
         const unclassified = item?.state === 'unclassified';
         const waiting = item?.state === 'queued';
+        const queuedTurns = Array.isArray(item?.turns) ? item.turns.length : 0;
         label.textContent = unclassified
           ? t('taskAttributionUnclassified').replace('{task}', taskLabel(item.fromTaskId))
           : waiting
-            ? t('taskAttributionQueued').replace('{task}', taskLabel(item.toTaskId))
+            ? (queuedTurns
+              // A hand-picked multi-turn request says how much it will move;
+              // a single-turn suggestion does not need to.
+              ? t('taskAttributionQueuedTurns').replace('{n}', String(queuedTurns)).replace('{task}', taskLabel(item.toTaskId))
+              : t('taskAttributionQueued').replace('{task}', taskLabel(item.toTaskId)))
             : t('taskAttributionSuggestion')
               .replace('{from}', taskLabel(item.fromTaskId)).replace('{to}', taskLabel(item.toTaskId));
         row.append(label);
@@ -215,9 +222,13 @@
         // Withdrawing a queued change is the same durable "dismiss": the row
         // stops counting as waiting work and the host never applies it.
         const call = action === 'cancel' ? 'dismiss' : action;
-        const result = await request('POST',
-          `/api/task-shells/${encodeURIComponent(shellId)}/attribution-decisions/${encodeURIComponent(item.id)}/${call}`,
-          call === 'accept' ? { clientMsgId: makeId() } : {});
+        // 手选多轮的排队行走 task-operations 自己的取消路由；归属建议的排队行
+        // 仍然是同一套 decision 接口（取消 = dismiss）。
+        const result = item.source === 'operation'
+          ? await request('POST', `/api/task-operations/${encodeURIComponent(item.id)}/cancel`, { clientMsgId: makeId() })
+          : await request('POST',
+            `/api/task-shells/${encodeURIComponent(shellId)}/attribution-decisions/${encodeURIComponent(item.id)}/${call}`,
+            call === 'accept' ? { clientMsgId: makeId() } : {});
         closeToast();
         const postponed = action === 'defer';
         const queued = action === 'accept' && result?.state === 'queued';
@@ -229,7 +240,7 @@
             : postponed ? t('taskAttributionDeferred')
               : action === 'cancel' ? t('taskAttributionQueueCancelled') : t('taskAttributionDismissed'));
         // A postponed or queued row stays in the queue; accept/dismiss clear it.
-        suggestions = postponed || queued
+        suggestions = postponed || (queued && item.source !== 'operation')
           ? suggestions.map(entry => entry.id === item.id ? { ...entry, state: queued ? 'queued' : 'deferred' } : entry)
           : suggestions.filter(entry => entry.id !== item.id);
         onApplied?.(result, { undone: false });
@@ -246,13 +257,23 @@
       if (!loadSuggestions || !scope) { suggestions = []; renderSuggestions(); return []; }
       try {
         const { shellId } = await scope();
-        const data = await loadSuggestions(shellId);
+        const [data, pending] = await Promise.all([
+          loadSuggestions(shellId),
+          loadOperations ? Promise.resolve(loadOperations(shellId)).catch(() => null) : null,
+        ]);
         // Unclassified rows are the verdicts the host could not read. They are
         // shown so the turn is never silently treated as a permanent "same".
         // Postponed rows stay in the queue too — "later" is not a decision.
-        suggestions = (Array.isArray(data?.decisions) ? data.decisions : [])
+        const decisions = (Array.isArray(data?.decisions) ? data.decisions : [])
           .filter(item => item?.state === 'pending' || item?.state === 'unclassified'
             || item?.state === 'deferred' || item?.state === 'queued');
+        // 手选多轮的归属调整也在同一张队列里排队：它同样是「已经接受、还没生效」，
+        // 所以并排显示、同样能取消，而不是关掉面板就再也看不见。
+        const operations = (Array.isArray(pending?.operations) ? pending.operations : [])
+          .filter(row => row?.status === 'queued')
+          .map(row => ({ id: row.id, source: 'operation', state: 'queued', toTaskId: row.targetTaskId,
+            turns: Array.isArray(row.turns) ? row.turns : [] }));
+        suggestions = [...decisions, ...operations];
       } catch (_) {
         suggestions = [];
       }
@@ -497,7 +518,7 @@
     // `link` is rendered as a real anchor inside the toast. Anything that
     // happens after an await must not rely on window.open: browsers block a
     // popup that was not opened by the click itself.
-    function showToast(message, action, link) {
+    function showToast(message, action, link, actionLabel) {
       closeToast();
       toast = doc.createElement('div');
       toast.className = 'task-attribution-toast';
@@ -518,7 +539,7 @@
         const button = doc.createElement('button');
         button.type = 'button';
         button.className = 'task-attribution-undo';
-        button.textContent = t('taskAttributionUndo');
+        button.textContent = actionLabel || t('taskAttributionUndo');
         button.onclick = () => { void action(); };
         toast.append(button);
       }
@@ -546,6 +567,19 @@
       }
     }
 
+    // A queued request is the user's to take back; the row is durable, so this
+    // works from any page and long after the toast would have expired.
+    async function cancelQueued(operationId) {
+      try {
+        await request('POST', `/api/task-operations/${encodeURIComponent(operationId)}/cancel`, { clientMsgId: makeId() });
+        closeToast();
+        setSummary(t('taskAttributionQueueCancelled'), 'muted');
+      } catch (error) {
+        closeToast();
+        showToast(t('taskAttributionFailed').replace('{error}', text(error?.message || error)));
+      }
+    }
+
     async function applyNow() {
       if (busy || !preview || !targetId || !scope || !request) return null;
       busy = true;
@@ -555,12 +589,29 @@
         const split = key.indexOf(':');
         return { sessionId: key.slice(0, split), turnId: key.slice(split + 1) };
       });
+      // The queued line is re-stated after the panel reset below; otherwise the
+      // post-apply refresh (which clears the summary) would hide it instantly.
+      let queueNotice = null;
       try {
         const { shellId } = await scope();
         const result = await request('POST', `/api/task-shells/${encodeURIComponent(shellId)}/task-operations`, {
           turns, target: { taskId: targetId }, clientMsgId: makeId(),
           previewToken: preview.previewToken, expectedRevision: preview.scopeRevision,
+          // 预览已经说了这几轮在跑：这次请求是排队，不是「再被拒一次」。
+          queue: (preview.blocked || []).length > 0,
         });
+        if (result?.status === 'queued') {
+          const waiting = (result.turns || []).length;
+          selected.clear();
+          clearPreview();
+          syncPicks();
+          queueNotice = t('taskAttributionQueuedTurns').replace('{n}', String(waiting)).replace('{task}', targetLabel());
+          showToast(t('taskAttributionQueuedToast'),
+            result?.id ? () => cancelQueued(result.id) : null, null, t('taskAttributionQueueCancel'));
+          // It belongs in the panel's queue right away, not only after a reload.
+          void refreshSuggestions();
+          return result;
+        }
         const moved = (result?.effects || []).length;
         selected.clear();
         clearPreview();
@@ -576,6 +627,7 @@
       } finally {
         busy = false;
         await refreshPreview();
+        if (queueNotice) setSummary(queueNotice, 'warn');
       }
     }
 
