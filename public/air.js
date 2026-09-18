@@ -47,6 +47,14 @@
   let epoch = 0;
   let stopped = false;
   let loading = false;
+  // 轮询是本页面唯一的数据来源（Air 没有 WebSocket），所以只能靠「有没有变」
+  // 决定要不要重画。服务端给两个读接口算 ETag；内容没变时回 304，这里就完全
+  // 跳过解析与 DOM 重建。刷新失败时指数退避，别在服务端打嗝时继续每 4 秒敲。
+  const resourceEtag = new Map();
+  let pollFailures = 0;
+  const POLL_MS = 4000;
+  const POLL_HIDDEN_MS = 15000;
+  const POLL_MAX_MS = 30000;
   let quickCreateAttempt = null;
   let directoryTasksExpanded = false;
   const directoryTaskFilter = { query: '', status: 'open' };
@@ -170,15 +178,25 @@
       || node('span', label(taskStatus(task)), 'mc-status');
   }
 
-  async function api(path, body, requestedMethod = null) {
-    const method = requestedMethod || (body === undefined ? 'GET' : 'POST');
+  // `conditional` 只给每 4 秒被问一次的那两个轮询接口用，它们的调用方知道
+  // 「没变」是正常结果。通用 api() 绝不能这么干：别的 GET 调用方要的是数据本身，
+  // 收到「没变」会当成空数据用。条件请求由客户端显式发起，不依赖浏览器/代理的
+  // 缓存行为（这个页面所有 GET 都是 no-store）。
+  async function request(path, { method, body, conditional }) {
     const hasBody = body !== undefined;
+    const knownEtag = conditional ? resourceEtag.get(path) : null;
     const response = await fetch(path, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(knownEtag ? { 'If-None-Match': knownEtag } : {}) },
       cache: method === 'GET' ? 'no-store' : 'default',
       ...(hasBody ? { body: JSON.stringify(body) } : {}),
     });
+    if (conditional && response.status === 304) return { ok: true, unchanged: true };
+    if (conditional) {
+      const etag = response.headers.get('etag');
+      if (etag) resourceEtag.set(path, etag);
+      else resourceEtag.delete(path);
+    }
     const raw = await response.text();
     let result;
     try { result = raw ? JSON.parse(raw) : {}; }
@@ -193,6 +211,11 @@
     }
     return result;
   }
+
+  function api(path, body, requestedMethod = null) {
+    return request(path, { method: requestedMethod || (body === undefined ? 'GET' : 'POST'), body, conditional: false });
+  }
+  const apiConditional = path => request(path, { method: 'GET', body: undefined, conditional: true });
 
   function notice(text = '') { $('notice').textContent = text; }
   function closeNav() {
@@ -2208,9 +2231,12 @@
 
   async function refreshEntry() {
     const selected = taskId;
-    if (!selected) return;
+    if (!selected) return false;
     try {
-      const result = await api(`/api/air/tasks/${encodeURIComponent(selected)}`);
+      const result = await apiConditional(`/api/air/tasks/${encodeURIComponent(selected)}`);
+      // 详情里 3.2MB 是消息正文；没变就别解析、别重建会话区（返回 false =
+      // 「没变」，null = 「这次读失败」，调用方据此决定要不要重画和退避）。
+      if (result.unchanged) return false;
       if (taskId !== selected) return;
       entry = result;
       // 直接打开一个任务（书签、通知链接、刷新）和从列表里点进去一样，都是「打开过」。
@@ -2222,34 +2248,43 @@
       renderDelivery(entry);
       renderDetails(entry);
       syncFrame();
+      return true;
     } catch (error) {
       if (taskId === selected) notice(error.message);
+      return null;
     }
   }
 
   async function refresh() {
     if (loading) return;
     loading = true;
+    let failed = false;
     try {
-      data = await api('/api/air');
-      // Pin 的清单随快照一起来（不用为它多打一次接口）。顺序就是页头从左到右的顺序。
-      taskPins = Array.isArray(data.taskPins) ? data.taskPins.slice() : [];
-      pinSignature = '';
-      // 「随时更新成最近使用」的落点：每次快照都把 lastRuntime 灌进新任务胶囊，
-      // 除非用户面前正摆着一份手挑的配置（quickRuntimeDirty）。刷新可能来自任何
-      // 地方的任何动作，不能因为它把人刚选好的线路冲回几小时前那套。
-      if (data.lastRuntime && !quickRuntimeDirty) {
-        quickRuntime = { ...data.lastRuntime };
-        renderQuickPills();
+      const snapshot = await apiConditional('/api/air');
+      if (!snapshot.unchanged) {
+        data = snapshot;
+        // Pin 的清单随快照一起来（不用为它多打一次接口）。顺序就是页头从左到右的顺序。
+        taskPins = Array.isArray(data.taskPins) ? data.taskPins.slice() : [];
+        pinSignature = '';
+        // 「随时更新成最近使用」的落点：每次快照都把 lastRuntime 灌进新任务胶囊，
+        // 除非用户面前正摆着一份手挑的配置（quickRuntimeDirty）。刷新可能来自任何
+        // 地方的任何动作，不能因为它把人刚选好的线路冲回几小时前那套。
+        if (data.lastRuntime && !quickRuntimeDirty) {
+          quickRuntime = { ...data.lastRuntime };
+          renderQuickPills();
+        }
+        notice(data.migration?.errors?.length ? `有 ${data.migration.errors.length} 份历史任务等待核验；原记录与工作区均已保留。` : '');
+        render();
       }
-      notice(data.migration?.errors?.length ? `有 ${data.migration.errors.length} 份历史任务等待核验；原记录与工作区均已保留。` : '');
-      render();
-      await refreshEntry();
-      // 控制台概览里有「定时任务」那张卡，面板打开时就把规则取全，不显示陈旧数字。
+      // 快照没变不等于对话没变：任务详情有自己的 ETag，照旧问一次（多半也是 304）。
+      const entryChanged = await refreshEntry();
+      if (entryChanged === null) failed = true;
+      // 定时任务与控制台概览只在真的有新数据时重画，否则每 4 秒白建一遍 DOM。
+      if (snapshot.unchanged && !entryChanged) return;
       if (mode === 'schedules' || consoleOpen) await refreshSchedules();
       if (consoleOpen) window.MultiCCAirAdmin?.render('overview', adminContext());
-    } catch (error) { notice(error.message); }
-    finally { loading = false; }
+    } catch (error) { failed = true; notice(error.message); }
+    finally { if (failed) pollFailures++; else pollFailures = 0; loading = false; }
   }
 
   function adminContext() {
@@ -2565,7 +2600,11 @@
   async function poll(currentEpoch = epoch) {
     if (stopped || currentEpoch !== epoch) return;
     if (!document.hidden || !data) await refresh();
-    if (!stopped && currentEpoch === epoch) timer = setTimeout(() => poll(currentEpoch), 4000);
+    if (stopped || currentEpoch !== epoch) return;
+    // 后台标签页不用盯着 4 秒；连续失败则退避，避免服务端打嗝时继续被敲。
+    const base = document.hidden && data ? POLL_HIDDEN_MS : POLL_MS;
+    const delay = pollFailures ? Math.min(base * 2 ** pollFailures, POLL_MAX_MS) : base;
+    timer = setTimeout(() => poll(currentEpoch), delay);
   }
   void loadLidSleepRow();
   void poll();
