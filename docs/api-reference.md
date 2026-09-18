@@ -9,7 +9,7 @@
 | `GET` | `/api/directories` | List directories with session counts and git push status |
 | `POST` | `/api/directories` | Register a workspace directory and seed its Agent Commander session |
 | `PATCH` | `/api/directories/:id` | Rename / relocate / update role prompt |
-| `DELETE` | `/api/directories/:id?force=1` | Delete a directory record, optionally removing owned sessions |
+| `DELETE` | `/api/directories/:id?force=1` | Delete a directory record, optionally removing owned sessions. Task-bound sessions are referenced by their task (including `archived`/`merged` cards) and `force=1` does not bypass that reference: delete the owning tasks first |
 | `POST` | `/api/directories/:id/push` | Push the directory base branch to remote |
 | `GET` | `/api/directories/:id/sessions` | List sessions in a directory with worktree and merge state |
 | `POST` | `/api/directories/:id/sessions` | Create a Claude/Codex terminal or chat session (`{ cli, kind, label?, model?, provider?, role? }`) |
@@ -26,7 +26,7 @@
 | `GET` | `/api/sessions/:id` | Get session details |
 | `PATCH` | `/api/sessions/:id` | Update label, model, role prompt, memory, streaming, auto-continue, provider |
 | `POST` | `/api/sessions/:id/switch-cli` | Switch a chat CLI (`{ cli, fresh? }`), preserving per-CLI native state and staging a one-shot semantic handoff |
-| `DELETE` | `/api/sessions/:id` | Kill and delete a session |
+| `DELETE` | `/api/sessions/:id` | Kill and delete a session. A task-bound hidden room (its task's resume file and the only copy of that task's chat evidence) is refused with `400 { code: "task_bound_session", taskId }`; the supported disposal is `DELETE /api/task-board/tasks/:taskId`. `?force=1` only clears this guard for an ORPHANED binding (the owning task is already gone) — while the task still archives the room, task-history retention still answers `409 TASK_HISTORY_REFERENCED` |
 | `POST` | `/api/sessions/:id/relocate` | Change session's working directory |
 | `POST` | `/api/sessions/:id/restart` | Restart a dead terminal session in place |
 | `GET` | `/api/sessions/:id/merge-status` | Inspect worktree ahead/behind/conflict state |
@@ -117,6 +117,7 @@ ledger retains durable execution and usage records. The unified chat view
 | `GET` | `/api/task-board/tasks/:taskId/diff/file` | One file's diff content (same params as the session diff route) |
 | `POST` | `/api/task-board/tasks/:taskId/merge` | Merge the task worktree back into the base branch — same `gitMergeBack` path as the session merge (conflicts → 409, other failures → 400) |
 | `POST` | `/api/task-board/tasks/:taskId/cleanup-worktree` | Merge + delete the per-task worktree and clear the ledger fields (refuses while a run is active → 409) |
+| `DELETE` | `/api/task-board/tasks/:taskId` | Dispose the task and everything it 1:1-owns: its task-bound chat room, worktree and chat evidence (`{ ok, deleted, taskIds }`). This is the supported teardown for a task-bound session, which `DELETE /api/sessions/:id` refuses; it releases the history reference so the directory cascade can then proceed. Idempotent — a replayed delete of an already-disposed id returns `{ ok: true, deleted: true }` |
 
 New pending cards start module AI classification after intent attribution settles on
 their final task id. Automatic model failures are retried once on a later turn; the

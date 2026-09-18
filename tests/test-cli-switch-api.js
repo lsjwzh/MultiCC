@@ -84,6 +84,9 @@ function cleanup() {
   response = await api('POST', `/api/directories/${dirId}/sessions`, { cli: 'opencode', kind: 'chat' });
   ok(response.status === 200 && response.data.cli === 'opencode', 'create OpenCode chat');
   const sessionId = response.data.id;
+  const taskId = response.data.taskId;
+  ok(typeof taskId === 'string' && taskId.length > 0,
+    'directory chat creation adopts a board task (task-bound hidden room)');
 
   response = await api('PATCH', `/api/sessions/${sessionId}`, { effort: 'high', agent: 'build' });
   ok(response.status === 200 && response.data.effort === 'high' && response.data.agent === 'build',
@@ -124,15 +127,8 @@ function cleanup() {
     && !boundedWire.includes('rolePrompt') && !boundedWire.includes('cwd'),
   'v1 session query excludes host and native-session internals');
   response = await api('GET', '/api/v1/sessions');
-  ok(response.status === 200 && response.data.sessions?.some(item => item.id === sessionId),
-    'v1 session list uses the same bounded projection');
-  response = await api('GET', `/api/v1/directories/${dirId}/workspace`);
-  const workspaceWire = JSON.stringify(response.data);
-  ok(response.status === 200 && response.data.workspace?.sessions?.some(item => item.session?.id === sessionId),
-    'v1 workspace is composed through the bounded workspace service');
-  ok(!workspaceWire.includes('currentFile') && !workspaceWire.includes('worktreePath')
-    && !workspaceWire.includes(project),
-  'v1 workspace excludes filesystem and current-file paths');
+  ok(response.status === 200 && !response.data.sessions?.some(item => item.id === sessionId),
+    'v1 fleet list keeps task-bound rooms out of the human-shaped fleet');
 
   response = await api('PATCH', `/api/sessions/${sessionId}`, { agent: 'build' });
   ok(response.status === 400 && /only supported/.test(response.data.error || ''),
@@ -178,6 +174,21 @@ function cleanup() {
   ok(response.data.effort === 'high' && response.data.agent === 'build',
     'fork inherits active CLI-specific variant and native agent settings');
 
+  // A fork is a plain fleet session with its own materialized worktree, unlike
+  // the task-bound room it came from (whose workspace is created lazily at
+  // delivery). The bounded projections and the Git checkpoint are therefore
+  // asserted against the fork.
+  response = await api('GET', '/api/v1/sessions');
+  ok(response.status === 200 && response.data.sessions?.some(item => item.id === forkId),
+    'v1 session list uses the same bounded projection');
+  response = await api('GET', `/api/v1/directories/${dirId}/workspace`);
+  const workspaceWire = JSON.stringify(response.data);
+  ok(response.status === 200 && response.data.workspace?.sessions?.some(item => item.session?.id === forkId),
+    'v1 workspace is composed through the bounded workspace service');
+  ok(!workspaceWire.includes('currentFile') && !workspaceWire.includes('worktreePath')
+    && !workspaceWire.includes(project),
+  'v1 workspace excludes filesystem and current-file paths');
+
   response = await api('POST', `/api/sessions/${sessionId}/switch-cli`, { cli: 'opencode', fresh: true });
   ok(response.status === 200 && response.data.changed && response.data.fresh, 'explicit same-CLI native reset');
 
@@ -187,10 +198,16 @@ function cleanup() {
   ok(!!persisted?.cliStates?.claude && !!persisted?.cliStates?.codex
     && !!persisted?.cliStates?.opencode && !!persisted?.cliStates?.qoder,
     'all visited CLI states persisted');
-  ok(!!persisted?.pendingCliHandoff?.checkpoint?.git?.head, 'checkpoint persists Git HEAD');
+  const forkPersisted = records.find(item => item.id === forkId);
+  ok(!!forkPersisted?.pendingCliHandoff?.checkpoint?.git?.head, 'checkpoint persists Git HEAD');
 
+  response = await api('DELETE', `/api/task-board/tasks/${taskId}`);
+  ok(response.status === 200 && response.data.deleted === true,
+    'cleanup releases the task-owned room through the task board');
+  response = await api('GET', `/api/sessions/${sessionId}`);
+  ok(response.status === 404, 'task deletion removed the hidden task-bound room');
   response = await api('DELETE', `/api/directories/${dirId}?force=1`);
-  ok(response.status === 200 && response.data.removedSessions >= 3, 'cleanup directory and sessions');
+  ok(response.status === 200 && response.data.removedSessions >= 1, 'cleanup directory and sessions');
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) throw new Error(`${failed} integration assertion(s) failed`);

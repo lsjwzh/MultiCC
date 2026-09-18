@@ -120,12 +120,24 @@ function pick(value, fields) {
   fs.mkdirSync(historyDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(historyDir, `${sessionId}.json`), JSON.stringify(messages), { mode: 0o600 });
 
+  // A directory-created chat is a task-bound hidden room: it is addressable but
+  // deliberately absent from both fleet lists and from the directory list, so
+  // the legacy-vs-bounded parity assertions below need a session that both
+  // projections actually list. Forking the room yields an ordinary fleet session
+  // with a materialized worktree — the same shape the lists are meant to carry.
+  response = await api('POST', `/api/sessions/${sessionId}/fork`, { label: 'bounded-fork' });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  const listedId = response.data.sessionId || response.data.id;
+  assert.ok(listedId && listedId !== sessionId, 'fork returns a distinct fleet session id');
+
   const legacyList = await api('GET', '/api/sessions');
   const v1List = await api('GET', '/api/v1/sessions');
   assert.equal(legacyList.status, 200);
   assert.equal(v1List.status, 200);
-  const legacy = legacyList.data.find(item => item.id === sessionId);
-  const v1 = v1List.data.sessions.find(item => item.id === sessionId);
+  const legacy = legacyList.data.find(item => item.id === listedId);
+  const v1 = v1List.data.sessions.find(item => item.id === listedId);
+  assert.ok(legacy, 'the fork is listed by the legacy fleet projection');
+  assert.ok(v1, 'the fork is listed by the bounded v1 fleet projection');
   const common = [
     'id', 'dirId', 'cli', 'kind', 'label', 'model', 'effectiveModel', 'effort',
     'effectiveEffort', 'agent', 'provider', 'subagent', 'autoCommit',
@@ -156,9 +168,9 @@ function pick(value, fields) {
   assert.equal(legacyDirectory.status, 200);
   assert.equal(legacyWorkspace.status, 200);
   assert.equal(v1Workspace.status, 200);
-  assert.ok(legacyDirectory.data.sessions.some(item => item.id === sessionId));
-  const oldWorkspace = legacyWorkspace.data.sessions.find(item => item.id === sessionId);
-  const boundedWorkspace = v1Workspace.data.workspace.sessions.find(item => item.session.id === sessionId);
+  assert.ok(legacyDirectory.data.sessions.some(item => item.id === listedId));
+  const oldWorkspace = legacyWorkspace.data.sessions.find(item => item.id === listedId);
+  const boundedWorkspace = v1Workspace.data.workspace.sessions.find(item => item.session.id === listedId);
   assert.deepEqual(
     pick(oldWorkspace, ['id', 'status', 'clients', 'pendingNotes', 'classifyState', 'goal', 'phase']),
     {

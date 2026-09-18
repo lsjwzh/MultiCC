@@ -222,17 +222,29 @@ function createSessionLifecycleRuntime(rawDeps) {
       if (persisted?.type === 'commander') {
         return res.status(400).json({ error: 'Commander 会话不可单独删除，只能随其所属工作区一起删除' });
       }
-      // A task-bound hidden session is its task's resume file. The fleet never
-      // lists it and the chat view has no session-DELETE affordance, so a DELETE
-      // arriving here is a sweep script — default-refuse so bulk cleanup cannot
-      // silently orphan task chat history. force=1 is the operator's deliberate
-      // hard reset (the board re-creates the session on next use and the
-      // cold-start seed rebuilds context from the task ledger); the in-band
-      // reset is the chat view's clear_history, which drops the native CLI
-      // session too. Unlike the commander guard this one honors force, because
-      // a task binding heals by re-creation while a fleet dispatcher does not.
+      // A task-bound hidden session is its task's resume file and the only copy
+      // of that task's chat evidence, so the supported disposal is deleting the
+      // owning task (DELETE /api/task-board/tasks/:id), which cascades this room,
+      // its worktree and every attached client. The fleet never lists task-bound
+      // rooms and the chat view has no session-DELETE affordance, so a bare
+      // DELETE arriving here is a sweep script — default-refuse, or bulk cleanup
+      // would silently orphan task chat history.
+      //
+      // force=1 is deliberately weaker than the commander guard above, but it is
+      // NOT a general hard reset: while the owning task still archives this room
+      // the retention service refuses the physical delete with
+      // TASK_HISTORY_REFERENCED (409), because the room's history has no second
+      // copy (docs/chat-history-retention.md). force only clears the way for an
+      // ORPHANED binding — a room whose task is already gone — and for the
+      // task-deletion path, which releases the binding before calling the
+      // cascade. The in-band reset for a live task is the chat view's
+      // clear_history, which drops the native CLI session too.
       if (persisted?.taskBoundTaskId && !force) {
-        return res.status(400).json({ error: 'task-bound 会话不可单独删除（任务 1:1 绑定）；如确需硬重置请带 force=1，或在会话内使用清空历史' });
+        return res.status(400).json({
+          code: 'task_bound_session',
+          taskId: persisted.taskBoundTaskId,
+          error: 'task-bound 会话不可单独删除（任务 1:1 绑定）；请删除所属任务，或在会话内使用清空历史；force=1 只用于清理绑定任务已不存在的遗留会话',
+        });
       }
       if (persisted) {
         const dir = directories.get(persisted.dirId);
