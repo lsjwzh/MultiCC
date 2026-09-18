@@ -122,6 +122,20 @@
   color: var(--chat-warning, #d29922);
   border-color: var(--chat-warning, #d29922);
 }
+/* 独立继续是任务级动作，和「移动轮次」不是一回事：给它一条竖线，别看起来像
+   第二个应用按钮。 */
+.task-attribution-continue {
+  padding: 2px 9px;
+  border: 1px solid var(--chat-line, #30363d);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--chat-soft, #21262d);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.task-attribution-continue:hover:not(:disabled) { color: var(--chat-warning, #d29922); border-color: var(--chat-warning, #d29922); }
+.task-attribution-continue:disabled { opacity: .55; cursor: default; }
 .task-attribution-hint { color: var(--chat-muted, #8b949e); }
 .task-attribution-count { font-weight: 600; white-space: nowrap; }
 .task-attribution-summary { flex: 1 1 160px; min-width: 0; color: var(--chat-muted, #8b949e); }
