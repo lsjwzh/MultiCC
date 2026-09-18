@@ -125,3 +125,36 @@ test('recording the same turn twice is idempotent, and a resolved row is final',
   await assert.rejects(decisions.accept(f.a.id, first.decision.id, { clientMsgId: 'late' }),
     { code: 'attribution_decision_resolved' });
 });
+
+test('an unreadable verdict is journalled as unclassified and cannot be accepted', async t => {
+  const { f, decisions, record } = await setup(t);
+  const cursor = f.runtime.view(f.a.id).currentTaskId;
+  const recorded = await record({ unclassified: true });
+  assert.equal(recorded.action, 'none');
+  assert.equal(recorded.decision.state, 'unclassified');
+  assert.equal(recorded.decision.path, 'none');
+  assert.equal(recorded.decision.toTaskId, null);
+  assert.equal(recorded.decision.hidden, false, 'it is visible, not a silent same');
+  assert.equal(f.runtime.view(f.a.id).currentTaskId, cursor, 'nothing moved');
+  const offered = decisions.list(f.a.id);
+  assert.equal(offered.length, 1);
+  await assert.rejects(decisions.accept(f.a.id, recorded.decision.id, { clientMsgId: 'accept-none' }),
+    { code: 'attribution_verdict_unavailable' });
+  assert.equal(decisions.dismiss(f.a.id, recorded.decision.id).state, 'dismissed');
+  // A resolved row stays final: the same unreadable verdict cannot reopen it.
+  const again = await record({ unclassified: true });
+  assert.equal(again.decision.state, 'dismissed');
+  assert.equal(decisions.list(f.a.id).filter(row => row.state === 'unclassified').length, 0,
+    'a dismissed verdict is not offered again');
+});
+
+test('a re-judged turn refreshes its pending suggestion instead of stacking a second one', async t => {
+  const { f, decisions, record } = await setup(t);
+  const first = await record({ relation: 'new', taskId: 'tsk_candidate', taskName: 'First' });
+  const second = await record({ relation: 'new', taskId: 'tsk_candidate', taskName: 'Second' });
+  assert.equal(second.decision.id, first.decision.id);
+  assert.equal(second.decision.revisions, 1);
+  assert.equal(second.decision.taskName, 'Second');
+  assert.equal(second.decision.createdAt, first.decision.createdAt, 'the row keeps its origin');
+  assert.equal(decisions.list(f.a.id).length, 1, 'one turn never asks twice');
+});

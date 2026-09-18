@@ -2,9 +2,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
-const { renderLazyContextPrompt, snapshotHistory, verifySnapshot } = require('../src/task-shell/context');
+const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/task-shell/context');
 const { createTaskShellHost } = require('../src/task-shell/host');
 const { displayMessages, displayTask } = require('../src/task-display-attribution');
 
@@ -408,4 +411,75 @@ test('goal limits survive normalized receipt retry without changing the message 
   assert.deepEqual(seen[0].goalLimits, { maxRounds: 4, maxBudget: 1000 });
   assert.deepEqual(seen[1].goalLimits, seen[0].goalLimits);
   assert.equal(seen[1].idempotencyKey, seen[0].idempotencyKey);
+});
+
+test('P3: admission is refused with a reason while the task switches execution', async t => {
+  const observed = [];
+  let runtime = null;
+  const f = fixture(t, {
+    captureIndependentBaseline: async () => ({ ok: true, commit: 'abc123', branch: 'main', dirty: false, ahead: 0,
+      sourceSessionId: 'a', sourceWorkspace: '/tmp/wt', baseBranch: 'main' }),
+    getExecution: async id => {
+      observed.push({ id, guard: runtime.guardAdmission('a', 'while switching', {}) });
+      return { busy: false, turnId: null };
+    },
+  });
+  runtime = f.runtime;
+  // The conversation must own a real execution before "independent continue"
+  // can mean anything: adoption is what binds the shell to session `a`.
+  f.runtime.adopt(f.a.id, 'a');
+  const first = await f.runtime.send(f.a.id, input('work'));
+  const requested = await f.runtime.independent.request(f.a.id, first.taskId, { clientMsgId: 'ic-1' });
+  assert.equal(requested.state, 'ready');
+  observed.length = 0;
+  const applied = await f.runtime.independent.apply(requested.id);
+  assert.equal(applied.state, 'applied');
+  const guarded = observed.filter(entry => entry.guard?.code === 'task_switching');
+  assert.equal(guarded.length, 1, 'the source execution is guarded for the whole check→write span');
+  assert.match(guarded[0].guard.message, /切换执行环境/);
+  assert.equal(f.runtime.independent.isSwitching('a'), false, 'and the window closes afterwards');
+});
+
+test('P1 P4: deleting a shell drops the journals that shell owns', async t => {
+  const purged = [];
+  const f = fixture(t, { purgeShellAttribution: id => { purged.push(id); return { operations: 1, overlays: 1 }; } });
+  const other = f.runtime.open('other');
+  f.store.set('attr-decision', 'd1', { id: 'd1', shellId: other.id, state: 'pending' });
+  f.store.set('relation', 'r1', { id: 'r1', shellId: other.id, kind: 'related' });
+  f.store.set('relation-op', 'o1', { id: 'o1', shellId: other.id });
+  f.store.set('independent', 'i1', { id: 'i1', shellId: other.id, taskId: 'tsk_x', state: 'waiting' });
+  // A row another shell owns is not touched.
+  const first = await f.runtime.send(f.a.id, input('work'));
+  f.store.set('attr-decision', 'd2', { id: 'd2', shellId: f.a.id, state: 'pending' });
+  f.runtime.remove(other.id);
+  for (const [kind, id] of [['attr-decision', 'd1'], ['relation', 'r1'], ['relation-op', 'o1'], ['independent', 'i1']]) {
+    assert.equal(f.store.get(kind, id), null, `${kind} row outlived its shell`);
+  }
+  assert.equal(f.store.get('attr-decision', 'd2')?.state, 'pending', 'another shell keeps its journal');
+  assert.deepEqual(purged, [other.id], 'the overlay journal is reclaimed by its owner');
+  assert.ok(f.store.get('task', first.taskId), 'tasks are untouched by a shell delete');
+});
+
+test('P1: mounting the host enforces the attribution retention window', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-sweep-'));
+  const file = path.join(dir, 'shell.sqlite');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const DAY = 24 * 60 * 60 * 1000;
+  const seeded = createTaskShellStore(file);
+  // The review window exists only if something enforces it: a reverted journal
+  // row past the window is reclaimed, one inside it is the audit trail.
+  // Journal rows are keyed by the module's operation key, not by the raw ids:
+  // a row seeded under any other key would simply never be swept (and this test
+  // then fails loudly, which is what we want).
+  const opKey = clientMsgId => `op_${hash(['sh_1', clientMsgId]).slice(0, 40)}`;
+  seeded.set('task-op', opKey('old'), { id: opKey('old'), shellId: 'sh_1', clientMsgId: 'old',
+    status: 'reverted', undoneAt: Date.now() - 40 * DAY });
+  seeded.set('task-op', opKey('fresh'), { id: opKey('fresh'), shellId: 'sh_1', clientMsgId: 'fresh',
+    status: 'reverted', undoneAt: Date.now() - DAY });
+  seeded.close();
+  const host = createTaskShellHost({ file, records: new Map(), directories: new Map() });
+  t.after(() => host.close());
+  host.mountRoutes({ get: () => {}, post: () => {}, put: () => {}, delete: () => {}, use: () => {} });
+  assert.deepEqual(host.taskOperations().list('sh_1').map(row => row.clientMsgId), ['fresh'],
+    'the mount sweep keeps only the rows still inside the retention window');
 });

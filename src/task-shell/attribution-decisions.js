@@ -28,8 +28,8 @@ function createAttributionDecisions(deps) {
       toTaskId: record.toTaskId, toTaskTitle: deps.taskTitle?.(record.toTaskId) || record.taskName || null,
       taskName: record.taskName || null, relation: record.relation, mode: record.mode, action: record.action,
       path: record.path, state: record.state, hidden: record.hidden === true, reason: record.reason,
-      createdAt: record.createdAt, resolvedAt: record.resolvedAt || null, apply: record.apply || null,
-      lastError: record.lastError || null };
+      createdAt: record.createdAt, updatedAt: record.updatedAt || null, revisions: Number(record.revisions) || 0,
+      resolvedAt: record.resolvedAt || null, apply: record.apply || null, lastError: record.lastError || null };
   }
 
   function notify(sessionId) {
@@ -39,19 +39,41 @@ function createAttributionDecisions(deps) {
   }
 
   // Recording is idempotent per (conversation, turn): re-running the same Aux
-  // verdict must not pile up rows or apply itself twice.
+  // verdict must not pile up rows or apply itself twice. A *pending* row is the
+  // one exception: a fresh verdict for the same turn refreshes it in place, so a
+  // late (or corrected) judgement replaces the suggestion instead of creating a
+  // second prompt. Rows the user or `auto` already resolved stay final.
   async function record(sessionId, receiptId, input = {}) {
     const receipt = store.get('receipt', receiptId);
     const source = receipt && store.get('task', receipt.taskId);
     if (!receipt || !source || source.sessionId !== sessionId) return { action: 'none', decision: null };
     const plan = planAttributionAction({ mode: input.mode, relation: input.relation,
       targetTaskId: input.taskId || null, currentTaskId: input.currentTaskId || source.id });
-    if (plan.action === 'none') return { action: 'none', decision: null };
     const id = idOf(receipt.shellId, receiptId, input.turnId);
     const existing = store.get('attr-decision', id);
-    if (existing && existing.state !== 'failed') return { action: existing.action, decision: publicDecision(existing) };
-    if (existing) store.remove('attr-decision', id);
-    const row = { id, shellId: receipt.shellId, sessionId, receiptId, turnId: input.turnId || null,
+    // An unusable verdict (no JSON, model unavailable, unreadable target) is
+    // still a fact about the turn. It is recorded as `unclassified` — visible
+    // and dismissible, but never a silent permanent "same" and never an applied
+    // identity change, because it carries no address to apply.
+    if (input.unclassified === true) {
+      if (existing && existing.state !== 'failed' && existing.state !== 'unclassified') {
+        return { action: 'none', decision: publicDecision(existing) };
+      }
+      const row = { id, shellId: receipt.shellId, sessionId, receiptId, turnId: input.turnId || null,
+        fromTaskId: source.id, toTaskId: null, taskName: input.taskName || null, relatedTaskId: null,
+        relation: null, path: 'none', mode: plan.mode, action: 'suggest', reason: input.reason || 'verdict_unavailable',
+        hidden: false, state: 'unclassified', createdAt: existing?.createdAt || now(),
+        updatedAt: now(), revisions: Number(existing?.revisions) || 0,
+        runId: input.runId || null, anchorMessageId: input.anchorMessageId || null };
+      store.set('attr-decision', id, row);
+      notify(sessionId);
+      return { action: 'none', decision: publicDecision(row) };
+    }
+    if (plan.action === 'none') return { action: 'none', decision: null };
+    if (existing && existing.state !== 'failed' && existing.state !== 'pending') {
+      return { action: existing.action, decision: publicDecision(existing) };
+    }
+    const next = { id, shellId: receipt.shellId, sessionId, receiptId, turnId: input.turnId || null,
       fromTaskId: source.id, toTaskId: plan.targetTaskId, taskName: input.taskName || null,
       relatedTaskId: input.relatedTaskId || null, relation: input.relation === 'new' ? 'new' : 'same',
       // A new identity is created through the shell cursor; naming an existing
@@ -60,9 +82,13 @@ function createAttributionDecisions(deps) {
       mode: plan.mode, action: plan.action, reason: plan.reason,
       hidden: plan.action === 'record', state: 'pending', createdAt: now(), runId: input.runId || null,
       anchorMessageId: input.anchorMessageId || null };
+    const row = existing
+      ? { ...next, createdAt: existing.createdAt || next.createdAt, updatedAt: now(),
+        revisions: (Number(existing.revisions) || 0) + 1 }
+      : next;
     store.set('attr-decision', id, row);
     notify(sessionId);
-    if (plan.action !== 'apply') return { action: plan.action, decision: publicDecision(row) };
+    if (row.action !== 'apply') return { action: row.action, decision: publicDecision(row) };
     // `auto` applies here, inside the runtime that owns the write, so the caller
     // never has to repeat a transaction whose end it cannot see.
     const applied = await applyRow(row, { clientMsgId: `auto_${row.id}` });
@@ -116,7 +142,17 @@ function createAttributionDecisions(deps) {
   async function accept(shellId, decisionId, { clientMsgId } = {}) {
     const row = get(shellId, decisionId);
     if (row.state === 'applied') return publicDecision(row);
-    if (row.state !== 'pending') throw fail('attribution_decision_resolved', 'This suggestion is already resolved', 409);
+    // Fail closed instead of "applying" a row that has no address: accepting an
+    // unclassified verdict would otherwise look like a successful change while
+    // moving nothing (and an overlay row without a turn cannot be written).
+    // `unclassified` is unresolved but unusable, so it reports its own reason
+    // instead of the misleading "already resolved".
+    if (row.state !== 'pending' && row.state !== 'unclassified') {
+      throw fail('attribution_decision_resolved', 'This suggestion is already resolved', 409);
+    }
+    if (row.path === 'none' || !row.toTaskId) {
+      throw fail('attribution_verdict_unavailable', 'This verdict has no target; classify the turn again', 409);
+    }
     if (typeof clientMsgId !== 'string' || !/^[\w.:-]{1,160}$/.test(clientMsgId)) throw fail('invalid_input', 'invalid clientMsgId', 400);
     const pending = flights.get(row.id);
     if (pending) { await pending; return publicDecision(get(shellId, decisionId)); }
@@ -136,7 +172,11 @@ function createAttributionDecisions(deps) {
   function dismiss(shellId, decisionId) {
     const row = get(shellId, decisionId);
     if (row.state === 'dismissed') return publicDecision(row);
-    if (row.state !== 'pending') throw fail('attribution_decision_resolved', 'This suggestion is already resolved', 409);
+    // `unclassified` is dismissible: it is the one action that verdict can
+    // offer, and dropping it is how the user clears the notice.
+    if (row.state !== 'pending' && row.state !== 'unclassified') {
+      throw fail('attribution_decision_resolved', 'This suggestion is already resolved', 409);
+    }
     store.set('attr-decision', row.id, { ...row, state: 'dismissed', resolvedAt: now() });
     notify(row.sessionId);
     return publicDecision(store.get('attr-decision', row.id));
