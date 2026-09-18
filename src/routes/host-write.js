@@ -324,6 +324,11 @@ function createPowerSettingsHandler(deps) {
         return res.status(400).json({ error: 'enabled must be a boolean' });
       }
       const status = await deps.macosPower.setLidSleepPrevention(req.body.enabled);
+      // Mirror the read route: report the companion battery guard so the UI can
+      // show what protection now applies after the toggle.
+      if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
+        status.batteryGuard = deps.batteryGuard.getStatus();
+      }
       return res.json({ ok: true, ...status });
     } catch (error) {
       return next(error);
