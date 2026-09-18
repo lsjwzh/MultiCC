@@ -348,8 +348,13 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 #nav-scrim { position: fixed; z-index: 20; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .26); }
 main { min-width: 0; flex: 1; display: flex; flex-direction: column; background: rgba(255, 255, 255, .8); }
 /* position: relative 只服务一件事：让页头顶上那排 pin（#task-pins）有地方绝对定位。
-   它们不参与这一行的排布，页头永远只有「标题 + 工具」这一行。 */
-#task-header { position: relative; min-height: 88px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 13px 24px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .82); backdrop-filter: blur(20px); }
+   它们不参与这一行的排布，页头永远只有「标题 + 工具」这一行。
+   z-index 16 是给 pin 那张详情卡片的：卡片挂在胶囊下面，必然伸到 105px 的页头
+   外面去，而它自己是页头的后代 —— 页头这条 `backdrop-filter` 已经是一个层叠
+   上下文，卡片在里面写多大都只管这一层内部，整条页头仍然排在对话区前面，卡片
+   的下半截会被页头那条底边整整齐齐地切掉。所以要把页头自己抬起来（和手机上
+   工具浮层用的是同一档：进详情的 15 之上、抽屉遮罩的 20 之下）。 */
+#task-header { position: relative; z-index: 16; min-height: 88px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 13px 24px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .82); backdrop-filter: blur(20px); }
 .breadcrumb { min-width: 0; flex: 1; }
 .breadcrumb .caption { margin: 0 0 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #task-title { overflow-wrap: anywhere; }
@@ -367,11 +372,13 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* ── Pin 住的任务：页头最顶上浮着的那条「收藏栏」 ────────────────────────
    一排居中的快捷标签浮在页头最顶上（像浏览器的收藏快捷链接），不占行 —— 页头
    永远还是「标题 + 工具」那一行、105px，没人 pin 的时候整条不出现（[hidden]）。
-   默认缩略（状态图标 + 标题开头），鼠标停在上面才展开成完整的一条（状态 +
-   标题 + 目录 + 阶段）。
+   默认缩略（状态图标 + 标题开头），鼠标停在上面、聚焦、或点一下，完整的那份
+   （标题 + 状态 + 目录 + 阶段）挂在【下面】一张卡片里。
    浮着就得自己看住碰撞：它是绝对的居中，宽度上限两侧各留 160px（不压左边那行
-   面包屑），标签本身还能再收窄（min-width 46px）到装得下为止；出现的那一条
-   只横向长、不变高，所以展开时页头也不会跳。
+   面包屑），标签本身还能再收窄（min-width 46px）到装得下为止。
+   展开为什么是「往下挂」而不是「往右长」：横向伸长会把旁边几个 pin 一起推着
+   挪，排在自己左边的那条刚好看不清（用户说的「晃眼」）。卡片是绝对定位的，
+   胶囊自己的矩形一个像素都不变，旁边几条纹丝不动。
    为什么不自己占一行 / 不缩在标题和工具中间：占一行要多花 38px 页头高度；缩在
    中间当 flex 邻居时，5 个 pin 要 600 多像素，先被压掉的是标题自己（曾经的竖排
    更是连工具都挡上了）。
@@ -389,34 +396,45 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* hidden 属性是 UA 的 display:none，挡不住上面那条 display:flex。 */
 #task-pins[hidden] { display: none; }
 .pin-tab { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 46px; max-width: 118px;
-  gap: 6px; overflow: hidden; height: 30px; padding: 0 4px 0 11px; border: 1px solid var(--line); border-top: 0;
+  gap: 6px; height: 30px; padding: 0 4px 0 11px; border: 1px solid var(--line); border-top: 0;
   border-radius: 0 0 14px 14px;
   background: rgba(255, 255, 255, .9); box-shadow: 0 4px 12px #35577d0f;
-  transition: max-width .18s ease, background .18s ease; }
-.pin-tab:hover, .pin-tab:focus-within { max-width: 400px; border-color: #c7dcf1; background: #fff; box-shadow: 0 8px 20px #35577d24; }
+  transition: background .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.pin-tab:hover, .pin-tab:focus-within, .pin-tab.is-open { border-color: #c7dcf1; background: #fff; box-shadow: 0 8px 20px #35577d24; }
 /* 全局那条 `button{min-height:38px}` 会把两件东西顶出这张 30px 高的卡片：打开
    按钮撑到 38px、取消按钮撑到 38px。min-height 比 height 硬，所以得显式归零。 */
 .pin-tab .pin-open { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 0; flex: 1 1 auto; height: 100%;
-  padding: 0; border: 0; border-radius: 0; background: transparent; text-align: left; }
-/* 展开态是同一行上更长的一条：状态（图标 + 中文）· 标题 · 目录 · 阶段。原来是
-   「标题一行 + 目录/阶段一行」两行塞进 30px 的胶囊 —— 两行加起来比胶囊还高，字
-   从上下两边一起冒出去（用户看到的就是这个）。所以它不换行：宽度按内容长到 400px
-   上限，装不下的是标题自己收省略号，旁边那几段（状态、目录、阶段）都是定宽小块，
-   跟着图标一样居中排在同一条基线上。 */
+  padding: 0; overflow: hidden; border: 0; border-radius: 0; background: transparent; text-align: left; }
+/* 胶囊里那一条永远不换行：状态只留图标，标题自己收省略号。 */
 .pin-tab .pin-copy { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .pin-tab .pin-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #35536d; font-size: 11.5px; font-weight: 600; line-height: 1.25; }
-.pin-tab .pin-meta { display: none; align-items: center; gap: 7px; min-width: 0; color: #7b8ea1; font-size: 9.5px; white-space: nowrap; }
-.pin-tab:hover .pin-meta, .pin-tab:focus-within .pin-meta { display: flex; }
-/* 目录和阶段之间那一点：「MultiCC 进行中」连排着读会当成一个词。 */
-.pin-tab .pin-meta > * + *::before { content: "·"; margin-right: 6px; color: #c3d0dc; }
 .pin-tab .pin-status { display: flex; flex: 0 0 auto; }
 .pin-tab .pin-status .mc-status { font-size: 11px; }
-/* 缩略态只留状态图标：一行标题本来就窄，再带上「执行中」三个字就只剩两三个字
-   的标题了。徽标自己还是那一枚（status-badge.css 的 .mc-status-label 藏起来）。 */
-.pin-tab:not(:hover):not(:focus-within) .pin-status .mc-status-label { display: none; }
+/* 胶囊里只留状态图标：一条标题本来就窄，再带上「执行中」三个字，就只剩两三个
+   字的标题了。徽标自己还是那一枚（status-badge.css 的 .mc-status-label 藏起来），
+   完整那句挪到下面卡片的 meta 行里，带字。 */
+.pin-tab .pin-status .mc-status-label { display: none; }
 .pin-tab .pin-x { flex: 0 0 auto; min-width: 20px; min-height: 0; width: 20px; height: 20px; padding: 0;
   border: 0; border-radius: 7px; background: transparent; color: #9aabbb; font-size: 13px; line-height: 1; }
 .pin-tab .pin-x:hover { color: #b64e43; border-color: transparent; background: #fbeeec; }
+/* 悬停/聚焦/点开时挂下来的那张详情卡。鼠标从胶囊挪到卡片上要跨过 8px 的空隙，
+   卡片自己用 ::before 把这道缝盖住 —— 缝是卡片的一部分，悬停在缝上仍然算「在
+   卡片里」，卡片不会先一步消失。 */
+.pin-panel { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); z-index: 3;
+  display: none; flex-direction: column; gap: 6px; width: max-content;
+  max-width: min(320px, calc(100vw - 48px)); margin-top: 8px; padding: 10px 12px;
+  border: 1px solid var(--line-strong); border-radius: 12px; background: #fff;
+  box-shadow: 0 16px 34px #35577d26; text-align: left; }
+.pin-panel::before { content: ""; position: absolute; left: 0; right: 0; top: -9px; height: 9px; }
+.pin-tab:hover .pin-panel, .pin-tab:focus-within .pin-panel, .pin-tab.is-open .pin-panel { display: flex; }
+.pin-panel-title { color: #2c4763; font-size: 12px; font-weight: 640; line-height: 1.35; overflow-wrap: anywhere; }
+.pin-panel-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: #7b8ea1; font-size: 10px; white-space: nowrap; }
+/* 目录和阶段之间那一点：「MultiCC 进行中」连排着读会当成一个词。 */
+.pin-panel-meta > * + *::before { content: "·"; margin-right: 5px; color: #c3d0dc; }
+.pin-panel-meta .mc-status { font-size: 10px; }
+.pin-panel-open { align-self: flex-start; min-height: 24px; margin-top: 2px; padding: 3px 10px;
+  border: 1px solid #cfe3f8; border-radius: 8px; background: var(--blue-soft); color: #146dcc; font-size: 11px; }
+.pin-panel-open:hover { border-color: #b7d6f5; background: #dceaff; }
 .task-tools { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
 /* 手机上工具收进「⋯」浮层，浮层里每一行都是「图标 + 名字」两列（见 760px 块）。
    所以图标和名字各占一个 span：.air-tool-icon 是这个按钮桌面也显示的符号（「＋
