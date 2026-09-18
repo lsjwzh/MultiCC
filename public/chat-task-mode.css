@@ -4,6 +4,13 @@
 
 body.task-mode .session-only { display: none !important; }
 
+.task-separation-dialog h3 { margin: 0 0 8px; }
+.task-separation-dialog p { margin: 7px 0; line-height: 1.45; }
+.task-separation-dialog .task-separation-hint {
+  color: var(--chat-muted, #8b949e);
+  font-size: 12px;
+}
+
 .run-separator {
   margin: 10px auto 6px;
   padding: 2px 12px;

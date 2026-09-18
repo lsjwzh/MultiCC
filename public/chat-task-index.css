@@ -1,0 +1,71 @@
+/* Optional, non-blocking task-code index for task-shell conversations. */
+.task-index-toggle {
+  position: fixed;
+  right: 10px;
+  top: 50%;
+  z-index: 40;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 9px;
+  background: var(--chat-surface, #161b22);
+  color: var(--chat-muted, #8b949e);
+  box-shadow: var(--chat-shadow, 0 6px 18px rgba(0,0,0,.24));
+  cursor: pointer;
+}
+.task-index-toggle:hover, .task-index-toggle[aria-expanded="true"] {
+  color: var(--chat-text, #c9d1d9);
+  border-color: var(--chat-blue, #58a6ff);
+}
+.task-index-rail {
+  position: fixed;
+  right: 10px;
+  top: 50%;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 52vh;
+  max-width: 96px;
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 10px;
+  background: var(--chat-surface, #161b22);
+  background: color-mix(in srgb, var(--chat-surface, #161b22) 94%, transparent);
+  box-shadow: var(--chat-shadow, 0 10px 24px rgba(0,0,0,.3));
+}
+.task-index-row { display: flex; align-items: center; gap: 2px; }
+.task-index-item, .task-index-detach {
+  min-width: 30px;
+  min-height: 27px;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--chat-muted, #8b949e);
+  font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+}
+.task-index-item:hover, .task-index-item:focus-visible {
+  color: var(--chat-blue, #58a6ff);
+  border-color: var(--chat-blue, #58a6ff);
+  outline: none;
+}
+.task-index-detach {
+  min-width: 20px;
+  color: var(--chat-warning, #d29922);
+  font-size: 12px;
+}
+.task-index-detach:hover, .task-index-detach:focus-visible {
+  color: var(--chat-text, #c9d1d9);
+  border-color: var(--chat-warning, #d29922);
+  outline: none;
+}
+.task-index-target { outline: 2px solid var(--chat-blue, #58a6ff); outline-offset: 3px; }
+@media (max-width: 760px) {
+  .task-index-toggle { right: 6px; width: 38px; height: 38px; }
+  .task-index-rail { right: 6px; max-height: 44vh; }
+  .task-index-item { min-height: 34px; }
+}

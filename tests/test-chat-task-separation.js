@@ -58,3 +58,18 @@ test('popup renders untrusted names/reasons as text and disables both actions wh
     assert.ok(buttons.every(e => !e.disabled)); close();
   } finally { global.document = old; }
 });
+
+test('separation suggestion uses a non-modal dialog when the browser supports it', () => {
+  const old = global.document, elements = [];
+  const element = tag => ({ tag, children: [], style: {},
+    append(...children) { this.children.push(...children); }, setAttribute() {},
+    addEventListener() {}, show() { this.nonModal = true; }, showModal() { this.modal = true; },
+    close() {}, remove() {} });
+  global.document = { createElement: tag => { const e = element(tag); elements.push(e); return e; }, body: element('body') };
+  try {
+    showDialog({ title: 'New' }, () => {});
+    const dialog = elements.find(e => e.tag === 'dialog');
+    assert.equal(dialog.nonModal, true);
+    assert.equal(dialog.modal, undefined);
+  } finally { global.document = old; }
+});

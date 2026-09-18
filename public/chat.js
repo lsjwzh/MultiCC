@@ -537,6 +537,27 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   attachQuoteButton,
   warn: (...args) => console.warn(...args),
 });
+async function detachIndexedTask(entry) {
+  if (!entry?.taskId || isReadOnly()) return;
+  const code = entry.code || entry.taskId.slice(-4).toUpperCase();
+  const go = await _chatConfirm(tt('taskIndexDetachConfirm', { code }), {
+    okText: tt('taskIndexDetach'),
+  });
+  if (!go) return;
+  try {
+    const clientMsgId = `index-${newClientMsgId()}`;
+    const result = await chatApi.json(withToken(`/api/task-shell-tasks/${encodeURIComponent(entry.taskId)}/fork`), {
+      method: 'POST', json: { clientMsgId },
+    });
+    if (result.url) window.open(result.url, '_blank', 'noopener');
+    else if (result.taskId) window.open(`/air?task=${encodeURIComponent(result.taskId)}`, '_blank', 'noopener');
+  } catch (error) {
+    _chatAlert(tt('taskIndexDetachFailed', { error: chatApi.errorText(error) }), { danger: true });
+  }
+}
+const chatTaskIndex = window.MultiCCTaskIndex?.createController({
+  document, messagesEl, translate: tt, onDetach: detachIndexedTask,
+});
 const chatMessageFocus = window.MultiCCChatMessageFocus.createMessageFocusController({
   targetId: _targetMessageId,
   findById: id => chatHistoryView.findById(id),
