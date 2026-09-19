@@ -371,7 +371,10 @@
     if (consoleOpen) applyConsole(false);
     closeOptions();
   }
-  function navigate(dir, task = null) {
+  // `remember:false` 是给侧栏点开那条路留的：那条路要让 MRU 晚一拍再上台（见
+  // openSidebarTask），所以先别在这里改顺序 —— 顺序的真相仍然只有 recentTaskIds
+  // 一份，晚的是「什么时候写」。
+  function navigate(dir, task = null, options = {}) {
     saveDraft();
     if (dir !== directoryId) {
       directoryTasksExpanded = false;
@@ -383,7 +386,7 @@
     mode = 'tasks';
     entry = null;
     closeDetails();
-    if (task) rememberTask(task);
+    if (task && options.remember !== false) rememberTask(task);
     closeOverlays();
     history.pushState({}, '', routeUrl());
     closeNav();
@@ -1233,9 +1236,15 @@
    *  帧）重画一遍。 */
   function renderSidebarTasks() {
     const tasks = sidebarTasks();
+    const list = $('tasks');
+    // 重画不该顺手把人挪走：这一列自己会滚（任务带吃掉侧栏剩下的高度），滚到中下部
+    // 再点一条任务、或者轮询/开控制台顺手重画一遍，都不该被顶回顶部。清空再填的写法
+    // 在列表变短、或中间真落了一次重排时会把 scrollTop 夹小 —— 与其赌浏览器什么时候
+    // 夹，不如画完自己回填一次（真短了，浏览器随后照旧夹到新的上限）。
+    const scrollTop = list.scrollTop;
     $('task-list-title').textContent = '最近任务';
     $('task-count').textContent = tasks.length;
-    $('tasks').replaceChildren(...tasks.map(task => {
+    list.replaceChildren(...tasks.map(task => {
       const elsewhere = task.dirId !== directoryId;
       const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : ''].filter(Boolean).join(' '));
       button.dataset.task = task.id;
@@ -1256,10 +1265,56 @@
       const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
       button.append(node('strong', task.title), meta);
       if (extra) button.append(node('small', extra, 'task-note'));
-      button.onclick = () => navigate(task.dirId, task.id);
+      button.onclick = () => openSidebarTask(task);
       return button;
     }));
-    if (!tasks.length) $('tasks').append(node('small', '还没有打开过任务。这个目录里的任务会出现在这里。', 'empty-list'));
+    list.scrollTop = scrollTop;
+    // 抬起动画要跨过一次重画（点开 → 渲染 → 延迟换位）不能断：这条带子重建之后
+    // 把抬起的类补回去，否则第一拍里那张卡会先落下去再飞。
+    if (pendingReorderId) taskMotion()?.lift(list, pendingReorderId);
+    if (!tasks.length) list.append(node('small', '还没有打开过任务。这个目录里的任务会出现在这里。', 'empty-list'));
+  }
+
+  // ── 侧栏点开一条任务 ────────────────────────────────────────────────────
+  // MRU（打开过的排最前）这条规则没变，变的是它什么时候落到眼睛上：点下去立刻
+  // 换位，卡片是「闪」到顶上的，太快、也没交代它去了哪儿。现在分两拍 —— 先把它
+  // 抬起来（is-lifting），REORDER_LIFT_MS 之后重排这一条带子，再用 FLIP 把它从
+  // 原位送上去。列表已经滚到中下部时不让它飞：顶端槽位在屏幕外，飞过去等于凭空
+  // 消失，就地抽掉更诚实；两种情况下的滚动位置都不动。
+  const REORDER_LIFT_MS = 170;
+  let pendingReorderId = null;
+  let pendingReorderTimer = null;
+  const taskMotion = () => window.MultiCCTaskMotion;
+
+  function openSidebarTask(task) {
+    const motion = taskMotion();
+    const list = $('tasks');
+    const row = motion?.rowById?.(list, task.id) || null;
+    if (pendingReorderTimer !== null) {
+      clearTimeout(pendingReorderTimer);
+      motion?.clear?.(list, pendingReorderId);
+      pendingReorderTimer = null;
+      pendingReorderId = null;
+    }
+    // 已经在顶上（或者那条根本不在这一列里）就没有换位可言，照旧立刻走。
+    if (!row || list.children[0] === row) { navigate(task.dirId, task.id); return; }
+    pendingReorderId = task.id;
+    motion.lift(list, task.id);
+    // 对话先切：换位只是这条带子自己的家务事，没理由让对话等它。
+    navigate(task.dirId, task.id, { remember: false });
+    pendingReorderTimer = setTimeout(() => {
+      pendingReorderTimer = null;
+      const id = pendingReorderId;
+      pendingReorderId = null;
+      if (!id) return;
+      const before = motion.capture(list);
+      const scrollTop = list.scrollTop;
+      const flight = motion.topSlotVisible(list);
+      rememberTask(id);
+      renderSidebarTasks();
+      list.scrollTop = scrollTop;
+      motion.play(list, before, { liftId: id, flight });
+    }, REORDER_LIFT_MS);
   }
 
   // ── Pin 住的任务 ────────────────────────────────────────────────────────
@@ -2241,7 +2296,12 @@
       entry = result;
       // 直接打开一个任务（书签、通知链接、刷新）和从列表里点进去一样，都是「打开过」。
       // 不在这儿记一笔，「最近」在刚进页面时就是空的。只有排序真的变了才重画。
-      if (recentTaskIds[0] !== selected) { rememberTask(selected); render(); }
+      //
+      // 例外：从侧栏点开的那条，换位已经排进它自己那两拍里了（openSidebarTask 让
+      // navigate 先别记，REORDER_LIFT_MS 之后再记）。详情回来得比那一拍快是常态，
+      // 这里再插一手，等于把它打回「瞬间跳到顶上」——那一拍得让路，谁在等这条
+      // 记录，谁就把它记完。
+      if (recentTaskIds[0] !== selected && pendingReorderId !== selected) { rememberTask(selected); render(); }
       $('task-title').textContent = entry.task.title;
       applyTaskTitleEditing(entry.task);
       $('task-state').textContent = taskStateText(entry);
