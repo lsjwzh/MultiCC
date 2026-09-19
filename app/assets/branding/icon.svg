@@ -1,41 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- MultiCC app icon — "parallel session streams".
-       Four vertical tracks = concurrent agent sessions; each lit segment is that
-       session's progress, deliberately unequal because agents run out of step. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512">
+  <!-- MultiCC logo — one console, many coding agents.
+       Agent chips replace the old single-"claude" mark: MultiCC orchestrates
+       claude / codex / kimi / opencode / zcode and more CLIs side by side.
+       Same artwork as public/icon.svg; 1024 nominal size for app use. -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1B1F28"/>
-      <stop offset="100%" stop-color="#0D1014"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#161b22"/>
     </linearGradient>
-    <linearGradient id="lit" x1="0" y1="1" x2="0" y2="0">
-      <stop offset="0%" stop-color="#1E9E6A"/>
-      <stop offset="100%" stop-color="#3DDC97"/>
-    </linearGradient>
-    <linearGradient id="litFocus" x1="0" y1="1" x2="0" y2="0">
-      <stop offset="0%" stop-color="#3DDC97"/>
-      <stop offset="100%" stop-color="#9BF7CE"/>
-    </linearGradient>
-    <filter id="glow" x="-60%" y="-30%" width="220%" height="160%">
-      <feGaussianBlur stdDeviation="26" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
   </defs>
-
-  <rect width="1024" height="1024" fill="url(#bg)"/>
-
-  <!-- unlit tracks -->
-  <g fill="#272D3A">
-    <rect x="204" y="204" width="88" height="616" rx="44"/>
-    <rect x="380" y="204" width="88" height="616" rx="44"/>
-    <rect x="556" y="204" width="88" height="616" rx="44"/>
-    <rect x="732" y="204" width="88" height="616" rx="44"/>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <rect x="36" y="36" width="440" height="440" rx="72" fill="#161b22" stroke="#30363d" stroke-width="4"/>
+  <text x="256" y="168" text-anchor="middle" font-family="system-ui,sans-serif" font-size="96" font-weight="700">
+    <tspan fill="#f78166">Multi</tspan><tspan fill="#79c0ff">CC</tspan>
+  </text>
+  <!-- agent chips row 1 -->
+  <g font-family="ui-monospace,Menlo,monospace" font-size="26" font-weight="600">
+    <rect x="76" y="216" width="120" height="44" rx="22" fill="#f7816622" stroke="#f78166" stroke-width="2"/>
+    <text x="136" y="246" text-anchor="middle" fill="#f78166">claude</text>
+    <rect x="208" y="216" width="112" height="44" rx="22" fill="#79c0ff22" stroke="#79c0ff" stroke-width="2"/>
+    <text x="264" y="246" text-anchor="middle" fill="#79c0ff">codex</text>
+    <rect x="332" y="216" width="96" height="44" rx="22" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="2"/>
+    <text x="380" y="246" text-anchor="middle" fill="#d2a8ff">kimi</text>
   </g>
-
-  <!-- lit progress, bottom-aligned -->
-  <g filter="url(#glow)">
-    <rect x="204" y="420" width="88" height="400" rx="44" fill="url(#lit)"/>
-    <rect x="380" y="580" width="88" height="240" rx="44" fill="url(#lit)"/>
-    <rect x="556" y="300" width="88" height="520" rx="44" fill="url(#litFocus)"/>
-    <rect x="732" y="670" width="88" height="150" rx="44" fill="url(#lit)"/>
+  <!-- agent chips row 2 -->
+  <g font-family="ui-monospace,Menlo,monospace" font-size="26" font-weight="600">
+    <rect x="96" y="276" width="152" height="44" rx="22" fill="#3fb95022" stroke="#3fb950" stroke-width="2"/>
+    <text x="172" y="306" text-anchor="middle" fill="#3fb950">opencode</text>
+    <rect x="260" y="276" width="104" height="44" rx="22" fill="#e3b34122" stroke="#e3b341" stroke-width="2"/>
+    <text x="312" y="306" text-anchor="middle" fill="#e3b341">zcode</text>
+    <rect x="376" y="276" width="52" height="44" rx="22" fill="#8b949e22" stroke="#8b949e" stroke-width="2"/>
+    <text x="402" y="306" text-anchor="middle" fill="#8b949e">…</text>
   </g>
+  <text x="256" y="404" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="34" fill="#3fb950">$ &#95;</text>
 </svg>
