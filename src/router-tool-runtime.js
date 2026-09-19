@@ -12,6 +12,7 @@ const TERMINAL_OPERATION_STATES = new Set([
 ]);
 const TOOL_NAMES = new Set([
   'wait_for_user_answer', 'request_user_input',
+  'request_secret_input', 'list_secrets',
   'get_task_context',
   'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
   'route_task', 'dispatch_master', 'dispatch_slave', 'dispatch_cancel',
@@ -179,6 +180,7 @@ function createRouterToolRuntime({
   getTaskContext = async () => null,
   onAdmitted = async () => {},
   recordUserInput,
+  listSecrets = () => [],
   registerExternalWait,
   getExternalWait,
   listExternalWaits,
@@ -950,6 +952,67 @@ function createRouterToolRuntime({
     };
   }
 
+  // ── Sensitive-value vault tools ──
+  // The vault's cardinal rule: a secret VALUE never enters this runtime, never
+  // becomes a tool result, and therefore never reaches an LLM transcript. The
+  // client saves the typed value straight to POST /api/secrets; the only thing
+  // that comes back to the model is a name-only confirmation message.
+  async function requestSecretInput(context, args) {
+    rejectUnknownArguments(args, new Set(['name', 'question', 'reason']));
+    const name = String(args.name == null ? '' : args.name).trim();
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name)) {
+      throw new RouterToolError(
+        'invalid_arguments',
+        'name must match [A-Za-z0-9_.-] and be 1-64 characters',
+      );
+    }
+    const question = cleanText(args.question, 'question', MAX_QUESTION_LENGTH);
+    const reason = cleanOptionalText(args.reason, 'reason', MAX_REASON_LENGTH);
+    const requestId = `usrq-${stableSuffix([
+      context.sessionId, context.turnId, 'secret', name, question, reason,
+    ], cryptoImpl)}`;
+    const recorded = await recordUserInput({
+      requestId,
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      question,
+      reason,
+      options: [],
+      allowMultiple: false,
+      inputType: 'secret',
+      secretName: name,
+    });
+    if (!recorded || recorded.ok !== true) {
+      throw new RouterToolError(
+        recorded?.code || 'user_input_signal_rejected',
+        recorded?.error || 'user input signal was rejected',
+        recorded?.statusCode || 409,
+      );
+    }
+    return {
+      ok: true,
+      status: 'waiting_secret_input_recorded',
+      request_id: requestId,
+      secret_name: name,
+      duplicate: recorded.duplicate === true,
+      instruction: 'A secure local input dialog is now shown to the user. Tell the user the dialog is open and stop this turn without running more tools. The value they type is saved directly into the local MultiCC vault and is NEVER returned to you, logged, or sent through any LLM API; the next user message only confirms the entry name is stored.',
+    };
+  }
+
+  function listSecretsForContext() {
+    const list = typeof listSecrets === 'function' ? listSecrets() : [];
+    if (!Array.isArray(list)) return { ok: true, secrets: [] };
+    return {
+      ok: true,
+      // Metadata only — names and descriptions, never values.
+      secrets: list.map(entry => ({
+        name: String(entry.name || ''),
+        description: String(entry.description || ''),
+        updatedAt: entry.updatedAt || null,
+      })).filter(entry => entry.name),
+    };
+  }
+
   function externalWaitSummary(wait) {
     const metadata = wait?.metadata && typeof wait.metadata === 'object'
       ? wait.metadata : {};
@@ -1217,6 +1280,13 @@ function createRouterToolRuntime({
     }
     if (tool === 'wait_for_user_answer' || tool === 'request_user_input') {
       return requestUserInput(context, args);
+    }
+    if (tool === 'request_secret_input') {
+      return requestSecretInput(context, args);
+    }
+    if (tool === 'list_secrets') {
+      rejectUnknownArguments(args, new Set());
+      return listSecretsForContext(context);
     }
     if (tool === 'wait_for_external_result') {
       return waitForExternalResult(context, args);

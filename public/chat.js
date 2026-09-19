@@ -1109,6 +1109,8 @@ let chatComposer = null;
 const pendingUserInputController = window.MultiCCChatUserInputCard.createController({
   document, isConnected: () => !!ws && ws.readyState === WebSocket.OPEN,
   submitAnswer: answer => { inputEl.value = answer; return chatComposer?.send() === true; },
+  // 安全输入框提交端口（chat-secret-submit.js）：值直存本地保险箱，确认文案才进对话。
+  submitSecret: window.MultiCCChatSecretSubmit?.create({ chatApi, withToken, addSystemMsg, setInput: v => { inputEl.value = v; }, send: () => chatComposer?.send(), sessionId: () => _sessionName }),
   dismissRequest: async requestId => {
     const result = await chatApi.json(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/user-input/dismiss`), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId }),

@@ -169,6 +169,55 @@ test('request_user_input validates bounded choices without dispatching work', as
   assert.equal(admissions.length, 0);
 });
 
+test('request_secret_input records a secret-mode signal and never returns a value path', async t => {
+  const { runtime, userInputSignals } = fixture(t);
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-secret' });
+  const args = { name: 'OPENAI_API_KEY', question: '请填写 OpenAI API Key', reason: '调用发布接口' };
+  const first = await runtime.execute(capability, 'request_secret_input', args);
+  const duplicate = await runtime.execute(capability, 'request_secret_input', args);
+  assert.equal(first.status, 'waiting_secret_input_recorded');
+  assert.equal(first.secret_name, 'OPENAI_API_KEY');
+  assert.equal(first.request_id, duplicate.request_id);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(userInputSignals.length, 1);
+  assert.equal(userInputSignals[0].inputType, 'secret');
+  assert.equal(userInputSignals[0].secretName, 'OPENAI_API_KEY');
+  assert.deepEqual(userInputSignals[0].options, []);
+  // The tool contract must steer the model away from expecting the value.
+  assert.match(first.instruction, /NEVER returned to you/);
+  // Bad names and unknown arguments are rejected.
+  const bad = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-secret-bad' });
+  await assert.rejects(
+    runtime.execute(capability, 'request_secret_input', { name: '../etc/passwd', question: 'x' }),
+    error => error.code === 'invalid_arguments',
+  );
+  await assert.rejects(
+    runtime.execute(bad, 'request_secret_input', { ...args, value: 'sk-leak' }),
+    error => error.code === 'invalid_arguments',
+  );
+});
+
+test('list_secrets projects metadata only', async t => {
+  const { runtime } = fixture(t, {
+    listSecrets: () => [
+      { name: 'OPENAI_API_KEY', description: '主账号', updatedAt: '2026-09-19T00:00:00.000Z' },
+      { name: 'github_token', description: '', updatedAt: null },
+    ],
+  });
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-list-secrets' });
+  const result = await runtime.execute(capability, 'list_secrets', {});
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.secrets.map(s => s.name), ['OPENAI_API_KEY', 'github_token']);
+  for (const secret of result.secrets) {
+    assert.ok(!('value' in secret), 'list_secrets must never expose values');
+  }
+  // Unknown arguments are rejected even for a read-only tool.
+  await assert.rejects(
+    runtime.execute(capability, 'list_secrets', { name: 'x' }),
+    error => error.code === 'invalid_arguments',
+  );
+});
+
 test('get_task_context is read-only, paginated and scoped to the caller capability', async t => {
   const calls = [];
   const { runtime } = fixture(t, { getTaskContext: async (context, query) => {
