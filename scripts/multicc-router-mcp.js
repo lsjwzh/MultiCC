@@ -245,6 +245,58 @@ const TOOLS = [
     },
   },
   {
+    name: 'request_secret_input',
+    title: 'Request secret from user',
+    description: 'Pop a secure local dialog asking the user to fill in a secret (API key, token, credential...). The typed value is saved directly into the local MultiCC secret vault and NEVER returned to you, logged, or sent through any LLM API. Use this whenever a secret is needed — never ask the user to paste secrets into the chat. After calling, briefly tell the user the dialog is open and stop the turn; the next user message only confirms the entry name is stored.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'question'],
+      properties: {
+        name: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 64,
+          pattern: '^[A-Za-z0-9_.-]+$',
+          description: 'Vault entry name, e.g. OPENAI_API_KEY or github_token. Check list_secrets first and reuse an existing name to update it.',
+        },
+        question: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 16384,
+          description: 'User-facing prompt shown in the secure dialog, e.g. what the key is for and where to get it.',
+        },
+        reason: {
+          type: 'string',
+          maxLength: 4096,
+          description: 'Optional concise explanation of why the secret is needed.',
+        },
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: 'list_secrets',
+    title: 'List secret vault entries',
+    description: 'List locally stored sensitive entries (API keys, tokens). Returns names, descriptions and update times only — values never leave the vault and never pass through any LLM. Check this before requesting a new secret to avoid duplicate entries.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: 'wait_for_external_result',
     title: 'Wait for external result',
     description: 'Register a durable callback or delay for the current session. It never accepts a session id, command, URL to poll, or arbitrary injected message. Callback capability URLs are returned only by the first successful registration; an idempotent replay never rotates or re-exposes the secret.',

@@ -103,7 +103,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   const listed = await plain.call('tools/list');
   assert.deepEqual(listed.result.tools.map(tool => tool.name), [
     'get_task_context',
-    'wait_for_user_answer', 'request_user_input',
+    'wait_for_user_answer', 'request_user_input', 'request_secret_input', 'list_secrets',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
     'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
     'dispatch_slave',
@@ -200,7 +200,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   const dispatchedList = await dispatched.call('tools/list');
   assert.deepEqual(dispatchedList.result.tools.map(tool => tool.name), [
     'get_task_context',
-    'wait_for_user_answer', 'request_user_input',
+    'wait_for_user_answer', 'request_user_input', 'request_secret_input', 'list_secrets',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
     'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
     'dispatch_slave',

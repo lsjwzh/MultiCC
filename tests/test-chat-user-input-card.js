@@ -163,3 +163,36 @@ test('a late dismissal response cannot clear a newer question', async () => {
   assert.equal(fx.elements.root.hidden, false);
   assert.equal(fx.elements.root.dataset.requestId, 'new');
 });
+
+test('secret mode renders a masked field and routes the value to submitSecret, not chat text', async () => {
+  const saved = [];
+  const errors = [];
+  const doc = fakeDoc();
+  const elements = {
+    root: Object.assign(fakeEl('section'), { hidden: true }),
+    question: fakeEl('div'),
+    reason: fakeEl('div'),
+    options: fakeEl('div'),
+    textInput: fakeEl('textarea'),
+    submitButton: fakeEl('button'),
+    dismissButton: fakeEl('button'),
+  };
+  const submitted = [];
+  const controller = createController({
+    document: doc, showError: e => errors.push(e),
+    elements,
+    isConnected: () => true,
+    submitAnswer: (value, requestId) => { submitted.push({ value, requestId }); return true; },
+    submitSecret: async (value, requestId, secretName) => { saved.push({ value, requestId, secretName }); return true; },
+  });
+  controller.render({
+    requestId: 'usrq-s1', inputType: 'secret', secretName: 'OPENAI_API_KEY',
+    question: '请填写 OpenAI API Key', options: [],
+  });
+  assert.equal(elements.textInput.type, 'password');
+  assert.equal(await controller.submit('  sk-live-123  '), true);
+  assert.deepEqual(saved, [{ value: 'sk-live-123', requestId: 'usrq-s1', secretName: 'OPENAI_API_KEY' }]);
+  assert.deepEqual(submitted, [], 'secret values must never become chat text');
+  assert.equal(elements.root.hidden, true, 'card clears after a successful save');
+  assert.equal(elements.textInput.type, 'text', 'field resets after clear');
+});

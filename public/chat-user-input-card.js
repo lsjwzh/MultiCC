@@ -15,6 +15,10 @@
     const dismissRequest = opts.dismissRequest;
     const showError = opts.showError || (() => {});
     const submitAnswer = opts.submitAnswer || (() => false);
+    // Secret mode: the typed value goes straight to POST /api/secrets via this
+    // port and never becomes chat text. Only a name-only confirmation message
+    // is sent afterwards, so the value never passes through any LLM API.
+    const submitSecret = opts.submitSecret || null;
     const isConnected = opts.isConnected || (() => true);
     // Collapsed-state floating bubble affordances (optional — a host that does
     // not ship the button/fab simply skips the collapse feature).
@@ -27,6 +31,7 @@
     let requestId = '';
     let submitting = false;
     let optionInputs = [];
+    let secretName = null;    // set while the card waits for a vault entry
     let controls = [textInput, submitButton];
     let lastMessage = null;     // last rendered message, for re-expand after collapse
     let collapsed = false;      // true while the card is hidden and the fab is shown
@@ -44,6 +49,7 @@
       requestId = '';
       submitting = false;
       optionInputs = [];
+      secretName = null;
       controls = [textInput, submitButton];
       collapsed = false;
       lastMessage = null;
@@ -55,6 +61,8 @@
       reason.hidden = true;
       optionsEl.replaceChildren();
       textInput.value = '';
+      textInput.type = 'text';
+      if (textInput.placeholder) textInput.placeholder = '';
       setAvailability();
       return true;
     }
@@ -62,6 +70,7 @@
     function submit(answer) {
       const value = String(answer == null ? '' : answer).trim();
       if (!requestId || !value || submitting || !isConnected()) return false;
+      if (secretName) return submitSecretValue(value);
       submitting = true;
       setAvailability();
       const accepted = submitAnswer(value, requestId) === true;
@@ -71,6 +80,23 @@
         setAvailability();
       }
       return accepted;
+    }
+
+    // Secret flow is async: the value is persisted to the local vault first,
+    // and only a successful save clears the card. A failed save keeps the card
+    // (and the value in the masked field) so nothing is lost.
+    async function submitSecretValue(value) {
+      if (!submitSecret) return false;
+      submitting = true;
+      setAvailability();
+      try {
+        const accepted = await submitSecret(value, requestId, secretName);
+        if (accepted === true) { clear(requestId); return true; }
+      } catch (error) {
+        showError(error);
+      }
+      if (requestId) { submitting = false; setAvailability(); }
+      return false;
     }
 
     async function dismiss() {
@@ -131,6 +157,14 @@
       reason.hidden = !reason.textContent;
       optionsEl.replaceChildren();
       textInput.value = '';
+      // Secret mode: masked input, value saved to the local vault (never chat).
+      secretName = message.inputType === 'secret' && /^[A-Za-z0-9_.-]{1,64}$/.test(String(message.secretName || ''))
+        ? String(message.secretName) : null;
+      textInput.type = secretName ? 'password' : 'text';
+      textInput.autocomplete = 'off';
+      if (textInput.placeholder) {
+        textInput.placeholder = secretName ? '输入敏感信息（仅保存到本地保险箱，不进入对话）' : '';
+      }
 
       for (const value of values) {
         if (allowMultiple) {

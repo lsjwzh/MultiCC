@@ -9,6 +9,7 @@ const MAX_QUESTION_LENGTH = 16 * 1024;
 const MAX_REASON_LENGTH = 4 * 1024;
 const MAX_OPTION_LENGTH = 512;
 const MAX_OPTIONS = 12;
+const SECRET_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
 function sanitizeOptions(value) {
   if (!Array.isArray(value)) return [];
@@ -139,6 +140,13 @@ function createUserInputSignalHost({
         reason: signal.reason || '',
         options: Array.isArray(signal.options) ? signal.options : [],
         allowMultiple: signal.allowMultiple === true,
+        // Secret-mode requests render a password input in the client and the
+        // answer is stored via POST /api/secrets — the value never becomes a
+        // chat message. Non-secret requests keep inputType absent for backward
+        // compatibility with older clients.
+        ...(signal.inputType === 'secret' && SECRET_NAME_RE.test(String(signal.secretName || ''))
+          ? { inputType: 'secret', secretName: String(signal.secretName) }
+          : {}),
         createdAt: now(),
         resolved: false,
       },
