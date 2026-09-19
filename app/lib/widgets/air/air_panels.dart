@@ -310,8 +310,14 @@ class _DirectoryCard extends StatelessWidget {
 }
 
 /// 任务行。徽标说的是「这个任务现在算什么」（生命周期 + 这一轮的 runState），
-/// 副行说的是「它在哪个目录、走到哪一步、卡在哪」—— 与 Web Air 的 `taskRow`
-/// 同一套分工、同一个形状：徽标在左，标题与副行在中间，时间在右。
+/// 副行说的是「它在哪个目录、走到哪一步、卡在哪」。
+///
+/// 形状和 Web Air 的两份任务行同一套：**标题独占一行（最多两行），徽标 + 副行 +
+/// 时间在它下面一行**。徽标原来摆在最左边（当时照抄的是 `air-admin.js` 的
+/// `taskRow`），可那是一行三列的老排法：390px 的手机上徽标加行尾那排操作一共
+/// 吃掉一半宽度，标题只剩 90 来 px —— 一个中文任务名被折成两条还读不完，而标题
+/// 恰恰是这一行里唯一必须读全的东西。现在标题拿整行，徽标挪到它描述的那一行旁边
+/// （和 `air.js` 的 `directory-task-row` 一样），Web 那边同一处也照这个改了。
 ///
 /// 侧栏、当前目录、控制台都用这一行。Web 那边同样只有一份 `taskRow`：行长得
 /// 不一样的地方，状态就会各说各话。
@@ -362,55 +368,67 @@ class AirTaskTile extends StatelessWidget {
             ),
           ),
           padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              StatusBadge(
-                domain: StatusDomain.task,
-                status: airTaskStatus(task),
-                fontSize: 10.5,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
                       task.title,
+                      key: ValueKey('air-task-title-${task.id}'),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: AppColors.text,
                         fontSize: 14.5,
                         fontWeight: FontWeight.w500,
+                        height: 1.35,
                       ),
                     ),
-                    if (subtitle.isNotEmpty) ...[
-                      const SizedBox(height: 3),
-                      Text(
-                        subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.faint,
-                          fontSize: 11.5,
-                        ),
-                      ),
-                    ],
+                  ),
+                  // 行尾操作和标题同一行：底下那行留给副行，它在窄屏上本来也
+                  // 装不下多少字。
+                  if (trailing != null) ...[
+                    const SizedBox(width: 4),
+                    trailing!,
                   ],
-                ),
+                ],
               ),
-              if (time.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                Text(
-                  time,
-                  style: const TextStyle(
-                    color: AppColors.faint,
+              const SizedBox(height: 5),
+              Row(
+                children: [
+                  StatusBadge(
+                    domain: StatusDomain.task,
+                    status: airTaskStatus(task),
                     fontSize: 10.5,
                   ),
-                ),
-              ],
-              trailing ?? const SizedBox(width: 4),
+                  // 副行自己吃掉剩下的宽度（空着也占着），时间才总在行尾。
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.faint,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ),
+                  if (time.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    Text(
+                      time,
+                      style: const TextStyle(
+                        color: AppColors.faint,
+                        fontSize: 10.5,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ],
           ),
         ),

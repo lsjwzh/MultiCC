@@ -668,7 +668,9 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .admin-recent-row:last-child { border-bottom: 0; }
 .admin-recent-row:hover, .admin-recent-row:focus-within { background: #f2f8fe; }
 .admin-recent-row .task-row-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; padding: 9px 4px; }
-.admin-recent-row .task-row-open > span:nth-child(2) { min-width: 0; flex: 1; }
+/* 标题那一格是行里的第一个孩子（徽标已经挪进它下面的 task-meta，见 air-admin.js
+   的 taskRow）；它得能收缩，否则长标题会把时间顶出行外。 */
+.admin-recent-row .task-row-open > span:first-child { min-width: 0; flex: 1; }
 .admin-recent-row strong, .admin-recent-row small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .admin-recent-row strong { color: #314f69; font-size: 11px; }
 .admin-recent-row time { flex: 0 0 auto; color: #8a9aad; font-size: 9px; }
@@ -1135,6 +1137,17 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
   .directory-task-panel.expanded #directory-task-list { height: min(360px, 46dvh); }
+  /* 任务行的标题在手机上占两行：一行 11px 的标题在 390px 屏上只装得下十来个字，
+     读不出这条任务是干什么的（目录首页由用户报的那张图就是这个）。标题是这一行
+     里唯一必须读全的字段，字也给它放大到副行之上；徽标与阶段仍在它下面那行，徽标
+     排在最前面所以截断永远截不到它。App 的任务行是同一形状（AirTaskTile）。 */
+  .directory-task-row strong, .admin-recent-row strong {
+    display: -webkit-box; overflow: hidden; white-space: normal;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    font-size: 12.5px; line-height: 1.4;
+  }
+  .directory-task-row .task-row-open { grid-template-columns: 20px minmax(0, 1fr) auto; gap: 8px; padding: 10px 8px 10px 12px; }
+  .directory-task-row time, .admin-recent-row time { font-size: 10px; }
   .admin-assistant-card { grid-template-columns: 38px minmax(0, 1fr); padding: 12px; }
   .admin-assistant-mark { width: 38px; height: 38px; border-radius: 12px; }
   .admin-assistant-action { display: none; }
