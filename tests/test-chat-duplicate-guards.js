@@ -89,6 +89,35 @@ test('shell commit preserves the auto-commit checkbox and distinct sends with id
   }
 });
 
+test('a second send during a running turn lands once, in order, with no failure path', () => {
+  const rig = shellRig();
+  // 上一轮还在跑时再发一条：回执要等第一条 turn 起来才回，这一段窗口里两条
+  // 都在途。旧实现把第二条当成「socket 没开」拦回去（输入框被填回原文）。
+  const sends = ['first', 'second'].map((text, index) => ({
+    text, clientMsgId: `client-${index + 1}`, receiptId: `sr_${index + 1}`, id: `stored-${index + 1}`,
+  }));
+  for (const send of sends) {
+    assert.equal(rig.adapter.send({ type: 'user_message', text: send.text, clientMsgId: send.clientMsgId }), true);
+  }
+  for (const send of sends) {
+    rig.receive({ type: 'session_queue', event: 'queued', queued: false, items: [], message: send.text, clientMsgId: send.receiptId });
+  }
+  for (const send of sends) {
+    rig.receive({ type: 'task_shell_routed', clientMsgId: send.clientMsgId, receiptId: send.receiptId, sessionId: 'diag-session' });
+  }
+  assert.deepEqual([...rig.messagesEl.querySelectorAll('.msg.user')].map(node => node.dataset.clientMsgId),
+    ['client-1', 'client-2'], 'both sends must be on screen once the receipts land');
+  for (const send of sends) {
+    const record = { id: send.id, role: 'user', content: send.text, clientMsgId: send.receiptId };
+    rig.receive({ type: 'chat_msg_meta', id: send.id, role: 'user', clientMsgId: send.receiptId, message: record });
+    rig.receive({ type: 'chat_history', messages: [record], hasMore: false });
+  }
+  const bubbles = rig.messagesEl.querySelectorAll('.msg.user');
+  assert.equal(bubbles.length, 2, 'commits and history must not duplicate the in-flight pair');
+  assert.deepEqual([...bubbles].map(node => node.dataset.msgId), ['stored-1', 'stored-2']);
+  assert.equal(rig.adapter.state().pending, null);
+});
+
 test('shell identity translation leaves persisted event records untouched', () => {
   const rig = shellRig();
   const events = shellEvents('client-1', 'sr_1', 'stored-1');
