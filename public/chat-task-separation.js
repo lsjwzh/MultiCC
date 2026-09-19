@@ -56,6 +56,24 @@
     return { refresh };
   }
   function text(value) { return typeof value === 'string' ? value : value == null ? '' : String(value); }
+  // 服务端拒绝带稳定 code（fork_source_busy 等），裸英文 message 可读性差；
+  // 按码翻译，翻译缺失时回落原文。
+  function errorText(t, error) {
+    const code = text(error && error.code);
+    const keyByCode = {
+      fork_source_busy: 'taskSeparationErrBusy',
+      separation_stale: 'taskSeparationErrStale',
+      fork_source_dirty: 'taskSeparationErrDirty',
+      integration_receipt_required: 'taskSeparationErrDelivery',
+      baseline_revalidation_required: 'taskSeparationErrDelivery',
+      final_run_result_required: 'taskSeparationErrDelivery',
+      run_not_succeeded: 'taskSeparationErrDelivery',
+      code_observation_required: 'taskSeparationErrDelivery',
+    };
+    const key = keyByCode[code];
+    const translated = key ? t(key) : '';
+    return (translated && translated !== key) ? translated : (text(error && error.message) || code || 'separation_failed');
+  }
   function showDialog(suggestion, decide, collapse) {
     const t = root.t || (key => key), doc = root.document;
     const dialog = doc.createElement('dialog');
@@ -77,7 +95,7 @@
     async function submit(decision) {
       buttons.forEach(button => { button.disabled = true; }); error.textContent = '';
       try { await decide(decision); }
-      catch (e) { error.textContent = e.message || String(e); }
+      catch (e) { error.textContent = errorText(t, e); }
       finally { buttons.forEach(button => { button.disabled = false; }); }
     }
     const actions = [['keep', 'taskSeparationKeep'], ['separate', 'taskSeparationAccept'], ['defer', 'taskSeparationLater']];
