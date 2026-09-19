@@ -114,25 +114,3 @@
 .task-index-step:hover:not(:disabled), .task-index-step:focus-visible { color: var(--chat-blue, #58a6ff); border-color: var(--chat-blue, #58a6ff); outline: none; }
 .task-index-step:disabled { opacity: .45; cursor: default; }
 .task-index-segpos { flex: 1; min-width: 0; color: var(--chat-muted, #8b949e); font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
-
-/* 「下一条发给 #ABCD」：当前输入游标的常驻提示。只是显示 + 打开索引，
-   点它不会改变归属，所以样式刻意低对比。 */
-#next-task-target {
-  display: inline-flex;
-  align-items: center;
-  margin: 2px 0 0;
-  padding: 2px 8px;
-  border: 1px solid var(--chat-line, #30363d);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--chat-muted, #8b949e);
-  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-  cursor: pointer;
-}
-#next-task-target[hidden] { display: none !important; }
-#next-task-target:hover, #next-task-target:focus-visible { color: var(--chat-blue, #58a6ff); border-color: var(--chat-blue, #58a6ff); outline: none; }
-#next-task-target[data-flash="true"] { color: var(--chat-blue, #58a6ff); border-color: var(--chat-blue, #58a6ff); animation: task-target-flash 1.5s ease-out; }
-@keyframes task-target-flash {
-  0% { background: color-mix(in srgb, var(--chat-blue, #58a6ff) 32%, transparent); }
-  100% { background: transparent; }
-}

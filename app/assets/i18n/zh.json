@@ -1223,8 +1223,6 @@
   "taskIndexIsTarget": "下一条消息将发给 {code}",
   "taskIndexPrevSegment": "上一段",
   "taskIndexNextSegment": "下一段",
-  "taskTargetChip": "下一条发给 {code}",
-  "taskTargetChipTitle": "点击打开任务索引；索引里 ◎ 标出当前目标 {code}",
   "taskIndexTargetFailed": "设置发送目标失败：{error}",
   "taskIndexTargetStale": "发送目标刚被另一个页面改过，目录已重新读取；确认后再点一次。",
   "taskAttributionToggle": "调整任务归属",
