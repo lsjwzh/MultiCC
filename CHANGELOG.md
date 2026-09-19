@@ -2,6 +2,27 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.0.1 — Task attribution you can see and steer (2026-09-19)
+
+### Highlights
+
+- **Task attribution ladder** — every incoming message is matched to a task through an escalating chain of evidence, and each decision is written to a durable journal you can audit. When a message references another task's history, the rejection now names the task it pointed at.
+- **Attribution controls in chat** — accept or reject the AI Assistant's suggestion inline, re-attribute a whole turn by hand, or split it into a durable independent continuation that keeps its own task.
+- **Input target** — the composer always shows which task your next message will land in. Pick any task from the full-history index; in-flight turns stay durably queued instead of being dropped.
+- **Air task pins** — pin up to five tasks for one-tap access: the header tab row on desktop, the sidebar top on mobile and in the app.
+
+### Improvements and fixes
+
+- **Battery guard** — a new in-process guard can sleep the host when running on battery below a threshold, opt-in alongside the lid-closed-running setting, and stays latched until AC power or a manual rearm.
+- **Bundled computer-use skills** — `computer-use` and `computer-use-permissions` ship as preset skills. Bundled skill install no longer wipes a same-named, unversioned user skill.
+- **Task graph** — batch ranges, explicit relations, and visible source edges make the relationship network easier to read.
+- **Air console polish** — sidebar boxed groups in two columns with a foldable 常用设置; the line capsule shows the provider name with a marquee; "谁在等我" now lists only actionable tasks; the directory Git card offers one-click push for unpushed commits.
+- **Performance and durability** — ETag/304 conditional polling, `cursorVersion`-gated conditional writes, a receipt-index rowid watermark, and `sessionId`→task / `taskId`→link indexes reduce redundant work and keep state consistent across reconnects.
+
+### Compatibility
+
+- No API or data-format changes. Existing provider configurations, relay shares and imported Fleets keep working without migration. The Android and iOS packages advance to `2.29.14+127` so they upgrade the previous stable build in place.
+
 ## v2.0.0 — The Air release (2026-09-16)
 
 ### Highlights
