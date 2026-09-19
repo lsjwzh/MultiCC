@@ -19,6 +19,7 @@ const EXPECTED_PATHS = [
   '/api/settings/tunnel',
   '/api/tunnel/funnel',
   '/api/tunnel/ipv6',
+  '/api/tunnel/sakurafrp',
   '/api/settings/access-token',
   '/api/settings/official-oauth',
   '/api/settings/power',
@@ -46,6 +47,7 @@ function createHarness(overrides = {}) {
       getStatus: () => ({ config: { intervalSec: 30 }, healthy: true }),
       funnelStatus: async () => ({ enabled: true, port: 3000 }),
       ipv6Status: async () => ({ available: true, direct: false }),
+      sakuraAccess: async () => ({ ok: false, reason: 'no_token' }),
     },
     getAccessToken: () => '',
     isLocalRequest: () => false,
@@ -321,6 +323,26 @@ test('tunnel diagnostic failures delegate raw errors to the safe error boundary'
   assert.equal(ipv6.body, undefined);
   assert.equal(ipv6.nextError, ipv6Error);
   assert.doesNotMatch(JSON.stringify(presentSafely(ipv6.nextError).body), /private|secret/);
+});
+
+test('sakurafrp enrichment delegates the redacted payload and forwards errors', async () => {
+  const payload = {
+    ok: true,
+    user: { id: 1, name: 'lsjwzh', trafficUsed: 100, trafficTotal: 2000, signed: false },
+    access: { tunnelId: 9, name: 'multicc', online: true, needsBoundDomain: true, publicUrl: null },
+    tunnelCount: 1,
+    configUrl: '',
+    needsBoundDomain: true,
+  };
+  const ok = createHarness({ tunnel: { getStatus: () => ({}), sakuraAccess: async () => payload } });
+  assert.deepEqual((await invoke(ok.routes, '/api/tunnel/sakurafrp')).body, payload);
+
+  const boom = new Error('sakura api failed token=secret');
+  const failing = createHarness({ tunnel: { getStatus: () => ({}), sakuraAccess: async () => { throw boom; } } });
+  const res = await invoke(failing.routes, '/api/tunnel/sakurafrp');
+  assert.equal(res.body, undefined);
+  assert.equal(res.nextError, boom);
+  assert.equal(presentSafely(res.nextError).body.error, 'internal_error');
 });
 
 test('power settings preserve success branches and delegate all errors', async () => {

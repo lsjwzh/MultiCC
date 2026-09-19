@@ -18,6 +18,8 @@ const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
 const { createTailscaleFunnelProbe } = require('./tailscale-funnel-health');
 const { findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp } = require('./tunnel-sakurafrp');
+const { defaultFrpcDest, installFrpc } = require('./tunnel-sakurafrp-install');
+const { readLauncherToken, getUserInfo, discoverAccess } = require('./tunnel-sakurafrp-api');
 
 const PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const CONFIG_FILE = PATHS.tunnelConfigFile;
@@ -35,7 +37,15 @@ const MAX_REPAIR_LEDGER_BYTES = 16 * 1024;
 // to a PATH lookup so a user-installed binary still works.
 const NATAPP_BIN_CANDIDATES = ['/opt/natapp/natapp', '/usr/local/bin/natapp', '/opt/homebrew/bin/natapp'];
 const CPOLAR_BIN_CANDIDATES = ['/usr/local/bin/cpolar', '/opt/homebrew/bin/cpolar', '/usr/bin/cpolar'];
-const SAKURAFRP_BIN_CANDIDATES = ['/usr/local/bin/frpc', '/opt/homebrew/bin/frpc', '/usr/bin/frpc'];
+// The headless `frpc` we install ourselves (tunnel-sakurafrp-install) lands under
+// the MultiCC data root, so probe it FIRST — a managed install must win over a
+// stale PATH/homebrew copy — then fall back to the well-known system locations.
+const SAKURAFRP_BIN_CANDIDATES = [
+  defaultFrpcDest({ dataDir: process.env.MULTICC_DATA_DIR }),
+  '/usr/local/bin/frpc',
+  '/opt/homebrew/bin/frpc',
+  '/usr/bin/frpc',
+];
 const NATAPP_DEFAULT_CMD = 'natapp -authtoken={authtoken}';
 const CPOLAR_DEFAULT_CMD = 'cpolar http {port}';
 const SAKURAFRP_DEFAULT_CMD = 'frpc -f {authtoken}';
@@ -667,6 +677,89 @@ async function restartSakurafrp() {
   return app ? restartSakuraLauncher(app, { run: execShell }) : restartCliProvider('sakurafrp');
 }
 
+// ── SakuraFrp account/tunnel enrichment + headless install ──────────────────
+// The monitor only knows "does the public URL answer". These give the manage
+// panel the actionable account facts (traffic/sign-in/online) and the CLI-first
+// onboarding path (install frpc, bind the public URL) without ever exposing the
+// access token. Token resolution prefers the explicit config, then the macOS
+// launcher's saved config.json; it is used server-side only and never returned.
+
+// A dashboard-bound nyat.app subdomain is the ONLY host whose TLS cert matches
+// (auto_https issues the cert for *.nyat.app, not the raw node host). No v4 API
+// exposes it, so the user must paste it; we validate the shape and never guess.
+const NYAT_BOUND_DOMAIN_RE = /^[a-z0-9][a-z0-9.-]*\.nyat\.app$/i;
+
+function sakuraToken() {
+  const configured = ((config.sakurafrp && config.sakurafrp.authtoken) || '').trim();
+  if (configured) return configured;
+  const launcher = readLauncherToken();
+  return launcher && launcher.token ? launcher.token : null;
+}
+
+// Live account + tunnel facts for the panel. Degrades to { ok:false, reason }
+// (no_token / api_error) so the UI can say WHY instead of showing a dead panel.
+async function sakuraAccess({ fetch } = {}) {
+  const token = sakuraToken();
+  if (!token) return { ok: false, reason: 'no_token' };
+  try {
+    const [user, discovered] = await Promise.all([
+      getUserInfo({ token, fetch }),
+      discoverAccess({ token, fetch }),
+    ]);
+    const access = discovered.access || null;
+    return {
+      ok: true,
+      user,
+      access,
+      tunnelCount: discovered.tunnelCount || 0,
+      configUrl: (config.sakurafrp && config.sakurafrp.url) || '',
+      // Tell the UI whether the public URL can be auto-derived or needs a paste.
+      needsBoundDomain: !!(access && access.needsBoundDomain),
+    };
+  } catch (error) {
+    return { ok: false, reason: 'api_error', message: String((error && error.message) || error).slice(0, 200) };
+  }
+}
+
+// Headless frpc install — the CLI-first onboarding path. Lands at the managed
+// data-root bin that SAKURAFRP_BIN_CANDIDATES now probes first.
+async function sakuraInstallFrpc({ fetch } = {}) {
+  try {
+    const result = await installFrpc({ dest: defaultFrpcDest({ dataDir: process.env.MULTICC_DATA_DIR }), fetch });
+    return { ok: true, path: result.path, version: result.version, archKey: result.archKey, size: result.size };
+  } catch (error) {
+    return { ok: false, reason: 'install_failed', message: String((error && error.message) || error).slice(0, 200) };
+  }
+}
+
+// Honest base-URL backfill. Plain-http tunnels derive http://nodeHost:remote
+// directly. auto_https tunnels CANNOT be derived (cert only covers the bound
+// *.nyat.app subdomain), so the caller must supply that bound host; we validate
+// its shape and refuse to fabricate a cert-mismatched URL.
+async function sakuraApplyPublicUrl({ boundDomain, fetch } = {}) {
+  const token = sakuraToken();
+  if (!token) return { ok: false, reason: 'no_token' };
+  let access;
+  try {
+    access = (await discoverAccess({ token, fetch })).access;
+  } catch (error) {
+    return { ok: false, reason: 'api_error', message: String((error && error.message) || error).slice(0, 200) };
+  }
+  if (!access) return { ok: false, reason: 'no_tunnel' };
+  let url;
+  if (access.needsBoundDomain) {
+    const host = String(boundDomain || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+    if (!NYAT_BOUND_DOMAIN_RE.test(host)) return { ok: false, reason: 'bound_domain_required' };
+    url = `https://${host}`;
+  } else if (access.publicUrl) {
+    url = access.publicUrl;
+  } else {
+    return { ok: false, reason: 'underivable' };
+  }
+  applyConfig({ sakurafrp: { url } });
+  return { ok: true, url };
+}
+
 // Root-cause messages from a failed restart may embed the failed shell command
 // (execFile echoes it), which contains the rendered authtoken. Mask every
 // occurrence before the text leaves the server (API response / UI / logs).
@@ -1124,6 +1217,9 @@ module.exports = {
   restartNatapp,
   restartCpolar,
   restartSakurafrp,
+  sakuraAccess,
+  sakuraInstallFrpc,
+  sakuraApplyPublicUrl,
   loadConfig,
   availability,
   setFunnel,

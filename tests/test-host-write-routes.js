@@ -19,6 +19,8 @@ const EXPECTED_PATHS = [
   '/api/settings/notify',
   '/api/settings/tunnel',
   '/api/tunnel/restart/:provider',
+  '/api/tunnel/sakurafrp/install',
+  '/api/tunnel/sakurafrp/public-url',
   '/api/tunnel/funnel',
   '/api/settings/access-token',
   '/api/settings/official-oauth',

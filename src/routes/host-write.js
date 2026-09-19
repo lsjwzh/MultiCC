@@ -228,6 +228,48 @@ function createTunnelRestartHandler(deps) {
   };
 }
 
+// Headless SakuraFrp frpc install (CLI-first onboarding). Local-only: it writes
+// an executable under the managed data root. result.message is already bounded
+// by the tunnel runtime; the access token is never involved here.
+function createTunnelSakurafrpInstallHandler(deps) {
+  return async function tunnelSakurafrpInstallHandler(req, res, next) {
+    if (!requireLocal(deps, req, res)) return undefined;
+    try {
+      const result = await deps.tunnel.sakuraInstallFrpc();
+      if (result && result.ok) return res.json(result);
+      return res.status(400).json({
+        ok: false,
+        reason: (result && result.reason) || 'install_failed',
+        message: (result && result.message) || '',
+      });
+    } catch (error) {
+      return next(error);
+    }
+  };
+}
+
+// Honest public-URL backfill. Plain-http tunnels auto-derive; auto_https tunnels
+// require the user's dashboard-bound *.nyat.app host (validated server-side).
+// Local-only: it writes durable tunnel config.
+function createTunnelSakurafrpPublicUrlHandler(deps) {
+  return async function tunnelSakurafrpPublicUrlHandler(req, res, next) {
+    if (!requireLocal(deps, req, res)) return undefined;
+    try {
+      const body = req.body || {};
+      const boundDomain = typeof body.boundDomain === 'string' ? body.boundDomain : '';
+      const result = await deps.tunnel.sakuraApplyPublicUrl({ boundDomain });
+      if (result && result.ok) return res.json(result);
+      return res.status(400).json({
+        ok: false,
+        reason: (result && result.reason) || 'underivable',
+        message: (result && result.message) || '',
+      });
+    } catch (error) {
+      return next(error);
+    }
+  };
+}
+
 function createTunnelFunnelHandler(deps) {
   return async function tunnelFunnelHandler(req, res, next) {
     try {
@@ -381,6 +423,8 @@ function mountHostWriteRoutes(app, rawDeps) {
   app.post('/api/settings/notify', createNotifySettingsHandler(deps));
   app.post('/api/settings/tunnel', createTunnelSettingsHandler(deps));
   app.post('/api/tunnel/restart/:provider', createTunnelRestartHandler(deps));
+  app.post('/api/tunnel/sakurafrp/install', createTunnelSakurafrpInstallHandler(deps));
+  app.post('/api/tunnel/sakurafrp/public-url', createTunnelSakurafrpPublicUrlHandler(deps));
   app.post('/api/tunnel/funnel', createTunnelFunnelHandler(deps));
   app.post('/api/settings/access-token', createAccessTokenHandler(deps));
   app.post('/api/settings/official-oauth', createBooleanSettingHandler(deps, {
@@ -419,6 +463,8 @@ module.exports = {
   createNotifySettingsHandler,
   createTunnelSettingsHandler,
   createTunnelRestartHandler,
+  createTunnelSakurafrpInstallHandler,
+  createTunnelSakurafrpPublicUrlHandler,
   createTunnelFunnelHandler,
   createAccessTokenHandler,
   createBooleanSettingHandler,
