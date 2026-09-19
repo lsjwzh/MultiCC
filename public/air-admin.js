@@ -181,10 +181,17 @@
     applyRing(row, isRunning(task));
     const body = make('span', null, 'task-row-open');
     const copy = make('span');
-    const where = options.dir === false ? '' : `${context.directoryName(task.dirId)} · `;
-    copy.append(make('strong', task.title || '未命名任务'), make('small', where + taskDetail(task, context)));
-    body.append(statusBadge(task, options.badge || {}), copy,
-      make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
+    // 两排：标题在上，徽标 + 目录/阶段在下。徽标原来占着最左边一列（这一行是三列
+    // flex），窄屏上和行尾的删除一起把标题挤到只剩九十几像素 —— 而标题是这一行里
+    // 唯一必须读全的字段。目录首页的 `directory-task-row` 一直是这个形状，这里向它
+    // 对齐（App 的任务行同一天也照这个改了）。
+    const meta = make('small', null, 'task-meta');
+    meta.append(statusBadge(task, options.badge || {}));
+    const where = options.dir === false ? '' : context.directoryName(task.dirId);
+    const note = [where, taskDetail(task, context)].filter(Boolean).join(' · ');
+    if (note) meta.append(make('em', note, 'task-note'));
+    copy.append(make('strong', task.title || '未命名任务'), meta);
+    body.append(copy, make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
     row.append(body);
     if (options.deletable && context.deleteTask) {
       const remove = action('删除', async event => {
