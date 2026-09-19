@@ -38,7 +38,9 @@ void main() {
     expect(fields, findsNWidgets(2));
     await tester.enterText(fields.first, 'http://192.168.1.8:3000');
     await tester.enterText(fields.last, 'wrong');
-    await tester.tap(find.text('验证并连接'));
+    final connect = find.text('验证并连接');
+    await tester.ensureVisible(connect);
+    await tester.tap(connect);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
