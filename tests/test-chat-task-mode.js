@@ -19,7 +19,9 @@ test('real task boot preserves resolved read-only and chat URLs with external mo
         if (route.endsWith('/tasks/resolve')) return response({ sessionId: 'execution' });
         return response({ id: 'sh_main' });
       };
-      const context = { URL, _taskId: 'task-one', _sessionName: '',
+      // chat.js 顶层 `const SHARE_MODE` 是 classic script 的全局词法绑定，boot 读它；
+      // 这里按普通聊天页（非分享）注入。
+      const context = { URL, SHARE_MODE: false, isReadOnly: () => false, _taskId: 'task-one', _sessionName: '',
         _params: new URLSearchParams({ task: 'task-one', air: '1', ...(external ? { external } : {}) }),
         window: { fetch, MultiCCChatShellEntry: { resolve, chatUrl } },
         location: { href: 'http://localhost:3000/chat.html?task=task-one', replace: target => replaced.push(target) },
@@ -123,6 +125,74 @@ test('shell receipts buffer until acknowledgement, remap client identity and rep
   const routed = adapter.ingest({ type: 'task_shell_routed', clientMsgId: 'client-1', receiptId: 'sr_1', sessionId: 'execution' });
   assert.equal(routed.routeSessionId, 'execution');
   assert.equal(routed.events[0].clientMsgId, 'client-1');
+  assert.equal(adapter.state().pending, null);
+});
+
+test('a send leaves while an earlier receipt is still outstanding', () => {
+  const sent = [];
+  const adapter = createTransportAdapter({ send: value => (sent.push(value), true) });
+  adapter.ingest({ type: 'system', subtype: 'init', is_streaming: false, taskShell: true });
+  // 服务端按会话有持久 FIFO，回执只是「这条是谁发的、跑在哪」的答案。
+  // 回执没回来之前拦下一条，只会把排队中的消息丢掉、并让 composer 把健康的
+  // socket 报成断开、把刚清空的输入框再填回去。
+  assert.equal(adapter.send({ type: 'user_message', text: 'one', clientMsgId: 'client-1' }), true);
+  assert.equal(adapter.send({ type: 'user_message', text: 'two', clientMsgId: 'client-2' }), true);
+  assert.deepEqual(sent.map(message => message.text), ['one', 'two']);
+  assert.equal(adapter.state().pending.clientMsgId, 'client-1', 'state still reports the oldest in-flight send');
+});
+
+test('an unacknowledged sibling keeps its receipt echo buffered after the first ack', () => {
+  const sent = [];
+  const adapter = createTransportAdapter({ send: value => (sent.push(value), true) });
+  adapter.ingest({ type: 'system', subtype: 'init', is_streaming: false, taskShell: true });
+  adapter.send({ type: 'user_message', text: 'one', clientMsgId: 'client-1' });
+  adapter.send({ type: 'user_message', text: 'two', clientMsgId: 'client-2' });
+  // 两条回显先到，此刻服务端只知道回执 id：谁都不能提前放行，否则先按 sr_ 渲染
+  // 一泡、回执到了再按浏览器 id 渲染第二泡。
+  assert.deepEqual(adapter.ingest({ type: 'message_admission_progress', message: 'one', clientMsgId: 'sr_1', state: 'waiting' }).events, []);
+  assert.deepEqual(adapter.ingest({ type: 'message_admission_progress', message: 'two', clientMsgId: 'sr_2', state: 'waiting' }).events, []);
+  const first = adapter.ingest({ type: 'task_shell_routed', clientMsgId: 'client-1', receiptId: 'sr_1', sessionId: 'execution' });
+  assert.deepEqual(first.events.map(event => event.clientMsgId), ['client-1']);
+  assert.equal(adapter.state().pending.clientMsgId, 'client-2');
+  const second = adapter.ingest({ type: 'task_shell_routed', clientMsgId: 'client-2', receiptId: 'sr_2', sessionId: 'execution' });
+  assert.deepEqual(second.events.map(event => event.clientMsgId), ['client-2']);
+  assert.equal(adapter.state().pending, null);
+});
+
+test('reconnect replays every unacknowledged send, not only the oldest', () => {
+  const sent = [];
+  const adapter = createTransportAdapter({ send: value => (sent.push(value), true) });
+  adapter.ingest({ type: 'system', subtype: 'init', is_streaming: false, taskShell: true });
+  adapter.send({ type: 'user_message', text: 'one', clientMsgId: 'client-1' });
+  adapter.send({ type: 'user_message', text: 'two', clientMsgId: 'client-2' });
+  assert.equal(adapter.replayPending(), true);
+  assert.deepEqual(sent.map(message => message.text), ['one', 'two', 'one', 'two']);
+  adapter.ingest({ type: 'task_shell_routed', clientMsgId: 'client-1', receiptId: 'sr_1', sessionId: 'execution' });
+  assert.equal(adapter.replayPending(), true);
+  assert.deepEqual(sent.slice(4).map(message => message.text), ['two'], 'acked sends must not be replayed again');
+});
+
+test('a send the socket refuses leaves nothing in flight', () => {
+  const adapter = createTransportAdapter({ send: () => false });
+  adapter.ingest({ type: 'system', subtype: 'init', is_streaming: false, taskShell: true });
+  assert.equal(adapter.send({ type: 'user_message', text: 'lost', clientMsgId: 'client-1' }), false);
+  assert.equal(adapter.state().pending, null);
+  assert.equal(adapter.replayPending(), false);
+});
+
+test('a rejected send drops its own echo but keeps the sibling in flight', () => {
+  const adapter = createTransportAdapter({ send: () => true });
+  adapter.ingest({ type: 'system', subtype: 'init', is_streaming: false, taskShell: true });
+  adapter.send({ type: 'user_message', text: 'one', clientMsgId: 'client-1' });
+  adapter.send({ type: 'user_message', text: 'two', clientMsgId: 'client-2' });
+  adapter.ingest({ type: 'message_admission_progress', message: 'one', clientMsgId: 'sr_1', state: 'waiting' });
+  adapter.ingest({ type: 'message_admission_progress', message: 'two', clientMsgId: 'sr_2', state: 'waiting' });
+  adapter.ingest({ type: 'chat_history', messages: [{ id: 'stored-old', role: 'user', content: 'old', clientMsgId: 'sr_old' }] });
+  const failure = adapter.ingest({ type: 'error', notDelivered: true, clientMsgId: 'client-2', receiptId: 'sr_2', error: 'stale' });
+  assert.deepEqual(failure.events.map(event => event.type), ['chat_history', 'error'], 'authoritative history survives, the failed echo does not');
+  assert.equal(adapter.state().pending.clientMsgId, 'client-1');
+  const ack = adapter.ingest({ type: 'task_shell_routed', clientMsgId: 'client-1', receiptId: 'sr_1', sessionId: 'execution' });
+  assert.deepEqual(ack.events.map(event => event.clientMsgId), ['client-1']);
   assert.equal(adapter.state().pending, null);
 });
 
