@@ -32,6 +32,7 @@ function createRouterToolHost({
     cancelActiveTurn,
     onDispatchCancelled,
     getTaskContext,
+    listSecrets,
   } = {}) {
     runtime = createRouterToolRuntime({
       records,
@@ -79,6 +80,7 @@ function createRouterToolHost({
         });
       },
       recordUserInput,
+      listSecrets: typeof listSecrets === 'function' ? listSecrets : () => [],
       getTaskContext: typeof getTaskContext === 'function' ? getTaskContext : async () => null,
       subscribeDispatchProgress,
       resolveContext: resolveContext || (sessionId => {

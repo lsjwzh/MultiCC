@@ -59,7 +59,7 @@ const crypto = require('crypto');
 const bus = require('./src/bus');
 const services = require('./src/services');
 const state = require('./src/state/container');
-const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry');
+const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault');
 const providers = require('./src/providers/core');
 providers.enableUnifiedOfficialProviders();
 const { executeAuxHttp } = require('./src/aux-http');
@@ -2747,7 +2747,7 @@ const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persi
 const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
 routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
-  recordUserInput: signal => sessionWorkHost.recordInput(signal), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
+  recordUserInput: signal => sessionWorkHost.recordInput(signal), listSecrets: () => secretsVault.list(), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
   onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission, getTaskContext: (context, query) => taskShellHost.refillContext(context.sessionId, { ...query, receiptId: context.requestId }) });
 
 waitInjector.init({
@@ -2866,7 +2866,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 // Scheduled tasks (定时任务): every rule owns one fixed Air task and enters it
 // through the task-shell receipt protocol. This complements the lower-level
 // per-session triggers without bringing legacy role/chat shells back.
-cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id) }); // docs-registry = /manage「服务与文档」管理表（同行以守 3000 行预算）
+cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id) }); secretsVault.mount(app); // docs-registry/secrets-vault = /manage 管理表与敏感信息保险箱（同行以守 3000 行预算）
 cronTasks.init({
   directories,
   clis: SUPPORTED_CHAT_CLIS,

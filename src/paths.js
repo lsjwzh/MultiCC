@@ -117,6 +117,10 @@ function createPaths({ dataDir } = {}) {
     // every agent-generated document/page/file and every reachable local web
     // service registers here so the /manage panel can list, open and prune them.
     docsRegistryFile: path.join(root, 'docs_registry.json'),
+    // Local sensitive-value vault (src/secrets-vault.js): API keys, tokens and
+    // other secrets the user fills via the secure dialog or the /manage panel.
+    // Values live ONLY here (0600) and never pass through any LLM transcript.
+    secretsFile: path.join(root, 'secrets.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
     taskRunDbFile: path.join(root, 'task-runs.sqlite'),
     taskShellDbFile: path.join(root, 'task-shells.sqlite'),

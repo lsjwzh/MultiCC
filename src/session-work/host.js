@@ -497,6 +497,8 @@ function createSessionWorkHost(deps = {}) {
         reason: signal.reason || '',
         options: Array.isArray(signal.options) ? signal.options : [],
         allowMultiple: signal.allowMultiple === true,
+        ...(signal.inputType === 'secret' && signal.secretName
+          ? { inputType: 'secret', secretName: String(signal.secretName) } : {}),
       });
     }
     return recorded;
@@ -514,6 +516,8 @@ function createSessionWorkHost(deps = {}) {
         reason: pending.reason || '',
         options: pending.options || [],
         allowMultiple: pending.allowMultiple === true,
+        ...(pending.inputType === 'secret' && pending.secretName
+          ? { inputType: 'secret', secretName: String(pending.secretName) } : {}),
       });
     } else {
       // user_input_resolved is fire-and-forget: it only reached sockets online

@@ -805,6 +805,7 @@
     <div id="nav-scroll">
     <div class="nav-label" data-i18n="workspace">Workspace</div>
     <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> <span>工作目录与任务</span> <span class="badge" id="nav-dir-count">0</span></button>
+    <button class="nav-item" data-view="secrets" onclick="setView('secrets')"><span class="ic">🔐</span> <span>敏感信息</span> <span class="badge" id="nav-secrets-count">0</span></button>
     <!-- Cron sits with Overview, not under Settings: it is scheduled work that
          spawns sessions, so it belongs with the live view of what is running
          rather than with the config panes. -->
@@ -1994,6 +1995,27 @@
           </div>
         </section>
 
+        <section class="view" data-view="secrets">
+          <div class="sec-head"><h2><span>🔐 敏感信息</span> <span id="secrets-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadSecrets()">刷新</button>
+          </div>
+          <p class="sec-desc">本地保险箱：存放 API key、token 等敏感信息。agent 通过 request_secret_input 弹安全输入框收集，值只存本地（0600），<b>不经过对话与任何 LLM API</b>；此处可手动增删改、查看与复制。</p>
+          <div class="settings-card" style="max-width:780px">
+            <div class="sc-head" style="font-weight:600;">新增 / 覆盖条目</div>
+            <div class="sc-body" style="gap:10px;">
+              <div class="setting-row"><label>名称</label><input id="secret-name" type="text" autocomplete="off" spellcheck="false" placeholder="如 OPENAI_API_KEY（字母数字_.-，≤64）" /></div>
+              <div class="setting-row"><label>值</label><input id="secret-value" type="password" autocomplete="off" placeholder="密钥明文，仅存本地" /><button class="btn btn-sm eye-toggle" type="button" data-target="secret-value">👁</button></div>
+              <div class="setting-row"><label>备注</label><input id="secret-desc" type="text" autocomplete="off" placeholder="用途说明（可选）" /></div>
+              <div style="display:flex;justify-content:flex-end;"><button class="btn btn-green btn-sm" onclick="secretsSave()">保存到保险箱</button></div>
+            </div>
+          </div>
+          <div class="settings-card" style="max-width:780px">
+            <div class="sc-body" id="secrets-list" style="gap:8px;">
+              <div style="color:var(--faint);font-size:13px;">加载中…</div>
+            </div>
+          </div>
+        </section>
+
       </div>
 
       <!-- Focus panel: embedded terminal -->
@@ -2305,6 +2327,7 @@
   <script src="manage.js"></script>
   <script src="manage-aux-history.js"></script>
 <script src="docs-registry.js"></script>
+<script src="manage-secrets.js"></script>
 <script src="manage-update.js"></script>
   <script>
     /* ── Redesign shell: nav view switching, KPI row, search ── */
@@ -2322,6 +2345,7 @@
         skillsync: ['技能同步', 'Skills 跨 Provider 同步状态'],
         storage: ['临时上传', '上传文件缓存'],
         docs: ['服务与文档', '生成的文档与本地 web 服务'],
+        secrets: ['🔐 敏感信息', '本地密钥保险箱 · 值不经过 LLM'],
         memory: ['🧠 记忆图谱', '项目记忆系统网络'],
         taskgraph: ['⛓ 任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接'],
       };
@@ -2355,6 +2379,7 @@
         }
         if (v === 'voice') window.MultiCCManageQwenAudio?.loadPanel?.();
         if (v === 'docs') window.loadDocsRegistry?.();
+        if (v === 'secrets') window.loadSecrets?.();
         // Sync the active provider tab when the provider view is shown.
         if (v === 'provider') {
           const activeTab = document.querySelector('#prov-tabs .prov-tab.active');
@@ -2362,7 +2387,7 @@
         }
       };
       const requestedView = new URLSearchParams(location.search).get('view') || 'docs';
-      const allowedViews = ['overview', 'memory', 'taskgraph', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs'];
+      const allowedViews = ['overview', 'memory', 'taskgraph', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs', 'secrets'];
       if (allowedViews.includes(requestedView) || ['tasks', 'planner'].includes(requestedView)) {
         window.setView(requestedView);
       }
