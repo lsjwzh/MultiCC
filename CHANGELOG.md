@@ -8,7 +8,7 @@ All notable changes to MultiCC are documented in this file.
 
 - **Task attribution ladder** — every incoming message is matched to a task through an escalating chain of evidence, and each decision is written to a durable journal you can audit. When a message references another task's history, the rejection now names the task it pointed at.
 - **Attribution controls in chat** — accept or reject the AI Assistant's suggestion inline, re-attribute a whole turn by hand, or split it into a durable independent continuation that keeps its own task.
-- **Input target** — the composer always shows which task your next message will land in. Pick any task from the full-history index; in-flight turns stay durably queued instead of being dropped.
+- **Input target** — the full-history index shows and switches which task your next message will land in (the ◎ marker); in-flight turns stay durably queued instead of being dropped.
 - **Air task pins** — pin up to five tasks for one-tap access: the header tab row on desktop, the sidebar top on mobile and in the app.
 
 ### Improvements and fixes

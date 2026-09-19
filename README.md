@@ -109,7 +109,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 - **Built-in console** — providers, schedules, AI Assistant, host operations, without leaving the page
 - **Scheduled tasks** — cron-style recurring work bound to fixed Air tasks
 - **Task pins** — pin up to five tasks to the header tab row (sidebar top on mobile and in the app)
-- **Input target** — the composer always shows which task your next message lands in; pick any task from the full-history index, and in-flight turns stay durably queued
+- **Input target** — see and switch which task your next message lands in from the full-history index (the ◎ marker); in-flight turns stay durably queued
 - **Attribution controls** — accept or reject the AI Assistant's task suggestion inline, re-attribute a whole turn by hand, or split it into a durable independent continuation
 
 **→ First run, task graph, memory graph, console pages: [Features](docs/features.md)**
