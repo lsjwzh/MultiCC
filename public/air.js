@@ -2070,7 +2070,38 @@
     if (separation?.state === 'separated' && separation.targetTaskId && separation.targetTaskId !== value.task.id) {
       actions.push(actionButton('打开独立任务', () => navigate(value.task.dirId || directoryId, separation.targetTaskId), 'open-separated'));
     }
+    // 分离建议的持久入口：聊天帧里的弹窗/挂起卡依赖 WS 推送与页面时机，容易
+    // 错过；这里的按钮只要建议还挂起就一直在，瞬时拒绝（如源任务在跑）后也能
+    // 直接重试。只在查看源任务时显示 —— 决定落在源会话上。
+    if (separation && !['kept', 'separated'].includes(separation.state)
+        && separation.sourceTaskId === value.task.id && value.sessionId) {
+      actions.push(actionButton(separation.phase === 'blocked' ? '重试分离' : '接受分离',
+        () => decideSeparation(value, separation, 'separate'), 'separation-accept'));
+      actions.push(actionButton('稍后处理',
+        () => decideSeparation(value, separation, 'defer'), 'separation-defer'));
+      actions.push(actionButton('保留在当前任务',
+        () => decideSeparation(value, separation, 'keep'), 'separation-keep'));
+    }
     $('delivery-actions').replaceChildren(...actions);
+  }
+
+  async function decideSeparation(value, separation, decision) {
+    await taskAction(`separation-${decision}`, async () => {
+      let result;
+      try {
+        result = await api(`/api/sessions/${encodeURIComponent(value.sessionId)}/task-separation/${encodeURIComponent(separation.id)}`, { decision });
+      } catch (error) {
+        // 分离错误码与交付卡 blocker 共用一套中文文案，比裸英文 message 可读。
+        throw Object.assign(error, { message: blockerNames[error?.code] || taskActionError(error) });
+      }
+      if (decision === 'separate' && result?.taskId) {
+        navigate(value.task.dirId || directoryId, result.taskId);
+        notice(`已创建独立任务「${separation.targetTitle || ''}」。`);
+        return;
+      }
+      await refreshEntry();
+      notice(decision === 'defer' ? '分离建议已挂起，可稍后在聊天页或这里继续处理。' : '本轮保留在当前任务。');
+    });
   }
 
   function renderDetails(value) {

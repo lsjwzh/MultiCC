@@ -135,6 +135,24 @@ test('busy and dirty sources retain the suggestion and expose the original error
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_dirty' });
   assert.equal(f.runtime.separation.latest('a').id, p.id); assert.equal(f.store.list('task').length, 1);
 });
+test('a transiently blocked suggestion stays retryable after the conversation advances', async t => {
+  const f = await setup(t), p = f.propose();
+  f.statuses.set('a', { busy: true });
+  await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_busy' });
+  f.statuses.set('a', { busy: false });
+  // The user retried only after the next turn landed: the tail-anchor check has
+  // expired, but a blocked suggestion must not vanish — its error told the user
+  // to retry once the task finished.
+  f.histories.get('a').push({ id: 'u2', role: 'user', content: 'Follow-up', turnId: 'turn-2', taskId: f.source.id },
+    { id: 'a2', role: 'assistant', content: 'Follow-up result', turnId: 'turn-2', taskId: f.source.id });
+  const latest = createTaskShellRuntime(f.ports).separation.latest('a');
+  assert.equal(latest.id, p.id);
+  assert.equal(latest.deferred, true);
+  assert.equal(latest.stale, false, 'blocked-but-anchored suggestion stays acceptable');
+  const result = await createTaskShellRuntime(f.ports).separation.decide('a', p.id, 'separate');
+  assert.equal(result.ok, true);
+  assert.equal(f.creations.length, 1);
+});
 test('blocked separation persists only a bounded safe error code', async t => {
   const f = await setup(t, { withSeparationBarrier: async () => {
     throw Object.assign(new Error('secret /Users/example/token'), { code: 'bad code /Users/example/token' });

@@ -309,6 +309,8 @@
       line-height: 1.35;
     }
     #pending-user-input-text:focus { border-color: var(--chat-warning, #d29922); }
+    /* 保险箱条目的掩码：textarea 的 .type 只读，密码遮蔽只能用 CSS。 */
+    #pending-user-input-text.secret-mask { -webkit-text-security: disc; }
     #pending-user-input-submit {
       flex-shrink: 0;
       min-height: 38px;
