@@ -165,6 +165,61 @@ async function stopServer() {
   assert.match(handoffDoc, new RegExp(uploadPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   fs.rmSync(rewritten[1], { force: true });
 
+  // ── v3 zip transport: export real zip bytes → import-zip end-to-end ──
+  const { readZip } = require('../src/session/handoff-zip');
+  const zipResponse = await fetch(
+    `${BASE}/api/sessions/${sourceId}/bundle.zip?passphrase=${encodeURIComponent(PASSPHRASE)}`,
+    { headers: { Authorization: `Bearer ${TOKEN}` } });
+  assert.equal(zipResponse.status, 200);
+  assert.match(zipResponse.headers.get('content-type') || '', /zip/);
+  const zipBuf = Buffer.from(await zipResponse.arrayBuffer());
+  assert.equal(zipBuf.readUInt32LE(0), 0x04034b50, 'response body is a zip archive');
+  // Standard-tool interop is covered by unit tests; here verify structure via
+  // our own reader: manifest present, assets ride as real files with the
+  // original bytes, and the chat text stays encrypted (never in the clear).
+  const zipEntries = readZip(zipBuf);
+  const zipNames = zipEntries.map(e => e.name);
+  assert.ok(zipNames.includes('manifest.json'));
+  const plaintextJoin = zipEntries.map(e => e.data.toString('latin1')).join('');
+  assert.ok(!plaintextJoin.includes('看这张截图'), 'chat history must stay encrypted inside manifest.json');
+  const metaEntry = JSON.parse(zipEntries.find(e => e.name === 'meta.json').data.toString('utf8'));
+  assert.equal(metaEntry.format, 'multicc-session-handoff');
+  assert.equal(metaEntry.v, 3);
+  assert.ok(metaEntry.counts.messages >= 1);
+  const assetEntries = zipEntries.filter(e => e.name.startsWith('assets/'));
+  assert.ok(assetEntries.length >= 1, JSON.stringify(zipNames));
+  assert.deepEqual(assetEntries[0].data, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
+  assert.ok(zipEntries.some(e => e.name === 'git.bundle'));
+
+  let zipImport = null;
+  let zipResp = await fetch(
+    `${BASE}/api/sessions/import-zip?passphrase=${encodeURIComponent(PASSPHRASE)}&dirId=${dirId}&label=Zip%20Imported`,
+    { method: 'POST', headers: { 'Content-Type': 'application/zip', Authorization: `Bearer ${TOKEN}` },
+      body: zipBuf });
+  zipImport = await zipResp.json();
+  assert.equal(zipResp.status, 200, JSON.stringify(zipImport));
+  assert.equal(zipImport.ok, true);
+  assert.equal(zipImport.restored.gitRestored, true, JSON.stringify(zipImport.restored));
+  assert.ok(zipImport.restored.assets.restored >= 1, JSON.stringify(zipImport.restored));
+  const zipId = zipImport.sessionId;
+  // The replayed commit landed in the zip-imported worktree too.
+  assert.equal(await fs.promises.readFile(
+    path.join(project, '.multicc-worktrees', zipId, 'session-feature.txt'), 'utf8'), 'session feature\n');
+  const zipHistory = await fs.promises.readFile(
+    path.join(dataRoot, 'chat_history', `${zipId}.json`), 'utf8');
+  assert.ok(!zipHistory.includes(uploadPath), 'old temp path must be rewritten (zip import)');
+  const zipRewritten = zipHistory.match(/(\/[^"'\n]*multicc_handoff_[^"'\n]*\.png)/);
+  assert.ok(zipRewritten, 'zip-imported history references the restored asset');
+  assert.deepEqual(fs.readFileSync(zipRewritten[1]), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
+  fs.rmSync(zipRewritten[1], { force: true });
+  // Wrong passphrase must fail closed before any session is created.
+  zipResp = await fetch(`${BASE}/api/sessions/import-zip?passphrase=wrong-pass&dirId=${dirId}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/zip', Authorization: `Bearer ${TOKEN}` },
+      body: zipBuf });
+  assert.equal(zipResp.status, 400);
+  assert.match(await zipResp.text(), /passphrase|corrupt/);
+
+
   // The seeded room was adopted into a board task at boot, and task teardown
   // refuses an unmerged workspace — so release the fixture's branch first, then
   // dispose the task that owns the room, then the directory.
