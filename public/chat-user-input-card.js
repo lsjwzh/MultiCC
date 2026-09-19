@@ -36,6 +36,15 @@
     let lastMessage = null;     // last rendered message, for re-expand after collapse
     let collapsed = false;      // true while the card is hidden and the fab is shown
 
+    // chat.html 里 #pending-user-input-text 是 <textarea>：它的 .type 是只读
+    // getter，严格模式下赋值直接抛 TypeError。掩码因此在 textarea 上走 CSS
+    // （-webkit-text-security），只有真 <input> 宿主才切 type='password'。
+    function maskTextInput(masked) {
+      if (textInput.tagName === 'INPUT') { textInput.type = masked ? 'password' : 'text'; return; }
+      textInput.classList.toggle('secret-mask', masked);
+      textInput.dataset.masked = masked ? '1' : '';
+    }
+
     function setAvailability() {
       const disabled = submitting || !isConnected();
       for (const control of controls) control.disabled = disabled;
@@ -61,7 +70,7 @@
       reason.hidden = true;
       optionsEl.replaceChildren();
       textInput.value = '';
-      textInput.type = 'text';
+      maskTextInput(false);
       if (textInput.placeholder) textInput.placeholder = '';
       setAvailability();
       return true;
@@ -160,7 +169,7 @@
       // Secret mode: masked input, value saved to the local vault (never chat).
       secretName = message.inputType === 'secret' && /^[A-Za-z0-9_.-]{1,64}$/.test(String(message.secretName || ''))
         ? String(message.secretName) : null;
-      textInput.type = secretName ? 'password' : 'text';
+      maskTextInput(secretName !== null);
       textInput.autocomplete = 'off';
       if (textInput.placeholder) {
         textInput.placeholder = secretName ? '输入敏感信息（仅保存到本地保险箱，不进入对话）' : '';
