@@ -26,7 +26,7 @@
 | `GET` | `/api/sessions/:id` | Get session details |
 | `PATCH` | `/api/sessions/:id` | Update label, model, role prompt, memory, streaming, auto-continue, provider |
 | `POST` | `/api/sessions/:id/switch-cli` | Switch a chat CLI (`{ cli, fresh? }`), preserving per-CLI native state and staging a one-shot semantic handoff |
-| `DELETE` | `/api/sessions/:id` | Kill and delete a session. A task-bound hidden room (its task's resume file and the only copy of that task's chat evidence) is refused with `400 { code: "task_bound_session", taskId }`; the supported disposal is `DELETE /api/task-board/tasks/:taskId`. `?force=1` only clears this guard for an ORPHANED binding (the owning task is already gone) — while the task still archives the room, task-history retention still answers `409 TASK_HISTORY_REFERENCED` |
+| `DELETE` | `/api/sessions/:id` | Kill and delete a session. A task-bound hidden room (its task's resume file and the only copy of that task's chat evidence) is refused with `400 { code: "task_bound_session", taskId }`; the supported disposal is `DELETE /api/task-board/tasks/:taskId`. `?force=1` only clears this guard for an ORPHANED binding (the owning task is already gone) — while the task still archives the room, task-history retention still answers `409 TASK_HISTORY_REFERENCED`. The refusal body names the pinning tasks so the UI can point at them: `{ code, blocked: true, reasons: ["task_history_referenced"], tasks: [{ id, title }], taskIds: [...], error: "会话历史仍被任务引用…「<title>」…" }` |
 | `POST` | `/api/sessions/:id/relocate` | Change session's working directory |
 | `POST` | `/api/sessions/:id/restart` | Restart a dead terminal session in place |
 | `GET` | `/api/sessions/:id/merge-status` | Inspect worktree ahead/behind/conflict state |

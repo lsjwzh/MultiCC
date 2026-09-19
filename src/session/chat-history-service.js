@@ -114,12 +114,14 @@ function createChatHistoryService({
   onPostPersistError = () => {},
   canDeleteSession = null,
   isMessageProtected = (_sessionId, message) => !!message.taskId,
+  referencingTasks = () => [],
 } = {}) {
   assertChatHistoryPort(history);
   if (typeof idFactory !== 'function') throw new TypeError('[session] idFactory must be a function');
   if (typeof clock !== 'function') throw new TypeError('[session] clock must be a function');
   if (canDeleteSession !== null && typeof canDeleteSession !== 'function') throw new TypeError('[session] canDeleteSession must be a function');
   if (typeof isMessageProtected !== 'function') throw new TypeError('[session] isMessageProtected must be a function');
+  if (typeof referencingTasks !== 'function') throw new TypeError('[session] referencingTasks must be a function');
   if (!Number.isSafeInteger(maxMessages) || maxMessages < 1) {
     throw new TypeError('[session] maxMessages must be a positive integer');
   }
@@ -258,12 +260,27 @@ function createChatHistoryService({
     }
   }
 
+  // Builds the retention-refusal error and attaches the concrete tasks that pin
+  // the session, so callers (HTTP routes, cascade teardown) can name them to the
+  // user instead of surfacing a bare TASK_HISTORY_REFERENCED code. A board read
+  // failure must never mask the refusal itself, so enrichment is best-effort.
+  function taskReferencedError(sessionId, text) {
+    const error = new Error(text);
+    error.code = 'TASK_HISTORY_REFERENCED';
+    let tasks = [];
+    try {
+      const resolved = referencingTasks(String(sessionId));
+      if (Array.isArray(resolved)) tasks = resolved.filter(Boolean);
+    } catch (_) {}
+    error.tasks = tasks;
+    error.taskIds = tasks.map(task => task.id).filter(Boolean);
+    return error;
+  }
+
   function assertCanDeleteSession(sessionId) {
     const key = String(sessionId);
     if (canDeleteSession ? !canDeleteSession(key) : current(key).some(message => isMessageProtected(key, message))) {
-      const error = new Error('task-linked history must be retained with its task archive');
-      error.code = 'TASK_HISTORY_REFERENCED';
-      throw error;
+      throw taskReferencedError(key, 'task-linked history must be retained with its task archive');
     }
   }
 
@@ -404,9 +421,7 @@ function createChatHistoryService({
     const ids = new Set(messages.map(message => message.id));
     if (current(sessionId).some(message => !ids.has(message.id) && !message._interim
         && isMessageProtected(String(sessionId), message))) {
-      const error = new Error('cannot remove task-linked messages');
-      error.code = 'TASK_HISTORY_REFERENCED';
-      throw error;
+      throw taskReferencedError(sessionId, 'cannot remove task-linked messages');
     }
     const dropped = [];
     const result = withLazyMessages({ dropped: jsonClone(dropped) }, messages);
@@ -423,9 +438,7 @@ function createChatHistoryService({
     const index = messages.findIndex(message => message.id === messageId);
     if (index < 0) return withLazyMessages({ removed: false }, messages);
     if (isMessageProtected(String(sessionId), messages[index])) {
-      const error = new Error('cannot remove task-linked messages');
-      error.code = 'TASK_HISTORY_REFERENCED';
-      throw error;
+      throw taskReferencedError(sessionId, 'cannot remove task-linked messages');
     }
     const [removed] = messages.splice(index, 1);
     const result = withLazyMessages({ removed: true, message: jsonClone(removed) }, messages);
