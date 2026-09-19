@@ -151,6 +151,13 @@ function createSessionBundleRoutes(rawDeps) {
         }
         const memoryFiles = { ...(memoryScopes.session && memoryScopes.session.files) };
 
+        // 1a) Local files the conversation references by path — user uploads
+        //     (temp-dir multicc_* files) and local image refs. Without these
+        //     the imported chat shows dead paths where screenshots used to be.
+        let assets = { files: [], skipped: [], totalBytes: 0 };
+        try { assets = handoffEnv.collectMessageAssets(messages, { tmpDir: os.tmpdir() }); }
+        catch (e) { assets = { files: [], skipped: [{ path: '*', reason: e.message }], totalBytes: 0 }; }
+
         // 1b) Skills: resolve the carried set from the installed inventory.
         let skills = [];
         if (skillsMode !== 'none' && typeof listInstalledSkills === 'function') {
@@ -263,7 +270,7 @@ function createSessionBundleRoutes(rawDeps) {
             // dirId/branch/worktreePath are hints; target rebuilds its own paths.
           },
           messages, memoryFiles, providerState, gitBundleB64, gitBundleNote,
-          memoryScopes, skills: carriedSkills, contextDeps,
+          memoryScopes, skills: carriedSkills, contextDeps, assets,
         };
         const plaintext = Buffer.from(JSON.stringify(payload), 'utf8');
         const enc = bundleEncrypt(String(passphrase), plaintext);
@@ -280,6 +287,8 @@ function createSessionBundleRoutes(rawDeps) {
                     bytes: skill.bytes, truncated: !!skill.truncated,
                   })),
                   repoRemote: contextDeps.repoRemote,
+                  assets: { files: assets.files.length, bytes: assets.totalBytes,
+                            skipped: assets.skipped.length, truncated: !!assets.truncated },
                   note: gitBundleNote },
         });
       } catch (e) {
@@ -332,9 +341,22 @@ function createSessionBundleRoutes(rawDeps) {
       const newSession = r.session;
 
       try {
-        // 1) Restore chat history.
+        // 1) Restore chat history. Carried assets (conversation-referenced
+        //    uploads/images) land in this machine's temp dir first, and the
+        //    message text is rewritten to the new paths so the images render
+        //    again in the imported conversation.
+        let assetMapping = [];
+        if (payload.assets && Array.isArray(payload.assets.files) && payload.assets.files.length) {
+          try { assetMapping = handoffEnv.restoreMessageAssets(payload.assets, { tmpDir: os.tmpdir() }); }
+          catch (e) { /* dead paths are cosmetic; import must not fail on them */ }
+        }
         if (Array.isArray(payload.messages)) {
-          getChatHistoryService().replace(newSid, payload.messages, { reason: 'bundle-import' });
+          const restored = assetMapping.length
+            ? payload.messages.map(m => (m && typeof m.content === 'string')
+                ? { ...m, content: handoffEnv.rewriteAssetPaths(m.content, assetMapping) }
+                : m)
+            : payload.messages;
+          getChatHistoryService().replace(newSid, restored, { reason: 'bundle-import' });
         }
 
         // 2) Restore memory files (v1 flat payload) and the v2 scope map.
@@ -410,7 +432,7 @@ function createSessionBundleRoutes(rawDeps) {
         //    memory scopes and installed skills.
         try {
           const doc = handoffEnv.renderHandoffDoc({ payload, memoryReport: memoryScopeReport,
-                                                     skillResults, gitNote });
+                                                     skillResults, assetMapping, gitNote });
           const memDir = folderMemory.sessionDir(newSession);
           fs.mkdirSync(memDir, { recursive: true });
           fs.writeFileSync(path.join(memDir, 'HANDOFF.md'), doc, 'utf8');
@@ -422,6 +444,7 @@ function createSessionBundleRoutes(rawDeps) {
                                memoryFiles: payload.memoryFiles ? Object.keys(payload.memoryFiles).length : 0,
                                memoryScopes: memoryScopeReport,
                                skills: skillResults,
+                               assets: { restored: assetMapping.length },
                                gitRestored, gitNote } });
       } catch (e) {
         res.status(500).json({ error: 'import failed (session record created): ' + e.message, sessionId: newSid });
