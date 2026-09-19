@@ -1223,8 +1223,6 @@
   "taskIndexIsTarget": "The next message will go to {code}",
   "taskIndexPrevSegment": "Previous segment",
   "taskIndexNextSegment": "Next segment",
-  "taskTargetChip": "Next message goes to {code}",
-  "taskTargetChipTitle": "Open the task index; ◎ marks the current target {code}",
   "taskIndexTargetFailed": "Could not change the send target: {error}",
   "taskIndexTargetStale": "Another page just moved the send target, so the list was re-read; pick again to confirm.",
   "taskAttributionToggle": "Change task attribution",
