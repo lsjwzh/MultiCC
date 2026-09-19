@@ -1410,4 +1410,62 @@ class ManageService {
     if (res.statusCode >= 400) _throw(res);
     return utf8.decode(res.bodyBytes);
   }
+
+  // ── Secrets vault（敏感信息保险箱）─────────────────────────────────────
+  // Mobile mirror of the /manage「敏感信息」panel. The list endpoint returns
+  // metadata only (name/description/source/updatedAt); the value is fetched
+  // one entry at a time via /api/secrets/:name/value when the user taps
+  // 「显示」, matching the web panel's reveal-on-tap contract.
+
+  /// List vault entries (metadata only — values never ride along).
+  Future<List<Map<String, dynamic>>> fetchSecrets() async {
+    final res = await _req('GET', Uri.parse(_url('/api/secrets')));
+    if (res.statusCode >= 400) _throw(res);
+    final decoded = jsonDecode(utf8.decode(res.bodyBytes));
+    if (decoded is! List) return const [];
+    return [
+      for (final item in decoded)
+        if (item is Map) item.cast<String, dynamic>(),
+    ];
+  }
+
+  /// Create or update an entry. 201 on create, 200 on update.
+  Future<void> saveSecret(
+    String name,
+    String value, {
+    String? description,
+  }) async {
+    final res = await _req(
+      'POST',
+      Uri.parse(_url('/api/secrets')),
+      body: jsonEncode({
+        'name': name,
+        'value': value,
+        if (description != null && description.trim().isNotEmpty)
+          'description': description.trim(),
+      }),
+    );
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  /// Delete an entry (404 when missing → surfaced via [_throw]).
+  Future<void> deleteSecret(String name) async {
+    final res = await _req(
+      'DELETE',
+      Uri.parse(_url('/api/secrets/${Uri.encodeComponent(name)}')),
+    );
+    if (res.statusCode >= 400) _throw(res);
+  }
+
+  /// Reveal one entry's value — only ever called from the row's 显示 action.
+  Future<String> revealSecret(String name) async {
+    final res = await _req(
+      'GET',
+      Uri.parse(_url('/api/secrets/${Uri.encodeComponent(name)}/value')),
+    );
+    if (res.statusCode >= 400) _throw(res);
+    final decoded =
+        jsonDecode(utf8.decode(res.bodyBytes)) as Map;
+    return (decoded['value'] ?? '') as String;
+  }
 }
