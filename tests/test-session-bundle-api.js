@@ -57,7 +57,8 @@ async function waitForServer() {
 async function startServer() {
   server = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot },
+    env: { ...process.env, PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot,
+           MULTICC_MEMORY_ROOT: path.join(dataRoot, 'memories') },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   server.stderr.on('data', chunk => { stderr += chunk.toString(); });
@@ -87,6 +88,12 @@ async function stopServer() {
   const sourceId = 'bundle-source';
   await createLegacySession({ dataDir: dataRoot, dirId, id: sourceId, cli: 'claude', stop: stopServer, start: startServer });
   const sourceWorktree = path.join(project, '.multicc-worktrees', sourceId);
+  // Shared-scope memory + project instructions ride along in bundle v2: the
+  // memory waterfall scope map and the context dependency manifest.
+  const memoryRoot = path.join(dataRoot, 'memories');
+  await fs.promises.mkdir(path.join(memoryRoot, dirId, '_shared'), { recursive: true });
+  await fs.promises.writeFile(path.join(memoryRoot, dirId, '_shared', 'handoff-shared.md'), 'shared knowledge\n');
+  await fs.promises.writeFile(path.join(sourceWorktree, 'CLAUDE.md'), '# project rules\n');
   await fs.promises.writeFile(path.join(sourceWorktree, 'session-feature.txt'), 'session feature\n');
   await git(sourceWorktree, ['add', '-A']);
   await git(sourceWorktree, ['-c', 'user.email=test@multicc.local', '-c', 'user.name=MultiCC Test',
@@ -102,7 +109,9 @@ async function stopServer() {
   response = await api('GET', `/api/sessions/${sourceId}/bundle?passphrase=${encodeURIComponent(PASSPHRASE)}`);
   assert.equal(response.status, 200, JSON.stringify(response.data));
   assert.equal(response.data.ok, true);
+  assert.equal(response.data.meta.v, 2);
   assert.equal(response.data.meta.hasGitBundle, true);
+  assert.ok(response.data.meta.scopes.shared >= 1, JSON.stringify(response.data.meta.scopes));
 
   const { salt, iv, ct, tag } = response.data;
   response = await api('POST', '/api/sessions/import', {
@@ -115,6 +124,21 @@ async function stopServer() {
   assert.equal(await fs.promises.readFile(path.join(importedWorktree, 'session-feature.txt'), 'utf8'), 'session feature\n');
   assert.equal(await fs.promises.readFile(path.join(importedWorktree, 'new-main.txt'), 'utf8'), 'new main\n');
   assert.equal(await git(importedWorktree, ['status', '--porcelain']), '');
+
+  // v2 environment payload. The import targets the SAME project directory, so
+  // the shared scope restore is the collision path: the file already exists
+  // and the local copy wins (idempotent re-import never overwrites team
+  // memory). The handoff manifest still lands in the imported session's
+  // private memory folder.
+  assert.equal(await fs.promises.readFile(
+    path.join(memoryRoot, dirId, '_shared', 'handoff-shared.md'), 'utf8'), 'shared knowledge\n');
+  assert.ok(response.data.restored.memoryScopes.shared.skipped.some(
+    s => s.name === 'handoff-shared.md' && s.reason === 'already exists locally'),
+    JSON.stringify(response.data.restored.memoryScopes));
+  const handoffDoc = await fs.promises.readFile(
+    path.join(memoryRoot, dirId, 'sessions', importedId, 'HANDOFF.md'), 'utf8');
+  assert.match(handoffDoc, /HANDOFF/);
+  assert.match(handoffDoc, /来源仓库/);
 
   // The seeded room was adopted into a board task at boot, and task teardown
   // refuses an unmerged workspace — so release the fixture's branch first, then

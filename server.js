@@ -1660,10 +1660,8 @@ mountMemoryBrowserRoutes(app, {
   now: Date.now,
 });
 
-// ── Cross-machine handoff (Happier-parity: move a live session to another machine) ──
-// Export/import of the encrypted session bundle (metadata + chat history + memory
-// files + provider state + git bundle of the worktree branch) lives in
-// src/routes/session-bundle.js; only host wiring stays here.
+// ── Cross-machine handoff: encrypted bundle v2 (memory scopes + skills + context deps
+// + provider + git); lives in src/routes/session-bundle.js, host wiring here. ──
 createSessionBundleRoutes({
   persistedSessions,
   directories,
@@ -1675,6 +1673,8 @@ createSessionBundleRoutes({
   loadChatHistory,
   getChatHistoryService: () => chatHistoryService,
   getFolderMemory: () => folderMemory,
+  listInstalledSkills,
+  getSkillSyncRuntime: () => skillSyncRuntime,
 }).mountRoutes(app);
 
 sessionGitRuntime.mountRoutes(app);
