@@ -67,6 +67,43 @@ void main() {
     expect(answer, '自定义回答');
   });
 
+  // secret 模式：密码框收值，提交走 onSecretSubmit（直存保险箱），绝不落入
+  // onAnswer/聊天文本——与 web chat-user-input-card 的 secret 测试同一条红线。
+  testWidgets('secret mode masks the field and routes to onSecretSubmit', (
+    tester,
+  ) async {
+    String? secret;
+    String? answer;
+    await tester.pumpWidget(
+      _host(
+        PendingUserInputPanel(
+          input: const PendingUserInput(
+            requestId: 'r-secret',
+            question: '请填写 API Key',
+            isSecret: true,
+            secretName: 'OPENAI_API_KEY',
+          ),
+          enabled: true,
+          onAnswer: (value) => answer = value,
+          onSecretSubmit: (value) => secret = value,
+        ),
+      ),
+    );
+
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('pending-secret-text')),
+    );
+    expect(field.obscureText, isTrue, reason: 'secret values must be masked');
+    await tester.enterText(
+      find.byKey(const Key('pending-secret-text')),
+      '  sk-live-123  ',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('pending-submit-text')));
+    expect(secret, 'sk-live-123');
+    expect(answer, isNull, reason: 'secret values must never become chat text');
+  });
+
   // 「已解决 / 忽略」：与「收起」不同，它真的改变服务端的等待态
   // （web 的 #pending-user-input-dismiss）。
   testWidgets('pending input offers 已解决 / 忽略 and reports the tap', (

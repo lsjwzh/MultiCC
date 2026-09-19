@@ -2845,6 +2845,44 @@ class ChatProvider extends ChangeNotifier {
     return result;
   }
 
+  /// 安全弹窗提交：值直存本地保险箱，成功后只发「已保存」确认文案（带
+  /// userInputRequestId，由 ChatService 自动附加）——密钥明文不进入对话、
+  /// 不经过任何 LLM API。保存失败时卡片保留，报一条系统消息。
+  Future<void> submitPendingSecret(String value) async {
+    final pending = _pendingUserInput;
+    if (pending == null || !pending.isSecret) return;
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) return;
+    Map<String, dynamic> result;
+    try {
+      result = await SessionService(settings: settings).saveSecret(
+        pending.secretName,
+        trimmed,
+        sessionId: executionSessionName,
+      );
+    } catch (error) {
+      _addSystemMsg(
+        t('pendingSecretSaveFailed', {
+          'name': pending.secretName,
+          'error': '$error',
+        }),
+      );
+      notifyListeners();
+      return;
+    }
+    if (result['ok'] != true) {
+      _addSystemMsg(
+        t('pendingSecretSaveFailed', {
+          'name': pending.secretName,
+          'error': (result['error'] ?? 'unknown').toString(),
+        }),
+      );
+      notifyListeners();
+      return;
+    }
+    sendMessage('（敏感信息 ${pending.secretName} 已通过安全弹窗填写并保存到本地保险箱，值不会出现在对话里）');
+  }
+
   // Reconnect (app resume / half-open socket recovery). We still reload the
   // authoritative transcript from the server — that's required so an answer
   // that completed while we were disconnected isn't missed (preserving local
