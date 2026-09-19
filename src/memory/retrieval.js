@@ -4,7 +4,8 @@ const path = require('node:path');
 const { hash } = require('../task-shell/context');
 const { relevance } = require('../context/selection');
 const { scanMemoryContent } = require('../memory-store');
-const { DOCS_REGISTRY_RULE, DOCS_REGISTRY_RULE_MARKER } = require('./builtin-rules');
+const { BUILTIN_RULES, DOCS_REGISTRY_RULE, DOCS_REGISTRY_RULE_MARKER, SECRET_VAULT_RULE, SECRET_VAULT_RULE_MARKER } = require('./builtin-rules');
+const BUILTIN_MARKERS = BUILTIN_RULES.map(({ marker }) => marker);
 
 // Read only the caller's scopes. Never follow symlinks into another scope.
 function safeFiles(root, folder, diagnostics) {
@@ -56,7 +57,7 @@ function retrieveMemory(root, folders, persisted, query) {
   for (const [scope, folder, skill] of scopes) {
     for (const { file, name, text } of safeFiles(root, folder, diagnostics)) {
       chunks(text).forEach((excerpt, index) => {
-        if (excerpt.includes(DOCS_REGISTRY_RULE_MARKER)) return; // Dedicated immutable built-in below.
+        if (BUILTIN_MARKERS.some(marker => excerpt.includes(marker))) return; // Dedicated immutable built-ins below.
         if (scanMemoryContent(excerpt)) { diagnostics.push({ path: file, reason: 'unsafe_content' }); return; }
         const relative = path.relative(root, file), id = `memory:${relative}#${index}`;
         const match = relevance(query, `${skill || ''} ${name} ${excerpt}`);
@@ -81,6 +82,9 @@ function retrieveMemory(root, folders, persisted, query) {
   }
   inventory.unshift({ id: 'builtin:docs-registry', version: hash(DOCS_REGISTRY_RULE), mode: 'memory:builtin',
     kind: 'memory', scope: 'builtin', taskName: 'MultiCC · 文档与服务登记', excerpt: DOCS_REGISTRY_RULE,
+    priority: 1000, selected: true, reason: 'builtin', atomic: true });
+  inventory.unshift({ id: 'builtin:secret-vault', version: hash(SECRET_VAULT_RULE), mode: 'memory:builtin',
+    kind: 'memory', scope: 'builtin', taskName: 'MultiCC · 敏感信息保险箱', excerpt: SECRET_VAULT_RULE,
     priority: 1000, selected: true, reason: 'builtin', atomic: true });
   return { inventory, candidates: inventory.filter(s => s.selected), diagnostics };
 }

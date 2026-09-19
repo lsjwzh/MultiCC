@@ -66,6 +66,30 @@ test('records, deduplicates, and rejects stale request_user_input signals', () =
     'turn_not_active');
 });
 
+test('secret-mode signals persist inputType/secretName and reject unsafe names', () => {
+  const { host, states } = fixture();
+  const base = {
+    requestId: 'usrq-secret-1',
+    sessionId: 'chat-1',
+    turnId: 'turn-1',
+    question: '请填写 API Key',
+    options: [],
+    allowMultiple: false,
+    inputType: 'secret',
+    secretName: 'OPENAI_API_KEY',
+  };
+  assert.deepEqual(host.record(base), { ok: true, duplicate: false });
+  const pending = states.get('chat-1').pendingUserInput;
+  assert.equal(pending.inputType, 'secret');
+  assert.equal(pending.secretName, 'OPENAI_API_KEY');
+  // An unsafe secret name degrades to a normal answer card, never a crash.
+  states.get('chat-1').pendingUserInput = null;
+  host.record({ ...base, requestId: 'usrq-secret-2', secretName: '../etc/passwd' });
+  const degraded = states.get('chat-1').pendingUserInput;
+  assert.equal(degraded.inputType, undefined);
+  assert.equal(degraded.secretName, undefined);
+});
+
 test('real user turn clears pending signal while automatic continuation preserves it', () => {
   const { host, states } = fixture();
   states.get('chat-1').pendingUserInput = { requestId: 'usrq-1' };
