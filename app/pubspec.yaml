@@ -108,6 +108,7 @@ flutter:
   assets:
     - assets/i18n/zh.json
     - assets/i18n/en.json
+    - assets/branding/icon.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
