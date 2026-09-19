@@ -71,6 +71,37 @@ if ! [[ "$BUNDLE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{1,127}$ ]]; then
   exit 1
 fi
 
+# ── 分发方式闸门：描述文件里必须列着设备 UDID ───────────────────────────────
+# itms-services 只认 development / ad-hoc（In-House）那几类描述文件 —— 它们才带
+# ProvisionedDevices。App Store 分发型（名字里的 "iOS Team Store Provisioning
+# Profile"、ProfileDistributionType=STORE）一台设备都不列，手机把整个包下完之后
+# 会静默丢掉：服务器这边 manifest、HEAD、GET 全 200，页面上安装按钮也是亮的，只有
+# 用户那边「点了没反应」，然后继续用旧版跑。2026-09-20 发的 129 就是这么废掉的
+# （build 用了 method=app-store 的 ExportOptions），所以这一条放在发布前拦。
+#
+# 测试口子：MULTICC_IPA_PROFILE_PLIST 指到一份已经解好的描述文件 plist 时，跳过
+# security cms —— 真签名没法在单测里造出来，但两种结局（有设备 / 没设备）都要能验。
+PROFILE_ENTRY="$(unzip -Z1 "$SRC" | grep -m1 -E '^Payload/[^/]+\.app/embedded\.mobileprovision$' || true)"
+if [ -z "$PROFILE_ENTRY" ]; then
+  echo "[publish-ipa] ERROR: $SRC 里没有 Payload/*.app/embedded.mobileprovision —— 不能投放" >&2
+  exit 1
+fi
+if [ -n "${MULTICC_IPA_PROFILE_PLIST:-}" ]; then
+  cp "$MULTICC_IPA_PROFILE_PLIST" "$WORK/profile.plist"
+elif ! unzip -p "$SRC" "$PROFILE_ENTRY" > "$WORK/profile.mobileprovision" \
+  || ! security cms -D -i "$WORK/profile.mobileprovision" > "$WORK/profile.plist" 2>/dev/null; then
+  echo "[publish-ipa] ERROR: 解不开 $PROFILE_ENTRY（security cms -D 失败）—— 这个包装不上，先别发布" >&2
+  exit 1
+fi
+if ! plutil -extract ProvisionedDevices raw -o - "$WORK/profile.plist" >/dev/null 2>&1; then
+  echo "[publish-ipa] ERROR: 这个 IPA 是 App Store 分发型签的 —— 描述文件里一台设备都没有，" >&2
+  echo "  itms-services 装不上（手机会下载完再静默丢掉，用户只看到「点了没反应」）。" >&2
+  echo "  改用 development 重新导出：在 app/ 下运行" >&2
+  echo "    flutter build ipa --release --export-options-plist=<method=development 的 plist>" >&2
+  echo "  仓库自带的 app/ios/ExportOptions.plist 是 app-store-connect，产出的包不能走这条通道。" >&2
+  exit 1
+fi
+
 IPA_SHA256="$(shasum -a 256 "$SRC" | awk '{print $1}')"
 IPA_SIZE="$(wc -c < "$SRC" | tr -d '[:space:]')"
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
