@@ -1,9 +1,35 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#0d1117"/>
-  <rect x="40" y="40" width="432" height="432" rx="72" fill="#161b22" stroke="#30363d" stroke-width="4"/>
-  <text x="256" y="200" text-anchor="middle" font-family="system-ui,sans-serif" font-size="108" font-weight="700">
+  <!-- MultiCC logo — one console, many coding agents.
+       Agent chips replace the old single "claude" line: MultiCC orchestrates
+       claude / codex / kimi / opencode / zcode and more CLIs side by side. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#161b22"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <rect x="36" y="36" width="440" height="440" rx="72" fill="#161b22" stroke="#30363d" stroke-width="4"/>
+  <text x="256" y="168" text-anchor="middle" font-family="system-ui,sans-serif" font-size="96" font-weight="700">
     <tspan fill="#f78166">Multi</tspan><tspan fill="#79c0ff">CC</tspan>
   </text>
-  <text x="256" y="320" text-anchor="middle" font-family="monospace" font-size="48" fill="#58a6ff">claude</text>
-  <text x="256" y="380" text-anchor="middle" font-family="monospace" font-size="28" fill="#3fb950">$ _</text>
+  <!-- agent chips row 1 -->
+  <g font-family="ui-monospace,Menlo,monospace" font-size="26" font-weight="600">
+    <rect x="76" y="216" width="120" height="44" rx="22" fill="#f7816622" stroke="#f78166" stroke-width="2"/>
+    <text x="136" y="246" text-anchor="middle" fill="#f78166">claude</text>
+    <rect x="208" y="216" width="112" height="44" rx="22" fill="#79c0ff22" stroke="#79c0ff" stroke-width="2"/>
+    <text x="264" y="246" text-anchor="middle" fill="#79c0ff">codex</text>
+    <rect x="332" y="216" width="96" height="44" rx="22" fill="#d2a8ff22" stroke="#d2a8ff" stroke-width="2"/>
+    <text x="380" y="246" text-anchor="middle" fill="#d2a8ff">kimi</text>
+  </g>
+  <!-- agent chips row 2 -->
+  <g font-family="ui-monospace,Menlo,monospace" font-size="26" font-weight="600">
+    <rect x="96" y="276" width="152" height="44" rx="22" fill="#3fb95022" stroke="#3fb950" stroke-width="2"/>
+    <text x="172" y="306" text-anchor="middle" fill="#3fb950">opencode</text>
+    <rect x="260" y="276" width="104" height="44" rx="22" fill="#e3b34122" stroke="#e3b341" stroke-width="2"/>
+    <text x="312" y="306" text-anchor="middle" fill="#e3b341">zcode</text>
+    <rect x="376" y="276" width="52" height="44" rx="22" fill="#8b949e22" stroke="#8b949e" stroke-width="2"/>
+    <text x="402" y="306" text-anchor="middle" fill="#8b949e">…</text>
+  </g>
+  <text x="256" y="404" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="34" fill="#3fb950">$ &#95;</text>
 </svg>
