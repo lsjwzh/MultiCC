@@ -15,6 +15,7 @@ provider 状态和 worktree 分支的 git bundle；v2 在此之上补齐「执�
 | 私有记忆文件 | ✅（`memoryFiles`） | ✅（同时进 `memoryScopes.session`） |
 | 记忆瀑布其余 scope（shared / task / cli / machine） | ❌ | ✅ `memoryScopes` |
 | 被引用的技能（整个技能文件夹） | ❌ | ✅ `skills` |
+| 对话引用的本地文件（上传的图片/附件、本地图片引用） | ❌ | ✅ `assets`（导入时重写历史路径） |
 | 上下文依赖清单（仓库远端、分支、CLAUDE.md/AGENTS.md、provider env 键名） | ❌ | ✅ `contextDeps` |
 | provider 状态 / git bundle | ✅ | ✅ |
 | 导入后落 `HANDOFF.md` 移植说明 | ❌ | ✅ |
@@ -36,7 +37,17 @@ curl -s "$MULTICC_BASE_URL/api/sessions/<id>/bundle?passphrase=<≥6位口令>" 
 - `skills=a,b,c` — 显式技能清单（出现时默认切到 `explicit`）。
 
 体积护栏：单文件 512KB、单技能 2MB、最多 20 个技能、git bundle 100MB，
-超限项记入 `meta` 与 skipped 清单而不是让导出失败。
+对话引用资产单文件 5MB / 总量 20MB，超限项记入 `meta` 与 skipped 清单而不是
+让导出失败。
+
+**对话引用的文件（assets）**：聊天里上传的图片/附件实际存在系统临时目录
+（`/tmp/multicc_*`，消息文本里只有路径），助手展示的本地图片
+（`![](/path/x.png)`）也只是路径引用。导出时自动扫描消息里的这两类本地
+路径，把仍存在的文件以 base64 收进 bundle；导入时恢复到目标机临时目录
+（`multicc_handoff_*`），并把**导入后历史消息里的路径重写为新位置**，图片
+在队友的会话里照常显示。映射表记入 HANDOFF.md。已不存在的引用（源机器
+临时文件被清理）记为 skipped，不会让导出失败。markdown 里引用的非图片
+本地文件出于安全不携带（防止把任意本机文件打进可传播包）。
 
 ## 导入
 

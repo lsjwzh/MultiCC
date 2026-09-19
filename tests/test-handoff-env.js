@@ -175,6 +175,62 @@ test('restoreMemoryScopes writes shared without overwriting and prefixes narrow 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('collectMessageAssets carries uploads and image refs, skips the rest', () => {
+  const root = tempRoot();
+  const tmpDir = path.join(root, 'tmp');
+  const service = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills') });
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const upload = path.join(tmpDir, 'multicc_1234_abcd12.png');
+  fs.writeFileSync(upload, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const chart = path.join(root, 'chart.png');
+  fs.writeFileSync(chart, 'fakepng');
+  const doc = path.join(root, 'notes.txt');
+  fs.writeFileSync(doc, 'text');
+  const messages = [
+    { role: 'user', content: `看这张图 ${upload}` },
+    { role: 'assistant', content: `图表：![chart](${chart}) 和 ![](https://remote/x.png) 与 data:image/png;base64,xxx` },
+    { role: 'assistant', content: `非图片本地引用 ![](${doc}) 和已消失 ${path.join(tmpDir, 'multicc_99_gone.jpg')}` },
+  ];
+  const collected = service.collectMessageAssets(messages, { tmpDir });
+  const carried = collected.files.map(f => f.path);
+  assert.ok(carried.includes(upload));
+  assert.ok(carried.includes(chart));
+  assert.ok(!carried.includes(doc)); // markdown-referenced but not an image
+  assert.ok(collected.skipped.some(s => s.path === doc && /non-image/.test(s.reason)));
+  assert.ok(collected.skipped.some(s => /multicc_99_gone/.test(s.path)));
+  assert.ok(collected.files.every(f => f.encoding === 'base64'));
+
+  // Per-file cap: default service would carry it, so use a tiny cap variant.
+  const capped = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills'), maxAssetFileBytes: 2 });
+  const tiny = capped.collectMessageAssets(messages, { tmpDir });
+  assert.ok(tiny.files.length === 0 || tiny.files.every(f => f.size <= 2));
+  assert.ok(tiny.skipped.length >= 2);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('restoreMessageAssets rewrites paths so imported conversations render', () => {
+  const root = tempRoot();
+  const srcDir = path.join(root, 'src-tmp');
+  const dstDir = path.join(root, 'dst-tmp');
+  fs.mkdirSync(srcDir, { recursive: true });
+  fs.mkdirSync(dstDir, { recursive: true });
+  const service = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills') });
+  const oldPath = path.join(srcDir, 'multicc_1_ab.png');
+  const bytes = Buffer.from([1, 2, 3, 4]);
+  const assets = { files: [{ path: oldPath, name: 'multicc_1_ab.png', size: 4,
+                             encoding: 'base64', content: bytes.toString('base64') }] };
+  const mapping = service.restoreMessageAssets(assets, { tmpDir: dstDir });
+  assert.equal(mapping.length, 1);
+  assert.notEqual(mapping[0].to, oldPath);
+  assert.match(mapping[0].to, /multicc_handoff_/);
+  assert.deepEqual(fs.readFileSync(mapping[0].to), bytes);
+  const rewritten = service.rewriteAssetPaths(`看 ${oldPath} 这张图`, mapping);
+  assert.equal(rewritten, `看 ${mapping[0].to} 这张图`);
+  // Missing / unsafe assets are dropped, never thrown.
+  assert.deepEqual(service.restoreMessageAssets({ files: [{ path: '/x', name: '../up', content: '' }] }, { tmpDir: dstDir }), []);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('renderHandoffDoc mentions repo, provider, memory and skills sections', () => {
   const root = tempRoot();
   const service = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills') });
