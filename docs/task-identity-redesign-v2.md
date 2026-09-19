@@ -487,4 +487,21 @@ P1 上线后已能整理对话并看到多个码；P2 实现“尽量把不同�
 `target` 标记跟随，且 `scopeRevision` 不变）。新测试均先验证过没有实现时会失败。
 
 仍然留后：§9.1 的「自动模式落地后显示『已划为 #ABCD · 撤销』」（auto 档未开）；
-Flutter 端与 Web 的对应界面（贴段建议卡、四字码索引、输入目标胶囊）。
+Flutter 端与 Web 的对应界面（贴段建议卡、四字码索引）。
+
+### 13.7 输入目标胶囊下线（2026-09-19，用户裁决）
+
+§13.4 的「输入目标常驻胶囊」上线一天后按用户要求删掉：它只是把服务端的输入游标
+（`currentTaskId`）复述一遍，而游标真正被改动的入口只有一个（索引里的 ◎），
+胶囊既不给出新信息、又在输入框上方常驻一行、把 composer 挤高了。
+
+删除范围：`public/chat-task-target.js`（整个模块）与 `tests/test-chat-task-target.js`、
+`chat.html` 的 `#next-task-target` 按钮与脚本标签、`chat-task-index.css` 的
+`#next-task-target` 规则与 `task-target-flash` 关键帧、`chat.js` 的三处接线
+（`onTarget` / `notify` / `task_state` 回读）、`chat-task-boot.js` 的
+`mountComposerTarget`、i18n 的 `taskTargetChip` / `taskTargetChipTitle`
+（源在 `app/assets/i18n/*.json`，`scripts/generate-i18n.js` 重新生成 Web 目录）。
+
+保留：`chatScope.taskShortCode` 只读投影（索引行、任务板、App 都在用）、
+索引里的 ◎ 与 `select-target` 写路径（现在它是唯一的目标界面）、索引打开/归属变更
+时重新拉取目录。也就是说「下一条发给谁」仍然可查、可改，只是不再常驻显示。

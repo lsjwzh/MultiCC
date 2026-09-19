@@ -2676,9 +2676,6 @@
         <span class="dm-caret" aria-hidden="true">▾</span>
       </button>
     </div>
-    <!-- 「下一条发给 #ABCD」：当前输入游标的常驻提示（chat-task-target.js 填充）。
-         它只显示服务端游标；点击打开任务索引，索引里 ◎ 是同一个状态。 -->
-    <button id="next-task-target" type="button" hidden></button>
     <span id="liveness-pill" title="" role="button" tabindex="0" aria-live="polite" style="display:none;position:fixed;right:18px;bottom:18px;z-index:30;margin:0;font-size:12px;color:var(--chat-danger, #ff7b72);background:var(--chat-danger-soft, #1b1113);border:1px solid var(--chat-danger, #f85149);box-shadow:var(--chat-shadow, 0 4px 16px #0008);border-radius:999px;padding:7px 12px;cursor:pointer;"><span id="liveness-pill-dot" class="lv-dot lv-unknown"></span><span id="liveness-pill-label"></span> · 点击终止并重试</span>
   </div>
 
@@ -2912,7 +2909,6 @@
   <script src="chat-quote.js"></script>
   <script src="chat-history-view.js"></script>
   <script src="chat-task-index.js"></script>
-  <script src="chat-task-target.js"></script>
   <script src="chat-message-focus.js"></script>
   <script src="chat-scroll-controller.js"></script>
   <script src="memo-controller.js"></script>
