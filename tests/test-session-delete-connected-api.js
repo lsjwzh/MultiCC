@@ -162,6 +162,15 @@ function waitForFrame(socket, type) {
   response = await api('DELETE', `/api/sessions/${sessionId}?force=1`);
   assert.equal(response.status, 409);
   assert.equal(response.data.code, 'TASK_HISTORY_REFERENCED');
+  // The refusal names the pinning task so the UI can point the user at it
+  // instead of showing a bare TASK_HISTORY_REFERENCED code.
+  assert.ok(Array.isArray(response.data.tasks) && response.data.tasks.length > 0,
+    'the 409 body carries the referencing tasks');
+  assert.ok(response.data.tasks.some(task => task.id === sessionTaskId),
+    'the owning task is among the referencing tasks');
+  assert.ok(response.data.taskIds.includes(sessionTaskId));
+  assert.equal(typeof response.data.error, 'string');
+  assert.ok(response.data.error.length > 0, 'a human-readable refusal message is present');
   response = await api('GET', `/api/sessions/${sessionId}`);
   assert.equal(response.status, 200, 'retention refusal leaves the room addressable');
 

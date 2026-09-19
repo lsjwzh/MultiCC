@@ -271,6 +271,7 @@ function createChatHistoryRuntime(rawDeps) {
     retentionPolicy: typeof deps.retentionPolicy === 'function' ? deps.retentionPolicy : null,
     canDeleteSession: deps.canDeleteSession,
     isMessageProtected: deps.isMessageProtected,
+    referencingTasks: deps.referencingTasks,
     postPersist: handleCommittedHistoryEvent,
     onPostPersistError: (error, event) => {
       logFailure('chat_history_post_persist_failed', error, event && event.sessionId);

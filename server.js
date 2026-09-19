@@ -161,7 +161,7 @@ const {
   getMemoryEntries,
   normalizeManualMemory,
 } = require('./src/memory/runtime');
-const { createTaskHistoryRetention } = require('./src/session/task-history-retention');
+const { createTaskHistoryRetention, taskHistoryRefusal } = require('./src/session/task-history-retention');
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { mountShareRoutes } = require('./src/routes/share');
@@ -792,7 +792,7 @@ async function seedCommanderSession(dir) {
 async function destroySessionCascade(s, d, opts = {}) {
   if ([...persistedSessions.values()].some(r => r.workspaceOwnerSessionId === s.id) || s.retiredWorktrees?.length) return { ok: false, blocked: true, code: 'shell_workspace_referenced', reasons: ['shell_workspace_referenced'] };
   try { chatHistoryService?.assertCanDeleteSession(s.id); }
-  catch (error) { return { ok: false, code: error.code || 'history_check_failed', blocked: true, reasons: ['task_history_referenced'] }; }
+  catch (error) { return taskHistoryRefusal(error); }
   const active = sessions.get(s.id), chat = chatSessions.get(s.id);
   let removal = null;
   // Remove the worktree before tearing down runtime/persistence. A default
