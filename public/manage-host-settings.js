@@ -407,6 +407,7 @@
       if (sfAvail) sfAvail.textContent = av.sakurafrp ? '· 已安装' : '· 未检测到 sakurafrp';
       loadFunnelStatus();
       loadIpv6Status();
+      loadSakurafrpEnrichment();
       // advanced
       document.getElementById('tnl-interval').value = c.intervalSec;
       document.getElementById('tnl-failthreshold').value = c.failThreshold;
@@ -503,6 +504,104 @@
       setTimeout(loadTunnelSettings, 1500);
     } catch (e) {
       if (msg) { msg.textContent = '失败: ' + e.message; msg.className = 'status-text err'; }
+    }
+  }
+
+  // ── SakuraFrp account/tunnel enrichment + CLI-first onboarding ──
+  // The monitor only probes "does the URL answer". These surface the actionable
+  // account facts (traffic / sign-in / online) and the headless install + honest
+  // public-URL backfill. The access token never reaches the browser.
+  function sfFmtBytes(n) {
+    if (!Number.isFinite(n) || n <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  async function loadSakurafrpEnrichment() {
+    const acct = document.getElementById('tnl-sf-account');
+    const tnl = document.getElementById('tnl-sf-tunnel');
+    const backfillBtn = document.getElementById('tnl-sf-backfill');
+    const boundInput = document.getElementById('tnl-sf-bounddomain');
+    try {
+      const res = await fetch('/api/tunnel/sakurafrp' + tokenQS('?'));
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        const why = data.reason === 'no_token'
+          ? '未绑定访问密钥（在"凭证"填写，或 macOS 启动器登录后自动读取）'
+          : data.reason === 'api_error' ? 'API 调用失败：' + (data.message || '') : '不可用';
+        if (acct) acct.textContent = why;
+        if (tnl) tnl.textContent = '-';
+        return;
+      }
+      const u = data.user || {};
+      if (acct) {
+        acct.textContent = `${u.name || u.id || '?'} · 流量 ${sfFmtBytes(u.trafficUsed)}/${sfFmtBytes(u.trafficTotal)}`
+          + ` · ${u.signed ? '已签到' : '未签到'}` + (u.realname ? ' · 已实名' : '');
+      }
+      const a = data.access;
+      if (tnl) {
+        if (a) {
+          const reach = a.needsBoundDomain ? '需绑定 *.nyat.app 域名（auto_https）'
+            : a.publicUrl ? a.publicUrl : '无公网地址（' + (a.reason || '未知') + '）';
+          tnl.textContent = `${a.name || a.tunnelId} · ${a.type || '?'} · ${a.online ? '在线' : '离线'}`
+            + ` · ${a.nodeName || a.nodeHost || ''} · ${reach}`;
+        } else {
+          tnl.textContent = data.tunnelCount ? `共 ${data.tunnelCount} 条隧道` : '无隧道';
+        }
+      }
+      // Only auto_https tunnels need the paste box; others auto-derive.
+      if (boundInput) boundInput.style.display = data.needsBoundDomain ? '' : 'none';
+      if (backfillBtn) backfillBtn.textContent = data.needsBoundDomain ? '回填' : '自动回填';
+    } catch (_) { /* enrichment is best-effort; the panel still works without it */ }
+  }
+
+  async function installSakurafrp() {
+    const btn = document.getElementById('tnl-sf-install');
+    const msg = document.getElementById('tnl-sf-install-msg');
+    if (btn) btn.disabled = true;
+    if (msg) { msg.textContent = '正在下载并校验 frpc…'; msg.className = 'status-text'; }
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (_urlToken) headers['X-Access-Token'] = _urlToken;
+      const res = await fetch('/api/tunnel/sakurafrp/install', { method: 'POST', headers });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.message || data.reason || ('HTTP ' + res.status));
+      if (msg) { msg.textContent = '已安装 frpc ' + (data.version || '') + ' → ' + (data.path || ''); msg.className = 'status-text ok'; }
+      loadTunnelSettings();
+    } catch (e) {
+      if (msg) { msg.textContent = '安装失败: ' + e.message; msg.className = 'status-text err'; }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function backfillSakurafrpUrl() {
+    const btn = document.getElementById('tnl-sf-backfill');
+    const msg = document.getElementById('tnl-sf-backfill-msg');
+    const boundInput = document.getElementById('tnl-sf-bounddomain');
+    if (btn) btn.disabled = true;
+    if (msg) { msg.textContent = '正在回填…'; msg.className = 'status-text'; }
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (_urlToken) headers['X-Access-Token'] = _urlToken;
+      const res = await fetch('/api/tunnel/sakurafrp/public-url', {
+        method: 'POST', headers,
+        body: JSON.stringify({ boundDomain: boundInput ? boundInput.value.trim() : '' }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        const hint = data.reason === 'bound_domain_required'
+          ? '请填写绑定的 *.nyat.app 域名' : (data.message || data.reason || ('HTTP ' + res.status));
+        throw new Error(hint);
+      }
+      if (msg) { msg.textContent = '已回填公网地址：' + data.url; msg.className = 'status-text ok'; }
+      loadTunnelSettings();
+    } catch (e) {
+      if (msg) { msg.textContent = '回填失败: ' + e.message; msg.className = 'status-text err'; }
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -833,6 +932,9 @@
     loadTunnelSettings,
     saveTunnelSettings,
     restartTunnel,
+    installSakurafrp,
+    backfillSakurafrpUrl,
+    loadSakurafrpEnrichment,
     restartMulticcService,
     loadIpv6Status,
     applyFunnel,
