@@ -132,6 +132,12 @@ class PendingUserInput {
   final List<String> options;
   final bool allowMultiple;
 
+  /// secret 模式（inputType == 'secret'）：面板变密码框，提交值直存服务端
+  /// 保险箱（POST /api/secrets），只有「已保存」确认文案进入对话——与 web 的
+  /// chat-secret-submit.js 同一条红线：密钥明文不经过聊天与 LLM API。
+  final bool isSecret;
+  final String secretName;
+
   const PendingUserInput({
     required this.requestId,
     this.taskId,
@@ -139,12 +145,18 @@ class PendingUserInput {
     this.reason = '',
     this.options = const [],
     this.allowMultiple = false,
+    this.isSecret = false,
+    this.secretName = '',
   });
 
   static PendingUserInput? fromJson(Map<String, dynamic> json) {
     final requestId = (json['requestId'] ?? '').toString().trim();
     if (requestId.isEmpty) return null;
     final rawOptions = json['options'];
+    // 名称校验与 web 卡片/服务端一致；不合法时退化为普通回答卡，绝不崩溃。
+    final secretName = (json['secretName'] ?? '').toString().trim();
+    final isSecret = json['inputType'] == 'secret' &&
+        RegExp(r'^[A-Za-z0-9_.-]{1,64}$').hasMatch(secretName);
     return PendingUserInput(
       requestId: requestId,
       taskId: _optionalString(json['taskId']),
@@ -157,6 +169,8 @@ class PendingUserInput {
                 .toList(growable: false)
           : const [],
       allowMultiple: json['allowMultiple'] == true,
+      isSecret: isSecret,
+      secretName: isSecret ? secretName : '',
     );
   }
 }

@@ -1,11 +1,18 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const http = require('http');
 const test = require('node:test');
 const express = require('express');
+// Isolate the vault store before router-tool-host (→ secrets-vault) resolves
+// its STORE path: the spawnProcess env-injection test below writes entries.
+process.env.MULTICC_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rth-test-'));
 const { isLocalRequest } = require('../src/request-locality');
 const { createRouterToolHost } = require('../src/router-tool-host');
+const vault = require('../src/secrets-vault');
 
 async function listen(server) {
   await new Promise((resolve, reject) => {
@@ -238,4 +245,40 @@ test('internal bridge requires loopback plus its scoped process capability', asy
   assert.equal(observerWarnings.length, 2, 'a fulfilled false projection is observable too');
   assert.equal(observerWarnings[1].fields.observer, 'task_board');
   assert.equal(observerWarnings[1].fields.error, 'task_board_declined_admission');
+});
+
+test('spawnProcess injects vault entries into the child env (set-if-absent)', () => {
+  vault._resetForTests();
+  vault.upsert({ name: 'RTH_SMOKE_TOKEN', value: 'smoke-1' });
+  vault.upsert({ name: 'ANTHROPIC_API_KEY', value: 'must-not-inject' });
+  const host = createRouterToolHost({ express, isLocalRequest, logger: { warn() {}, error() {} } });
+  host.configure({
+    records: new Map([['s1', { id: 's1', dirId: 'dir', kind: 'chat', type: 'worker' }]]),
+    orchestrationRuntime: {
+      operations: { get: async () => null, list: async () => [] },
+      waits: { get: async () => null },
+    },
+    dispatchToSession: async () => ({ ok: false }),
+    recordUserInput: async () => ({ ok: true }),
+    listSecrets: () => vault.list(),
+  });
+  const spawnProbe = baseEnv => {
+    let seen = null;
+    host.spawnProcess({
+      cli: 'claude',
+      spawn: (cmd, args, opts) => { seen = opts.env; return { on() {}, once() {}, kill() {} }; },
+      command: 'true', args: [], cwd: process.cwd(),
+      env: { ...baseEnv }, sessionId: 's1', turnId: 't1',
+    });
+    return seen;
+  };
+  // Fresh child env: injectable entry lands, routing namespace never does, and
+  // the MULTICC_* host marker set by processContext stays authoritative.
+  const fresh = spawnProbe({ PATH: process.env.PATH });
+  assert.equal(fresh.RTH_SMOKE_TOKEN, 'smoke-1');
+  assert.equal('ANTHROPIC_API_KEY' in fresh, false);
+  assert.equal(fresh.MULTICC_SESSION_ID, 's1', 'processContext MULTICC_* markers stay authoritative');
+  // Provider-set keys win (set-if-absent): the vault value must not clobber.
+  const pinned = spawnProbe({ RTH_SMOKE_TOKEN: 'provider-set' });
+  assert.equal(pinned.RTH_SMOKE_TOKEN, 'provider-set');
 });

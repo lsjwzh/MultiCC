@@ -115,6 +115,27 @@ void main() {
     expect(PendingUserInput.fromJson({'question': 'missing id'}), isNull);
   });
 
+  test('secret-mode pending input parses safely and degrades on bad names', () {
+    final secret = PendingUserInput.fromJson({
+      'requestId': 'r-sec',
+      'question': '请填写 API Key',
+      'inputType': 'secret',
+      'secretName': 'OPENAI_API_KEY',
+    });
+    expect(secret!.isSecret, isTrue);
+    expect(secret.secretName, 'OPENAI_API_KEY');
+
+    // 不合法名称退化为普通回答卡（与 web 卡片/服务端同一校验），绝不崩溃。
+    final degraded = PendingUserInput.fromJson({
+      'requestId': 'r-sec-2',
+      'question': 'q',
+      'inputType': 'secret',
+      'secretName': '../etc/passwd',
+    });
+    expect(degraded!.isSecret, isFalse);
+    expect(degraded.secretName, isEmpty);
+  });
+
   test('structured API error prevents unsafe manual retry', () {
     final partial = ApiErrorPolicyState.fromJson({
       'state': 'failed',
