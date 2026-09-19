@@ -135,3 +135,32 @@ test('agent-sourced posts are labelled and persistence round-trips', () => {
   const mode = fs.statSync(vault.STORE).mode & 0o777;
   assert.equal(mode, 0o600);
 });
+
+test('envOverlay injects clean names and skips routing namespaces', () => {
+  reset();
+  vault.upsert({ name: 'MY_TOKEN', value: 'tok-1' });
+  vault.upsert({ name: 'github_token', value: 'ghp-1' }); // lowercase stays injectable
+  vault.upsert({ name: 'ANTHROPIC_API_KEY', value: 'must-not-inject' });
+  vault.upsert({ name: 'CLAUDE_CODE_FABLE_MODEL', value: 'must-not-inject' });
+  vault.upsert({ name: 'OPENAI_API_KEY', value: 'must-not-inject' });
+  vault.upsert({ name: 'CODEX_HOME', value: '/must-not-inject' });
+  vault.upsert({ name: 'MULTICC_SESSION_ID', value: 'must-not-inject' });
+  vault.upsert({ name: 'has.dots-and-dashes', value: 'not-an-env-name' });
+  const overlay = vault.envOverlay();
+  assert.deepEqual(Object.keys(overlay).sort(), ['MY_TOKEN', 'github_token']);
+  assert.equal(overlay.MY_TOKEN, 'tok-1');
+  assert.equal(overlay.github_token, 'ghp-1');
+});
+
+test('applyEnvOverlay is set-if-absent so provider routing stays authoritative', () => {
+  reset();
+  vault.upsert({ name: 'MY_TOKEN', value: 'tok-2' });
+  vault.upsert({ name: 'PINNED', value: 'vault-value' });
+  const env = { MY_TOKEN: 'provider-set', PINNED: '' };
+  vault.applyEnvOverlay(env);
+  assert.equal(env.MY_TOKEN, 'provider-set', 'existing keys are never overridden');
+  // Empty-string pins count as present (claude terminal blanks routing keys
+  // with '' — those must not be resurrected from the vault either).
+  assert.equal(env.PINNED, '');
+  assert.equal(vault.applyEnvOverlay(null), null, 'degrades without throwing');
+});

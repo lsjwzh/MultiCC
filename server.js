@@ -1067,7 +1067,7 @@ async function createSession(id) {
   // Per-session provider override is injected into tmux; Codex capture below
   // also uses the selected CODEX_HOME.
   const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
-  const termEnv = { ...provEnv.env, ...(persisted.loginEnv || {}) }; // loginEnv: allowlisted login-terminal pins (sanitizeLoginEnv), e.g. CODEX_HOME=<account dir>
+  const termEnv = { ...provEnv.env, ...(persisted.loginEnv || {}) }; secretsVault.applyEnvOverlay(termEnv); // loginEnv: allowlisted login-terminal pins (sanitizeLoginEnv), e.g. CODEX_HOME=<account dir>; 保险箱条目按名注入 env（set-if-absent，见 src/secrets-vault.js）
   if (persisted.cli === 'claude') {
     for (const k of providers.CLAUDE_ROUTING_KEYS) {
       if (!(k in termEnv)) termEnv[k] = '';

@@ -125,6 +125,37 @@ function has(name) {
   return clean ? entries.has(clean) : false;
 }
 
+// ── Env projection: 统一注入子进程环境变量 ──────────────────────────────────
+// Every vault entry whose name is a legal env-var identifier is injected into
+// spawned CLI children under the SAME name (no per-entry mapping config).
+// Two guards keep the host in control of its own routing:
+//   1. Names in provider/transport namespaces (ANTHROPIC_/CLAUDE_/OPENAI_/
+//      CODEX_/MULTICC_) are never injected — they could hijack per-session
+//      provider routing, resurrect a purged official-relay bypass, or land in
+//      the per-session --settings mirror (which would copy the value to disk).
+//   2. applyEnvOverlay is set-if-absent, so anything the provider stack, login
+//      pins or host markers already set stays authoritative.
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_EXCLUDED_PREFIXES = ['ANTHROPIC_', 'CLAUDE_', 'OPENAI_', 'CODEX_', 'MULTICC_'];
+
+function envOverlay() {
+  const overlay = {};
+  for (const [name, entry] of entries) {
+    if (!ENV_NAME_RE.test(name)) continue; // '.', '-' 等名字只进保险箱，不进 env
+    if (ENV_EXCLUDED_PREFIXES.some(prefix => name.startsWith(prefix))) continue;
+    overlay[name] = entry.value;
+  }
+  return overlay;
+}
+
+function applyEnvOverlay(env) {
+  if (!env || typeof env !== 'object') return env;
+  for (const [name, value] of Object.entries(envOverlay())) {
+    if (!(name in env)) env[name] = value;
+  }
+  return env;
+}
+
 function mount(app) {
   app.get('/api/secrets', (req, res) => {
     res.json(safeList());
@@ -166,6 +197,9 @@ module.exports = {
   remove,
   reveal,
   has,
+  envOverlay,
+  applyEnvOverlay,
+  ENV_EXCLUDED_PREFIXES,
   // Test hooks — the production singleton loads once at require time.
   _resetForTests() { entries = new Map(); },
   _saveForTests: save,

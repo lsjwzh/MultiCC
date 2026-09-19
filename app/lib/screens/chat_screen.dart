@@ -894,6 +894,10 @@ class _ChatViewState extends State<ChatView> {
                                     provider.connectionState ==
                                     ChatConnectionState.connected,
                                 onAnswer: provider.sendMessage,
+                                onSecretSubmit:
+                                    (value) => provider.submitPendingSecret(
+                                      value,
+                                    ),
                                 onCollapse: provider.collapsePendingUserInput,
                                 onDismiss: () =>
                                     _dismissPendingUserInput(provider),
