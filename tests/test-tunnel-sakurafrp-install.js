@@ -25,8 +25,14 @@ const {
 
 const md5 = (buf) => crypto.createHash('md5').update(buf).digest('hex');
 
+const createdDirs = [];
+test.after(() => {
+  for (const dir of createdDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tmpDest(name = 'frpc') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-sakurafrp-install-'));
+  createdDirs.push(dir);
   return { dir, dest: path.join(dir, name) };
 }
 
