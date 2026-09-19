@@ -23,6 +23,7 @@ import 'events_screen.dart';
 import 'main_shell.dart';
 import 'provider_screen.dart';
 import 'push_settings_screen.dart';
+import 'secrets_screen.dart';
 import 'token_usage_screen.dart';
 import 'tunnel_settings_screen.dart';
 import 'voice_settings_screen.dart';
@@ -951,6 +952,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   MaterialPageRoute<void>(
                     builder: (_) =>
                         VoiceSettingsScreen(settings: widget.settings),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              _NavTile(
+                icon: Icons.lock_outline_rounded,
+                title: t('secretsVaultTitle'),
+                subtitle: t('secretsVaultHint'),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => SecretsScreen(settings: widget.settings),
                   ),
                 ),
               ),
