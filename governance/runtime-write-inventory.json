@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-09-12",
+  "reviewedAt": "2026-09-18",
   "entries": [
     {
       "id": "server-env",
@@ -196,6 +196,19 @@
         {
           "file": "src/paths.js",
           "anchor": "? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')"
+        }
+      ]
+    },
+    {
+      "id": "sakurafrp-frpc-binary",
+      "classification": "external-owner",
+      "owner": "SakuraFrp frpc installer",
+      "rationale": "The standalone frpc data-plane binary is a large replaceable third-party runtime asset downloaded from the SakuraFrp CDN, not transactional MultiCC state. Installs without MULTICC_DATA_DIR keep it under the historical ~/.multicc root; configured installs stay isolated below their own data root.",
+      "migrationStrategy": "Keep production assets below a dedicated bin root, verify every download's MD5 and byte size before activation, and reinstall from the /system/clients manifest instead of copying binaries when the layout changes.",
+      "sources": [
+        {
+          "file": "src/tunnel-sakurafrp-install.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'bin')"
         }
       ]
     },
