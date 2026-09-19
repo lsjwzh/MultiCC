@@ -110,7 +110,17 @@ class _SetupScreenState extends State<SetupScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Logo
+                // Logo: 新品牌图标（agent 胶囊阵列），资源缺失时退化为纯文字
+                Center(
+                  child: Image.asset(
+                    'assets/branding/icon.png',
+                    width: 72,
+                    height: 72,
+                    errorBuilder: (context, error, stackTrace) =>
+                        const SizedBox.shrink(),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 const Text(
                   'MultiCC',
                   textAlign: TextAlign.center,
