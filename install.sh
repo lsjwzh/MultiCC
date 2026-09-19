@@ -2,12 +2,12 @@
 # ============================================================================
 # MultiCC — One-Click Install Script
 # ============================================================================
-# MultiCC version  2.0.0
+# MultiCC version  2.0.1
 # Release channel  stable — see https://github.com/lsjwzh/MultiCC/releases
 # ============================================================================
 # Usage:
 #   Stable release:
-#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.0/install.sh | bash -s -- --branch v2.0.0
+#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.1/install.sh | bash -s -- --branch v2.0.1
 #   Latest (main branch, may be ahead of the latest stable release):
 #     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
 #
@@ -127,7 +127,7 @@ banner() {
 }
 
 # MultiCC version — keep in sync with package.json when cutting a release
-INSTALLER_VERSION="2.0.0"
+INSTALLER_VERSION="2.0.1"
 
 # ── Parse flags ──────────────────────────────────────────────────────────
 INSTALL_DIR=""
@@ -226,13 +226,12 @@ else
 fi
 
 # ── Detect Node.js ────────────────────────────────────────────────────────
-# server.js does `require('chokidar')`, and chokidar 5 is ESM-only. Loading a
-# pure-ESM package via require() without a flag was only backported to Node
-# 20.19.0 (20.x line) and 22.12.0 (22.x line). On Node 18 or 20.0–20.18 the
-# server crashes at startup with ERR_REQUIRE_ESM, so we gate here on the exact
-# floor (≥20.19.0) instead of letting users discover it only at `start`.
-NODE_MIN_MAJOR=20
-NODE_MIN_MINOR=19
+# server.js uses the built-in `node:sqlite` module, which stabilized in Node
+# 22.16. Both server.js and the ./multicc manager hard-exit below that floor,
+# so we gate here on the exact minimum (≥22.16.0) instead of letting users
+# discover it only at `start`.
+NODE_MIN_MAJOR=22
+NODE_MIN_MINOR=16
 
 # 0 (true) if major.minor is older than the required floor.
 node_too_old() {
@@ -244,13 +243,13 @@ node_too_old() {
 print_node_install_hint() {
   echo ""
   if [ "$IS_MACOS" = true ]; then
-    echo "  Install: brew install node       # Homebrew ships a current (>= 20.19) Node"
+    echo "  Install: brew install node       # Homebrew ships a current (>= 22.16) Node"
   else
     echo "  Install:"
-    echo "    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -   # recommended (>= 20.19)"
+    echo "    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -   # recommended (>= 22.16)"
     echo "    sudo apt-get install -y nodejs"
   fi
-  echo "  Or visit: https://nodejs.org/en/download   (pick an LTS >= 20.19)"
+  echo "  Or visit: https://nodejs.org/en/download   (pick an LTS >= 22.16)"
 }
 
 if command -v node >/dev/null 2>&1; then
@@ -259,7 +258,7 @@ if command -v node >/dev/null 2>&1; then
   NODE_MINOR="$(echo "$NODE_VERSION" | cut -d. -f2)"
   if node_too_old "$NODE_MAJOR" "$NODE_MINOR"; then
     err "Node.js v${NODE_VERSION} found, but v${NODE_MIN_MAJOR}.${NODE_MIN_MINOR}.0+ is required."
-    echo "  (the server depends on chokidar 5, whose require(ESM) support landed in Node 20.19 / 22.12)"
+    echo "  (the server uses the built-in node:sqlite module, which requires Node 22.16+)"
     print_node_install_hint
     exit 1
   fi
