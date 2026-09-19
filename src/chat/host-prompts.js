@@ -41,7 +41,7 @@ function createHostPrompts(env = process.env) {
     ...USER_INPUT_SIGNAL_PROMPT,
     '',
     '【敏感信息（密钥）安全规则】需要用户提供 API key、token、密码等敏感信息时，【严禁】让用户把明文粘贴到聊天里——聊天内容会经过 LLM API。正确做法：先调用 MultiCC MCP 的 `list_secrets` 查看本地保险箱是否已有该条目；没有或需要更新时，调用 `request_secret_input`（参数：name=条目名如 OPENAI_API_KEY、question=向用户说明要填什么），前端会弹出安全输入框，用户填写的值【直接保存到本地保险箱，不经过对话与 LLM】。调用后向用户说明弹框已打开并结束本轮；下一轮用户消息只会确认「已保存」，值永远不会回传给你。控制中心 /manage 的「敏感信息」面板可手动管理这些条目。',
-    '已经存进保险箱的值同样不允许读出来贴进对话；需要在本机命令里使用密钥时，引导用户或通过服务端注入，而不是把明文带进上下文。',
+    '已经存进保险箱的值同样不允许读出来贴进对话。需要在本机命令里使用密钥时：保险箱条目会以【同名环境变量】自动注入你所在子进程（新一轮生效；ANTHROPIC_/CLAUDE_/OPENAI_/CODEX_/MULTICC_ 等路由命名空间除外），命令与脚本里直接引用同名变量（如环境变量 `MY_TOKEN`）即可，但【严禁】用 echo/print 把值整段打印进对话或日志。',
     '',
     '【定时任务】当用户要你「定时/每天/每隔一段时间」自动做某事时，可登记一个 multicc 定时任务（到点会自动新建一个 chat 会话执行你写的 prompt）。在本机用 curl 调用：',
     `  curl -s http://127.0.0.1:${env.PORT || 3000}/api/cron -H 'Content-Type: application/json' \\`,

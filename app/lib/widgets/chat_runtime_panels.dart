@@ -11,6 +11,10 @@ class PendingUserInputPanel extends StatefulWidget {
   final bool enabled;
   final ValueChanged<String> onAnswer;
 
+  /// secret 模式的提交口（input.isSecret 时生效）：值直存服务端保险箱，
+  /// 不走 onAnswer/聊天文本。可选；不传时 secret 卡退化成普通文本框。
+  final ValueChanged<String>? onSecretSubmit;
+
   /// 收起为漂浮球（可选；不传则不显示收起按钮）。收起纯属本地 UI，
   /// 不改变「等待回答」的服务端语义。
   final VoidCallback? onCollapse;
@@ -25,6 +29,7 @@ class PendingUserInputPanel extends StatefulWidget {
     required this.input,
     required this.enabled,
     required this.onAnswer,
+    this.onSecretSubmit,
     this.onCollapse,
     this.onDismiss,
   });
@@ -67,6 +72,10 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
   void _submitCustomAnswer() {
     final answer = _customAnswer.text.trim();
     if (!widget.enabled || answer.isEmpty) return;
+    if (widget.input.isSecret && widget.onSecretSubmit != null) {
+      widget.onSecretSubmit!(answer);
+      return;
+    }
     widget.onAnswer(answer);
   }
 
@@ -92,15 +101,19 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
         children: [
           Row(
             children: [
-              const Icon(
-                Icons.help_outline_rounded,
+              Icon(
+                input.isSecret
+                    ? Icons.lock_outline_rounded
+                    : Icons.help_outline_rounded,
                 size: 16,
-                color: Color(0xFFa85a25),
+                color: const Color(0xFFa85a25),
               ),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  t('pendingInputTitle'),
+                  input.isSecret
+                      ? t('pendingSecretTitle')
+                      : t('pendingInputTitle'),
                   style: const TextStyle(
                     color: Color(0xFFa85a25),
                     fontSize: 12,
@@ -144,7 +157,8 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
               ),
             ),
           ],
-          if (input.options.isNotEmpty) ...[
+          // secret 模式只收一个值，不渲染选项按钮。
+          if (input.options.isNotEmpty && !input.isSecret) ...[
             const SizedBox(height: 8),
             Wrap(
               spacing: 6,
@@ -203,11 +217,16 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
             children: [
               Expanded(
                 child: TextField(
-                  key: const Key('pending-free-text'),
+                  key: Key(
+                    input.isSecret ? 'pending-secret-text' : 'pending-free-text',
+                  ),
                   controller: _customAnswer,
                   enabled: widget.enabled,
                   minLines: 1,
-                  maxLines: 3,
+                  maxLines: input.isSecret ? 1 : 3,
+                  obscureText: input.isSecret,
+                  autocorrect: !input.isSecret,
+                  enableSuggestions: !input.isSecret,
                   textInputAction: TextInputAction.done,
                   onSubmitted: (_) => _submitCustomAnswer(),
                   style: const TextStyle(
@@ -216,7 +235,9 @@ class _PendingUserInputPanelState extends State<PendingUserInputPanel> {
                   ),
                   decoration: InputDecoration(
                     isDense: true,
-                    hintText: t('pendingInputFreeTextHint'),
+                    hintText: input.isSecret
+                        ? t('pendingSecretHint')
+                        : t('pendingInputFreeTextHint'),
                     hintStyle: const TextStyle(
                       color: Color(0xFF6f8096),
                       fontSize: 11,

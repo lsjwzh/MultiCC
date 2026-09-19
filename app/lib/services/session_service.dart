@@ -937,6 +937,34 @@ class SessionService {
     return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
   }
 
+  /// 把安全弹窗里填写的值直存服务端保险箱（web 的 chat-secret-submit.js
+  /// 走的同一接口）。值只进 POST body —— 永远不进聊天消息、不经过 LLM API。
+  /// 与 dismissUserInput 同一错误约定：4xx 的 `{error}` 是给人看的结论
+  /// （名称不合法等），原样返回；只有 5xx 才抛传输异常。
+  Future<Map<String, dynamic>> saveSecret(
+    String name,
+    String value, {
+    String? sessionId,
+  }) async {
+    final body = <String, dynamic>{'name': name, 'value': value};
+    if (sessionId != null && sessionId.isNotEmpty) {
+      body['sessionId'] = sessionId;
+    }
+    final res = await http
+        .post(
+          Uri.parse(_url('/api/secrets')),
+          headers: _headers,
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 500) {
+      final err = _tryParseError(res.body);
+      throw Exception(err ?? '${res.statusCode}');
+    }
+    final decoded = jsonDecode(res.body);
+    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+  }
+
   /// Fetch this session's dispatch summary (durable operations joined with the
   /// target session's queue state — the authoritative projection).
   /// relation=both covers both directions: dispatches this session owns (sent

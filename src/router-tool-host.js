@@ -3,6 +3,7 @@
 const path = require('path');
 const { createRouterToolRuntime } = require('./router-tool-runtime');
 const { applyRouterMcpEnv } = require('./cli-adapters/router-mcp');
+const secretsVault = require('./secrets-vault');
 
 function createRouterToolHost({
   express,
@@ -255,6 +256,11 @@ function createRouterToolHost({
     });
     if (processCapability) Object.assign(env, processCapability.env);
     applyRouterMcpEnv(env, cli, routerMcpNode, routerMcpScript, { cwd });
+    // Vault entries join every CLI child env under their own names so agents can
+    // reference $NAME in commands. Set-if-absent + routing-namespace exclusion
+    // (src/secrets-vault.js envOverlay) keep provider routing authoritative —
+    // this runs AFTER the provider env, MCP env and MULTICC_* markers are set.
+    secretsVault.applyEnvOverlay(env);
     let proc;
     try {
       proc = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
