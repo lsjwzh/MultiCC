@@ -5,7 +5,7 @@
 ## Stable Release (recommended)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.0/install.sh | bash -s -- --branch v2.0.0
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.1/install.sh | bash -s -- --branch v2.0.1
 ```
 
 This installs the latest **stable release**. The script auto-detects your OS,
@@ -142,7 +142,7 @@ Under the hood: `POST /api/update` with `{"force": true|false}` starts it, `GET
 
 ## Prerequisites
 
-- **Node.js** >= 20.19 (required by `chokidar` 5 ESM — backported `require(ESM)` support landed in Node 20.19 / 22.12)
+- **Node.js** >= 22.16 (the server uses the built-in `node:sqlite` module; both `server.js` and the `./multicc` manager refuse to start below this floor)
 - **tmux** (for terminal mode; chat mode works without it)
 - **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)).
 

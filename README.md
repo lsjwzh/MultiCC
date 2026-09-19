@@ -24,7 +24,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/v/release/lsjwzh/MultiCC?label=latest%20release" alt="Latest Release" />
-  <img src="https://img.shields.io/badge/node-%3E%3D20.19-brightgreen" alt="Node.js >=20.19" />
+  <img src="https://img.shields.io/badge/node-%3E%3D22.16-brightgreen" alt="Node.js >=22.16" />
   <img src="https://img.shields.io/badge/CLIs-claude%20%7C%20codex%20%7C%20opencode%20%7C%20zcode%20%7C%20kimi%20%7C%20qoder%20%7C%20workbuddy%20%7C%20dsh-8A2BE2" alt="Supported CLIs" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/flutter-Android%20%7C%20iOS-02569B" alt="Flutter app" />
@@ -108,6 +108,9 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 - **⌘K search** — directories, tasks, and sessions from one palette
 - **Built-in console** — providers, schedules, AI Assistant, host operations, without leaving the page
 - **Scheduled tasks** — cron-style recurring work bound to fixed Air tasks
+- **Task pins** — pin up to five tasks to the header tab row (sidebar top on mobile and in the app)
+- **Input target** — see and switch which task your next message lands in from the full-history index (the ◎ marker); in-flight turns stay durably queued
+- **Attribution controls** — accept or reject the AI Assistant's task suggestion inline, re-attribute a whole turn by hand, or split it into a durable independent continuation
 
 **→ First run, task graph, memory graph, console pages: [Features](docs/features.md)**
 
@@ -131,7 +134,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 ### 1. Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.0/install.sh | bash -s -- --branch v2.0.0
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.1/install.sh | bash -s -- --branch v2.0.1
 ```
 
 The script detects your OS, checks prerequisites, clones the repo, installs dependencies, generates an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd`). Installation never builds the Android APK.
@@ -150,7 +153,7 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bas
 
 </details>
 
-**Prerequisites:** Node.js **>= 20.19**, `tmux` (terminal mode only), and at least one coding CLI on your `PATH`, already logged in.
+**Prerequisites:** Node.js **>= 22.16**, `tmux` (terminal mode only), and at least one coding CLI on your `PATH`, already logged in.
 
 <details>
 <summary><strong>Not a terminal person? Install the desktop app instead</strong> (macOS / Windows / Linux)</summary>
@@ -241,6 +244,7 @@ Or do it from the browser: click the **version number at the bottom of the Air c
 - **Cross-session dispatch** — one agent hands work to another
 - **Agent Commander** — a fleet-conductor session seeded into every new directory
 - Shared **task board** with a **unified task chat view** — every task owns a bound chat session with live transcript, cancel/cleanup, and stable short codes
+- **Task attribution ladder** — each incoming message is matched to a task through escalating evidence, with every decision written to a durable journal you can audit and override
 - Native **task graph** and **memory graph** views in the Air console
 - **Scheduled message dock** — queue and review messages before they are sent
 - **Hibernate idle task worktrees** — auto-suspend idle task sessions to free resources
@@ -280,6 +284,7 @@ Or do it from the browser: click the **version number at the bottom of the Air c
 - Classic voice input with **on-device ASR** (sherpa-onnx SenseVoice) and LLM prompt polishing
 - **Voice task announcements** — hands-free status of completed tasks
 - 500-event **replay buffer** — reconnect rebuilds state deterministically
+- In-process **battery guard** — opt-in sleep when running on battery below a threshold, latched until AC power or a manual rearm
 - Serialized git queue, graceful shutdown/restart
 - Password-gated automatic LAN binding, HMAC cookies, WebSocket tickets
 
