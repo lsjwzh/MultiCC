@@ -178,6 +178,19 @@ function createTunnelIpv6Handler(deps) {
   };
 }
 
+// Live SakuraFrp account + tunnel enrichment for the manage panel. The access
+// token is resolved server-side and never returned (getUserInfo redacts it);
+// failures degrade to { ok:false, reason } rather than throwing.
+function createTunnelSakurafrpHandler(deps) {
+  return async function tunnelSakurafrpHandler(req, res, next) {
+    try {
+      res.json(await deps.tunnel.sakuraAccess());
+    } catch (error) {
+      return next(error);
+    }
+  };
+}
+
 function createAccessTokenSettingsHandler(deps) {
   return function accessTokenSettingsHandler(req, res) {
     const token = deps.getAccessToken() || '';
@@ -239,6 +252,7 @@ function mountHostReadRoutes(app, rawDeps) {
   app.get('/api/settings/tunnel', createTunnelSettingsHandler(deps));
   app.get('/api/tunnel/funnel', createTunnelFunnelHandler(deps));
   app.get('/api/tunnel/ipv6', createTunnelIpv6Handler(deps));
+  app.get('/api/tunnel/sakurafrp', createTunnelSakurafrpHandler(deps));
   app.get('/api/settings/access-token', createAccessTokenSettingsHandler(deps));
   app.get('/api/settings/official-oauth', createBooleanSettingHandler(deps.getOfficialOAuthEnabled));
   app.get('/api/settings/power', createPowerSettingsHandler(deps));
@@ -260,6 +274,7 @@ module.exports = {
   createTunnelSettingsHandler,
   createTunnelFunnelHandler,
   createTunnelIpv6Handler,
+  createTunnelSakurafrpHandler,
   createAccessTokenSettingsHandler,
   createBooleanSettingHandler,
   createPowerSettingsHandler,

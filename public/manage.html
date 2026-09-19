@@ -1599,6 +1599,21 @@
               <div class="setting-row"><label>端口</label><input id="tnl-sf-port" type="number" min="1" placeholder="3000" /></div>
               <div class="setting-row"><label>启动命令（高级）</label><textarea id="tnl-sf-startcmd" rows="2" style="min-height:48px;resize:vertical;" placeholder="留空用默认模板；支持占位符 {authtoken} {port}"></textarea></div>
               <div class="setting-row"><label>状态</label><span id="tnl-sf-status" style="font-size:13px;color:var(--text);">-</span></div>
+              <div class="setting-row"><label>账户</label><span id="tnl-sf-account" style="font-size:12px;color:var(--faint);">-</span></div>
+              <div class="setting-row"><label>隧道</label><span id="tnl-sf-tunnel" style="font-size:12px;color:var(--faint);">-</span></div>
+              <div class="setting-row"><label>命令行客户端</label>
+                <span style="display:inline-flex;gap:8px;align-items:center;">
+                  <button class="btn" id="tnl-sf-install" onclick="installSakurafrp()">安装 frpc</button>
+                  <span class="status-text" id="tnl-sf-install-msg"></span>
+                </span>
+              </div>
+              <div class="setting-row"><label>回填公网地址</label>
+                <span style="display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                  <input id="tnl-sf-bounddomain" type="text" style="max-width:240px;" placeholder="auto_https 隧道需粘贴绑定的 *.nyat.app 域名" />
+                  <button class="btn" id="tnl-sf-backfill" onclick="backfillSakurafrpUrl()">回填</button>
+                  <span class="status-text" id="tnl-sf-backfill-msg"></span>
+                </span>
+              </div>
             </div>
             <div class="sc-footer"><button class="btn btn-green" onclick="saveTunnelSettings()">保存</button><button class="btn" id="tnl-sf-restart" onclick="restartTunnel('sakurafrp')">立即重启</button><span class="status-text" id="tnl-sf-msg"></span></div>
           </div>
