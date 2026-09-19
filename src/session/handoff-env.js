@@ -15,6 +15,20 @@
 const DEFAULT_MAX_FILE_BYTES = 512 * 1024;
 const DEFAULT_MAX_SKILL_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_SKILLS = 20;
+// Chat attachments land in the OS temp dir as multicc_<ts>_<hex><ext> (the
+// upload middleware's naming) and only their PATH travels inside message
+// text — so a handoff bundle must carry the referenced bytes itself or the
+// imported conversation shows dead paths. Capped tightly: this is about
+// screenshots and small docs, not shipping datasets.
+const DEFAULT_MAX_ASSET_FILE_BYTES = 5 * 1024 * 1024;
+const DEFAULT_MAX_ASSET_TOTAL_BYTES = 20 * 1024 * 1024;
+const ASSET_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
+// Markdown / HTML image references to local-filesystem paths — the shape the
+// chat UI rewrites through /api/download. Absolute-looking paths only; remote
+// URLs and data: URIs stay where they are.
+const MD_IMAGE_RE = /!\[[^\]]*\]\(\s*(file:\/\/[^)\s]+|\/[^)\s]+)\s*(?:\"[^\"]*\")?\s*\)/g;
+const IMG_SRC_RE = /<img[^>]+src=[\"']([^\"']+)[\"']/gi;
+const LOCAL_PATH_RE = /^(?:file:\/\/|\/(?:tmp|Users|home|var|private|opt|Volumes|mnt|root|data)\/|[A-Za-z]:[\\/])/;
 const MEMORY_SCOPE_PREFIX = Object.freeze({
   task: 'task-',
   cli: 'cli-',
@@ -34,8 +48,11 @@ function createHandoffEnvService(rawDeps) {
   const maxFileBytes = deps.maxFileBytes || DEFAULT_MAX_FILE_BYTES;
   const maxSkillBytes = deps.maxSkillBytes || DEFAULT_MAX_SKILL_BYTES;
   const maxSkills = deps.maxSkills || DEFAULT_MAX_SKILLS;
+  const maxAssetFileBytes = deps.maxAssetFileBytes || DEFAULT_MAX_ASSET_FILE_BYTES;
+  const maxAssetTotalBytes = deps.maxAssetTotalBytes || DEFAULT_MAX_ASSET_TOTAL_BYTES;
   const logger = deps.logger || console;
   const builtinRuleText = deps.builtinRuleText || DEFAULT_BUILTIN_RULE_TEXT;
+  let assetCounter = 0;
 
   // Exported memory scope names a bundle may carry. `session` is the v1
   // memoryFiles payload kept for compatibility; the others are additions.
@@ -334,10 +351,118 @@ function createHandoffEnvService(rawDeps) {
     return report;
   }
 
+  // ── Chat-referenced assets ─────────────────────────────────────────────
+  // Collect the local files a conversation references by path: user uploads
+  // (the temp-dir multicc_* files whose paths the composer appends to the
+  // outgoing text) and local image references in markdown/HTML. Only files
+  // that still exist are carried; everything else is reported as skipped so
+  // the export meta can say what was lost.
+  function extractAssetPaths(messages, tmpDir) {
+    const paths = new Set();
+    const add = (value) => {
+      const clean = String(value || '').replace(/^file:\/\//, '');
+      if (clean) paths.add(clean);
+    };
+    // The upload middleware names files multicc_<ts>_<hex><ext> under the OS
+    // temp dir; match that prefix wherever the temp dir lives on this machine.
+    const uploadPrefix = path.join(String(tmpDir || os_tmpdirFallback()), 'multicc_');
+    const uploadRe = new RegExp(`${escapeRegExp(uploadPrefix)}[\\w.-]+`, 'g');
+    for (const message of Array.isArray(messages) ? messages : []) {
+      const content = message && typeof message.content === 'string' ? message.content : '';
+      if (!content) continue;
+      for (const match of content.matchAll(uploadRe)) add(match[0]);
+      for (const match of content.matchAll(MD_IMAGE_RE)) {
+        const target = match[1];
+        if (LOCAL_PATH_RE.test(target)) add(target);
+      }
+      for (const match of content.matchAll(IMG_SRC_RE)) {
+        const target = match[1];
+        if (LOCAL_PATH_RE.test(target)) add(target);
+      }
+    }
+    return [...paths];
+  }
+
+  function os_tmpdirFallback() {
+    return require('node:os').tmpdir();
+  }
+
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function collectMessageAssets(messages, { tmpDir } = {}) {
+    const out = { files: [], skipped: [], totalBytes: 0, truncated: false };
+    for (const absPath of extractAssetPaths(messages, tmpDir)) {
+      let stat = null;
+      try { stat = fs.statSync(absPath); } catch (_) {
+        out.skipped.push({ path: absPath, reason: 'missing (temp files are cleaned up)' });
+        continue;
+      }
+      if (!stat.isFile()) { out.skipped.push({ path: absPath, reason: 'not a regular file' }); continue; }
+      // Markdown-referenced paths may point anywhere on disk; only carry
+      // image types from that route. Upload-prefix files are unrestricted
+      // (they already passed the upload policy on the way in).
+      const isUpload = absPath.startsWith(path.join(String(tmpDir || os_tmpdirFallback()), 'multicc_'));
+      const ext = path.extname(absPath).toLowerCase();
+      if (!isUpload && !ASSET_IMAGE_EXTENSIONS.has(ext)) {
+        out.skipped.push({ path: absPath, reason: 'non-image local reference' });
+        continue;
+      }
+      if (stat.size > maxAssetFileBytes) {
+        out.skipped.push({ path: absPath, reason: `file ${stat.size}B > ${maxAssetFileBytes}B cap` });
+        continue;
+      }
+      if (out.totalBytes + stat.size > maxAssetTotalBytes) {
+        out.truncated = true;
+        out.skipped.push({ path: absPath, reason: 'total asset budget exceeded' });
+        continue;
+      }
+      try {
+        out.files.push({ path: absPath, name: path.basename(absPath),
+                         size: stat.size, encoding: 'base64',
+                         content: fs.readFileSync(absPath).toString('base64') });
+        out.totalBytes += stat.size;
+      } catch (e) {
+        out.skipped.push({ path: absPath, reason: e.message });
+      }
+    }
+    return out;
+  }
+
+  // Restore carried assets into the target machine's temp dir with the same
+  // multicc_ prefix the upload middleware uses, and return the from→to path
+  // mapping the import route rewrites message text with.
+  function restoreMessageAssets(assets, { tmpDir } = {}) {
+    const mapping = [];
+    const target = String(tmpDir || os_tmpdirFallback());
+    for (const asset of Array.isArray(assets && assets.files) ? assets.files : []) {
+      try {
+        const name = safeRelativePath(asset.name);
+        if (!name) continue;
+        const dest = path.join(target,
+          `multicc_handoff_${Date.now().toString(36)}_${(assetCounter += 1)}_${name.replace(/[\\/]/g, '_')}`);
+        fs.writeFileSync(dest, Buffer.from(String(asset.content || ''), 'base64'), { mode: 0o600, flag: 'wx' });
+        mapping.push({ from: asset.path, to: dest });
+      } catch (e) {
+        logger.warn(`[handoff-env] asset ${asset.path} restore failed: ${e.message}`);
+      }
+    }
+    return mapping;
+  }
+
+  function rewriteAssetPaths(text, mapping) {
+    let value = text;
+    for (const { from, to } of mapping || []) {
+      if (from && to) value = value.split(from).join(to);
+    }
+    return value;
+  }
+
   // The context-dependency manifest written into the imported session's
   // private memory folder: everything a fresh session (or a human) needs to
   // rebuild the working context on this machine.
-  function renderHandoffDoc({ payload, memoryReport, skillResults, gitNote }) {
+  function renderHandoffDoc({ payload, memoryReport, skillResults, assetMapping, gitNote }) {
     const meta = (payload && payload.sessionMeta) || {};
     const ctx = (payload && payload.contextDeps) || {};
     const lines = [];
@@ -382,6 +507,16 @@ function createHandoffEnvService(rawDeps) {
       lines.push('- 本 bundle 未携带技能（或未检测到被引用的技能）。');
     }
     lines.push('');
+    lines.push('## 对话引用的文件（图片 / 附件）');
+    if (Array.isArray(assetMapping) && assetMapping.length) {
+      lines.push('对话里引用的本地文件已随包带来，历史消息中的路径已重写为下列新位置：');
+      for (const m of assetMapping.slice(0, 20)) lines.push(`- ${m.from} → ${m.to}`);
+      if (assetMapping.length > 20) lines.push(`- …共 ${assetMapping.length} 个`);
+      lines.push('- 注意：临时目录会随系统清理，长期需要的文件请转移到项目目录或会话记忆。');
+    } else {
+      lines.push('- 未携带（对话未引用本地文件，或引用的临时文件已被源机器清理）。');
+    }
+    lines.push('');
     lines.push('## 后续构建上下文的建议');
     lines.push('1. 先读本文件所在文件夹里的记忆文件（含 task-/cli-/machine- 前缀的移植文件）。');
     lines.push('2. 用 `git log <基分支>..HEAD` 了解本会话已完成的增量；未合入的成果在本会话的 worktree 分支上。');
@@ -400,6 +535,10 @@ function createHandoffEnvService(rawDeps) {
     matchableSkillName,
     collectSkillFolder,
     collectSkillFolders,
+    collectMessageAssets,
+    restoreMessageAssets,
+    rewriteAssetPaths,
+    extractAssetPaths,
     restoreSkillFolders,
     restoreMemoryScopes,
     renderHandoffDoc,
@@ -413,4 +552,6 @@ module.exports = {
   DEFAULT_MAX_FILE_BYTES,
   DEFAULT_MAX_SKILL_BYTES,
   DEFAULT_MAX_SKILLS,
+  DEFAULT_MAX_ASSET_FILE_BYTES,
+  DEFAULT_MAX_ASSET_TOTAL_BYTES,
 };

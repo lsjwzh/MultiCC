@@ -95,6 +95,16 @@ async function stopServer() {
   await fs.promises.writeFile(path.join(memoryRoot, dirId, '_shared', 'handoff-shared.md'), 'shared knowledge\n');
   await fs.promises.writeFile(path.join(sourceWorktree, 'CLAUDE.md'), '# project rules\n');
   await fs.promises.writeFile(path.join(sourceWorktree, 'session-feature.txt'), 'session feature\n');
+  // A conversation-referenced upload (temp-dir multicc_* file) must travel
+  // with the bundle and come back on a rewritten path. Seed it while the
+  // server is stopped so the history cache cannot overwrite the fixture.
+  const uploadPath = path.join(os.tmpdir(), `multicc_${process.pid}_handofftest.png`);
+  await fs.promises.writeFile(uploadPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
+  await stopServer();
+  await fs.promises.mkdir(path.join(dataRoot, 'chat_history'), { recursive: true });
+  await fs.promises.writeFile(path.join(dataRoot, 'chat_history', `${sourceId}.json`),
+    `${JSON.stringify({ id: 'm-asset-1', role: 'user', ts: Date.now(), content: `看这张截图 ${uploadPath}` })}\n`);
+  await startServer();
   await git(sourceWorktree, ['add', '-A']);
   await git(sourceWorktree, ['-c', 'user.email=test@multicc.local', '-c', 'user.name=MultiCC Test',
     'commit', '-m', 'session feature']);
@@ -114,6 +124,7 @@ async function stopServer() {
   assert.ok(response.data.meta.scopes.shared >= 1, JSON.stringify(response.data.meta.scopes));
 
   const { salt, iv, ct, tag } = response.data;
+  const exportMeta = response.data.meta;
   response = await api('POST', '/api/sessions/import', {
     salt, iv, ct, tag, passphrase: PASSPHRASE, dirId, label: 'Imported safely',
   });
@@ -139,6 +150,20 @@ async function stopServer() {
     path.join(memoryRoot, dirId, 'sessions', importedId, 'HANDOFF.md'), 'utf8');
   assert.match(handoffDoc, /HANDOFF/);
   assert.match(handoffDoc, /来源仓库/);
+  // The upload rode along: meta counted it, the imported history points at
+  // the restored copy (multicc_handoff_*), the bytes match, and the manifest
+  // documents the from→to mapping.
+  assert.ok(exportMeta.assets.files >= 1, JSON.stringify(exportMeta.assets));
+  assert.ok(response.data.restored.assets.restored >= 1, JSON.stringify(response.data.restored));
+  const importedHistory = await fs.promises.readFile(
+    path.join(dataRoot, 'chat_history', `${importedId}.json`), 'utf8');
+  assert.ok(!importedHistory.includes(uploadPath), 'old temp path must be rewritten');
+  const rewritten = importedHistory.match(/(\/[^"'\n]*multicc_handoff_[^"'\n]*\.png)/);
+  assert.ok(rewritten, 'imported history references the restored asset');
+  assert.deepEqual(fs.readFileSync(rewritten[1]), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
+  assert.match(handoffDoc, /multicc_handoff_/);
+  assert.match(handoffDoc, new RegExp(uploadPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  fs.rmSync(rewritten[1], { force: true });
 
   // The seeded room was adopted into a board task at boot, and task teardown
   // refuses an unmerged workspace — so release the fixture's branch first, then
@@ -154,6 +179,7 @@ async function stopServer() {
   await stopServer();
   assertTestDir(tmpRoot);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
+  fs.rmSync(uploadPath, { force: true });
   console.log('session bundle HTTP integration: passed');
 })().catch(async error => {
   console.error(error);
