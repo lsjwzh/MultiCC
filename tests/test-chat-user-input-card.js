@@ -23,7 +23,13 @@ function fakeEl(tag) {
     querySelector() { return null; },
     setAttribute() {},
     getAttribute() { return null; },
-    classList: { add() {}, remove() {}, toggle() {} },
+    classList: {
+      _set: new Set(),
+      add(c) { this._set.add(c); },
+      remove(c) { this._set.delete(c); },
+      toggle(c, force) { if (force) this._set.add(c); else this._set.delete(c); },
+      contains(c) { return this._set.has(c); },
+    },
   };
   if (/^(input|checkbox)$/i.test(tag)) el.checked = false;
   return el;
@@ -189,10 +195,36 @@ test('secret mode renders a masked field and routes the value to submitSecret, n
     requestId: 'usrq-s1', inputType: 'secret', secretName: 'OPENAI_API_KEY',
     question: '请填写 OpenAI API Key', options: [],
   });
-  assert.equal(elements.textInput.type, 'password');
+  // chat.html ships a <textarea> here: .type is a read-only getter, so masking
+  // is the CSS class, never a type assignment (which throws in strict mode).
+  assert.equal(elements.textInput.type, undefined, 'textarea .type must never be assigned');
+  assert.equal(elements.textInput.classList.contains('secret-mask'), true);
+  assert.equal(elements.textInput.dataset.masked, '1');
   assert.equal(await controller.submit('  sk-live-123  '), true);
   assert.deepEqual(saved, [{ value: 'sk-live-123', requestId: 'usrq-s1', secretName: 'OPENAI_API_KEY' }]);
   assert.deepEqual(submitted, [], 'secret values must never become chat text');
   assert.equal(elements.root.hidden, true, 'card clears after a successful save');
-  assert.equal(elements.textInput.type, 'text', 'field resets after clear');
+  assert.equal(elements.textInput.classList.contains('secret-mask'), false, 'mask resets after clear');
+  assert.equal(elements.textInput.dataset.masked, '');
+});
+
+test('secret mode switches type when the host ships a real <input>', () => {
+  const doc = fakeDoc();
+  const elements = {
+    root: Object.assign(fakeEl('section'), { hidden: true }),
+    question: fakeEl('div'),
+    reason: fakeEl('div'),
+    options: fakeEl('div'),
+    textInput: fakeEl('input'),
+    submitButton: fakeEl('button'),
+    dismissButton: fakeEl('button'),
+  };
+  const controller = createController({
+    document: doc, elements, isConnected: () => true,
+    submitAnswer: () => true, submitSecret: async () => true,
+  });
+  controller.render({ requestId: 'usrq-i1', inputType: 'secret', secretName: 'MY_TOKEN', question: 'q' });
+  assert.equal(elements.textInput.type, 'password');
+  controller.clear('usrq-i1');
+  assert.equal(elements.textInput.type, 'text');
 });

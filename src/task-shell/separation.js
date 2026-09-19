@@ -26,6 +26,20 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
     const last = getHistory(source.sessionId).findLast(m => ['user', 'assistant'].includes(m.role) && m.content);
     return !!last && last.id === suggestion.anchorMessageId;
   }
+  // current() 的尾锚检查要求建议仍指着对话尾巴。但被瞬时拒绝（fork_source_busy
+  // 「等本轮结束再分离」、交付凭证尚未落库等）而卡在 blocked 的建议，若只因对话
+  // 又前进了一轮就永不可重试，错误文案给出的承诺就落空了。重试只要求锚点轮仍在
+  // 历史里、壳路由没动 —— 分离内容按 turnId 提取，与是否对话尾巴无关。
+  function anchored(suggestion) {
+    const { receipt, source, shell } = sourceOf(suggestion.sessionId, suggestion.receiptId);
+    if (ports.isDeletedTask?.(source.id) || ports.getTask?.(source.id)?.status === 'archived'
+        || shell?.currentTaskId !== source.id || shell?.cursorReceiptId !== receipt.id
+        || shell?.cursorVersion !== suggestion.cursorVersion) return false;
+    return getHistory(source.sessionId).some(m => m.id === suggestion.anchorMessageId);
+  }
+  function usable(suggestion) {
+    return current(suggestion) || (suggestion.phase === 'blocked' && anchored(suggestion));
+  }
   function propose(sessionId, receiptId, input) {
     if (!input.separation?.title || !input.turnId || !input.anchorMessageId) return null;
     const { receipt, source, shell } = sourceOf(sessionId, receiptId);
@@ -55,6 +69,11 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
     // the deferred/stale states add fields.
     if (suggestion.taskId) return suggestion.deferredAt ? { ...suggestion, deferred: true, stale: false } : suggestion;
     const valid = current(suggestion);
+    // 瞬时失败（blocked）但锚点轮仍可重试的建议：以挂起卡形式留在托盘里，
+    // 展开后接受路径会按 usable() 放行，而不是永远消失。
+    if (!valid && suggestion.phase === 'blocked' && anchored(suggestion)) {
+      return { ...suggestion, deferred: true, stale: false };
+    }
     // An explicitly deferred suggestion stays in the durable tray even after
     // the conversation moves on, but it is then only dismissible: the accept
     // path still revalidates and rejects a stale source.
@@ -103,9 +122,11 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
     }
     // Only accepting is blocked by a stale source. Dismissing (keep) a stale or
     // deferred entry stays available: it resolves the suggestion without
-    // creating, moving or re-routing anything.
+    // creating, moving or re-routing anything. A transiently blocked suggestion
+    // (busy source, missing delivery evidence at click time) stays retryable as
+    // long as its judged turn is still anchored in history.
     if (decision === 'separate' && !suggestion.taskId
-        && !current(suggestion)) throw fail('separation_stale', 'The conversation has advanced; this suggestion has expired');
+        && !usable(suggestion)) throw fail('separation_stale', 'The conversation has advanced; this suggestion has expired');
     if (decision === 'keep') {
       if (suggestion.taskId) throw fail('separation_already_confirmed', 'Separation was already confirmed; retry to finish creating the task');
       store.set('task-separation', id, { ...suggestion, state: 'kept', resolvedAt: Date.now() });
@@ -126,7 +147,7 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
           // Revalidate after the writer lease is held. A pre-barrier delivery
           // check can race a new source turn or a changed integration head.
           delivery = await verifiedDelivery(suggestion);
-          if (!current(suggestion)) throw fail('separation_stale');
+          if (!usable(suggestion)) throw fail('separation_stale');
           if (code.dirty) throw fail('fork_source_dirty', 'Commit and merge the source changes before separating');
           const snapshot = handoffSnapshot(taskId, getHistory(sessionId), { ...suggestion, receipt,
             sourceWorkspace: getRecord(sessionId)?.worktreePath });
@@ -141,7 +162,7 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
             runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent']
               .filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) } };
           store.transaction(() => {
-            if (!current(suggestion)) throw fail('separation_stale');
+            if (!usable(suggestion)) throw fail('separation_stale');
             store.set('snapshot', snapshot.hash, snapshot);
             store.set('task', task.id, task);
             store.set('shell', shellId, { id: shellId, sourceSessionId: nextSessionId, dirId: task.dirId,
