@@ -52,3 +52,39 @@ Future<bool> deleteAirTaskWithConfirmation({
   }
   return true;
 }
+
+/// 任务行行尾的一枚操作图标（当前目录列表的 Pin / 详情 / 删除，控制台的删除）。
+///
+/// 尺寸只在这里定义：`IconButton` 默认会被 `MaterialTapTargetSize.padded` 撑到
+/// 48px，三个并排就是 144px —— 390px 的手机上超过任务行宽度的三分之一，而那一截
+/// 本来该是标题的。42px 比 Material 的 48px 目标略小（仍是拇指点得中的尺寸），
+/// 换来的是标题多出一整行的读字量。
+class AirTaskRowAction extends StatelessWidget {
+  const AirTaskRowAction({
+    super.key,
+    required this.tooltip,
+    required this.icon,
+    this.onPressed,
+  });
+
+  /// 一行里这类按钮的统一边长。
+  static const double size = 42;
+
+  final String tooltip;
+  final Widget icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+    onPressed: onPressed,
+    tooltip: tooltip,
+    iconSize: 18,
+    padding: EdgeInsets.zero,
+    style: IconButton.styleFrom(
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      minimumSize: const Size(size, size),
+      maximumSize: const Size(size, size),
+    ),
+    icon: icon,
+  );
+}

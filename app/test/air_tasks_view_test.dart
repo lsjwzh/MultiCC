@@ -8,6 +8,7 @@ import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/onboarding_store.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air/air_sidebar.dart';
+import 'package:multicc_app/widgets/air/air_task_actions.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
 import 'package:multicc_app/widgets/workspace_navigation_drawer.dart';
 
@@ -318,7 +319,10 @@ void main() {
     final requests = <String>[];
     final client = _client(requests);
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(320, 800);
+    // 视口比 800 高一截：任务行现在标题占一行（徽标挪到副行），一行比从前高十几
+    // 像素，800 高的屏上第二条正好落到视口外 —— 而这条用例要断的「归档行也在树上」
+    // 跟屏高无关，列表本来就会滚。
+    tester.view.physicalSize = const Size(320, 900);
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
@@ -363,6 +367,57 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(requests, contains('/api/task-board/tasks/t1'));
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('任务行的宽度归标题：徽标不占左列，行尾操作不再撑回 48px', (tester) async {
+    // 用户报的是这张图：窄屏上「最近任务」的标题被折成两条还读不完。根因有两处，
+    // 各断一次 —— 徽标曾经独占一列（左边 78px），而行尾三颗 IconButton 每颗都被
+    // MaterialTapTargetSize.padded 撑到 48px（一共 144px），390px 的屏上留给标题
+    // 的只剩 90 来 px。标题是这一行里唯一必须读全的东西，这两处都不该跟它抢宽度。
+    final settings = await _settings();
+    final client = _manyTasksClient();
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 1200);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final tile = find.byKey(const ValueKey('air-directory-task-t8'));
+    expect(tile, findsOneWidget);
+    final tileWidth = tester.getSize(tile).width;
+    final titleWidth = tester
+        .getSize(find.byKey(const ValueKey('air-task-title-t8')))
+        .width;
+    // 行尾只剩三颗 42px 的操作（126px）加 4px 间隙，其余全给标题。
+    expect(titleWidth, greaterThan(tileWidth - 3 * AirTaskRowAction.size - 30));
+    expect(
+      titleWidth,
+      greaterThan(tileWidth / 2),
+      reason: '标题该拿到这一行一半以上的宽度（实测 $titleWidth / $tileWidth）',
+    );
+    for (final prefix in ['air-task-pin', 'air-task-details', 'air-task-delete']) {
+      final size = tester.getSize(find.byKey(ValueKey('$prefix-t8')));
+      expect(
+        size,
+        const Size(AirTaskRowAction.size, AirTaskRowAction.size),
+        reason: '行尾操作不许被 padded 撑回 48px',
+      );
+    }
+    // 徽标跟副行同一行（标题那一行只有标题）。它得在标题行的下边。
+    final badge = find.descendant(of: tile, matching: find.text('空闲'));
+    expect(badge, findsOneWidget);
+    expect(
+      tester.getTopLeft(badge).dy,
+      greaterThan(tester.getTopLeft(find.byKey(const ValueKey('air-task-title-t8'))).dy),
+    );
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });

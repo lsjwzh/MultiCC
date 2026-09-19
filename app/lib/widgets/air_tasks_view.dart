@@ -1594,36 +1594,24 @@ class _AirTasksViewState extends State<AirTasksView>
           // Pin 的开关在 App 里落在这一处（Web 是页头那颗 📌）：打开任务在 App 里
           // 是把聊天页整张升起来盖住 Air 首页的，页头那排工具那时点不到 —— 这一行
           // 是任务在「列表里的样子」，钉住/取消钉住正好属于它。
-          IconButton(
+          AirTaskRowAction(
             key: ValueKey('air-task-pin-${task.id}'),
             onPressed: () => unawaited(_togglePin(task)),
-            iconSize: 18,
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-            padding: EdgeInsets.zero,
             tooltip: pinned ? '取消 Pin' : 'Pin 到任务列表顶部',
             icon: Icon(
               pinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
               color: pinned ? AppColors.accent : AppColors.faint,
             ),
           ),
-          IconButton(
+          AirTaskRowAction(
             key: ValueKey('air-task-details-${task.id}'),
             onPressed: () => unawaited(_openDetails(task)),
-            iconSize: 18,
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-            padding: EdgeInsets.zero,
             tooltip: '任务详情',
             icon: const Icon(Icons.info_outline_rounded, color: AppColors.faint),
           ),
-          IconButton(
+          AirTaskRowAction(
             key: ValueKey('air-task-delete-${task.id}'),
             onPressed: () => unawaited(_deleteTaskFromList(task)),
-            iconSize: 18,
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-            padding: EdgeInsets.zero,
             tooltip: '删除任务',
             icon: const Icon(
               Icons.delete_outline_rounded,

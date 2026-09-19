@@ -650,9 +650,12 @@ class _TaskRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // 两行：抽屉宽 268px，一行 13px 只装得下十几个字，而 Web 侧栏
+                  // 同一行（`#tasks strong`）是自由换行的。折两行是对齐，也是这条
+                  // 带子上唯一必须读全的字段；上限两行是别让一条长标题吃掉整条带子。
                   Text(
                     task.title,
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       color: AppColors.text,

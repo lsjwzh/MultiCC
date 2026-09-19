@@ -416,8 +416,11 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                     else
                       SizedBox(
                         key: const ValueKey('air-console-task-scroll'),
-                        height: (shown.length * 76.0)
-                            .clamp(76.0, 340.0)
+                        // 每行按 86px 估：行尾那枚操作是 42px，标题行至少要它那么
+                        // 高，加上副行与内边距就是这个数（见 AirTaskTile）。这只是
+                        // 给这句「最多一屏」算个舒服的高度，真正的滚动在列表里。
+                        height: (shown.length * 86.0)
+                            .clamp(86.0, 340.0)
                             .toDouble(),
                         child: ListView.separated(
                           primary: false,
@@ -431,19 +434,14 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
                               directoryName: _directoryName(task.dirId),
                               showTime: MediaQuery.sizeOf(context).width > 360,
                               onTap: () => widget.onOpenTask(task),
-                              trailing: IconButton(
+                              trailing: AirTaskRowAction(
                                 key: ValueKey('air-console-delete-${task.id}'),
                                 tooltip: '删除任务',
-                                visualDensity: VisualDensity.compact,
-                                constraints: const BoxConstraints.tightFor(
-                                  width: 32,
-                                  height: 32,
-                                ),
-                                padding: EdgeInsets.zero,
-                                iconSize: 18,
-                                color: AppColors.danger,
                                 onPressed: () => _deleteTask(task),
-                                icon: const Icon(Icons.delete_outline_rounded),
+                                icon: const Icon(
+                                  Icons.delete_outline_rounded,
+                                  color: AppColors.danger,
+                                ),
                               ),
                             );
                           },
