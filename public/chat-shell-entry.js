@@ -49,9 +49,17 @@
     const makeClientMsgId = options.makeClientMsgId || (() => `shell-${Date.now()}`);
     let enabled = false;
     let controlTurnId = null;
-    let pending = null;
+    // 已经交给 socket、还没等到路由回执的那几条（浏览器 clientMsgId → 原文）。
+    // 回执要回答两件事：这条是哪个浏览器身份，以及它所属的任务现在跑在哪个
+    // 会话里 —— 所以在这之前它自己的回显只能压着（见下面 buffered）。但那是
+    // 「压住回显」的理由，不是「压住下一条」的理由：服务端本来就有按会话的持久
+    // FIFO，客户端再拦一道的结果只是把这条消息丢掉，还让 composer 把健康的
+    // socket 报成断开、把刚清空的输入框又填回去。
+    const awaiting = new Map();
     let buffered = [];
     const receiptClients = new Map();
+
+    function text(value) { return value == null ? '' : String(value); }
 
     function remapClient(message) {
       const id = message?.clientMsgId == null ? '' : String(message.clientMsgId);
@@ -62,6 +70,18 @@
       if (message?.type === 'chat_msg_meta') return message.message ? [message.message] : [];
       if (message?.type === 'chat_history' && Array.isArray(message.messages)) return message.messages;
       return [];
+    }
+
+    function recordsOf(message) { return [message, ...historyRecords(message)]; }
+
+    // 一条事件只要带着还没认领的回执 id（服务端把 task-shell 的投递写成
+    // clientMsgId = receipt.id），就不能现在放出去：不然它会先按回执 id 渲染
+    // 一个气泡，回执到了再按浏览器 id 渲染第二个。
+    function unmappedReceipt(event) {
+      return recordsOf(event).some(record => {
+        const id = text(record?.clientMsgId);
+        return id.startsWith('sr_') && !receiptClients.has(id);
+      });
     }
 
     function remap(message) {
@@ -82,30 +102,39 @@
       if (message?.type === 'system' && message.subtype === 'init' && 'is_streaming' in message) {
         enabled = message.taskShell === true;
       }
-      const awaitingReceipt = pending && [message, ...historyRecords(message)].some(record => {
-        const id = record?.clientMsgId == null ? '' : String(record.clientMsgId);
-        return id.startsWith('sr_') && !receiptClients.has(id);
-      });
-      if (awaitingReceipt) {
-        buffered.push(message);
-        return { events: [] };
-      }
+      if (awaiting.size && unmappedReceipt(message)) { buffered.push(message); return { events: [] }; }
       if (message?.type === 'task_shell_routed') {
-        const receiptId = message.receiptId == null ? '' : String(message.receiptId);
-        const clientMsgId = message.clientMsgId == null ? '' : String(message.clientMsgId);
-        if (receiptId && clientMsgId) receiptClients.set(receiptId, clientMsgId);
-        pending = null;
-        const events = buffered.map(remap);
-        buffered = [];
+        const receiptId = text(message.receiptId);
+        const clientMsgId = text(message.clientMsgId);
+        if (receiptId && clientMsgId) {
+          receiptClients.set(receiptId, clientMsgId);
+          awaiting.delete(clientMsgId);
+        }
+        // 只放行这一份回执认领过的：还在等自己回执的那些继续压着，否则它们会
+        // 先用回执 id 露面。
+        const events = [];
+        buffered = buffered.filter(event => {
+          if (unmappedReceipt(event)) return true;
+          events.push(remap(event));
+          return false;
+        });
         return { events, routeSessionId: message.sessionId ? String(message.sessionId) : '' };
       }
       if (message?.type === 'error' && message.notDelivered === true
-          && pending?.clientMsgId === message.clientMsgId) {
-        pending = null;
+          && awaiting.has(text(message.clientMsgId))) {
+        const receiptId = text(message.receiptId);
+        awaiting.delete(text(message.clientMsgId));
         // A reconnect page may contain older, unmapped receipts. A failed new
         // send must not discard those already committed messages.
-        const events = buffered.filter(event => ['chat_msg_meta', 'chat_history'].includes(event.type)).map(remap);
-        buffered = [];
+        const events = [];
+        buffered = buffered.filter(event => {
+          const ids = recordsOf(event).map(record => text(record?.clientMsgId));
+          // 这条没能投出去：它自己的回显（按回执 id 认）直接丢掉。
+          if (receiptId && ids.includes(`sr_${receiptId}`)) return false;
+          // 落库的权威历史照放行 —— 重连页里可能夹着更早、再也不会有回执的条目。
+          if (['chat_msg_meta', 'chat_history'].includes(event.type)) { events.push(remap(event)); return false; }
+          return true;
+        });
         return { events: [...events, remap(message)] };
       }
       return { events: [remap(message)] };
@@ -113,7 +142,6 @@
 
     function send(payload) {
       if (!enabled || !['user_message', 'cancel'].includes(payload?.type)) return rawSend(payload);
-      if (pending) return false;
       const message = { ...payload, taskShell: true };
       if (message.type === 'cancel') {
         if (!controlTurnId) return false;
@@ -123,19 +151,32 @@
         if (!controlTurnId) return false;
         message.turnId = controlTurnId;
       }
-      pending = message;
+      const clientMsgId = text(message.clientMsgId);
+      awaiting.set(clientMsgId, message);
       try {
         if (rawSend(message)) return true;
       } catch (error) {
-        pending = null;
+        awaiting.delete(clientMsgId);
         throw error;
       }
-      pending = null;
+      // socket 没接（返回 false）：这条没出去，别留成在途。
+      awaiting.delete(clientMsgId);
       return false;
     }
 
-    function replayPending() { return pending ? rawSend(pending) : false; }
-    function state() { return { enabled, controlTurnId, pending: pending && { ...pending } }; }
+    // 重连后把还没回执的那几条按原顺序重放一遍：每条都带着自己的 clientMsgId，
+    // 服务端按回执 id 去重，重放安全。
+    function replayPending() {
+      let resent = false;
+      for (const message of awaiting.values()) {
+        try { if (rawSend(message)) resent = true; } catch (_) { /* 留着下次重连再试 */ }
+      }
+      return resent;
+    }
+    function state() {
+      const first = awaiting.values().next();
+      return { enabled, controlTurnId, pending: first.done ? null : { ...first.value } };
+    }
     return Object.freeze({ ingest, replayPending, send, state });
   }
 
