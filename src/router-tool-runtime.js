@@ -14,6 +14,7 @@ const TOOL_NAMES = new Set([
   'wait_for_user_answer', 'request_user_input',
   'request_secret_input', 'list_secrets',
   'get_task_context',
+  'generate_image',
   'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
   'route_task', 'dispatch_master', 'dispatch_slave', 'dispatch_cancel',
   'dispatch_status',
@@ -190,6 +191,7 @@ function createRouterToolRuntime({
   cancelQueuedEntry = null,
   cancelActiveTurnFn = null,
   onDispatchCancelled = () => {},
+  imageBridge = null,
 } = {}) {
   if (!records || typeof records.get !== 'function') {
     throw new TypeError('[router-tool-runtime] records map is required');
@@ -1255,6 +1257,34 @@ function createRouterToolRuntime({
     };
   }
 
+  async function generateImage(context, args, options) {
+    rejectUnknownArguments(args, new Set(['prompt', 'reference_image_paths']));
+    const prompt = cleanText(args.prompt, 'prompt', 16 * 1024);
+    const referenceImagePaths = args.reference_image_paths == null ? [] : args.reference_image_paths;
+    if (!Array.isArray(referenceImagePaths) || referenceImagePaths.length > 4
+        || referenceImagePaths.some(value => typeof value !== 'string' || value.length > 1024)) {
+      throw new RouterToolError('invalid_arguments', 'reference_image_paths is invalid');
+    }
+    const session = records.get(context.sessionId);
+    if (!imageBridge?.isEligible?.(session)) {
+      throw new RouterToolError('image_generation_unavailable', 'image generation is unavailable for this session', 409);
+    }
+    try {
+      return await imageBridge.generate({
+        context, session, prompt, referenceImagePaths, signal: options.signal,
+      });
+    } catch (error) {
+      const code = typeof error?.code === 'string' && /^image_generation_|^tool_call_cancelled$/.test(error.code)
+        ? error.code : 'image_generation_failed';
+      const message = code === 'tool_call_cancelled'
+        ? 'image generation was cancelled'
+        : (code === 'image_generation_busy'
+          ? 'image generation is busy; retry shortly'
+          : (code === 'invalid_arguments' ? error.message : 'image generation could not be completed'));
+      throw new RouterToolError(code, message, code === 'tool_call_cancelled' ? 499 : 409);
+    }
+  }
+
   async function execute(token, tool, args = {}, options = {}) {
     if (!TOOL_NAMES.has(tool)) {
       throw new RouterToolError('unknown_tool', 'unknown router tool', 404);
@@ -1278,6 +1308,7 @@ function createRouterToolRuntime({
       if (!result) throw new RouterToolError('task_context_unavailable', 'task context is unavailable', 404);
       return result;
     }
+    if (tool === 'generate_image') return generateImage(context, args, options);
     if (tool === 'wait_for_user_answer' || tool === 'request_user_input') {
       return requestUserInput(context, args);
     }
