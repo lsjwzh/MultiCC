@@ -1146,10 +1146,15 @@
       const prompt = node('p', task.prompt, 'schedule-prompt');
       const actions = node('footer', null, 'schedule-actions');
       const run = scheduleAction('▶ 立即运行', () => runSchedule(task.id), 'primary subtle');
+      // A rule whose fixed task was archived stops executing until a new fixed
+      // task is bound; that repair is explicit, never automatic.
+      const rebind = task.taskBindingError
+        ? scheduleAction('⛑ 重新绑定固定任务', () => rebindSchedule(task.id), 'primary subtle')
+        : null;
       const toggle = scheduleAction(task.enabled ? '暂停' : '启用', () => toggleSchedule(task.id, !task.enabled));
       const edit = scheduleAction('编辑规则', () => openScheduleDialog(task.id));
       const remove = scheduleAction('删除规则', () => deleteSchedule(task.id), 'danger');
-      actions.append(run, toggle, edit, node('span'), remove);
+      actions.append(run, ...(rebind ? [rebind] : []), toggle, edit, node('span'), remove);
       card.append(head, timing, fixed, state, prompt, actions);
       list.append(card);
     }
@@ -1225,6 +1230,17 @@
       await Promise.all([refreshSchedules(), refresh()]);
       notice(result.decision === 'queued' ? '固定任务正在忙碌，本次执行已经排队。' : '执行指令已经送入固定 Air 任务。');
     } catch (error) { notice(`运行失败：${error.message}`); }
+  }
+
+  async function rebindSchedule(id) {
+    if (!window.confirm('为这条规则绑定一个新的固定 Air 任务？旧的固定任务和历史都不会被删除。')) return;
+    try {
+      const result = await api(`/api/cron/${encodeURIComponent(id)}/rebind`, {});
+      await Promise.all([refreshSchedules(), refresh()]);
+      notice(`已重新绑定固定任务：${result.taskId}`);
+    } catch (error) {
+      notice(error.code === 'binding_healthy' ? '固定任务当前可写，无需重新绑定。' : `重新绑定失败：${error.message}`);
+    }
   }
 
   async function toggleSchedule(id, enabled) {
