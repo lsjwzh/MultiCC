@@ -8,11 +8,19 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
   function worktrees(ids) {
     return Object.values(getBoard().tasks).filter(t => ids.includes(t.id) && t.worktreePath && t.branch);
   }
+  function removalFailure(result, fallback) {
+    const reasons = (result.reasons || []).map(reason => reason === 'dirty' ? 'task_workspace_dirty'
+      : reason === 'unmerged' ? 'task_workspace_unmerged' : reason);
+    const code = result.code || reasons[0] || fallback;
+    return Object.assign(new Error(code), { code, ...(reasons.length ? { reasons } : {}) });
+  }
   async function assertWorkspaceSafe(dir, record) {
     if (!dir) throw Object.assign(new Error('directory_not_found'), { code: 'directory_not_found' });
     const safety = await gitWorktreeMergeState(dir, record);
-    const code = safety.dirty ? 'task_workspace_dirty' : safety.ahead > 0 ? 'task_workspace_unmerged' : null;
-    if (code) throw Object.assign(new Error(code), { code });
+    const reasons = [];
+    if (safety.dirty) reasons.push('task_workspace_dirty');
+    if (safety.ahead > 0) reasons.push('task_workspace_unmerged');
+    if (reasons.length) throw Object.assign(new Error(reasons[0]), { code: reasons[0], reasons });
   }
   function sessions(task, ids) {
     const tasks = Object.values(getBoard().tasks).filter(t => ids.includes(t.id));
@@ -30,7 +38,7 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
       }
     }
   }
-  async function prepareTaskDelete(task, ids) {
+  async function prepareTaskDelete(task, ids, options = {}) {
     assertTaskIdle(task, ids);
     const targets = sessions(task, ids);
     const otherTasks = Object.values(getBoard().tasks).filter(t => !ids.includes(t.id));
@@ -42,7 +50,7 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
       if (ids.includes(record.taskBoundTaskId) && (record.retiredWorktrees?.length || [...records.values()].some(r => r.workspaceOwnerSessionId === record.id))) {
         throw Object.assign(new Error('shell_workspace_referenced'), { code: 'shell_workspace_referenced' });
       }
-      if (ids.includes(record.taskBoundTaskId) && record.worktreePath && !record.workspaceOwnerSessionId) {
+      if (!options.force && ids.includes(record.taskBoundTaskId) && record.worktreePath && !record.workspaceOwnerSessionId) {
         await assertWorkspaceSafe(directories.get(record.dirId), record);
       }
     }
@@ -50,11 +58,11 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
       if (otherTasks.some(t => t.worktreePath === member.worktreePath)) {
         throw Object.assign(new Error('shell_workspace_referenced'), { code: 'shell_workspace_referenced' });
       }
-      await assertWorkspaceSafe(directories.get(taskDirId(getBoard(), member)), member);
+      if (!options.force) await assertWorkspaceSafe(directories.get(taskDirId(getBoard(), member)), member);
     }
   }
-  async function purgeTaskData(task, ids) {
-    await prepareTaskDelete(task, ids);
+  async function purgeTaskData(task, ids, options = {}) {
+    await prepareTaskDelete(task, ids, options);
     const targets = sessions(task, ids);
     const otherTasks = Object.values(getBoard().tasks).filter(t => !ids.includes(t.id));
     const ownedRefs = Object.values(getBoard().tasks).filter(t => ids.includes(t.id)).flatMap(t => t.refs || []);
@@ -62,11 +70,10 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
     for (const member of worktrees(ids)) {
       if (targets.some(r => ids.includes(r.taskBoundTaskId) && !r.workspaceOwnerSessionId && r.worktreePath === member.worktreePath)) continue;
       const dir = directories.get(taskDirId(getBoard(), member));
-      const result = await gitWorktreeRemove(dir.path, member.worktreePath, member.branch, { baseBranch: dir.baseBranch });
-      if (!result.ok) {
-        const code = result.code || result.reasons?.[0] || 'worktree_remove_refused';
-        throw Object.assign(new Error(code), { code });
-      }
+      const result = await gitWorktreeRemove(dir.path, member.worktreePath, member.branch, {
+        baseBranch: dir.baseBranch, force: !!options.force,
+      });
+      if (!result.ok) throw removalFailure(result, 'worktree_remove_refused');
     }
     getShell().purgeTasks(ids);
     for (const record of targets) {
@@ -85,11 +92,8 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
         // The generic session teardown treats history IO as best-effort. A
         // permanent task deletion must instead fail visibly and remain retryable.
         getHistoryService().deleteSession(record.id);
-        const result = await destroySession(record, directories.get(record.dirId));
-        if (!result.ok) {
-          const code = result.code || result.reasons?.[0] || 'session_delete_failed';
-          throw Object.assign(new Error(code), { code });
-        }
+        const result = await destroySession(record, directories.get(record.dirId), { force: !!options.force });
+        if (!result.ok) throw removalFailure(result, 'session_delete_failed');
       }
     }
     persist();

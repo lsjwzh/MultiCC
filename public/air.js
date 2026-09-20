@@ -1936,8 +1936,8 @@
     task_deleting: '任务正在删除中，请稍等。',
     title_required: '任务标题不能为空。',
     title_too_long: '任务标题最多 40 个字符。',
-    task_workspace_dirty: '工作区还有未提交改动：请先在任务里让它提交或清理，再删除。',
-    task_workspace_unmerged: '工作区还有未合并到基分支的提交：请先合并，再删除。',
+    task_workspace_dirty: '工作区还有未提交改动，需要再次确认后才能删除。',
+    task_workspace_unmerged: '工作区还有未合并到基分支的提交，需要再次确认后才能删除。',
     task_session_shared: '会话还被其他任务共享，无法删除。',
     shell_workspace_referenced: '工作区被其他会话引用，无法删除。',
     task_shell_shared: '任务的会话壳还挂着别的任务，不能整体移动。',
@@ -1948,6 +1948,24 @@
   function taskActionError(error) {
     return TASK_ACTION_ERRORS[error?.code || ''] || TASK_ACTION_ERRORS[error?.message || '']
       || TASK_ACTION_ERRORS[(error?.reasons || [])[0] || ''] || error?.message || '操作失败';
+  }
+
+  function taskDeleteRisks(error) {
+    const reasons = new Set([error?.code, error?.message, ...(error?.reasons || [])]);
+    return {
+      dirty: reasons.has('task_workspace_dirty'),
+      unmerged: reasons.has('task_workspace_unmerged'),
+    };
+  }
+
+  function confirmRiskyTaskDelete(title, error) {
+    const risks = taskDeleteRisks(error);
+    if (!risks.dirty && !risks.unmerged) return false;
+    const findings = [
+      ...(risks.dirty ? ['• 有未提交的代码改动或未跟踪文件'] : []),
+      ...(risks.unmerged ? ['• 有尚未合入基分支（如 main）的提交'] : []),
+    ];
+    return window.confirm(`任务「${title}」的工作区检测到风险：\n\n${findings.join('\n')}\n\n仍然删除会直接移除 worktree 和分支。MultiCC 会在仓库的 .git/multicc-backups 中备份 Git 能识别的提交、改动和未跟踪文件；Git 忽略的文件不会被备份。\n\n仍然删除？`);
   }
 
   // 按钮点击即禁用、回来再放开；错误码统一翻成中文。
@@ -1974,9 +1992,17 @@
     const selectedId = task?.id || taskId;
     if (!selectedId) return;
     const title = task?.title || (selectedId === taskId ? entry?.task?.title : '') || selectedId;
-    if (!window.confirm(`删除任务「${title}」？\n\n它的专属会话与工作区会一并删除；有未提交改动或未合并提交时会被拒绝。此操作不可撤销。`)) return;
+    if (!window.confirm(`删除任务「${title}」？\n\n它的专属会话与 worktree 会被直接删除。此操作不可撤销。`)) return;
     await taskAction('delete', async () => {
-      await api(`/api/task-board/tasks/${encodeURIComponent(selectedId)}`, undefined, 'DELETE');
+      const path = `/api/task-board/tasks/${encodeURIComponent(selectedId)}`;
+      try {
+        await api(path, undefined, 'DELETE');
+      } catch (error) {
+        const risks = taskDeleteRisks(error);
+        if (!risks.dirty && !risks.unmerged) throw error;
+        if (!confirmRiskyTaskDelete(title, error)) return;
+        await api(path, { force: true }, 'DELETE');
+      }
       // 删除当前打开的任务时先退回目录；从列表删别的任务则留在原地，让筛选和滚动容器继续可用。
       if (selectedId === taskId) navigate(task?.dirId || directoryId);
       await refresh();

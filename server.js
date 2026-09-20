@@ -2531,8 +2531,9 @@ sessionHibernationRuntime = createSessionHibernationRuntime({
     },
   },
   inspectBlockers: async (id, record) => {
-    const blockers = ['workspace_residency_retained'], chat = chatSessions.get(id), stream = chatStream.status(id);
+    const blockers = [], chat = chatSessions.get(id), stream = chatStream.status(id);
     if (invalidSessions.has(id)) blockers.push('invalid_session');
+    try { if (workspaceAdmission?.hasActiveLease?.(id)) blockers.push('workspace_lease'); } catch (_) { blockers.push('workspace_lease_unknown'); }
     if (defaultRepoActor.isLeased(id)) blockers.push('repo_lease');
     if (chat?.isStreaming || chat?.claudeProc || chat?._cancelledProc || chat?._activeRunner) blockers.push('active_cli');
     if (stream?.busy || stream?.queued) blockers.push('active_stream');
@@ -2553,10 +2554,9 @@ sessionHibernationRuntime = createSessionHibernationRuntime({
   intervalMs: process.env.MULTICC_SESSION_HIBERNATE_INTERVAL_MS,
   startupDelayMs: process.env.MULTICC_SESSION_HIBERNATE_STARTUP_DELAY_MS,
   batchSize: process.env.MULTICC_SESSION_HIBERNATE_BATCH_SIZE,
-  onEvent: event => { logger.info('session_workspace_lifecycle', event); const record = event.sessionId && persistedSessions.get(event.sessionId); if (record?.dirId) workspaceBroadcast(record.dirId, event); },
+  onEvent: event => { logger.info('session_workspace_lifecycle', event); const record = event.sessionId && persistedSessions.get(event.sessionId); if (record?.dirId) workspaceBroadcast(record.dirId, event); if (event.action === 'hibernate' && event.status === 'success') workspaceAdmission?.reconcileResidency?.(); },
   metric: name => metrics.inc(name), logger,
 });
-
 workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmission({
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, persistence: sessionPersistence,
   ensureDir: ensureDirGitReady, addWorktree: gitWorktreeAdd, validate: gitWorktreeValidate,

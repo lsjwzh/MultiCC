@@ -3,6 +3,16 @@ import 'package:flutter/material.dart';
 import '../../services/air_service.dart';
 import '../../theme.dart';
 
+Set<String> _taskDeleteRisks(Object error) {
+  if (error is! AirTaskActionException) return const {};
+  return {error.code, ...error.reasons}
+      .where(
+        (code) =>
+            code == 'task_workspace_dirty' || code == 'task_workspace_unmerged',
+      )
+      .toSet();
+}
+
 /// 列表、详情与聊天菜单共用的一次性删除流程。这里集中维护确认文案、请求和错误
 /// 呈现；调用处只负责在成功后刷新列表或退出已经被删除的任务。
 Future<bool> deleteAirTaskWithConfirmation({
@@ -18,7 +28,7 @@ Future<bool> deleteAirTaskWithConfirmation({
     builder: (dialogContext) => AlertDialog(
       key: ValueKey('$keyPrefix-delete-confirm'),
       title: Text('删除任务「$title」？'),
-      content: const Text('它的专属会话与工作区会一并删除；有未提交改动或未合并提交时会被拒绝。此操作不可撤销。'),
+      content: const Text('它的专属会话与 worktree 会被直接删除。此操作不可撤销。'),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -36,14 +46,58 @@ Future<bool> deleteAirTaskWithConfirmation({
   try {
     await service.deleteTask(taskId);
   } catch (error) {
-    if (onError != null) {
-      onError(error);
-    } else if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$error')));
+    final risks = _taskDeleteRisks(error);
+    if (risks.isEmpty || !context.mounted) {
+      if (onError != null) {
+        onError(error);
+      } else if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+      }
+      return false;
     }
-    return false;
+    final findings = [
+      if (risks.contains('task_workspace_dirty')) '• 有未提交的代码改动或未跟踪文件',
+      if (risks.contains('task_workspace_unmerged')) '• 有尚未合入基分支（如 main）的提交',
+    ];
+    final force = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: ValueKey('$keyPrefix-delete-risk-confirm'),
+        title: const Text('工作区还有未保存的代码'),
+        content: Text(
+          '${findings.join('\n')}\n\n仍然删除会直接移除 worktree 和分支。MultiCC 会在仓库的 .git/multicc-backups 中备份 Git 能识别的提交、改动和未跟踪文件；Git 忽略的文件不会被备份。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('保留任务'),
+          ),
+          TextButton(
+            key: ValueKey('$keyPrefix-delete-risk-confirm-ok'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text(
+              '仍然删除',
+              style: TextStyle(color: AppColors.danger),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (force != true || !context.mounted) return false;
+    try {
+      await service.deleteTask(taskId, force: true);
+    } catch (forceError) {
+      if (onError != null) {
+        onError(forceError);
+      } else if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$forceError')));
+      }
+      return false;
+    }
   }
   if (context.mounted) {
     ScaffoldMessenger.of(

@@ -5,7 +5,7 @@
 function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, taskDto,
   notify, taskDirId, activeOperations, assertIdle, preparePurge, purge }) {
   const pending = new Set();
-  const fail = (res, code, status = 409) => res.status(status).json({ ok: false, error: code });
+  const fail = (res, code, status = 409, details = {}) => res.status(status).json({ ok: false, error: code, ...details });
   async function operate(req, res, action) {
     const task = resolveTask(req.params.taskId);
     if (!task) return action === 'delete' && getBoard().deletedTaskIds?.includes(req.params.taskId)
@@ -19,12 +19,13 @@ function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, t
       if (expected != null && task.recordType === 'planned' && Number(expected) !== task.planningRevision) return fail(res, 'revision_conflict');
       const ids = taskIdentityIds(task), dirId = taskDirId(task);
       if (action === 'delete') {
-        await preparePurge?.(task, ids);
+        const options = { force: req.body?.force === true };
+        await preparePurge?.(task, ids, options);
         // Persist the write barrier before any asynchronous cleanup. On failure,
         // DELETE retries the same cleanup; no half-deleted task can execute.
         let result = commit(board => { for (const id of ids) if (board.tasks[id]) board.tasks[id].deleting = true; return { ok: true }; });
         if (!result.ok) return fail(res, result.error, 500);
-        await purge(task, ids);
+        await purge(task, ids, options);
         result = commit(board => {
           for (const id of ids) delete board.tasks[id];
           // IDs alone prevent delayed receipts/backfill from recreating erased
@@ -54,7 +55,10 @@ function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, t
       // Legacy /status callers also reach archive/restore here; neither releases a session.
       return res.json({ ok: true, releasedSession: false, releasedSessions: 0,
         task: taskDto(resolveTask(task.id)), revision: getBoard().revision });
-    } catch (error) { return fail(res, error.code || error.message || 'task_lifecycle_failed'); }
+    } catch (error) {
+      const details = Array.isArray(error.reasons) && error.reasons.length ? { reasons: error.reasons } : {};
+      return fail(res, error.code || error.message || 'task_lifecycle_failed', 409, details);
+    }
     finally { pending.delete(task.id); }
   }
   return { isBusy: id => pending.has(resolveTask(id)?.id || id), archive: (req, res) => operate(req, res, 'archive'),
@@ -67,12 +71,12 @@ function createBoardTaskLifecycle({ deps, taskRuns, isOpenTaskRun, ...options })
     const ids = options.taskIdentityIds(task);
     if (ids.some(id => taskRuns?.listTaskRuns(id).some(isOpenTaskRun))) throw Object.assign(new Error('task_busy'), { code: 'task_busy' });
     await deps.assertTaskIdle?.(task, ids);
-  }, preparePurge: async (task, ids) => {
+  }, preparePurge: async (task, ids, options) => {
     for (const id of ids) taskRuns?.assertTaskPurgeable(id);
-    await deps.prepareTaskDelete?.(task, ids);
-  }, purge: async (task, ids) => {
+    await deps.prepareTaskDelete?.(task, ids, options);
+  }, purge: async (task, ids, options) => {
     if (!deps.purgeTaskData) throw Object.assign(new Error('task_delete_unavailable'), { code: 'task_delete_unavailable' });
-    await deps.purgeTaskData(task, ids);
+    await deps.purgeTaskData(task, ids, options);
     for (const id of ids) taskRuns?.purgeTask(id);
   } });
 }

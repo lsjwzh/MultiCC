@@ -57,7 +57,13 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
     return json({ ok: true, dirId: value.dirId, cwd: '/projects/sandbox', planned: false,
       carried: { patchBytes: 232, files: 1, paths: ['notes/todo.txt'] }, task: entry.task });
   };
-  routes['DELETE /api/task-board/tasks/tsk_a'] = () => { deleteCalls.push('tsk_a'); return json({ ok: true, deleted: true, taskIds: ['tsk_a'] }); };
+  routes['DELETE /api/task-board/tasks/tsk_a'] = ({ body }) => {
+    const value = body.length ? JSON.parse(body) : null;
+    deleteCalls.push(value);
+    if (!value?.force) return { ...json({ ok: false, error: 'task_workspace_dirty',
+      reasons: ['task_workspace_dirty', 'task_workspace_unmerged'] }), status: 409 };
+    return json({ ok: true, deleted: true, taskIds: ['tsk_a'] });
+  };
 
   await withCdpHarness({ routes, screenshotDir: process.env.MULTICC_AIR_LIFECYCLE_QA_DIR || path.join(os.tmpdir(), 'multicc-air-lifecycle-qa') }, async page => {
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `addEventListener('error',e=>(window.__errors||=[]).push(e.message));addEventListener('unhandledrejection',e=>(window.__errors||=[]).push(String(e.reason)))` });
@@ -130,10 +136,13 @@ test('Air task detail archives, restores, moves with carry and deletes', async t
     await page.evaluate(`document.querySelector('[data-action="delete"]').click()`);
     assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('任务已删除')`),
       'delete notice: ' + await page.evaluate(`document.getElementById('notice').textContent`));
-    assert.deepEqual(deleteCalls, ['tsk_a']);
-    assert.equal(await page.evaluate(`window.__confirmed.length`), 1, 'delete asks once');
+    assert.deepEqual(deleteCalls, [null, { force: true }], 'only the confirmed retry is forced');
+    assert.equal(await page.evaluate(`window.__confirmed.length`), 2, 'risky deletion asks again');
     assert.ok((await page.evaluate(`window.__confirmed[0]`)).includes('手动命名的任务'), 'the confirm names the task');
     assert.ok((await page.evaluate(`window.__confirmed[0]`)).includes('不可撤销'), 'the confirm says it cannot be undone');
+    assert.ok((await page.evaluate(`window.__confirmed[1]`)).includes('未提交的代码改动'), 'the risk confirm reports dirty code');
+    assert.ok((await page.evaluate(`window.__confirmed[1]`)).includes('尚未合入基分支'), 'the risk confirm reports ahead commits');
+    assert.ok((await page.evaluate(`window.__confirmed[1]`)).includes('Git 忽略的文件不会被备份'), 'the backup boundary is explicit');
     assert.equal(await page.evaluate(`location.search.includes('task=')`), false, 'the deleted task is no longer selected');
     assert.deepEqual(await page.evaluate(`(window.__errors||[]).filter(m=>!/Failed to load resource|net::/.test(m))`), []);
   });

@@ -65,11 +65,22 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
     const workspace = get('record', workspaceId);
     if (!workspace) return 'workspace_not_found';
     if (get('lease', workspaceId) && ACTIVE.has(get('lease', workspaceId).state)) return 'workspace_busy';
-    if (leases().length >= executionLimit) return 'workspace_execution_capacity';
+    const activeLeases = leases();
+    if (activeLeases.length >= executionLimit) return 'workspace_execution_capacity';
     if (workspace.residency !== 'resident') {
-      const reserved = leases().filter(l => l.materializing).length;
-      if (reserved >= restoreLimit) return 'workspace_restore_capacity';
-      if (list('record').filter(w => ['resident', 'retained'].includes(w.residency)).length + reserved >= residentLimit) return 'workspace_resident_capacity';
+      const materializing = activeLeases.filter(l => l.materializing);
+      if (materializing.length >= restoreLimit) return 'workspace_restore_capacity';
+
+      // A resident checkout consumes space in exactly one repository. A busy
+      // project must not prevent an unrelated directory from materializing its
+      // first task, so only the resident budget is directory-scoped. Execution
+      // and restore concurrency remain process-wide resource guards.
+      const residentInDirectory = list('record').filter(w => w.dirId === workspace.dirId
+        && ['resident', 'retained'].includes(w.residency)).length;
+      const materializingInDirectory = materializing.filter(lease => (
+        get('record', lease.workspaceId)?.dirId === workspace.dirId
+      )).length;
+      if (residentInDirectory + materializingInDirectory >= residentLimit) return 'workspace_resident_capacity';
     }
     return null;
   }
@@ -143,7 +154,7 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
     return store.transaction(() => {
       const reclaimed = [];
       for (const record of list('record')) {
-        if (record.residency !== 'resident') continue;
+        if (!['resident', 'retained'].includes(record.residency)) continue;
         const lease = get('lease', record.id);
         if (lease && ACTIVE.has(lease.state)) continue;
         if (observe(record) !== 'gone') continue;
@@ -155,6 +166,7 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
   }
   return { register, bind, acquire, transition, resident, retain, release, recover, reclaim, available,
     workspace: id => get('record', id), binding: id => get('binding', id), lease: id => get('lease', id),
-    snapshot: () => ({ workspaces: list('record'), leases: leases(), budgets: { executionLimit, residentLimit, restoreLimit } }), epoch };
+    snapshot: () => ({ workspaces: list('record'), leases: leases(),
+      budgets: { executionLimit, residentLimit, residentLimitScope: 'directory', restoreLimit } }), epoch };
 }
 module.exports = { createWorkspaceRegistry };

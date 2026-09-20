@@ -66,8 +66,8 @@ function createWorkspaceAdmission(deps) {
     const workspace = registry.register({ ownerId: source.id, dirId: dir.id, path: location,
       branch: source.branch || `multicc/${source.id}`, baseRef: dir.baseBranch,
       residency: source.workspaceState === 'planned' ? 'planned' : fs.existsSync(location) ? 'resident' : 'hibernated',
-      // Legacy/external writers are not proven quiescent. This pin prohibits
-      // automatic reclamation; it does not discard existing working files.
+      // Preserve the legacy provenance for diagnostics. Safety is decided by
+      // the live blocker inspection, while residency follows the filesystem.
       pins: source.workspaceState === 'planned' ? [] : ['legacy_resident_retained'] });
     registry.bind(id, workspace.id);
     return workspace;
@@ -76,6 +76,12 @@ function createWorkspaceAdmission(deps) {
     const state = deps.getState(id);
     return !!(state?.isStreaming || processAlive(state?.claudeProc) || processAlive(state?._cancelledProc)
       || state?._activeRunner || deps.hasBackground(id) || deps.streamBusy(id));
+  }
+  function hasActiveLease(id) {
+    const workspace = identify(id);
+    if (!workspace) return false;
+    return ['reserved', 'materializing', 'starting', 'running', 'uncertain']
+      .includes(registry.lease(workspace.id)?.state);
   }
   function occupied(id) {
     for (const [sid, permit] of active) if (permit.terminal) void drain(sid, permit);
@@ -92,7 +98,49 @@ function createWorkspaceAdmission(deps) {
       if (record.id === id || !applicable(record)) continue;
       if ((record.workspaceOwnerSessionId || record.id) === source.id && isLive(record.id)) return true;
     }
-    return !!registry.available(workspace.id);
+    const reason = registry.available(workspace.id);
+    // Resident pressure has an asynchronous recovery path in beforeDeliver().
+    // Let the scheduler enter that path instead of classifying the target as a
+    // permanently occupied writer and retrying the same synchronous probe.
+    return !!reason && reason !== 'workspace_resident_capacity';
+  }
+
+  function reclaimGoneWorkspaces(force = false) {
+    if (closed) return [];
+    const at = Date.now();
+    if (!force && at - lastResidencyReclaimAt < residencyReclaimLimit()) return [];
+    lastResidencyReclaimAt = at;
+    let reclaimed = [];
+    try {
+      reclaimed = registry.reclaim(record => (fs.existsSync(record.path) ? 'present' : 'gone'));
+    } catch (error) {
+      deps.log('workspace_residency_reclaim_failed', { code: error.code });
+      return [];
+    }
+    for (const workspaceId of reclaimed) deps.log('workspace_residency_reclaimed', { workspaceId });
+    return reclaimed;
+  }
+
+  async function acquireWithResidentRelief(workspace, sessionId, requestId) {
+    try { return registry.acquire(workspace.id, sessionId, requestId); }
+    catch (error) {
+      if (error?.code !== 'workspace_resident_capacity') throw error;
+      const runtime = deps.hibernation?.();
+      if (typeof runtime?.reclaimForCapacity !== 'function') throw error;
+      const relief = await runtime.reclaimForCapacity({
+        dirId: workspace.dirId,
+        excludeSessionIds: [owner(sessionId).id],
+        count: 1,
+      });
+      const reclaimed = reclaimGoneWorkspaces(true);
+      deps.log('workspace_capacity_relief', {
+        sessionId, dirId: workspace.dirId,
+        considered: relief?.considered || 0,
+        hibernated: relief?.hibernated || 0,
+        reclaimed: reclaimed.length,
+      });
+      return registry.acquire(workspace.id, sessionId, requestId);
+    }
   }
   async function materialize(id, lease) {
     const source = owner(id), dir = deps.directories.get(source.dirId);
@@ -138,9 +186,13 @@ function createWorkspaceAdmission(deps) {
     const workspace = identify(descriptor.sessionId);
     if (!workspace) return null;
     const source = owner(descriptor.sessionId);
+    // Hibernation persists this transition before its final blocker check.
+    // Refusing new acquisition during that small window closes the race where
+    // a checkout could otherwise be detached immediately after a lease starts.
+    if (['hibernating', 'thawing'].includes(source.workspaceState)) throw failure('workspace_busy');
     for (const record of deps.records.values()) if (record.id !== descriptor.sessionId
       && (record.workspaceOwnerSessionId || record.id) === source.id && isLive(record.id)) throw failure('workspace_busy');
-    const lease = registry.acquire(workspace.id, descriptor.sessionId, descriptor.item.id);
+    const lease = await acquireWithResidentRelief(workspace, descriptor.sessionId, descriptor.item.id);
     const permit = { lease, sessionId: descriptor.sessionId, deliveryId: descriptor.item.id };
     permits.add(permit); active.set(descriptor.sessionId, permit);
     try {
@@ -313,20 +365,6 @@ function createWorkspaceAdmission(deps) {
     const value = Number(deps.budgets?.residencyReclaimMs);
     return Number.isFinite(value) && value >= 0 ? value : DEFAULT_RESIDENCY_RECLAIM_MS;
   }
-  function reclaimGoneWorkspaces() {
-    if (closed) return;
-    const at = Date.now();
-    if (at - lastResidencyReclaimAt < residencyReclaimLimit()) return;
-    lastResidencyReclaimAt = at;
-    let reclaimed = [];
-    try {
-      reclaimed = registry.reclaim(record => (fs.existsSync(record.path) ? 'present' : 'gone'));
-    } catch (error) {
-      deps.log('workspace_residency_reclaim_failed', { code: error.code });
-      return;
-    }
-    for (const workspaceId of reclaimed) deps.log('workspace_residency_reclaimed', { workspaceId });
-  }
   async function withSeparationBarrier({ sessionId, turnId, separationId }, work) {
     if (!sessionId || !turnId || !separationId || typeof work !== 'function') throw failure('separation_barrier_input_required');
     const workspace = identify(sessionId);
@@ -334,7 +372,7 @@ function createWorkspaceAdmission(deps) {
     const siblingLive = () => [...deps.records.values()].some(record => applicable(record)
       && (record.workspaceOwnerSessionId || record.id) === source.id && isLive(record.id));
     if (!workspace || active.has(sessionId) || siblingLive()) throw failure('workspace_busy');
-    const lease = registry.acquire(workspace.id, sessionId, `separation:${separationId}`);
+    const lease = await acquireWithResidentRelief(workspace, sessionId, `separation:${separationId}`);
     let stopped = false;
     try {
       await materialize(sessionId, lease);
@@ -352,10 +390,12 @@ function createWorkspaceAdmission(deps) {
       }
     }
   }
-  return { identify, occupied, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, finalized, optionsForTurn, initialize,
+  return { identify, occupied, hasActiveLease, beforeDeliver, assertPermit, starting, spawned, settled, bindTurn, finalized, optionsForTurn, initialize,
     mergeHooks: id => evidence.hooks(id), recoverEvidence: id => evidence.recover(id),
     deliveryEvidence: (id, turnId) => evidence.summary(id, turnId), verifyBaseline: (receipt, cwd) => evidence.verifyBaseline(receipt, cwd),
     withSeparationBarrier, recordSeparationApplication: input => evidence.recordSeparationApplication(input),
-    capacityReason: id => registry.available(id), snapshot: () => registry.snapshot(), close: () => { closed = true; clearInterval(settleTimer); store.close(); } };
+    capacityReason: id => registry.available(id), snapshot: () => registry.snapshot(),
+    reconcileResidency: () => reclaimGoneWorkspaces(true),
+    close: () => { closed = true; clearInterval(settleTimer); store.close(); } };
 }
 module.exports = { createWorkspaceAdmission };

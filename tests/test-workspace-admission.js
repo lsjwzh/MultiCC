@@ -43,6 +43,25 @@ test('execution and resident limits independently retain queued work', t => {
   f.registry.release(l, { stopped: true });
   assert.equal(f.registry.available(b.id), 'workspace_resident_capacity');
 });
+test('resident limit is per directory while execution and restore limits stay global', t => {
+  const f = fixture(t, { executionLimit: 4, residentLimit: 1, restoreLimit: 2 });
+  assert.equal(f.registry.snapshot().budgets.residentLimitScope, 'directory');
+  const residentA = f.add('resident-a', 'resident');
+  const plannedA = f.add('planned-a');
+  const plannedB = f.registry.register({ ownerId: 'planned-b', dirId: 'other',
+    path: path.join(f.dir, 'planned-b'), branch: 'planned-b', residency: 'planned' });
+  assert.equal(f.registry.available(plannedA.id), 'workspace_resident_capacity');
+  assert.equal(f.registry.available(plannedB.id), null,
+    'a full directory must not consume another directory resident budget');
+
+  const restoringB = f.registry.acquire(plannedB.id, 'planned-b', 'restore-b');
+  const anotherB = f.registry.register({ ownerId: 'another-b', dirId: 'other',
+    path: path.join(f.dir, 'another-b'), branch: 'another-b', residency: 'planned' });
+  assert.equal(f.registry.available(anotherB.id), 'workspace_resident_capacity',
+    'a materializing reservation consumes capacity only in its own directory');
+  assert.equal(f.registry.available(residentA.id), null, 'resident workspaces do not need another resident slot');
+  f.registry.release(restoringB, { stopped: true });
+});
 test('unknown stop and restart never steal a writer lease', t => {
   const f = fixture(t), w = f.add('a', 'resident'), l = f.registry.acquire(w.id, 'a', 'm');
   f.registry.transition(l, 'starting'); f.registry.release(l, { stopped: false });
@@ -67,20 +86,25 @@ test('identity conflicts and missing validation roll back without changing resid
   assert.throws(() => f.registry.resident(l, {}), { code: 'workspace_validation_required' });
   assert.equal(f.registry.workspace(w.id).residency, 'planned');
 });
-async function hostFixture(t) {
-  const f = fixture(t), repo = path.join(f.dir, 'repo'); fs.mkdirSync(repo);
+async function hostFixture(t, options = {}) {
+  const f = fixture(t, options.limits), repo = path.join(f.dir, 'repo'); fs.mkdirSync(repo);
   const git = args => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git(['init', '-b', 'main']); git(['config', 'user.name', 'Test']); git(['config', 'user.email', 'test@example.invalid']); git(['commit', '--allow-empty', '-m', 'base']);
   const record = { id: 'task-test', kind: 'chat', cli: 'codex', dirId: 'd', branch: 'multicc/task-test', worktreePath: path.join(repo, '.multicc-worktrees/task-test'), workspaceState: 'planned' };
   const records = new Map([[record.id, record]]), state = {}, flags = { background: false, closes: 0, creates: 0 };
+  const hibernationRuntime = {
+    ensureAwake: async () => ({ ok: true }),
+    reclaimForCapacity: options.reclaimForCapacity,
+  };
   const deps = { file: f.file, records, directories: new Map([['d', { id: 'd', path: repo, baseBranch: 'main' }]]),
     persistence: { mutate: (_source, fn) => fn(records) }, getState: () => state,
     ensureDir: async () => ({ ok: true }), addWorktree: async () => { flags.creates++; git(['worktree', 'add', '-b', record.branch, record.worktreePath, 'main']); return { worktreePath: record.worktreePath, branch: record.branch }; },
-    validate: async () => ({ ok: true }), hibernation: () => ({ ensureAwake: async () => ({ ok: true }) }),
+    validate: async () => ({ ok: true }), hibernation: () => hibernationRuntime,
+    budgets: options.limits,
     hasBackground: () => flags.background, streamBusy: () => false, closePersistent: async () => { flags.closes++; return { closed: true }; }, updateCwd: () => {}, log: () => {} };
   const host = createWorkspaceAdmission(deps); t.after(() => host.close()); host.initialize();
   const descriptor = id => ({ sessionId: record.id, item: { id }, opts: { deliveryId: id } });
-  return { ...f, host, record, descriptor, flags, state, deps };
+  return { ...f, host, record, descriptor, flags, state, deps, hibernationRuntime };
 }
 test('first dispatch materializes once, rejects forged permits, and holds claim through background work', async t => {
   const f = await hostFixture(t); assert.equal(fs.existsSync(f.record.worktreePath), false);
@@ -104,6 +128,32 @@ test('accepted duplicate without launch and failed materialization both release 
   assert.equal(fs.existsSync(f.record.worktreePath), true);
   assert.equal(f.host.snapshot().workspaces[0].residency, 'retained');
   assert.equal(f.host.snapshot().leases.length, 0);
+});
+test('resident pressure enters directory-scoped hibernation, reconciles immediately and retries admission', async t => {
+  let victimPath;
+  const reliefCalls = [];
+  const f = await hostFixture(t, {
+    limits: { executionLimit: 2, residentLimit: 1, restoreLimit: 1 },
+    reclaimForCapacity: async input => {
+      reliefCalls.push(input);
+      fs.rmSync(victimPath, { recursive: true, force: true });
+      return { ok: true, considered: 1, hibernated: 1 };
+    },
+  });
+  victimPath = path.join(f.dir, 'old-resident');
+  fs.mkdirSync(victimPath);
+  const victim = f.registry.register({ ownerId: 'old-resident', dirId: 'd', path: victimPath,
+    branch: 'old-resident', residency: 'resident' });
+
+  assert.equal(f.host.occupied(f.record.id), false,
+    'resident pressure must reach asynchronous relief instead of wedging in the busy probe');
+  const descriptor = f.descriptor('capacity-relief');
+  const guard = await f.host.beforeDeliver(descriptor);
+  assert.deepEqual(reliefCalls, [{ dirId: 'd', excludeSessionIds: [f.record.id], count: 1 }]);
+  const snapshot = f.host.snapshot();
+  assert.equal(snapshot.workspaces.find(w => w.id === victim.id).residency, 'hibernated');
+  assert.equal(snapshot.workspaces.find(w => w.ownerId === f.record.id).residency, 'resident');
+  await guard.complete({ accepted: false, durable: false });
 });
 test('a resident conflicted checkout is admitted in place instead of blocking its conversation', async t => {
   const f = await hostFixture(t);
@@ -133,9 +183,17 @@ test('broken workspace identity uses bounded delivery retries, not infinite back
 });
 test('response loss after launch pins the original operation', async t => {
   const f = await hostFixture(t), d = f.descriptor('m'), guard = await f.host.beforeDeliver(d);
+  assert.equal(f.host.hasActiveLease(f.record.id), true);
   f.host.starting(f.record.id, d.opts); await guard.complete({ accepted: false });
   assert.equal(f.host.snapshot().leases[0].state, 'uncertain');
+  assert.equal(f.host.hasActiveLease(f.record.id), true);
   await assert.rejects(f.host.beforeDeliver(d), { code: 'workspace_launch_unresolved' });
+});
+test('delivery cannot acquire while hibernation owns the transition window', async t => {
+  const f = await hostFixture(t);
+  f.record.workspaceState = 'hibernating';
+  await assert.rejects(f.host.beforeDeliver(f.descriptor('racing-delivery')), { code: 'workspace_busy' });
+  assert.equal(f.host.snapshot().leases.length, 0);
 });
 test('terminal callback before runner cleanup releases after the finalizer boundary', async t => {
   const f = await hostFixture(t), d = f.descriptor('m');
@@ -265,9 +323,11 @@ test('an unidentifiable workspace names its failure instead of reading as busy',
 
 test('reclaim demotes a workspace whose directory is gone and keeps the rest', t => {
   const f = fixture(t);
-  const gone = f.add('gone', 'resident'), kept = f.add('kept', 'resident');
-  assert.deepEqual(f.registry.reclaim(record => (record.id === gone.id ? 'gone' : 'present')), [gone.id]);
+  const gone = f.add('gone', 'resident'), retained = f.add('retained', 'retained'), kept = f.add('kept', 'resident');
+  assert.deepEqual(f.registry.reclaim(record => ([gone.id, retained.id].includes(record.id) ? 'gone' : 'present')),
+    [gone.id, retained.id]);
   assert.equal(f.registry.workspace(gone.id).residency, 'hibernated');
+  assert.equal(f.registry.workspace(retained.id).residency, 'hibernated');
   assert.equal(f.registry.workspace(kept.id).residency, 'resident');
   assert.equal(f.registry.workspace(gone.id).path, gone.path, 'the record keeps its identity');
 });

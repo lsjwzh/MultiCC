@@ -58,8 +58,8 @@ const Map<String, String> airTaskActionErrors = {
   'task_deleting': '任务正在删除中，请稍等。',
   'title_required': '任务标题不能为空。',
   'title_too_long': '任务标题最多 40 个字符。',
-  'task_workspace_dirty': '工作区还有未提交改动：请先在任务里让它提交或清理，再删除。',
-  'task_workspace_unmerged': '工作区还有未合并到基分支的提交：请先合并，再删除。',
+  'task_workspace_dirty': '工作区还有未提交改动，需要再次确认后才能删除。',
+  'task_workspace_unmerged': '工作区还有未合并到基分支的提交，需要再次确认后才能删除。',
   'task_session_shared': '会话还被其他任务共享，无法删除。',
   'shell_workspace_referenced': '工作区被其他会话引用，无法删除。',
   'task_shell_shared': '任务的会话壳还挂着别的任务，不能整体移动。',
@@ -71,14 +71,16 @@ const Map<String, String> airTaskActionErrors = {
 /// 归档 / 恢复 / 移动 / 删除失败。带上服务端的 `error` code，界面才能按
 /// [airTaskActionErrors] 说话（Web 的 `taskActionError(error)` 读的也是它）。
 class AirTaskActionException implements Exception {
-  const AirTaskActionException(this.code);
+  const AirTaskActionException(this.code, {this.reasons = const []});
 
   /// 服务端错误码（`task_busy` 这类），不是 HTTP 状态码。
   final String code;
 
+  /// 同一个工作区可以同时既 dirty、又有未合入提交；删除确认要一次说全。
+  final List<String> reasons;
+
   @override
-  String toString() =>
-      airTaskActionErrors[code] ?? '操作失败（$code）。';
+  String toString() => airTaskActionErrors[code] ?? '操作失败（$code）。';
 }
 
 /// 这行卡在哪：先说容量/租约这类会自己好转的原因，没有才说目录是计划态还是已经
@@ -517,7 +519,10 @@ class AirService {
     };
     final request = switch (method) {
       'GET' => _http.get(uri, headers: headers),
-      'DELETE' => _http.delete(uri, headers: headers),
+      'DELETE' =>
+        body == null
+            ? _http.delete(uri, headers: headers)
+            : _http.delete(uri, headers: headers, body: jsonEncode(body)),
       _ => _http.post(uri, headers: headers, body: jsonEncode(body ?? {})),
     };
     return request.timeout(const Duration(seconds: 30));
@@ -555,6 +560,9 @@ class AirService {
       final reasons = result['reasons'];
       throw AirTaskActionException(
         '${result['error'] ?? result['code'] ?? (reasons is List && reasons.isNotEmpty ? reasons.first : null) ?? 'HTTP ${response.statusCode}'}',
+        reasons: reasons is List
+            ? reasons.map((reason) => '$reason').toList(growable: false)
+            : const [],
       );
     }
     return result;
@@ -615,10 +623,13 @@ class AirService {
         {'dirId': dirId},
       );
 
-  /// 删除任务。它的专属会话与工作区一并消失，不可撤销；工作区还有未提交改动或
-  /// 未合并提交时服务端会拒绝（错误码见 [airTaskActionErrors]）。
-  Future<void> deleteTask(String taskId) =>
-      _lifecycle('DELETE', '/api/task-board/tasks/${Uri.encodeComponent(taskId)}');
+  /// 删除任务。默认先做安全检查；界面把 dirty / 未合入风险展示给用户并再次确认
+  /// 后，以 [force] 重试。强制删除仍不会越过运行中、共享或被引用的保护。
+  Future<void> deleteTask(String taskId, {bool force = false}) => _lifecycle(
+    'DELETE',
+    '/api/task-board/tasks/${Uri.encodeComponent(taskId)}',
+    force ? {'force': true} : null,
+  );
 
   /// 钉住 / 取消钉住一个任务，返回钉住之后的整份清单（顺序就是显示顺序）。
   ///

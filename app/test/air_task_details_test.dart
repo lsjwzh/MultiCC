@@ -634,12 +634,22 @@ void main() {
       client.close();
     });
 
-    testWidgets('只读任务不给移动入口，删除要先确认', (tester) async {
+    testWidgets('只读任务不给移动入口，风险 worktree 要二次确认才强制删除', (tester) async {
       final settings = await settingsFor();
       final writes = <String>[];
       final client = MockClient((request) async {
         if (request.method != 'GET') {
-          writes.add('${request.method} ${request.url.path}');
+          writes.add('${request.method} ${request.url.path} ${request.body}');
+          if (request.method == 'DELETE' && request.body.isEmpty) {
+            return http.Response(
+              jsonEncode({
+                'ok': false,
+                'error': 'task_workspace_dirty',
+                'reasons': ['task_workspace_dirty', 'task_workspace_unmerged'],
+              }),
+              409,
+            );
+          }
         }
         return ok(details(readOnly: true));
       });
@@ -674,11 +684,31 @@ void main() {
       expect(writes, isEmpty);
       expect(removed, isFalse);
 
+      // 首次确认只触发安全检查；发现 dirty + 未合入提交后必须把风险一次说全。
       await tester.tap(find.byKey(const ValueKey('air-details-delete')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('air-details-delete-confirm-ok')));
+      await tester.tap(
+        find.byKey(const ValueKey('air-details-delete-confirm-ok')),
+      );
       await tester.pumpAndSettle();
-      expect(writes, ['DELETE /api/task-board/tasks/t1']);
+      expect(
+        find.byKey(const ValueKey('air-details-delete-risk-confirm')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('未提交的代码改动'), findsOneWidget);
+      expect(find.textContaining('尚未合入基分支'), findsOneWidget);
+      expect(find.textContaining('Git 忽略的文件不会被备份'), findsOneWidget);
+      expect(writes, ['DELETE /api/task-board/tasks/t1 ']);
+      expect(removed, isFalse);
+
+      await tester.tap(
+        find.byKey(const ValueKey('air-details-delete-risk-confirm-ok')),
+      );
+      await tester.pumpAndSettle();
+      expect(writes, [
+        'DELETE /api/task-board/tasks/t1 ',
+        'DELETE /api/task-board/tasks/t1 {"force":true}',
+      ]);
       expect(removed, isTrue);
 
       await tester.pumpWidget(const SizedBox());
