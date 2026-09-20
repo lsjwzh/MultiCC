@@ -438,7 +438,11 @@
         case 'system':
           if (message.subtype === 'init') applySystemInit(message);
           else if (message.subtype === 'agent_notes' && Array.isArray(message.notes)) host.addAgentNotes?.(message.notes);
-          else if (message.message) host.addSystemMsg?.(message.message);
+          else if (message.message) {
+            const handled = !!(message.authAction && typeof host.addAuthActionMsg === 'function'
+              && host.addAuthActionMsg(message.message, message.authAction) === true);
+            if (!handled) host.addSystemMsg?.(message.message);
+          }
           break;
         case 'session_id':
           if (message.id) {
