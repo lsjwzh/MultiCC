@@ -14,6 +14,7 @@ function createHarness(options = {}) {
   const ports = {
     persistAssistant(context, append) {
       calls.push(['persist', append.final, append.partial]);
+      if (options.persistThrows) throw new Error('history store unavailable');
       if (options.persisted !== false && append.final) context.turn.resultDurable = true;
       return options.persisted !== false;
     },
@@ -36,6 +37,7 @@ function createHarness(options = {}) {
     freezeInterrupted(sessionName, reason) { calls.push(['freeze-interrupted', reason]); },
     emitTurnOutcome() { calls.push(['outcome']); },
     runPostTurn(context, entry) { calls.push(['post-turn', entry.guard, context.turn.resultDurable]); },
+    logError(event, detail) { calls.push(['log-error', event, detail?.action || detail?.error?.message]); },
     now: () => 200,
   };
   return { calls, classifyOptions, executor: createTurnFinalizationExecutor(ports) };
@@ -170,6 +172,49 @@ test('usage failure also blocks error and cancellation classifications from prod
     assert.equal(harness.calls.some(call => call[0] === 'classify'), false);
     assert.equal(harness.calls.some(call => call[0] === 'outcome'), false);
   }
+});
+
+test('executor terminalizes a retry plan instead of applying retry-only effects', () => {
+  const harness = createHarness();
+  const ctx = context({ runner: { resultEvent: false }, turn: { ...context().turn, resultDurable: false } });
+  ctx.cs._activeRunner = ctx.runner;
+  const retry = planTurnFinalization({
+    completion: { version: 1, state: 'failed', reason: 'turn.failed', settled: true },
+    current: true, runnerKind: 'process', cli: 'codex', hasOutput: true,
+    resultEvent: false, resultDurable: false, pendingStreamError: 'disconnect',
+    nativeSession: true, codexDisconnectAttempt: 1,
+  });
+  assert.equal(retry.action, 'continue-codex');
+  const result = harness.executor.execute(retry, ctx);
+  assert.equal(result.resolved.action, 'finalize');
+  assert.equal(result.resolved.facts.retryUnavailable, true);
+  assert.equal(ctx.cs.isStreaming, false);
+  assert.equal(ctx.cs._activeRunner, null);
+  assert.deepEqual(harness.calls.find(call => call[0] === 'classify'), ['classify', 'api-error']);
+  assert.equal(harness.calls.some(call => call[0] === 'log-error'
+    && call[1] === 'nonterminal-finalization-plan'), true);
+});
+
+test('executor contains host-port failures and freezes the turn', () => {
+  const harness = createHarness({ persistThrows: true });
+  const ctx = context();
+  const result = harness.executor.execute(processPlan(), ctx);
+  assert.equal(result.terminalBlocked, true);
+  assert.equal(result.resolved.code, 'finalization_execution_failed');
+  assert.equal(ctx.cs.isStreaming, false);
+  assert.equal(ctx.cs._activeRunner, null);
+  assert.equal(harness.calls.some(call => call[0] === 'freeze-interrupted'
+    && call[1] === 'finalization_failed'), true);
+  assert.equal(harness.calls.some(call => call[0] === 'broadcast' && call[1] === 'stream_end'), true);
+});
+
+test('executor containment also survives a malformed callback context', () => {
+  const harness = createHarness();
+  assert.doesNotThrow(() => {
+    const result = harness.executor.execute(null, null);
+    assert.equal(result.terminalBlocked, true);
+    assert.equal(result.resolved.code, 'finalization_execution_failed');
+  });
 });
 
 test('unknown stream interruption freezes and never invokes automatic resume', () => {

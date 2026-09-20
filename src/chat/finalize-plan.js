@@ -108,6 +108,8 @@ function planTurnFinalization(input = {}, deps = {}) {
     apiError: input.apiError === true,
     adapterError: input.adapterError === true && !recoveredTransport,
     retryPlanned: input.retryPlanned === true,
+    retryUnavailable: input.retryUnavailable === true,
+    retryUnavailableReason: input.retryUnavailableReason || null,
     resultEvent: input.resultEvent === true,
     resultDurable: input.resultDurable === true,
     hasOutput,
@@ -141,6 +143,7 @@ function planTurnFinalization(input = {}, deps = {}) {
     recoveredTransport,
   }) : 'stream_end';
   const handoff = normalizeHandoff(input);
+  facts.handoff = handoff;
   // A host-proved provider error envelope is evidence that the reused native
   // session was reached successfully and the selected upstream route failed.
   // Let Auto retry that same durable turn on another provider; the generic
@@ -149,7 +152,7 @@ function planTurnFinalization(input = {}, deps = {}) {
     && !facts.replaySafeProviderError;
   facts.guardedHandoffResumeFailure = guardedHandoffResumeFailure;
 
-  if (runnerKind === 'process' && cli === 'codex' && pendingStreamError) {
+  if (!facts.retryUnavailable && runnerKind === 'process' && cli === 'codex' && pendingStreamError) {
     const retry = decideRetry({
       event: 'codex-stream-disconnect',
       cli,
@@ -167,7 +170,7 @@ function planTurnFinalization(input = {}, deps = {}) {
     }
   }
 
-  if (!guardedHandoffResumeFailure
+  if (!facts.retryUnavailable && !guardedHandoffResumeFailure
       && facts.apiErrorDecision && facts.apiErrorDecision.action === 'retry') {
     return freezePlan({
       action: 'retry-api',
@@ -178,7 +181,7 @@ function planTurnFinalization(input = {}, deps = {}) {
     });
   }
 
-  if (runnerKind === 'process' && !guardedHandoffResumeFailure && !facts.apiError && !facts.hasOutput
+  if (!facts.retryUnavailable && runnerKind === 'process' && !guardedHandoffResumeFailure && !facts.apiError && !facts.hasOutput
       && !facts.killReason && !facts.retryBlockedByAdapterError && !facts.isRetry) {
     const retry = decideRetry({
       event: 'empty-exit', cli, isRetry: facts.isRetry,
@@ -225,6 +228,23 @@ function planTurnFinalization(input = {}, deps = {}) {
     facts,
     append,
     effects: Object.freeze([]),
+  });
+}
+
+// A retry attempt can fail after the original plan has already selected a
+// continuation. Re-plan through an explicit terminal disposition instead of
+// copying lossy retry counters and accidentally selecting another retry.
+function planRetryBlockedFinalization(sourcePlan, overrides = {}) {
+  const facts = sourcePlan && sourcePlan.facts ? sourcePlan.facts : {};
+  return planTurnFinalization({
+    ...facts,
+    ...overrides,
+    handoff: overrides.handoff || facts.handoff,
+    apiError: true,
+    apiErrorDecision: null,
+    retryPlanned: false,
+    retryUnavailable: true,
+    retryUnavailableReason: overrides.retryUnavailableReason || 'retry_unavailable',
   });
 }
 
@@ -320,7 +340,7 @@ function resolveTurnFinalization(plan, outcome = {}) {
       action: plan && plan.action ? plan.action : 'noop',
       code: plan && plan.code ? plan.code : 'finalize_plan_required',
       facts: plan && plan.facts ? plan.facts : {},
-      effects: plan && plan.effects ? plan.effects : Object.freeze([]),
+      effects: Object.freeze([]),
     });
   }
   const facts = plan.facts;
@@ -404,5 +424,6 @@ module.exports = {
   isGuardedHandoffFailure,
   normalizeHandoff,
   planTurnFinalization,
+  planRetryBlockedFinalization,
   resolveTurnFinalization,
 };

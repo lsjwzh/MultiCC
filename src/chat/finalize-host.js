@@ -1,6 +1,6 @@
 'use strict';
 
-const { resolveTurnFinalization } = require('./finalize-plan');
+const { planRetryBlockedFinalization, resolveTurnFinalization } = require('./finalize-plan');
 
 const REQUIRED_PORTS = Object.freeze([
   'persistAssistant',
@@ -192,7 +192,13 @@ function createTurnFinalizationExecutor(rawPorts) {
     }
   }
 
-  function execute(plan, rawContext) {
+  function executeUnsafe(plan, rawContext) {
+    if (plan && !['finalize', 'noop'].includes(plan.action)) {
+      logError('nonterminal-finalization-plan', { action: plan.action });
+      plan = planRetryBlockedFinalization(plan, {
+        retryUnavailableReason: 'executor_received_nonterminal_plan',
+      });
+    }
     const context = {
       appendPersisted: false,
       finalText: '',
@@ -237,6 +243,37 @@ function createTurnFinalizationExecutor(rawPorts) {
       usageDurable: context.usageDurable,
       terminalBlocked: context.terminalBlocked,
     });
+  }
+
+  // Runner close callbacks are process-level event handlers. A finalization
+  // contract or port failure must freeze that turn, never escape and terminate
+  // the server process.
+  function execute(plan, rawContext = {}) {
+    const safeContext = rawContext && typeof rawContext === 'object' ? rawContext : {};
+    try {
+      return executeUnsafe(plan, safeContext);
+    } catch (error) {
+      const { sessionName, cs, runner } = safeContext;
+      try { logError('turn-finalization-execution-failed', { sessionName, error }); } catch (_) {}
+      if (cs) {
+        cs.isStreaming = false;
+        if (safeContext.runnerKind === 'process') cs.claudeProc = null;
+        if (cs._activeRunner === runner) cs._activeRunner = null;
+      }
+      try { ports.clearIncrementalSave(sessionName); } catch (_) {}
+      try { ports.setStatus(sessionName, 'waiting'); } catch (_) {}
+      try { ports.freezeInterrupted?.(sessionName, 'finalization_failed'); } catch (_) {}
+      try { ports.broadcast(sessionName, { type: 'error', error: '本轮收尾失败，已安全停止；请检查日志。' }); } catch (_) {}
+      try { ports.broadcast(sessionName, { type: 'stream_end' }); } catch (_) {}
+      return Object.freeze({
+        resolved: Object.freeze({ action: 'finalize', code: 'finalization_execution_failed',
+          facts: plan?.facts || {}, effects: Object.freeze([]) }),
+        appendPersisted: false,
+        finalText: '',
+        usageDurable: null,
+        terminalBlocked: true,
+      });
+    }
   }
 
   return Object.freeze({ execute });

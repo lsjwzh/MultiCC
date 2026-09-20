@@ -29,6 +29,7 @@ const {
   isGuardedHandoffFailure,
   normalizeHandoff,
   planTurnFinalization,
+  planRetryBlockedFinalization,
   createTurnFinalizationExecutor,
   detectErrorEnvelope,
   envelopeSourceFor,
@@ -1956,12 +1957,8 @@ function createChatTurnEngine(deps) {
             routeAttemptId: runner.providerAttempt && runner.providerAttempt.routeAttemptId,
             code: error && error.code || 'attempt_prepare_failed',
           });
-          const blockedPlan = planTurnFinalization({
-            ...finalizePlan.facts,
-            apiError: true,
-            apiErrorDecision: null,
-            retryPlanned: false,
-            handoff: persisted.pendingCliHandoff,
+          const blockedPlan = planRetryBlockedFinalization(finalizePlan, {
+            retryUnavailableReason: error && error.code || 'attempt_prepare_failed', handoff: persisted.pendingCliHandoff,
           });
           turnProgressHeartbeat.stop(sessionName, turn.turnId);
           turnFinalizationExecutor.execute(blockedPlan, {
@@ -2631,9 +2628,8 @@ function createChatTurnEngine(deps) {
               code: error && error.code || 'attempt_prepare_failed',
             });
             runner.retryPlanned = false;
-            const blockedPlan = planTurnFinalization({
-              ...plan.facts, apiError: true, apiErrorDecision: null,
-              retryPlanned: false, handoff: persisted.pendingCliHandoff,
+            const blockedPlan = planRetryBlockedFinalization(plan, {
+              retryUnavailableReason: error && error.code || 'attempt_prepare_failed', handoff: persisted.pendingCliHandoff,
             });
             turnFinalizationExecutor.execute(blockedPlan, {
               runnerKind: 'stream', sessionName, cs, persisted, turn, runner,
