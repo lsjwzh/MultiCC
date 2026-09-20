@@ -452,6 +452,9 @@
   <!-- 用量统计要先于线路页那个模块加载：Provider 页渲染时会把它挂上去。 -->
   <script src="air-usage.js"></script>
   <script src="air-provider.js"></script>
+  <!-- 外网穿透是 Air 原生页：国内 SakuraFrp / 海外 Tailscale 分流与全部操作
+       都在这里完成，不再嵌入旧 manage 页面。要先于 air-admin.js 注册。 -->
+  <script src="air-tunnel.js"></script>
   <!-- 状态注册表要先于 air-admin.js：任务行的徽标和「在不在跑」的判定都由它出。 -->
   <script src="status-presentation.js"></script>
   <script src="air-admin.js"></script>

@@ -897,6 +897,115 @@ button.admin-stat:hover { transform: translateY(-1px); }
 
 .air-migration-note { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding: 10px 12px; color: #617991; border: 1px solid #d6e6f5; border-radius: 11px; background: #f1f7fe; font-size: 10px; }.air-migration-note strong { flex: 0 0 auto; color: #2071bf; }
 .air-legacy-frame { width: 100%; min-height: 720px; height: calc(100dvh - 240px); border: 1px solid #d8e5f2; border-radius: 16px; background: #f8fbff; box-shadow: 0 10px 32px #35577d0a; }
+
+/* ── 外网穿透：Air 原生的一站式地区分流 ────────────────────────────────
+   这不是旧 manage 表单的换皮 iframe。首屏先回答「我该选哪条路」，再把每条路的
+   账户、客户端、公网地址和动作排成三步；低频兼容项折到最后。中国大陆用一点暖色、
+   海外用 Air 原生蓝色，仅作路径辨识，状态本身仍由 success/warning/danger 表达。 */
+.air-tunnel-page { display: grid; gap: 16px; max-width: 1320px; margin: 0 auto; }
+.air-tunnel-hero {
+  display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(360px, .8fr); align-items: center; gap: 24px;
+  overflow: hidden; padding: 25px 27px; border: 1px solid #d4e3f2; border-radius: 21px;
+  background: linear-gradient(135deg, #fff 0%, #f3f8fe 58%, #edf5fe 100%); box-shadow: 0 14px 40px #35577d0d;
+}
+.air-tunnel-hero-copy h2 { margin: 4px 0 7px; color: #203e5b; font-size: clamp(20px, 2.2vw, 29px); letter-spacing: -.55px; }
+.air-tunnel-hero-copy p { max-width: 720px; color: #667d94; font-size: 12px; line-height: 1.75; }
+.air-tunnel-route-map { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px; }
+.air-tunnel-route-map > span { color: #97a9ba; font-size: 10px; }
+.air-tunnel-route-map a { position: relative; min-width: 0; padding: 14px; color: #35526f; border: 1px solid #d3e3f2; border-radius: 15px; background: rgba(255,255,255,.82); box-shadow: 0 8px 22px #35577d0a; }
+.air-tunnel-route-map a:first-child { border-color: #ead9cd; background: #fffaf6; }
+.air-tunnel-route-map a:hover { transform: translateY(-1px); border-color: #b7d5f1; box-shadow: 0 11px 24px #35577d16; }
+.air-tunnel-route-map b, .air-tunnel-route-map span { display: block; }
+.air-tunnel-route-map b { color: #274a68; font-size: 13px; }
+.air-tunnel-route-map span { margin-top: 3px; color: #73879b; font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.air-tunnel-route-map em { position: absolute; top: 8px; right: 8px; padding: 1px 5px; color: #287a5b; border-radius: 999px; background: #e8f7f0; font-size: 8px; font-style: normal; }
+
+.air-tunnel-security { display: grid; grid-template-columns: 38px minmax(220px, 1fr) auto minmax(320px, .8fr); align-items: center; gap: 11px 14px; padding: 13px 15px; }
+.air-tunnel-security-mark { width: 38px; height: 38px; display: grid; place-items: center; color: #fff; border-radius: 12px; background: #2d7fbd; font-size: 19px; box-shadow: 0 7px 17px #2d7fbd2e; }
+.air-tunnel-security-copy h3 { margin: 1px 0; color: #294760; font-size: 13px; }
+.air-tunnel-security-copy p { color: #708398; font-size: 10.5px; }
+.air-tunnel-security-editor { display: grid; grid-template-columns: minmax(150px, 1fr) auto auto; gap: 6px; }
+.air-tunnel-security-editor input, .air-tunnel-security-editor button { min-height: 34px; padding-block: 6px; font-size: 11px; }
+.air-tunnel-security > .air-tunnel-message { grid-column: 2 / -1; }
+
+.air-tunnel-chip { display: inline-flex; align-items: center; justify-content: center; min-height: 23px; padding: 2px 8px; border: 1px solid #d8e3ee; border-radius: 999px; color: #687d91; background: #f4f7fa; font-size: 9px; font-weight: 650; white-space: nowrap; }
+.air-tunnel-chip.info { color: #176ec4; border-color: #cce2f7; background: #edf6ff; }
+.air-tunnel-chip.success { color: #257c5d; border-color: #cbe9dc; background: #edf9f3; }
+.air-tunnel-chip.warning { color: #95621f; border-color: #ecd9b7; background: #fff8e9; }
+.air-tunnel-chip.danger { color: #a54c43; border-color: #edcbc7; background: #fff1ef; }
+
+.air-tunnel-route-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 16px; }
+.air-tunnel-route { min-width: 0; overflow: hidden; border: 1px solid #d6e4f2; border-radius: 20px; background: rgba(255,255,255,.94); box-shadow: 0 12px 34px #35577d0b; }
+.air-tunnel-route.cn { border-color: #eadbd0; }
+.air-tunnel-route > header { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 18px 19px 15px; border-bottom: 1px solid #dfebf5; background: #f6faff; }
+.air-tunnel-route.cn > header { border-color: #eee1d7; background: #fffaf6; }
+.air-tunnel-route header h3 { margin: 2px 0 1px; color: #254562; font-size: 16px; }
+.air-tunnel-route header p { color: #74889b; font-size: 10px; }
+.air-tunnel-region { width: 42px; height: 42px; display: grid; place-items: center; color: #fff; border-radius: 13px; background: linear-gradient(145deg, #3295eb, #166dcb); font-size: 11px; font-weight: 750; letter-spacing: .8px; box-shadow: 0 8px 18px #277cc72b; }
+.air-tunnel-route.cn .air-tunnel-region { background: linear-gradient(145deg, #d77d55, #b65338); box-shadow: 0 8px 18px #bd5e3e29; }
+.air-tunnel-recommend { align-self: start; padding: 3px 7px; color: #26795b; border-radius: 999px; background: #eaf7f1; font-size: 8.5px; font-weight: 650; }
+.air-tunnel-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; padding: 1px; background: #e7eef5; }
+.air-tunnel-route.cn .air-tunnel-facts { background: #eee3db; }
+.air-tunnel-facts > div { min-width: 0; padding: 9px 12px; background: #fbfdff; }
+.air-tunnel-facts > .wide { grid-column: 1 / -1; }
+.air-tunnel-facts span, .air-tunnel-facts strong { display: block; }
+.air-tunnel-facts span { color: #8899aa; font-size: 8.5px; letter-spacing: .35px; text-transform: uppercase; }
+.air-tunnel-facts strong { margin-top: 2px; overflow: hidden; color: #405d76; font-size: 10.5px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.air-tunnel-steps { display: grid; gap: 0; margin: 0; padding: 3px 18px 0; list-style: none; }
+.air-tunnel-steps > li { display: grid; grid-template-columns: 25px minmax(0, 1fr); gap: 10px; padding: 14px 0; border-bottom: 1px solid #e7eef5; }
+.air-tunnel-steps > li:last-child { border-bottom: 0; }
+.air-tunnel-step-no { width: 22px; height: 22px; display: grid; place-items: center; color: #3676aa; border: 1px solid #cde0f1; border-radius: 50%; background: #f2f8fd; font-size: 9px; font-weight: 700; }
+.air-tunnel-route.cn .air-tunnel-step-no { color: #a75638; border-color: #ead5c8; background: #fff6f0; }
+.air-tunnel-step-body { min-width: 0; }
+.air-tunnel-step-body h4 { margin: 1px 0 3px; color: #35536e; font-size: 12px; }
+.air-tunnel-step-body p { margin-bottom: 8px; color: #798b9d; font-size: 10px; line-height: 1.55; }
+.air-tunnel-step-body > small { display: block; margin-top: 5px; color: #8b9bad; font-size: 8.5px; }
+.air-tunnel-inline-form { display: grid; grid-template-columns: minmax(120px, 1fr) auto auto; align-items: center; gap: 6px; }
+.air-tunnel-inline-form input, .air-tunnel-inline-form button { min-height: 34px; padding-block: 6px; font-size: 10.5px; }
+.air-tunnel-inline-form a { padding: 7px 2px; font-size: 9.5px; white-space: nowrap; }
+.air-tunnel-field { display: block; margin-top: 8px; color: #71859a; font-size: 9.5px; }
+.air-tunnel-field > span { display: block; margin-bottom: 4px; }
+.air-tunnel-field input { min-height: 35px; padding: 7px 9px; font-size: 11px; }
+.air-tunnel-field.compact { max-width: 180px; }
+.air-tunnel-domain { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px; }
+.air-tunnel-domain button { min-height: 35px; padding-block: 6px; font-size: 10px; }
+.air-tunnel-switches { display: flex; flex-wrap: wrap; gap: 6px 15px; margin: 9px 0; color: #637a90; font-size: 9.5px; }
+.air-tunnel-switches label { display: inline-flex; align-items: center; gap: 5px; }
+.air-tunnel-switches input { width: auto; margin: 0; accent-color: var(--accent); }
+.air-tunnel-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.air-tunnel-actions button, .air-tunnel-button { min-height: 34px; padding: 7px 10px; font-size: 10px; }
+.air-tunnel-button { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
+.air-tunnel-button:hover { background: var(--blue-soft); border-color: #c7ddf5; }
+.air-tunnel-actions .danger, button.danger { color: #a44139; border-color: #edc9c4; background: #fff3f1; }
+.air-tunnel-actions .danger:hover, button.danger:hover { background: #ffe9e6; }
+.air-tunnel-message { min-height: 16px; color: #71869a; font-size: 9.5px; line-height: 1.5; }
+.air-tunnel-message.success { color: #237b5a; }
+.air-tunnel-message.warning { color: #95621f; }
+.air-tunnel-message.danger { color: #ad4d43; }
+.air-tunnel-route > .air-tunnel-message { display: block; margin: 0 18px 15px; padding: 8px 10px; border-radius: 9px; background: #f5f8fb; }
+.air-tunnel-detail { max-height: 98px; margin: 9px 0 0; padding: 9px; overflow: auto; color: #60758a; border: 1px solid #e0e9f2; border-radius: 9px; background: #f8fbfe; font: 9px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+
+.air-tunnel-advanced { overflow: hidden; border: 1px solid #d8e5f2; border-radius: 17px; background: rgba(255,255,255,.82); }
+.air-tunnel-advanced > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 17px; color: #4c6680; cursor: pointer; list-style: none; }
+.air-tunnel-advanced > summary::-webkit-details-marker { display: none; }
+.air-tunnel-advanced > summary:hover { background: #f5f9fd; }
+.air-tunnel-advanced > summary span:first-child b, .air-tunnel-advanced > summary span:first-child small { display: block; }
+.air-tunnel-advanced > summary small { margin-top: 2px; }
+.air-tunnel-advanced > summary > span:last-child { color: #7f94a8; font-size: 9px; }
+.air-tunnel-advanced[open] > summary { border-bottom: 1px solid #e0e9f2; }
+.air-tunnel-advanced-body { display: grid; gap: 12px; padding: 13px; background: #f7faff; }
+.air-tunnel-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.air-tunnel-form-grid.policy { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.air-tunnel-form-grid label { min-width: 0; color: #6f8398; font-size: 9.5px; }
+.air-tunnel-form-grid label > span { display: block; margin-bottom: 4px; }
+.air-tunnel-form-grid label.wide { grid-column: 1 / -1; }
+.air-tunnel-form-grid input { min-height: 34px; padding: 7px 9px; font-size: 10.5px; }
+.air-tunnel-compat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.air-tunnel-compat { min-width: 0; padding: 13px; border: 1px solid #d9e5f1; border-radius: 15px; background: #fff; }
+.air-tunnel-compat-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.air-tunnel-compat-head strong, .air-tunnel-compat-head small { display: block; }
+.air-tunnel-compat-head strong { color: #35536e; font-size: 12px; }
+.air-tunnel-compat-head small { margin-top: 2px; font-size: 8.5px; }
 .service-dialog { max-width: 620px; padding: 0; background: #fbfdff; }
 .service-dialog form { padding: 24px; }
 .service-dialog .section-heading { margin: -24px -24px 0; padding: 21px 24px 15px; border-bottom: 1px solid #e1eaf3; }
@@ -1110,6 +1219,11 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   .admin-directory-list { grid-template-columns: 1fr; }
   .admin-directory-row { border-right: 0; }
   .air-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .air-tunnel-hero { grid-template-columns: 1fr; }
+  .air-tunnel-security { grid-template-columns: 38px minmax(0, 1fr) auto; }
+  .air-tunnel-security-editor { grid-column: 2 / -1; }
+  .air-tunnel-route-grid { grid-template-columns: 1fr; }
+  .air-tunnel-compat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #directory-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #console-head { padding-inline: 22px; }
   #console-body { padding: 22px 22px 42px; }
@@ -1228,6 +1342,24 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   #quick-task-status { order: 4; flex-basis: 100%; }
   #quick-task-submit { margin-left: auto; }
   #admin-center { padding: 22px 15px 36px; }
+  .air-tunnel-page { gap: 12px; }
+  .air-tunnel-hero { gap: 17px; padding: 19px 17px; }
+  .air-tunnel-route-map { grid-template-columns: 1fr; }
+  .air-tunnel-route-map > span { text-align: center; }
+  .air-tunnel-security { grid-template-columns: 34px minmax(0, 1fr); padding: 12px; }
+  .air-tunnel-security-mark { width: 34px; height: 34px; }
+  .air-tunnel-security > .air-tunnel-chip { grid-column: 2; justify-self: start; }
+  .air-tunnel-security-editor, .air-tunnel-security > .air-tunnel-message { grid-column: 1 / -1; }
+  .air-tunnel-security-editor { grid-template-columns: 1fr auto; }
+  .air-tunnel-security-editor .subtle { grid-column: 2; }
+  .air-tunnel-route > header { grid-template-columns: 40px minmax(0, 1fr); padding-inline: 14px; }
+  .air-tunnel-route > header .air-tunnel-recommend { grid-column: 2; justify-self: start; }
+  .air-tunnel-inline-form { grid-template-columns: minmax(0, 1fr) auto; }
+  .air-tunnel-inline-form a { grid-column: 1 / -1; }
+  .air-tunnel-steps { padding-inline: 13px; }
+  .air-tunnel-form-grid.policy, .air-tunnel-compat-grid { grid-template-columns: 1fr; }
+  .air-tunnel-domain { grid-template-columns: 1fr; }
+  .air-tunnel-domain button { justify-self: start; }
   #schedule-center { padding: 22px 15px 36px; }
   #directory-grid { grid-template-columns: 1fr; }
   dialog { padding: 20px; }
