@@ -89,3 +89,45 @@ test('answers keep the role of the original pending run after newer work is queu
   const answer = await f.runtime.send(f.task.shellId, { taskId: f.task.taskId, text: 'answer', intent: 'answer', turnId: 'pending-turn', requestId: 'question', clientMsgId: 'answer' });
   assert.equal(f.store.get('receipt', answer.receiptId).roleSnapshotId, oldRole);
 });
+
+test('a question moved by separation uses the target role and heals legacy source-role receipts', async t => {
+  const f = await setup(t), sourceRun = await f.send('source-question');
+  const sourceReceipt = f.store.get('receipt', sourceRun.receiptId);
+  const targetId = 'tsk_moved', targetSessionId = 'task-moved', targetShellId = 'sh-moved';
+  f.store.transaction(() => {
+    f.store.set('task', targetId, { id: targetId, dirId: 'd1', sessionId: targetSessionId,
+      ownerShellId: targetShellId, title: 'Moved task', taskFirst: true, ready: true,
+      separatedFromTaskId: f.task.taskId, createdAt: Date.now() });
+    f.store.set('shell', targetShellId, { id: targetShellId, sourceSessionId: targetSessionId,
+      dirId: 'd1', standalone: true, currentTaskId: targetId, defaultTaskId: targetId,
+      cursorVersion: 0, createdAt: Date.now() });
+    f.store.set('link', `${targetShellId}:${targetId}`, { shellId: targetShellId, taskId: targetId });
+    f.roles.inherit(f.task.taskId, targetId);
+    f.store.set('delivery:run', 'moved-turn', { binding: { receiptId: sourceReceipt.id } });
+  });
+  f.records.set(targetSessionId, { id: targetSessionId, kind: 'chat', cli: 'codex', dirId: 'd1', taskBoundTaskId: targetId });
+  f.statuses.set(targetSessionId, { busy: true, turnId: 'moved-turn',
+    pending: { taskId: targetId, requestId: 'moved-question' } });
+
+  const answer = await f.runtime.send(targetShellId, { taskId: targetId, text: 'answer', intent: 'answer',
+    turnId: 'moved-turn', requestId: 'moved-question', clientMsgId: 'moved-answer' });
+  let answerReceipt = f.store.get('receipt', answer.receiptId);
+  assert.equal(f.store.get('task-role:snapshot', answerReceipt.roleSnapshotId).taskId, targetId,
+    'new controls must not inherit the source task snapshot');
+
+  // Recreate the already-durable shape produced by the old build. The worker
+  // reaches prepareRoleContext directly on retry, without reserving a receipt
+  // again, so this boundary must repair it too.
+  answerReceipt = { ...answerReceipt, roleSnapshotId: sourceReceipt.roleSnapshotId };
+  f.store.set('receipt', answerReceipt.id, answerReceipt);
+  const descriptor = { sessionId: targetSessionId, opts: { taskShellReceiptId: answerReceipt.id } };
+  await prepareRoleContext(f.store, descriptor, {
+    records: f.records, getState: () => ({ chatTurnCount: 0 }), hasBackground: () => false,
+    closePersistent: async () => ({ closed: true }),
+    persistence: { mutate: (_key, fn) => fn(f.records) }, loadHistory: () => [],
+  });
+  const healed = f.store.get('receipt', answerReceipt.id);
+  assert.equal(f.store.get('task-role:snapshot', healed.roleSnapshotId).taskId, targetId);
+  assert.equal(healed.movedRoleSnapshot.from, sourceReceipt.roleSnapshotId);
+  assert.equal(descriptor.opts.taskRoleSnapshotId, healed.roleSnapshotId);
+});

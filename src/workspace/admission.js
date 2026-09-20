@@ -195,8 +195,10 @@ function createWorkspaceAdmission(deps) {
     const lease = await acquireWithResidentRelief(workspace, descriptor.sessionId, descriptor.item.id);
     const permit = { lease, sessionId: descriptor.sessionId, deliveryId: descriptor.item.id };
     permits.add(permit); active.set(descriptor.sessionId, permit);
+    let materialized = false;
     try {
       await materialize(descriptor.sessionId, lease);
+      materialized = true;
       try { permit.startCode = await captureCodeRevision(workspace.path); }
       catch (error) { permit.startObservationError = /^code_[a-z_]+$/.test(error.message) ? error.message : 'code_observation_failed'; }
       await require('../task-shell/role-bindings').prepareRoleContext(store, descriptor, deps);
@@ -215,8 +217,12 @@ function createWorkspaceAdmission(deps) {
         } else if (current && current.state !== 'released') registry.transition(lease, 'uncertain');
       } };
     } catch (error) {
-      if (fs.existsSync(workspace.path)) registry.retain(lease, 'materialization_failed');
-      registry.release(lease, { stopped: true, reason: 'materialization_failed' });
+      // Role/context preparation happens after the checkout has already been
+      // validated and marked resident. Do not mislabel those failures as a Git
+      // materialization failure or permanently pin an otherwise healthy tree.
+      const reason = materialized ? 'prelaunch_failed' : 'materialization_failed';
+      if (!materialized && fs.existsSync(workspace.path)) registry.retain(lease, reason);
+      registry.release(lease, { stopped: true, reason });
       active.delete(descriptor.sessionId); throw error;
     }
   }

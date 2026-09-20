@@ -113,7 +113,10 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
       transition(lease, 'reserved', { materializing: false });
       const w = get('record', lease.workspaceId);
       if (!observed?.head || !observed.commonDir) throw fail('workspace_validation_required');
-      const next = { ...w, ...observed, residency: 'resident', version: w.version + 1 };
+      // A successful live validation resolves the transient failure pin left
+      // by an earlier materialization attempt. Other retention reasons remain.
+      const next = { ...w, ...observed, residency: 'resident',
+        pins: (w.pins || []).filter(pin => pin !== 'materialization_failed'), version: w.version + 1 };
       put('record', w.id, next); return next;
     });
   }
