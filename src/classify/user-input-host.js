@@ -207,6 +207,56 @@ function createUserInputSignalHost({
     return { ok: true, duplicate: false };
   }
 
+  // Task separation moves the judged turn's open question to the task the turn
+  // now lives in. The source settles as resolved(resolution:'moved') — the same
+  // broadcast a normal resolve fires, so every open source window tears the
+  // card down — and the target session adopts the still-unanswered request
+  // verbatim (same requestId, same turnId), so its replay shows the card and
+  // admission correlates the answer as the continuation of the asking turn.
+  // record()'s active-turn guard is bypassed deliberately: the target has no
+  // live turn yet; the unanswered question itself is the durable artifact
+  // being transferred. turnId is also mirrored into userInputSignalTurnId so
+  // the scheduler's getTurnId (which reads recoveryState.turnId) correlates
+  // the shell answer path on a session that has not run a turn of its own yet.
+  function move(sourceId, targetId, { turnId, taskId } = {}) {
+    if (!sourceId || !targetId || sourceId === targetId) return { ok: false, code: 'invalid_move' };
+    const current = pending(sourceId);
+    if (!current || current.resolved === true) {
+      return { ok: false, code: current ? 'already_resolved' : 'no_pending_request' };
+    }
+    if (turnId && current.turnId && current.turnId !== turnId) return { ok: false, code: 'turn_mismatch' };
+    const targetPending = pending(targetId);
+    if (targetPending && targetPending.resolved !== true) return { ok: false, code: 'target_already_pending' };
+    setState(sourceId, {
+      pendingUserInput: { ...current, resolved: true, resolvedAt: now(),
+        resolution: 'moved', movedToSessionId: String(targetId) },
+      lastResolvedUserInput: { requestId: current.requestId, at: now(),
+        taskId: current.taskId ?? null, resolution: 'moved' },
+      userInputSignalVersion: 1,
+    });
+    log(`[multicc/classify] ${sourceId} request_user_input moved to ${targetId} request=${current.requestId}`);
+    onResolved(sourceId, current.requestId, current.taskId ?? null, { resolution: 'moved' });
+    setState(targetId, {
+      pendingUserInput: {
+        requestId: current.requestId,
+        turnId: current.turnId || null,
+        taskId: taskId || current.taskId || null,
+        question: current.question,
+        reason: current.reason || '',
+        options: Array.isArray(current.options) ? current.options : [],
+        allowMultiple: current.allowMultiple === true,
+        ...(current.inputType === 'secret' && current.secretName
+          ? { inputType: 'secret', secretName: String(current.secretName) } : {}),
+        createdAt: current.createdAt || now(),
+        resolved: false,
+        movedFromSessionId: String(sourceId),
+      },
+      ...(current.turnId ? { userInputSignalTurnId: current.turnId } : {}),
+      userInputSignalVersion: 1,
+    });
+    return { ok: true, requestId: current.requestId, question: current };
+  }
+
   function degradedResult(sessionId, currentTask) {
     if (!pending(sessionId) || pending(sessionId).resolved === true) return null;
     const state = getState(sessionId) || {};
@@ -219,7 +269,7 @@ function createUserInputSignalHost({
     };
   }
 
-  return Object.freeze({ apply, beginTurn, degradedResult, lastResolved, pending, record, resolve });
+  return Object.freeze({ apply, beginTurn, degradedResult, lastResolved, move, pending, record, resolve });
 }
 
 module.exports = {
