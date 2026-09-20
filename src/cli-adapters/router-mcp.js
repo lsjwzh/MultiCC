@@ -9,6 +9,7 @@ const ROUTER_ENV_KEYS = [
   'MULTICC_TURN_ID',
   'MULTICC_ORIGIN_DISPATCH_ID',
   'MULTICC_ROUTER_CAPABILITY',
+  'MULTICC_IMAGE_BRIDGE',
 ];
 
 function stdioServer(node, script) {

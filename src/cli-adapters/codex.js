@@ -101,6 +101,7 @@ function routerMcpConfigArgs(node, script) {
     'MULTICC_TURN_ID',
     'MULTICC_ORIGIN_DISPATCH_ID',
     'MULTICC_ROUTER_CAPABILITY',
+    'MULTICC_IMAGE_BRIDGE',
   ];
   return [
     `mcp_servers.multicc_router.command=${JSON.stringify(String(node))}`,

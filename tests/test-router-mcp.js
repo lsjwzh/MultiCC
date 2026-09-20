@@ -20,7 +20,7 @@ async function close(server) {
   await new Promise(resolve => server.close(resolve));
 }
 
-function clientFor(port, originDispatchId = '') {
+function clientFor(port, originDispatchId = '', imageBridge = false) {
   const child = spawn(process.execPath, [
     path.join(__dirname, '..', 'scripts', 'multicc-router-mcp.js'),
   ], {
@@ -29,6 +29,7 @@ function clientFor(port, originDispatchId = '') {
       MULTICC_BASE_URL: `http://127.0.0.1:${port}`,
       MULTICC_ROUTER_CAPABILITY: 'cap-test',
       MULTICC_ORIGIN_DISPATCH_ID: originDispatchId,
+      ...(imageBridge ? { MULTICC_IMAGE_BRIDGE: '1' } : {}),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -205,6 +206,24 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
     'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
     'dispatch_slave',
   ]);
+});
+
+test('image bridge tool is advertised only when the host marks this process eligible', async t => {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, result: { ok: true } })); });
+  });
+  const port = await listen(server);
+  t.after(() => close(server));
+  const eligible = clientFor(port, '', true);
+  t.after(() => eligible.stop());
+  const listed = await eligible.call('tools/list');
+  const tool = listed.result.tools.find(entry => entry.name === 'generate_image');
+  assert.ok(tool);
+  assert.deepEqual(tool.inputSchema.required, ['prompt']);
+  assert.equal(tool.inputSchema.properties.reference_image_paths.maxItems, 4);
+  const called = await eligible.call('tools/call', { name: 'generate_image', arguments: { prompt: 'a blue circle' } });
+  assert.equal(called.result.isError, false);
 });
 
 test('an incomplete sync stream returns an explicit dispatch_status recovery contract', async t => {
