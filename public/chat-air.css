@@ -57,6 +57,12 @@ body.air-chat {
   border-bottom: 1px solid var(--air-line);
   background: #fbfdff;
 }
+/* 宿主浮层的展开 / 关闭图标悬在 iframe 右上角，不单独占工具行。只有真正嵌进
+   Air 的聊天页需要让出这块安全区；独立分享页虽然也用 air-chat 皮肤，但外面没有
+   这两颗按钮，不能白白少掉 92px。 */
+.air-chat.air-embedded #chat-context-bar {
+  padding-right: max(clamp(20px, 4vw, 48px), 92px);
+}
 .air-chat #header {
   order: 3;
   flex: 0 0 auto;
