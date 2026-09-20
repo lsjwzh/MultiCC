@@ -194,6 +194,9 @@ function createSessionWorkHost(deps = {}) {
     if (pending.taskId) deps.reconcileTaskProjection?.(pending.taskId, {
       classifyState: 'D', reason: 'user_input_moved_separation',
     });
+    if (taskId) deps.reconcileTaskProjection?.(taskId, {
+      classifyState: 'W', reason: 'user_input_moved_separation',
+    });
     const question = moved.question || pending;
     deps.broadcast(targetId, {
       type: 'user_input_required',
