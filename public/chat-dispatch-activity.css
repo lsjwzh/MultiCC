@@ -68,7 +68,6 @@
   background:var(--chat-surface, rgba(20, 26, 36, .96));
   box-shadow:var(--chat-shadow, 0 8px 28px #000000aa);
   color: var(--chat-text, #e7eaee);
-  backdrop-filter: blur(12px);
 }
 .dispatch-activity-head {
   display: flex;

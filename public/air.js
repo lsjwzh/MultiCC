@@ -171,7 +171,7 @@
   const taskStatus = task => window.MultiCCAirAdmin?.taskStatus?.(task) || 'unknown';
   const isRunningTask = task => window.MultiCCAirAdmin?.isRunning?.(task) === true;
   const runningDirectories = () => window.MultiCCAirAdmin?.runningDirectories?.(data) || new Set();
-  const applyRing = (element, on) => window.MultiCCAirAdmin?.applyRing?.(element, on);
+  const applyRing = (element, on, seed) => window.MultiCCAirAdmin?.applyRing?.(element, on, seed);
   /** 状态徽标（图标 + 中文标签）。没有注册表时给一句可读的兜底文案。 */
   function statusBadge(task, options) {
     return window.MultiCCAirAdmin?.statusBadge?.(task, options)
@@ -442,7 +442,7 @@
     const busy = runningDirectories();
     $('directory-grid').replaceChildren(...directories.map(directory => {
       const button = node('button');
-      applyRing(button, busy.has(directory.id));
+      applyRing(button, busy.has(directory.id), directory.id);
       const taskCount = data.tasks.filter(task => task.dirId === directory.id).length;
       const activeCount = data.tasks.filter(task => task.dirId === directory.id && isRunningTask(task)).length;
       button.append(node('strong', '▣ ' + directory.name), node('small', directory.path),
@@ -485,7 +485,7 @@
     document.querySelector('.directory-task-panel')?.classList.toggle('expanded', directoryTasksExpanded);
     $('directory-task-list').replaceChildren(...rows.map(task => {
       const row = node('div', null, 'directory-task-row');
-      applyRing(row, isRunningTask(task));
+      applyRing(row, isRunningTask(task), task.id);
       const button = node('button', null, 'task-row-open');
       button.type = 'button';
       const copy = node('span');
@@ -1276,7 +1276,7 @@
       const elsewhere = task.dirId !== directoryId;
       const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : ''].filter(Boolean).join(' '));
       button.dataset.task = task.id;
-      applyRing(button, isRunningTask(task));
+      applyRing(button, isRunningTask(task), task.id);
       // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
       // 的类型/阶段/资源去向。目录作为标签跟在同一行里 —— 「最近」这条带子本来就
       // 是跨目录的（我打开过的任务 + 当前目录的几个），所以每一行都自报家门，
@@ -1419,7 +1419,7 @@
     container.replaceChildren(...tasks.map(task => {
       const tab = node('div', null, 'pin-tab');
       tab.dataset.task = task.id;
-      applyRing(tab, isRunningTask(task));
+      applyRing(tab, isRunningTask(task), task.id);
       const open = node('button', null, 'pin-open');
       open.type = 'button';
       const stage = label(task.workflowStage || task.status);
@@ -1546,7 +1546,7 @@
     // 「正在跑」这件事，页头也是需要说清的地方之一：当前这条任务在跑的时候，
     // 标题下面那行状态和侧栏、控制台用的是同一个圈。
     const openTask = taskId ? (data?.tasks || []).find(task => task.id === taskId) : null;
-    applyRing($('task-state'), isRunningTask(openTask));
+    applyRing($('task-state'), isRunningTask(openTask), openTask?.id);
     renderComposerControls();
   }
 
@@ -1833,7 +1833,7 @@
     $('create').disabled = !dir;
     // 有活在跑的目录也带圈：不必切过去才知道那个目录正忙。
     const busy = runningDirectories();
-    applyRing(document.querySelector('.space-card'), busy.has(directoryId));
+    applyRing(document.querySelector('.space-card'), busy.has(directoryId), directoryId);
     renderHeader(dir);
     renderDirectories();
     renderDirectoryOverview();

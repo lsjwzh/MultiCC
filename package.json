@@ -58,7 +58,7 @@
     "lab:down": "docker compose -f docker/task-shell/compose.yaml down",
     "lab:logs": "docker compose -f docker/task-shell/compose.yaml logs --tail=100 lab",
     "test:release:clean-install": "node scripts/build-task-shell-image.js --clean-install && docker run --rm --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --memory=3g --shm-size=256m multicc-clean-install-test:local",
-    "test:task-first": "node --test tests/test-task-attribution-eligibility.js tests/test-task-attribution-facts.js tests/test-attribution-mode.js tests/test-workspace-inventory.js tests/test-workspace-admission.js tests/test-task-lifecycle.js tests/test-air-tasks.js tests/test-air-conditional-get.js tests/test-air-pins.js tests/test-air-task-motion.js tests/test-air-manage-shell.js tests/test-air-ops.js tests/test-air-usage.js tests/test-delivery-evidence.js tests/test-task-role-bindings.js tests/test-task-first-migration.js tests/test-task-first-entry.js tests/test-cron-task-first.js tests/test-cron-fanout-migration.js"
+    "test:task-first": "node --test tests/test-task-attribution-eligibility.js tests/test-task-attribution-facts.js tests/test-attribution-mode.js tests/test-workspace-inventory.js tests/test-workspace-admission.js tests/test-task-lifecycle.js tests/test-air-tasks.js tests/test-air-conditional-get.js tests/test-air-pins.js tests/test-air-task-motion.js tests/test-air-manage-shell.js tests/test-air-ops.js tests/test-air-usage.js tests/test-delivery-evidence.js tests/test-task-role-bindings.js tests/test-task-first-migration.js tests/test-task-first-entry.js tests/test-cron-task-first.js tests/test-cron-fanout-migration.js tests/test-air-paint-budget.js"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",
