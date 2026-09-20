@@ -1164,6 +1164,7 @@
   "worktreeForceSyncFailed": "✗ 同步指令未确认送达：{error}；可重试。",
   "worktreeForceSyncNoSession": "会话尚未连接，请稍后重试同步指令。",
   "worktreeForceSyncOffline": "连接未就绪",
+  "worktreeReclaimed": "💤 工作区已休眠回收，发一条消息即可恢复",
   "rebaseDone": "✓ 冲突已解决，同步完成",
   "rebaseStillConflicts": "✗ 仍有冲突未解决：{files}；请全部解决后再点「继续」。",
   "chatWidthTitle": "聊天宽度",

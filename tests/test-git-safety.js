@@ -14,6 +14,8 @@ const {
   gitRelocateWorktree,
   gitMergeBack,
   gitSyncFromBase,
+  gitRebaseResolve,
+  gitWorktreeDetach,
   gitWorktreeMergeState,
 } = require('../src/git/service');
 
@@ -41,21 +43,56 @@ async function sessionIn(dir, id) {
   return { id, dirId: dir.id, worktreePath: added.worktreePath, branch: added.branch };
 }
 
-test('merge operations treat a reclaimed worktree as unavailable without spawning git', async () => {
+test('write operations treat a reclaimed worktree as unavailable without spawning git', async () => {
   const missing = path.join(os.tmpdir(), `multicc-reclaimed-${process.pid}-${Date.now()}`);
   const dir = { id: 'repo', path: missing, baseBranch: 'main' };
   const session = {
     id: 'hibernated', branch: 'multicc/hibernated', worktreePath: path.join(missing, 'worktree'),
     workspaceState: 'hibernated',
   };
-  const merge = await gitMergeBack(dir, session);
-  assert.deepEqual(merge, {
-    ok: false, code: 'worktree_missing', error: 'session has no worktree',
-  });
+  const refused = { ok: false, code: 'worktree_missing', error: 'session has no worktree' };
+  assert.deepEqual(await gitMergeBack(dir, session), refused);
+  assert.deepEqual(await gitSyncFromBase(dir, session), refused);
+  assert.deepEqual(await gitRebaseResolve(dir, session, 'continue'), refused);
+  // The status payload names the reclaim and keeps branch/baseBranch, so the
+  // chat page can say "hibernated" instead of drawing a checkout that is ready.
   const state = await gitWorktreeMergeState(dir, session);
   assert.deepEqual(state, {
     mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'hibernated',
+    worktreeMissing: true, baseBranch: 'main', branch: 'multicc/hibernated',
   });
+});
+
+test('a hibernated worktree reports no phantom behind and keeps its branch restorable', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const dir = await initRepo(root, 'repo');
+  const session = await sessionIn(dir, 'reclaimed');
+  session.workspaceState = 'hibernated';
+
+  const detached = await gitWorktreeDetach(dir.path, session.worktreePath, session.branch, {
+    sessionId: session.id,
+  });
+  assert.equal(detached.ok, true);
+  assert.equal(fs.existsSync(session.worktreePath), false);
+
+  // The base branch moves on while the workspace sleeps. The retained ref still
+  // answers `main...<branch>`, so this used to read as an actionable
+  // "behind N, sync now" for a session with no checkout to sync.
+  await fsp.writeFile(path.join(dir.path, 'app.js'), 'module.exports = 3;\n');
+  await git(dir.path, ['add', '-A']);
+  await git(dir.path, ['commit', '-m', 'main moves on']);
+
+  const state = await gitWorktreeMergeState(dir, session);
+  assert.equal(state.worktreeMissing, true);
+  assert.equal(state.reason, 'hibernated');
+  assert.equal(state.behind, 0);
+  assert.equal(state.ahead, 0);
+  assert.equal(state.mergeReady, false);
+  assert.equal(state.branch, session.branch, 'the retained branch keeps the workspace restorable');
+  assert.equal(
+    await git(dir.path, ['rev-parse', '--verify', `refs/heads/${session.branch}`]).then(() => true, () => false),
+    true);
 });
 
 test('dirty worktree removal is refused by default and forced removal is recoverable', async t => {
