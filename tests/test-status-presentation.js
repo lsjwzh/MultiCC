@@ -484,6 +484,12 @@ function parseDart() {
     assert.ok(block, `dart set ${name} not found`);
     return [...block[1].matchAll(/CanonicalStatus\.(\w+),/g)].map(m => m[1]);
   };
+  // 运行标记的调色板：两端同一份，顺序也要一样 —— 颜色按 id 哈希取，同一个 id 在
+  // 两端必须落到同一个色。
+  const ringBlock = /const List<int> ringTints = \[([\s\S]*?)\n\];/.exec(src);
+  assert.ok(ringBlock, 'dart ringTints not found');
+  const ringTints = [...ringBlock[1].matchAll(/0xFF([0-9A-Fa-f]{6})/g)]
+    .map(m => `#${m[1].toLowerCase()}`);
   return {
     specs,
     aliases: mapOf('statusAliases'),
@@ -491,6 +497,7 @@ function parseDart() {
     classify: mapOf('classifyLetterStatus'),
     sessionStatuses: setOf('sessionStatuses'),
     taskStatuses: setOf('taskStatuses'),
+    ringTints,
   };
 }
 
@@ -500,6 +507,7 @@ test('Flutter mirrors the web registry exactly', () => {
   assert.deepEqual(dart.sessionStatuses, [...SP.SESSION_STATUSES], 'session vocabulary drifted');
   assert.deepEqual(dart.taskStatuses, [...SP.TASK_STATUSES], 'task vocabulary drifted');
   assert.deepEqual(Object.keys(dart.specs).sort(), Object.keys(SP.STATUS_PRESENTATION).sort());
+  assert.deepEqual(dart.ringTints, [...SP.RING_TINTS], '运行标记的调色板两端漂移了');
 
   for (const [name, web] of Object.entries(SP.STATUS_PRESENTATION)) {
     assert.deepEqual(dart.specs[name], {

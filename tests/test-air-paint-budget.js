@@ -36,6 +36,10 @@ const AIR_CSS = read('air.css');
 const AIR_ADMIN = read('air-admin.js');
 const AIR = read('air.js');
 const CHAT_HTML = read('chat.html');
+const STATUS_PRESENTATION = read('status-presentation.js');
+const MANAGE_HTML = read('manage.html');
+const MANAGE_DASHBOARD = read('manage-dashboard.js');
+const COMPOSER_CSS = read('composer.css');
 
 test('Air 的壳不再常驻毛玻璃：每一层 backdrop-filter 都是 none', () => {
   // 这几层的底色本来就是 .82–.98 的不透明/近不透明填充（sidebar 是 .96/.92 的
@@ -64,8 +68,10 @@ test('圈是静态描边，不是会动的彩虹', () => {
 });
 
 test('圈的调色板：每一档都过得了像素门槛，而且是按 id 挑的', () => {
-  const palette = AIR_ADMIN.match(/const RING_TINTS = \[([^\]]+)\]/);
-  assert.ok(palette, 'air-admin.js 里找不到 RING_TINTS');
+  // 调色板只有一份，住在 status-presentation.js —— Air 的圈和老看板卡片的描边是
+  // 同一条规则的两个壳，同一件东西在两页上不该是两个颜色。
+  const palette = STATUS_PRESENTATION.match(/const RING_TINTS = Object\.freeze\(\[([^\]]+)\]/);
+  assert.ok(palette, 'status-presentation.js 里找不到 RING_TINTS');
   const tints = palette[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
   assert.ok(tints.length >= 4, `调色板太小，随机感会退化成条纹：${tints.join(' ')}`);
   // test-air-console-cdp.js 的 ringEdges 从边框里侧向内扫 7px，取最饱和的像素，
@@ -78,9 +84,17 @@ test('圈的调色板：每一档都过得了像素门槛，而且是按 id 挑�
     assert.ok(saturation >= 60, `${tint} 太淡了（max-min=${saturation} < 60）：像素断言会在这一档上失败`);
   }
   // 颜色靠 id 定，不靠随机数：列表每 4 秒随快照重画一次，随机会让同一行一直换色。
-  assert.ok(/function ringTint\(seed\)/.test(AIR_ADMIN), 'ringTint 应该由 seed 决定颜色');
-  assert.equal(/Math\.random\(/.test(AIR_ADMIN.slice(AIR_ADMIN.indexOf('RING_TINTS'))), false,
+  assert.ok(/function ringTint\(seed\)/.test(STATUS_PRESENTATION), 'ringTint 应该由 seed 决定颜色');
+  const hashBody = STATUS_PRESENTATION.slice(STATUS_PRESENTATION.indexOf('function ringTint(seed)'));
+  assert.equal(/Math\.random\(/.test(hashBody.slice(0, hashBody.indexOf('\n  }'))), false,
     'ringTint 里不该出现 Math.random：同一个任务必须每次都是同一个颜色');
+
+  // 两个消费者都得走这一份，不许各自留个数组抄一遍。
+  assert.ok(/registry\(\)[\s\S]{0,40}?\.ringTint\(seed\)/.test(AIR_ADMIN), 'air-admin.js 应该向 registry 要颜色');
+  assert.ok(/typeof sp\.ringTint === 'function'[\s\S]{0,60}?sp\.ringTint\(seed\)/.test(MANAGE_DASHBOARD),
+    'manage-dashboard.js 应该向 registry 要颜色');
+  assert.equal(/RING_TINTS = \[/.test(AIR_ADMIN), false, 'air-admin.js 不该再自带一份调色板');
+  assert.equal(/RING_TINTS = \[/.test(MANAGE_DASHBOARD), false, 'manage-dashboard.js 不该再自带一份调色板');
 
   // 每一个调用点都得把 id 传下去，否则那条线的颜色会退回主题色 —— 圈还在，但
   // 「哪条和哪条不一样」这件事就没了，而它正是这次替代动画的东西。
@@ -106,4 +120,99 @@ test('聊天里的「工具在跑」不再逐帧改文字', () => {
   assert.equal(/animation\s*:/.test(still[1]), false, '静态省略号上不该挂动画');
   assert.ok(/content:\s*['"]\\?2026['"]/.test(still[1]) || /content:\s*['"]…['"]/.test(still[1]),
     `省略号应该是一个静态的 …：${still[1]}`);
+});
+
+// ── 第二组：界面上不许有「一直动」的东西 ──────────────────────────────────────
+//
+// 第一组管的是「一帧要花多少」（毛玻璃）。这一组管的是「帧会不会停」：软件光栅下
+// 合成器只要还在出帧，每一帧都要把整屏重新合成一遍，所以屏幕上永远有个东西在动
+// 就等于永远不归零。规则因此是两条：
+//   · 会一直存在的装饰（跑着的任务、等待中的角标、卡片上的光晕）必须是静态的；
+//   · 只允许「过程中才出现」的动画活着（工具在转、正在输入、正在录音、diff 正在
+//     加载），而且它们只能碰 transform / opacity —— 那两样由合成器接管，不重排版。
+
+test('Air 的壳上一条 animation 都没有', () => {
+  // 例外的只有 composer.css 的跑马灯（下面单独钉），其余一律不许出现 —— 壳是常驻
+  // 在屏幕上的那几层，它们动一下就是整屏一直在动。
+  for (const file of SHELL_CSS.concat(['status-badge.css'])) {
+    const css = read(file);
+    const decls = [...css.matchAll(/^\s*animation:\s*([^;}]+)/gm)].map(m => m[1].trim());
+    assert.deepEqual(decls, [], `${file} 又出现了动画：${decls.join(' / ')}`);
+    assert.equal(/@keyframes/.test(css), false, `${file} 不该再有关键帧`);
+  }
+});
+
+test('跑马灯默认不动，指上去才走', () => {
+  // 长名字还是要能看全（切掉的名字等于没有名字），但「屏幕上一直有个东西在来回走」
+  // 正是要拿掉的那件事，所以改成 hover / 键盘焦点时才走。
+  assert.ok(/animation-play-state:\s*paused/.test(COMPOSER_CSS), '跑马灯默认应该是暂停的');
+  const running = COMPOSER_CSS.slice(COMPOSER_CSS.indexOf('animation-play-state: running'));
+  const before = COMPOSER_CSS.slice(COMPOSER_CSS.indexOf('Hovering'), COMPOSER_CSS.indexOf('animation-play-state: running'));
+  assert.ok(/is-marquee:hover/.test(before) && /focus/.test(before),
+    '只有指上去或键盘聚焦时才该开始走');
+  assert.ok(running, '跑马灯得有个能走起来的开关');
+});
+
+test('所有「一直动」的动画只碰 transform / opacity', () => {
+  // 逐帧改 box-shadow / border-color / background-position / 宽高 会重排或重绘；
+  // 唯一还能留下的永续动画都得是合成器能接管的属性。
+  const PAINT_ONLY = /^(box-shadow|border(-[a-z]+)?-color|border|background(-[a-z]+)?|color|content|width|height|top|left|right|bottom|filter|backdrop-filter|margin|padding|font-size)\s*:/;
+  const files = fs.readdirSync(path.join(ROOT, 'public')).filter(f => /\.(css|html)$/.test(f));
+  const offenders = [];
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(ROOT, 'public', file), 'utf8');
+    // 一个文件里可能既有 <style> 又有内联 style，这里按整份文本处理：@keyframes 的
+    // 定义和引用都在同一份文本里。
+    const infinite = new Set();
+    for (const m of source.matchAll(/animation:\s*([^;}]+)/g)) {
+      const value = m[1].trim();
+      if (!/\binfinite\b/.test(value)) continue;
+      const name = value.split(/\s+/).find(tok => /^[A-Za-z][\w-]*$/.test(tok)
+        && !/^(infinite|alternate|both|forwards|backwards|none|linear|ease|ease-in|ease-out|ease-in-out|paused|running|normal|reverse|step-start|step-end)$/.test(tok));
+      if (name) infinite.add(name);
+    }
+    for (const name of infinite) {
+      const start = source.search(new RegExp(`@keyframes\\s+${name}[\\s{]`));
+      if (start < 0) continue;
+      const open = source.indexOf('{', start);
+      let depth = 0, end = open;
+      for (; end < source.length; end += 1) {
+        if (source[end] === '{') depth += 1;
+        else if (source[end] === '}') { depth -= 1; if (!depth) break; }
+      }
+      const body = source.slice(open, end);
+      for (const decl of body.split(/[;{]/)) {
+        if (PAINT_ONLY.test(decl.trim())) offenders.push(`${file} @keyframes ${name}: ${decl.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `这些永续动画每帧都要重排/重绘：\n${offenders.join('\n')}`);
+});
+
+test('老看板的运行标记也是静态描边，不再是彩虹', () => {
+  // 这一处和 Air 的圈是同一条规则的另一份实现：谁在跑 → 加粗的浅色边，颜色按 id
+  // 从同一份调色板里挑。原来是 3s infinite 的 border-color + 带模糊光晕的
+  // box-shadow —— 逐帧重绘整张卡，比 Air 那个还贵。
+  assert.equal(/@keyframes\s+rainbow-border/.test(MANAGE_HTML), false, '彩虹那套关键帧不该回来');
+  const rule = /\.card-border-rainbow\s*\{([^}]*)\}/.exec(MANAGE_HTML);
+  assert.ok(rule, 'manage.html 里找不到 .card-border-rainbow');
+  assert.equal(/animation\s*:/.test(rule[1]), false, '运行标记上不该挂动画');
+  assert.ok(/var\(--card-tint,\s*var\(--codex\)\)/.test(rule[1]),
+    '颜色要写成 var(--card-tint, var(--codex))：量不到变量时退回主题色，边不会整个消失');
+
+  // 颜色由 manage-dashboard.js 按 id 写进来，摘类的时候要清掉（卡片是复用的）。
+  assert.ok(/style\.setProperty\('--card-tint'/.test(MANAGE_DASHBOARD), '运行中要写 --card-tint');
+  assert.ok(/style\.removeProperty\('--card-tint'/.test(MANAGE_DASHBOARD), '不跑了要把颜色清掉');
+
+  // 同一张板上另外几处「一直闪」的装饰也一起改掉了：角标、冲突按钮、页签下划线。
+  assert.equal(/@keyframes\s+pulse-badge/.test(MANAGE_HTML), false, '角标不该再闪');
+  assert.equal(/@keyframes\s+conflictPulse/.test(MANAGE_HTML), false, '冲突按钮不该再脉冲');
+  assert.equal(/@keyframes\s+ddTabRunningSweep/.test(MANAGE_HTML), false, '页签下划线不该再扫');
+});
+
+test('running 的标记不再旋转', () => {
+  const css = read('status-badge.css');
+  assert.ok(css.includes('.mc-status.st-spin .mc-status-ico'), 'running 的标记还得在（只有 running 有）');
+  assert.equal(/@keyframes/.test(css), false, '这个文件不该再有关键帧');
+  assert.equal(/rotate\(/.test(css), false, '不该再旋转');
 });

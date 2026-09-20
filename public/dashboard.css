@@ -95,11 +95,9 @@ a:hover { text-decoration: underline; }
 .refresh-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--green);
-  animation: pulse 2s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: .4; }
+  /* 静态：这颗点说的是「数据是活的」，而它亮着本身就是这句话。2s infinite 的
+     呼吸只让这一行每隔 2 秒重绘一次，外加让合成器一直出帧。 */
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 25%, transparent);
 }
 
 /* ── Main container ── */

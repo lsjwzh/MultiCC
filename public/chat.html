@@ -355,19 +355,17 @@
       color: #fff;
       cursor: pointer;
       z-index: 60;
-      box-shadow:var(--chat-shadow, 0 6px 18px #00000088);
+      /* 静态的一圈琥珀外环，不再是 2s infinite 的呼吸。原来那套是关键帧逐帧改带
+         模糊的 box-shadow —— 每帧重绘这个圆钮加它的光晕，而它出现在「有人在等你
+         回答」的时候，正是最不该让整屏一直出帧的时候。 */
+      box-shadow:var(--chat-shadow, 0 6px 18px #00000088), 0 0 0 6px rgba(210, 153, 34, 0.22);
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 20px;
-      animation: pending-input-fab-pulse 2s ease-in-out infinite;
     }
     #pending-user-input-fab[hidden] { display: none !important; }
     #pending-user-input-fab:hover { background: #b8780f; }
-    @keyframes pending-input-fab-pulse {
-      0%, 100% { box-shadow:var(--chat-shadow, 0 6px 18px #00000088, 0 0 0 0 rgba(210, 153, 34, 0.45)); }
-      50% { box-shadow:var(--chat-shadow, 0 6px 18px #00000088, 0 0 0 9px rgba(210, 153, 34, 0)); }
-    }
     .new-msg-pill {
       position: fixed;
       left: 50%;

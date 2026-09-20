@@ -335,7 +335,7 @@ function updateReviewCard(card, status) {
   if (reviewBtn) reviewBtn.style.display = status === 'reviewed' ? 'none' : '';
 }
 
-/* ── Card border rainbow animation helpers ── */
+/* ── 运行中卡片的描边：静态的浅色边，颜色按 id 挑（不再有彩虹动画） ── */
 function isSessionRunning(sessionId) {
   // 1. Live workspace status (from /ws/workspace) — thinking/editing/running
   const st = _workspaceStatus.get(sessionId);
@@ -356,18 +356,40 @@ function isAnyWorkInDirRunning(dirId) {
     : 0;
   return taskCount > 0 || isAnySessionInDirRunning(dirId);
 }
-function applyCardBorderState(cardEl, isRunning) {
+/** 描边的颜色：按卡片 id 从 status-presentation.js 那份调色板里挑（Air 的圈用的
+ *  是同一份）。同一张卡每次都是同一个色；没给 seed 就不写变量，css 退回主题绿。
+ *  两个形态：cardTintDecl 给已经有 style 属性的模板拼进去（声明，带分号），
+ *  cardTintStyle 给没有 style 属性的模板整条加上。 */
+function cardTintDecl(seed) {
+  const tint = cardTintOf(seed);
+  return tint ? `--card-tint:${tint};` : '';
+}
+function cardTintStyle(seed) {
+  const tint = cardTintOf(seed);
+  return tint ? ` style="--card-tint:${tint}"` : '';
+}
+function applyCardBorderState(cardEl, isRunning, seed) {
   if (!cardEl) return;
-  if (isRunning) cardEl.classList.add('card-border-rainbow');
-  else cardEl.classList.remove('card-border-rainbow');
+  if (isRunning) {
+    cardEl.classList.add('card-border-rainbow');
+    if (seed != null && cardEl.style) cardEl.style.setProperty('--card-tint', cardTintOf(seed));
+  } else {
+    cardEl.classList.remove('card-border-rainbow');
+    // 卡片是复用出来的：摘掉类的时候顺手把色清掉，否则下一条任务会顶着上一条的颜色。
+    if (cardEl.style && cardEl.style.removeProperty) cardEl.style.removeProperty('--card-tint');
+  }
+}
+function cardTintOf(seed) {
+  const sp = window.MultiCCStatusPresentation;
+  return sp && typeof sp.ringTint === 'function' ? sp.ringTint(seed) : '';
 }
 function refreshCardBordersForDir(dirId) {
   const running = isAnyWorkInDirRunning(dirId);
   const dirCard = document.querySelector('#directory-list .dir-block[data-dir-id="' + escapeHtml(dirId) + '"]');
-  applyCardBorderState(dirCard, running);
+  applyCardBorderState(dirCard, running, dirId);
   (dirSessionsOf(dirId) || []).forEach(s => {
     document.querySelectorAll('.lean[data-id="' + escapeHtml(s.id) + '"]').forEach(card => {
-      applyCardBorderState(card, isSessionRunning(s.id));
+      applyCardBorderState(card, isSessionRunning(s.id), s.id);
     });
   });
 }
@@ -375,7 +397,7 @@ function refreshAllCardBorders() {
   (_cachedDirectories || []).forEach(d => refreshCardBordersForDir(d.id));
   document.querySelectorAll('#directory-list > .dir-block:not([data-dir-id]) .lean').forEach(card => {
     const sid = card.getAttribute('data-id');
-    applyCardBorderState(card, sid ? isSessionRunning(sid) : false);
+    applyCardBorderState(card, sid ? isSessionRunning(sid) : false, sid);
   });
 }
 function refreshTaskBoardFleetActivity() {
@@ -1346,7 +1368,7 @@ function renderDirectoryBlock(dir, dirSessions) {
   // body is a 2-line preview; clicking opens the full detail in a modal.
   if (_focusedSessionId) {
     return `
-    <div class="dir-block open${isAnyWorkInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}">
+    <div class="dir-block open${isAnyWorkInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}"${isAnyWorkInDirRunning(id) ? cardTintStyle(id) : ''}>
       <div class="dir-header">
         ${headerMain}
         ${headerActions}
@@ -1360,7 +1382,7 @@ function renderDirectoryBlock(dir, dirSessions) {
 
   // Overview mode: unified card with min-height and grid layout
   return `
-    <div class="dir-block dir-card${isAnyWorkInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}" onclick="openDirectoryDetail('${escapeHtml(id)}')" style="display:flex;flex-direction:column;min-height:160px;">
+    <div class="dir-block dir-card${isAnyWorkInDirRunning(id) ? ' card-border-rainbow' : ''}" data-dir-id="${escapeHtml(id)}" onclick="openDirectoryDetail('${escapeHtml(id)}')" style="display:flex;flex-direction:column;min-height:160px;${isAnyWorkInDirRunning(id) ? cardTintDecl(id) : ''}">
       <div class="dir-header">
         ${headerMain}
         ${headerActions}
@@ -1714,7 +1736,7 @@ function renderSessionRow(s) {
   // the backing CLI now that groups are kind-only; #id, delete and the rest
   // live in the ⋯ menu / title attribute.
   return `
-    <div class="lean${isSessionRunning(s.id) ? ' card-border-rainbow' : ''}${focusedClass}" data-id="${escapeHtml(s.id)}" onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
+    <div class="lean${isSessionRunning(s.id) ? ' card-border-rainbow' : ''}${focusedClass}" data-id="${escapeHtml(s.id)}"${isSessionRunning(s.id) ? cardTintStyle(s.id) : ''} onclick="openSessionInline('${escapeHtml(s.id)}','${escapeHtml(s.kind || 'terminal')}')">
       ${window.MultiCCStatusPresentation.statusBadgeHtml('session', cardStatus, {
         translate: tt, showLabel: false, className: 'dot', id: `sess-status-${s.id}`,
       })}
