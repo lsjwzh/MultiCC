@@ -272,24 +272,30 @@ function createWorkspaceAdmission(deps) {
     return { workspacePermit: permit, deliveryId: permit?.deliveryId };
   }
   async function drain(id, permit) {
-    if (closed || active.get(id) !== permit || !permit.terminal || permit.draining || permit.evidencePending || isLive(id)) return;
+    if (permit.draining) return permit.drainPromise || null;
+    if (closed || active.get(id) !== permit || !permit.terminal || permit.evidencePending || isLive(id)) return null;
     permit.draining = true;
-    try {
-      // A warm native process also owns its directory. Close and confirm it
-      // before releasing this run; background work prevents this path.
-      const stopped = await deps.closePersistent?.(id);
-      if (closed || stopped?.closed !== true || active.get(id) !== permit || isLive(id)) return;
-      if (permit.evidenceBound) {
-        try {
-          const code = await captureCodeRevision(permit.lease.workspaceId && registry.workspace(permit.lease.workspaceId)?.path);
-          evidence.recordWriterBarrier({ sessionId: id, turnId: permit.turnId, workspaceId: permit.lease.workspaceId,
-            leaseId: permit.lease.id, generation: permit.lease.generation, code });
-        } catch (error) { deps.log('writer_barrier_not_recorded', { sessionId: id, code: error.code || error.message }); }
-      }
-      registry.release(permit.lease, { stopped: true, reason: permit.terminal.status || 'stopped' });
-      active.delete(id);
-    } catch (error) { deps.log('workspace_release_retained', { sessionId: id, code: error.code }); }
-    finally { permit.draining = false; }
+    const release = (async () => {
+      try {
+        // A warm native process also owns its directory. Close and confirm it
+        // before releasing this run; background work prevents this path.
+        const stopped = await deps.closePersistent?.(id);
+        if (closed || stopped?.closed !== true || active.get(id) !== permit || isLive(id)) return;
+        if (permit.evidenceBound) {
+          try {
+            const code = await captureCodeRevision(permit.lease.workspaceId && registry.workspace(permit.lease.workspaceId)?.path);
+            evidence.recordWriterBarrier({ sessionId: id, turnId: permit.turnId, workspaceId: permit.lease.workspaceId,
+              leaseId: permit.lease.id, generation: permit.lease.generation, code });
+          } catch (error) { deps.log('writer_barrier_not_recorded', { sessionId: id, code: error.code || error.message }); }
+        }
+        registry.release(permit.lease, { stopped: true, reason: permit.terminal.status || 'stopped' });
+        active.delete(id);
+      } catch (error) { deps.log('workspace_release_retained', { sessionId: id, code: error.code }); }
+      finally { permit.draining = false; }
+    })();
+    permit.drainPromise = release;
+    try { return await release; }
+    finally { if (permit.drainPromise === release) permit.drainPromise = null; }
   }
   function settled(id, outcome) {
     const permit = active.get(id); if (!permit) return;
@@ -371,6 +377,19 @@ function createWorkspaceAdmission(deps) {
     const source = owner(sessionId);
     const siblingLive = () => [...deps.records.values()].some(record => applicable(record)
       && (record.workspaceOwnerSessionId || record.id) === source.id && isLive(record.id));
+    // A wait_for_user_answer turn is terminal from the writer's point of view,
+    // but its lease can still be awaiting the asynchronous evidence flush when
+    // the user clicks “separate”.  Drain that terminal lease here rather than
+    // reporting it as a live writer.  We never do this for a running process:
+    // isLive remains the hard boundary against concurrent filesystem writes.
+    const terminal = active.get(sessionId);
+    if (terminal?.terminal && !isLive(sessionId)) {
+      // `settled()` also schedules drain().  drain() exposes the in-flight
+      // release promise, so this waits for that exact close/verification pass
+      // rather than mistaking a short evidence write for a live writer.
+      if (terminal.evidencePending) await terminal.evidencePending;
+      if (active.get(sessionId) === terminal && !isLive(sessionId)) await drain(sessionId, terminal);
+    }
     if (!workspace || active.has(sessionId) || siblingLive()) throw failure('workspace_busy');
     const lease = await acquireWithResidentRelief(workspace, sessionId, `separation:${separationId}`);
     let stopped = false;
