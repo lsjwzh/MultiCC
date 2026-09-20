@@ -83,22 +83,6 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
   function forTask(taskId) {
     return store.list('task-separation').filter(s => s.sourceTaskId === taskId || s.taskId === taskId).at(-1) || null;
   }
-  async function verifiedDelivery(suggestion) {
-    if (typeof ports.deliveryEvidence !== 'function') throw fail('delivery_evidence_unavailable');
-    const evidence = ports.deliveryEvidence(suggestion.sessionId, suggestion.turnId) || {};
-    const run = evidence.run;
-    if (!run) throw fail('final_run_result_required', 'The final run result has not been recorded');
-    if (run.outcome !== 'succeeded' || run.pendingInput) throw fail('run_not_succeeded', 'The source turn did not finish successfully');
-    if (!run.endCodeRevision) throw fail('code_observation_required', 'The final code version was not observed');
-    const codeChanged = !run.startCodeRevision || run.startCodeRevision !== run.endCodeRevision;
-    let baseline = null;
-    if (codeChanged) {
-      if (!evidence.integration) throw fail('integration_receipt_required', 'Merge this turn before separating it');
-      baseline = await ports.verifyDeliveryBaseline?.(evidence.integration, suggestion.sessionId);
-      if (baseline?.effectValid !== true) throw fail('baseline_revalidation_required', 'The merge receipt is no longer current');
-    }
-    return { ...evidence, baseline, codeChanged };
-  }
   async function decide(sessionId, id, decision) {
     if (!['separate', 'keep', 'defer'].includes(decision)) throw fail('invalid_input', 'decision must be separate, keep or defer', 400);
     let suggestion = store.get('task-separation', id);
@@ -135,25 +119,29 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
     }
     const operation = (async () => {
       const { receipt, source } = sourceOf(sessionId, suggestion.receiptId);
-      if (ports.isTaskLifecycleBusy?.(source.id) || (await getExecution(sessionId)).busy !== false) throw fail('fork_source_busy', 'Wait for this task to finish before separating');
+      // A separation creates a new task; it does not publish the source task's
+      // code.  Requiring that code to be merged made a harmless task boundary
+      // depend on an unrelated delivery workflow, and also ruled out a turn
+      // which has deliberately paused for a user answer.  The writer barrier
+      // below is the authoritative concurrency check: it only yields a baseline
+      // after all actual writers have stopped and the worktree is re-observed.
+      if (ports.isTaskLifecycleBusy?.(source.id)) throw fail('task_busy', 'The source task is changing lifecycle state');
       let task = suggestion.taskId && store.get('task', suggestion.taskId);
       if (!task) {
         if (store.list('task').filter(t => t.dirId === source.dirId).length >= 200) throw fail('task_shell_task_limit');
         if (typeof ports.withSeparationBarrier !== 'function') throw fail('separation_barrier_unavailable');
         if (typeof ports.recordSeparationApplication !== 'function') throw fail('separation_application_unavailable');
-        let delivery = await verifiedDelivery(suggestion);
         const taskId = `tsk_${hash(id).slice(0, 32)}`, nextSessionId = `task-${taskId.slice(4)}`, shellId = `sh_${hash(nextSessionId).slice(0, 24)}`;
         await ports.withSeparationBarrier({ sessionId, turnId: suggestion.turnId, separationId: suggestion.id }, async ({ barrier, code }) => {
-          // Revalidate after the writer lease is held. A pre-barrier delivery
-          // check can race a new source turn or a changed integration head.
-          delivery = await verifiedDelivery(suggestion);
+          // Revalidate after the writer lease is held.  The code head captured
+          // here, not main's head, is the isolated task's reproducible start.
           if (!usable(suggestion)) throw fail('separation_stale');
           if (code.dirty) throw fail('fork_source_dirty', 'Commit and merge the source changes before separating');
           const snapshot = handoffSnapshot(taskId, getHistory(sessionId), { ...suggestion, receipt,
             sourceWorkspace: getRecord(sessionId)?.worktreePath });
           if (!snapshot) throw fail('separation_context_missing');
           const record = getRecord(sessionId);
-          const baseline = { commit: delivery.codeChanged ? delivery.integration.integrationHead : code.head,
+          const baseline = { commit: code.head,
             branch: record?.branch || null, sourceSessionId: sessionId,
             sourceWorkspace: record?.worktreePath || null };
           task = { id: taskId, dirId: source.dirId, sessionId: nextSessionId, ownerShellId: shellId,
@@ -170,8 +158,11 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
             store.set('link', `${shellId}:${task.id}`, { shellId, taskId: task.id });
             roles?.inherit(source.id, task.id);
             suggestion = { ...suggestion, taskId: task.id, barrierId: barrier.id,
-              deliveryKind: delivery.codeChanged ? 'integration' : 'no_code_change',
-              integrationId: delivery.integration?.id || null, phase: 'target_recorded', lastError: null };
+              // This receipt proves a clean, stopped source snapshot.  It is
+              // intentionally distinct from an integration receipt: the source
+              // task can be delivered to main later, on its own schedule.
+              deliveryKind: 'workspace_snapshot', integrationId: null,
+              phase: 'target_recorded', lastError: null };
             store.set('task-separation', id, suggestion);
           });
         });

@@ -101,34 +101,36 @@ test('a newer turn invalidates the old popup even before its receipt has changed
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'separation_stale' });
   assert.equal(f.creations.length, 0);
 });
-test('failed, waiting and unobserved turns cannot create an independent task', async t => {
+test('a stable source snapshot can separate a failed, waiting or unobserved turn', async t => {
   for (const run of [
     { id: 'turn-1', outcome: 'failed', pendingInput: false, endCodeRevision: 'revision-1' },
     { id: 'turn-1', outcome: 'succeeded', pendingInput: true, endCodeRevision: 'revision-1' },
     { id: 'turn-1', outcome: 'succeeded', pendingInput: false, endCodeRevision: null },
   ]) {
     const f = await setup(t, { deliveryEvidence: () => ({ run, integration: null }) }), p = f.propose();
-    const code = run.endCodeRevision ? 'run_not_succeeded' : 'code_observation_required';
-    await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code });
-    assert.equal(f.store.list('task').length, 1);
+    const result = await f.runtime.separation.decide('a', p.id, 'separate');
+    assert.equal(result.ok, true);
+    assert.equal(f.store.get('task-separation', p.id).deliveryKind, 'workspace_snapshot');
   }
 });
-test('changed code requires a current integration receipt before the writer barrier', async t => {
+test('a clean source snapshot does not require a merge receipt', async t => {
   const changed = { id: 'turn-1', outcome: 'succeeded', pendingInput: false,
     startCodeRevision: 'revision-0', endCodeRevision: 'revision-1' };
   const missing = await setup(t, { deliveryEvidence: () => ({ run: changed, integration: null }) });
-  await assert.rejects(missing.runtime.separation.decide('a', missing.propose().id, 'separate'), { code: 'integration_receipt_required' });
-  assert.equal(missing.barriers.length, 0);
+  const result = await missing.runtime.separation.decide('a', missing.propose().id, 'separate');
+  assert.equal(result.ok, true);
+  assert.equal(missing.store.get('task', result.taskId).forkBaseline.commit, 'a'.repeat(40));
   const stale = await setup(t, { deliveryEvidence: () => ({ run: changed, integration: { id: 'integration-1', integrationHead: 'abc' } }),
     verifyDeliveryBaseline: async () => ({ effectValid: false }) });
-  await assert.rejects(stale.runtime.separation.decide('a', stale.propose().id, 'separate'), { code: 'baseline_revalidation_required' });
-  assert.equal(stale.barriers.length, 0);
+  assert.equal((await stale.runtime.separation.decide('a', stale.propose().id, 'separate')).ok, true);
 });
 test('busy and dirty sources retain the suggestion and expose the original error', async t => {
-  const f = await setup(t, { withSeparationBarrier: async (input, work) => work({
-    barrier: { id: `barrier-${input.separationId}` },
-    code: { revision: 'revision-1', head: 'a'.repeat(40), repoId: 'repo-1', dirty: true },
-  }) }), p = f.propose();
+  const f = await setup(t), p = f.propose();
+  f.ports.withSeparationBarrier = async (input, work) => {
+    if (f.statuses.get('a')?.busy) throw Object.assign(new Error('busy'), { code: 'fork_source_busy' });
+    return work({ barrier: { id: `barrier-${input.separationId}` },
+      code: { revision: 'revision-1', head: 'a'.repeat(40), repoId: 'repo-1', dirty: true } });
+  };
   f.statuses.set('a', { busy: true });
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_busy' });
   f.statuses.set('a', { busy: false });
@@ -137,6 +139,11 @@ test('busy and dirty sources retain the suggestion and expose the original error
 });
 test('a transiently blocked suggestion stays retryable after the conversation advances', async t => {
   const f = await setup(t), p = f.propose();
+  f.ports.withSeparationBarrier = async (input, work) => {
+    if (f.statuses.get('a')?.busy) throw Object.assign(new Error('busy'), { code: 'fork_source_busy' });
+    return work({ barrier: { id: `barrier-${input.separationId}` },
+      code: { revision: 'revision-1', head: 'a'.repeat(40), repoId: 'repo-1', dirty: false } });
+  };
   f.statuses.set('a', { busy: true });
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_busy' });
   f.statuses.set('a', { busy: false });

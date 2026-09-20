@@ -209,3 +209,25 @@ test('a separation application receipt is required before the fourth step can co
   assert.deepEqual(applied.steps.map(step => step.status), ['done', 'done', 'done', 'done']);
   assert.equal(applied.application.targetTaskId, 'B');
 });
+
+test('a workspace-snapshot separation does not masquerade as an unmerged delivery', async t => {
+  const f = fixture(t), start = await captureCodeRevision(f.wt);
+  f.begin('turn-waiting', { startCodeRevision: start.revision, startHead: start.head, startDirty: start.dirty });
+  fs.writeFileSync(path.join(f.wt, 'isolated.txt'), 'snapshot');
+  const run = await f.finish('turn-waiting', { outcome: 'waiting', pendingInput: true });
+  f.git(f.wt, 'add', '.'); f.git(f.wt, 'commit', '-m', 'source snapshot');
+  const code = await captureCodeRevision(f.wt);
+  const barrier = f.evidence.recordWriterBarrier({ sessionId: 's', turnId: 'turn-waiting', separationId: 'sep-snapshot',
+    workspaceId: 'w', leaseId: 'lease-snapshot', generation: 1, code });
+  const separation = { id: 'sep-snapshot', sessionId: 's', turnId: 'turn-waiting', sourceTaskId: 'A',
+    sourceTitle: 'Source', taskId: 'B', title: 'Independent', state: 'pending', phase: 'indexing_task',
+    deliveryKind: 'workspace_snapshot' };
+  const view = await deliveryView({ sessionId: 's', taskId: 'A', separation, admission: f.admission, cwd: f.repo });
+  assert.equal(run.outcome, 'waiting');
+  assert.equal(view.integration, null);
+  assert.deepEqual(view.blockers, ['separation_application_required']);
+  assert.deepEqual(view.steps.map(step => [step.label, step.status]), [
+    ['源会话已停写', 'done'], ['隔离基线已冻结', 'done'], ['源现场稳定', 'done'], ['分离生效', 'pending'],
+  ]);
+  assert.equal(barrier.dirty, false);
+});

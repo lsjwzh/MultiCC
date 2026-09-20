@@ -18,8 +18,15 @@ async function deliveryView({ sessionId, taskId, candidate, separation, admissio
   const codeChanged = codeObserved && run.startCodeRevision
     ? run.startCodeRevision !== run.endCodeRevision : null;
   const noCodeChange = codeChanged === false;
+  // A confirmed task separation starts a new worktree at a clean source
+  // snapshot.  It is deliberately not a request to integrate source code into
+  // main, so showing “code has not been merged” here is both misleading and a
+  // false blocker for a perfectly usable new task.
+  const workspaceSnapshot = separation?.deliveryKind === 'workspace_snapshot';
   const integrationCurrent = !!integration && baseline?.effectValid === true;
-  const codeDelivered = codeObserved && (noCodeChange || integrationCurrent);
+  const codeDelivered = workspaceSnapshot
+    ? !!barrier && barrier.writersStopped === true && barrier.dirty === false
+    : codeObserved && (noCodeChange || integrationCurrent);
   const barrierCurrent = !!barrier && barrier.turnId === run?.id
     && barrier.codeRevision === run?.endCodeRevision && barrier.writersStopped === true;
   const separationApplied = separation?.state === 'separated' && !!application
@@ -29,14 +36,16 @@ async function deliveryView({ sessionId, taskId, candidate, separation, admissio
 
   const blockers = [];
   if (!separation && candidate?.state === 'stale') blockers.push('view_changed');
-  if (!run) blockers.push('final_run_result_required');
-  else {
-    if (!runSucceeded) blockers.push('run_not_succeeded');
-    if (!codeObserved) blockers.push('code_observation_required');
-  }
-  if (codeObserved && !noCodeChange) {
-    if (!integration) blockers.push('integration_receipt_required');
-    else if (!integrationCurrent) blockers.push('baseline_revalidation_required');
+  if (!workspaceSnapshot) {
+    if (!run) blockers.push('final_run_result_required');
+    else {
+      if (!runSucceeded) blockers.push('run_not_succeeded');
+      if (!codeObserved) blockers.push('code_observation_required');
+    }
+    if (codeObserved && !noCodeChange) {
+      if (!integration) blockers.push('integration_receipt_required');
+      else if (!integrationCurrent) blockers.push('baseline_revalidation_required');
+    }
   }
   if (!barrierCurrent) blockers.push('source_writer_barrier_required');
   if (separation && !kept && !separationApplied) blockers.push('separation_application_required');
@@ -46,9 +55,12 @@ async function deliveryView({ sessionId, taskId, candidate, separation, admissio
     key, label, status: done ? 'done' : state || 'pending', evidenceId,
   });
   const steps = [
-    step('run', '本轮成功', runSucceeded, run?.id || null, run && !runSucceeded ? 'blocked' : null),
-    step('delivery', '代码交付', codeDelivered, noCodeChange ? run?.id : integration?.id || null,
-      runSucceeded && !codeDelivered ? 'blocked' : null),
+    step('run', workspaceSnapshot ? '源会话已停写' : '本轮成功', workspaceSnapshot ? barrierCurrent : runSucceeded,
+      workspaceSnapshot ? barrier?.id || null : run?.id || null,
+      workspaceSnapshot ? (barrierCurrent ? null : 'blocked') : run && !runSucceeded ? 'blocked' : null),
+    step('delivery', workspaceSnapshot ? '隔离基线已冻结' : '代码交付', codeDelivered,
+      workspaceSnapshot ? barrier?.id || null : noCodeChange ? run?.id : integration?.id || null,
+      workspaceSnapshot ? (codeDelivered ? null : 'blocked') : runSucceeded && !codeDelivered ? 'blocked' : null),
     step('barrier', '源现场稳定', barrierCurrent, barrier?.id || null,
       codeDelivered && !barrierCurrent ? 'blocked' : null),
     step('attribution', separation ? '分离生效' : '任务归属', separationApplied || fixedAttribution,
