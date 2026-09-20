@@ -497,9 +497,14 @@ function createTaskShellRuntime(ports) {
         store.set('answer', key, { receiptId });
       }
       const originReceipt = payload.intent !== 'work' && store.get('delivery:run', payload.turnId)?.binding?.receiptId;
-      const controlRole = originReceipt && store.get('receipt', originReceipt)?.roleSnapshotId;
+      const originRole = originReceipt && store.get('receipt', originReceipt)?.roleSnapshotId;
+      // A question moved by task separation still points at the source run.
+      // Preserve a question-time role only when it belongs to this same task;
+      // otherwise freeze the target task's inherited/current role below.
+      const controlRole = roles.isSnapshotFor(task.id, originRole) ? originRole : null;
+      const queuedRole = roles.isSnapshotFor(task.id, last?.roleSnapshotId) ? last.roleSnapshotId : null;
       const receipt = { id: receiptId, shellId: s.id, taskId: task.id, fingerprint, payload,
-        roleSnapshotId: payload.intent === 'work' ? roles.snapshot(task.id) : controlRole || last?.roleSnapshotId || roles.snapshot(task.id),
+        roleSnapshotId: payload.intent === 'work' ? roles.snapshot(task.id) : controlRole || queuedRole || roles.snapshot(task.id),
         taskIdentityLocked: delivery.taskIdentityLocked === true,
         taskMetadata: delivery.taskMetadata || null,
         cursorVersion: payload.intent === 'work' ? (currentShell.cursorVersion || 0) + 1 : currentShell.cursorVersion || 0,

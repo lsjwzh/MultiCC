@@ -2,6 +2,22 @@
 const { hash, snapshotHistory, renderSnapshots } = require('./context');
 const fail = code => Object.assign(new Error(code), { code, status: 409 });
 
+function verifiedSnapshot(store, id, taskId = null) {
+  const snapshot = id && store.get('task-role:snapshot', id);
+  if (!snapshot || (taskId && snapshot.taskId !== taskId)
+    || snapshot.id !== 'role_' + hash({ taskId: snapshot.taskId, version: snapshot.version, bindings: snapshot.bindings })) return null;
+  return snapshot;
+}
+
+function materializeSnapshot(store, value) {
+  const id = 'role_' + hash(value);
+  const snapshot = { ...value, id, prompt: value.bindings.map(b => `【${b.name}】\n${b.prompt}`).join('\n\n') };
+  const old = store.get('task-role:snapshot', id);
+  if (old && JSON.stringify(old) !== JSON.stringify(snapshot)) throw fail('role_snapshot_conflict');
+  if (!old) store.set('task-role:snapshot', id, snapshot);
+  return id;
+}
+
 function createRoleBindings(store, { getRecord, getDirectory, assertWritable = () => {} }) {
   function current(taskId) {
     const task = store.get('task', taskId); if (!task) throw fail('task_not_found');
@@ -34,15 +50,11 @@ function createRoleBindings(store, { getRecord, getDirectory, assertWritable = (
     });
   }
   function snapshot(taskId) {
-    const value = current(taskId), id = 'role_' + hash(value);
+    const value = current(taskId);
     // Freeze the legacy/default role once. The execution record later contains
     // a compiled prompt and must never feed back into the binding definition.
     if (!store.get('task-role:binding', taskId)) store.set('task-role:binding', taskId, value);
-    const snapshot = { ...value, id, prompt: value.bindings.map(b => `【${b.name}】\n${b.prompt}`).join('\n\n') };
-    const old = store.get('task-role:snapshot', id);
-    if (old && JSON.stringify(old) !== JSON.stringify(snapshot)) throw fail('role_snapshot_conflict');
-    if (!old) store.set('task-role:snapshot', id, snapshot);
-    return id;
+    return materializeSnapshot(store, value);
   }
   function inherit(sourceTaskId, targetTaskId) {
     const source = current(sourceTaskId);
@@ -53,19 +65,42 @@ function createRoleBindings(store, { getRecord, getDirectory, assertWritable = (
     if (!previous) store.set('task-role:binding', targetTaskId, value);
     return value;
   }
-  return { current, update, snapshot, inherit };
+  return { current, update, snapshot, inherit,
+    isSnapshotFor: (taskId, id) => !!verifiedSnapshot(store, id, taskId) };
 }
 
 // Called only under a workspace permit before launching the queued receipt.
 // Native session handles are archived, not removed from disk. Transcript and
 // project/private memory remain in their original stores.
 async function prepareRoleContext(store, descriptor, deps) {
-  const receipt = descriptor.opts.taskShellReceiptId && store.get('receipt', descriptor.opts.taskShellReceiptId);
+  let receipt = descriptor.opts.taskShellReceiptId && store.get('receipt', descriptor.opts.taskShellReceiptId);
   if (!receipt?.roleSnapshotId) return;
   const task = store.get('task', receipt.taskId), record = deps.records.get(descriptor.sessionId);
-  const snapshot = store.get('task-role:snapshot', receipt.roleSnapshotId);
-  if (!task || task.sessionId !== descriptor.sessionId || !snapshot || snapshot.taskId !== task.id
-    || snapshot.id !== 'role_' + hash({ taskId: task.id, version: snapshot.version, bindings: snapshot.bindings })) throw fail('role_snapshot_unverified');
+  let snapshot = verifiedSnapshot(store, receipt.roleSnapshotId);
+  // A pending question can move with a separated turn. Historical receipts
+  // inherited the source turn's role snapshot even though the answer now runs
+  // under the target task. Repair only that provable relationship: the target
+  // names this snapshot's task as its separation source, and the durable run
+  // binding proves the control belongs to the same source receipt. Arbitrary
+  // corrupt or cross-task snapshots still fail closed below.
+  if (task && ['answer', 'steer', 'cancel'].includes(receipt.payload?.intent)
+      && snapshot && snapshot.taskId !== task.id && task.separatedFromTaskId === snapshot.taskId) {
+    const originReceiptId = store.get('delivery:run', receipt.payload.turnId)?.binding?.receiptId;
+    const originReceipt = originReceiptId && store.get('receipt', originReceiptId);
+    const targetBinding = store.get('task-role:binding', task.id);
+    if (originReceipt?.taskId === snapshot.taskId
+        && originReceipt.roleSnapshotId === snapshot.id
+        && targetBinding?.taskId === task.id) {
+      const previousRoleSnapshotId = receipt.roleSnapshotId;
+      const roleSnapshotId = materializeSnapshot(store, targetBinding);
+      receipt = { ...receipt, roleSnapshotId,
+        movedRoleSnapshot: { from: previousRoleSnapshotId, sourceTaskId: snapshot.taskId, repairedAt: Date.now() } };
+      store.set('receipt', receipt.id, receipt);
+      snapshot = verifiedSnapshot(store, roleSnapshotId, task.id);
+    }
+  }
+  if (!task || task.sessionId !== descriptor.sessionId || !record
+    || !snapshot || snapshot.taskId !== task.id) throw fail('role_snapshot_unverified');
   if (record.taskRoleEpoch !== snapshot.id) {
     if (deps.hasBackground(descriptor.sessionId)) throw fail('role_writer_busy');
     const closed = await deps.closePersistent(descriptor.sessionId);
