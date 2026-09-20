@@ -195,8 +195,10 @@ test('Air keeps the recently opened conversations warm instead of reloading them
 // 原来落到 document.body.append(frame) 上，而 body 是横向 flex：iframe 的固有宽度
 // 300px 是它作为 flex 项的 min-width:auto，压不下去 —— 那一行于是被分成 main 93px +
 // 帧 300px，页头（flex-wrap，面包屑也 wrap）就竖着摞成一条窄列、标题只剩一个字，对话
-// 跑到右边整屏高。帧的父母永远是 #task-content，这一条就是给它上的锁。
-test('Air mounts a brand new conversation frame inside #task-content, never on <body>', async t => {
+// 跑到右边整屏高。帧的家由此定死：住在 #chat-layer 里，而 #chat-layer 只在 #task-content
+// 之内活动（浮层盖住目录详情、展开时盖住页头，帧跟着一起长）。这一条就是给它上的锁 ——
+// 既锁「不能挂到 body 上」，也锁「必须还在内容区里」。
+test('Air mounts a brand new conversation frame inside the content area, never on <body>', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const routes = buildAirRoutes();
   const screenshotDir = process.env.MULTICC_AIR_FRAME_POOL_QA_DIR || path.join(os.tmpdir(), 'multicc-air-frame-pool-qa');
@@ -207,6 +209,7 @@ test('Air mounts a brand new conversation frame inside #task-content, never on <
     const title = document.getElementById('task-title');
     return {
       frameParent: frame && frame.parentElement ? (frame.parentElement.id || frame.parentElement.tagName) : null,
+      insideContent: !!(frame && frame.closest('#task-content')),
       bodyFrames: [...document.querySelectorAll('iframe')].filter(f => f.parentElement === document.body).length,
       viewport: window.innerWidth,
       mainWidth: Math.round(main.getBoundingClientRect().width),
@@ -221,10 +224,12 @@ test('Air mounts a brand new conversation frame inside #task-content, never on <
     await page.navigate('/air.html?dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('#tasks button').length === ${TASKS.length}`), '侧栏列出任务');
 
-    // ① 先开 A：这一帧住在 #task-content 里
+    // ① 先开 A：这一帧住在对话浮层里，而浮层在内容区之内
     assert.equal(await page.evaluate(clickTask('任务 A')), true);
     assert.ok(await page.waitFor(frameReady('task-a')), 'A 的对话帧要立起来');
-    assert.equal((await page.evaluate(layout)).frameParent, 'task-content', '第一帧就该住在 #task-content 里');
+    const opened = await page.evaluate(layout);
+    assert.equal(opened.frameParent, 'chat-layer', '第一帧就该住在对话浮层里');
+    assert.equal(opened.insideContent, true, `浮层永远在 #task-content 之内：${JSON.stringify(opened)}`);
 
     // ② 点侧栏那张工作目录卡回目录：当前帧被交回池子（id 摘掉、藏起来）
     await page.evaluate(`document.getElementById('library').click()`);
@@ -236,7 +241,8 @@ test('Air mounts a brand new conversation frame inside #task-content, never on <
     assert.ok(await page.waitFor(frameReady('task-c')), 'C 的对话帧要立起来');
 
     const after = await page.evaluate(layout);
-    assert.equal(after.frameParent, 'task-content', `新帧必须住在 #task-content 里，不能挂到 body 上：${JSON.stringify(after)}`);
+    assert.equal(after.frameParent, 'chat-layer', `新帧必须住在对话浮层里，不能挂到 body 上：${JSON.stringify(after)}`);
+    assert.equal(after.insideContent, true, `新帧仍然要在内容区之内：${JSON.stringify(after)}`);
     assert.equal(after.bodyFrames, 0, `body 上不该有帧：${JSON.stringify(after)}`);
     assert.equal(after.mainWidth, after.viewport, `main 要占满整屏，不能被一个 300px 的帧挤窄：${JSON.stringify(after)}`);
     assert.equal(after.headerWidth, after.viewport, `页头要整宽，不能被挤成一条竖排窄列：${JSON.stringify(after)}`);
@@ -248,7 +254,8 @@ test('Air mounts a brand new conversation frame inside #task-content, never on <
     assert.equal(await page.evaluate(clickTask('任务 A')), true);
     assert.ok(await page.waitFor(frameReady('task-a')), '切回 A 要用池子里那份热帧');
     const resumed = await page.evaluate(layout);
-    assert.equal(resumed.frameParent, 'task-content', `来回切一次，帧还是住在 #task-content 里：${JSON.stringify(resumed)}`);
+    assert.equal(resumed.frameParent, 'chat-layer', `来回切一次，帧还是住在浮层里：${JSON.stringify(resumed)}`);
+    assert.equal(resumed.insideContent, true, `来回切一次，帧还在内容区之内：${JSON.stringify(resumed)}`);
     assert.equal(resumed.bodyFrames, 0, `来回切一次，body 上仍然不该有帧：${JSON.stringify(resumed)}`);
     assert.equal(resumed.mainWidth, resumed.viewport, `来回切一次，main 还是整宽：${JSON.stringify(resumed)}`);
 
