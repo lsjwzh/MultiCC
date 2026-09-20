@@ -55,14 +55,43 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// Not display state, so setting it deliberately does not notify.
   VoidCallback? fleetCollapseHandler;
 
-  /// Close the fleet panel, animating it out when the panel is mounted.
-  void requestCloseFleetDir() {
-    final animateOut = fleetCollapseHandler;
-    if (animateOut != null) {
-      animateOut();
-    } else {
-      closeFleetDir();
+  /// 对话浮层（`_ChatSheet`）注册的同一件事。除了 Android 返回键，首页 AppBar 的
+  /// ☰ 也走它：抽屉挂在内层 Scaffold 上，而浮层挂在它上面 —— 不先让浮层滑落，
+  /// 抽屉会拉在浮层底下（屏幕上什么也看不到）。
+  VoidCallback? chatCollapseHandler;
+
+  /// 正在等「浮层滑落完了」的那个人。滑落什么时候结束只有浮层自己知道，所以它
+  /// AnimationController 一落地就回头叫 [notifyLayerCollapsed]。
+  Completer<void>? _layerCollapse;
+
+  /// 收起目录详情浮层；面板在树上时滑落动画走完才算完成，不在就直接关。
+  Future<void> requestCloseFleetDir() =>
+      _collapseLayer(fleetCollapseHandler, closeFleetDir);
+
+  /// 收起对话浮层，同上。
+  Future<void> requestCloseChat() =>
+      _collapseLayer(chatCollapseHandler, goToSessionList);
+
+  Future<void> _collapseLayer(VoidCallback? animateOut, VoidCallback hardClose) {
+    // 上一跳还没落地就来了新的一跳（连着点两下 ☰）：先把等着的那个叫醒，
+    // 不然它会一直吊着，后面那件事就再也不会发生。
+    final pending = _layerCollapse;
+    if (pending != null && !pending.isCompleted) pending.complete();
+    if (animateOut == null) {
+      hardClose();
+      return Future<void>.value();
     }
+    final done = Completer<void>();
+    _layerCollapse = done;
+    animateOut();
+    return done.future;
+  }
+
+  /// 浮层滑落动画结束时由浮层调用（见 [_layerCollapse]）。
+  void notifyLayerCollapsed() {
+    final done = _layerCollapse;
+    _layerCollapse = null;
+    if (done != null && !done.isCompleted) done.complete();
   }
 
   // ── Deep-link focus (task-board "jump to message") ─────────────────────────
