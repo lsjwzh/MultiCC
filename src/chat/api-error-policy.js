@@ -80,6 +80,40 @@ const TOOL_CODES = new Set([
   'invalid_tool_arguments', 'tool_schema_error', 'tool_protocol_error',
   'mcp_error', 'function_call_error',
 ]);
+// Subscription-quota exhaustion wording. Providers transport these walls as
+// 402/403/429 and the CLI's own error text is the only place the real cause
+// survives ("You have exceeded the 5-hour usage quota", "usage limit reached",
+// "额度不足"). Retrying any of them inside seconds can never succeed, so the
+// wording must outrank the bare HTTP status that carried it.
+const QUOTA_EXHAUSTION_RES = Object.freeze([
+  /\b402\b/,
+  /insufficient (?:balance|quota|credit|funds)/,
+  /\bbilling\b/,
+  /usage limit/,
+  /credit balance/,
+  // "You have exceeded the 5-hour usage quota." / "You've exceeded your quota"
+  /exceed(?:ed|s|ing)?\b[^.\n]{0,60}?\bquota\b/,
+  // "quota exhausted" / "quota will be reset" / "the quota has been reached"
+  /\bquota\b[^\n]{0,40}?\b(?:exceeded|exhausted|reached|depleted|used up|resets?|will be reset|has been reset)\b/,
+  // "Weekly usage limit reached" / "5-hour limit reached" / "daily quota"
+  /\b(?:weekly|daily|monthly|hourly|5-hour|five-hour|7-day|24-hour)\b[^.\n]{0,40}?\b(?:quota|limit)\b/,
+  // Codex CLI: "or waiting for the reset"
+  /waiting for the reset/,
+  /upgrade your plan/,
+  /purchase extra usage/,
+  // "You've hit your limit · resets 3pm" (Claude CLI), "reached your limit"
+  /\b(?:hit|reached)\s+your\s+limit\b/,
+  /额度不足|余额不足|剩余额度|额度已用尽|额度用尽|配额不足|配额已用尽|超出配额|用量上限/,
+]);
+// Reset guidance embedded in the provider's error text, e.g. Codex's
+// "It will reset at 2026-09-20 18:11:35 +0800 CST." Some CLIs only state the
+// restart point in prose, so it can never arrive as a Retry-After header.
+const RESET_IN_TEXT_RE = /\breset(?:s|ting)?\s+in\s+(\d+(?:\.\d+)?)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b/i;
+const RESET_AT_TEXT_RE = /\breset(?:s|ting)?\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:\s*(?:Z|[+-]\d{2}:?\d{2}))?)/i;
+const RESET_UNIT_MS = Object.freeze({ second: 1000, minute: 60_000, hour: 3_600_000, day: 86_400_000 });
+// A reset further out than this is treated as unusable guidance (misparse or a
+// plan change), which falls back to the ordinary non-retryable quota branch.
+const MAX_PARSED_RESET_MS = 30 * 86_400_000;
 const MAX_SANITIZED_MESSAGE = 240;
 
 function numberOrNull(value) {
@@ -300,6 +334,30 @@ function parseReset(value, now = Date.now()) {
   return Math.max(0, Math.round(epochMs - now));
 }
 
+// Only "reset in 12 minutes" / "reset at 2026-09-20 18:11:35 +0800" are read.
+// A bare wall-clock hour ("resets 3pm") is deliberately ignored: it has no
+// timezone and would schedule a wait at the wrong instant.
+function resetAfterFromText(value, now = Date.now()) {
+  const text = String(value || '');
+  if (!text) return null;
+  const relative = RESET_IN_TEXT_RE.exec(text);
+  if (relative) {
+    const amount = Number(relative[1]);
+    const unit = relative[2].toLowerCase().replace(/s$/, '');
+    const scale = RESET_UNIT_MS[unit]
+      || RESET_UNIT_MS[{ sec: 'second', min: 'minute', hr: 'hour', day: 'day' }[unit]];
+    if (!Number.isFinite(amount) || amount <= 0 || !scale) return null;
+    const delay = Math.round(amount * scale);
+    return delay > 0 && delay <= MAX_PARSED_RESET_MS ? delay : null;
+  }
+  const absolute = RESET_AT_TEXT_RE.exec(text);
+  if (!absolute) return null;
+  const at = Date.parse(absolute[1]);
+  if (!Number.isFinite(at)) return null;
+  const delay = Math.round(at - now);
+  return delay > 0 && delay <= MAX_PARSED_RESET_MS ? delay : null;
+}
+
 function httpStatusOf(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const nested = raw.error && typeof raw.error === 'object' ? raw.error : {};
@@ -345,11 +403,12 @@ function structuredCategory(status, code, rawCategory) {
 
 function textFallbackCategory(message) {
   const text = String(message || '').toLowerCase();
-  // Billing wording outranks a bare 401/403: providers transport quota
-  // exhaustion as HTTP 403 ("用户额度不足", "usage limit"), and telling the
-  // user to re-login would be the wrong remedy. Mirrors structuredCategory's
-  // 403 refinement below.
-  if (/\b402\b|insufficient (?:balance|quota)|billing|usage limit|credit balance|额度不足|余额不足|剩余额度/.test(text)) return 'billing_quota';
+  // Billing/quota wording outranks a bare 401/403/429: providers transport
+  // quota exhaustion as HTTP 402/403/429 ("用户额度不足", "usage limit",
+  // "You have exceeded the 5-hour usage quota"), and telling the user to
+  // re-login — or retrying in three seconds — would be the wrong remedy.
+  // Mirrors structuredCategory's status refinements below.
+  if (QUOTA_EXHAUSTION_RES.some(re => re.test(text))) return 'billing_quota';
   if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication (?:failed|required)|authorization failed|invalid api key|insufficient scope|please (?:use|run)\s*\/login|not logged in|login required|未登录|请先登录|尚未登录/.test(text)) return 'authentication_permission';
   if (/\b429\b|rate limit|too many requests/.test(text)) return 'rate_limit';
   if (/context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit/.test(text)) return 'context_token_limit';
@@ -463,6 +522,18 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
         && trustedTextCategory === 'context_token_limit') {
       category = 'context_token_limit';
     }
+    // HTTP 429 is the transport for both a true rate limit and a subscription
+    // quota wall (Codex: "You have exceeded the 5-hour usage quota", Claude:
+    // "usage limit reached · resets 3pm"). The provider's own wording is the
+    // more specific diagnosis, and a quota wall must never be replayed after a
+    // three-second backoff — it is either waited out or handed to another
+    // provider. An explicit rate-limit code still wins over prose.
+    if (httpStatus === 429
+        && explicit === 'rate_limit'
+        && !RATE_CODES.has(code)
+        && trustedTextCategory === 'billing_quota') {
+      category = 'billing_quota';
+    }
     // A bare 5xx only says "the relay returned an error". When the trusted
     // envelope text names a more specific root cause (DNS failure, TLS
     // disconnect, timeout), that diagnosis outranks the generic bucket —
@@ -482,7 +553,13 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   const partialOutput = context.partialOutput === true || raw.partialOutput === true;
   const sideEffects = context.sideEffects === true || raw.sideEffects === true;
   const phase = String(context.phase || raw.phase || (partialOutput ? 'stream' : 'before_first_token'));
-  const retryAfterMs = retryAfterOf(raw, now);
+  let retryAfterMs = retryAfterOf(raw, now);
+  // CLIs that only state their reset point in prose ("It will reset at
+  // 2026-09-20 18:11:35 +0800 CST") would otherwise be treated as an
+  // unresettable quota wall. Only trusted provider-owned text is read.
+  if (retryAfterMs == null && category === 'billing_quota' && TRUSTED_TEXT_SOURCES.has(source)) {
+    retryAfterMs = resetAfterFromText(message, now);
+  }
   const retryable = RETRYABLE.has(category);
   const replaySafePhase = phase === 'connect' || phase === 'before_first_token' || phase === 'request';
   const safeToRetry = retryable && replaySafePhase && !partialOutput && !sideEffects;
@@ -810,6 +887,16 @@ function createApiErrorPolicyRuntime(options = {}) {
   return Object.freeze({ evaluate, recordSuccess, snapshot });
 }
 
+function resetWaitLabel(delayMs) {
+  const ms = Number(delayMs);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `（约 ${minutes} 分钟后重置）`;
+  const hours = Math.max(1, Math.round(minutes / 60));
+  if (hours < 48) return `（约 ${hours} 小时后重置）`;
+  return `（约 ${Math.max(2, Math.round(hours / 24))} 天后重置）`;
+}
+
 function retryNotice(decision) {
   if (!decision || !decision.error) return '上游 API 请求失败，未自动重试。';
   const { error } = decision;
@@ -823,7 +910,8 @@ function retryNotice(decision) {
     return `上游 API 暂时不可用，将在 ${seconds} 秒后进行受控重试（${decision.attempt}/${error.maxAttempts}）。${causeNotice}`;
   }
   if (decision.action === 'wait_reset') {
-    return `额度或限流窗口尚未恢复，系统不会短周期重试。${causeNotice}${error.userAction}`;
+    const window = resetWaitLabel(decision.delayMs);
+    return `额度或限流窗口尚未恢复${window}，系统不会短周期重试。${causeNotice}${error.userAction}`;
   }
   if (decision.action === 'wait_circuit') {
     const seconds = Math.max(1, Math.ceil((decision.delayMs || 0) / 1000));
@@ -849,6 +937,7 @@ module.exports = {
   decideApiErrorPolicy,
   createApiErrorPolicyRuntime,
   parseRetryAfter,
+  resetAfterFromText,
   retryNotice,
   sanitizeMessage,
   isErrorOnlyText,
