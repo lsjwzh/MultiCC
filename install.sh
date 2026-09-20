@@ -243,7 +243,11 @@ node_too_old() {
 print_node_install_hint() {
   echo ""
   if [ "$IS_MACOS" = true ]; then
-    echo "  Install: brew install node       # Homebrew ships a current (>= 22.16) Node"
+    echo "  Install: brew install node       # Apple Silicon, or Intel on macOS 13+"
+    echo "  Old Intel Mac (macOS 12 or older): Homebrew no longer builds Intel bottles."
+    echo "  Grab the macOS x64 LTS tarball from https://nodejs.org/en/download, unpack it"
+    echo "  and put its bin/ on PATH (no compiler needed) — or use nvm."
+    echo "  Or skip Node entirely: the portable bundle ships its own runtime (docs/portable.md)"
   else
     echo "  Install:"
     echo "    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -   # recommended (>= 22.16)"

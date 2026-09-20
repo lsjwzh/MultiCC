@@ -134,10 +134,16 @@ MultiCC 同时是一个普通的桌面应用——双击图标，后端和界面
 2. 打开应用：先显示启动页，后端在本机回环端口就绪后自动进入主界面。
 3. 数据、配置、日志都在各平台标准的用户数据目录里，更新就是下载新的安装包覆盖。
 
+老 Mac 装不了桌面版时（Electron 要求 macOS 13+，Homebrew 也早已停止给 Intel 供应
+bottle），改用**便携版**：同一个后端与 Web UI，Node 运行时和依赖全在包里，解压即用，
+支持 macOS 11+（含 Intel 的 Mac Pro 2013 等），文件名
+`multicc-portable-<版本>-darwin-x64.tar.gz`。
+
 桌面安装包从这个功能合入后的第一个 tag 发布起出现在 Releases 页；在那之前可以用
 `npm run desktop:dev` 从源码运行。
 
 **→ 安装、首次启动、启动失败处理、数据与日志位置、安全模型、签名状态：[桌面版文档](docs/desktop.md)**
+**→ 老机器 / 没有 Node 的机器：[便携版文档](docs/portable.md)**
 
 </details>
 
@@ -285,6 +291,9 @@ curl -X POST "http://localhost:3000/api/sessions/$SESSION_ID/switch-cli" \
 **有桌面版吗？**
 有。macOS（dmg）、Windows（exe）、Linux（AppImage / deb）安装包都在 Releases 页。双击即用，后端和界面全部在本机自动启动，无需 Node 和终端。详见 **[桌面版文档](docs/desktop.md)**。
 
+**老 Mac（比如 Mac Pro 2013）装不上桌面版，Node 也升不上去怎么办？**
+用**便携版**（`multicc-portable-<版本>-darwin-x64.tar.gz`）：Node 22 运行时、服务端和全部生产依赖都打包在内，解压后双击 `MultiCC.app` 即可，不需要 Node、Homebrew、Xcode，也不需要编译原生模块，支持 macOS 11+ 的 Intel 与 Apple Silicon 机器。详见 **[便携版文档](docs/portable.md)**。
+
 **MultiCC 提供 HTTPS 吗？**
 不提供。局域网直连仍是明文 HTTP；麦克风、PWA 安装这类需要安全上下文的功能，请在本机用 `http://localhost`，或者走一个真正终止 TLS 的隧道。
 
@@ -320,6 +329,7 @@ cd MultiCC && ./multicc update --force
 | **[Multi-CLI switching](docs/cli-switching.md)** | 核心卖点：checkpoint 格式、会话复用语义、API、一键安装 |
 | [Installation](docs/installation.md) | 安装参数、升级、`./multicc` 命令、systemd、App 编译 |
 | [桌面版 Desktop app](docs/desktop.md) | macOS / Windows / Linux 桌面安装包：首启、故障处理、数据与日志位置、安全模型、签名 |
+| [便携版 Portable bundle](docs/portable.md) | 老机器 / 没有 Node 的机器：自包含（内置 Node 22 + 全部依赖）、macOS 11+ 与 Intel 支持、`.app` 双击包装、数据位置与已知限制 |
 | [Configuration](docs/configuration.md) | 全部环境变量、provider、语音、通知 |
 | [Features](docs/features.md) | 完整功能参考 |
 | [Architecture](docs/architecture.md) | 仓库结构、消息流、设计决策 |

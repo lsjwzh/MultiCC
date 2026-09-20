@@ -172,12 +172,18 @@ remember.
 3. Data, settings, and logs live in the standard per-user app folder — nothing in
    a terminal, nothing in the repo. Updates arrive as new installers.
 
+On a Mac that cannot run it (the Electron shell needs macOS 13+, and Homebrew no
+longer builds Intel bottles), grab the **portable bundle** instead — the same
+backend and web UI with the Node runtime inside, installed by unzipping. It
+supports macOS 11+ including Intel Macs: `multicc-portable-<version>-darwin-x64.tar.gz`.
+
 Desktop installers appear on the Releases page from the first tag published after
 this feature landed; until such a release exists, build and run it from source
 with `npm run desktop:dev`.
 
 **→ Install, first launch, startup failures, data/log locations, security model,
-signing status: [Desktop app](docs/desktop.md)**
+signing status: [Desktop app](docs/desktop.md)** — or, for old/Intel Macs and
+machines without Node, the **[portable bundle](docs/portable.md)**.
 
 </details>
 
@@ -306,6 +312,7 @@ Or do it from the browser: click the **version number at the bottom of the Air c
 | **[Multi-CLI switching](docs/cli-switching.md)** | The headline feature: checkpoint format, reuse semantics, API, one-click install |
 | [Installation & service management](docs/installation.md) | Install flags, updating, `./multicc` commands, systemd, Flutter builds |
 | [Desktop app](docs/desktop.md) | macOS / Windows / Linux desktop installers: first launch, failures, data & log locations, security model, signing |
+| [Portable bundle](docs/portable.md) | Self-contained build for machines that cannot install Node or the desktop app (macOS 11+/Intel, no compiler, no Homebrew): layout, `.app` wrapper, data locations, limits |
 | [Configuration](docs/configuration.md) | Every environment variable, providers, voice, notifications |
 | [Features](docs/features.md) | The complete feature reference |
 | [Architecture](docs/architecture.md) | Repository layout, message flows, design decisions |
