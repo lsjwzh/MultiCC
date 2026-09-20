@@ -42,8 +42,13 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     if (sid && !scope.sessionIds.includes(sid)) scope.sessionIds.push(sid);
     for (const source of task.historySessionIds || []) if (!scope.sessionIds.includes(source)) scope.sessionIds.push(source);
     const inherited = (task.forkedFromTaskId || task.separatedFromTaskId) ? (task.snapshotIds || []).flatMap(id => store.get('snapshot', id)?.messages || []).map(m => ({ ...m, inherited: true, content: m.content || m.evidenceExcerpt || '' })) : [];
-    const messages = displayMessages(inherited.concat(shellRecords(scope, getHistory, ports.getLiveState)
-      .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid))), task, {
+    const live = shellRecords(scope, getHistory, ports.getLiveState)
+      .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid));
+    // A separated task's transcript seed keeps the source message id, so the
+    // judged exchange exists both as an inherited snapshot excerpt and as a
+    // live record. The live record wins: it carries the full, current content.
+    const liveIds = new Set(live.map(m => m.sourceMessageId).filter(Boolean));
+    const messages = displayMessages(inherited.filter(m => !m.sourceMessageId || !liveIds.has(m.sourceMessageId)).concat(live), task, {
       getTask: taskId => store.get('task', taskId) || getTask(taskId),
       codeFor: ports.taskShortCode,
     });
@@ -61,6 +66,11 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
   }
   async function bindPlannedTask(id) {
     const existing = store.get('task', id), indexed = findTask(id), lifecycle = getTask(id) || indexed;
+    // An embedded task already has an identity and a board card, but explicitly
+    // shares its source conversation until the user chooses “separate shell”.
+    // Merely opening its Air detail must remain a read, never materialize the
+    // reserved session/worktree behind the user's back.
+    if (existing?.embedded === true && !existing.ready) return taskEntry(id);
     if ((existing?.ready && !existing.bindingPending) || lifecycle.status === 'archived' || lifecycle.deleting) return taskEntry(id);
     // A historical task with an existing execution cannot be rebound by a read.
     if (!existing && indexed.chatSessionId) return taskEntry(id);

@@ -2057,7 +2057,7 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   onAttributionChanged: (id, detail) => chatBroadcast(id, {
     ...(detail && typeof detail === 'object' ? detail : {}), type: 'task_attribution_updated' }),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
-  loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime, appendHistory: (id, m) => chatHistoryRuntime.appendMessage(id, m),
+  loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime, appendHistory: (id, m) => chatHistoryRuntime.appendMessage(id, m), hideHistory: (id, ids) => chatHistoryRuntime.hideMessages(id, ids),
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,

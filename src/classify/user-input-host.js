@@ -253,6 +253,7 @@ function createUserInputSignalHost({
       },
       ...(current.turnId ? { userInputSignalTurnId: current.turnId } : {}),
       userInputSignalVersion: 1,
+      classifyState: 'W',
     });
     return { ok: true, requestId: current.requestId, question: current };
   }

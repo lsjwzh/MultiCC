@@ -360,6 +360,25 @@ function createChatHistoryRuntime(rawDeps) {
     });
   }
 
+  // Bulk display-level removal for moves (e.g. task separation): the canonical
+  // transcript is kept, the messages just stop rendering in the default view —
+  // the same semantics as the single-message DELETE route.
+  function hideMessages(sessionId, ids) {
+    const key = String(sessionId);
+    let hidden = 0;
+    for (const id of Array.isArray(ids) ? ids : []) {
+      if (typeof id !== 'string' || !id) continue;
+      try {
+        if (!visibility.remove(key, id)) continue;
+        hidden += 1;
+        deps.chatBroadcast(key, { type: 'chat_msg_deleted', id, displayOnly: true });
+      } catch (error) {
+        logFailure('chat_history_hide_failed', error, key);
+      }
+    }
+    return hidden;
+  }
+
   function latestAssistantAt(sessionId) {
     return service.latestAssistantAt(sessionId);
   }
@@ -789,6 +808,7 @@ function createChatHistoryRuntime(rawDeps) {
     clearHistory,
     clearIncrementalSave,
     hasIncrementalSave: sessionId => incrementalSaveTimers.has(String(sessionId)),
+    hideMessages,
     lastActivity,
     latestAssistantAt,
     load,

@@ -155,6 +155,7 @@ function createTaskShellHost(deps) {
       // wait_user question moves through the session work host (which owns the
       // source-side settle and the target-side announce).
       appendHistory: (id, message) => deps.appendHistory?.(id, message),
+      hideHistory: (id, ids) => deps.hideHistory?.(id, ids),
       movePendingUserInput: (sourceId, targetId, opts) => deps.getWorkHost?.()?.moveInput?.(sourceId, targetId, opts),
       createExecution: async (task, source) => {
         const dir = deps.directories.get(task.dirId);
@@ -366,7 +367,7 @@ function createTaskShellHost(deps) {
   // by a retention window instead of being deleted with the turn. That window is
   // only real if something enforces it: this is the only caller of
   // `expireOlderThan`, and it runs once at mount and then daily.
-  let sweepTimer = null;
+  let sweepTimer = null, separationHealTimer = null;
   function sweepAttributionLog() {
     const sweep = () => {
       try { taskOperations().expireOlderThan(); }
@@ -395,6 +396,14 @@ function createTaskShellHost(deps) {
       attributionSettings.mount(app);
       // 独立继续的等待队列由服务端推进：重启后恢复，不依赖页面开着。
       getRuntime().independent.start();
+      // 存量分离的可见交接修复：旧版本分离时不播种历史、不迁移待答问题、
+      // 源视图也不隐藏。启动后幂等补齐（已完成的步骤自动跳过）。
+      separationHealTimer = setTimeout(() => {
+        separationHealTimer = null;
+        Promise.resolve(getRuntime().separation.heal())
+          .catch(error => console.warn('[task-separation] heal failed', error.message));
+      }, 1000);
+      if (typeof separationHealTimer.unref === 'function') separationHealTimer.unref();
       // 被「本轮还在跑」挡下的归属建议同样由服务端推进：用户接受后页面就可以
       // 关掉，轮次一结束再重新校验并应用（或按 CAS 失败并留下原因）。
       attributionDecisions().start(deps.attributionQueueIntervalMs);
@@ -471,6 +480,7 @@ function createTaskShellHost(deps) {
     contextComplete: (...args) => getRuntime().contextComplete(...args),
     close: () => {
       try { runtime?.independent?.stop(); } catch (_) {}
+      if (separationHealTimer) { clearTimeout(separationHealTimer); separationHealTimer = null; }
       if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
       store?.close();
     },

@@ -38,7 +38,7 @@ function fixture({
   const observed = {
     enqueued: 0, enqueuedTasks: [], transitions: 0,
     transitionResults: [], transitionOptions: [], broadcasts: [], summaries: [],
-    boardReassignments: [], boardGroupLinks: [], shellSettlements: [], separations: [],
+    boardReassignments: [], boardGroupLinks: [], shellSettlements: [], separations: [], annotations: [],
   };
   const auxQueue = {
     queue: [],
@@ -117,6 +117,7 @@ function fixture({
       id: 'msg-scan-1', role: 'assistant', content: 'x'.repeat(40), taskId: 'task-1',
     }],
     appendChatMessage() {},
+    annotateChatTurn: (...args) => { observed.annotations.push(args); return []; },
   });
   return { machine, record, chatState, chatSessions, observed };
 }
@@ -429,13 +430,14 @@ test('delayed attribution with a superseded anchor cannot overwrite the newer ta
   assert.equal(h.chatState.currentTask.goal, '更新后的任务');
 });
 
-test('low relevance in a locked shell raises confirmation without changing name, task or run state', async () => {
+test('low relevance in a locked shell allocates the related task identity without changing rule state', async () => {
   const history = [
     { id: 'u0', role: 'user', content: 'Original', taskId: 'task-1' },
     { id: 'u1', role: 'user', content: 'Unrelated work', taskId: 'task-1', turnId: 'turn-low' },
     { id: 'a1', role: 'assistant', content: 'Finished', taskId: 'task-1', turnId: 'turn-low' },
   ];
-  const h = fixture({ taskShell: true, isStreaming: false, history, separationResult: { id: 'sep-1', state: 'pending' },
+  const h = fixture({ taskShell: true, isStreaming: false, history,
+    separationResult: { id: 'sep-1', state: 'pending', taskId: 'task-split', title: 'Unrelated work' },
     auxText: JSON.stringify({ relation: 'new', taskName: 'Wrong rename', contextRelevance: 'low', splitTaskName: 'Unrelated work' }) });
   h.record.taskState.taskId = 'task-1'; h.record.taskState.classifyState = 'D';
   h.chatState.currentUserText = 'Unrelated work';
@@ -446,6 +448,7 @@ test('low relevance in a locked shell raises confirmation without changing name,
   assert.equal(h.record.taskState.taskId, 'task-1');
   assert.equal(h.record.taskState.goal, '已识别任务');
   assert.equal(h.record.taskState.classifyState, 'D');
+  assert.equal(h.observed.annotations.at(-1)[2].taskId, 'task-split');
   assert.equal(h.observed.shellSettlements.length, 0);
   assert.equal(h.observed.boardReassignments.length, 0);
 });
@@ -459,7 +462,8 @@ test('relation=new with high relevance still raises the separation confirmation'
     { id: 'u1', role: 'user', content: 'Different feature', taskId: 'task-1', turnId: 'turn-new' },
     { id: 'a1', role: 'assistant', content: 'Done', taskId: 'task-1', turnId: 'turn-new' },
   ];
-  const h = fixture({ taskShell: true, isStreaming: false, history, separationResult: { id: 'sep-2', state: 'pending' },
+  const h = fixture({ taskShell: true, isStreaming: false, history,
+    separationResult: { id: 'sep-2', state: 'pending', taskId: 'task-split', title: '修复 limit bar 不更新' },
     auxText: JSON.stringify({ relation: 'new', taskName: '修复 limit bar 不更新', contextRelevance: 'high', splitTaskName: null }) });
   h.record.taskState.taskId = 'task-1'; h.record.taskState.classifyState = 'D';
   h.chatState.currentUserText = 'Different feature';
@@ -467,7 +471,8 @@ test('relation=new with high relevance still raises the separation confirmation'
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.observed.separations.length, 1);
   assert.equal(h.observed.separations[0][2].separation.title, '修复 limit bar 不更新');
-  assert.equal(h.record.taskState.taskId, 'task-1', '用户确认前任务身份不变');
+  assert.equal(h.record.taskState.taskId, 'task-1', '规则状态仍属于原执行会话');
+  assert.equal(h.observed.annotations.at(-1)[2].taskId, 'task-split', '显示归属在弹框时已经拆分');
   assert.equal(h.observed.shellSettlements.length, 0);
   assert.equal(h.observed.boardReassignments.length, 0);
 });
@@ -490,15 +495,16 @@ test('relation=new falls back to attribution handling when no separation can be 
   assert.equal(h.observed.shellSettlements.length, 1, 'propose 无果后回归归属结算路径');
 });
 
-// 用户已经对这个标题点过「保留在当前任务」：propose 返回 kept 占位,不能因此
-// 又跑去建归属候选折腾同一个任务。
-test('a previously kept split title settles quietly without attribution churn', async () => {
+// 用户已经对这个标题点过「留在当前会话」：propose 返回同一个 kept 任务，后续轮
+// 继续归到它名下，但不能再建归属候选或弹出新的任务。
+test('a previously kept split title reuses its task identity without attribution churn', async () => {
   const history = [
     { id: 'u0', role: 'user', content: 'Original feature', taskId: 'task-1' },
     { id: 'u1', role: 'user', content: 'Different feature', taskId: 'task-1', turnId: 'turn-new' },
     { id: 'a1', role: 'assistant', content: 'Done', taskId: 'task-1', turnId: 'turn-new' },
   ];
-  const h = fixture({ taskShell: true, isStreaming: false, history, separationResult: { id: 'sep-3', state: 'kept' },
+  const h = fixture({ taskShell: true, isStreaming: false, history,
+    separationResult: { id: 'sep-3', state: 'kept', taskId: 'task-split', title: '修复 limit bar 不更新' },
     auxText: JSON.stringify({ relation: 'new', taskName: '修复 limit bar 不更新', contextRelevance: 'high', splitTaskName: null }) });
   h.record.taskState.taskId = 'task-1'; h.record.taskState.classifyState = 'D';
   h.chatState.currentUserText = 'Different feature';
@@ -506,6 +512,7 @@ test('a previously kept split title settles quietly without attribution churn', 
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.observed.separations.length, 1);
   assert.equal(h.record.taskState.taskId, 'task-1');
+  assert.equal(h.observed.annotations.at(-1)[2].taskId, 'task-split');
   assert.equal(h.observed.shellSettlements.length, 0);
   assert.equal(h.observed.boardReassignments.length, 0);
 });
