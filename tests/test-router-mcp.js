@@ -21,16 +21,20 @@ async function close(server) {
 }
 
 function clientFor(port, originDispatchId = '', imageBridge = false) {
+  const env = {
+    ...process.env,
+    MULTICC_BASE_URL: `http://127.0.0.1:${port}`,
+    MULTICC_ROUTER_CAPABILITY: 'cap-test',
+    MULTICC_ORIGIN_DISPATCH_ID: originDispatchId,
+  };
+  // The host may mark this very process image-bridge-eligible; keep the child
+  // hermetic so non-eligible cases never inherit MULTICC_IMAGE_BRIDGE.
+  if (imageBridge) env.MULTICC_IMAGE_BRIDGE = '1';
+  else delete env.MULTICC_IMAGE_BRIDGE;
   const child = spawn(process.execPath, [
     path.join(__dirname, '..', 'scripts', 'multicc-router-mcp.js'),
   ], {
-    env: {
-      ...process.env,
-      MULTICC_BASE_URL: `http://127.0.0.1:${port}`,
-      MULTICC_ROUTER_CAPABILITY: 'cap-test',
-      MULTICC_ORIGIN_DISPATCH_ID: originDispatchId,
-      ...(imageBridge ? { MULTICC_IMAGE_BRIDGE: '1' } : {}),
-    },
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const pending = new Map();
