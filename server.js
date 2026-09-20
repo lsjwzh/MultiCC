@@ -2863,9 +2863,8 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
   .then(() => recoverTmuxSessions())
   .catch(error => console.error('[multicc] async tmux recovery failed:', error.message));
 
-// Scheduled tasks (定时任务): every rule owns one fixed Air task and enters it
-// through the task-shell receipt protocol. This complements the lower-level
-// per-session triggers without bringing legacy role/chat shells back.
+// Scheduled tasks (定时任务): every rule owns one fixed Air task and enters it through the
+// task-shell receipt protocol, complementing the lower-level per-session triggers.
 cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id) }); secretsVault.mount(app); // docs-registry/secrets-vault = /manage 管理表与敏感信息保险箱（同行以守 3000 行预算）
 cronTasks.init({
   directories,
@@ -2876,6 +2875,7 @@ cronTasks.init({
   sendTaskMessage: (id, text, options) => taskShellHost.sendTaskMessage(id, text, options),
   resolveTaskId: sessionId => taskShellHost.artifactTaskId(sessionId),
   taskSummary: id => taskShellHost.taskSummary(id),
+  notifyBroken: info => pushRuntime.notify(info?.sessionId || info?.taskId || 'cron', 'error', info?.message),
 });
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();
