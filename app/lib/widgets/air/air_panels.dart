@@ -399,11 +399,7 @@ class AirTaskTile extends StatelessWidget {
               const SizedBox(height: 5),
               Row(
                 children: [
-                  StatusBadge(
-                    domain: StatusDomain.task,
-                    status: airTaskStatus(task),
-                    fontSize: 10.5,
-                  ),
+                  AirTaskStatusBadge(task: task, fontSize: 10.5),
                   // 副行自己吃掉剩下的宽度（空着也占着），时间才总在行尾。
                   const SizedBox(width: 8),
                   Expanded(

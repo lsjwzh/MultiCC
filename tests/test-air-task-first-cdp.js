@@ -327,7 +327,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(skin.chat.cls.trim(), 'mc-composer__pill mc-composer__pill--ai', JSON.stringify(skin.chat));
     assert.equal(skin.chatRole.cls.trim(), 'mc-composer__pill mc-composer__pill--role', JSON.stringify(skin.chatRole));
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').closest('#task-details')!==null && document.getElementById('delivery-card').offsetHeight===0`), true, 'delivery details take no space above chat');
-    assert.equal(await page.evaluate(`document.getElementById('conversation').getBoundingClientRect().top===document.getElementById('task-header').getBoundingClientRect().bottom`), true, 'two adjacent bands, no intervening delivery card');
+    // 对话是浮在目录详情之上的一层（`#chat-layer`），层里第一条是它自己的控制条
+    //（手机上就是那条拖柄），下面才是对话帧。所以「贴着页头的两条」量的是层：
+    // 层顶上仍然不许夹着东西（收起的 delivery-card 已经塌成 0 高）。量帧本身
+    // 会把控制条那 32px 读成「中间夹了一层」。
+    assert.equal(await page.evaluate(`document.getElementById('chat-layer').getBoundingClientRect().top===document.getElementById('task-header').getBoundingClientRect().bottom`), true, 'two adjacent bands, no intervening delivery card');
+    assert.equal(await page.evaluate(`document.getElementById('conversation').getBoundingClientRect().top===document.getElementById('chat-bar').getBoundingClientRect().bottom`), true, '层里控制条下面紧跟着对话帧');
     await page.evaluate(`document.getElementById('task-state').click()`);
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').offsetHeight>0 && document.getElementById('task-state').getAttribute('aria-expanded')==='true'`), true);
     await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -854,6 +859,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.navigate('/air?task=tsk_a&dir=d1');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='完善任务协作体验'`));
     assert.ok(await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`));
+    // 对话浮层是从下面滑上来的（transform 260ms）：量几何之前先等它到位，否则量到
+    // 的是动画中间那一帧（236 这种带小数点的数就是它）。滑到位时 transform 归 none。
+    assert.ok(await page.waitFor(`getComputedStyle(document.getElementById('chat-layer')).transform==='none'`), '对话浮层滑到位才量几何');
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       assert.equal(await page.evaluate(`innerWidth`), width);
@@ -861,7 +869,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       // 手机上页头是「标题区」不是导航：面包屑、标题、状态、按钮原来叠四行占 142px。
       // 面包屑（在哪个目录）收进侧栏抽屉；状态跟标题同一行读，放不下才落回第二行；
       // 工具（含 ↻）收进「⋯」打开的一层浮层，页头就只剩那一行 —— 浮层不占位。
-      const mobileHeader = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const t=g('task-title'),s=g('task-state'),h=g('task-header');const tr=t.getBoundingClientRect(),sr=s.getBoundingClientRect();return {h:h.getBoundingClientRect().height,crumb:getComputedStyle(g('task-breadcrumb')).display,conv:g('conversation').getBoundingClientRect().top,sameLine:Math.abs(tr.top-sr.top)<12,titleClipped:t.scrollWidth>t.clientWidth+1,full:s.textContent,joined:[...s.children].map(c=>c.textContent).join(''),run:[...s.querySelectorAll('.ts-run')].map(e=>getComputedStyle(e).display),life:[...s.querySelectorAll('.ts-life')].map(e=>getComputedStyle(e).display),detail:getComputedStyle(g('details-toggle')).display,refreshParent:g('refresh').parentElement.className,options:getComputedStyle(g('task-options')).display,tools:getComputedStyle(g('task-tools')).display}})()`);
+      const mobileHeader = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const t=g('task-title'),s=g('task-state'),h=g('task-header');const tr=t.getBoundingClientRect(),sr=s.getBoundingClientRect();return {h:h.getBoundingClientRect().height,crumb:getComputedStyle(g('task-breadcrumb')).display,chatTop:g('chat-layer').getBoundingClientRect().top,sameLine:Math.abs(tr.top-sr.top)<12,titleClipped:t.scrollWidth>t.clientWidth+1,full:s.textContent,joined:[...s.children].map(c=>c.textContent).join(''),run:[...s.querySelectorAll('.ts-run')].map(e=>getComputedStyle(e).display),life:[...s.querySelectorAll('.ts-life')].map(e=>getComputedStyle(e).display),detail:getComputedStyle(g('details-toggle')).display,refreshParent:g('refresh').parentElement.className,options:getComputedStyle(g('task-options')).display,tools:getComputedStyle(g('task-tools')).display}})()`);
       // 390 上一行就够（45px）；320 上「⋯」拿走的那 34px 让状态回到第二行 —— 宁可
       // 多这一行，也不把状态压成省略号，那正是 titleClipped 这条断言在守的事。
       // 两个宽度都比收起来之前的 85 / 93px 矮，工具一件也没少。
@@ -869,7 +877,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(mobileHeader.options, 'block', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.tools, 'none', '工具不能自己占一行：收在浮层里', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.crumb, 'none', JSON.stringify(mobileHeader));
-      assert.equal(mobileHeader.conv, mobileHeader.h, JSON.stringify(mobileHeader));
+      // 贴着页头的那一条是对话浮层（`#chat-layer`）：层里第一条才是控制条（手机上
+      // 是那条拖柄），对话帧在它下面。量层，才是量「页头下面紧跟着对话这一条」。
+      assert.equal(mobileHeader.chatTop, mobileHeader.h, JSON.stringify(mobileHeader));
       // 320 上「⋯」拿走的 34px 在 macOS 字体度量下会把状态挤回第二行，但
       // docker 的 noto-cjk 更窄，一行可能仍然放得下 —— 那是更好的渲染，不是
       // 回归。这条守的真正不变量是「放不下时宁可换行也不裁标题」，标题不裁

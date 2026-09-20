@@ -628,6 +628,9 @@ class _TaskRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 这一行的状态只能有一个来源：`AirTaskStatusBadge`（= 生命周期 + 这一轮的
+    // runState），跟目录首页的任务卡、Web 侧栏的 `statusBadge(task)` 同一个判定。
+    final detail = airTaskDetail(task);
     return InkWell(
       key: ValueKey('air-side-task-${task.id}'),
       onTap: onTap,
@@ -636,15 +639,6 @@ class _TaskRow extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
         child: Row(
           children: [
-            Container(
-              width: 6,
-              height: 6,
-              decoration: BoxDecoration(
-                color: task.closed ? AppColors.faint : AppColors.accent,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -653,6 +647,7 @@ class _TaskRow extends StatelessWidget {
                   // 两行：抽屉宽 268px，一行 13px 只装得下十几个字，而 Web 侧栏
                   // 同一行（`#tasks strong`）是自由换行的。折两行是对齐，也是这条
                   // 带子上唯一必须读全的字段；上限两行是别让一条长标题吃掉整条带子。
+                  // 标题占满整行宽度 —— 徽标移到下面那一行去（同 Web 的 `.task-meta`）。
                   Text(
                     task.title,
                     maxLines: 2,
@@ -662,14 +657,29 @@ class _TaskRow extends StatelessWidget {
                       fontSize: 13,
                     ),
                   ),
-                  Text(
-                    airLabel(task.workflowStage ?? task.status),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.faint,
-                      fontSize: 10.5,
-                    ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      AirTaskStatusBadge(task: task, fontSize: 10, dense: true),
+                      // 阶段/资源去向跟在徽标后面（Web 侧栏那行 `.task-note`）。
+                      // 原来这里写的是 `airLabel(task.workflowStage ?? task.status)`：
+                      // 观察型记录没有阶段、`status` 只有 active/done/archived，于是
+                      // 满屏「进行中」—— 而徽标说的才是真状态。
+                      if (detail.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            detail,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.faint,
+                              fontSize: 10.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
