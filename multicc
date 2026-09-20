@@ -540,6 +540,14 @@ do_update() {
     return 1
   fi
 
+  # Record the version this update is coming *from*. The new process reads it on
+  # boot to decide whether it must run one-time data migrations (today: the cron
+  # fan-out cleanup for installs <= 2.0.2). A stale file from an earlier update is
+  # harmless: the migration is idempotent and keeps its own applied marker.
+  echo "$local_version" > "$SCRIPT_DIR/.multicc_upgrade"
+  # Drop any report a previous boot left behind: only this update's counts count.
+  rm -f "$LOG_DIR/cron-fanout-cleanup.log"
+
   echo "Restarting to apply update..."
   if [ -f "$PLIST" ]; then
     # Installed as a launchd service — reload so the new server.js is picked up
@@ -552,6 +560,19 @@ do_update() {
   if ! wait_for_ready; then
     echo "Update code was applied, but startup migration/readiness needs operator attention."
     return 1
+  fi
+  # One-time data migrations run right after readiness. Only installs that may
+  # carry the residue wait for the report, so unaffected updates pay nothing.
+  if [ "$local_version" != "0.0.0" ] && ! compare_versions "2.0.2" "$local_version"; then
+    local _report_wait=0
+    while [ "$_report_wait" -lt 24 ] && [ ! -f "$LOG_DIR/cron-fanout-cleanup.log" ]; do
+      sleep 0.5
+      _report_wait=$((_report_wait + 1))
+    done
+    if [ -f "$LOG_DIR/cron-fanout-cleanup.log" ]; then
+      cat "$LOG_DIR/cron-fanout-cleanup.log"
+      rm -f "$LOG_DIR/cron-fanout-cleanup.log"
+    fi
   fi
   echo "Update complete (${before:0:7} → ${after:0:7})."
 }

@@ -113,6 +113,9 @@ function createPaths({ dataDir } = {}) {
     providerLimitCacheFile: path.join(root, 'provider-limit-cache.json'),
     quotaBarCacheFile: path.join(root, 'quota-bar-cache.json'),
     scheduledTasksFile: path.join(root, 'scheduled_tasks.json'),
+    // Applied-marker for the one-time cron fan-out cleanup that archives the
+    // per-firing task copies written by releases <= 2.0.2 (plugins/cron/fanout-migration.js).
+    cronFanoutMigrationFile: path.join(root, 'cron_fanout_migration.json'),
     // Published docs & web services management table (src/docs-registry.js):
     // every agent-generated document/page/file and every reachable local web
     // service registers here so the /manage panel can list, open and prune them.
