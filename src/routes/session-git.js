@@ -296,7 +296,8 @@ function createSessionGitRuntime(rawDeps) {
     const out = [];
     for (const session of deps.records.values()) {
       if (session.id === exceptId || session.dirId !== dir.id
-          || session.workspaceOwnerSessionId || !session.worktreePath || !session.branch) continue;
+          || session.workspaceOwnerSessionId || !session.worktreePath || !session.branch
+          || !deps.existsSync(session.worktreePath)) continue;
       try {
         if (isWorktreeActive(session.id)) {
           out.push({ id: session.id, skipped: true, reason: 'active' });

@@ -200,6 +200,60 @@ class WorktreeBehindBanner extends StatelessWidget {
   }
 }
 
+/// 工作区已回收提示条，对齐 Web `chat-worktree-status.js` 里 `worktreeMissing`
+/// 那一支：休眠（或手工清理）后记录仍留着 branch + worktreePath，但本地没有
+/// checkout —— 既没有可同步的 worktree，也没有可比的落后量。所以这里不给
+/// 「同步」（点了只会拿到 409），只留「强制同步」：它把指令交给会话，投递时会
+/// 先把工作区恢复出来。恢复后这条由 merge-status 自己撤掉。
+class WorktreeReclaimedBanner extends StatelessWidget {
+  final String? branch;
+  final VoidCallback onForceSync;
+  final bool forceSyncing;
+  const WorktreeReclaimedBanner({
+    super.key,
+    this.branch,
+    required this.onForceSync,
+    this.forceSyncing = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('worktree-reclaimed-bar'),
+      margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFf2f4f7),
+        border: Border.all(color: const Color(0xFF5b6472)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.bedtime_outlined, size: 16, color: Color(0xFF5b6472)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Tooltip(
+              message: branch == null
+                  ? t('worktreeReclaimed')
+                  : '${t('worktreeReclaimed')}（$branch）',
+              child: Text(
+                t('worktreeReclaimed'),
+                style: const TextStyle(color: Color(0xFF5b6472), fontSize: 12),
+              ),
+            ),
+          ),
+          WorktreeForceSyncButton(
+            busy: forceSyncing,
+            onPressed: onForceSync,
+            color: const Color(0xFF5b6472),
+            buttonKey: const Key('worktree-reclaimed-force-sync-btn'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 「强制同步」按钮。两个容器（落后提示条 / 冲突横幅）里长得一样、共用一个
 /// 在途状态 —— Web 也是把同一个 affordance 渲染进两处。
 class WorktreeForceSyncButton extends StatelessWidget {
