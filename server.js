@@ -2057,7 +2057,7 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   onAttributionChanged: (id, detail) => chatBroadcast(id, {
     ...(detail && typeof detail === 'object' ? detail : {}), type: 'task_attribution_updated' }),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
-  loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime,
+  loadHistory: id => viewChatHistory(id), getTaskBoard: () => taskBoardRuntime, appendHistory: (id, m) => chatHistoryRuntime.appendMessage(id, m),
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
@@ -2439,7 +2439,7 @@ sessionWorkHost = createSessionWorkHost({
   pendingUserInput: id => userInputSignalHost.pending(id),
   getTurnLiveness: id => livenessRuntime.ownership(id),
   recordUserInput: signal => userInputSignalHost.record(signal),
-  resolveUserInput: (id, requestId, options) => userInputSignalHost.resolve(id, requestId, options),
+  resolveUserInput: (id, requestId, options) => userInputSignalHost.resolve(id, requestId, options), moveUserInput: (s, t, o) => userInputSignalHost.move(s, t, o),
   broadcast: chatBroadcast,
   setTaskState,
   onTaskBoardQueueEvent: event => taskBoardRuntime.onQueueEvent(event),

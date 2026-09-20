@@ -179,7 +179,49 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
         sourceSessionId: sessionId, sourceTaskId: source.id, targetTaskId: task.id,
         targetSessionId: task.sessionId, targetShellId: task.ownerShellId,
         turnId: suggestion.turnId, barrierId: suggestion.barrierId });
+      // Visible handoff. The durable snapshot is an excerpt meant for agent
+      // context, so the new task's chat opened to a blank transcript and an
+      // open question asked by the judged turn stayed behind in the source.
+      // Seed the new session's transcript with the full judged turn (source
+      // history is canonical and stays untouched) and move that turn's pending
+      // wait_user question over, so the user answers where the turn now lives.
+      // Both are best-effort and idempotent: the separation itself is already
+      // durable, and a retried decide skips what an earlier attempt completed.
+      let seededMessages = 0;
+      try {
+        if (typeof ports.appendHistory === 'function') {
+          const targetHistory = getHistory(task.sessionId);
+          const alreadySeeded = targetHistory.some(m => m.importedBy === suggestion.id
+            || (m.sourceSessionId === sessionId && m.sourceMessageId === suggestion.anchorMessageId));
+          if (!alreadySeeded) {
+            const history = getHistory(sessionId);
+            const end = history.findIndex(m => m.id === suggestion.anchorMessageId);
+            const candidates = end >= 0 ? history.slice(0, end + 1) : history;
+            let selected = candidates.filter(m => suggestion.turnId
+              ? m.turnId === suggestion.turnId : m.clientMsgId === receipt.id);
+            if (!selected.length && end >= 0 && !history[end].turnId) {
+              const start = candidates.findLastIndex(m => m.role === 'user');
+              selected = candidates.slice(Math.max(0, start));
+            }
+            for (const m of selected) {
+              if (!['user', 'assistant'].includes(m.role) || !m.content || m.displayOnly) continue;
+              if (ports.appendHistory(task.sessionId, { ...m, taskId: task.id,
+                sourceSessionId: sessionId, sourceMessageId: m.id,
+                contextMessageId: m.contextMessageId || `${sessionId}:${m.id}`,
+                importedBy: suggestion.id, importedAt: Date.now() }) !== false) seededMessages += 1;
+            }
+          }
+        }
+      } catch (error) { console.warn('[task-separation] transcript seed failed', error.message); }
+      let movedUserInput = null;
+      try {
+        const moved = typeof ports.movePendingUserInput === 'function'
+          ? await ports.movePendingUserInput(sessionId, task.sessionId, { turnId: suggestion.turnId, taskId: task.id })
+          : null;
+        if (moved?.ok) movedUserInput = moved.requestId || true;
+      } catch (error) { console.warn('[task-separation] pending input move failed', error.message); }
       const result = { ok: true, decision, taskId: task.id, sessionId: task.sessionId,
+        seededMessages, movedUserInput,
         url: `/air?dir=${encodeURIComponent(task.dirId)}&task=${encodeURIComponent(task.id)}` };
       store.set('task-separation', id, { ...suggestion, state: 'separated', phase: 'applied',
         applicationId: application.id, resolvedAt: Date.now(), lastError: null, result });
