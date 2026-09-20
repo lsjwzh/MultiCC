@@ -1,12 +1,23 @@
 :root {
   color-scheme: light;
-  --bg: #f4f8fd;
+  /* 画布底色：v2 皮肤把它抬亮一档（旧值 #f4f8fd），配合 body 上那层很淡的
+     径向光 —— 白卡片要浮在「有一点颜色」的底上才分得开。 */
+  --bg: #f6f9fd;
   --panel: #ffffff;
   --panel-soft: #f8fbff;
   --text: #233249;
   --muted: #6f8096;
   --line: #dce6f1;
   --line-strong: #ccdbea;
+  /* 发丝线与三层阴影（v2 皮肤）。它们和 --line 不是同一件东西，所以不合并：
+     --line 是结构线，画在表格、分隔、控件边框上，颜色要读得出来；--hairline 只画
+     在白卡片之间，比 --line 浅一档，分层靠阴影而不是靠线。用法集中在文件末尾
+     「新版视觉 v2」那一段。 */
+  --hairline: #e7eef7;
+  --hairline-strong: #dbe6f2;
+  --shadow-1: 0 1px 2px rgba(30, 54, 86, .045), 0 10px 28px rgba(30, 54, 86, .055);
+  --shadow-2: 0 1px 2px rgba(30, 54, 86, .05), 0 18px 44px rgba(30, 54, 86, .10);
+  --shadow-3: 0 2px 4px rgba(30, 54, 86, .06), 0 32px 72px rgba(30, 54, 86, .16);
   --accent: #1678e8;
   --accent-strong: #0965cf;
   --blue-soft: #eaf4ff;
@@ -124,8 +135,10 @@ small, .caption { color: var(--muted); font-size: 11px; }
 
 #sidebar {
   z-index: 30;
-  width: 268px;
-  flex: 0 0 268px;
+  /* 276px 不是随手写的：对话浮层的展开态（#chat-layer.is-expanded）和 1040px
+     断点各把侧栏宽度抄了一遍，改这里就要一起改那两处。 */
+  width: 276px;
+  flex: 0 0 276px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -613,7 +626,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* 桌面展开只覆盖主界面：这层仍住在 main 里，`inset:0` 会盖掉主区页头和内容，
    但不会越过作为 main 兄弟的侧栏。控制台（41）与 ⌘K（50）仍在它上面。 */
 #chat-layer.is-expanded {
-  position: fixed; z-index: 33; inset: 0 0 0 268px;
+  position: fixed; z-index: 33; inset: 0 0 0 276px;
   border: 0; border-radius: 0; box-shadow: none;
 }
 @media (max-width: 1040px) and (min-width: 761px) {
@@ -1208,6 +1221,141 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 #palette-note { margin-left: auto; }
 #palette-results .empty-list { padding: 26px; color: var(--muted); text-align: center; font-size: 12px; }
 
+/* ── 新版视觉 v2：留白 + 发丝线 + 柔和阴影 ─────────────────────────────────
+   这一段是整页的皮肤：只改视觉，不碰结构、文案、显隐和交互。它【必须】待在下面
+   这些 @media 断点之前 —— 窄屏该让步的是这里这套宽松值，而不是各断点里专门为
+   小屏量过的紧凑值，而 CSS 里后来者赢。
+
+   三条约束来自「画面预算」（见上方那段与 tests/test-air-paint-budget.js）：
+     · 没有毛玻璃。分层靠 1px 发丝边 + 两层柔和阴影，不靠 backdrop-filter；
+     · 没有常驻动画。运行中仍然是静态加粗描边 + 状态胶囊；
+     · 圆角是连续的：卡片 22px（手机 18–20px）、控件 12px、胶囊 15px。
+   为什么整段写在一起：这次视觉变更的全部差异要能一眼看全。散回上面各条规则里，
+   它会和那些讨论「为什么钉在底部」「为什么是这一档 z-index」的结构注释缠在一起 ——
+   那些注释比这里任何一条值都重要，不该被视觉值淹掉。
+
+   一处需要知道的耦合：侧栏宽度 276px 仍然写在上面 #sidebar 那条规则里，不在
+   这里 —— #chat-layer.is-expanded 的 inset 和 1040px 断点各抄过一遍这个数字，
+   散成两处就等着对不齐。 */
+body {
+  background:
+    radial-gradient(1180px 420px at 14% -14%, #edf5ff 0%, rgba(237, 245, 255, 0) 62%),
+    radial-gradient(900px 400px at 102% -6%, #f1f7ff 0%, rgba(241, 247, 255, 0) 58%),
+    var(--bg);
+}
+/* 底页不再自己铺一层白：卡片自己是白的，中间的底色留给 body 那层很淡的光。 */
+main { background: transparent; }
+
+/* ── 侧栏 ────────────────────────────────────────────────────────────── */
+#sidebar { gap: 10px; padding: 26px 18px 20px; border-right: 1px solid var(--hairline); background: #fff; box-shadow: none; }
+.brand { margin: 0 4px 18px; font-size: 18.5px; letter-spacing: -.4px; }
+.brand-mark { width: 30px; height: 30px; border-radius: 11px; box-shadow: 0 8px 20px rgba(20, 110, 220, .22); }
+.space-card { border: 1px solid var(--hairline); border-radius: 18px; background: #fff; box-shadow: var(--shadow-1); }
+.space-main { padding: 14px 13px 10px; }
+.space-copy strong { font-size: 13.5px; }
+.space-shortcuts { min-height: 36px; padding: 0 10px 8px; }
+.nav-row { min-height: 42px; padding: 0 12px; border-radius: 14px; font-size: 13.5px; }
+.nav-row.active { border-color: #d9e8f8; background: #f4f9ff; }
+#task-sidebar { margin-top: 6px; }
+.task-heading { margin: 0 6px 10px; }
+.sidebar-create { min-height: 38px; border-radius: 13px; }
+#tasks button { padding: 12px; border-radius: 16px; }
+#tasks button.selected { border-color: #dbe9f9; background: #f7fbff; box-shadow: var(--shadow-1); }
+#tasks strong { font-size: 12.5px; }
+.task-note { font-size: 10.5px; }
+.side-group { padding: 6px; border-color: var(--hairline); background: #fff; }
+.sidebar-setting-row { min-height: 30px; border-radius: 10px; }
+.global-links button, .ops-actions button, .ops-actions a { min-height: 32px; border-radius: 10px; }
+
+/* ── 页头 ────────────────────────────────────────────────────────────── */
+#task-header { min-height: 94px; gap: 14px; padding: 18px 34px; border-bottom: 1px solid var(--hairline); background: rgba(255, 255, 255, .88); }
+#task-title { font-size: 25px; letter-spacing: -.6px; }
+.breadcrumb .caption { margin-bottom: 6px; }
+.eyebrow { color: #7d93ad; font-size: 9.5px; letter-spacing: 1.6px; }
+#task-state { font-size: 12px; }
+.task-tools { gap: 6px; }
+.task-tools button { min-height: 34px; border-radius: 12px; }
+.pin-tab { border-radius: 15px; background: #fff; box-shadow: var(--shadow-1); }
+
+/* ── 目录首页 ────────────────────────────────────────────────────────── */
+#empty { padding: 30px 34px 38px; }
+#directory-stats { gap: 14px; margin-bottom: 18px; }
+.directory-stat { padding: 17px 19px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1); }
+.directory-stat span { font-size: 12px; }
+.directory-stat strong { font-size: 27px; }
+.directory-stat small { font-size: 11px; }
+/* 首页上每一块内容都是一张同族的白卡：同一个圆角、同一条发丝边、同一层阴影。
+   它们之间不再用分隔线互相切割，靠留白分开 —— 所以这里列的选择器是「卡片集合」，
+   加新卡片时应该跟着一起进来。 */
+.directory-task-panel, .directory-git-panel, .admin-panel, .air-docs, .air-provider-card,
+.schedule-card, .air-config-section, .detail-group, .air-legacy-frame {
+  border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1);
+}
+.directory-task-panel .section-heading { padding: 16px 20px 12px; border-bottom: 1px solid var(--hairline); }
+.directory-task-panel .section-heading strong { font-size: 15px; }
+.directory-task-row { border-right-color: var(--hairline); border-bottom-color: var(--hairline); }
+.directory-task-row .task-row-open { padding: 15px 10px 15px 18px; gap: 12px; }
+.directory-task-row strong { font-size: 12.5px; color: #2f4d68; }
+.directory-task-row time { font-size: 9.5px; }
+.directory-git-panel .section-heading { padding: 16px 20px 12px; }
+.directory-git-chip { padding: 5px 10px; border-radius: 11px; }
+#directory-task-more { padding: 14px; font-size: 12px; }
+
+/* ── 统一输入框（composer 面板位）─────────────────────────────────────── */
+#quick-task-form { margin-top: 22px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-2); }
+.mc-composer__aux { padding: 14px 14px 0; }
+#quick-task-expand { padding: 15px 16px; }
+
+/* ── 对话浮层 / 任务详情 ──────────────────────────────────────────────── */
+#chat-layer { inset: 16px 18px 18px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-3); }
+#task-header.is-chat-header { padding: 30px 92px 9px 16px; border-bottom: 1px solid var(--hairline); background: #fff; }
+#task-details { padding: 26px; border-left: 1px solid var(--hairline); background: #fff; box-shadow: -16px 0 56px rgba(43, 76, 109, .08); }
+.detail-group { padding: 17px; }
+#delivery-card { padding: 18px; border: 1px solid #dfeaf7; border-radius: 18px; background: #f7fbff; }
+/* #chat-bar button 这里【故意不写】：皮肤草稿把它抬到 min-height 32px，而那颗按钮
+   住在 30px 高的胶囊里、自己是 26×26 —— 抬了就会溢出容器 2px。那两个浮层按钮保持
+   原尺寸，圆角沿用它们自己的 8px。 */
+
+/* ── 控制台面板 ──────────────────────────────────────────────────────── */
+#console-panel { border-right: 1px solid var(--hairline); background: #fff; box-shadow: 24px 0 80px rgba(43, 76, 109, .16); }
+#console-head { padding: 26px 34px 18px; border-bottom: 1px solid var(--hairline); }
+#console-body { padding: 24px 34px 40px; }
+/* 控制台顶上那四张卡是「读数带」，不是留白的地方：它的高度上限（桌面 84px、
+   手机 80px）写在 test-air-console-cdp.js 里 —— 这四个数字只是用来确认系统活着，
+   省下的高度全给下面的任务清单。所以这里只换皮（发丝边 + 白底 + 柔和阴影 +
+   18px 圆角），内边距和字号一律沿用原值，一个字都不放大。 */
+.admin-stats { gap: 14px; }
+.admin-stat { border: 1px solid var(--hairline); border-radius: 18px; background: #fff; box-shadow: var(--shadow-1); }
+.admin-assistant-card { padding: 18px 20px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1); }
+/* 面板自己已经是一张卡：里面的列表、网格不再画第二层边框，也不再自己撑一圈内边距，
+   否则卡片套卡片只剩噪声。 */
+.admin-panel { border-color: var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1); }
+.admin-recent-row .task-row-open { padding: 12px 6px; }
+.admin-recent-row strong { font-size: 12px; }
+.admin-directory-list { border-color: var(--hairline); }
+.admin-tool-grid { gap: 12px; }
+.admin-tool-card { border-color: var(--hairline); border-radius: 18px; background: #fff; }
+.admin-overview-grid { gap: 18px; }
+/* 控制台面板自己就是那张白卡，底下不用再铺一层渐变。 */
+#admin-center { background: transparent; }
+.air-setting-card { padding: 22px; border-color: var(--hairline); border-radius: 22px; box-shadow: var(--shadow-1); }
+.air-settings-groups { gap: 18px; }
+.air-settings-group { padding: 22px; }
+.air-settings-grid { gap: 16px; }
+
+/* ── 通用控件 ────────────────────────────────────────────────────────── */
+button { border-radius: 12px; }
+.primary { padding: 10px 18px; border-radius: 13px; box-shadow: 0 8px 20px rgba(22, 120, 232, .22); }
+input, select, textarea { border-radius: 12px; }
+input:focus, select:focus, textarea:focus { border-color: #9cc6f3; box-shadow: 0 0 0 4px #e8f2ff; }
+dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--shadow-3); }
+#directory-library { padding: 40px; }
+#directory-grid { gap: 16px; }
+#directory-grid button { padding: 22px; border-radius: 20px; box-shadow: var(--shadow-1); }
+#directory-search { max-width: 640px; }
+.schedule-summary span, .schedule-badge { border-radius: 10px; }
+#palette { border-radius: 22px; box-shadow: var(--shadow-3); }
+
 @media (max-width: 1040px) {
   #sidebar { width: 240px; flex-basis: 240px; padding-inline: 13px; }
   #task-header { padding-inline: 20px; }
@@ -1506,4 +1654,24 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 @media (max-width: 760px) {
   .setup-card { padding: 12px 12px 10px; }
   .setup-actions #setup-dismiss { margin-left: 0; flex-basis: 100%; text-align: left; }
+}
+
+/* 手机上的皮肤收口：只在 760px 以下生效，且写在文件最后 —— 它要给上面那几个断点块
+   （1040 / 760 / 420）里已经量过的紧凑值让路，所以只声明设计稿真的改了的那几项，
+   不重述任何结构。 */
+@media (max-width: 760px) {
+  /* 抽屉宽度沿用上面那条「不许超出屏幕」的写法，只是设计稿给的宽度宽了 14px。 */
+  #sidebar { width: min(300px, calc(100% - 34px)); }
+  #task-header { padding: 14px 16px; min-height: auto; }
+  #task-title { font-size: 21px; }
+  #empty { padding: 18px 16px 24px; }
+  .directory-task-panel, .directory-git-panel, .admin-panel { border-radius: 20px; }
+  #console-head { padding: 20px 18px 14px; }
+  #console-body { padding: 18px 16px 32px; }
+}
+/* 统计卡在手机上的内边距单独收在 421px 以上：≤420px 那一档把它压到 9px 是为了在
+   320px 上不折行，那是小屏的事，不该被这次视觉变更抬回去。 */
+@media (max-width: 760px) and (min-width: 421px) {
+  .directory-stat { padding: 14px 15px; border-radius: 18px; }
+  .directory-stat strong { font-size: 23px; }
 }
