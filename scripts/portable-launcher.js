@@ -39,7 +39,7 @@ const LIB_DIR = fs.existsSync(path.join(__dirname, 'lib'))
   ? path.join(__dirname, 'lib')
   : path.resolve(__dirname, '..', 'desktop', 'lib');
 const { findFreePort } = require(path.join(LIB_DIR, 'port-chooser'));
-const { createBackendSupervisor } = require(path.join(LIB_DIR, 'backend-supervisor'));
+const { createBackendSupervisor, killProcessTree } = require(path.join(LIB_DIR, 'backend-supervisor'));
 const { reclaimOrphan, pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim'));
 const {
   resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs,
@@ -48,6 +48,12 @@ const {
 const APP_DIRNAME = 'MultiCCPortable';
 const DEFAULT_START_PORT = 3000;
 const DETACH_FLAG = '--detached-child';
+// Node prints "SQLite is an experimental feature" the first time node:sqlite
+// loads. Every launch would otherwise log it.
+const SQLITE_WARNING = 'ExperimentalWarning';
+// How long a stray stop request stays actionable. Old requests are ignored, so
+// a crashed launcher can never pass its request on to a fresh one.
+const STOP_REQUEST_TTL_MS = 5 * 60 * 1000;
 
 function defaultResourcesDir({ env = process.env, dirname = __dirname } = {}) {
   return path.resolve(env.MULTICC_PORTABLE_RESOURCES || path.join(dirname, '..'));
@@ -80,7 +86,12 @@ function resolvePortablePaths({
     resources,
     userData,
     runtimeDir: path.join(resources, 'runtime'),
-    runtimeNode: path.join(resources, 'runtime', 'bin', platform === 'win32' ? 'node.exe' : 'node'),
+    // The official Windows zip keeps node.exe at the runtime root; the unix
+    // tarballs keep it in bin/. The bundle builder mirrors this exactly
+    // (scripts/portable-bundle.js runtimeNodePath) — keep the two in step.
+    runtimeNode: platform === 'win32'
+      ? path.join(resources, 'runtime', 'node.exe')
+      : path.join(resources, 'runtime', 'bin', 'node'),
     launcherPath: path.join(resources, 'launcher', 'portable-launcher.js'),
     desktopEnv: resolveDesktopEnv({ isPackaged: true, resourcesPath: resources, userData }),
   };
@@ -95,6 +106,11 @@ function buildPortableChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, ru
     const binDir = path.dirname(runtimeNode);
     env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
   }
+  // Storage is node:sqlite, which Node still labels experimental and announces
+  // on stderr at load. That line is noise in a shipped app's log, not a warning
+  // the user can act on.
+  env.NODE_OPTIONS = [env.NODE_OPTIONS, `--disable-warning=${SQLITE_WARNING}`]
+    .filter(Boolean).join(' ');
   return env;
 }
 
@@ -193,8 +209,10 @@ function createLauncher({
   // from under it: the supervisor treats a child that exits on its own as a
   // crash and would restart it.
   const pidFile = path.join(path.dirname(infoFile), 'portable-launcher.pid');
+  const stopRequestFile = path.join(path.dirname(infoFile), 'portable-launcher.stop');
   if (!logger) logger = createLogger({ logFile: path.join(desktopEnv.logsDir, 'portable.log') });
   if (!openUrl) openUrl = origin => openBrowser(origin, { spawnImpl, platform, logger });
+  const killTree = (pid, options) => killProcessTree(pid, options);
 
   function writePidFile() {
     try { fs.writeFileSync(pidFile, `${process.pid}\n`); } catch (error) {
@@ -218,12 +236,50 @@ function createLauncher({
     return { running: ready, starting: !ready, pid: info.pid, origin: info.origin || null };
   }
 
+  // Windows has no signals. `process.kill(pid, 'SIGTERM')` there terminates the
+  // target through TerminateProcess, which would kill the supervising launcher
+  // outright and leave the server it started orphaned — the supervisor only
+  // drains on request, and the "stop" wrapper would silently leave a live
+  // server. So on Windows (and for robustness everywhere) the request goes
+  // through a marker file the supervisor polls.
+  function writeStopRequest(pid) {
+    try {
+      fs.writeFileSync(stopRequestFile, `${JSON.stringify({ pid, at: Date.now() })}\n`);
+      return true;
+    } catch (error) {
+      logger.error(`could not write ${stopRequestFile}: ${error.message}`);
+      return false;
+    }
+  }
+
+  function clearStopRequest() {
+    try { fs.unlinkSync(stopRequestFile); } catch (_) {}
+  }
+
+  function pendingStopRequest(now = Date.now()) {
+    let raw;
+    try { raw = JSON.parse(fs.readFileSync(stopRequestFile, 'utf8')); } catch (_) { return null; }
+    if (!raw || raw.pid !== process.pid) return null;
+    if (!Number.isFinite(raw.at) || now - raw.at > STOP_REQUEST_TTL_MS || raw.at > now) return null;
+    return raw;
+  }
+
   async function stop() {
     const owner = launcherPid();
     let ownerSignalled = false;
     if (owner && owner !== process.pid && pidAlive(owner)) {
       logger.log(`asking the running launcher (pid ${owner}) to stop`);
-      try { process.kill(owner, 'SIGTERM'); ownerSignalled = true; } catch (_) {}
+      if (platform === 'win32') {
+        // Ask through the marker; keep the signal as a last resort for a
+        // launcher from an older bundle that does not poll for it.
+        ownerSignalled = writeStopRequest(owner);
+        if (!ownerSignalled) {
+          try { process.kill(owner, 'SIGTERM'); ownerSignalled = true; } catch (_) {}
+        }
+      } else {
+        try { process.kill(owner, 'SIGTERM'); ownerSignalled = true; } catch (_) {}
+        writeStopRequest(owner);
+      }
       // Give the owner time to drain the server over its normal path before we
       // escalate to a tree kill.
       for (let i = 0; i < 80; i += 1) {
@@ -231,6 +287,16 @@ function createLauncher({
         if (!info || !info.pid || !pidAlive(info.pid)) break;
         await new Promise(resolve => setTimeout(resolve, 250));
       }
+      if (pidAlive(owner)) {
+        // The supervisor is still alive, so it would restart whatever we kill
+        // next. Take the whole tree down (taskkill /T on Windows).
+        logger.log(`the launcher (pid ${owner}) did not stop — terminating its process tree`);
+        killTree(owner, { spawn: spawnImpl, platform });
+        for (let i = 0; i < 20 && pidAlive(owner); i += 1) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+      }
+      clearStopRequest();
       if (!pidAlive(owner)) clearPidFile();
     }
     const result = await reclaimImpl({ infoFile, fetchImpl, spawn: spawnImpl, logger });
@@ -324,6 +390,18 @@ function createLauncher({
       supervisor,
       pidFile,
       clearPidFile,
+      clearStopRequest,
+      // Polled rather than signalled: see the Windows note in stop(). Returns a
+      // timer so the caller can keep it from holding the event loop open.
+      watchStopRequest: onRequest => {
+        let fired = false;
+        return setInterval(() => {
+          if (fired || !pendingStopRequest()) return;
+          fired = true;
+          clearStopRequest();
+          onRequest();
+        }, 500);
+      },
     };
   }
 
@@ -376,7 +454,9 @@ async function main(argv = process.argv.slice(2)) {
   if (result.detached || !result.started || !result.supervisor) return 0;
 
   // Foreground: the launcher owns the child, so closing the terminal window
-  // (SIGHUP) stops the server instead of orphaning it.
+  // (SIGHUP) stops the server instead of orphaning it. SIGINT/SIGTERM are the
+  // POSIX path; on Windows only SIGHUP and SIGINT are ever delivered (Ctrl+C,
+  // console close), and `--stop` arrives as the marker file below.
   const supervisor = result.supervisor;
   const clearPidFile = result.clearPidFile || (() => {});
   let stopping = false;
@@ -385,10 +465,17 @@ async function main(argv = process.argv.slice(2)) {
     stopping = true;
     logger.log(`received ${signal} — stopping the server`);
     try { await supervisor.stop(); } catch (error) { logger.error(`stop failed: ${error.message}`); }
+    result.clearStopRequest?.();
     clearPidFile();
     process.exit(0);
   };
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => { shutdown(signal); });
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    try { process.on(signal, () => { shutdown(signal); }); } catch (_) {}
+  }
+  const stopWatcher = result.watchStopRequest
+    ? result.watchStopRequest(() => shutdown('stop request'))
+    : null;
+  if (stopWatcher && typeof stopWatcher.unref === 'function') stopWatcher.unref();
   await new Promise(() => {});
   return 0;
 }
@@ -403,6 +490,8 @@ if (require.main === module) {
 module.exports = {
   APP_DIRNAME,
   DEFAULT_START_PORT,
+  SQLITE_WARNING,
+  STOP_REQUEST_TTL_MS,
   buildPortableChildEnv,
   browserCommand,
   createLauncher,

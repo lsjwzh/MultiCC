@@ -77,13 +77,11 @@ check_runtime_dependencies() {
     return 0
   fi
 
+  # Exit 10 = this Node cannot open SQLite databases. SQLite is part of Node
+  # (node:sqlite since 22.5), so there is no addon to rebuild: the fix is a
+  # newer Node, not a repair of the install tree.
   if [ "$check_rc" -eq 10 ]; then
-    echo "better-sqlite3 native binding is unavailable — rebuilding it once..."
-    if (cd "$SCRIPT_DIR" && env PATH="$(dirname "$NODE"):$PATH" npm rebuild better-sqlite3 --foreground-scripts 2>&1); then
-      check_rc=0
-      "$NODE" "$SCRIPT_DIR/scripts/check-runtime-deps.js" || check_rc=$?
-      [ "$check_rc" -eq 0 ] && return 0
-    fi
+    echo "This Node ($("$NODE" -v)) cannot open SQLite databases; MultiCC needs Node 22.16 or newer."
   fi
   return "$check_rc"
 }

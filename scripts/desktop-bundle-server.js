@@ -47,11 +47,12 @@ function parseArgs(argv) {
 }
 
 // Cross-arch staging. The macOS desktop job builds arm64 and x64 dmgs from one
-// Apple Silicon runner, so both the staged optional deps and the prebuilt
-// native addons must resolve for the target — a single staged tree on the host
-// arch is what put arm64 better-sqlite3 inside the x64 dmg. npm's own view of
-// the target comes from --os/--cpu (added in stageServer), while
-// prebuild-install reads npm_config_arch/npm_config_platform.
+// Apple Silicon runner, so the staged optional deps (sherpa-onnx ships one
+// prebuilt package per platform) must resolve for the target — a single staged
+// tree on the host arch is what once put an arm64 SQLite addon inside the x64
+// dmg. npm's own view of the target comes from --os/--cpu (added in
+// stageServer), while prebuilt-package resolution reads
+// npm_config_arch/npm_config_platform.
 function crossArchNpmEnv({ arch, platform }) {
   const npmEnv = {};
   if (arch) { npmEnv.npm_config_arch = arch; npmEnv.npm_config_cpu = arch; }
@@ -154,15 +155,29 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   for (const must of ['server.js', 'src/paths.js', 'public/manage.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js',
     'skills/multicc-artifact/references/registration-rule.md',
-    ...(install ? [path.join('node_modules', 'express'),
-      // electron-rebuild exits 0 with "No native modules found" when this is
-      // absent, so a missing better-sqlite3 must fail here, not in the packaged app.
-      path.join('node_modules', 'better-sqlite3')] : [])]) {
+    // Storage needs no compiled addon (src/sqlite/driver.js uses the SQLite
+    // that ships inside Node), so express is the only hard module to prove.
+    ...(install ? [path.join('node_modules', 'express')] : [])]) {
     if (!fs.existsSync(path.join(out, must))) throw new Error(`staged copy is missing ${must}`);
   }
   const staged = JSON.parse(fs.readFileSync(path.join(out, 'package.json'), 'utf8'));
   for (const name of OPTIONAL_AT_RUNTIME) {
     if (staged.dependencies[name]) throw new Error(`${name} must be optional in the staged manifest`);
+  }
+
+  // better-sqlite3 is not ours any more: the server stores its state in the
+  // SQLite that ships inside Node (src/sqlite/driver.js). It still lands in the
+  // tree as cli-provider-router's *optional* dependency, and it is the one
+  // artifact there whose binary must match the runtime it is packaged with —
+  // exactly the mismatch that once put an arm64 addon inside the x64 dmg. The
+  // server never loads it (MultiCC's CC-Switch import uses the driver), and
+  // CPR's SQLite-backed flows are written to report themselves unavailable when
+  // the optional package is absent — so ship without it. Add it back if a
+  // bundled flow ever needs CPR's own CC-Switch import/takeover.
+  const optionalSqliteAddon = path.join(out, 'node_modules', 'better-sqlite3');
+  if (install && fs.existsSync(optionalSqliteAddon)) {
+    fs.rmSync(optionalSqliteAddon, { recursive: true, force: true });
+    logger.log('[desktop-bundle-server] dropped the optional better-sqlite3 addon (storage is node:sqlite)');
   }
   const versionMatch = staged.version === rootPkg.version;
   logger.log(`[desktop-bundle-server] done (version ${staged.version}${versionMatch ? '' : ` — MISMATCH vs root ${rootPkg.version}`}, install=${install})`);

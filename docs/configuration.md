@@ -58,17 +58,18 @@ Provider config is stored locally and managed from `/manage`:
 | `~/.multicc/kimi-homes/<sessionId>/` | Isolated `KIMI_CODE_HOME` per Kimi session bound to a MultiCC provider — injected credentials never touch the native `~/.kimi-code` login. |
 
 MultiCC only reads the CC-Switch database during import; it never rewrites
-CC-Switch settings. If `/manage` reports that the database exists but the
-SQLite native runtime is unavailable, repair and verify the local native
-modules from the MultiCC directory:
+CC-Switch settings. SQLite is built into the Node runtime (`node:sqlite`), so
+there is no native module to compile. If `/manage` reports that the database
+exists but SQLite is unavailable, the Node binary is older than 22.16 — verify
+it from the MultiCC directory:
 
 ```bash
-npm rebuild better-sqlite3 --foreground-scripts
-node scripts/check-native-deps.js
+node scripts/check-sqlite-runtime.js
+node scripts/check-runtime-deps.js
 ```
 
 The installer and `./multicc update` run this verification automatically and
-attempt the SQLite rebuild once before failing safely.
+fail safely with the required Node version.
 
 ### Remote provider relay
 

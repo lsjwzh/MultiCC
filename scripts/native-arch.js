@@ -8,9 +8,11 @@
 //
 // Why this is a gate and not a nicety: a native module built for the build
 // host still installs and still looks present. The x64 macOS desktop dmg was
-// assembled on an Apple Silicon runner with arm64 better-sqlite3 inside, and
-// only the first `new Database()` on an Intel Mac would have failed. Absence
-// is easy to see; the wrong architecture is not.
+// once assembled on an Apple Silicon runner with an arm64 native addon inside,
+// and only the first `require()` on an Intel Mac would have failed. Absence is
+// easy to see; the wrong architecture is not. SQLite no longer needs this gate
+// at all (node:sqlite is part of the runtime); the remaining payload is the
+// optional sherpa-onnx ASR package.
 
 const fs = require('fs');
 const path = require('path');

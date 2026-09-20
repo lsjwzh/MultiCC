@@ -35,7 +35,7 @@
     "test:deterministic": "npm run test:core && npm run test:task-board-auto && npm run test:cpu-hotpaths && npm run test:security && npm run test:state && npm run test:git && npm run test:worktree-reclamation && npm run test:bridges && npm run test:architecture && npm run test:governance && npm run test:provider-router && npm run test:desktop && npm run test:portable",
     "test:contracts": "node --test tests/test-api-contracts.js tests/test-task-run-server-composition.js tests/test-task-run-main-usage-integration.js tests/test-turn-state-rules.js tests/test-task-attribution-backtest.js tests/test-classify-api-error-state.js tests/test-aux-run-log.js tests/test-aux-run-routes.js tests/test-static-doc-page.js tests/test-newcomer-onboarding.js",
     "backtest:task-attribution": "node scripts/backtest-task-attribution.js",
-    "test:native": "node tests/test-native-deps.js && node tests/test-runtime-deps.js && node tests/test-release-upgrade.js && node --test tests/test-terminal-deps-install.js && node scripts/check-native-deps.js && node scripts/check-runtime-deps.js",
+    "test:native": "node tests/test-sqlite-runtime-check.js && node tests/test-runtime-deps.js && node --test tests/test-sqlite-driver.js && node tests/test-release-upgrade.js && node --test tests/test-terminal-deps-install.js && node scripts/check-sqlite-runtime.js && node scripts/check-runtime-deps.js",
     "test:integration:isolated": "node tests/test-cli-completion-isolated.js && node tests/test-zcode-session-recovery-isolated.js && npm run test:task-shells:isolated && node tests/test-commander-migration-isolated.js && node tests/test-task-bound-routing-isolated.js && node tests/test-directory.js && node tests/test-auth-locality-isolated.js && node --test tests/test-fleet-sharing-two-ip.js tests/test-provider-sharing-two-ip.js && node tests/test-liveness-api.js && node tests/test-cli-switch-api.js && node tests/test-cli-switch-failclosed.js && node tests/test-session-bounded-api.js && node tests/test-pending-config-isolated.js && node tests/test-memory-api.js && node tests/test-wait-api-durable.js && node tests/test-durable-operations-api.js && node tests/test-dispatch-loop-isolated.js && node tests/test-session-persistence-api.js && node tests/test-session-delete-connected-api.js && node tests/test-session-bundle-api.js && node --test tests/test-memo-http-api.js && node tests/test-starting-stall-recovery-isolated.js && node tests/test-codex-rollout-guard-isolated.js && node tests/test-cron-fanout-upgrade-isolated.js",
     "test:classify-live": "node tests/test-classify-api-errors.js",
     "test:live": "node tests/test.js --live-ai",
@@ -66,7 +66,6 @@
     "@homebridge/ciao": "^1.3.10",
     "@larksuiteoapi/node-sdk": "^1.71.1",
     "@slack/bolt": "^4.2.0",
-    "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "cli-provider-router": "https://github.com/lsjwzh/cli-provider-router/archive/f68ca11a8e2da4c03cebe7b1f83fd6a27e7c28e4.tar.gz",
     "discord.js": "^14.16.0",
@@ -78,5 +77,8 @@
     "undici": "^6.28.1",
     "web-push": "^3.6.7",
     "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "better-sqlite3": "^12.6.2"
   }
 }

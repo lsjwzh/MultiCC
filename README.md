@@ -393,7 +393,7 @@ Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, 
 
 Key decisions: vendor transcripts are never translated; state is flat JSON, not a database; each session owns a branch and worktree; the network bind is fail-closed. The desktop app adds one more client without adding a second UI — it embeds this same server and serves this same web page from a loopback port.
 
-**Built with:** Node.js · Express · ws · better-sqlite3 · sherpa-onnx (on-device ASR) · cli-provider-router · chokidar · tmux · Flutter · Electron (desktop shell). No frontend build step — the web client is plain JavaScript.
+**Built with:** Node.js · Express · ws · node:sqlite (built into Node 22.16+, so there is no compiled SQLite addon) · sherpa-onnx (on-device ASR) · cli-provider-router · chokidar · tmux · Flutter · Electron (desktop shell). No frontend build step — the web client is plain JavaScript.
 
 **→ [Architecture](docs/architecture.md)**
 

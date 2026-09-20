@@ -3,11 +3,11 @@
 
 const path = require('path');
 const {
-  EXIT_BETTER_SQLITE_ONLY,
   EXIT_OK,
-  checkNativeDeps,
+  EXIT_SQLITE_UNAVAILABLE,
+  checkSqliteRuntime,
   runtimeDetails,
-} = require('./check-native-deps');
+} = require('./check-sqlite-runtime');
 
 const EXIT_RUNTIME_FAILURE = 1;
 const REQUIRED_CPR_API_MAJOR = 1;
@@ -68,24 +68,26 @@ function checkLanDiscovery({ requireFn = require } = {}) {
 function checkRuntimeDeps({
   requireFn = require,
   runtime = process,
-  cwd = path.join(__dirname, '..'),
+  loadDatabase,
 } = {}) {
-  const native = checkNativeDeps({ requireFn, runtime, cwd });
+  const sqlite = checkSqliteRuntime(loadDatabase ? { loadDatabase, runtime } : { runtime });
   const providerRouter = checkProviderRouter({ requireFn });
   const lanDiscovery = checkLanDiscovery({ requireFn });
-  const failures = native.failures.slice();
+  const failures = sqlite.failures.slice();
   if (!providerRouter.ok) failures.push(providerRouter.failure);
   if (!lanDiscovery.ok) failures.push(lanDiscovery.failure);
-  const onlyBetterSqlite = failures.length === 1
-    && failures[0].dependency === 'better-sqlite3';
+  // A missing SQLite runtime is always "your Node is too old", which callers
+  // report differently from a damaged install — hence the distinct exit code.
+  const sqliteOnly = failures.length === 1 && failures[0].dependency === 'node:sqlite';
   return {
     ok: failures.length === 0,
     failures,
-    onlyBetterSqlite,
+    sqliteOnly,
     exitCode: failures.length === 0
       ? EXIT_OK
-      : (onlyBetterSqlite ? EXIT_BETTER_SQLITE_ONLY : EXIT_RUNTIME_FAILURE),
+      : (sqliteOnly ? EXIT_SQLITE_UNAVAILABLE : EXIT_RUNTIME_FAILURE),
     runtime: runtimeDetails(runtime),
+    sqlite: sqlite.ok ? sqlite : null,
     providerRouter: providerRouter.ok ? providerRouter : null,
     lanDiscovery: lanDiscovery.ok ? lanDiscovery : null,
   };
@@ -103,7 +105,8 @@ function formatReport(result) {
   for (const failure of result.failures) {
     lines.push(`- ${failure.dependency}: ${failure.message}`);
   }
-  lines.push(`Repair: cd '${String(path.join(__dirname, '..')).replace(/'/g, `'"'"'`)}' && npm install`);
+  lines.push(`Repair: cd '${String(path.join(__dirname, '..')).replace(/'/g, `'"'"'`)}' && npm install`
+    + ' — and run MultiCC on Node 22.16 or newer, which is where SQLite lives now.');
   return lines.join('\n');
 }
 
@@ -117,6 +120,7 @@ if (require.main === module) process.exitCode = main();
 
 module.exports = {
   EXIT_RUNTIME_FAILURE,
+  EXIT_SQLITE_UNAVAILABLE,
   REQUIRED_CPR_API_MAJOR,
   checkLanDiscovery,
   checkProviderRouter,

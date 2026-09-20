@@ -452,16 +452,17 @@ test('desktop-bundle-server stages for the target arch, not the build host', { t
   });
   assert.deepEqual(crossArchNpmEnv({}), {}, 'no target flags must leave the host defaults alone');
   // A typo has to fail here: --arch arn64 would quietly stage for the host and
-  // put arm64 better-sqlite3 into the x64 dmg again.
+  // put the host's architecture into the x64 dmg again.
   const bad = spawnSync(process.execPath,
     [path.join(ROOT, 'scripts', 'desktop-bundle-server.js'), '--arch', 'arn64'], { encoding: 'utf8' });
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /unsupported --arch arn64/);
 
-  // npm's own view of the target is the --os/--cpu flag pair; prebuild-install
-  // reads the npm_config_* environment (that is what picks the addon binary).
+  // npm's own view of the target is the --os/--cpu flag pair; the npm_config_*
+  // environment is what the optional prebuilt packages (sherpa-onnx) resolve
+  // against, and what keeps a cross-arch build from staging the host's binary.
   const staged = stageWithStubNpm(
-    'mkdir -p node_modules/express node_modules/better-sqlite3\n'
+    'mkdir -p node_modules/express\n'
     + 'echo "ARGS:$@"; env | grep -E "^npm_config_(os|cpu|arch|platform)=" | sort',
     ['--arch', 'x64', '--platform', 'darwin']);
   assert.equal(staged.status, 0, staged.stderr);
@@ -652,7 +653,7 @@ test('desktop packaging config: pinned versions, stable names, user-scope instal
   const rootPkg = require(path.join(ROOT, 'package.json'));
   const pkg = require(path.join(DESKTOP, 'package.json'));
   assert.equal(pkg.version, rootPkg.version, 'desktop version tracks the root package');
-  assert.equal(pkg.devDependencies.electron, '44.1.1', 'electron pinned exactly (ABI rebuild depends on it)');
+  assert.equal(pkg.devDependencies.electron, '44.1.1', 'electron pinned exactly: its bundled Node 24 is the storage runtime');
   const b = pkg.build;
   assert.equal(b.asar, true);
   assert.equal(pkg.main, 'main.js');
@@ -695,15 +696,15 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   assert.match(wf, /tags:\s*\['v\*\.\*\.\*'\]/);
   assert.match(wf, /workflow_dispatch:/);
   assert.match(wf, /--publish never/);
-  // Node 20 has no better-sqlite3 prebuild (ABI 115) and @electron/rebuild 4.x
-  // declares engines node>=22.12; on windows-latest that meant a source build
-  // npm's bundled node-gyp could not configure against the runner's VS.
   assert.match(wf, /node-version: 22/);
-  assert.match(wf, /electron-rebuild/);
-  // @electron/rebuild v4 parses flags with node:util parseArgs: the Electron
-  // version flag is --version, and an unknown option aborts before any rebuild.
-  assert.match(wf, /--version "\$ELECTRON_VERSION"/);
-  assert.doesNotMatch(wf, /--electron-version/);
+  // Storage is the SQLite inside Node itself (node:sqlite, Node 22.16+), and
+  // Electron 44 ships Node 24 — nothing is compiled against Electron's ABI any
+  // more, so every rebuild step must stay gone. Re-adding one would mean a
+  // native addon crept back into the shipped tree.
+  assert.doesNotMatch(wf, /electron-rebuild/);
+  assert.doesNotMatch(wf, /ELECTRON_VERSION/);
+  // The arch gate must tolerate a platform with no optional ASR prebuild.
+  assert.match(wf, /--allow-none/);
   assert.match(wf, /gh release upload/);
   // Comments explain the rule; the steps themselves must follow it.
   const wfCode = wf.replace(/^\s*#.*$/gm, '');
@@ -717,10 +718,10 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   }
   assert.match(wf, /desktop-release-assets\.js/);
   assert.match(wf, /SIGNING-STATUS/, 'unsigned state must be explicit');
-  // One staged app-server tree belongs to one arch: the x64 dmg shipped arm64
-  // better-sqlite3 because a single tree (staged on the arm64 runner) served
-  // both mac dmgs. Staging/rebuilding/packaging per arch plus the arch gate is
-  // what makes that impossible, so pin all three.
+  // One staged app-server tree belongs to one arch: the x64 dmg once shipped an
+  // arm64 native ASR binary because a single tree (staged on the arm64 runner)
+  // served both mac dmgs. Staging/packaging per arch plus the arch gate is what
+  // makes that impossible, so pin all three.
   assert.match(wf, /for arch in \$\{\{ matrix\.archs \}\}/);
   assert.match(wf, /--arch "\$arch" --platform "\$\{\{ matrix\.native_platform \}\}"/);
   assert.match(wf, /scripts\/native-arch\.js/);

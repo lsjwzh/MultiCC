@@ -1793,8 +1793,8 @@ async function loadProviders() {
     });
   }
   // cc-switch only gates the import button, not the store itself. A database
-  // file alone is insufficient: better-sqlite3 loads its native addon lazily,
-  // so the server also reports whether a real SQLite probe succeeded.
+  // file alone is insufficient: SQLite comes from the Node runtime itself
+  // (node:sqlite), so the server also reports whether a real probe succeeded.
   const ccStatus = (_providerData.ccSwitchStatus && typeof _providerData.ccSwitchStatus === 'object')
     ? _providerData.ccSwitchStatus
     : {
@@ -1810,7 +1810,7 @@ async function loadProviders() {
       if (!ccStatus.dbFound || ccStatus.reason === 'database-not-found') {
         text.textContent = '未检测到 cc-switch 数据库（~/.cc-switch/cc-switch.db），无法导入。';
       } else if (ccStatus.reason === 'native-runtime-unavailable') {
-        text.textContent = '已找到 cc-switch 数据库，但 SQLite native runtime 不可用。请在 MultiCC 目录执行：npm rebuild better-sqlite3 --foreground-scripts，然后重试。';
+        text.textContent = '已找到 cc-switch 数据库，但当前 Node 运行时不带 SQLite（需要 Node 22.16 及以上，内置 node:sqlite）。升级 Node 后重试，无需编译。';
       } else {
         text.textContent = ccStatus.message || 'cc-switch 当前不可导入，请检查服务端状态。';
       }

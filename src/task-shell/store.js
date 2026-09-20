@@ -2,13 +2,14 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { databaseConstructor } = require('../sqlite/driver');
 
 // Durable task-shell routing state. Chat history and the task board
 // keep their existing ownership. Sync transactions cover decisions before any
 // asynchronous workspace creation or delivery can yield.
 function createTaskShellStore(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const Database = require('better-sqlite3');
+  const Database = databaseConstructor();
   const db = new Database(file, { timeout: 5000 });
   try {
     const version = db.pragma('user_version', { simple: true });
