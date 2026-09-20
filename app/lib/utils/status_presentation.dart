@@ -512,6 +512,8 @@ class StatusBadge extends StatelessWidget {
     this.showLabel = true,
     this.fontSize = 9.5,
     this.dense = false,
+    this.label,
+    this.semanticLabel,
   });
 
   final StatusDomain domain;
@@ -521,9 +523,17 @@ class StatusBadge extends StatelessWidget {
   final double fontSize;
   final bool dense;
 
+  /// 换掉注册表里那个词。Air 面自带一份中文（同 Web `air-admin.js` 的
+  /// `STATUS_COPY`），可见文案和读屏念的必须是同一个词 —— 屏幕上写「执行中」、
+  /// 读屏念「进行中」会让「它说的哪个状态」变成要猜的事。
+  final String? label;
+  final String? semanticLabel;
+
   @override
   Widget build(BuildContext context) {
     final spec = statusSpecOf(domain, status);
+    final word = label ?? spec.label;
+    final accessible = semanticLabel ?? spec.semanticLabel;
     final safeReason = sanitizeReason(reason);
     final color = spec.color;
     final icon = spec.spinner
@@ -547,7 +557,7 @@ class StatusBadge extends StatelessWidget {
             const SizedBox(width: 4),
             Flexible(
               child: Text(
-                spec.label,
+                word,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: color,
@@ -563,13 +573,13 @@ class StatusBadge extends StatelessWidget {
 
     final labelled = Semantics(
       label: safeReason.isEmpty
-          ? spec.semanticLabel
-          : '${spec.semanticLabel} · $safeReason',
+          ? accessible
+          : '$accessible · $safeReason',
       child: ExcludeSemantics(child: chip),
     );
     return safeReason.isEmpty
         ? labelled
-        : Tooltip(message: '${spec.label} · $safeReason', child: labelled);
+        : Tooltip(message: '$word · $safeReason', child: labelled);
   }
 }
 

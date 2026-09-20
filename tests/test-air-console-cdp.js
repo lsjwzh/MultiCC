@@ -497,6 +497,16 @@ test('directory all-tasks expands in place with filters, fixed height and delete
       return [document.querySelectorAll('#directory-task-list .directory-task-row').length,s.overflowY,Math.round(l.getBoundingClientRect().height)]; })()`),
       [12, 'auto', 390], 'default filter shows open rows inside a fixed-height scroller');
 
+    // 这 12 条都是观察型记录（没有 recordType，也没有阶段），徽标说「空闲」—— 行上
+    // 那行小字不许再写一遍「进行中」：那是生命周期（active）的翻法，跟徽标说的不是
+    // 一回事。以前这里每一行都挂着「进行中」，跟徽标正说着反话（侧栏那个「满屏
+    // 进行中」的 bug 同源）。
+    assert.deepEqual(
+      await page.evaluate(`[...document.querySelectorAll('#directory-task-list .directory-task-row')].map(row => row.querySelector('.task-note')?.textContent || '')`),
+      Array.from({ length: 12 }, () => ''),
+      '空闲的观察型记录行上没有第二层信息可以说',
+    );
+
     await page.evaluate(`(() => { const i=document.getElementById('directory-task-search');i.value='12';i.dispatchEvent(new Event('input')); })()`);
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#directory-task-list strong')].map(e=>e.textContent)`), ['目录任务 12']);
     await page.evaluate(`window.confirm=()=>true;document.querySelector('#directory-task-list .task-delete').click()`);
