@@ -442,6 +442,8 @@ function createProviderRouterPort(options = {}) {
       // the proxy is still streaming a response.
       ...(typeof mountOptions.onActivity === 'function'
         ? { onActivity: mountOptions.onActivity } : {}),
+      ...(typeof mountOptions.onTransportRotate === 'function'
+        ? { onTransportRotate: mountOptions.onTransportRotate } : {}),
       // Token-level delta sidecar: cli-provider-router's codex proxy forwards each
       // upstream text/reasoning/tool delta here along with routing context
       // {providerId, sessionId, role, routeName, model}. The host broadcasts it to
