@@ -469,8 +469,6 @@ function createSessionAdminRuntime(rawDeps) {
       if (record.type === 'aux' || record.type === 'gateway') {
         return res.status(400).json({ error: 'not a chat session' });
       }
-      const queue = auxRuntime().queue;
-      if (queue.isUnhealthy()) return res.status(503).json({ error: 'aux 服务不可用，无法重判' });
       const task = deps.getTaskState(record);
       const force = String(req.query.force).toLowerCase() === 'true';
       if (isSettledLetter(task.classifyState) && !force) {
@@ -522,8 +520,6 @@ function createSessionAdminRuntime(rawDeps) {
     });
 
     app.post('/api/reclassify-all', (req, res) => {
-      const queue = auxRuntime().queue;
-      if (queue.isUnhealthy()) return res.status(503).json({ error: 'aux 服务不可用，无法重判' });
       const onlyJunk = req.body?.onlyJunk !== false;
       const ids = [];
       for (const [sessionId, record] of deps.records) {
@@ -589,17 +585,14 @@ function createSessionAdminRuntime(rawDeps) {
         });
       }
       chat.currentAssistantText = latest.text;
-      const unhealthy = auxRuntime().queue.isUnhealthy();
       deps.runClassifyNow(chat, sessionName);
       const tail = latest.text.slice(-1500);
       return res.json({
         ok: true,
         sessionName,
-        triggered: !unhealthy,
+        triggered: true,
         tailPreview: tail.slice(-300).replace(/\n/g, ' '),
-        note: unhealthy
-          ? 'aux unhealthy — classify suppressed (⑦ gate), no RESULT will be logged'
-          : 'classify enqueued — check server logs for classify RESULT',
+        note: 'classify enqueued — check server logs for classify RESULT',
       });
     });
 

@@ -638,12 +638,6 @@
             {
               state: message.state,
               freezeReason: message.freezeReason || null,
-              // Network-hold surfacing: while the host hold gate is deferring
-              // deliveries the server marks queued items held:true (and sends
-              // schedule.hold). Render 已暂挂 instead of 执行中 so a held
-              // message is not mistaken for a wedged insert.
-              hold: message.hold
-                || (visibleItems.some(item => item?.held) ? { reason: 'network_unhealthy' } : null),
             },
           );
           if (message.event === 'queued' && message.queued !== false) {

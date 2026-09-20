@@ -18,7 +18,6 @@ const classifyStateMachine = fs.readFileSync(
 const apiErrorHost = fs.readFileSync(
   path.join(root, 'src', 'chat', 'api-error-host.js'), 'utf8');
 const waitInjector = fs.readFileSync(path.join(root, 'src', 'wait', 'injector.js'), 'utf8');
-const sessionDelivery = fs.readFileSync(path.join(root, 'src', 'session', 'delivery.js'), 'utf8');
 
 test('Classify no longer owns an uncapped API retry or error-text pruning channel', () => {
   assert.equal(server.includes('API error -> retry (uncapped)'), false);
@@ -107,8 +106,10 @@ test('typed continuations clear stale API error ownership before launching', () 
     /originContinue: originContinue && !directUserInput,\s*turnId/);
 });
 
-test('network recovery uses the typed retry delivery boundary', () => {
-  assert.equal(apiErrorHost.includes('sessionDelivery.deliverRetry(sessionId, message'), true);
-  assert.equal(apiErrorHost.includes('waitInjector.safeInject(sessionId, message)'), false);
-  assert.equal(sessionDelivery.includes("if (kind === 'retry') admission.retry = true"), true);
+test('API error handling installs no cross-request recovery or admission gate', () => {
+  assert.equal(apiErrorHost.includes('heldSessions'), false);
+  assert.equal(apiErrorHost.includes('resumeHeldSessions'), false);
+  assert.equal(apiErrorHost.includes('auxHealthProbe'), false);
+  assert.equal(apiErrorHost.includes('isNetworkUnhealthy'), false);
+  assert.equal(apiErrorHost.includes('sessionDelivery.deliverRetry'), false);
 });

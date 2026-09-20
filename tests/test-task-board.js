@@ -2144,7 +2144,7 @@ test('backfill scans dir sessions, tags turns via aux and reports progress', asy
   assert.deepEqual(task.refs.map(x => x.assistantMsgId), ['a1', 'a2']);
 });
 
-test('backfill reports unhealthy aux and concurrent runs', async () => {
+test('backfill ignores historical Aux health but rejects a concurrent run', async () => {
   let healthy = true;
   const { runtime } = mkRuntime({
     auxQueue: {
@@ -2161,18 +2161,14 @@ test('backfill reports unhealthy aux and concurrent runs', async () => {
   const r1 = mk();
   routes.get('/api/task-board/backfill')({ body: {} }, r1);
   await new Promise(rr => setImmediate(rr));
-  assert.equal(r1.code, 503);
+  assert.equal(r1.body.ok, true,
+    'historical Aux health must not suppress the new backfill request');
 
   healthy = true;
   const r2 = mk();
   routes.get('/api/task-board/backfill')({ body: {} }, r2);
   await new Promise(rr => setImmediate(rr));
-  assert.equal(r2.body.ok, true);
-
-  const r3 = mk();
-  routes.get('/api/task-board/backfill')({ body: {} }, r3);
-  await new Promise(rr => setImmediate(rr));
-  assert.equal(r3.code, 409);
+  assert.equal(r2.code, 409);
 });
 
 test('goal-flagged sends prepend the goal note into the bound turn; board-level send routes by dir', async () => {

@@ -329,8 +329,6 @@ function createChatTurnEngine(deps) {
     turnHasSideEffects,
     clearSessionApiErrorState,
     scheduleOwnedRetry,
-    isNetworkUnhealthy,
-    holdSession,
     getTokenUsage,
     resetRoleTokenUsage,
     providerTokenWindows,
@@ -1255,7 +1253,6 @@ function createChatTurnEngine(deps) {
       duplicatePersisted,
       shuttingDown: isShuttingDown(),
       sessionExists: true,
-      networkUnhealthy: isNetworkUnhealthy(),
       runningTurn: !!(existingCs && existingCs.claudeProc) || streamBusy,
       backgroundWorkActive: claudeManagedProxy
         && getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName),
@@ -1276,12 +1273,6 @@ function createChatTurnEngine(deps) {
       });
       return false;
     }
-    if (admission.decision === 'hold') {
-      holdSession(sessionName, 'classify-inject', text);
-      console.log(`[multicc/net] ${sessionName}: suppress system inject (originContinue) — network unhealthy, held for recovery`);
-      return false;
-    }
-
     const turnId = `turn_${crypto.randomBytes(12).toString('hex')}`;
     const turn = createTurnLifecycle(turnRequest, { turnId });
     // t0 = when the server received the user message. The chat-send route entry
@@ -1308,8 +1299,7 @@ function createChatTurnEngine(deps) {
     let preparationAttempt = null;
 
     try {
-    // A real user/trigger turn resets auto-continue guards. Degraded automatic
-    // continuations were already held at admission until recordApiSuccess resumes them.
+    // A real user/trigger turn resets auto-continue guards.
     // A real (non-auto-continue) message means the user/trigger is driving again →
     // reset the D auto-continue guard so a future background-wait gets fresh budget.
     if (!originContinue || directUserInput) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
@@ -1936,7 +1926,6 @@ function createChatTurnEngine(deps) {
           codexDisconnectAttempt: cs._codexStreamContinuationCount || 0,
           freshStartAttempt: isRetry ? 1 : 0,
           handoff: persisted.pendingCliHandoff,
-          auxUnhealthy: auxQueue.isUnhealthy(),
         }, {
           retry: { limits: { codexDisconnect: CODEX_STREAM_DISCONNECT_CONTINUE_MAX } },
         });
@@ -2205,7 +2194,6 @@ function createChatTurnEngine(deps) {
       }
       return saved;
     }
-    if (item.payload?.type === 'dispatch.request' && isNetworkUnhealthy()) return false;
     if (item.payload?.type === 'dispatch.result' && item.payload.gateway) {
       // The result sink is the gateway that owns the dispatch (item.sessionId is
       // the operation's resultSessionId), not a hardcoded WeChat thread.

@@ -39,28 +39,14 @@ test('system continuation is prefixed once and cannot be promoted to retry by me
   assert.equal(h.admissions[1].text, `${SYSTEM_PREFIX}already marked`);
 });
 
-test('API recovery is admitted as a typed retry with stable metadata', async () => {
-  const h = harness();
-  await h.delivery.deliverRetry('session-1', 'provider recovered', {
-    idempotencyKey: 'api-recovery:session-1:1000',
-    taskSource: 'api_recovery',
-  });
-  assert.deepEqual(h.admissions, [{
-    sessionId: 'session-1',
-    text: `${SYSTEM_PREFIX}provider recovered`,
-    options: {
-      idempotencyKey: 'api-recovery:session-1:1000',
-      taskSource: 'api_recovery',
-      originContinue: true,
-      retry: true,
-    },
-  }]);
-});
-
 test('invalid delivery kind is rejected before reaching session admission', () => {
   const h = harness();
   assert.throws(
     () => h.delivery.deliver('session-1', 'payload', { kind: 'task' }),
+    /unsupported kind/,
+  );
+  assert.throws(
+    () => h.delivery.deliver('session-1', 'payload', { kind: 'retry' }),
     /unsupported kind/,
   );
   assert.equal(h.admissions.length, 0);

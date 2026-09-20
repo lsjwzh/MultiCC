@@ -1806,23 +1806,18 @@ const sessionDelivery = require('./src/session/delivery').createSessionDelivery(
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
   log: message => console.log('[multicc/delivery]', message),
 });
-let apiErrorAuxQueue = null;
 const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger });
 const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore(); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger }); // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
 const apiErrorHost = createApiErrorHost({
-  policy: apiErrorPolicy, logger, persistedSessions, getTaskState, setTaskState,
-  chatBroadcast, workspaceBroadcast, sessionDelivery, appendChatMessage,
-  getAuxQueue: () => apiErrorAuxQueue,
+  policy: apiErrorPolicy, logger, persistedSessions, setTaskState,
+  chatBroadcast,
   setSessionStatus, isShuttingDown: () => _shuttingDown,
   clearIncrementalSave: sessionId => chatHistoryRuntime?.clearIncrementalSave(sessionId),
   isCurrentTurnRunner: (...args) => isCurrentTurnRunner(...args),
-  onApiError: decision =>
-    claudeOAuthRefresh.onApiError(decision) || codexOAuthRefresh.onApiError(decision),
 });
 const {
   recordApiError, recordApiSuccess, evaluateTurnApiError, meaningfulTurnOutput,
   turnHasSideEffects, clearSessionApiErrorState, scheduleOwnedRetry,
-  isNetworkUnhealthy, holdSession, auxHealthProbe, stopNetworkProbe,
 } = apiErrorHost;
 const bgCoalesce = require('./src/bg-completion-coalescer');
 const { createDetached } = require('./src/detached');
@@ -1955,7 +1950,6 @@ const {
     sessions: persistedSessions, getTaskState, chatBroadcast, workspaceBroadcast,
   }),
 });
-apiErrorAuxQueue = auxQueue;
 installAuxHealthProvider(() => auxQueue.getStatus().health);
 // Memory runtime owns normalization, Aux distillation, periodic review and the
 // pending-distill gate. History is resolved lazily because its runtime is
@@ -2478,8 +2472,6 @@ sessionWorkHost = createSessionWorkHost({
   log: logger,
 });
 
-const AUX_HEALTH_PROBE_INTERVAL_MS = 5 * 60 * 1000;  // ④: probe aux recovery while unhealthy
-
 // GET /api/scan/history — debug: recent periodic-scan passes, newest first, each
 // with its per-session enqueue/skip decisions + reasons. In-memory ring only.
 //   ?limit=N   (default 20, capped at SCAN_HISTORY_MAX_PASSES)
@@ -2667,8 +2659,6 @@ const chatTurnEngine = createChatTurnEngine({
   turnHasSideEffects,
   clearSessionApiErrorState,
   scheduleOwnedRetry,
-  isNetworkUnhealthy,
-  holdSession,
   getTokenUsage,
   resetRoleTokenUsage,
   providerTokenWindows,
@@ -2711,7 +2701,6 @@ orchestrationRuntime = createOrchestrationRuntime({
     && !!sessionHibernationRuntime?.isLocked?.(taskShellHost.workspaceGroup(sid)),
   beforeDeliver: async descriptor => { const guard = await workspaceAdmission.beforeDeliver(descriptor); try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
   getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
-  getSessionHold: id => (apiErrorHost.isHeld(id) ? { reason: 'network_unhealthy' } : null),
   onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); void taskRunHost.onSchedulerEvent(event).catch(error => logger.warn('task_run_finalize_failed', { error: error.message })); },
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
@@ -2898,7 +2887,6 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   waitInjector,
   cronTasks,
   tunnel,
-  stopNetworkProbe,
   skillSyncRuntime,
   triggerRuntime,
   pushRuntime,
@@ -2981,8 +2969,6 @@ app.use(safeErrorHandler(logger));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
 const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, [...taskRunStore.listPinnedArtifactIds(), ...docsRegistry.listPinnedArtifactIds()]); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
     trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000));
-    // ④: probe aux recovery every 5 min while unhealthy (no-op when healthy).
-    trackServiceTimer(setInterval(() => auxHealthProbe(), AUX_HEALTH_PROBE_INTERVAL_MS));
     // Keep the official OAuth credential alive. The check is a credential read;
     // it only runs the CLI once the expiry is close, so the router never has to
     // report "run `claude` once to refresh the Keychain" to a user. Boot counts

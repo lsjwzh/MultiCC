@@ -333,11 +333,10 @@ test('task context is explicit, trusted, and preserved only for routed task star
   }), /only valid on a task start/);
   const ordinary = normalizeTurnRequest({ sessionId: 'worker-1', text: '普通聊天' });
   assert.deepEqual(ordinary.task, { id: null, start: false, source: null, text: '' });
-  // System-injected continuations (auto provider handoff after an unsafe
-  // replay boundary, api recovery after a network hold) carry a continuation
-  // label plus task attribution. They must normalize — rejection burned their
-  // outbox retries into dead-letter, so the provider switch never ran — but
-  // they still cannot START a task.
+  // A system-injected auto-provider handoff after an unsafe replay boundary
+  // carries a continuation label plus task attribution. It must normalize —
+  // rejection burns its outbox retry into dead-letter — but it still cannot
+  // START a task.
   const handoff = normalizeTurnRequest({
     sessionId: 'worker-1',
     text: '🔇Zhipu GLM 因上游限额或接口错误中断。请由 火山Codingplan 继续剩余任务。',
@@ -348,10 +347,9 @@ test('task context is explicit, trusted, and preserved only for routed task star
   assert.deepEqual(handoff.task, {
     id: 'tsk-stable', start: false, source: 'auto_provider_handoff', text: '',
   });
-  const recovered = normalizeTurnRequest({
+  assert.throws(() => normalizeTurnRequest({
     sessionId: 'worker-1', text: '🔇上游 API 已恢复…', taskSource: 'api_recovery',
-  });
-  assert.deepEqual(recovered.task, { id: null, start: false, source: 'api_recovery', text: '' });
+  }), /unsupported task source/);
   assert.throws(() => normalizeTurnRequest({
     sessionId: 'worker-1', text: 'x', taskId: 'tsk-x',
     taskStart: true, taskSource: 'auto_provider_handoff',
@@ -510,11 +508,11 @@ test('a new Claude attempt is rejected before persistence while background work 
   assert.match(body, /background-work-active[\s\S]*本消息尚未执行/);
 });
 
-test('system continuation is held during network failure while user turns remain admissible', () => {
+test('a prior network failure never gates a later continuation or user request', () => {
   const system = request({ originContinue: true });
-  const held = planTurnAdmission(system, { sessionExists: true, networkUnhealthy: true });
-  assert.equal(held.decision, 'hold');
-  assert.equal(held.effects[0].type, 'hold-turn');
+  const continued = planTurnAdmission(system, { sessionExists: true, networkUnhealthy: true });
+  assert.equal(continued.decision, 'prepare');
+  assert.equal(continued.effects[0].type, 'persist-user-message');
   const user = request();
   assert.equal(planTurnAdmission(user, { sessionExists: true, networkUnhealthy: true }).decision, 'prepare');
 });

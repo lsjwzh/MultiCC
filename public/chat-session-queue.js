@@ -249,10 +249,7 @@
       ? registry.freezeReasonStatus(metadata.freezeReason)
       : (metadata.state === 'assessing' ? 'running' : 'queued');
     const dockIcon = registry.presentation('session', dockStatus).icon;
-    const holdActive = !!metadata.hold;
-    hint.textContent = `${dockIcon} ` + (holdActive
-      ? '网络异常，消息已暂挂；恢复后自动执行'
-      : metadata.state === 'frozen'
+    hint.textContent = `${dockIcon} ` + (metadata.state === 'frozen'
         ? `已暂停：${registry.sanitizeReason(metadata.freezeReason) || '等待当前任务继续'}`
         : metadata.state === 'assessing'
           ? '等待完成判定，队列已暂停'
@@ -295,17 +292,11 @@
           const insert = documentRef.createElement('button');
           insert.type = 'button';
           insert.className = 'session-queue-insert';
-          // A host-wide hold gate (network unhealthy) is claim→release
-          // cycling this entry: it is NOT executing. Say 已暂挂 so the user
-          // does not read 执行中 as a wedged insert; cancel stays available.
-          const held = item.held === true;
-          insert.textContent = held ? '已暂挂' : (item.priority ? '执行中' : '立刻插入');
-          insert.title = held
-            ? '网络恢复后自动执行'
-            : item.priority
-              ? '这条消息已被选中立即执行'
-              : '停止当前回复并立即执行这条消息';
-          insert.disabled = held || item.priority === true;
+          insert.textContent = item.priority ? '执行中' : '立刻插入';
+          insert.title = item.priority
+            ? '这条消息已被选中立即执行'
+            : '停止当前回复并立即执行这条消息';
+          insert.disabled = item.priority === true;
           insert.setAttribute?.('aria-label', `立即执行第 ${Number(item.position) || index + 1} 条消息`);
           insert.addEventListener('click', async event => {
             event.stopPropagation?.();

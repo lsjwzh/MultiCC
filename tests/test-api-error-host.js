@@ -38,12 +38,8 @@ function harness(options = {}) {
   const logs = [];
   const taskWrites = [];
   const broadcasts = [];
-  const workspaceEvents = [];
-  const injections = [];
-  const chatMessages = [];
   const statuses = [];
   const timers = [];
-  const intervals = [];
   const records = new Map([['session-1', {
     dirId: 'dir-1',
     summary: 'task',
@@ -55,13 +51,6 @@ function harness(options = {}) {
     recordSuccess(provider, context) { logs.push({ event: 'success', provider, context }); },
     snapshot() { return { circuits: [] }; },
   };
-  const auxQueue = {
-    queue: [],
-    currentTask: null,
-    getStatus: () => ({ health: { unhealthy: false } }),
-    enqueue: () => Promise.resolve({ cancelled: true }),
-    recordSuccess() {},
-  };
   const host = createApiErrorHost({
     policy,
     logger: {
@@ -70,21 +59,10 @@ function harness(options = {}) {
       error(event, fields) { logs.push({ event, fields }); },
     },
     persistedSessions: records,
-    getTaskState: persisted => persisted.taskState || {},
     setTaskState: (sessionId, patch, writeOptions) => {
       taskWrites.push({ sessionId, patch, writeOptions });
     },
     chatBroadcast: (sessionId, payload) => broadcasts.push({ sessionId, payload }),
-    workspaceBroadcast: (dirId, payload) => workspaceEvents.push({ dirId, payload }),
-    appendChatMessage: (sessionId, message) => {
-      chatMessages.push({ sessionId, message });
-      return true;
-    },
-    sessionDelivery: {
-      deliverRetry: (sessionId, message, deliveryOptions) =>
-        injections.push({ sessionId, message, deliveryOptions }),
-    },
-    getAuxQueue: () => auxQueue,
     setSessionStatus: (sessionId, status) => statuses.push({ sessionId, status }),
     clearIncrementalSave: sessionId => logs.push({ event: 'clear', sessionId }),
     isCurrentTurnRunner: (state, turn, runner) => state._activeRunner === runner
@@ -97,18 +75,9 @@ function harness(options = {}) {
       return timer;
     },
     clearTimeout: timer => { timer.cleared = true; },
-    setInterval: callback => {
-      const timer = { callback, unref() {} };
-      intervals.push(timer);
-      return timer;
-    },
-    clearInterval: timer => { timer.cleared = true; },
-    networkThreshold: 3,
-    probeTimeoutMs: options.probeTimeoutMs,
   });
   return {
-    host, logs, taskWrites, broadcasts, workspaceEvents, injections, statuses,
-    timers, intervals, records, auxQueue, chatMessages,
+    host, logs, taskWrites, broadcasts, statuses, timers,
     decideWith(fn) { nextDecision = fn; },
   };
 }
@@ -314,7 +283,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
   assert.equal(attemptRuntime.snapshot('session-1').replayFence, 'none');
 });
 
-test('turn duration is diagnostic only and recovery budget starts at first host decision', () => {
+test('turn duration is diagnostic only and creates no recovery-window state', () => {
   let clock = 200_000;
   const h = harness({ now: () => clock });
   const observed = [];
@@ -334,8 +303,8 @@ test('turn duration is diagnostic only and recovery budget starts at first host 
     phase: 'before_first_token',
   });
   assert.equal(observed[0].turnElapsedMs, 199_000);
-  assert.equal(observed[0].recoveryElapsedMs, 0);
-  assert.equal(observed[0].elapsedMs, 0);
+  assert.equal('recoveryElapsedMs' in observed[0], false);
+  assert.equal('elapsedMs' in observed[0], false);
 
   clock += 10_000;
   h.host.evaluateTurnApiError({
@@ -344,7 +313,7 @@ test('turn duration is diagnostic only and recovery budget starts at first host 
     phase: 'before_first_token',
   });
   assert.equal(observed[1].turnElapsedMs, 209_000);
-  assert.equal(observed[1].recoveryElapsedMs, 10_000);
+  assert.equal('recoveryElapsedMs' in observed[1], false);
 });
 
 test('turn policy binds errors and idempotency to the owned provider route attempt', () => {
@@ -494,172 +463,18 @@ test('owned retry reuses the current turn, resets partial state, and cancels whe
   assert.equal(starts, 1, 'a superseded runner never replays the request');
 });
 
-test('only network failures open the global hold and recovery resumes held sessions', async () => {
+test('API failures remain request-local and never install recovery gates', () => {
   const h = harness();
   h.decideWith(raw => decision({
     error: { category: raw.category, provider: raw.provider || 'claude' },
   }));
-  h.host.recordApiError({ category: 'provider_transient' });
-  assert.equal(h.host.snapshot().consecutiveFails, 0);
-  h.host.recordApiError({ category: 'network' });
-  h.host.recordApiError({ category: 'network' });
-  h.host.recordApiError({ category: 'network' });
-  assert.equal(h.host.isNetworkUnhealthy(), true);
-  assert.equal(h.intervals.length, 1);
-  h.host.holdSession('session-1', 'offline', '真实待处理数据');
-  assert.equal(h.host.isHeld('session-1'), true);
-  assert.equal(h.workspaceEvents.length, 1);
-  h.host.recordApiSuccess('claude');
-  await Promise.resolve();
-  assert.equal(h.host.isNetworkUnhealthy(), false);
-  assert.equal(h.injections.length, 1);
-  assert.match(h.injections[0].message, /真实待处理数据/);
-  assert.equal(h.injections[0].deliveryOptions.taskSource, 'api_recovery');
-  assert.match(h.injections[0].deliveryOptions.idempotencyKey, /^api-recovery:session-1:/);
-});
-
-test('the first hold of a session injects one visible chat notice, never per retry', async () => {
-  const h = harness();
-  h.decideWith(raw => decision({
-    error: { category: raw.category, provider: raw.provider || 'claude' },
-  }));
-  h.host.recordApiError({ category: 'network' });
-  h.host.recordApiError({ category: 'network' });
-  h.host.recordApiError({ category: 'network' });
-  assert.equal(h.host.isNetworkUnhealthy(), true);
-  h.host.holdSession('session-1', 'classify-inject', '第一条');
-  assert.equal(h.chatMessages.length, 1, 'first hold persists one system notice');
-  assert.equal(h.chatMessages[0].sessionId, 'session-1');
-  assert.equal(h.chatMessages[0].message.role, 'system');
-  assert.match(h.chatMessages[0].message.content, /已暂挂/);
-  assert.equal(h.broadcasts.length, 1, 'the notice is broadcast to the chat');
-  assert.equal(h.broadcasts[0].payload.subtype, 'notice');
-  // The turn engine re-attempts every tick while unhealthy: a second hold of
-  // the same episode must NOT spam another notice.
-  h.host.holdSession('session-1', 'classify-inject', '第二条');
-  assert.equal(h.chatMessages.length, 1, 'one notice per hold episode');
-  assert.equal(h.broadcasts.length, 1);
-});
-
-test('network recovery never resumes a scrubbed TaskRun execution slot', async () => {
-  const h = harness();
-  h.records.get('session-1').taskExecutionSlot = true;
-  h.decideWith(raw => decision({
-    error: { category: raw.category, provider: raw.provider || 'claude' },
-  }));
-  h.host.recordApiError({ category: 'network' });
-  h.host.recordApiError({ category: 'network' });
-  h.host.recordApiError({ category: 'network' });
-  h.host.holdSession('session-1', 'offline', 'must survive in TaskRun ledger');
-  h.host.recordApiSuccess('claude');
-  await Promise.resolve();
-  assert.equal(h.injections.length, 0);
-  assert.equal(h.logs.some(entry => entry.event === 'api_error_task_run_requires_new_run'), true);
-});
-
-test('Aux recovery probe fires for every unhealthy state and honours the reset window', () => {
-  const h = harness();
-  let enqueued = 0;
-  h.auxQueue.enqueue = () => { enqueued += 1; return Promise.resolve({}); };
-  // `retryable` is about the failed request, not about the upstream: a dead
-  // credential makes every request non-retryable and would otherwise latch the
-  // fleet with no probe at all. Each shape below is its own episode (distinct
-  // sinceAt), which is what makes an immediate probe due.
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: false, category: 'authentication_permission', sinceAt: 1 },
-  });
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 1);
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: false, category: 'billing_quota', sinceAt: 2 },
-  });
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 2);
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: true, category: 'unknown', sinceAt: 3, retryAt: 2_000 },
-  });
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 2, 'a credible reset time blocks probes before the window');
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: true, category: 'unknown', sinceAt: 3, retryAt: 1_000 },
-  });
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 3);
-});
-
-test('Aux recovery probe backs off to a 30 min ceiling within one unhealthy episode', () => {
-  let clock = 1_000_000;
-  const h = harness({ now: () => clock });
-  const probes = [];
-  h.auxQueue.enqueue = () => { probes.push(clock); return Promise.resolve({}); };
-  // `sinceAt` is stamped once per episode, so a failing probe cannot push the
-  // next one out: the schedule belongs to the episode, not to the last failure.
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: true, category: 'unknown', retryAt: null, sinceAt: 500_000 },
-  });
-  for (let minute = 0; minute <= 150; minute += 1) {
-    h.host.auxHealthProbe();
-    clock += 60_000;
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(h.host.recordApiError({ category: 'network' }).action, 'retry');
   }
-  assert.deepEqual(probes.map(at => (at - 1_000_000) / 60_000), [0, 5, 15, 35, 65, 95, 125]);
-});
-
-test('Aux recovery probe starts a fresh episode at the short interval', () => {
-  let clock = 1_000_000;
-  const h = harness({ now: () => clock });
-  let enqueued = 0;
-  h.auxQueue.enqueue = () => { enqueued += 1; return Promise.resolve({}); };
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: true, sinceAt: 500_000 },
-  });
-  h.host.auxHealthProbe();
-  clock += 5 * 60_000;
-  h.host.auxHealthProbe();
-  clock += 10 * 60_000;
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 3, 'the episode climbed its backoff ladder');
-  // ...and a later episode (a different sinceAt) is not inheriting that ladder.
-  h.auxQueue.getStatus = () => ({ health: { unhealthy: false } });
-  h.host.auxHealthProbe();
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: true, sinceAt: clock + 1 },
-  });
-  clock += 1;
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 4, 'a fresh episode probes immediately');
-});
-
-test('Aux recovery probe retries external billing quota and clears health on success', async () => {
-  const h = harness({ probeTimeoutMs: 12_345 });
-  let enqueuedTask = null;
-  let successes = 0;
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: false, category: 'billing_quota', retryAt: null },
-  });
-  h.auxQueue.enqueue = task => {
-    enqueuedTask = task;
-    return Promise.resolve({ text: 'ok', cancelled: false });
-  };
-  h.auxQueue.recordSuccess = () => { successes += 1; };
-  h.host.auxHealthProbe();
-  await Promise.resolve();
-  assert.equal(enqueuedTask.type, 'health_probe');
-  assert.deepEqual(enqueuedTask.meta, { probe: true, timeout: 12_345 });
-  assert.equal(successes, 1);
-});
-
-test('Aux recovery probe does not enqueue a second health probe while one is active', () => {
-  const h = harness();
-  let enqueued = 0;
-  h.auxQueue.getStatus = () => ({
-    health: { unhealthy: true, retryable: false, category: 'billing_quota', retryAt: null },
-  });
-  h.auxQueue.enqueue = () => { enqueued += 1; return Promise.resolve({ text: 'ok' }); };
-  h.auxQueue.queue = [{ type: 'health_probe' }];
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 0);
-  h.auxQueue.queue = [];
-  h.auxQueue.currentTask = { type: 'health_probe' };
-  h.host.auxHealthProbe();
-  assert.equal(enqueued, 0);
+  assert.deepEqual(h.host.snapshot(), { policy: { circuits: [] } });
+  assert.equal(h.host.isNetworkUnhealthy, undefined);
+  assert.equal(h.host.holdSession, undefined);
+  assert.equal(h.host.isHeld, undefined);
+  assert.equal(h.host.auxHealthProbe, undefined);
+  assert.equal(h.host.stopNetworkProbe, undefined);
 });

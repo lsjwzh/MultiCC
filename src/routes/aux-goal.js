@@ -241,7 +241,7 @@ function mountAuxGoalRoutes(app, dependencies) {
       health.lastFailAt = Date.now();
       health.lastFailMsg = publicMessage.slice(0, 200);
       health.retryable = decision
-        ? decision.action === 'retry' || decision.action === 'wait_circuit'
+        ? decision.action === 'retry'
           || (decision.action === 'wait_reset' && !!decision.retryAt)
         : true;
       health.category = decision?.error?.category || 'unknown';
@@ -282,6 +282,8 @@ function mountAuxGoalRoutes(app, dependencies) {
     },
 
     isUnhealthy() {
+      // Observability only. A previous failure must never reject or skip the
+      // next request; that request is allowed to reach upstream normally.
       return !!(this.health && this.health.unhealthy);
     },
 

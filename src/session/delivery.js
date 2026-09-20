@@ -1,16 +1,15 @@
 'use strict';
 
 // Typed, host-owned delivery boundary for messages that continue an existing
-// chat session. This module deliberately does not decide *when* to retry, poll,
-// or resume: callers bring an already-authorized intent and this boundary maps
-// it to the scheduler vocabulary.
+// chat session. Callers bring an already-authorized continuation and this
+// boundary maps it to the scheduler vocabulary.
 //
 // Keeping delivery separate from wait-injector prevents legacy in-memory wait
-// timers from becoming the authority for API recovery, dispatch feedback, or
-// background-task completion.
+// timers from becoming the authority for dispatch feedback or background-task
+// completion.
 
 const SYSTEM_PREFIX = '🔇';
-const DELIVERY_KINDS = new Set(['continuation', 'retry']);
+const DELIVERY_KINDS = new Set(['continuation']);
 
 function requireFunction(value, name) {
   if (typeof value !== 'function') {
@@ -48,8 +47,7 @@ function createSessionDelivery(options = {}) {
       // scheduler work kind remains independently typed below.
       originContinue: true,
     };
-    if (kind === 'retry') admission.retry = true;
-    else delete admission.retry;
+    delete admission.retry;
 
     try {
       return Promise.resolve(admit(cleanSessionId, message, admission))
@@ -81,19 +79,10 @@ function createSessionDelivery(options = {}) {
     });
   }
 
-  function deliverRetry(sessionId, text, options = {}) {
-    return deliver(sessionId, text, {
-      ...options,
-      kind: 'retry',
-      system: options.system !== false,
-    });
-  }
-
   return {
     deliver,
     deliverContinuation,
     deliverSystem,
-    deliverRetry,
   };
 }
 

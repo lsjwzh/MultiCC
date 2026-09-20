@@ -818,16 +818,16 @@ test('structured user-input and FIFO events expose correlation and honest frozen
     fixture.calls.filter(call => Array.isArray(call) && call[0] === 'queue'),
     [
       ['queue', ['<img src=x onerror=alert(2)>'], {
-        state: 'frozen', freezeReason: 'awaiting_user_input', hold: null,
+        state: 'frozen', freezeReason: 'awaiting_user_input',
       }],
       ['queue', ['<b>literal staged body</b>'], {
-        state: 'running', freezeReason: null, hold: null,
+        state: 'running', freezeReason: null,
       }],
       ['queue', ['older staged'], {
-        state: 'frozen', freezeReason: 'classify_error', hold: null,
+        state: 'frozen', freezeReason: 'classify_error',
       }],
       ['queue', [], {
-        state: 'frozen', freezeReason: 'classify_error', hold: null,
+        state: 'frozen', freezeReason: 'classify_error',
       }],
     ],
   );

@@ -2,14 +2,15 @@
 
 // Every surface that shows a judgement — the chat bar, the Air deck, the
 // roster cards, the app dashboard — renders Aux's LAST verdict about a session.
-// That verdict is only meaningful while Aux is answering: when Aux itself is
-// unhealthy it stops changing, and a two-day-old goal keeps being presented as
-// "what the assistant currently thinks this session is doing". The user reads
-// it as a live judgement and asks why nothing moved.
+// That verdict is only meaningful while Aux is answering: after an Aux request
+// fails, a two-day-old goal can still be presented as "what the assistant
+// currently thinks this session is doing". The user reads it as a live
+// judgement and asks why nothing moved.
 //
 // So a verdict travels with its own freshness. `task_state` payloads (the one
 // channel all those surfaces already consume) therefore carry two facts:
-// whether Aux is healthy, and since when it has not been. The judgement itself
+// whether the latest observed Aux availability is healthy, and since when it
+// has not been. The judgement itself
 // is deliberately NOT blanked: it is still the best description available, and
 // throwing it away would lose real information. It just stops claiming to be
 // current.
@@ -40,9 +41,10 @@ function readAuxHealth() {
 // It deliberately carries no diagnosis (no category, no upstream error text):
 // task_state is fanned out to every client subscribed to a session, a shared
 // session's sharees included, and Aux's upstream failure is provider plumbing
-// that says nothing about the conversation. "The judgement is paused" is the
-// whole fact a viewer needs; /manage's aux panel is where the operator reads
-// the reason.
+// that says nothing about the conversation. "The last judgement may be stale"
+// is the whole fact a viewer needs; /manage's aux panel is where the operator
+// reads the reason. This signal is observational only: request producers must
+// never use it as an admission gate; every later request still reaches Aux.
 function auxVerdictStaleness() {
   const health = readAuxHealth();
   if (!health || !health.unhealthy) return { auxUnhealthy: false, auxUnhealthySince: null };

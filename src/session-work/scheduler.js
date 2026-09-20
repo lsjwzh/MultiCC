@@ -9,10 +9,6 @@ const { turnOutcomeForClassify } = require('../classify/vocab');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
-// Under an E verdict the queue parks for a human decision. These kinds ARE
-// that decision: a structured repair answer, an approval, or an explicit
-// retry/resume. Ordinary conversation input (task/continuation) stays parked.
-const HUMAN_DECISION_KINDS = new Set(['answer', 'approval', 'retry', 'resume']);
 const RESOLUTION_ACTIONS = new Set(['skip', 'cancel', 'resolve']);
 const RETRY_ACTIONS = new Set(['retry', 'resume']);
 const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
@@ -196,10 +192,7 @@ function controlAllowedByClassify(item, classifyState) {
   // Every session.work payload is ultimately one native conversation message.
   // Classify P is the only staging gate; W/B/E/D may start a fresh CLI turn
   // even when the previous -p process and its physical active slot are gone.
-  // (The E parking rule lives in the idle branch of selectSessionItem: it
-  // blocks *queued* FIFO deliveries after an error. This shared predicate also
-  // serves the still-active gap, where a continuation related to the live
-  // entry remains attachable even while canonical classify already shows E.)
+  // E is an outcome label for that prior turn, never a queue gate.
   if (item?.payload?.type === 'session.work') return classifyState !== 'P';
   // An async dispatch result is a new conversation message, not a background
   // wait state. It must never interrupt an active P turn, but once that turn
@@ -231,10 +224,7 @@ function newSchedule(sessionId, at) {
     freezeReason: null,
     awaitingRequestId: null,
     classifyState: null,
-    // Wall-clock of the LAST classify verdict write. Under an E verdict it is
-    // the cutoff that separates "stale FIFO work parked by the error" (admits
-    // older than this stay parked) from "fresh human input after the error"
-    // (admits newer than this are the human decision and may be promoted).
+    // Wall-clock of the last classify verdict write, retained for diagnostics.
     classifyStateAt: null,
     priorityEntryId: null,
     active: null,
@@ -249,13 +239,6 @@ function queuedText(item) {
   return String(value).slice(0, MAX_PUBLIC_MESSAGE_LENGTH);
 }
 
-// Host-wide hold provider, installed by the most recent factory creation
-// that passed getSessionHold. publicSchedule is module-level (shared by every
-// call site, including the WS emit paths), so the provider lives here too;
-// each factory creation resets it, keeping Node tests that never pass the
-// dep on the null (no-hold) path.
-let sessionHoldProvider = null;
-
 function publicSchedule(schedule, queue = []) {
   if (!schedule) return null;
   // A correlated request_user_input answer is a durable control hand-off, not
@@ -263,18 +246,12 @@ function publicSchedule(schedule, queue = []) {
   // but exposing it in the ordinary FIFO makes the picker answer look "staged"
   // and lets reconnect snapshots resurrect that false queue card.
   const shown = visibleQueue(queue);
-  const hold = typeof sessionHoldProvider === 'function'
-    ? sessionHoldProvider(schedule.sessionId) : null;
   return {
     sessionId: schedule.sessionId,
     state: schedule.state,
     freezeReason: schedule.freezeReason || null,
     awaitingRequestId: schedule.awaitingRequestId || null,
     classifyState: classifyStateForSchedule(schedule),
-    // Non-null while a host-wide hold gate (network unhealthy) is deferring
-    // this session's deliveries: every queued item below carries held:true
-    // and the client should render 已暂挂, not 执行中.
-    hold: hold ? { reason: hold.reason || 'network_unhealthy', sinceAt: hold.sinceAt || null } : null,
     active: schedule.active ? clone(schedule.active) : null,
     queued: shown.map((item, index) => ({
       entryId: item.id,
@@ -286,7 +263,6 @@ function publicSchedule(schedule, queue = []) {
       state: item.state,
       workKind: workKind(item),
       priority: item.id === schedule.priorityEntryId,
-      held: !!hold,
       position: index + 1,
       admittedAt: item.createdAt,
       text: queuedText(item),
@@ -304,17 +280,11 @@ function createSessionWorkScheduler({
   getClassifyState = null,
   getPendingUserInput = null,
   getTurnId = null,
-  getSessionHold = null,
   log = () => {},
 } = {}) {
   if (!store || typeof store.mutate !== 'function' || typeof store.read !== 'function') {
     throw new TypeError('[session-scheduler] orchestration store is required');
   }
-  // Host-wide hold state (today: api-error-host network hold). Consulted on
-  // every publicSchedule snapshot so the queued card can say 已暂挂 instead
-  // of 执行中 while a hold gate is claim→release cycling deliveries.
-  sessionHoldProvider = typeof getSessionHold === 'function' ? getSessionHold : null;
-
   function safeQueueSummary(schedule, classifyState = null) {
     if (!schedule?.sessionId) return null;
     return {
@@ -467,54 +437,18 @@ function createSessionWorkScheduler({
         : 'D';
       // P is the sole input staging state. Once classify leaves P, a typed or
       // control message may start a fresh native turn even if it was admitted
-      // before the previous process exited. The directRun fast lane does NOT
-      // apply to E: directRun exists to carry typed input across the P
-      // boundary, not to overrule an error verdict — an E-at-rest queue falls
-      // through to the E gate below, which parks ordinary deliveries for a
-      // human decision (control items still consult controlAllowedByClassify,
-      // where session.work under E is limited to explicit retry/resume).
+      // before the previous process exited. E describes the previous turn's
+      // outcome only; it never gates this request or later FIFO work.
       if (cls !== 'P') {
-        const direct = cls !== 'E' ? ordered.find(it => it.directRun) : null;
+        const direct = ordered.find(it => it.directRun);
         if (direct) return direct;
-        // Under E the control lane narrows too: a queued session.work
-        // continuation is an ordinary parked delivery (handled by the E gate
-        // below), not a human decision. Only answer/approval/retry/resume pass.
         const control = ordered.find(item => isControlItem(item)
-          && controlAllowedByClassify(item, cls)
-          && (cls !== 'E'
-            || item?.payload?.type !== 'session.work'
-            || HUMAN_DECISION_KINDS.has(workKind(item))));
+          && controlAllowedByClassify(item, cls));
         if (control) return control;
       }
-      // At-rest verdicts (W/B) leave stale FIFO items untouched — the queue
-      // does nothing until the user's next direct admit or a D verdict. Every
-      // other state (D succeeded, never-classified, P exhausted) drains FIFO.
+      // W/B are real waits. P still has an owned turn. D/E otherwise drain:
+      // E describes the request that just ended and cannot gate a later one.
       if (cls === 'W' || cls === 'B') return null;
-      if (cls === 'E') {
-        // E parks the queue for a human decision. A user-selected "insert now"
-        // promotion IS that decision (insertQueued marks priorityEntryId and
-        // directRun precisely so this exact entry survives an E verdict), and a
-        // hidden task execution slot has no human: Task Board owns the failed
-        // run's lifecycle (the error ledger entry and the bounded retry already
-        // consumed the E verdict), so its own re-engagement — any delivery
-        // carrying task-run lineage — IS that decision too. Unlock the promoted
-        // entry first, then the oldest lineage item; ordinary deliveries stay
-        // parked exactly as before.
-        if (priorityEntryId) {
-          const promoted = ordered.find(item => item.id === priorityEntryId);
-          if (promoted) return promoted;
-        }
-        // Re-engagement is Task Board run machinery (dispatch.request): a
-        // hidden execution slot has no user, so its own retry of a failed run
-        // IS the decision. Typed chat input (session.work) is never auto-
-        // re-engaged under E — words staged before the error are stale FIFO
-        // and wait for a fresh human decision, exactly like the park holds
-        // them for selection purposes.
-        const reengagement = ordered.find(item => taskRunIdForItem(item) != null
-          && item?.payload?.type !== 'session.work');
-        if (reengagement) return reengagement;
-        return null;
-      }
       if (cls === 'P') return null;
       return ordered[0];
     }
@@ -682,17 +616,6 @@ function createSessionWorkScheduler({
         // outranks unrelated user work already staged behind that interaction.
         schedule.priorityEntryId = admitted.item.id;
       }
-      // E-at-rest typed input IS the human decision the E park waits for, on
-      // the same authority as an explicit "insert now": fresh text entered
-      // while the queue sits on an error verdict promotes at once instead of
-      // parking behind the failed turn's stale FIFO. Work staged before the E
-      // verdict keeps its older admit timestamp and stays parked — only a new
-      // admission (this item, created just now) can carry the promotion.
-      if (directMessage && !specialAnswer
-          && !schedule.active && schedule.state === 'idle'
-          && classifyStateForSchedule(schedule) === 'E') {
-        schedule.priorityEntryId = admitted.item.id;
-      }
       schedule.updatedAt = at;
       const queue = queueForDraft(draft, cleanSessionId);
       const selected = selectSessionItem(queue, draft, at);
@@ -851,17 +774,6 @@ function createSessionWorkScheduler({
         schedule.awaitingRequestId = null;
         schedule.classifyState = schedule.classifyState || 'D';
         if (schedule.priorityEntryId === item.id) schedule.priorityEntryId = null;
-        // A retryable delivery failure (host veto, transient turn rejection)
-        // must not consume an explicit human promotion: under an E verdict the
-        // promoted entry is otherwise unselectable (the E park ignores
-        // directRun and the priority mark was just cleared by the claim), so
-        // one failed attempt would wedge "insert now" forever. Restore the
-        // promotion for the still-pending entry; the retry path re-attempts
-        // it on the next tick.
-        if (schedule.classifyState === 'E'
-            && draft.outbox[item.id]?.state === 'pending') {
-          schedule.priorityEntryId = item.id;
-        }
       } else {
         schedule.active.deliveryId = schedule.active.entryId;
         schedule.active.workKind = 'task';
@@ -975,8 +887,8 @@ function createSessionWorkScheduler({
         ? String(awaitingRequestId)
         : null;
       if (schedule.priorityEntryId === completed.entryId) schedule.priorityEntryId = null;
-      // classifyState is the LETTER (D/W/B/E). D = turn succeeded (drains FIFO);
-      // W/B/E = released but at-rest (FIFO only drains on D, see selectSessionItem).
+      // classifyState is the LETTER (D/W/B/E). W/B represent real waits; D/E
+      // both release FIFO because an error in one request cannot gate the next.
       schedule.classifyState = CLASSIFY_STATES.has(classifyState) ? classifyState : 'D';
       schedule.classifyStateAt = at;
       // A turn ending on an unanswered question must not let work staged while
@@ -1051,7 +963,7 @@ function createSessionWorkScheduler({
     const recoveredClassify = CLASSIFY_STATES.has(recoveredState.classifyState)
       ? recoveredState.classifyState : null;
     // Recovery follows the same rule as the live path (T1): every verdict
-    // releases the active slot via complete(). D drains FIFO; W/B/E leave it.
+    // releases the active slot via complete(). D/E drain FIFO; W/B leave it.
     // No classify-driven freeze on restart either.
     if (recoveredClassify) {
       return complete(item.sessionId, {
@@ -1255,22 +1167,8 @@ function createSessionWorkScheduler({
       if (item.state !== 'pending') {
         return { ok: false, code: 'queued_entry_not_pending' };
       }
-      // The E park is a human-decision gate: "insert now" counts only when the
-      // promoted entry POST-DATES the error verdict. Work admitted before the
-      // E settled (including direct input typed while the failed turn was
-      // still running) is exactly the stale FIFO the park exists to hold; a
-      // click on it must not resurrect it. Fresh post-E input never lands here
-      // — admit() already promotes it — so this check only guards the stale
-      // path.
-      if (classifyStateForSchedule(schedule) === 'E'
-          && Number.isFinite(Number(schedule.classifyStateAt))
-          && Number(item.createdAt) < Number(schedule.classifyStateAt)) {
-        return {
-          ok: false,
-          code: 'e_park_stale_entry',
-          classifyStateAt: Number(schedule.classifyStateAt),
-        };
-      }
+      // "Insert now" is an entry-scoped scheduling override. It does not alter
+      // API-error state or create a cross-request recovery policy.
       const at = Number(now());
       const active = schedule.active;
       // "Insert now" replaces the currently running attempt with this exact
@@ -1314,7 +1212,7 @@ function createSessionWorkScheduler({
       }
       // A user-selected "insert now" item is not merely FIFO priority. Once
       // the route cancels/releases the active slot, directRun makes this exact
-      // pending entry immediately selectable even when the prior verdict is E.
+      // pending entry immediately selectable.
       item.directRun = true;
       item.userInputOverrideId = canonicalPendingUserInput(sessionId)?.requestId || null;
       schedule.priorityEntryId = cleanEntryId;
@@ -1530,16 +1428,15 @@ function createSessionWorkScheduler({
         if (!schedule) {
           schedule = ensure(draft, sessionId, at);
           schedule.classifyState = recoveredClassify;
-          // Recovery cannot reconstruct the original verdict wall-clock; the
-          // recovery time is the conservative cutoff — every pre-restart
-          // admission is "stale" under a recovered E park.
+          // Recovery cannot reconstruct the original verdict wall-clock; keep
+          // the recovery time only as diagnostic metadata.
           schedule.classifyStateAt = at;
           // A pending outbox item is not evidence of an active task. This is
           // especially important now that the public FIFO includes callbacks:
           // a lone task.interrupted notification must remain deliverable.
           // Rebuild a legacy active pointer only from an explicit non-D
           // classify fact.
-          if (recoveredClassify && recoveredClassify !== 'D') {
+          if (recoveredClassify && !['D', 'E'].includes(recoveredClassify)) {
             schedule.active = {
               entryId: `legacy-active:${sessionId}`,
               deliveryId: null,
@@ -1583,6 +1480,39 @@ function createSessionWorkScheduler({
           : null;
         const deliveryNeedsAck = activeDelivery
           && (activeDelivery.state === 'pending' || activeDelivery.state === 'leased');
+        if (classifyState === 'E') {
+          const completed = clone(schedule.active);
+          schedule.active = null;
+          schedule.state = 'idle';
+          schedule.freezeReason = null;
+          schedule.awaitingRequestId = null;
+          schedule.lastDecision = {
+            action: completed.supersededByEntryId ? 'superseded' : 'complete',
+            reason: completed.supersededByEntryId
+              ? 'superseded_by_immediate_insert' : 'recovered-classify-E',
+            entryId: completed.entryId,
+            taskId: completed.taskId || null,
+            taskRunId: completed.taskRunId || null,
+            leaseEpoch: completed.leaseEpoch || null,
+            originDispatchId: completed.originDispatchId || null,
+            supersededByEntryId: completed.supersededByEntryId || null,
+            at,
+          };
+          schedule.updatedAt = at;
+          changes.push({
+            type: 'completed',
+            sessionId,
+            entryId: completed.entryId,
+            taskId: completed.taskId || null,
+            taskRunId: completed.taskRunId || null,
+            leaseEpoch: completed.leaseEpoch || null,
+            classifyState: 'E',
+            turnOutcome: 'failed',
+            queued: queueForDraft(draft, sessionId).length,
+            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
+          });
+          continue;
+        }
         if (classifyState === 'D') {
           if (!recoveredSuccessProven(schedule, recoveredState)) {
             schedule.classifyState = 'P';
