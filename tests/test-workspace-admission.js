@@ -91,7 +91,7 @@ async function hostFixture(t, options = {}) {
   const git = args => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git(['init', '-b', 'main']); git(['config', 'user.name', 'Test']); git(['config', 'user.email', 'test@example.invalid']); git(['commit', '--allow-empty', '-m', 'base']);
   const record = { id: 'task-test', kind: 'chat', cli: 'codex', dirId: 'd', branch: 'multicc/task-test', worktreePath: path.join(repo, '.multicc-worktrees/task-test'), workspaceState: 'planned' };
-  const records = new Map([[record.id, record]]), state = {}, flags = { background: false, closes: 0, creates: 0 };
+  const records = new Map([[record.id, record]]), state = {}, flags = { background: false, closes: 0, creates: 0, pendingInput: null };
   const hibernationRuntime = {
     ensureAwake: async () => ({ ok: true }),
     reclaimForCapacity: options.reclaimForCapacity,
@@ -101,7 +101,8 @@ async function hostFixture(t, options = {}) {
     ensureDir: async () => ({ ok: true }), addWorktree: async () => { flags.creates++; git(['worktree', 'add', '-b', record.branch, record.worktreePath, 'main']); return { worktreePath: record.worktreePath, branch: record.branch }; },
     validate: async () => ({ ok: true }), hibernation: () => hibernationRuntime,
     budgets: options.limits,
-    hasBackground: () => flags.background, streamBusy: () => false, closePersistent: async () => { flags.closes++; return { closed: true }; }, updateCwd: () => {}, log: () => {} };
+    hasBackground: () => flags.background, streamBusy: () => false, pendingInput: () => flags.pendingInput,
+    closePersistent: async () => { flags.closes++; return { closed: true }; }, updateCwd: () => {}, log: () => {} };
   const host = createWorkspaceAdmission(deps); t.after(() => host.close()); host.initialize();
   const descriptor = id => ({ sessionId: record.id, item: { id }, opts: { deliveryId: id } });
   return { ...f, host, record, descriptor, flags, state, deps, hibernationRuntime };
@@ -249,6 +250,25 @@ test('separation barrier holds the workspace, rechecks the frozen revision and r
   assert.equal(f.host.deliveryEvidence(f.record.id, 'turn-separate').application.id, application.id);
   const next = f.descriptor('after-barrier'), nextGuard = await f.host.beforeDeliver(next);
   await nextGuard.complete({ accepted: false, durable: false });
+});
+
+test('separation drains a terminal wait-for-user lease before taking its snapshot', async t => {
+  const f = await hostFixture(t), d = f.descriptor('waiting-source');
+  const guard = await f.host.beforeDeliver(d);
+  f.host.bindTurn(f.record.id, d.opts, 'turn-waiting', 'task-source');
+  f.host.starting(f.record.id, d.opts, 'attempt-waiting'); await guard.complete({ accepted: true });
+  f.flags.pendingInput = { requestId: 'usrq-waiting' };
+  f.host.settled(f.record.id, { status: 'waiting' });
+  f.host.finalized({ sessionName: f.record.id, turn: { turnId: 'turn-waiting', resultDurable: true }, usageDurable: true,
+    runner: { providerAttempt: { routeAttemptId: 'attempt-waiting' } } },
+  { effects: [], facts: { completion: { state: 'completed' } } });
+  let captured;
+  await f.host.withSeparationBarrier({ sessionId: f.record.id, turnId: 'turn-waiting', separationId: 'sep-waiting' }, async value => {
+    captured = value;
+  });
+  assert.equal(f.host.deliveryEvidence(f.record.id, 'turn-waiting').run.outcome, 'waiting');
+  assert.equal(captured.barrier.separationId, 'sep-waiting');
+  assert.equal(captured.code.dirty, false);
 });
 
 test('an uncertain lease whose writer pid is provably dead is reclaimed without waiting out the threshold', async t => {
