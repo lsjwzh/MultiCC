@@ -160,6 +160,56 @@ function createSessionWorkHost(deps = {}) {
     return admitted;
   }
 
+  // A separated turn takes its open question along. The source settles exactly
+  // as if the question were dismissed there (classify D + card teardown via the
+  // resolve broadcast), while the target session adopts the pending request and
+  // announces it, so a window already open on the new task shows the card
+  // without waiting for a reconnect replay. Called by the task-shell separation
+  // flow after the new execution exists; the separation writer barrier has
+  // already proven the source has no live writers.
+  async function moveInput(sourceId, targetId, { turnId, taskId } = {}) {
+    if (typeof deps.moveUserInput !== 'function') return { ok: false, code: 'move_not_supported' };
+    const sourceRecord = deps.getRecord(sourceId);
+    if (!sourceRecord) return { ok: false, code: 'session_not_found' };
+    const pending = deps.pendingUserInput(sourceId);
+    if (!pending || pending.resolved === true) {
+      return { ok: false, code: pending ? 'already_resolved' : 'no_pending_request' };
+    }
+    const moved = deps.moveUserInput(sourceId, targetId, { turnId, taskId });
+    if (!moved?.ok) return moved;
+    const state = deps.getTaskState(sourceRecord) || {};
+    deps.dispatchStateAction({
+      state: 'D', goal: state.goal || '', phase: state.phase || '',
+      evidence: 'user_input_moved_separation', requestId: moved.requestId,
+    }, {
+      sessionName: sourceId, sessionId: sourceRecord.id || sourceId,
+      cs: deps.getChatSession(sourceId) || null, isTerminal: sourceRecord.kind !== 'chat',
+      taskId: pending.taskId || null, source: 'user_input_moved',
+    });
+    const transition = pendingTransitions.get(sourceId);
+    if (transition) {
+      const settled = await transition;
+      if (settled?.ok === false && settled.code !== 'stale_classification') return settled;
+    }
+    if (pending.taskId) deps.reconcileTaskProjection?.(pending.taskId, {
+      classifyState: 'D', reason: 'user_input_moved_separation',
+    });
+    const question = moved.question || pending;
+    deps.broadcast(targetId, {
+      type: 'user_input_required',
+      requestId: moved.requestId,
+      turnId: question.turnId || null,
+      taskId: taskId || question.taskId || null,
+      question: question.question,
+      reason: question.reason || '',
+      options: Array.isArray(question.options) ? question.options : [],
+      allowMultiple: question.allowMultiple === true,
+      ...(question.inputType === 'secret' && question.secretName
+        ? { inputType: 'secret', secretName: question.secretName } : {}),
+    });
+    return { ok: true, requestId: moved.requestId, resolution: 'moved' };
+  }
+
   // A manual settlement consumes the question, without admitting an answer or
   // starting a provider turn. Recheck after the asynchronous scheduler read.
   async function dismissUserInput(sessionId, requestId) {
@@ -935,6 +985,7 @@ function createSessionWorkHost(deps = {}) {
     classifyUnavailable,
     getRunState,
     isRunActive,
+    moveInput,
     onSchedulerEvent,
     recordInput,
     recoveryState,
