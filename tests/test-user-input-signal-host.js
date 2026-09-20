@@ -370,3 +370,73 @@ test('manual dismissal persists audit and replay evidence without reviving degra
   host.resolve('chat-1', 'old', { dismissed: true });
   assert.equal(events.length, 1);
 });
+
+// ── move(): task separation transfers the judged turn's open question ───────
+
+test('move settles the source as moved and replants the unanswered request on the target', () => {
+  const events = [];
+  const { host, states } = fixture({ onResolved: (...args) => events.push(args) });
+  host.record({ requestId: 'usrq-m1', sessionId: 'chat-1', turnId: 'turn-1',
+    question: '这版视觉走哪条路？', reason: '方向决定改动面', options: ['demo', '正式代码'] });
+  states.set('chat-2', { classifyState: 'D' });
+  const moved = host.move('chat-1', 'chat-2', { turnId: 'turn-1', taskId: 'task-2' });
+  assert.equal(moved.ok, true);
+  assert.equal(moved.requestId, 'usrq-m1');
+  // Source: resolved(moved), with a durable replay marker so a late reconnect
+  // tears the stale card down instead of re-asking.
+  const source = states.get('chat-1').pendingUserInput;
+  assert.equal(source.resolved, true);
+  assert.equal(source.resolution, 'moved');
+  assert.equal(source.movedToSessionId, 'chat-2');
+  assert.deepEqual(host.lastResolved('chat-1'), { requestId: 'usrq-m1', at: 1234, taskId: 'task-1', resolution: 'moved' });
+  // The resolve broadcast fires once so every open source window closes the card.
+  assert.deepEqual(events, [['chat-1', 'usrq-m1', 'task-1', { resolution: 'moved' }]]);
+  // Target: same requestId/turnId (answer correlation), retargeted taskId, and
+  // the signal turn id mirrored so getTurnId correlates a session that has not
+  // run a turn of its own yet.
+  const target = states.get('chat-2');
+  assert.deepEqual(target.pendingUserInput, {
+    requestId: 'usrq-m1',
+    turnId: 'turn-1',
+    taskId: 'task-2',
+    question: '这版视觉走哪条路？',
+    reason: '方向决定改动面',
+    options: ['demo', '正式代码'],
+    allowMultiple: false,
+    createdAt: 1234,
+    resolved: false,
+    movedFromSessionId: 'chat-1',
+  });
+  assert.equal(target.userInputSignalTurnId, 'turn-1');
+  // The moved question behaves like any pending one on the target: the answer
+  // resolves it, and W projection applies.
+  assert.equal(host.degradedResult('chat-2', { goal: 'g', phase: 'p' }).state, 'W');
+  assert.deepEqual(host.resolve('chat-2', 'usrq-m1'), { ok: true, duplicate: false });
+});
+
+test('move refuses mismatched turn, resolved source and occupied target without side effects', () => {
+  const { host, states } = fixture();
+  host.record({ requestId: 'usrq-m2', sessionId: 'chat-1', turnId: 'turn-1', question: '？' });
+  states.set('chat-2', {});
+  assert.equal(host.move('chat-1', 'chat-2', { turnId: 'turn-OTHER' }).code, 'turn_mismatch');
+  assert.equal(host.move('chat-1', 'chat-1', {}).code, 'invalid_move');
+  assert.equal(host.move('nobody', 'chat-2', {}).code, 'no_pending_request');
+  states.get('chat-2').pendingUserInput = { requestId: 'usrq-x', resolved: false };
+  const before = JSON.stringify(states);
+  assert.equal(host.move('chat-1', 'chat-2', {}).code, 'target_already_pending');
+  assert.equal(JSON.stringify(states), before, 'rejected moves change nothing');
+  host.resolve('chat-1', 'usrq-m2');
+  assert.equal(host.move('chat-1', 'chat-2', {}).code, 'already_resolved');
+  assert.equal(states.get('chat-2').pendingUserInput.requestId, 'usrq-x');
+});
+
+test('move carries secret-mode fields so the target renders a password input', () => {
+  const { host, states } = fixture();
+  host.record({ requestId: 'usrq-s9', sessionId: 'chat-1', turnId: 'turn-1',
+    question: '请填写 API Key', inputType: 'secret', secretName: 'OPENAI_API_KEY' });
+  states.set('chat-2', {});
+  assert.equal(host.move('chat-1', 'chat-2', { taskId: 'task-2' }).ok, true);
+  const target = states.get('chat-2').pendingUserInput;
+  assert.equal(target.inputType, 'secret');
+  assert.equal(target.secretName, 'OPENAI_API_KEY');
+});

@@ -150,6 +150,12 @@ function createTaskShellHost(deps) {
       },
       withSeparationBarrier: (input, work) => deps.getWorkspaceAdmission?.()?.withSeparationBarrier(input, work),
       recordSeparationApplication: input => deps.getWorkspaceAdmission?.()?.recordSeparationApplication(input),
+      // Separation handoff side effects: the new task's visible transcript is
+      // seeded through the chat-history writer, and the judged turn's open
+      // wait_user question moves through the session work host (which owns the
+      // source-side settle and the target-side announce).
+      appendHistory: (id, message) => deps.appendHistory?.(id, message),
+      movePendingUserInput: (sourceId, targetId, opts) => deps.getWorkHost?.()?.moveInput?.(sourceId, targetId, opts),
       createExecution: async (task, source) => {
         const dir = deps.directories.get(task.dirId);
         if (!dir) throw failure('directory_missing');

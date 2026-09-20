@@ -204,3 +204,47 @@ test('HTTP confirmation binds session and suggestion, validates decisions and ke
     const body = await res.json(); assert.equal(body.code || null, code); assert.equal(body.ok, !code);
   }
 });
+test('confirmed separation seeds the full judged turn into the new transcript and moves its open question', async t => {
+  const f = await setup(t);
+  const appended = [], moves = [];
+  f.ports.appendHistory = (id, message) => {
+    appended.push({ id, message });
+    f.histories.set(id, [...(f.histories.get(id) || []), message]);
+    return true;
+  };
+  f.ports.movePendingUserInput = async (sourceId, targetId, opts) => {
+    moves.push({ sourceId, targetId, opts });
+    return { ok: true, requestId: 'usrq-1' };
+  };
+  const before = JSON.stringify(f.histories.get('a'));
+  const p = f.propose();
+  const result = await f.runtime.separation.decide('a', p.id, 'separate');
+  const task = f.store.get('task', result.taskId);
+  // Only the judged turn (turn-1) is seeded — the older exchange stays behind,
+  // content is the full history text, not the context snapshot's excerpt.
+  assert.equal(result.seededMessages, 2);
+  assert.deepEqual(appended.map(a => a.message.content), ['Unrelated goal', 'New result']);
+  assert.ok(appended.every(a => a.id === task.sessionId
+    && a.message.taskId === task.id
+    && a.message.sourceSessionId === 'a'
+    && a.message.importedBy === p.id
+    && typeof a.message.importedAt === 'number'));
+  assert.deepEqual(appended.map(a => a.message.sourceMessageId), ['u1', 'a1']);
+  assert.deepEqual(appended.map(a => a.message.contextMessageId), ['a:u1', 'a:a1']);
+  assert.equal(JSON.stringify(f.histories.get('a')), before, 'source transcript is canonical and untouched');
+  // The judged turn's open wait_user question moves to the new task.
+  assert.deepEqual(moves, [{ sourceId: 'a', targetId: task.sessionId, opts: { turnId: 'turn-1', taskId: task.id } }]);
+  assert.equal(result.movedUserInput, 'usrq-1');
+  // A repeated decide returns the stored result without re-seeding or re-moving.
+  const replay = await f.runtime.separation.decide('a', p.id, 'separate');
+  assert.deepEqual(replay, result);
+  assert.equal(appended.length, 2);
+  assert.equal(moves.length, 1);
+});
+test('separation succeeds without the handoff ports and reports zero seeded messages', async t => {
+  const f = await setup(t), p = f.propose();
+  const result = await f.runtime.separation.decide('a', p.id, 'separate');
+  assert.equal(result.ok, true);
+  assert.equal(result.seededMessages, 0);
+  assert.equal(result.movedUserInput, null);
+});
