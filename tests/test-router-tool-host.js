@@ -282,3 +282,26 @@ test('spawnProcess injects vault entries into the child env (set-if-absent)', ()
   const pinned = spawnProbe({ RTH_SMOKE_TOKEN: 'provider-set' });
   assert.equal(pinned.RTH_SMOKE_TOKEN, 'provider-set');
 });
+
+test('a host-owned image bridge is advertised to a Claude chat when a direct Codex login exists', () => {
+  const records = new Map([['claude-chat', {
+    id: 'claude-chat', cli: 'claude', provider: 'claude-official', dirId: 'dir', kind: 'chat', type: 'worker',
+  }]]);
+  const host = createRouterToolHost({ express, isLocalRequest, logger: { warn() {}, error() {} } });
+  let stopped = 0;
+  host.configure({
+    records,
+    orchestrationRuntime: { operations: { get: async () => null, list: async () => [] }, waits: { get: async () => null } },
+    dispatchToSession: async () => ({ ok: false }),
+    recordUserInput: async () => ({ ok: true }),
+    imageBridge: {
+      isEligible: session => session?.cli === 'claude',
+      stopAll: () => { stopped += 1; },
+    },
+  });
+  const context = host.processContext({ sessionId: 'claude-chat', turnId: 'turn-1', baseUrl: 'http://127.0.0.1:3000' });
+  assert.equal(context.env.MULTICC_IMAGE_BRIDGE, '1');
+  context.revoke();
+  host.clear();
+  assert.equal(stopped, 1);
+});

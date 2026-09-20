@@ -20,6 +20,8 @@ function createRouterToolHost({
     throw new TypeError('[router-tool-host] locality port is required');
   }
   let runtime = null;
+  let imageBridge = null;
+  let configuredRecords = null;
 
   function configure({
     records,
@@ -34,7 +36,10 @@ function createRouterToolHost({
     onDispatchCancelled,
     getTaskContext,
     listSecrets,
+    imageBridge: configuredImageBridge,
   } = {}) {
+    imageBridge = configuredImageBridge || null;
+    configuredRecords = records || null;
     runtime = createRouterToolRuntime({
       records,
       dispatchToSession,
@@ -101,6 +106,7 @@ function createRouterToolHost({
           taskSource: turn.task?.source || null,
         } : null;
       }),
+      imageBridge,
     });
   }
 
@@ -208,6 +214,7 @@ function createRouterToolHost({
         MULTICC_TURN_ID: turnId,
         MULTICC_ORIGIN_DISPATCH_ID: originDispatchId || '',
         MULTICC_ROUTER_CAPABILITY: token,
+        MULTICC_IMAGE_BRIDGE: imageBridge?.isEligible?.(configuredRecords?.get?.(sessionId)) ? '1' : '0',
       }),
       bind(proc) {
         proc.once('error', revoke);
@@ -219,6 +226,7 @@ function createRouterToolHost({
 
   function clear() {
     runtime?.clear();
+    imageBridge?.stopAll?.();
   }
 
   function refreshPersistentProcess(holder, env, context) {
