@@ -270,19 +270,19 @@
     .dir-block:hover{border-color:var(--line-strong);transform:translateY(-2px)}
     body.has-focus .dir-block{transform:none}
 
- /* rainbow border for running cards — animates border-color + glow, follows border-radius */
+ /* 运行中的卡片：加粗的浅色描边，不再是彩虹。
+    原来是 3s infinite 的 border-color + 带模糊光晕的 box-shadow 关键帧 —— 逐帧改
+    这两个属性每帧都要重绘整张卡（光晕还要重算模糊），而这台机器上 Chrome 关着图
+    形加速（走软件光栅），屏幕上只要一直在动，合成器就永远不归零。现在颜色是静态
+    的：--card-tint 由 manage-dashboard.js 按卡片 id 从 status-presentation.js 那份
+    调色板里挑（同一张卡每次同一个色，彼此看着是随机的）。类名保留 —— 谁在跑这件
+    事没变，变的只是它还动不动。 */
  .card-border-rainbow {
-   animation: rainbow-border 3s linear infinite;
+   border-color: var(--card-tint, var(--codex));
+   box-shadow: 0 0 0 2px color-mix(in srgb, var(--card-tint, var(--codex)) 55%, transparent);
  }
- @keyframes rainbow-border {
-   0%   { border-color: #ff0000; box-shadow: 0 0 0 1px #ff0000, 0 0 14px #ff000088; }
-   14%  { border-color: #ff8800; box-shadow: 0 0 0 1px #ff8800, 0 0 14px #ff880088; }
-   28%  { border-color: #ffff00; box-shadow: 0 0 0 1px #ffff00, 0 0 14px #ffff0088; }
-   42%  { border-color: #00ff00; box-shadow: 0 0 0 1px #00ff00, 0 0 14px #00ff0088; }
-   57%  { border-color: #0088ff; box-shadow: 0 0 0 1px #0088ff, 0 0 14px #0088ff88; }
-   71%  { border-color: #0000ff; box-shadow: 0 0 0 1px #0000ff, 0 0 14px #0000ff88; }
-   85%  { border-color: #8800ff; box-shadow: 0 0 0 1px #8800ff, 0 0 14px #8800ff88; }
-   100% { border-color: #ff0000; box-shadow: 0 0 0 1px #ff0000, 0 0 14px #ff000088; }
+ @supports not (background: color-mix(in srgb, red 20%, transparent)) {
+   .card-border-rainbow { box-shadow: 0 0 0 2px var(--card-tint, var(--codex)); }
  }
     .dir-header{display:flex;align-items:flex-start;gap:11px;padding:15px 17px 12px}
     body.has-focus .dir-header{padding:12px;gap:8px}
@@ -382,9 +382,10 @@
     .btn-icon.merge-ready:hover{background:var(--accent-dim)}
     .sess-merge-btn{flex:0 0 auto;display:inline-flex;align-items:center;gap:3px;height:22px;padding:0 7px;font-size:10px;font-weight:700;border-radius:11px;border:1px solid var(--accent-line);background:var(--accent-dim);color:var(--accent);cursor:pointer;white-space:nowrap;transition:.15s;line-height:1}
     .sess-merge-btn:hover{background:var(--accent);color:#04110f;border-color:var(--accent)}
-    .sess-conflict-btn{flex:0 0 auto;display:inline-flex;align-items:center;gap:3px;height:22px;padding:0 7px;font-size:10px;font-weight:700;border-radius:11px;border:1px solid rgba(255,107,99,.5);background:rgba(255,107,99,.16);color:var(--danger);cursor:pointer;white-space:nowrap;transition:.15s;line-height:1;animation:conflictPulse 1.8s ease-in-out infinite}
+    /* 冲突按钮：静态的加粗描边。原来是一圈 1.8s infinite 的 box-shadow 脉冲 ——
+       逐帧重绘整个按钮，只为了说「这里有个冲突」，而颜色和文案本来就在说这件事。 */
+    .sess-conflict-btn{flex:0 0 auto;display:inline-flex;align-items:center;gap:3px;height:22px;padding:0 7px;font-size:10px;font-weight:700;border-radius:11px;border:1.5px solid var(--danger);background:rgba(255,107,99,.16);color:var(--danger);cursor:pointer;white-space:nowrap;transition:.15s;line-height:1}
     .sess-conflict-btn:hover{background:var(--danger);color:#fff;border-color:var(--danger)}
-    @keyframes conflictPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,107,99,.0)}50%{box-shadow:0 0 0 3px rgba(255,107,99,.18)}}
     .btn-icon.danger{color:var(--danger);border-color:rgba(255,107,99,.35)}
     .btn-icon.danger:hover{color:#fff;border-color:var(--danger);background:rgba(255,107,99,.18)}
 
@@ -402,11 +403,12 @@
     .status-badge.waiting{background:rgba(227,179,65,.14);color:var(--amber)}
     .status-badge.error{background:rgba(255,107,99,.14);color:var(--danger)}
     .status-badge.inactive,.status-badge.idle{background:rgba(255,255,255,.05);color:var(--faint)}
-    .notify-badge{display:none;position:absolute;top:10px;right:12px;font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;animation:pulse-badge 1.5s infinite;z-index:1}
+    /* 「谁在等我」的角标：静态的。它挂在卡片上不动，说的是「这张卡有事」，闪烁只是
+       让整张卡每 1.5s 重绘一次 —— 一年到头都在闪的东西不传递任何变化。 */
+    .notify-badge{display:none;position:absolute;top:10px;right:12px;font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;z-index:1}
     .notify-badge.waiting{display:inline-block;background:var(--amber);color:#04110f}
     .notify-badge.completed{display:inline-block;background:var(--accent);color:#04110f}
     .notify-badge.error{display:inline-block;background:var(--danger);color:#fff}
-    @keyframes pulse-badge{0%,100%{opacity:1}50%{opacity:.5}}
     .card-body{padding:0 16px 14px;display:flex;flex-direction:column;gap:8px}
     .card-field{display:flex;align-items:baseline;gap:8px;font-size:12px}
     .card-field .field-label{color:var(--faint);flex-shrink:0;min-width:50px}
@@ -674,13 +676,15 @@
     .dd-tab:hover{color:var(--text)}
     .dd-tab.on{color:var(--text);border-bottom-color:var(--accent)}
     .dd-tab.has-running{color:var(--text);background:linear-gradient(180deg,transparent,rgba(127,212,154,.07))}
-    .dd-tab.has-running::after{content:"";position:absolute;left:8px;right:8px;bottom:-2px;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--codex),var(--accent),transparent);background-size:200% 100%;animation:ddTabRunningSweep 1.8s linear infinite}
+    /* 有任务在跑的那个页签：一条静态的渐变下划线。原来它靠 background-position 在
+       1.8s 里扫一遍 —— 每帧重绘一条渐变，而且只要还有任务在跑就永远扫下去。 */
+    .dd-tab.has-running::after{content:"";position:absolute;left:8px;right:8px;bottom:-2px;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--codex),var(--accent),transparent)}
     .dd-tab .dd-tab-running{margin-left:7px;padding:1px 6px;border:1px solid rgba(127,212,154,.35);border-radius:999px;background:rgba(127,212,154,.1);font-size:10px;font-weight:650;vertical-align:1px}
     .dd-tab-running .mc-status-ico{width:1em}
-    @keyframes ddTabRunningSweep{to{background-position:-200% 0}}
-    @media (prefers-reduced-motion:reduce){
-      .dd-tab.has-running::after{animation:none;background:var(--codex)}
-      .card-border-rainbow{animation:none;border-color:var(--codex);box-shadow:0 0 0 1px rgba(127,212,154,.55),0 0 10px rgba(127,212,154,.25)}
+    /* 关掉的是「浮起来」那一下，不是状态：运行中的描边、页签下划线都是静态的，
+       这里没有东西需要降级。 */
+      @media (prefers-reduced-motion:reduce){
+      .dir-block:hover{transform:none}
     }
 
     /* ── Task board (dir-detail modal section + stacked detail modal) ── */

@@ -59,13 +59,10 @@
       transition: background 0.3s;
     }
     #status-dot.connected    { background: #3fb950; box-shadow: 0 0 6px #3fb95088; }
-    #status-dot.connecting   { background: #d29922; animation: pulse 1s infinite; }
+    /* 连接中是静态的琥珀点：颜色 + 旁边的文字已经说清楚了，1s infinite 的呼吸
+       只是让这个 8px 的点永远在动 —— 它一动，合成器就永远在出帧。 */
+    #status-dot.connecting   { background: #d29922; box-shadow: 0 0 6px #d2992288; }
     #status-dot.disconnected { background: #f85149; }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50%       { opacity: 0.4; }
-    }
 
     #status-label {
       font-size: 12px;
@@ -155,13 +152,11 @@
       background: #f85149;
       border-color: #f85149;
       color: #fff;
-      animation: pulse 1s infinite;
     }
     .toolbar-btn.processing {
       background: #d29922;
       border-color: #d29922;
       color: #fff;
-      animation: pulse 1s infinite;
     }
 
     #mic-status {

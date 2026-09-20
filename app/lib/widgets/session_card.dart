@@ -12,7 +12,7 @@ import '../services/settings_service.dart';
 import '../services/workspace_service.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import '../widgets/git_log_sheet.dart';
-import '../widgets/rainbow_border.dart';
+import '../widgets/running_border.dart';
 import '../widgets/session_badges.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../screens/terminal_screen.dart';
@@ -100,8 +100,9 @@ class SessionCard extends StatelessWidget {
           : session.provider;
     }
 
-    return RainbowBorder(
+    return RunningBorder(
       running: isRunning,
+      seed: session.id,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         decoration: BoxDecoration(

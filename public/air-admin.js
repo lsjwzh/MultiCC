@@ -113,13 +113,16 @@
     for (const task of data?.tasks || []) if (isRunning(task)) dirs.add(task.dirId);
     return dirs;
   }
-  /** 圈的颜色：同一件东西每次挑到同一档（按 id 哈希），彼此之间看起来是随机的。 */
-  const RING_TINTS = ['#7fb0ff', '#f7b98a', '#86cdf0', '#c2a8ff', '#a8d47e', '#f2a3bf', '#7fd3c2', '#f0c66a'];
+  /** 圈的颜色：同一件东西每次挑到同一档（按 id 哈希），彼此之间看起来是随机的。
+   *
+   *  调色板和哈希都住在 status-presentation.js —— 老看板那张卡片的描边用的是同
+   *  一份（.card-border-rainbow 和 .ring-running 是同一条规则的两个壳），同一件
+   *  东西在两页上不该是两个颜色，所以这里不再自己留一份调色板。
+   *  status-presentation.js 必须在本脚本之前加载（air.html / manage.html 里就是
+   *  这么排的）；万一没有，圈退回主题强调色 —— 少一个变量不该让圈整个消失。 */
   function ringTint(seed) {
-    const text = seed == null ? '' : String(seed);
-    let hash = 0;
-    for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
-    return RING_TINTS[hash % RING_TINTS.length];
+    const shared = registry();
+    return shared ? shared.ringTint(seed) : '#7fb0ff';
   }
   /**
    * 圈是「这条在跑」的唯一视觉信号，但它不再逐帧动画：一个静态的加粗描边，颜色按

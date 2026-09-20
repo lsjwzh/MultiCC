@@ -158,11 +158,19 @@
 .mc-composer__pill--ai.is-marquee .mc-composer__pill-text-run {
   display: inline-block;
   animation: mc-pill-marquee var(--mc-pill-marquee-duration, 6s) ease-in-out infinite alternate;
+  /* 默认不动。跑马灯是唯一一处「屏幕上一直有个东西在来回走」的地方，而它归零不了
+     的原因跟彩虹圈是同一个：合成器只要还在出帧，每一帧都要重算。名字还是要能看
+     全，所以是「指上去才走」而不是删掉 —— 想在哪儿读就在哪儿读，别的时候是静的。 */
+  animation-play-state: paused;
 }
-/* Hovering is how someone reads the whole thing without waiting for the loop:
-   the pill already carries the full text as its tooltip, this just stops the
-   motion long enough to be read. */
-.mc-composer__pill--ai.is-marquee:hover .mc-composer__pill-text-run { animation-play-state: paused; }
+/* Hovering (or keyboard focus) is how someone reads the whole thing: the pill
+   already carries the full text as its tooltip, this just starts the motion
+   while you are looking at it. */
+.mc-composer__pill--ai.is-marquee:hover .mc-composer__pill-text-run,
+.mc-composer__pill--ai.is-marquee:focus-visible .mc-composer__pill-text-run,
+.mc-composer__pill--ai.is-marquee:focus-within .mc-composer__pill-text-run {
+  animation-play-state: running;
+}
 @media (prefers-reduced-motion: reduce) {
   .mc-composer__pill--ai.is-marquee .mc-composer__pill-text-run { animation: none; }
   .mc-composer__pill--ai.is-marquee .mc-composer__pill-text { text-overflow: ellipsis; }
