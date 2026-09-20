@@ -34,7 +34,6 @@ function createHostLifecycle(deps) {
     waitInjector,
     cronTasks,
     tunnel,
-    stopNetworkProbe,
     skillSyncRuntime,
     triggerRuntime,
     pushRuntime,
@@ -130,7 +129,6 @@ function createHostLifecycle(deps) {
     try { waitInjector.stop(); } catch (_) {}
     try { cronTasks.stop(); } catch (_) {}
     try { tunnel.stop(); } catch (_) {}
-    try { stopNetworkProbe(); } catch (_) {}
     try { await skillSyncRuntime.stop(); } catch (_) {}
     try { await triggerRuntime.stop(); } catch (_) {}
     try { await sessionHibernationRuntime?.stop?.(); } catch (_) {}

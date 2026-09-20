@@ -376,6 +376,38 @@ test('Aux authentication/configuration failures fail fast without recovery probe
   assert.equal(health.category, 'authentication_permission');
 });
 
+test('an unhealthy observation never suppresses the next Aux request', async () => {
+  let calls = 0;
+  const harness = createHarness({
+    executeAuxHttp: async () => {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('permission denied');
+        error.status = 403;
+        throw error;
+      }
+      return 'recovered-response';
+    },
+    recordApiError: () => ({
+      action: 'fail_fast',
+      error: { category: 'authentication_permission', retryable: false },
+    }),
+  });
+
+  await assert.rejects(
+    harness.runtime.auxQueue.enqueue({ type: 'manual', prompt: 'first', meta: {} }),
+    /permission denied/,
+  );
+  assert.equal(harness.runtime.auxQueue.isUnhealthy(), true);
+
+  const next = await harness.runtime.auxQueue.enqueue({
+    type: 'manual', prompt: 'second', meta: {},
+  });
+  assert.equal(calls, 2, 'the second request must reach executeAuxHttp');
+  assert.equal(next.text, 'recovered-response');
+  assert.equal(harness.runtime.auxQueue.isUnhealthy(), false);
+});
+
 test('Goal helpers keep clamping, framing and defensive verdict parsing', () => {
   assert.deepEqual(resolveGoalLimits({ maxRounds: 999, maxBudget: -2 }), { maxRounds: 200, maxBudget: 0 });
   assert.match(buildGoalLimitNote({ maxRounds: 3, maxBudget: 50 }), /3 轮/);

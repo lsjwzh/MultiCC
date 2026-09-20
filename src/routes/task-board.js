@@ -948,14 +948,6 @@ function createTaskBoardRuntime(deps) {
         : { ok: false, error: 'missing_context' };
     }
     if (!input.replyText) input.replyText = '（尚无助手回复，仅根据用户提交的任务信息归类）';
-    if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
-      saveModuleAssignment(task, {
-        running: false,
-        lastError: 'aux_unhealthy',
-      });
-      return { ok: false, error: 'aux_unhealthy' };
-    }
-
     const jobId = crypto.randomUUID();
     pendingModuleAssignmentByTask.set(taskId, jobId);
     saveModuleAssignment(task, {
@@ -1438,9 +1430,6 @@ function createTaskBoardRuntime(deps) {
   async function handleBackfill(req, res) {
     if (backfillState.running) {
       return res.status(409).json({ error: 'backfill_running', state: { ...backfillState } });
-    }
-    if (auxQueue.isUnhealthy && auxQueue.isUnhealthy()) {
-      return res.status(503).json({ error: 'aux_unhealthy' });
     }
     const dirId = String(req.body?.dirId || '').trim() || null;
     const turnLimit = Math.min(Math.max(Number(req.body?.turnLimit) || 12, 1), 30);
@@ -2746,11 +2735,9 @@ function createTaskBoardRuntime(deps) {
     if (!task.moduleAssignment) return res.status(409).json({ error: 'not_pending' });
     const result = queueTaskClassification(task.id, { manual: true });
     if (!result.ok) {
-      const status = ['aux_unhealthy', 'context_unavailable'].includes(result.error) ? 503 : 409;
-      const note = result.error === 'aux_unhealthy'
-        ? '归类服务（aux）暂不可用，请稍后重试'
-        : result.error === 'context_unavailable'
-          ? '任务上下文暂时无法读取，请稍后重试'
+      const status = result.error === 'context_unavailable' ? 503 : 409;
+      const note = result.error === 'context_unavailable'
+        ? '任务上下文暂时无法读取，请稍后重试'
         : null;
       return res.status(status).json({ error: result.error, note });
     }

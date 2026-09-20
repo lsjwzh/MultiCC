@@ -83,7 +83,6 @@ function createDeps({ timeline = [], errors = [], taskRunHost, taskRunStore, ses
     waitInjector: { stop: () => timeline.push('wait-stopped') },
     cronTasks: { stop: () => timeline.push('cron-stopped') },
     tunnel: { stop: () => timeline.push('tunnel-stopped') },
-    stopNetworkProbe: () => timeline.push('network-probe-stopped'),
     skillSyncRuntime: { stop: async () => timeline.push('skill-sync-stopped') },
     triggerRuntime: { stop: async () => timeline.push('triggers-stopped') },
     pushRuntime: { stop: () => timeline.push('push-stopped') },

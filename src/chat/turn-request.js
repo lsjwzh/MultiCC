@@ -12,11 +12,10 @@ const TASK_SOURCES = new Set(['task-board', 'commander', 'router-tool', 'task-sh
 // Continuation-only labels for system-injected turns. They may carry task
 // attribution but never start a task — the taskStart gate in normalizeTaskContext
 // still requires a TASK_SOURCES member, so these labels grant no task-start
-// authority. The
-// auto provider handoff (unsafe replay boundary) and the api-recovery resume
-// deliveries are admitted here; rejecting them as unsupported sources burned
-// their outbox retries into dead-letter, so the provider switch never ran.
-const CONTINUATION_SOURCES = new Set(['auto_provider_handoff', 'api_recovery']);
+// authority. Auto provider handoff after an unsafe replay boundary is admitted
+// here; rejecting it as an unsupported source burns its outbox retry into
+// dead-letter, so the same-request provider switch never runs.
+const CONTINUATION_SOURCES = new Set(['auto_provider_handoff']);
 const LEGACY_TASK_SOURCE_ALIASES = new Map([
   ['commander-route', 'commander'],
 ]);
@@ -185,18 +184,12 @@ function planTurnAdmission(request, facts = {}) {
       effects: Object.freeze([]),
     });
   }
-  trace.push('shutdown-check', 'session-check', 'network-check');
+  trace.push('shutdown-check', 'session-check');
   if (facts.shuttingDown === true) {
     return Object.freeze({ decision: 'reject', reason: 'shutdown', trace: Object.freeze(trace), effects: Object.freeze([]) });
   }
   if (facts.sessionExists === false) {
     return Object.freeze({ decision: 'reject', reason: 'session-missing', trace: Object.freeze(trace), effects: Object.freeze([]) });
-  }
-  if (request.launch.reason === 'continue' && facts.networkUnhealthy === true) {
-    return Object.freeze({
-      decision: 'hold', reason: 'network-unhealthy', trace: Object.freeze(trace),
-      effects: Object.freeze([{ type: 'hold-turn', sessionId: request.sessionId, text: request.text }]),
-    });
   }
   if (facts.runningTurn === true) {
     return Object.freeze({

@@ -119,7 +119,6 @@ function planTurnFinalization(input = {}, deps = {}) {
     pendingStreamError,
     nativeSession: input.nativeSession === true,
     replaySafeProviderError: input.replaySafeProviderError === true,
-    auxUnhealthy: input.auxUnhealthy === true,
     signal: input.signal == null ? '' : String(input.signal),
     code: input.code == null ? 0 : Number(input.code),
     apiErrorDecision: input.apiErrorDecision || null,
@@ -270,7 +269,6 @@ function statusEffects(plan, durableAfterAppend) {
           classification: facts.apiError ? 'api-error' : 'interrupted',
         }),
       ];
-      if (facts.auxUnhealthy) effects.push(effect('set-status', { status: 'idle', reason: 'aux-unhealthy' }));
       return effects;
     }
     if (durableAfterAppend) {
@@ -278,7 +276,6 @@ function statusEffects(plan, durableAfterAppend) {
         effect('complete-session-turn'),
         effect('classify-turn-end', { classification: 'succeeded' }),
       ];
-      if (facts.auxUnhealthy) effects.push(effect('set-status', { status: 'idle', reason: 'aux-unhealthy' }));
       return effects;
     }
     return [

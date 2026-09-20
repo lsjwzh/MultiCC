@@ -312,7 +312,7 @@ test('cancellation and shutdown never retry; unknown gets at most one controlled
   assert.equal(second.action, 'fail_fast');
 });
 
-test('recovery clock never suppresses attempt 0 and caps later host retries', () => {
+test('only the per-request attempt count caps host retries', () => {
   const raw = {
     message: 'API Error: 502 getaddrinfo ENOTFOUND open.bigmodel.cn',
     source: 'claude_result',
@@ -323,20 +323,16 @@ test('recovery clock never suppresses attempt 0 and caps later host retries', ()
   assert.equal(firstAfterSlowProvider.action, 'retry');
   assert.equal(firstAfterSlowProvider.attempt, 1);
 
-  const withinBudget = decide(raw, { attempt: 1, recoveryElapsedMs: 119_999 });
+  const withinBudget = decide(raw, { attempt: 1, recoveryElapsedMs: 9_999_999 });
   assert.equal(withinBudget.action, 'retry');
   assert.equal(withinBudget.attempt, 2);
 
-  const exhausted = decide(raw, { attempt: 1, recoveryElapsedMs: 120_000 });
-  assert.equal(exhausted.action, 'fail_fast');
-  assert.equal(exhausted.reason, 'retry_budget_exhausted');
-  assert.equal(exhausted.budgetExhaustedBy, 'recovery_window');
-  assert.match(retryNotice(exhausted), /自动恢复等待窗口已用尽/);
-  assert.match(retryNotice(exhausted), /ENOTFOUND open\.bigmodel\.cn/);
-
   const attemptsExhausted = decide(raw, { attempt: 2, recoveryElapsedMs: 1 });
+  assert.equal(attemptsExhausted.action, 'fail_fast');
+  assert.equal(attemptsExhausted.reason, 'retry_budget_exhausted');
   assert.equal(attemptsExhausted.budgetExhaustedBy, 'attempts');
   assert.match(retryNotice(attemptsExhausted), /自动重试次数已用尽/);
+  assert.match(retryNotice(attemptsExhausted), /ENOTFOUND open\.bigmodel\.cn/);
 });
 
 test('untrusted text cannot smuggle a retryable category and public messages are sanitized', () => {
@@ -554,13 +550,12 @@ test('structured watchdog, stale-connection and server_error codes classify with
   }
 });
 
-test('runtime deduplicates repeated events, opens provider circuit, and exposes aggregate metrics', () => {
+test('runtime deduplicates one event but never creates a cross-request circuit', () => {
   const logs = [];
   const metrics = new Map();
   const runtime = createApiErrorPolicyRuntime({
     now: () => 5_000,
     random: () => 0,
-    circuitThreshold: 3,
     logger: {
       info(event, fields) { logs.push({ event, fields }); },
       warn(event, fields) { logs.push({ event, fields }); },
@@ -576,22 +571,20 @@ test('runtime deduplicates repeated events, opens provider circuit, and exposes 
   const duplicate = runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-1' });
   assert.equal(one.action, 'retry');
   assert.equal(duplicate.duplicate, true);
-  runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-2' });
-  const open = runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-3' });
-  assert.equal(open.action, 'wait_circuit');
-  assert.equal(runtime.snapshot().circuits[0].open, true);
+  const two = runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-2' });
+  const three = runtime.evaluate(raw, { source: raw.source, provider: raw.provider, idempotencyKey: 'turn-3' });
+  assert.equal(two.action, 'retry');
+  assert.equal(three.action, 'retry');
+  assert.deepEqual(runtime.snapshot().circuits, []);
   assert.equal(logs.length, 3);
-  assert.equal(metrics.get('multicc_api_error_circuit_open_total'), 1);
   runtime.recordSuccess('claude', { retryAttempt: 1 });
-  assert.equal(runtime.snapshot().circuits[0].open, false);
   assert.equal(metrics.get('multicc_api_error_retry_succeeded_total'), 1);
 });
 
-test('circuit identity is cli plus providerId and success clears only that identity', () => {
+test('provider identity remains diagnostic and cannot block a later request', () => {
   const runtime = createApiErrorPolicyRuntime({
     now: () => 5_000,
     random: () => 0,
-    circuitThreshold: 2,
   });
   const raw = { httpStatus: 503, source: 'codex_event' };
   const fail = (cli, providerId, idempotencyKey) => runtime.evaluate(raw, {
@@ -600,33 +593,17 @@ test('circuit identity is cli plus providerId and success clears only that ident
     ...(providerId == null ? {} : { providerId }),
     idempotencyKey,
   });
-  const circuit = (cli, providerId) => runtime.snapshot().circuits.find(item => (
-    item.cli === cli && item.providerId === providerId
-  ));
-
-  fail('codex', 'provider-a', 'a-1');
-  assert.equal(fail('codex', 'provider-a', 'a-2').action, 'wait_circuit');
+  assert.equal(fail('codex', 'provider-a', 'a-1').action, 'retry');
+  assert.equal(fail('codex', 'provider-a', 'a-2').action, 'retry');
   assert.equal(fail('codex', 'provider-b', 'b-1').action, 'retry');
-  assert.equal(circuit('codex', 'provider-a').open, true);
-  assert.equal(circuit('codex', 'provider-b').open, false);
-
   runtime.recordSuccess('codex', { providerId: 'provider-b' });
-  assert.equal(circuit('codex', 'provider-a').open, true,
-    'a success on provider B must not close provider A');
   runtime.recordSuccess('codex', { providerId: 'provider-a' });
-  assert.equal(circuit('codex', 'provider-a').open, false);
-
-  fail('claude', null, 'claude-default-1');
-  assert.equal(fail('claude', null, 'claude-default-2').action, 'wait_circuit');
+  assert.equal(fail('claude', null, 'claude-default-1').action, 'retry');
+  assert.equal(fail('claude', null, 'claude-default-2').action, 'retry');
   assert.equal(fail('codex', null, 'codex-default-1').action, 'retry');
-  assert.equal(circuit('claude', '_default_').open, true);
-  assert.equal(circuit('codex', '_default_').open, false,
-    'default routes remain isolated by CLI');
   runtime.recordSuccess('codex');
-  assert.equal(circuit('claude', '_default_').open, true,
-    'the provider-only compatibility API clears only its CLI default route');
   runtime.recordSuccess('claude');
-  assert.equal(circuit('claude', '_default_').open, false);
+  assert.deepEqual(runtime.snapshot().circuits, []);
 });
 
 test('known-harmless provider stderr chatter is filtered, real errors are kept', () => {

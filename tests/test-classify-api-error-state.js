@@ -103,7 +103,7 @@ function fixture({
       onTaskAttributionSettled(...args) { observed.taskAttributionSettled.push(args); },
     }),
     getUserInputSignalHost: () => ({ apply: (_sessionId, result) => result, pending: () => null }),
-    getApiErrorHost: () => ({ isHeld: () => false }),
+    getApiErrorHost: () => ({ recordApiError() {} }),
     getWaitInjector: () => ({ SYS_PREFIX: '[system]', resetAuto() {}, resetInterrupted() {} }),
     setTaskState: (_sessionId, patch) => {
       record.taskState = { ...record.taskState, ...patch };
@@ -283,27 +283,25 @@ test('a planned retry owns the turn, so no premature E is published', () => {
   assert.equal(h.observed.transitions, 0);
 });
 
-test('clean turn success reaches D even when Aux task attribution is unavailable', () => {
+test('clean turn success reaches D and still attempts Aux after an earlier Aux failure', () => {
   const h = fixture({ auxUnhealthy: true });
   h.machine.classifyTurnEnd(h.chatState, 's1', {
     classification: 'succeeded', turnId: 'turn-offline',
   });
   assert.equal(h.record.taskState.classifyState, 'D');
-  assert.equal(h.observed.enqueued, 0);
+  assert.equal(h.observed.enqueued, 1,
+    'historical Aux health must not suppress a new attribution request');
   assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'turn_succeeded');
-  assert.equal(h.observed.auxRuns.length, 1);
-  assert.equal(h.observed.auxRuns[0].error, 'aux_unhealthy');
-  assert.equal(h.observed.auxRuns[0].turnId, 'turn-offline');
-  assert.equal(h.observed.annotations.length, 1,
-    'the turn still receives an inspectable auxRunId when Aux is unavailable');
+  assert.equal(h.observed.auxRuns.length, 0,
+    'the newly admitted request remains pending in this fixture');
 });
 
-test('clean turn with authoritative background work reaches B without Aux', () => {
+test('clean turn with authoritative background work reaches B and still attempts Aux', () => {
   const h = fixture({ auxUnhealthy: true, backgroundPending: true });
   h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
   assert.equal(h.record.taskState.classifyState, 'B');
   assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'background_pending');
-  assert.equal(h.observed.enqueued, 0);
+  assert.equal(h.observed.enqueued, 1);
 });
 
 test('a legacy API error with no policy decision still records one before publishing E', () => {

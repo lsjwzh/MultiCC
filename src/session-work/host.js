@@ -307,13 +307,9 @@ function createSessionWorkHost(deps = {}) {
   // may only be read by the shutdown drain, which cannot wait on classify
   // because classify is produced by the very Aux queue the drain is draining.
   //
-  // The 'assessing' carve-out is load-bearing: a turn that ends while Aux is
-  // unhealthy keeps classifyState 'P' forever (classifyUnavailable defers by
-  // design, scanAndReclassify bails on an unhealthy Aux, and the process
-  // watchdog deliberately skips 'assessing'). Reading that stuck P as busy
-  // would wedge every dispatch for the whole outage. 'assessing' means the
-  // runner is already gone and only the verdict is outstanding, so it is not
-  // busy — and a fresh turn always moves the queue off 'assessing' first.
+  // The 'assessing' carve-out is load-bearing: Aux attribution is asynchronous
+  // bookkeeping after the runner has already gone. Reading P as live execution
+  // would block the next real request merely because naming is still pending.
   function isRunActive(sessionId) {
     const state = deps.getRecord(sessionId)?.taskState;
     if (!state) return false;
@@ -524,7 +520,6 @@ function createSessionWorkHost(deps = {}) {
       queued: event.queued == null ? null : event.queued,
       items: Array.isArray(event.queuedItems) ? event.queuedItems : [],
       freezeReason: event.freezeReason || null,
-      hold: (event.schedule && event.schedule.hold) || null,
       at: event.at,
     });
     deps.setTaskState(event.sessionId, {

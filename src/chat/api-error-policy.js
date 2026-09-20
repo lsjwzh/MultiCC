@@ -624,14 +624,6 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
     ? maxAttemptsFor(error.category) : Math.max(0, Number(context.maxAttempts) || 0);
   error = withMaxAttempts(error, maxAttempts);
   const nextAttempt = error.attempt + 1;
-  // The wall-clock guard belongs to MultiCC's recovery loop, not to the
-  // provider invocation. Some CLIs already spend minutes on internal backoff;
-  // charging that time here used to reject attempt 0 before MultiCC had made a
-  // single retry. `elapsedMs` remains a compatibility fallback for direct
-  // policy callers while the host supplies the correctly scoped field.
-  const recoveryElapsedMs = Math.max(0, Number(
-    context.recoveryElapsedMs ?? context.elapsedMs ?? 0,
-  ) || 0);
 
   if (error.category === 'cancel_shutdown') {
     return Object.freeze({ action: 'fail_fast', reason: 'cancelled_or_shutdown', error, attempt: error.attempt, delayMs: 0 });
@@ -654,16 +646,7 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
   if (nextAttempt > maxAttempts) {
     return Object.freeze({
       action: 'fail_fast', reason: 'retry_budget_exhausted', budgetExhaustedBy: 'attempts',
-      error, attempt: error.attempt, delayMs: 0, recoveryElapsedMs,
-    });
-  }
-  // Attempt 0 must always receive its first bounded host retry. This invariant
-  // also protects restored/legacy callers that accidentally pass turn elapsed
-  // time instead of the recovery-scoped clock.
-  if (error.attempt > 0 && recoveryElapsedMs >= 120_000) {
-    return Object.freeze({
-      action: 'fail_fast', reason: 'retry_budget_exhausted', budgetExhaustedBy: 'recovery_window',
-      error, attempt: error.attempt, delayMs: 0, recoveryElapsedMs,
+      error, attempt: error.attempt, delayMs: 0,
     });
   }
 
@@ -700,7 +683,6 @@ function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
     maxAttempts,
     delayMs,
     retryAt: now + delayMs,
-    recoveryElapsedMs,
   });
 }
 
@@ -709,60 +691,12 @@ function metricToken(value) {
   return token.replace(/^_+|_+$/g, '') || 'unknown';
 }
 
-function circuitIdentity(providerOrIdentity, context = {}) {
-  const source = providerOrIdentity && typeof providerOrIdentity === 'object'
-    ? providerOrIdentity : {};
-  const providerAttempt = context.providerAttempt && typeof context.providerAttempt === 'object'
-    ? context.providerAttempt
-    : context.runner?.providerAttempt && typeof context.runner.providerAttempt === 'object'
-      ? context.runner.providerAttempt : {};
-  const usageAttribution = context.usageAttribution && typeof context.usageAttribution === 'object'
-    ? context.usageAttribution
-    : context.runner?.usageAttribution && typeof context.runner.usageAttribution === 'object'
-      ? context.runner.usageAttribution : {};
-  const cli = String(
-    providerAttempt.cli || usageAttribution.cli || context.cli || context.provider
-      || source.cli || source.provider
-      || (typeof providerOrIdentity === 'string' ? providerOrIdentity : '')
-      || 'unknown',
-  ).trim().toLowerCase().slice(0, 40) || 'unknown';
-  const providerId = routeIdentityText(
-    providerAttempt.providerId || usageAttribution.providerId || context.providerId
-      || source.providerId,
-    '_default_',
-  );
-  const providerName = routeIdentityText(
-    providerAttempt.providerName || usageAttribution.providerName || context.providerName
-      || source.providerName,
-    providerId === '_default_' ? cli : providerId,
-  );
-  return { cli, providerId, providerName };
-}
-
-function circuitIdentityKey(identity) {
-  // JSON tuple encoding avoids collisions when provider ids contain `:`.
-  return JSON.stringify([identity.cli, identity.providerId]);
-}
-
 function createApiErrorPolicyRuntime(options = {}) {
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const random = typeof options.random === 'function' ? options.random : Math.random;
   const logger = options.logger || { info() {}, warn() {}, error() {} };
   const metrics = options.metrics || { inc() {}, set() {} };
-  const threshold = Math.max(2, Number(options.circuitThreshold || 3));
-  const windowMs = Math.max(1_000, Number(options.circuitWindowMs || 60_000));
-  const cooldownMs = Math.max(1_000, Number(options.circuitCooldownMs || 60_000));
-  const circuits = new Map();
   const decisions = new Map();
-
-  function circuitFor(providerOrIdentity, context = {}) {
-    const identity = circuitIdentity(providerOrIdentity, context);
-    const key = circuitIdentityKey(identity);
-    if (!circuits.has(key)) {
-      circuits.set(key, { ...identity, failures: [], openUntil: 0 });
-    }
-    return circuits.get(key);
-  }
 
   function remember(key, value) {
     if (!key) return;
@@ -799,9 +733,6 @@ function createApiErrorPolicyRuntime(options = {}) {
       maxAttempts: error.maxAttempts,
       rootCause: error.rootCause,
       turnElapsedMs: Math.max(0, Number(context.turnElapsedMs || 0) || 0),
-      recoveryElapsedMs: Math.max(0, Number(
-        decision.recoveryElapsedMs ?? context.recoveryElapsedMs ?? context.elapsedMs ?? 0,
-      ) || 0),
       budgetExhaustedBy: decision.budgetExhaustedBy || null,
       sessionId: context.sessionId || null,
       turnId: context.turnId || null,
@@ -824,62 +755,21 @@ function createApiErrorPolicyRuntime(options = {}) {
     }
     const at = Number(now());
     const normalized = normalizeApiError(raw, context, { now: () => at });
-    let decision = decideApiErrorPolicy(normalized, context, { now: () => at, random });
-    const circuit = circuitFor(normalized);
-    circuit.failures = circuit.failures.filter(ts => at - ts <= windowMs);
-
-    if (decision.action === 'retry' && TRANSIENT.has(normalized.category)) {
-      if (circuit.openUntil > at) {
-        decision = Object.freeze({
-          ...decision,
-          action: 'wait_circuit',
-          reason: 'provider_circuit_open',
-          delayMs: circuit.openUntil - at,
-          retryAt: circuit.openUntil,
-        });
-      } else {
-        circuit.failures.push(at);
-        if (circuit.failures.length >= threshold) {
-          circuit.openUntil = at + cooldownMs;
-          decision = Object.freeze({
-            ...decision,
-            action: 'wait_circuit',
-            reason: 'provider_circuit_opened',
-            delayMs: cooldownMs,
-            retryAt: circuit.openUntil,
-          });
-          metrics.inc('multicc_api_error_circuit_open_total');
-        }
-      }
-    }
+    const decision = decideApiErrorPolicy(normalized, context, { now: () => at, random });
     remember(key, decision);
     logDecision(decision, context);
     return decision;
   }
 
-  function recordSuccess(provider, context = {}) {
-    const circuit = circuitFor(provider, context);
-    const recovered = circuit.failures.length > 0 || circuit.openUntil > 0;
-    circuit.failures = [];
-    circuit.openUntil = 0;
-    if (recovered) metrics.inc('multicc_api_error_recovery_total');
+  function recordSuccess(_provider, context = {}) {
     if (context.retryAttempt) metrics.inc('multicc_api_error_retry_succeeded_total');
   }
 
   function snapshot() {
-    const at = Number(now());
     return {
-      circuits: [...circuits.values()].map(state => ({
-        // Preserve `provider` for provider-only callers; it has always meant
-        // the CLI in this policy. The concrete provider is additive.
-        provider: state.cli,
-        cli: state.cli,
-        providerId: state.providerId,
-        providerName: state.providerName,
-        failures: state.failures.filter(ts => at - ts <= windowMs).length,
-        open: state.openUntil > at,
-        openUntil: state.openUntil || null,
-      })),
+      // Kept as an empty compatibility field for diagnostics consumers from
+      // older releases. API failures no longer create cross-request gates.
+      circuits: [],
       idempotencyEntries: decisions.size,
     };
   }
@@ -913,19 +803,13 @@ function retryNotice(decision) {
     const window = resetWaitLabel(decision.delayMs);
     return `额度或限流窗口尚未恢复${window}，系统不会短周期重试。${causeNotice}${error.userAction}`;
   }
-  if (decision.action === 'wait_circuit') {
-    const seconds = Math.max(1, Math.ceil((decision.delayMs || 0) / 1000));
-    return `Provider 连续失败，熔断 ${seconds} 秒以避免重试风暴；本轮未重放。${causeNotice}`;
-  }
   if (decision.reason === 'unsafe_replay_boundary') {
     return `上游 API 中断，但本轮已有部分输出或工具执行；为避免重复副作用，未自动重放。${causeNotice}${error.userAction}`;
   }
   if (decision.reason === 'retry_budget_exhausted') {
     const budget = decision.budgetExhaustedBy === 'attempts'
       ? '自动重试次数已用尽。'
-      : decision.budgetExhaustedBy === 'recovery_window'
-        ? '自动恢复等待窗口已用尽。'
-        : '自动重试预算已用尽。';
+      : '自动重试预算已用尽。';
     return `上游 API 请求仍然失败，${budget}${causeNotice}${error.userAction}`;
   }
   return `上游 API 请求失败，未自动重试。${causeNotice}${error.userAction}`;

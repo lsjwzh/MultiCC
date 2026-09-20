@@ -102,10 +102,6 @@ function createOrchestrationRuntime({
   recoverDispatchResult = async () => null,
   replayRecoveredDispatchEffects = async () => {},
   getSessionRecoveryState = () => null,
-  // Optional: (sessionId) → null | { reason, sinceAt }. Host-wide hold gate
-  // (api-error-host network hold); surfaced on every public queue snapshot
-  // so clients render 已暂挂 instead of 执行中 while deliveries are held.
-  getSessionHold = null,
   beforeFirstTick = async () => {},
   onSchedulerEvent = () => {},
   now = Date.now,
@@ -175,7 +171,6 @@ function createOrchestrationRuntime({
     getClassifyState: sessionId => getSessionRecoveryState(sessionId)?.classifyState || null,
     getPendingUserInput: sessionId => getSessionRecoveryState(sessionId)?.pendingUserInput || null,
     getTurnId: sessionId => getSessionRecoveryState(sessionId)?.turnId || null,
-    getSessionHold,
     log,
   });
   const pendingBySession = new Map();

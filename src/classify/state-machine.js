@@ -634,7 +634,6 @@ function createClassifyStateMachine(rawDeps) {
   }
 
   function scanAndReclassify() {
-    if (getAuxQueue().isUnhealthy()) return;
     // Debug observability: record this pass (time, queue state, and every
     // per-session enqueue/skip decision + reason) into the scanHistory ring.
     const passRecord = {
@@ -667,17 +666,6 @@ function createClassifyStateMachine(rawDeps) {
         note(sid, ts.classifyState, 'skipped-cancelled', 'explicit cancellation remains authoritative until next user turn');
         continue;
       }
-      // Skip sessions parked by the degrade防线 (held for API recovery). Re-judging a
-      // held session every 60s is pure waste — its history hasn't changed (no new turn
-      // ran while held), so the verdict can't self-correct. Worse, a fresh classify
-      // nudge here would re-hit the chokepoint and overwrite the stashed pendingText
-      // with boilerplate, losing any real dispatch/bg payload held for replay on
-      // recovery. resumeHeldSessions owns these; leave them alone.
-      if (getApiErrorHost().isHeld(sid)) {
-        note(sid, ts.classifyState, 'skipped-held', 'held by degrade防线 (API recovery)');
-        continue;
-      }
-
       // An owned provider turn waits for its close/finalize boundary. Stream
       // silence is not a terminal fact: OpenCode (and other one-shot CLIs) can
       // spend a long time inside a tool without emitting JSONL. The dedicated
@@ -914,22 +902,6 @@ function createClassifyStateMachine(rawDeps) {
     const prompt = buildClassifyConversation(sessionName, reply);
     const anchorMessageId = classifyAnchorMessageId(sessionName);
     const startedAt = Date.now();
-    // State has already been committed by resolveTurnState. Aux degradation now
-    // costs naming/attribution only and cannot hold scheduler progress. Still
-    // record the attempt and stamp its run id on the turn: "unavailable" is
-    // provenance too, and must be inspectable from every affected message.
-    if (getAuxQueue().isUnhealthy()) {
-      recordAuxRun(sessionName, {
-        runId, turnId, anchorMessageId, systemPrompt, prompt,
-        taskId: currentTaskId, error: 'aux_unhealthy', source: runSource,
-      });
-      annotateChatTurn(sessionName, turnId, {
-        taskId: currentTaskId || undefined,
-        auxRunId: runId,
-      }, { anchorMessageId });
-      logger.warn?.('task_attribution_unavailable', { sessionId: sessionName, turnId });
-      return;
-    }
     // Dedup: drop this session's older queued/in-flight classify before enqueuing
     // the fresh one — a session only needs its single latest judgement. Without
     // this, rapid turns pile up near-duplicate classifies that then supersede each
@@ -1136,7 +1108,7 @@ function createClassifyStateMachine(rawDeps) {
       console.log(`[multicc/aux] Classify FAILED for ${sessionName}: ${e.message}`);
       // Route the failure through the centralized API error policy so Aux
       // transport errors (ECONNRESET/timeout/5xx) land in the same taxonomy,
-      // metrics and provider circuit as every other aux/upstream failure —
+      // metrics as every other aux/upstream failure —
       // before this they were only a console line (1397 occurrences in one
       // production log window). This is observability only: task attribution
       // may degrade, but rule-based turn state has already committed and must

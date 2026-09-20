@@ -282,13 +282,13 @@ function readServerCode() {
   console.log('      → fail_fast / wait_reset: no automatic replay');
   console.log('      → classify E only projects the policy decision; it opens no retry loop');
   console.log('');
-  console.log('  Recovery path:');
-  console.log('    network circuit recovers → resumeHeldSessions()');
-  console.log('      → held sessions resume through sessionDelivery.deliverRetry()');
-  console.log('      → TaskRun slots require a new run and never receive anonymous retries');
+  console.log('  Later-request path:');
+  console.log('    the failed request ends when its bounded retry budget is exhausted');
+  console.log('      → no provider circuit, global network hold, or recovery injection');
+  console.log('      → the next request reaches normal admission independently');
   console.log('      → periodic classify scan repairs missing turn-state projections only');
 
-  ok('Retry flow documented', 'both normal and recovery paths');
+  ok('Retry flow documented', 'bounded retry and independent later requests');
 
   // ── Summary ────────────────────────────────────────────────────────
   console.log(`\n═══════════════════════════════════════════════════`);

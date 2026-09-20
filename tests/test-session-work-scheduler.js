@@ -63,7 +63,6 @@ function fixture(t, options = {}) {
     getClassifyState: options.getClassifyState,
     getPendingUserInput: options.getPendingUserInput,
     getTurnId: options.getTurnId,
-    getSessionHold: options.getSessionHold,
   });
   return {
     store,
@@ -970,7 +969,7 @@ test('persisted-delivery settlement uses only recovered classify and otherwise r
   assert.equal(staleState.freezeReason, null);
 });
 
-test('W/B/E classifications remain the only gates until a matching control or D', async t => {
+test('W/B remain gates while recovered E releases later FIFO work', async t => {
   const waiting = fixture(t);
   await waiting.scheduler.admit({
     sessionId: 'waiting', text: 'active', idempotencyKey: 'active',
@@ -1029,10 +1028,13 @@ test('W/B/E classifications remain the only gates until a matching control or D'
   });
   await failed.scheduler.freeze('failed', 'error');
   await failed.scheduler.recover({ isBusy: () => false });
-  const frozen = await failed.scheduler.status('failed');
-  assert.equal(frozen.state, 'frozen');
-  assert.equal(frozen.freezeReason, 'classify_error');
-  assert.equal(await claimOne(failed, 'failed'), null);
+  const released = await failed.scheduler.status('failed');
+  assert.equal(released.state, 'idle');
+  assert.equal(released.classifyState, 'E');
+  assert.equal(released.freezeReason, null);
+  const next = await claimOne(failed, 'failed');
+  assert.ok(next, 'a recovered prior-request error cannot gate later FIFO work');
+  assert.equal(next.payload.message, 'future');
 });
 
 test('direct input cannot bypass assessing and remains behind older FIFO work until classify D', async t => {
@@ -1172,33 +1174,6 @@ test('an errored TaskRun cannot anonymously resume a scrubbed execution slot', a
   });
   assert.deepEqual(retry, { ok: false, code: 'task_run_retry_requires_new_run' });
   assert.equal(await claimOne(failed, 'slot-1'), null);
-});
-
-test('host API recovery options become a retry work item after classify E', async t => {
-  const h = fixture(t);
-  await h.scheduler.admit({
-    sessionId: 's1',
-    text: 'original task',
-    idempotencyKey: 'original',
-  });
-  await startClaim(h, await claimOne(h));
-  await h.scheduler.complete('s1', { classifyState: 'E' });
-
-  const recovery = await h.scheduler.admit({
-    sessionId: 's1',
-    text: 'provider recovered',
-    source: 'api_recovery',
-    options: {
-      originContinue: true,
-      retry: true,
-    },
-    idempotencyKey: 'api-recovery:s1:1000',
-  });
-  assert.equal(recovery.entry.payload.workKind, 'retry');
-  assert.equal(recovery.entry.payload.source, 'api_recovery');
-  const claim = await claimOne(h);
-  assert.equal(claim.id, recovery.entry.id);
-  assert.equal(claim.payload.workKind, 'retry');
 });
 
 test('a pending queued entry can be cancelled individually but a leased entry cannot', async t => {
@@ -1413,13 +1388,8 @@ test('structured questions and classify errors keep normal FIFO work staged', as
 });
 
 // ── E-at-rest vs Task Board run deliveries ───────────────────────────────────
-// Production shape: the task-board dispatch path enqueues `dispatch.request`
-// outbox items directly through operation-service; they never pass through
-// scheduler.admit, so they carry no directRun tag. When a slot's turn ends with
-// an E verdict complete() parks the queue "for a user decision" — but a hidden
-// task execution slot has no user. Task Board owns the failed run's lifecycle
-// (error ledger entry + bounded retry already consumed the verdict), so its
-// own re-engagement — any delivery carrying task-run lineage — must drain.
+// The previous request's E verdict is diagnostic state only. Task Board
+// deliveries, direct input, callbacks and ordinary FIFO work remain eligible.
 
 async function settleToVerdict(harness, sessionId, classifyState) {
   await harness.scheduler.admit({
@@ -1452,12 +1422,11 @@ function dispatchRequestPayload({
   };
 }
 
-test('an E-at-rest queue still selects a Task Board run delivery — hidden slots have no user', async t => {
+test('an E-at-rest queue selects Task Board run deliveries in FIFO order', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 'slot-1', 'E');
-  // Both production shapes: the auto-retry continuation (taskStart:false,
-  // workKind continuation) and a fresh task delivery (taskStart:true,
-  // workKind task) — neither is a control kind the E gate would admit.
+  // Both production shapes are later requests; the prior E verdict cannot
+  // suppress either of them.
   await h.outbox.enqueue({
     id: 'operation:run-2:request',
     sessionId: 'slot-1',
@@ -1477,7 +1446,7 @@ test('an E-at-rest queue still selects a Task Board run delivery — hidden slot
   assert.notEqual(item.id, enqueued.id);
 });
 
-test('an E-at-rest queue still parks deliveries without task-run lineage', async t => {
+test('an E-at-rest queue drains a later delivery without task-run lineage', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 's1', 'E');
   await h.outbox.enqueue({
@@ -1490,18 +1459,12 @@ test('an E-at-rest queue still parks deliveries without task-run lineage', async
     },
     source: { type: 'operation', kind: 'dispatch', operationId: 'plain' },
   });
-  assert.equal(await claimOne(h, 's1'), null,
-    'the E verdict still parks deliveries that are not Task Board re-engagements');
+  const claim = await claimOne(h, 's1');
+  assert.ok(claim, 'a prior request error must not gate this delivery');
+  assert.equal(claim.id, 'operation:plain:request');
 });
 
-test('an E-at-rest queue parks a continuation staged before the error verdict', async t => {
-  // Production regression (Air task-shell chat): every message typed into a
-  // task session is admitted as workKind "continuation", which tags the
-  // outbox item directRun=true. The directRun fast lane exists to carry typed
-  // input across the P boundary — it must NOT overrule an E verdict, or the
-  // FIFO keeps firing into an errored session. Typed WHILE the failed turn
-  // was still running, this entry predates the E verdict: it is stale FIFO
-  // work and stays parked for a human decision.
+test('an E-at-rest queue drains a continuation staged before the error verdict', async t => {
   const h = fixture(t);
   await h.scheduler.admit({
     sessionId: 's1',
@@ -1517,15 +1480,12 @@ test('an E-at-rest queue parks a continuation staged before the error verdict', 
     idempotencyKey: 's1-during-p',
   });
   await h.scheduler.complete('s1', { expectedTaskId: 'task-1', classifyState: 'E' });
-  assert.equal(await claimOne(h, 's1'), null,
-    'work admitted before the E verdict is stale FIFO; the park holds it');
+  const claim = await claimOne(h, 's1');
+  assert.ok(claim, 'bounded failure of the active request releases later FIFO work');
+  assert.equal(claim.payload.message, 'typed while the failing turn was still running');
 });
 
-test('direct input typed at E-at-rest IS the human decision and runs immediately', async t => {
-  // The E park waits for a human decision; text freshly typed into the input
-  // box while the queue sits on an error verdict IS that decision, with the
-  // same authority as an explicit "insert now". It must not park behind the
-  // failed turn's stale FIFO.
+test('direct input typed at E-at-rest runs like any later request', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 's1', 'E');
   const admitted = await h.scheduler.admit({
@@ -1534,14 +1494,13 @@ test('direct input typed at E-at-rest IS the human decision and runs immediately
     workKind: 'continuation',
     idempotencyKey: 's1-after-error',
   });
-  assert.equal(admitted.queued, false,
-    'fresh post-E typed input is promoted at admission, not parked');
+  assert.equal(admitted.queued, false, 'there is no prior work, so the request starts normally');
   const item = await claimOne(h, 's1');
   assert.ok(item, 'E-at-rest direct input is selectable at once');
   assert.equal(item.payload.message, 'next instruction typed after the error');
 });
 
-test('insert-now cannot resurrect an entry admitted before the E verdict', async t => {
+test('insert-now can still prioritize an entry after an E verdict', async t => {
   const h = fixture(t);
   await h.scheduler.admit({
     sessionId: 's1',
@@ -1558,14 +1517,15 @@ test('insert-now cannot resurrect an entry admitted before the E verdict', async
   });
   h.advance(1); // the E verdict lands strictly after the stale admission
   await h.scheduler.complete('s1', { expectedTaskId: 'task-1', classifyState: 'E' });
-  const refused = await h.scheduler.insertQueued('s1', stale.entry.id, { actor: 'user' });
-  assert.equal(refused.ok, false);
-  assert.equal(refused.code, 'e_park_stale_entry',
-    'a click on pre-E FIFO work must not bypass the E park');
-  assert.equal(await claimOne(h, 's1'), null, 'the stale entry stays parked');
+  const inserted = await h.scheduler.insertQueued('s1', stale.entry.id, { actor: 'user' });
+  assert.equal(inserted.ok, true);
+  const promoted = await claimOne(h, 's1');
+  assert.ok(promoted, 'the selected stale entry is claimable after explicit insertion');
+  assert.equal(promoted.id, stale.entry.id,
+    'the override is entry-scoped and promotes exactly the selected message');
 });
 
-test('a retryable delivery failure does not consume an E-state insert promotion', async t => {
+test('a retryable delivery failure leaves E-state work claimable', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 's1', 'E');
   const fresh = await h.scheduler.admit({
@@ -1574,12 +1534,11 @@ test('a retryable delivery failure does not consume an E-state insert promotion'
     workKind: 'continuation',
     idempotencyKey: 's1-fresh',
   });
-  assert.equal(fresh.queued, false, 'post-E typed input promotes at admission');
+  assert.equal(fresh.queued, false, 'post-E input is admitted normally');
   const item = await claimOne(h, 's1');
   assert.ok(item, 'promoted entry claims');
   // Delivery rejected (transient turn-engine veto): outbox lease settles
-  // retryable, then the scheduler claim releases — the human's promotion
-  // must survive so the next tick re-attempts instead of wedging.
+  // retryable, then the scheduler claim releases for the next tick.
   await h.outbox.fail(item.id, item.leaseToken, 'runChatTurn rejected delivery', { retryable: true });
   h.advance(60_000); // outbox.fail defers availableAt past the retry delay
   const released = await h.scheduler.releaseClaim(item, 'delivery_deferred');
@@ -1589,7 +1548,7 @@ test('a retryable delivery failure does not consume an E-state insert promotion'
   assert.equal(retry.id, item.id);
 });
 
-test('an E-at-rest queue still admits an explicit retry control', async t => {
+test('an E-at-rest queue admits an explicit retry control', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 's1', 'E');
   await h.scheduler.admit({
@@ -1599,34 +1558,24 @@ test('an E-at-rest queue still admits an explicit retry control', async t => {
     idempotencyKey: 's1-retry',
   });
   const item = await claimOne(h, 's1');
-  assert.ok(item, 'an explicit retry IS the human decision that unparks E');
+  assert.ok(item);
   assert.equal(item.payload.workKind, 'retry');
 });
 
-test('a host-wide hold gate is surfaced on every public queue snapshot', async t => {
-  const held = new Set(['s1']);
-  const h = fixture(t, {
-    getSessionHold: sessionId => (held.has(sessionId)
-      ? { reason: 'network_unhealthy', sinceAt: 42 } : null),
-  });
+test('public queue snapshots contain no cross-request API hold state', async t => {
+  const h = fixture(t);
   await settleToVerdict(h, 's1', 'E');
   await h.scheduler.admit({
     sessionId: 's1',
-    text: 'held message',
+    text: 'later message',
     workKind: 'continuation',
-    idempotencyKey: 's1-held',
+    idempotencyKey: 's1-later',
   });
   const status = await h.scheduler.status('s1');
-  assert.deepEqual(status.hold, { reason: 'network_unhealthy', sinceAt: 42 });
+  assert.equal(status.hold, undefined);
   assert.equal(status.queued.length, 1);
-  assert.equal(status.queued[0].held, true,
-    'queued items carry held so the card renders 已暂挂, not 执行中');
-  held.clear();
-  const clearStatus = await h.scheduler.status('s1');
-  assert.equal(clearStatus.hold, null);
-  assert.equal(clearStatus.queued[0].held, false,
-    'hold state is consultative only: it never blocks admission or claim');
-  assert.ok(await claimOne(h, 's1'), 'a held session still claims normally');
+  assert.equal(status.queued[0].held, undefined);
+  assert.ok(await claimOne(h, 's1'), 'the later request claims normally');
 });
 
 test('a W-at-rest queue does not leak task-kind run deliveries past a pending question', async t => {

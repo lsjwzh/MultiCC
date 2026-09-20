@@ -392,8 +392,8 @@
         stateEl.style.display = '';
       }
       bar.classList.add(`st-${display.status}`);
-      // A verdict Aux stopped revising is kept on screen — it is still the best
-      // description we have — but it stops claiming to be current.
+      // Keep the last verdict visible, but mark it as potentially stale after
+      // the latest Aux failure. This is presentation only, never admission.
       bar.classList.toggle('aux-stale', verdictStaleness.auxUnhealthy);
       const staleEl = doc.getElementById('ac-stale');
       if (staleEl) {
@@ -949,8 +949,7 @@
     function renderApiError(message) {
       const bar = doc.getElementById('api-error-bar');
       if (!bar) return;
-      const retryScheduled = message.state === 'retry_wait' || message.action === 'retry'
-        || message.action === 'wait_reset' || message.action === 'wait_circuit';
+      const retryScheduled = message.state === 'retry_wait' || message.action === 'retry';
       const envelope = errorModel ? errorModel.normalize(message, {
         source: 'provider_policy',
         scope: 'turn',

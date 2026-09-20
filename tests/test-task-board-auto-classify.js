@@ -207,17 +207,21 @@ test('an unreadable context store fails open instead of archiving the card', () 
   assert.equal(pending.moduleAssignment.lastError, '');
 });
 
-test('bulk cleanup still archives missing context while Aux is unhealthy', () => {
+test('bulk cleanup archives missing context and admits valid work despite historical Aux health', () => {
   const history = [
     { id: 'u-health', role: 'user', content: '有效但 Aux 不健康', ts: 1 },
     { id: 'a-health', role: 'assistant', content: '完成。', ts: 2 },
   ];
+  let enqueueCalls = 0;
   const { runtime } = fixture({
     loadHistory: sessionId => sessionId === 'sess-1' ? history : [],
     auxQueue: {
       isUnhealthy: () => true,
       cancel: () => {},
-      enqueue: () => { throw new Error('must not enqueue while unhealthy'); },
+      enqueue: () => {
+        enqueueCalls += 1;
+        return new Promise(() => {});
+      },
     },
   });
   const board = runtime.getBoard();
@@ -240,9 +244,10 @@ test('bulk cleanup still archives missing context while Aux is unhealthy', () =>
   assert.equal(res.code, 200);
   assert.deepEqual(
     { queued: res.body.queued, archived: res.body.archived, skipped: res.body.skipped },
-    { queued: 0, archived: 1, skipped: 1 },
+    { queued: 1, archived: 1, skipped: 0 },
   );
+  assert.equal(enqueueCalls, 1);
   assert.equal(valid.status, 'active');
-  assert.equal(valid.moduleAssignment.lastError, 'aux_unhealthy');
+  assert.equal(valid.moduleAssignment.running, true);
   assert.equal(missing.status, 'archived');
 });

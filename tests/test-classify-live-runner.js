@@ -98,7 +98,7 @@ function fixture({
       onTaskAttributionSettled() {},
     }),
     getUserInputSignalHost: () => ({ apply: (_sessionId, result) => result, pending: () => null }),
-    getApiErrorHost: () => ({ isHeld: () => false }),
+    getApiErrorHost: () => ({ recordApiError() {} }),
     getWaitInjector: () => ({ SYS_PREFIX: '[system]', resetAuto() {}, resetInterrupted() {} }),
     setTaskState: (_sessionId, patch) => {
       record.taskState = { ...record.taskState, ...patch };

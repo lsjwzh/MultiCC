@@ -128,16 +128,13 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
   assert.match(source, /createOrchestrationRuntime\([\s\S]*?isBusy: dispatchTargetBusy/);
 });
 
-test('the classify-derived busy predicate exempts assessing so an unhealthy Aux cannot wedge dispatch', () => {
+test('the classify-derived busy predicate exempts transient assessing work', () => {
   const source = fs.readFileSync('src/session-work/host.js', 'utf8');
   const start = source.indexOf('function isRunActive(sessionId) {');
   assert.ok(start >= 0);
   const body = source.slice(start, source.indexOf('\n  }', start));
-  // A turn that ends while Aux is unhealthy keeps classifyState 'P' forever:
-  // classifyUnavailable defers by design, scanAndReclassify bails on an
-  // unhealthy Aux, and the process watchdog deliberately skips 'assessing'.
-  // Without this exemption that stuck P reads as busy and blocks every dispatch
-  // for the whole outage. Do not remove it.
+  // Aux attribution is asynchronous bookkeeping. It must not make the runner
+  // look busy and block the session's next real request.
   assert.match(body, /queueState === 'assessing'/);
   assert.doesNotMatch(body, /isStreaming|claudeProc|chatStream/);
 });

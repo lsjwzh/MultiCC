@@ -274,8 +274,10 @@ test('manual reclassify keeps D/W guard and fire-and-forget completion semantics
   assert.equal(fixture.dispatched.length, 0, 'manual replay cannot write turn state');
 
   fixture.queue.unhealthy = true;
-  const unavailable = invoke(handler, { params: { id: 't1' } });
-  assert.equal(unavailable.statusCode, 503);
+  const nextRequest = invoke(handler, { params: { id: 's1' }, query: { force: 'true' } });
+  assert.equal(nextRequest.statusCode, 200);
+  assert.equal(fixture.getClassifyNow(), 2,
+    'historical Aux health must not gate a later manual request');
 });
 
 test('manual mark-task-done compatibility route flips only the waiting turn outcome', () => {

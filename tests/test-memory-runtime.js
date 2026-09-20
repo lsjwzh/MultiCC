@@ -147,7 +147,7 @@ test('dedup and eviction preserve the legacy threshold and survivor ordering', (
   ]);
 });
 
-test('distill skips unsupported, short and unhealthy work without enqueueing', async () => {
+test('distill skips unsupported and short work but ignores historical Aux health', async () => {
   const missing = fixture({ records: new Map() });
   assert.deepEqual(await missing.runtime.distillHistoryIntoMemory('missing', []), { updated: false });
 
@@ -169,8 +169,9 @@ test('distill skips unsupported, short and unhealthy work without enqueueing', a
   const unhealthy = fixture({ unhealthy: true });
   assert.deepEqual(await unhealthy.runtime.distillHistoryIntoMemory('s1', [
     { role: 'assistant', content: 'a'.repeat(80) },
-  ]), { updated: false, skipped: 'aux unhealthy' });
-  assert.equal(unhealthy.calls.length, 0);
+  ]), { updated: false, entries: [] });
+  assert.equal(unhealthy.calls.filter(call => call.type === 'enqueue').length, 1,
+    'a previous failure must not suppress the next upstream request');
 });
 
 test('distill commits memory before durable save, event and broadcast', async () => {
@@ -292,7 +293,7 @@ test('review is single-flight and failure schedules a prompt retry', async () =>
   assert.equal(current.calls.find(call => call.type === 'save').source, 'runtime.memory-review-retry');
 });
 
-test('scheduler persists counter, deferred retry and healthy start transitions', async () => {
+test('scheduler starts due work regardless of historical Aux health', async () => {
   const current = fixture({
     history: [{ id: 'm1', role: 'user', content: 'remember this stable preference' }],
     reviewInterval: 3,
@@ -304,15 +305,11 @@ test('scheduler persists counter, deferred retry and healthy start transitions',
   current.record.memoryReviewTurnCount = 2;
   current.setUnhealthy(true);
   current.runtime.maybeSchedulePeriodicMemoryReview('s1');
-  assert.equal(current.record.memoryReviewTurnCount, 2);
-  assert.equal(current.calls.at(-1).source, 'runtime.memory-review-deferred');
-
-  current.setUnhealthy(false);
-  current.runtime.maybeSchedulePeriodicMemoryReview('s1');
   assert.equal(current.record.memoryReviewTurnCount, 0);
   const start = current.calls.findIndex(call => call.type === 'save' && call.source === 'runtime.memory-review-start');
   const enqueue = current.calls.findIndex(call => call.type === 'enqueue');
   assert.equal(start >= 0 && enqueue > start, true);
+  assert.equal(current.calls.some(call => call.source === 'runtime.memory-review-deferred'), false);
   await new Promise(resolve => setImmediate(resolve));
 
   const disabled = fixture({ reviewInterval: 0 });

@@ -124,8 +124,7 @@ function assertDependencies(deps) {
   if (!deps.records || typeof deps.records.get !== 'function') {
     throw new TypeError('[memory-runtime] records.get is required');
   }
-  if (!deps.auxQueue || typeof deps.auxQueue.enqueue !== 'function'
-      || typeof deps.auxQueue.isUnhealthy !== 'function') {
+  if (!deps.auxQueue || typeof deps.auxQueue.enqueue !== 'function') {
     throw new TypeError('[memory-runtime] auxQueue is required');
   }
   for (const name of [
@@ -144,8 +143,7 @@ function createMemoryRuntime(rawDeps) {
   // Optional by design: tests compose the runtime without the API error host.
   // When present, Aux transport failures (distill/review timeouts, ECONNRESET)
   // are routed through the centralized API error policy so they share the same
-  // taxonomy, metrics and provider circuit as turn failures instead of only a
-  // console warn line.
+  // taxonomy and metrics as turn failures instead of only a console warn line.
   const recordApiError = typeof deps.recordApiError === 'function' ? deps.recordApiError : null;
 
   function reportAuxFailure(error, sessionId, what) {
@@ -237,9 +235,6 @@ ${prior.length ? `【已有的会话记忆条目（请与新内容合并去重�
 ${text.slice(0, 12000)}
 
 请直接输出合并后的所有记忆条目（每行一条），不要解释、不要加标题。`;
-    if (deps.auxQueue.isUnhealthy()) {
-      return Promise.resolve({ updated: false, skipped: 'aux unhealthy' });
-    }
     return deps.auxQueue.enqueue({ type: 'memory_distill', prompt, meta: { sessionId } })
       .then(result => {
         const committed = persistMergedMemory(sessionId, parseEntries(result && result.text), '已提炼会话记忆');
@@ -273,9 +268,6 @@ ${text.slice(0, 12000)}
     const persisted = deps.records.get(sessionId);
     if (!persisted || persisted.type === 'aux' || persisted.type === 'gateway') {
       return Promise.resolve({ updated: false });
-    }
-    if (deps.auxQueue.isUnhealthy()) {
-      return Promise.resolve({ updated: false, skipped: 'aux unhealthy' });
     }
     const messages = reviewMessages(sessionId, persisted);
     if (!messages.length) return Promise.resolve({ updated: false });
@@ -333,11 +325,6 @@ ${transcript.slice(0, 12000)}
     persisted.memoryReviewTurnCount = Math.max(0, Number(persisted.memoryReviewTurnCount) || 0) + 1;
     if (persisted.memoryReviewTurnCount < reviewInterval) {
       deps.saveBestEffort('runtime.memory-review-counter');
-      return;
-    }
-    if (deps.auxQueue.isUnhealthy()) {
-      persisted.memoryReviewTurnCount = Math.max(0, reviewInterval - 1);
-      deps.saveBestEffort('runtime.memory-review-deferred');
       return;
     }
     persisted.memoryReviewTurnCount = 0;
