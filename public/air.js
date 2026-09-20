@@ -2265,19 +2265,26 @@
     });
     const actions = [];
     if (integration) actions.unshift(actionButton('重新核验交付', reconcileDelivery, 'reconcile'));
-    if (separation?.state === 'separated' && separation.targetTaskId && separation.targetTaskId !== value.task.id) {
-      actions.push(actionButton('打开独立任务', () => navigate(value.task.dirId || directoryId, separation.targetTaskId), 'open-separated'));
+    if (['kept', 'separated'].includes(separation?.state) && separation.targetTaskId && separation.targetTaskId !== value.task.id) {
+      actions.push(actionButton(separation.state === 'separated' ? '打开独立任务' : '打开关联任务',
+        () => navigate(value.task.dirId || directoryId, separation.targetTaskId), 'open-separated'));
+    }
+    // “留在当前会话”只决定壳，不撤销已经拆出的任务 ID。关联任务自己的
+    // 详情页因此始终保留签出入口，之后任何时候都能迁到独立会话。
+    if (separation?.state === 'kept' && separation.targetTaskId === value.task.id && value.sessionId) {
+      actions.push(actionButton('签出到独立会话',
+        () => decideSeparation(value, separation, 'separate'), 'separation-accept'));
     }
     // 分离建议的持久入口：聊天帧里的弹窗/挂起卡依赖 WS 推送与页面时机，容易
     // 错过；这里的按钮只要建议还挂起就一直在，瞬时拒绝（如源任务在跑）后也能
     // 直接重试。只在查看源任务时显示 —— 决定落在源会话上。
     if (separation && !['kept', 'separated'].includes(separation.state)
         && separation.sourceTaskId === value.task.id && value.sessionId) {
-      actions.push(actionButton(separation.phase === 'blocked' ? '重试分离' : '接受分离',
+      actions.push(actionButton(separation.phase === 'blocked' ? '重试签出' : '签出独立会话',
         () => decideSeparation(value, separation, 'separate'), 'separation-accept'));
       actions.push(actionButton('稍后处理',
         () => decideSeparation(value, separation, 'defer'), 'separation-defer'));
-      actions.push(actionButton('保留在当前任务',
+      actions.push(actionButton('留在当前会话',
         () => decideSeparation(value, separation, 'keep'), 'separation-keep'));
     }
     $('delivery-actions').replaceChildren(...actions);
@@ -2298,7 +2305,7 @@
         return;
       }
       await refreshEntry();
-      notice(decision === 'defer' ? '分离建议已挂起，可稍后在聊天页或这里继续处理。' : '本轮保留在当前任务。');
+      notice(decision === 'defer' ? '会话签出已挂起，可稍后在聊天页或这里继续处理。' : '关联任务已留在当前会话，之后仍可签出。');
     });
   }
 
@@ -2320,9 +2327,9 @@
         ['代码版本', attribution.run?.codeObserved ? '已观测最终版本' : '尚未核实'],
         ['交付状态', attribution.integration ? (attribution.integration.baselineCurrent ? '已合入基分支，版本有效' : '有合并记录，等待重新核验') : '尚无覆盖本轮代码的合并凭证'],
         ['源现场', attribution.barrier ? '写入者已停止，最终版本已锁定' : '尚无可验证的停写屏障'],
-        ['任务归属', attribution.application ? `分离已生效 · ${attribution.separation?.targetTaskId || ''}`
-          : attribution.separation?.state === 'kept' ? '已选择保留在当前任务'
-            : attribution.separation ? '独立任务尚未生效' : attribution.steps?.[3]?.status === 'done' ? '准入时已锁定当前任务' : '尚未核验'],
+        ['任务归属', attribution.application ? `已签出独立会话 · ${attribution.separation?.targetTaskId || ''}`
+          : attribution.separation?.state === 'kept' ? '任务 ID 已拆分，关联在当前会话'
+            : attribution.separation ? '任务 ID 已拆分，等待选择会话' : attribution.steps?.[3]?.status === 'done' ? '准入时已锁定当前任务' : '尚未核验'],
       ]),
       detailGroup('角色与上下文', [
         ['角色附件', roleText],
