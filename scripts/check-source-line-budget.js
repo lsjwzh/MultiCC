@@ -30,8 +30,8 @@ const MIGRATION_DEBT = Object.freeze({
   // src/chat/task-state-seed.js — both times the ceiling tracking a shrink
   // rather than a split.
   'src/chat/turn-engine.js': Object.freeze({
-    ceiling: 3006,
-    byteCeiling: 144120,
+    ceiling: 3004,
+    byteCeiling: 144118,
   }),
   // app/lib/screens/main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台).
   // Registered so the gate keeps tracking it; the next main_shell split must

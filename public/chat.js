@@ -997,7 +997,7 @@ function addSystemMsg(text) {
   messagesEl.appendChild(div);
   maybeScrollToBottom();
 }
-
+const chatAuthAction = window.MultiCCChatAuthAction.create({ document, chatApi, withToken, getSessionName: () => _sessionName, addSystemMsg, getMessagesEl: () => messagesEl, maybeScrollToBottom });
 /* ── Background-task danmaku panel ──
  * Live "bullet-comment" feed for Monitor / run_in_background task start & done
  * notices. Replaces the old addSystemMsg chat bubbles so these ephemeral status
@@ -2549,6 +2549,7 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     updateCwdDisplay,
     applyCliUi,
     addSystemMsg,
+    addAuthActionMsg: (text, action) => chatAuthAction.render(text, action),
     addAgentNotes,
     updateEffortBtn,
     updateProviderBtn,

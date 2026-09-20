@@ -1,5 +1,7 @@
 'use strict';
 
+const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
+
 function assertDependencies(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('[session-create] dependencies are required');
   if (!deps.directories || typeof deps.directories.get !== 'function') {
@@ -8,7 +10,16 @@ function assertDependencies(deps) {
   for (const name of ['createSessionRecord', 'asyncHandler']) {
     if (typeof deps[name] !== 'function') throw new TypeError(`[session-create] ${name} is required`);
   }
+  if (!deps.sessions || typeof deps.sessions.get !== 'function' || typeof deps.sessions.values !== 'function') {
+    throw new TypeError('[session-create] sessions map is required');
+  }
   return deps;
+}
+
+// Terminal sessions are embedded on the manage page (same mapping as
+// public/manage-fleet-sharing.js sessionPageUrl for kind !== 'chat').
+function terminalPageUrl(sessionId) {
+  return `/?id=${encodeURIComponent(sessionId)}`;
 }
 
 function mountSessionCreateRoutes(app, rawDeps) {
@@ -16,6 +27,35 @@ function mountSessionCreateRoutes(app, rawDeps) {
     throw new TypeError('[session-create] Express-compatible app is required');
   }
   const deps = assertDependencies(rawDeps);
+
+  // One-click remedy surfaced by the chat UI when a vendor-auth CLI
+  // (WorkBuddy/Qoder) fails with "authentication required": open a whitelisted
+  // interactive login terminal in the same directory so the user can run the
+  // vendor TUI's /login. Reuses an existing login terminal when one exists.
+  app.post('/api/sessions/:id/vendor-login-terminal', deps.asyncHandler(async (req, res) => {
+    const source = deps.sessions.get(req.params.id);
+    if (!source) return res.status(404).json({ error: 'session not found' });
+    const spec = vendorLoginForCli(source.cli);
+    if (!spec) {
+      return res.status(400).json({ error: `cli ${source.cli || 'unknown'} does not use vendor terminal login` });
+    }
+    const dir = deps.directories.get(source.dirId);
+    if (!dir) return res.status(404).json({ error: 'directory not found' });
+    for (const record of deps.sessions.values()) {
+      if (record && record.kind === 'terminal' && record.dirId === dir.id
+          && record.loginFlow === spec.loginFlow) {
+        return res.json({ ...record, reused: true, url: terminalPageUrl(record.id) });
+      }
+    }
+    const result = await deps.createSessionRecord({
+      dir, cli: source.cli, kind: 'terminal',
+      label: `${spec.label} 登录`,
+      loginFlow: spec.loginFlow,
+      persistence: 'required', persistenceSource: 'http.vendor-login-terminal',
+    });
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    return res.json({ ...result.session, url: terminalPageUrl(result.session.id) });
+  }));
 
   app.put('/api/directories/:id/role-workers/:presetId', deps.asyncHandler(async (req, res) => {
     return res.status(410).json({ ok: false, code: 'role_sessions_retired',

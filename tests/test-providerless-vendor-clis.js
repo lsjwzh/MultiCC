@@ -68,3 +68,18 @@ assert.match(source, /appType === 'codex'/);
   assert.doesNotMatch(source, /persisted\.cli !== 'qoder'\)\s*providers\.applyClaudeProxyEnv/);
   assert.doesNotMatch(source, /persisted\.cli !== 'codex' && persisted\.cli !== 'qoder'/);
 });
+
+test('vendor login flows map each vendor-auth CLI to a whitelisted login terminal spec', () => {
+  const { VENDOR_LOGIN, vendorLoginForCli, cliForLoginFlow } = require('../src/cli-adapters/vendor-login');
+  assert.deepEqual(Object.keys(VENDOR_LOGIN).sort(), ['codebuddy', 'qoder']);
+  assert.equal(vendorLoginForCli('codebuddy').loginFlow, 'codebuddy-login');
+  assert.equal(vendorLoginForCli('codebuddy').label, 'WorkBuddy');
+  assert.equal(vendorLoginForCli('qoder').loginFlow, 'qoder-login');
+  assert.equal(vendorLoginForCli(' CodeBuddy '), VENDOR_LOGIN.codebuddy, 'cli matching is case/space tolerant');
+  assert.equal(vendorLoginForCli('claude'), null);
+  assert.equal(vendorLoginForCli('dsh'), null, 'dsh uses DEEPSEEK_API_KEY, not TUI login');
+  assert.equal(cliForLoginFlow('codebuddy-login'), 'codebuddy');
+  assert.equal(cliForLoginFlow('qoder-login'), 'qoder');
+  assert.equal(cliForLoginFlow('codex-login'), null, 'codex/claude login flows stay hardcoded in create-record');
+  assert.equal(cliForLoginFlow('bogus'), null);
+});

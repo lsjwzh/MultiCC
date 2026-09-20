@@ -30,6 +30,7 @@ function fixture() {
   const app = fakeApp();
   mountSessionCreateRoutes(app, {
     directories: new Map([[dir.id, dir]]),
+    sessions: new Map(),
     asyncHandler: handler => handler,
     getAgentPreset: id => id === preset.id ? preset : null,
     async ensureRoleWorker(input) {
@@ -122,6 +123,7 @@ test('legacy chat creation adapts to a task and never creates a role workspace',
   const app = fakeApp(), tasks = [], executions = [];
   mountSessionCreateRoutes(app, {
     directories: new Map([['d', { id: 'd' }]]), asyncHandler: fn => fn,
+    sessions: new Map(),
     createSessionRecord: input => { executions.push(input); throw new Error('unexpected materialization'); },
     createTask: async input => { tasks.push(input); return { taskId: 'task-a', sessionId: 'execution-a', url: '/air?task=task-a' }; },
     getRecord: id => ({ id, taskBoundTaskId: 'task-a', workspaceState: 'planned' }),
@@ -133,4 +135,92 @@ test('legacy chat creation adapts to a task and never creates a role workspace',
   assert.equal(result.body.workspaceState, 'planned'); assert.equal(tasks[0].rolePrompt, 'Research role');
   assert.equal(tasks[0].title, 'Deliver report'); assert.equal(tasks[0].clientMsgId, 'm1');
   assert.equal(executions.length, 0);
+});
+
+test('vendor login terminal: unknown session and non-vendor cli are rejected', async () => {
+  const sessions = new Map([
+    ['chat-1', { id: 'chat-1', dirId: 'fleet-1', cli: 'claude', kind: 'chat' }],
+  ]);
+  const app = fakeApp();
+  const creates = [];
+  mountSessionCreateRoutes(app, {
+    directories: new Map([['fleet-1', { id: 'fleet-1' }]]),
+    sessions,
+    asyncHandler: fn => fn,
+    createSessionRecord: async input => { creates.push(input); return { ok: true, session: { id: 't-new', ...input, dir: undefined } }; },
+  });
+  const handler = app.routes.get('POST /api/sessions/:id/vendor-login-terminal');
+
+  const missing = await invoke(handler, { params: { id: 'nope' } });
+  assert.equal(missing.statusCode, 404);
+
+  const nonVendor = await invoke(handler, { params: { id: 'chat-1' } });
+  assert.equal(nonVendor.statusCode, 400);
+  assert.match(nonVendor.body.error, /does not use vendor terminal login/);
+  assert.equal(creates.length, 0);
+});
+
+test('vendor login terminal: creates a whitelisted loginFlow terminal once, then reuses it', async () => {
+  const dir = { id: 'fleet-1' };
+  const sessions = new Map([
+    ['wb-chat', { id: 'wb-chat', dirId: dir.id, cli: 'codebuddy', kind: 'chat' }],
+  ]);
+  const app = fakeApp();
+  const creates = [];
+  mountSessionCreateRoutes(app, {
+    directories: new Map([[dir.id, dir]]),
+    sessions,
+    asyncHandler: fn => fn,
+    async createSessionRecord(input) {
+      creates.push(input);
+      const session = {
+        id: 'wb-login-1', dirId: dir.id, cli: input.cli, kind: input.kind,
+        label: input.label, loginFlow: input.loginFlow,
+      };
+      sessions.set(session.id, session);
+      return { ok: true, session };
+    },
+  });
+  const handler = app.routes.get('POST /api/sessions/:id/vendor-login-terminal');
+
+  const created = await invoke(handler, { params: { id: 'wb-chat' } });
+  assert.equal(created.statusCode, 200);
+  assert.equal(created.body.id, 'wb-login-1');
+  assert.equal(created.body.url, '/?id=wb-login-1');
+  assert.equal(created.body.reused, undefined);
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].kind, 'terminal');
+  assert.equal(creates[0].cli, 'codebuddy');
+  assert.equal(creates[0].loginFlow, 'codebuddy-login');
+  assert.equal(creates[0].persistence, 'required');
+  assert.match(creates[0].label, /WorkBuddy/);
+
+  const again = await invoke(handler, { params: { id: 'wb-chat' } });
+  assert.equal(again.statusCode, 200);
+  assert.equal(again.body.id, 'wb-login-1');
+  assert.equal(again.body.reused, true);
+  assert.equal(creates.length, 1);
+});
+
+test('vendor login terminal: qoder maps to qoder-login', async () => {
+  const dir = { id: 'fleet-1' };
+  const sessions = new Map([
+    ['q-chat', { id: 'q-chat', dirId: dir.id, cli: 'qoder', kind: 'chat' }],
+  ]);
+  const app = fakeApp();
+  const creates = [];
+  mountSessionCreateRoutes(app, {
+    directories: new Map([[dir.id, dir]]),
+    sessions,
+    asyncHandler: fn => fn,
+    async createSessionRecord(input) {
+      creates.push(input);
+      return { ok: true, session: { id: 'q-login-1', dirId: dir.id, ...input } };
+    },
+  });
+  const response = await invoke(app.routes.get('POST /api/sessions/:id/vendor-login-terminal'), {
+    params: { id: 'q-chat' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(creates[0].loginFlow, 'qoder-login');
 });
