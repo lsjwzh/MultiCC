@@ -1667,8 +1667,8 @@
   /* ── 对话浮层：打开任务 = 把这一层升上来，不是换掉底页 ──
      底页（#empty 的目录详情）一直在，所以「关掉对话」是把这一层滑落回去，
      「换一个任务」只是把这一层里的帧换人 —— 两条路都不必重建底页，切换于是
-     只有一步的距离：侧栏点一下就是换台。展开 = 这一层改成 fixed 连页头一起
-     盖（真满屏），页头那颗按钮再点回来。展开态不落盘、不写地址：刷新回来
+     只有一步的距离：侧栏点一下就是换台。桌面展开只覆盖侧栏右边的主界面；手机
+     因为侧栏已经收进抽屉，展开才是真满屏。展开态不落盘、不写地址：刷新回来
      还是浮层，跟 App 的 sheet 不记忆展开一样。
 
      下面这两个开关必须成对出现在每一次 render 里（render 是唯一的落点）：
@@ -1719,7 +1719,9 @@
     const button = $('chat-expand');
     if (button) {
       button.setAttribute('aria-pressed', expanded ? 'true' : 'false');
-      button.title = expanded ? '收起：只盖内容区' : '展开：连页头一起盖';
+      const action = expanded ? '收起浮层' : '展开浮层';
+      button.title = action;
+      button.setAttribute('aria-label', action);
       const text = button.querySelector('.chat-bar-label');
       if (text) text.textContent = expanded ? '收起' : '展开';
     }
@@ -1750,7 +1752,7 @@
   }
 
   /* 手机上这一层是 App 那个底部 sheet 的等价物：往下拖 = 关掉对话。拖到一半
-     放开就弹回去，超过四分之一才认。桌面也能拖，但那边有按钮，不必知道这条。 */
+     放开就弹回去，超过四分之一才认。桌面按钮组也能当拖动起点，但按钮自身仍只点。 */
   function wireChatBar() {
     const bar = $('chat-bar');
     const layer = $('chat-layer');
