@@ -2875,7 +2875,7 @@ cronTasks.init({
   sendTaskMessage: (id, text, options) => taskShellHost.sendTaskMessage(id, text, options),
   resolveTaskId: sessionId => taskShellHost.artifactTaskId(sessionId),
   taskSummary: id => taskShellHost.taskSummary(id),
-  notifyBroken: info => pushRuntime.notify(info?.sessionId || info?.taskId || 'cron', 'error', info?.message),
+  notifyBroken: info => pushRuntime.notify(info?.sessionId || info?.taskId || 'cron', 'error', info?.message), taskBoard: () => taskBoardRuntime,
 });
 // In-process external-tunnel monitor (replaces phtunnel-monitor.sh watchdog).
 tunnel.init();

@@ -2938,6 +2938,38 @@ function createTaskBoardRuntime(deps) {
     // test/introspection surface
     getBoard: () => board,
     save,
+    // Batch archive for host-owned one-time data migrations (cron fan-out
+    // cleanup). It is not a route: the same "never touch a running task" rule
+    // as the lifecycle endpoints applies, and all ids land in one board write
+    // because a legacy board can hold hundreds of residue tasks.
+    archiveTasks: async taskIds => {
+      const wanted = [...new Set((taskIds || []).map(id => String(id || '')).filter(Boolean))];
+      const ids = wanted.filter(id => {
+        const task = board.tasks[id];
+        if (!task || task.status === 'archived' || task.deleting) return false;
+        if (taskLifecycle.isBusy(id)) return false;
+        if (taskRuns?.listTaskRuns?.(id)?.some(isOpenTaskRun)) return false;
+        return true;
+      });
+      const skipped = wanted.filter(id => !ids.includes(id)).map(taskId => ({ taskId, error: 'task_busy_or_missing' }));
+      if (!ids.length) return { ok: true, archived: [], skipped };
+      const result = commitPlanningMutation(draft => {
+        const at = Date.now();
+        for (const id of ids) {
+          const task = draft.tasks[id];
+          if (task.status !== 'archived') task.archivedFromStatus = task.status;
+          task.status = 'archived';
+          task.updatedAt = at;
+          if (task.recordType === 'planned') task.planningRevision = (task.planningRevision || 1) + 1;
+        }
+        return { ok: true };
+      });
+      if (!result?.ok) {
+        return { ok: false, archived: [], skipped: wanted.map(taskId => ({ taskId, error: result?.error || 'persistence_failed' })) };
+      }
+      notify(null, ids);
+      return { ok: true, archived: ids, skipped };
+    },
     // M3: null unless git deps were injected — callers must feature-check.
     taskWorktree,
   });

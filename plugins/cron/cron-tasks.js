@@ -13,14 +13,18 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { createPaths } = require('../../src/paths');
 const { atomicWriteJson } = require('../../src/runtime-security');
+const fanoutMigration = require('./fanout-migration');
 
-const STORE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).scheduledTasksFile;
+const PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+const STORE = PATHS.scheduledTasksFile;
 const LEGACY_STORE = path.join(__dirname, 'scheduled_tasks.json');
+const APP_VERSION = (() => { try { return require('../../package.json').version || null; } catch (_) { return null; } })();
 
 let tasks = [];
-let deps = null;       // { directories, createTask, getTask, sendTaskMessage, resolveTaskId, taskSummary, clis }
+let deps = null;       // { directories, createTask, getTask, sendTaskMessage, resolveTaskId, taskSummary, clis, taskBoard }
 let timer = null;
 let migration = null;
+let fanoutCleanup = null;
 const bindingFlights = new Map();
 
 function load() {
@@ -458,6 +462,37 @@ function mount(app) {
   }).catch(next));
 }
 
+// One-time consolidation of the fan-out residue left by releases <= 2.0.2 (see
+// fanout-migration.js). It waits for the boot chain and for the fixed-task
+// migration, so the task board, task shells and Commander state are all live
+// before anything is archived. It never rejects and never blocks readiness.
+function runFanoutCleanup() {
+  if (fanoutCleanup) return fanoutCleanup;
+  fanoutCleanup = (async () => {
+    if (!deps || typeof deps.taskBoard !== 'function') return null;
+    if (deps.ready) await deps.ready;
+    if (migration) await migration;
+    const board = deps.taskBoard();
+    if (!board || typeof board.getBoard !== 'function') return null;
+    return fanoutMigration.run({
+      dataDir: PATHS.root,
+      markerFile: PATHS.cronFanoutMigrationFile,
+      pkgRoot: PATHS.pkgRoot,
+      version: APP_VERSION,
+      tasks: Object.values(board.getBoard()?.tasks || {}),
+      rules: tasks,
+      archiveTasks: ids => board.archiveTasks(ids),
+      fromVersion: deps.fromVersion,
+      versionSource: deps.versionSource,
+      logger: console,
+    });
+  })().catch(error => {
+    console.error('[multicc/cron] fan-out cleanup failed:', error?.message || error);
+    return null;
+  });
+  return fanoutCleanup;
+}
+
 function init(injected) {
   deps = injected;
   load();
@@ -465,6 +500,7 @@ function init(injected) {
     console.error('[multicc/cron] Air task migration failed:', error.message);
     return { migrated: 0, errors: [{ error: error.message }] };
   });
+  runFanoutCleanup();
   if (timer) {
     clearInterval(timer);
     timer = null;
@@ -483,4 +519,5 @@ function stop() {
 }
 
 module.exports = { init, stop, mount, cronValidate, cronNext, _fireTask: fireTask,
-  _ensureTask: ensureTask, _rebindTask: rebindTask, _migrateTasks: migrateTasks };
+  _ensureTask: ensureTask, _rebindTask: rebindTask, _migrateTasks: migrateTasks,
+  _runFanoutCleanup: runFanoutCleanup };
