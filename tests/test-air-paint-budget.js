@@ -18,6 +18,10 @@
 //   1. 壳（air.css / chat-layout.css / chat-dispatch-activity.css）里没有 backdrop-filter；
 //   2. 圈没有被动画 —— 它是静态描边，颜色靠 air.js 写在节点上的 --ring-tint；
 //   3. 那个调色板的每一档都过得了 test-air-console-cdp.js 的像素门槛。
+//
+// 第四件是同一轮里更小的一处：聊天里「工具在跑」的省略号原本是逐帧改 content 的
+// 关键帧动画，每个字都是重排 + 重绘，而且只在工具运行期间出现 —— 那正是用户在看的
+// 时候。它现在是静态的省略号。
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -31,6 +35,7 @@ const SHELL_CSS = ['air.css', 'chat-layout.css', 'chat-dispatch-activity.css'];
 const AIR_CSS = read('air.css');
 const AIR_ADMIN = read('air-admin.js');
 const AIR = read('air.js');
+const CHAT_HTML = read('chat.html');
 
 test('Air 的壳不再常驻毛玻璃：每一层 backdrop-filter 都是 none', () => {
   // 这几层的底色本来就是 .82–.98 的不透明/近不透明填充（sidebar 是 .96/.92 的
@@ -85,4 +90,20 @@ test('圈的调色板：每一档都过得了像素门槛，而且是按 id 挑�
       assert.ok(args.length >= 3, `${file} 里有个 applyRing 少了 seed：applyRing(${call[1]})`);
     }
   }
+});
+
+test('聊天里的「工具在跑」不再逐帧改文字', () => {
+  // content 是关键帧里少数会触发布局的值：每换一个点，那一行就要重新排版一次。
+  const keyframes = [...CHAT_HTML.matchAll(/@keyframes\s+tool-dots\s*\{([^}]*\})?\}?/g)];
+  assert.deepEqual(keyframes.map(m => m[0]), [], 'tool-dots 那套逐帧改 content 的关键帧不该回来');
+  assert.equal(/animation:\s*tool-dots/.test(CHAT_HTML), false, '别再把 tool-dots 挂到 .tool-desc::after 上');
+
+  // 运行状态还得看得见：图标继续闪，省略号改成静态的留在行尾。
+  assert.ok(/\.tool-card\.tool-running\s+\.tool-icon\s*\{[^}]*animation:\s*blink/.test(CHAT_HTML),
+    '工具在跑的图标闪烁要留着，它是这一行唯一的运行信号');
+  const still = /\.tool-card\.tool-running\s+\.tool-desc::after\s*\{([^}]*)\}/.exec(CHAT_HTML);
+  assert.ok(still, '.tool-desc::after 的静态省略号不见了');
+  assert.equal(/animation\s*:/.test(still[1]), false, '静态省略号上不该挂动画');
+  assert.ok(/content:\s*['"]\\?2026['"]/.test(still[1]) || /content:\s*['"]…['"]/.test(still[1]),
+    `省略号应该是一个静态的 …：${still[1]}`);
 });
