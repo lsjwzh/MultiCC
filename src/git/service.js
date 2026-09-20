@@ -760,12 +760,22 @@ async function gitRelocateWorktree(oldDir, targetDir, session, opts = {}) {
 }
 
 async function mergeStateWith(execGit, dir, session) {
-  if (!dir || !session || !session.worktreePath || !session.branch
-      || !fs.existsSync(session.worktreePath)) {
-    const reason = session && session.workspaceState === 'hibernated' ? 'hibernated' : 'no-worktree';
-    return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason };
+  if (!dir || !session || !session.worktreePath || !session.branch) {
+    return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'no-worktree' };
   }
   const worktreePath = session.worktreePath;
+  // Hibernation (or a manual wipe) detaches the checkout and keeps the branch,
+  // so the record still carries branch+path with nothing on disk. The retained
+  // ref would still answer `rev-list main...branch` — an actionable "behind N,
+  // sync now" for a workspace that cannot be synced. Report the reclaim, and
+  // keep branch/baseBranch in the payload so the chat page can name the state
+  // instead of showing a branch that looks ready.
+  if (!fs.existsSync(worktreePath)) {
+    const reason = session.workspaceState === 'hibernated' ? 'hibernated' : 'no-worktree';
+    const baseBranch = dir.baseBranch || await baseBranchWith(execGit, dir.path).catch(() => null);
+    return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason,
+      worktreeMissing: true, baseBranch, branch: session.branch };
+  }
   const baseBranch = dir.baseBranch || await baseBranchWith(execGit, dir.path);
   const conflictFiles = await rebaseConflictsWith(execGit, worktreePath);
   if (conflictFiles) {
@@ -907,8 +917,14 @@ async function gitMergeBack(dir, session, opts = {}) {
 }
 
 async function gitSyncFromBase(dir, session, opts = {}) {
-  if (!dir || !session || !session.branch || !session.worktreePath || !fs.existsSync(session.worktreePath)) {
+  if (!dir || !session || !session.branch || !session.worktreePath) {
     return { ok: false, error: 'session has no worktree' };
+  }
+  // Same reclaim as mergeStateWith, on the write path: sync runs *inside* the
+  // checkout, so a detached one is a named refusal rather than a Git failure in
+  // a directory that is not there.
+  if (!fs.existsSync(session.worktreePath)) {
+    return { ok: false, code: 'worktree_missing', error: 'session has no worktree' };
   }
   return defaultRepoActor.run(dir.path, 'sync-from-base', async ({ execGit, progress, operationId: id }) => {
     const worktreePath = session.worktreePath;
@@ -950,8 +966,11 @@ async function gitSyncFromBase(dir, session, opts = {}) {
 }
 
 async function gitRebaseResolve(dir, session, action, opts = {}) {
-  if (!dir || !session || !session.worktreePath || !fs.existsSync(session.worktreePath)) {
+  if (!dir || !session || !session.worktreePath) {
     return { ok: false, error: 'session has no worktree' };
+  }
+  if (!fs.existsSync(session.worktreePath)) {
+    return { ok: false, code: 'worktree_missing', error: 'session has no worktree' };
   }
   return defaultRepoActor.run(dir.path, 'rebase-resolve', async ({ execGit }) => {
     const worktreePath = session.worktreePath;

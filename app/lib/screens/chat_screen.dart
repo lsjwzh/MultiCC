@@ -197,6 +197,15 @@ class _ChatViewState extends State<ChatView> {
   int _behindCount() => (_mergeStatus?['behind'] as num?)?.toInt() ?? 0;
   String _baseBranchName() => _mergeStatus?['baseBranch']?.toString() ?? 'main';
 
+  /// 工作区被回收时（休眠到点，或手工清了 worktree）记录里还留着 branch +
+  /// worktreePath，但本地没有 checkout。服务端在 merge-status 里给
+  /// `worktreeMissing`，老口径只给 `reason: 'hibernated'` —— 两种都算「本地没有
+  /// checkout」：既没有能同步的 worktree，也没有可比的落后量。说清状态，
+  /// 不给那颗点了只会拿到 409 的「同步」（Web 同款判断）。
+  bool _worktreeReclaimed() =>
+      _mergeStatus?['worktreeMissing'] == true ||
+      _mergeStatus?['reason'] == 'hibernated';
+
   /// 还没解决的冲突文件。服务端在 `merge-status` 里带 `conflict` /
   /// `conflictFiles`：worktree 卡在一次冲突的 rebase 上时才非空 —— 这是
   /// 「同步没走完」，不是「有文件改坏了」。
@@ -618,6 +627,7 @@ class _ChatViewState extends State<ChatView> {
   // branch (and again only if it falls further behind), so the user sees it
   // without having to scan the header.
   void _maybeWarnBehind() {
+    if (_worktreeReclaimed()) return;
     final behind = _behindCount();
     if (behind > _lastWarnedBehind) {
       final base = _baseBranchName();
@@ -982,7 +992,13 @@ class _ChatViewState extends State<ChatView> {
                           onForceSync: () => _forceSyncWorktree(provider),
                           forceSyncing: _forceSyncing,
                         ),
-                      if (_behindCount() > 0)
+                      if (_worktreeReclaimed())
+                        WorktreeReclaimedBanner(
+                          branch: _mergeStatus?['branch']?.toString(),
+                          onForceSync: () => _forceSyncWorktree(provider),
+                          forceSyncing: _forceSyncing,
+                        )
+                      else if (_behindCount() > 0)
                         WorktreeBehindBanner(
                           behind: _behindCount(),
                           baseBranch: _baseBranchName(),
@@ -1864,6 +1880,10 @@ Future<void> confirmMergeWorktree(
 }
 
 String _mergeStatusText(Map<String, dynamic>? status) {
+  // 工作区已回收：没有 checkout，「干净」和「落后」都不成立（Web 同款判断）。
+  if (status?['worktreeMissing'] == true || status?['reason'] == 'hibernated') {
+    return t('worktreeReclaimed');
+  }
   if (status?['mergeReady'] != true) return t('mergeNotReady');
   final bits = <String>[];
   if (status?['dirty'] == true) bits.add(t('uncommittedChanges'));

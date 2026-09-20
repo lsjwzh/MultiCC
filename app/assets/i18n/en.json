@@ -1164,6 +1164,7 @@
   "worktreeForceSyncFailed": "✗ Sync instruction not confirmed: {error}. You can retry.",
   "worktreeForceSyncNoSession": "The session is not connected yet. Retry the sync instruction shortly.",
   "worktreeForceSyncOffline": "connection not ready",
+  "worktreeReclaimed": "💤 Workspace hibernated (checkout reclaimed); send a message to restore",
   "rebaseDone": "✓ Conflicts resolved, sync complete",
   "rebaseStillConflicts": "✗ Conflicts remain: {files}. Resolve them all, then press Continue again.",
   "chatWidthTitle": "Chat width",
