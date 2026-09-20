@@ -4,8 +4,9 @@
 
 MultiCC uses `orchestration.sqlite` as the production authority for waits,
 outbox delivery, operations, observed tasks and per-session FIFO schedules.
-`better-sqlite3` is already a required runtime dependency and is verified by
-opening a real in-memory database during install, update and start.
+SQLite is not an installed dependency: it comes from the Node runtime itself
+as the built-in `node:sqlite` module (Node 22.16+), and is verified by opening
+a real in-memory database during install, update and start.
 
 The old `orchestration.json` backend remains available to isolated unit tests
 and as a rollback format. Production never falls back to JSON when a SQLite
@@ -83,9 +84,9 @@ normal restart.
 
 ## Failure modes and recovery
 
-- Missing/native-incompatible `better-sqlite3`: install/update/start probes it;
-  the shell path automatically rebuilds the binding once and otherwise stops
-  with an actionable error.
+- `node:sqlite` missing (Node older than 22.16): install/update/start probe it
+  and stop with an actionable error naming the required Node version. There is
+  no binding to rebuild, so the only fix is a newer Node.
 - Corrupt/unsupported SQLite: fail closed; preserve all files for diagnosis.
 - Crash before commit: SQLite rolls back every row in the transaction.
 - Crash after commit before caller acknowledgement: the store reloads committed

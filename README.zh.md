@@ -243,7 +243,7 @@ Provider、子 agent 路由、语音、TTS/ASR、通知都在 Air 控制台里�
 
 关键决策：厂商对话记录永不互相翻译；状态是扁平 JSON 而非数据库；每个会话独占一个分支和 worktree；网络绑定默认 fail-closed。桌面版只是多了一个客户端，没有第二套 UI——它内嵌同一个服务端，从本机回环端口提供同一个网页。
 
-**技术栈：** Node.js · Express · ws · better-sqlite3 · sherpa-onnx（本地 ASR）· cli-provider-router · chokidar · tmux · Flutter · Electron（桌面壳）。没有前端构建步骤——Web 客户端是纯 JavaScript。
+**技术栈：** Node.js · Express · ws · node:sqlite（Node 22.16+ 内置，无需编译 SQLite 原生模块）· sherpa-onnx（本地 ASR）· cli-provider-router · chokidar · tmux · Flutter · Electron（桌面壳）。没有前端构建步骤——Web 客户端是纯 JavaScript。
 
 **→ [Architecture](docs/architecture.md)**
 

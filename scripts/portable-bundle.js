@@ -9,19 +9,28 @@
 // Chromium 152), and Homebrew no longer supports macOS 12 or builds Intel
 // bottles, so an older Mac (e.g. Mac Pro 2013, macOS 12.7) cannot install
 // either one. The Node project still builds darwin-x64 with
-// `-mmacosx-version-min=11.0`, and better-sqlite3's darwin-x64 prebuild targets
-// 10.7, so a bundle pinned to Node 22 runs there untouched.
+// `-mmacosx-version-min=11.0`, so a bundle pinned to Node 22 runs there
+// untouched — provided nothing in it has to be compiled. Storage no longer
+// does: src/sqlite/driver.js uses the SQLite built into that runtime.
 //
 //   node scripts/portable-bundle.js --platform darwin --arch x64
 //
 // Result:
 //   <out>/multicc-portable-<version>-<platform>-<arch>/     bundle directory
 //   <out>/multicc-portable-<version>-<platform>-<arch>.tar.gz(+ .sha256)
+//   <out>/multicc-portable-<version>-<platform>-<arch>.zip   (win32: nobody
+//     un-tars a tarball on Windows, and Explorer opens a zip natively)
 //
 // Layout (macOS; Linux/Windows use the same Resources/ tree without the .app):
 //   MultiCC.app/Contents/Resources/app-server/   server.js + src/ + public/ + node_modules
 //   MultiCC.app/Contents/Resources/runtime/      the pinned Node runtime
 //   MultiCC.app/Contents/Resources/launcher/     portable-launcher.js + lib/ (desktop/lib)
+//
+// The runtime's internal layout is the official one, not ours: the unix
+// tarballs put the binary at runtime/bin/node, while the Windows zip keeps
+// node.exe at the root of runtime/ with no bin/ level. Everything that needs
+// that path goes through runtimeNodePath() so the two cannot drift apart — the
+// first Windows build died on exactly this.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -31,6 +40,7 @@ const { spawnSync } = require('child_process');
 
 const { stageServer } = require('./desktop-bundle-server');
 const { verifyNativeArch } = require('./native-arch');
+const { createZipArchive } = require('./zip-archive');
 
 // Pinned on purpose. Node 24/26 official macOS binaries are built with
 // -mmacosx-version-min=13.5, so following "latest" would silently drop every
@@ -45,8 +55,13 @@ const NODE_PLATFORM = { darwin: 'darwin', linux: 'linux', win32: 'win' };
 const LAUNCHER_LIB_FILES = ['port-chooser.js', 'health-probe.js', 'backend-supervisor.js', 'orphan-reclaim.js', 'desktop-env.js'];
 const NODE_DIST_BASE = 'https://nodejs.org/dist';
 const BUNDLE_README = '使用说明.txt';
-// better-sqlite3 is the one native dependency the server cannot start without.
-const NATIVE_SMOKE_MODULE = 'better-sqlite3';
+// The server's durable state is SQLite. It ships inside Node itself
+// (`node:sqlite`), so the smoke test below loads the bundled runtime and proves
+// *it* can open a database — the one check that would have caught "the runtime
+// we pinned cannot do storage" without any addon involved.
+const RUNTIME_SMOKE_SCRIPT = "[require('node:sqlite').DatabaseSync]"
+  + ".map(ctor => new ctor(':memory:'))"
+  + ".map(db => (db.exec('create table t(x)'), db.close(), 'sqlite-ok'))[0]";
 
 function parseArgs(argv) {
   const args = {
@@ -105,6 +120,13 @@ function nodeDistFileName(nodeVersion, platform, arch) {
 
 function nodeDistUrl(nodeVersion, platform, arch) {
   return `${NODE_DIST_BASE}/v${nodeVersion}/${nodeDistFileName(nodeVersion, platform, arch)}`;
+}
+
+// Where node lives inside Resources/runtime for a given platform.
+function runtimeNodePath(resourcesDir, platform) {
+  return platform === 'win32'
+    ? path.join(resourcesDir, 'runtime', 'node.exe')
+    : path.join(resourcesDir, 'runtime', 'bin', 'node');
 }
 
 function parseShasums(text, fileName) {
@@ -214,7 +236,7 @@ function extractRuntime({ archive, platform, dest, logger = console }) {
   for (const drop of ['include', 'share', 'CHANGELOG.md', 'README.md']) {
     fs.rmSync(path.join(dest, drop), { recursive: true, force: true });
   }
-  const nodeBin = path.join(dest, 'bin', platform === 'win32' ? 'node.exe' : 'node');
+  const nodeBin = runtimeNodePath(path.dirname(dest), platform);
   if (!fs.existsSync(nodeBin)) throw new Error(`runtime archive has no ${path.relative(dest, nodeBin)}`);
   if (platform !== 'win32') fs.chmodSync(nodeBin, 0o755);
   logger.log(`[portable-bundle] runtime ready (${path.relative(path.dirname(dest), nodeBin)})`);
@@ -309,7 +331,7 @@ function windowsCommandScript({ action, extraFlags = '' }) {
 rem MultiCC portable launcher (${action}). Keep this file next to Resources\\.
 setlocal
 set "HERE=%~dp0"
-"%HERE%Resources\\runtime\\bin\\node.exe" "%HERE%Resources\\launcher\\portable-launcher.js" ${action}${extraFlags ? ` ${extraFlags}` : ''} %*
+"%HERE%Resources\\runtime\\node.exe" "%HERE%Resources\\launcher\\portable-launcher.js" ${action}${extraFlags ? ` ${extraFlags}` : ''} %*
 `;
 }
 
@@ -335,7 +357,9 @@ function bundleReadme({ version, platform, nodeVersion, macosFloor }) {
         + '- 状态：双击 `查看状态 MultiCC.command`。\n'
         + '- 三个 `.command` 都会把额外参数透传给启动器，例如 `启动 MultiCC.command --port 8123`。'
       : '- 停止：`stop-multicc.sh`（Linux）/ `Stop-MultiCC.cmd`（Windows）。\n'
-        + '- 状态：上述脚本加 `--status`。',
+        + '- 状态：`status-multicc.sh`（Linux）/ `Status-MultiCC.cmd`（Windows）。\n'
+        + '- Windows 的 `Start-MultiCC.cmd` 默认占用当前控制台窗口（日志直接可见，关掉窗口即停止服务）；\n'
+        + '  想让它退到后台，用 `Start-MultiCC.cmd --detach`，之后靠 `Stop-MultiCC.cmd` 停止。',
     '',
     '## 数据位置',
     mac
@@ -349,6 +373,7 @@ function bundleReadme({ version, platform, nodeVersion, macosFloor }) {
       ? `- macOS ${macosFloor} 及以上（Intel 与 Apple Silicon 均可）。`
       : '- 64 位 Linux / Windows 10 及以上。',
     `- 内置 Node 运行时 ${nodeVersion}；不要把它换成 Node 24+：Node 24+ 要求 macOS 13.5 起。`,
+    '- 存储用的是 Node 自带的 SQLite（`node:sqlite`），包里没有任何需要编译或匹配 ABI 的原生 SQLite 模块。',
     '',
     '## 已知限制',
     '- 本地语音识别（sherpa-onnx）需要 macOS 15 及以上；更老系统上会自动回退到云端 ASR。',
@@ -390,11 +415,15 @@ function writePlatformShell({ bundleDir, resourcesDir, version, platform, nodeVe
       posixScript({ platform, action: '--start' }), 0o755);
     writeFileMode(path.join(bundleDir, 'stop-multicc.sh'),
       posixScript({ platform, action: '--stop' }), 0o755);
+    writeFileMode(path.join(bundleDir, 'status-multicc.sh'),
+      posixScript({ platform, action: '--status' }), 0o755);
   } else {
     writeFileMode(path.join(bundleDir, 'Start-MultiCC.cmd'),
       windowsCommandScript({ action: '--start' }));
     writeFileMode(path.join(bundleDir, 'Stop-MultiCC.cmd'),
       windowsCommandScript({ action: '--stop' }));
+    writeFileMode(path.join(bundleDir, 'Status-MultiCC.cmd'),
+      windowsCommandScript({ action: '--status' }));
   }
   writeFileMode(path.join(bundleDir, platform === 'darwin' ? BUNDLE_README : 'README.txt'),
     bundleReadme({ version, platform, nodeVersion, macosFloor }));
@@ -408,18 +437,17 @@ function sanityGate({ bundleDir, resourcesDir, platform, arch, install, runtime,
     path.join(appServerDir, 'plugins', 'bridges', 'wechat-ilink.js'),
     path.join(resourcesDir, 'launcher', 'portable-launcher.js'),
     ...LAUNCHER_LIB_FILES.map(file => path.join(resourcesDir, 'launcher', 'lib', file)),
-    ...(install ? [
-      path.join(appServerDir, 'node_modules', 'express'),
-      path.join(appServerDir, 'node_modules', 'better-sqlite3'),
-    ] : []),
-    ...(runtime ? [path.join(resourcesDir, 'runtime', 'bin', platform === 'win32' ? 'node.exe' : 'node')] : []),
+    ...(install ? [path.join(appServerDir, 'node_modules', 'express')] : []),
+    ...(runtime ? [runtimeNodePath(resourcesDir, platform)] : []),
   ];
   for (const file of must) {
     if (!fs.existsSync(file)) throw new Error(`bundle is missing ${path.relative(bundleDir, file) || file}`);
   }
-  // Presence is not enough: an addon built for the build host installs fine and
-  // only fails at the first require() on the target machine.
-  verifyNativeArch({ root: appServerDir, arch, platform, allowNone: !install, logger });
+  // Optional packages (sherpa-onnx) still ship prebuilt binaries: presence is
+  // not enough, because one built for the build host installs fine and only
+  // fails at the first require() on the target machine. Storage is not in this
+  // list — it comes from the runtime itself and is proved by the smoke test.
+  verifyNativeArch({ root: appServerDir, arch, platform, allowNone: true, logger });
   if (platform === 'darwin') {
     const plist = path.join(bundleDir, 'MultiCC.app', 'Contents', 'Info.plist');
     if (!fs.readFileSync(plist, 'utf8').includes('<string>MultiCC</string>')) {
@@ -434,43 +462,36 @@ function sanityGate({ bundleDir, resourcesDir, platform, arch, install, runtime,
   logger.log('[portable-bundle] sanity gate passed');
 }
 
-// The one check that proves the bundle will actually boot: load the native
-// addon with the runtime that ships next to it. Everything else (file lists,
-// ABI-looking prebuild names) can pass while `new Database()` still fails.
+// The one check that proves the bundle will actually boot: make the runtime that
+// ships next to it open a SQLite database. Every other check (file lists, pinned
+// versions, staged manifests) can pass while storage still fails on the target
+// machine, and storage is what the server cannot start without.
 // Cross-arch builds on a host that cannot execute the target runtime (Linux
 // arm64 building x64) skip instead of failing — CI runs those natively.
-function verifyStagedNative({
-  appServerDir,
+function verifyRuntimeSqlite({
   runtimeNode,
-  moduleName = NATIVE_SMOKE_MODULE,
   logger = console,
   timeoutMs = 60_000,
 } = {}) {
-  const moduleDir = path.join(appServerDir, 'node_modules', moduleName);
-  if (!fs.existsSync(moduleDir)) {
-    logger.log(`[portable-bundle] native smoke skipped: ${moduleName} is not staged`);
-    return { ok: false, skipped: true, reason: 'module-missing' };
-  }
   if (!runtimeNode || !fs.existsSync(runtimeNode)) {
-    logger.log('[portable-bundle] native smoke skipped: no bundled runtime to test with');
+    logger.log('[portable-bundle] runtime smoke skipped: no bundled runtime to test with');
     return { ok: false, skipped: true, reason: 'runtime-missing' };
   }
-  const script = `const Database = require(${JSON.stringify(moduleDir)});`
-    + "const db = new Database(':memory:'); db.exec('create table t(x)'); db.close(); console.log('native-ok');";
-  const res = spawnSync(runtimeNode, ['-e', script], { encoding: 'utf8', timeout: timeoutMs });
+  const res = spawnSync(runtimeNode, ['--disable-warning=ExperimentalWarning', '-e', RUNTIME_SMOKE_SCRIPT],
+    { encoding: 'utf8', timeout: timeoutMs });
   if (res.error) {
     const code = res.error.code;
     if (code === 'ENOEXEC' || code === 'EPERM' || code === 'EACCES') {
-      logger.log(`[portable-bundle] native smoke skipped: this host cannot execute the target runtime (${code})`);
+      logger.log(`[portable-bundle] runtime smoke skipped: this host cannot execute the target runtime (${code})`);
       return { ok: false, skipped: true, reason: code };
     }
-    throw new Error(`native smoke could not run: ${res.error.message}`);
+    throw new Error(`runtime smoke could not run: ${res.error.message}`);
   }
   if (res.status !== 0) {
     const output = `${res.stdout || ''}${res.stderr || ''}`.trim().split('\n').slice(-6).join(' | ');
-    throw new Error(`the bundled runtime cannot load ${moduleName}: ${output}`);
+    throw new Error(`the bundled runtime cannot open a SQLite database: ${output}`);
   }
-  logger.log(`[portable-bundle] native smoke passed (${moduleName} loads under the bundled runtime)`);
+  logger.log('[portable-bundle] runtime smoke passed (node:sqlite works under the bundled runtime)');
   return { ok: true, skipped: false };
 }
 
@@ -490,14 +511,23 @@ function writeManifest({ resourcesDir, version, platform, arch, nodeVersion, nod
   return manifest;
 }
 
-function archiveBundle({ bundleDir, outDir, name, logger = console }) {
-  const archive = path.join(outDir, `${name}.tar.gz`);
-  fs.rmSync(archive, { force: true });
-  const res = spawnSync('tar', ['-czf', archive, '-C', outDir, path.basename(bundleDir)], { stdio: 'inherit' });
-  if (res.status !== 0) {
-    throw new Error(res.status === null
-      ? `tar never completed (${res.error ? res.error.code || res.error.message : 'unknown error'})`
-      : `tar failed with status ${res.status}`);
+function archiveBundle({ bundleDir, outDir, name, platform = process.platform, logger = console }) {
+  // Windows gets a zip: that is what Explorer, PowerShell and every download
+  // page expect, and it needs no extra tooling on the way in (scripts/
+  // zip-archive.js writes it from Node, so a cross-arch Windows build behaves
+  // the same on a macOS, Linux or Windows runner).
+  const zip = platform === 'win32';
+  const archive = path.join(outDir, `${name}${zip ? '.zip' : '.tar.gz'}`);
+  if (zip) {
+    createZipArchive({ rootDir: bundleDir, out: archive, logger });
+  } else {
+    fs.rmSync(archive, { force: true });
+    const res = spawnSync('tar', ['-czf', archive, '-C', outDir, path.basename(bundleDir)], { stdio: 'inherit' });
+    if (res.status !== 0) {
+      throw new Error(res.status === null
+        ? `tar never completed (${res.error ? res.error.code || res.error.message : 'unknown error'})`
+        : `tar failed with status ${res.status}`);
+    }
   }
   const digest = sha256File(archive);
   fs.writeFileSync(`${archive}.sha256`, `${digest}  ${path.basename(archive)}\n`);
@@ -527,14 +557,15 @@ async function buildPortableBundle(args, { logger = console } = {}) {
   fs.mkdirSync(resourcesDir, { recursive: true });
 
   // Cross-arch builds: the staged production deps (and every prebuilt native
-  // addon in them) must match the TARGET, not the build host. better-sqlite3's
-  // prebuild-install reads npm_config_arch when picking its binary.
+  // addon left in them) must match the TARGET, not the build host.
+  // prebuild-install reads npm_config_arch/npm_config_target when picking a
+  // binary, so these stay pinned even though SQLite itself is now the runtime's
+  // built-in `node:sqlite` — the optional sherpa-onnx ASR payload still needs
+  // the right arch and the right runtime ABI.
   const npmEnv = {
-    // Target the BUNDLED runtime, not the build host. prebuild-install picks
-    // its binary from npm_config_target (falling back to the running Node), so
-    // without this the staged better-sqlite3 is built for whatever Node runs
-    // the build — ABI 147 on a Node 26 host — and the bundle dies at the first
-    // `new Database()` with ERR_DLOPEN_FAILED.
+    // Target the BUNDLED runtime, not the build host: without this a staged
+    // addon is built for whatever Node runs the build (ABI 147 on a Node 26
+    // host) and the bundle dies at the first require() with ERR_DLOPEN_FAILED.
     npm_config_target: args.nodeVersion,
     npm_config_runtime: 'node',
     npm_config_arch: args.arch,
@@ -571,10 +602,9 @@ async function buildPortableBundle(args, { logger = console } = {}) {
     logger.log('[portable-bundle] --no-runtime: skipping the Node runtime');
   }
 
-  if (args.verify && args.install && args.runtime) {
-    verifyStagedNative({
-      appServerDir: staged.out,
-      runtimeNode: path.join(resourcesDir, 'runtime', 'bin', args.platform === 'win32' ? 'node.exe' : 'node'),
+  if (args.verify && args.runtime) {
+    verifyRuntimeSqlite({
+      runtimeNode: runtimeNodePath(resourcesDir, args.platform),
       logger,
     });
   }
@@ -604,10 +634,8 @@ async function buildPortableBundle(args, { logger = console } = {}) {
   });
 
   let archive = null;
-  if (args.archive && args.platform !== 'win32') {
-    archive = archiveBundle({ bundleDir, outDir, name, logger });
-  } else if (args.archive) {
-    logger.log('[portable-bundle] archive skipped on win32 (ship the directory or zip it in CI)');
+  if (args.archive) {
+    archive = archiveBundle({ bundleDir, outDir, name, platform: args.platform, logger });
   }
   logger.log(`[portable-bundle] done: ${bundleDir}`);
   return { bundleDir, outDir, name, version, manifest, archive, staged };
@@ -655,8 +683,9 @@ module.exports = {
   nodeDistUrl,
   parseArgs,
   parseShasums,
+  runtimeNodePath,
   sanityGate,
   sha256File,
-  verifyStagedNative,
+  verifyRuntimeSqlite,
   writePlatformShell,
 };

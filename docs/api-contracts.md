@@ -99,8 +99,8 @@ window has elapsed.
 `npm run test:contracts` validates every schema, all OpenAPI references, golden
 payloads, DTO redaction boundaries, and backward compatibility. It has no
 network, native process, real repository, or AI dependency and runs in CI on
-Node 20 and 22. `npm test` combines deterministic suites, contract validation,
-and native dependency smoke checks.
+Node 22 and 24. `npm test` combines deterministic suites, contract validation,
+and the storage-runtime smoke checks (`test:native`).
 
 Live AI and manual integration checks are intentionally separate (`test:live`,
 `test:classify-live`, and other explicitly named live scripts). CI must not run
