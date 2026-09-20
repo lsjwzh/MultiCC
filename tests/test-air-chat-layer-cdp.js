@@ -5,10 +5,9 @@
 // 改之后：对话是浮在目录详情之上的一层，底页从不卸载 —— 关掉是滑落回去，换任务只是
 // 这一层里换了个人，所以「侧栏点一下就换台」还是一步。
 //
-// 这里量的是四件靠读代码看不出来的事：① 默认态真的正好盖住内容区（页头与侧栏留在
-// 外面，换台还是那一步），② 展开真的连页头一起盖（不是靠 z-index 侥幸，而是几何上
-// 确实盖住了整屏），③ 关掉之后 #empty 还活着（没有 hidden、没有卸载 —— 滚动位置与
-// 筛选就是靠这一条才在的），④ 换任务不往历史里写条目、后退等价于关层。
+// 这里量的是四件靠读代码看不出来的事：① 默认态是一整张有边距的浮卡，底页能从边缘
+// 看见，② 桌面展开只盖侧栏右侧的主界面，手机展开才铺满视口，③ 关掉之后 #empty
+// 还活着（没有 hidden、没有卸载），④ 换任务不往历史里写条目、后退等价于关层。
 //
 // DOM shim 量不了这些：getBoundingClientRect、层叠顺序（elementFromPoint）、
 // 过渡后的 visibility 都是浏览器行为。
@@ -59,6 +58,7 @@ const geometry = `(() => {
     sidebarHit: hit(Math.round(sidebar.getBoundingClientRect().x + 60), Math.round(window.innerHeight / 2)),
     contentHit: hit(r.content.x + Math.round(r.content.w / 2), r.content.y + Math.round(r.content.h / 2)),
     barH: Math.round(bar.getBoundingClientRect().height),
+    bar: rect(bar),
     handleH: Math.round(handle.getBoundingClientRect().height),
     titleShown: getComputedStyle(title).display !== 'none',
     titleText: title.textContent,
@@ -66,6 +66,19 @@ const geometry = `(() => {
     label: document.querySelector('#chat-expand .chat-bar-label').textContent,
     url: location.search,
     historyLength: history.length,
+  };
+})()`;
+
+const frameHeaderClearance = `(() => {
+  const layer = document.getElementById('chat-layer').getBoundingClientRect();
+  const bar = document.getElementById('chat-bar').getBoundingClientRect();
+  const frame = document.getElementById('conversation');
+  const context = frame.contentDocument.getElementById('chat-context-bar').getBoundingClientRect();
+  const style = getComputedStyle(frame.contentDocument.getElementById('chat-context-bar'));
+  return {
+    barLeft: Math.round(bar.left - layer.left),
+    contextRight: Math.round(context.right),
+    paddingRight: Math.round(parseFloat(style.paddingRight)),
   };
 })()`;
 
@@ -177,18 +190,24 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     assert.ok(await page.waitFor(`document.getElementById('chat-layer').classList.contains('is-open')`), '浮层要升上来');
 
     const open = await page.evaluate(geometry);
-    assert.deepEqual({ x: open.layer.x, y: open.layer.y, w: open.layer.w, h: open.layer.h },
-      { x: open.content.x, y: open.content.y, w: open.content.w, h: open.content.h },
-      `默认态要 100% 盖住内容区（不多不少）：${JSON.stringify(open)}`);
+    assert.ok(open.layer.x > open.content.x && open.layer.y > open.content.y,
+      `默认态四周要留出底页面板：${JSON.stringify(open)}`);
+    assert.ok(open.layer.x + open.layer.w < open.content.x + open.content.w,
+      `浮卡右边也要能看到底页：${JSON.stringify(open)}`);
+    assert.ok(open.layer.y + open.layer.h < open.content.y + open.content.h,
+      `浮卡底边也要能看到底页：${JSON.stringify(open)}`);
     assert.ok(open.layer.y >= open.header.y + open.header.h - 1, `浮层不该伸到页头上去：${JSON.stringify(open)}`);
     assert.equal(open.headerHit.inHeader, true, `页头要留在外面当快捷入口（谁在上面：${open.headerHit.tag}）`);
     assert.equal(open.headerHit.inLayer, false, `默认态浮层不许盖到页头：${JSON.stringify(open.headerHit)}`);
     assert.equal(open.sidebarHit.inSidebar, true, `侧栏也要留在外面，换台才是一步：${JSON.stringify(open.sidebarHit)}`);
     assert.equal(open.contentHit.inLayer, true, `内容区里最上面的是浮层：${JSON.stringify(open.contentHit)}`);
     assert.equal(open.emptyHidden, false, '被盖住不等于被 hidden');
-    assert.equal(open.titleShown, false, '默认态不重复任务名（页头那一行就写着）');
+    assert.equal(open.titleShown, false, '浮层不再用单独一行重复任务名');
     assert.equal(open.pressed, 'false');
     assert.equal(open.label, '展开');
+    assert.ok(open.bar.w <= 70 && open.bar.h <= 34, `右上只留两个紧凑图标：${JSON.stringify(open.bar)}`);
+    const clearance = await page.evaluate(frameHeaderClearance);
+    assert.ok(clearance.paddingRight >= 92, `iframe 现有状态行给角标让位，不得叠字：${JSON.stringify(clearance)}`);
     await page.screenshot('01-chat-layer-default');
 
     // ── 展开：连页头一起盖 ──────────────────────────────────────────────────
@@ -196,13 +215,14 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     assert.ok(await page.waitFor(`document.getElementById('chat-layer').classList.contains('is-expanded')`), '要进展开态');
     const expanded = await page.evaluate(geometry);
     assert.deepEqual({ x: expanded.layer.x, y: expanded.layer.y, w: expanded.layer.w, h: expanded.layer.h },
-      { x: 0, y: 0, w: expanded.viewport.w, h: expanded.viewport.h },
-      `展开态要铺满视口（页头与侧栏一起盖）：${JSON.stringify(expanded)}`);
+      { x: open.content.x, y: 0, w: expanded.viewport.w - open.content.x, h: expanded.viewport.h },
+      `桌面展开只铺满侧栏右侧：${JSON.stringify(expanded)}`);
     assert.equal(expanded.headerHit.inLayer, true, `展开后页头归浮层管：${JSON.stringify(expanded.headerHit)}`);
-    assert.equal(expanded.sidebarHit.inLayer, true, `展开后侧栏也归浮层管：${JSON.stringify(expanded.sidebarHit)}`);
+    assert.equal(expanded.sidebarHit.inSidebar, true, `展开后侧栏仍可用：${JSON.stringify(expanded.sidebarHit)}`);
+    assert.equal(expanded.sidebarHit.inLayer, false, `浮层不能越过侧栏：${JSON.stringify(expanded.sidebarHit)}`);
     assert.equal(expanded.pressed, 'true', '展开键要报出自己按下了');
     assert.equal(expanded.label, '收起');
-    assert.equal(expanded.titleShown, true, '展开后页头没了，任务名得由这一条报出来');
+    assert.equal(expanded.titleShown, false, '展开态也不新增一整条标题栏');
     assert.equal(expanded.titleText, '任务 A');
     await page.screenshot('02-chat-layer-expanded');
 
@@ -210,9 +230,7 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     await page.evaluate(`document.getElementById('chat-expand').click()`);
     assert.ok(await page.waitFor(`!document.getElementById('chat-layer').classList.contains('is-expanded')`), '要退回默认态');
     const collapsed = await page.evaluate(geometry);
-    assert.deepEqual({ x: collapsed.layer.x, y: collapsed.layer.y, w: collapsed.layer.w, h: collapsed.layer.h },
-      { x: collapsed.content.x, y: collapsed.content.y, w: collapsed.content.w, h: collapsed.content.h },
-      `收起=回到盖内容区：${JSON.stringify(collapsed)}`);
+    assert.deepEqual(collapsed.layer, open.layer, `收起=回到同一张浮卡：${JSON.stringify(collapsed)}`);
     assert.equal(collapsed.headerHit.inHeader, true, '收起之后页头又是页头了');
     assert.equal(collapsed.pressed, 'false');
 

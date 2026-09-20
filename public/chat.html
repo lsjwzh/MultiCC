@@ -2397,6 +2397,7 @@
     const sharedChat = /^\/share\/[^/]+\/?$/.test(location.pathname);
     if (!airRequested && !sharedChat) return;
     document.body.classList.add('air-chat');
+    if (airRequested) document.body.classList.add('air-embedded');
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f7fbff');
   })();
 </script>
