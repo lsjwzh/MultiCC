@@ -22,7 +22,7 @@
     provider: ['Provider 配置', '全局供应商、账号与线路管理', 'PROVIDERS'],
     global: ['全局配置', '语言、执行与通用偏好', 'SETTINGS'],
     push: ['推送通知', 'Web Push 与备用提醒通道', 'NOTIFICATIONS'],
-    tunnel: ['外网穿透', 'Tailscale 与隧道服务状态', 'NETWORK'],
+    tunnel: ['外网穿透', '国内 SakuraFrp / 海外 Tailscale 一站式接入', 'NETWORK'],
     bridges: ['消息桥接', '微信、飞书及其他消息入口', 'BRIDGES'],
     resources: ['Agent 资源', 'Skills 与历史资源管理', 'RESOURCES'],
     skillsync: ['技能同步', '跨 CLI 的 Skills 同步状态', 'SKILLS'],
@@ -831,6 +831,18 @@
     provider.render(context);
   }
 
+  function renderTunnel(context) {
+    setActions([
+      action('返回设置中心', () => context.setMode('settings'), '', panelIcon('←')),
+      action('刷新状态', () => root.MultiCCAirTunnel?.refresh(), '', keepsGlyph('↻')),
+    ]);
+    const tunnel = root.MultiCCAirTunnel;
+    if (tunnel) return tunnel.render(el('admin-content'), context);
+    const panel = make('section', null, 'admin-panel');
+    panel.append(make('h3', '外网穿透模块未加载'), make('p', '请刷新 Air 页面后重试。'));
+    el('admin-content').replaceChildren(panel);
+  }
+
   function render(mode, context, force = false) {
     currentContext = context;
     if (mode === 'overview') {
@@ -844,6 +856,7 @@
     if (mode === 'docs') return renderDocs(context);
     if (mode === 'settings') return renderSettings(context);
     if (mode === 'provider') return renderProvider(context);
+    if (mode === 'tunnel') return renderTunnel(context);
     if (mode === 'aux') return renderAux(context);
     renderLegacy(mode, context);
   }
