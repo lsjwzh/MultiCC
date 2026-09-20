@@ -90,6 +90,17 @@ assert.match(manager, /wait_for_ready\(\)/);
 assert.match(manager, /Waiting for startup migrations and readiness/);
 assert.ok(manager.indexOf('if ! wait_for_ready') > manager.indexOf('Restarting to apply update'),
   'the real update path must verify Commander migration readiness after restart');
+// One-time data migrations (cron fan-out cleanup for installs <= 2.0.2) are
+// driven by the pre-update version this path records, and must report back into
+// the update output instead of leaving the user with a silently changed board.
+assert.match(manager, /\.multicc_upgrade/, 'the update path must record the pre-update version');
+assert.ok(manager.indexOf('.multicc_upgrade') < manager.indexOf('Restarting to apply update'),
+  'the pre-update version must be recorded before the restart that runs the migration');
+assert.match(manager, /cron-fanout-cleanup\.log/, 'the update path must surface the cleanup report');
+assert.ok(manager.indexOf('rm -f "$LOG_DIR/cron-fanout-cleanup.log"') < manager.indexOf('Restarting to apply update'),
+  'a stale report from an earlier boot must be cleared before the restart that writes a new one');
+assert.ok(manager.indexOf('cat "$LOG_DIR/cron-fanout-cleanup.log"') > manager.indexOf('if ! wait_for_ready'),
+  'the cleanup report is only printed after readiness');
 
 const cprSpec = pkg.dependencies['cli-provider-router'];
 assert.match(cprSpec, /^https:\/\/github\.com\/lsjwzh\/cli-provider-router\/archive\/[0-9a-f]{40}\.tar\.gz$/);

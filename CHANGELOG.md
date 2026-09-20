@@ -2,6 +2,12 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## Unreleased
+
+### Improvements and fixes
+
+- **Upgrade-time cleanup of cron fan-out residue** — `./multicc update` records the version it is upgrading from, and the new process archives the per-firing duplicate tasks that releases ≤ 2.0.2 left on the board (archive only: a rule's fixed task is task-shell identity and cannot be merged into). The cleanup runs once per data directory, prints its count in the update output, and never blocks readiness.
+
 ## v2.0.1 — Task attribution you can see and steer (2026-09-19)
 
 ### Highlights
