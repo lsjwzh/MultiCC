@@ -282,22 +282,20 @@
              回去，滚动位置、筛选、展开状态全都还在（对齐 App 的 _ChatSheet：首页
              永远挂在 Stack 底下，No page swap）。
 
-             默认只盖内容区：页头（任务名 / 状态徽标 / 工具）和侧栏都留在外面，所以
-             「换下一个任务」仍然是一步 —— 侧栏点一下就是换台上那个人，不用先关再开。
-             页头那颗「展开」才把这一层改成 position:fixed 连页头一起盖（真满屏），
-             再点收回来。展开态不写进地址、也不记忆：刷新回来还是浮层（对齐 App 的
-             _anim 不落盘）。
+             桌面默认是一整张浮卡：四周留一圈缝、带玻璃底和投影，目录面板仍能从
+             边缘隐约看见。展开时盖掉主区页头，但侧栏继续留着，换任务仍然一步完成。
+             手机的侧栏本来就是抽屉，展开态才铺满整个视口。展开态不写进地址、也不
+             记忆：刷新回来还是浮层（对齐 App 的 _anim 不落盘）。
 
              帧由 air.js 的 mountFrame 挂进这一层（帧池契约：永远住在 #task-content
              里、已经挂好的帧不能挪 —— 挪一下整个 iframe 重载，池子攒的热乎气全没）。 -->
         <div id="chat-layer" role="region" aria-label="任务对话">
-          <!-- 这一条是浮层自己的控制条：手机上它是把手（往下拖 = 关掉），桌面上它是
-               展开/关闭的落点。任务名只在展开态出现 —— 那时候页头被盖住了，它是
-               唯一的标题。 -->
+          <!-- 控件挂在浮层右上角，不占一整行：两个按钮只显示图标。手机仍保留中间
+               的拖柄（往下拖 = 关掉），但透明的命中层不参与 iframe 的排版。 -->
           <header id="chat-bar">
             <span id="chat-bar-handle" aria-hidden="true"></span>
-            <strong id="chat-bar-title"></strong>
-            <button id="chat-expand" type="button" aria-pressed="false" title="展开：连页头一起盖">
+            <strong id="chat-bar-title" hidden></strong>
+            <button id="chat-expand" type="button" aria-pressed="false" title="展开浮层" aria-label="展开浮层">
               <span class="chat-bar-glyph" aria-hidden="true">⤢</span><span class="chat-bar-label">展开</span>
             </button>
             <button id="chat-close" type="button" title="关闭对话，回到目录详情" aria-label="关闭对话">
