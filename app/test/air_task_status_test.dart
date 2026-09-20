@@ -151,6 +151,31 @@ void main() {
     });
   });
 
+  group('Air 徽标说 Air 词表', () {
+    test('逐条对 Web 的 STATUS_COPY：跟词典里那几个词不是一个说法', () {
+      // App 词典（跟 Web 的 i18n 目录同一份）里 running 是「进行中」、waiting 是
+      // 「等待中」；Air 面说的是另一套（Web `air-admin.js` 的 STATUS_COPY）—— 跟
+      // 侧栏那些阶段、资源去向（`airLabel`）同源。
+      expect(airStatusLabel(CanonicalStatus.running), '执行中');
+      expect(airStatusLabel(CanonicalStatus.waiting), '等待回答');
+      expect(airStatusLabel(CanonicalStatus.blocked), '等待配置');
+      expect(airStatusLabel(CanonicalStatus.error), '执行异常');
+      expect(airStatusLabel(CanonicalStatus.succeeded), '执行成功');
+      expect(airStatusLabel(CanonicalStatus.unknown), '状态未知');
+      // 十二个状态一个不落，别留一个落回原样状态名。
+      for (final status in CanonicalStatus.values) {
+        expect(airStatusCopy[status], isNotNull, reason: '$status 缺词');
+      }
+    });
+
+    test('一行上不会出现两个词说同一件事', () {
+      // 在跑的任务：徽标「执行中」，第二层不该再说一遍（租约也是 running）。
+      final running = _task(runState: 'running', resource: const {'lease': 'running'});
+      expect(airStatusLabel(airTaskStatus(running)), '执行中');
+      expect(airTaskDetail(running), '');
+    });
+  });
+
   group('行上的第二层信息', () {
     test('计划 + 阶段 + 资源去向，合起来一句话', () {
       expect(
@@ -175,6 +200,46 @@ void main() {
           ),
         ),
         '目录已准备',
+      );
+    });
+
+    test('观察型记录不说阶段：这正是「满屏进行中」的来源', () {
+      // `status` 是生命周期（active/done/archived），不是「在不在跑」。老写法拿它
+      // 兜底当阶段，于是每条没跑的任务都在这一行写「进行中」，跟同一行的徽标
+      // （空闲 / 执行成功 / 等待回答）说反话。
+      expect(airTaskDetail(_task()), '', reason: '观察型记录没有阶段，也没有资源去向');
+      expect(
+        airTaskDetail(_task(status: 'done')),
+        '',
+        reason: '已完成也不该在这里写「进行中」—— 徽标已经说了',
+      );
+      // 有真话可说的时候照说：卡在名额上就得写出来。
+      expect(
+        airTaskDetail(
+          _task(runState: 'waiting', resource: const {
+            'capacityReason': 'workspace_execution_capacity',
+          }),
+        ),
+        '等待执行名额',
+      );
+    });
+
+    test('徽标说过的词不在第二层再说一遍（同 Web 侧栏）', () {
+      expect(
+        airTaskDetail(_task(runState: 'running', resource: const {'lease': 'running'})),
+        '',
+        reason: '徽标「执行中」+ 这行「执行中」不是更多信息',
+      );
+      // 阶段和资源去向撞词时同理（planned 记录才有阶段）。
+      expect(
+        airTaskDetail(
+          _task(
+            recordType: 'planned',
+            workflowStage: 'review',
+            resource: const {'lease': 'review'},
+          ),
+        ),
+        '计划 · 待验收',
       );
     });
 

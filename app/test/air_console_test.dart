@@ -190,8 +190,11 @@ void main() {
       reason: '最近动过的排在前面',
     );
     // 行上一眼能看出它在等我回答 / 出错了（同一条任务在两个分区里各一行）。
-    expect(find.text('等待中'), findsWidgets);
-    expect(find.text('异常'), findsWidgets);
+    // 徽标说的是 Air 词表（`airStatusCopy`，同 Web 的 STATUS_COPY）：waiting 是
+    // 「等待回答」、error 是「执行异常」—— 跟这一页统计卡上那句「等待回答、资源或
+    // 重试」是同一套词，不是词典里那套（「等待中」「异常」）。
+    expect(find.text('等待回答'), findsWidgets);
+    expect(find.text('执行异常'), findsWidgets);
 
     // 分区顺序：控制台要一眼回答两件事 —— 谁在等我、我有哪些目录 —— 所以「工作目录」
     // 紧跟「谁在等我」，不压到「全部任务」和工具格底下等用户滚到底才看见。
