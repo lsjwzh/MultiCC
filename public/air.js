@@ -1485,7 +1485,7 @@
       aux: ['MultiCC Air › 设置中心', 'AI Assistant', '意图分类与摘要服务的模型设置与运行记录。'],
       global: ['MultiCC Air › 设置中心', '全局配置', '语言、执行与通用偏好。'],
       push: ['MultiCC Air › 设置中心', '推送通知', 'Web Push 与备用提醒通道。'],
-      tunnel: ['MultiCC Air › 设置中心', '外网穿透', 'Tailscale 与隧道服务状态。'],
+      tunnel: ['MultiCC Air › 设置中心', '外网穿透', '国内 SakuraFrp / 海外 Tailscale 分流接入与状态。'],
       bridges: ['MultiCC Air › 设置中心', '消息桥接', '微信、飞书及其他消息入口。'],
       resources: ['MultiCC Air › 设置中心', 'Agent 资源', 'Skills 与历史资源管理。'],
       skillsync: ['MultiCC Air › 设置中心', '技能同步', '跨 CLI 的 Skills 同步状态。'],

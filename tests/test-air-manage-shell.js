@@ -25,6 +25,8 @@ test('Air owns the management home and exposes the management navigation', () =>
   assert.match(read('public/air.css'), /\.frequent-settings \{ display: grid; grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/);
   assert.match(html, /src="air-admin\.js"/);
   assert.match(html, /src="air-provider\.js"/);
+  assert.match(html, /src="air-tunnel\.js"/);
+  assert.ok(html.indexOf('src="air-tunnel.js"') < html.indexOf('src="air-admin.js"'), 'native tunnel module must register before the Air admin router');
   assert.match(js, /adminModes\.has\(requested\)/);
   assert.match(js, /MultiCCAirAdmin\?\.render/);
 });
@@ -52,4 +54,26 @@ test('global CLI and Provider settings are native in Air', () => {
   assert.match(provider, /speedtest/);
   assert.match(provider, /Provider 已创建/);
   assert.match(provider, /air-provider-card/);
+});
+
+test('regional tunnel onboarding is native and self-contained in Air', () => {
+  const admin = read('public/air-admin.js');
+  const tunnel = read('public/air-tunnel.js');
+  const css = read('public/air.css');
+
+  assert.match(admin, /function renderTunnel\(context\)/);
+  assert.match(admin, /if \(mode === 'tunnel'\) return renderTunnel\(context\)/);
+  assert.match(tunnel, /中国大陆方案/);
+  assert.match(tunnel, /海外方案/);
+  assert.match(tunnel, /SakuraFrp · 樱花内网穿透/);
+  assert.match(tunnel, /Tailscale Funnel/);
+  assert.match(tunnel, /api\/tunnel\/sakurafrp\/install/);
+  assert.match(tunnel, /api\/tunnel\/sakurafrp\/public-url/);
+  assert.match(tunnel, /api\/tunnel\/funnel/);
+  assert.match(tunnel, /api\/tunnel\/ipv6/);
+  assert.match(tunnel, /api\/settings\/access-token/);
+  assert.match(tunnel, /type="password" autocomplete="new-password"/);
+  assert.doesNotMatch(tunnel, /manage\.html\?view=tunnel/);
+  assert.match(css, /\.air-tunnel-route-grid \{ display: grid; grid-template-columns: repeat\(2/);
+  assert.match(css, /\.air-tunnel-compat-grid/);
 });
