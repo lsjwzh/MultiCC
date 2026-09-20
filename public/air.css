@@ -363,6 +363,21 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    的下半截会被页头那条底边整整齐齐地切掉。所以要把页头自己抬起来（和手机上
    工具浮层用的是同一档：进详情的 15 之上、抽屉遮罩的 20 之下）。 */
 #task-header { position: relative; z-index: 16; min-height: 88px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 13px 24px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .82); backdrop-filter: blur(20px); }
+/* 对话打开时不再保留一条外部页头：同一个节点被 air.js 搬进 #chat-layer。上沿给
+   居中的 pin 和右上角两颗浮层按钮留 28px，标题 / 状态 / 原有任务工具共用下面
+   一行。这样既是一整张聊天卡，也没有复制第二套操作。 */
+#task-header.is-chat-header {
+  z-index: 2; min-height: 66px; gap: 10px; padding: 28px 88px 7px 14px;
+  border: 0; border-bottom: 1px solid rgba(220, 230, 241, .92);
+  background: rgba(251, 253, 255, .78); backdrop-filter: none;
+}
+#task-header.is-chat-header .breadcrumb { display: flex; align-items: center; gap: 8px; overflow: hidden; }
+#task-header.is-chat-header #task-breadcrumb { display: none; }
+#task-header.is-chat-header #task-title {
+  flex: 0 1 auto; min-width: 56px; max-width: min(38vw, 520px); overflow: hidden;
+  font-size: 15px; line-height: 1.3; white-space: nowrap; text-overflow: ellipsis;
+}
+#task-header.is-chat-header #task-state { flex: 1 1 auto; min-width: 0; margin-top: 0; }
 .breadcrumb { min-width: 0; flex: 1; }
 .breadcrumb .caption { margin: 0 0 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #task-title { overflow-wrap: anywhere; }
@@ -575,8 +590,8 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* ── 对话浮层 ────────────────────────────────────────────────────────────────
    对话是「浮在目录详情之上的一层」，不是「换掉目录详情的那一页」。#empty 一直在
    下面（不 hidden、不卸载）。桌面默认是一张四周留缝的完整浮卡：边缘透出底页，
-   让人一眼读出层级；展开时只盖掉侧栏右侧的主界面，侧栏始终可用。手机另在 760px
-   断点里恢复整块内容区 / 整屏的几何，因为侧栏在那里本来就是抽屉。
+   让人一眼读出层级；任务页头本身也是这张卡的第一行，不再悬在卡外。展开时只盖掉
+   侧栏右侧的主界面，侧栏始终可用。手机在 760px 断点铺满视口，因为侧栏在那里是抽屉。
 
    收起用 transform 滑落，是为了「层」这件事看得见：现在关掉对话是滑回目录详情，
    不是换屏。visibility 跟着位移一起收（延迟到滑完），否则关闭态还会吃到点击。 */
@@ -606,8 +621,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* 手指拖着的时候不要过渡：位移要贴着手指走。 */
 #chat-layer.is-dragging { transition: none; }
 
-/* 两颗操作直接悬在右上角，不再单独占 32px 的工具行。header 是透明命中层，只有
-   两个按钮本身吃点击；iframe 从浮卡第一行就开始。 */
+/* 两颗操作直接悬在浮层页头右上角，不再单独占 32px 的工具行。 */
 #chat-bar {
   position: absolute; z-index: 3; top: 8px; right: 8px;
   display: flex; align-items: center; gap: 4px;
@@ -619,7 +633,6 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
   touch-action: none;
 }
 #chat-bar-handle { display: none; }
-#chat-bar-title { display: none; }
 #chat-bar button { display: grid; place-items: center; width: 26px; min-width: 26px; height: 26px; min-height: 26px; padding: 0; color: #47617c; border: 0; border-radius: 8px; background: transparent; font-size: 15px; }
 #chat-bar button:hover { background: #eef4fb; }
 #chat-bar #chat-close { font-size: 18px; line-height: 1; }
@@ -1125,6 +1138,8 @@ body.console-open #console-panel { transform: none; visibility: visible; }
      浮层在里面的 z-index 再大，也只管这一层内部，整条页头仍然排在 #task-layout
      前面。进详情的 15 之上、抽屉遮罩的 20 之下。 */
   #task-header { min-height: 0; align-items: center; flex-wrap: wrap; gap: 5px 6px; padding: 6px 10px; position: relative; z-index: 16; }
+  #task-header.is-chat-header { z-index: 2; min-height: 0; padding: 8px 80px 7px 10px; }
+  #task-header.is-chat-header #task-title { max-width: none; font-size: 18px; }
   /* 状态是「现在怎么样」，不是页头的第二行内容：让它跟在标题后面读，省掉一整行。
      挤不下时（窄屏，或标题本身比一整行还长）它自己换行回到第二行 —— 宁可多这一行，
      也要把状态整条留全，而不是压成省略号。 */
@@ -1242,13 +1257,13 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   #palette { top: 68px; max-height: min(520px, calc(100dvh - 110px)); }
   #palette footer { gap: 10px; }
 
-  /* 手机上侧栏是抽屉，所以展开仍是真满屏；默认态不留卡片外边距，避免浪费消息
-     区域。控件仍悬在右上角，透明命中层横跨顶部给下拉手势留足目标。 */
+  /* 手机上侧栏是抽屉，所以浮层铺满视口；页头已经在浮层里面。透明命中层横跨顶部，
+     但只有拖柄和两颗按钮接管指针，其余区域仍能点页头自己的标题与工具。 */
   #chat-layer { inset: 0; border-width: 1px 0 0; border-radius: 0; box-shadow: none; }
   #chat-layer.is-expanded { inset: 0; border: 0; }
-  #chat-bar { top: 0; right: 0; left: 0; justify-content: flex-end; height: 40px; padding: 7px 4px 3px 10px; border: 0; border-radius: 0; background: linear-gradient(to bottom, rgba(251, 253, 255, .9), rgba(251, 253, 255, 0)); box-shadow: none; backdrop-filter: none; }
-  #chat-bar button { background: rgba(251, 253, 255, .86); box-shadow: 0 2px 8px rgba(41, 72, 102, .1); }
-  #chat-bar-handle { display: block; position: absolute; top: 4px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: #cfdbe8; }
+  #chat-bar { top: 0; right: 0; left: 0; justify-content: flex-end; height: 40px; padding: 7px 4px 3px 10px; pointer-events: none; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
+  #chat-bar button { pointer-events: auto; background: rgba(251, 253, 255, .86); box-shadow: 0 2px 8px rgba(41, 72, 102, .1); }
+  #chat-bar-handle { display: block; position: absolute; top: 3px; left: 50%; width: 36px; height: 4px; margin-left: -18px; pointer-events: auto; touch-action: none; border-radius: 2px; background: #cfdbe8; }
   #chat-bar #chat-close { min-width: 30px; }
 }
 

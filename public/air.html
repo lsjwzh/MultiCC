@@ -283,18 +283,18 @@
              永远挂在 Stack 底下，No page swap）。
 
              桌面默认是一整张浮卡：四周留一圈缝、带玻璃底和投影，目录面板仍能从
-             边缘隐约看见。展开时盖掉主区页头，但侧栏继续留着，换任务仍然一步完成。
-             手机的侧栏本来就是抽屉，展开态才铺满整个视口。展开态不写进地址、也不
-             记忆：刷新回来还是浮层（对齐 App 的 _anim 不落盘）。
+             边缘隐约看见。任务打开时，air.js 把上面的同一个 #task-header 搬进这张
+             卡里；关闭后再放回原位。标题、状态、任务操作因此只有一份 DOM，不会变成
+             「外层页头 + 内层浮窗」两套。展开时只铺满侧栏右侧；手机侧栏本来就是抽屉，
+             所以铺满整个视口。展开态不写进地址、也不记忆。
 
              帧由 air.js 的 mountFrame 挂进这一层（帧池契约：永远住在 #task-content
              里、已经挂好的帧不能挪 —— 挪一下整个 iframe 重载，池子攒的热乎气全没）。 -->
         <div id="chat-layer" role="region" aria-label="任务对话">
-          <!-- 控件挂在浮层右上角，不占一整行：两个按钮只显示图标。手机仍保留中间
-               的拖柄（往下拖 = 关掉），但透明的命中层不参与 iframe 的排版。 -->
+          <!-- 控件挂在浮层内页头的右上角，不占一整行：两个按钮只显示图标。手机仍
+               保留中间的拖柄（往下拖 = 关掉），透明命中层不参与 iframe 的排版。 -->
           <header id="chat-bar">
             <span id="chat-bar-handle" aria-hidden="true"></span>
-            <strong id="chat-bar-title" hidden></strong>
             <button id="chat-expand" type="button" aria-pressed="false" title="展开浮层" aria-label="展开浮层">
               <span class="chat-bar-glyph" aria-hidden="true">⤢</span><span class="chat-bar-label">展开</span>
             </button>
