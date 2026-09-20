@@ -249,7 +249,7 @@ test('Fleet parent activity reuses the task board origin-aware running aggregate
     /function renderDirectoryDetailBody\(dirId\)[\s\S]*?taskBoardRunningCountForDir\(dirId\)/);
 });
 
-test('Fleet task entry renders and clears the shared running animation', () => {
+test('Fleet task entry renders and clears the shared running mark', () => {
   let runningTaskCount = 2;
   const tabClasses = new Set();
   const taskTab = {
@@ -308,8 +308,13 @@ test('Fleet task entry renders and clears the shared running animation', () => {
   assert.equal(taskTab.innerHTML, '📋 任务 (3)');
 
   const css = read('public/manage.html');
-  assert.match(css, /\.dd-tab\.has-running::after[\s\S]*?ddTabRunningSweep/);
-  assert.match(css, /prefers-reduced-motion:reduce[\s\S]*?\.card-border-rainbow\{animation:none/);
+  // 页签上的下划线是静态的：原来靠 background-position 在 1.8s 里扫一遍，每帧重绘
+  // 一条渐变，而且只要还有任务在跑就永远扫下去。谁在跑这件事没变，动的部分没了。
+  const underline = /\.dd-tab\.has-running::after\{([^}]*)\}/.exec(css);
+  assert.ok(underline, '.dd-tab.has-running::after 不见了');
+  assert.match(underline[1], /linear-gradient/);
+  assert.doesNotMatch(underline[1], /animation/);
+  assert.doesNotMatch(css, /ddTabRunningSweep/, '扫光的关键帧不该回来');
 });
 
 test('Fleet task links open Air with the directory and never mount the retired planner', () => {

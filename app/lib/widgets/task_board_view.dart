@@ -1224,7 +1224,7 @@ class _TaskRow extends StatelessWidget {
 
   /// 行内状态图标。图标表来自中心 registry —— 列表行和详情页曾各写一份，
   /// running 一处是脉冲点、一处是 🟢，queued/archived 两处都没有。
-  /// 只有 spinner 状态才动：出错的任务立刻停止脉冲，换成 ❌。
+  /// 只有 spinner 状态才戴那个标记（现在是静态的实心点）：出错的任务立刻换成 ❌。
   Widget _runStateIcon(StatusSpec spec) {
     if (spec.spinner) return const _RunningDot();
     return _EmojiDot(spec.icon, semanticLabel: spec.semanticLabel);
@@ -1259,58 +1259,22 @@ class _TaskRow extends StatelessWidget {
 
 /// Pulsing green dot for a running task. Only this widget owns an animation
 /// controller, so idle/waiting/error rows stay cheap (no tickers allocated).
-class _RunningDot extends StatefulWidget {
+/// 运行中的圆点：**静态**的实心点 + 一圈淡光晕，不再缩放脉冲。
+///
+/// 对应 Web 的 `.mc-status.st-spin .mc-status-ico`（那边同样不再旋转）。原来这里
+/// 是一个 900ms 来回缩放的 AnimationController —— 一个「一直动」的元素会让整屏永远
+/// 出帧，而这一行图标本来就只在 running 时出现，颜色和位置已经说明了它在跑。
+class _RunningDot extends StatelessWidget {
   const _RunningDot();
 
   @override
-  State<_RunningDot> createState() => _RunningDotState();
-}
-
-class _RunningDotState extends State<_RunningDot>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c;
-  late final Animation<double> _scale;
-
-  @override
-  void initState() {
-    super.initState();
-    _c = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat(reverse: true);
-    _scale = Tween<double>(
-      begin: 0.7,
-      end: 1.15,
-    ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _scale,
-      builder: (_, __) => Transform.scale(
-        scale: _scale.value,
-        child: Container(
-          width: 9,
-          height: 9,
-          decoration: const BoxDecoration(
-            color: Color(0xFF1e8a55),
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: Color(0x661e8a55),
-                blurRadius: 5,
-                spreadRadius: 0.5,
-              ),
-            ],
-          ),
-        ),
+    return Container(
+      width: 9,
+      height: 9,
+      decoration: const BoxDecoration(
+        color: Color(0xFF1e8a55),
+        shape: BoxShape.circle,
       ),
     );
   }

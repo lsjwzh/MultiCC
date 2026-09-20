@@ -455,6 +455,36 @@ CanonicalStatus highestPriority(StatusDomain domain, Iterable<Object?> raw) {
 StatusSpec statusSpecOf(StatusDomain domain, Object? status) =>
     statusPresentation[coerceStatus(domain, status)]!;
 
+/// 运行标记的颜色：和 Web 的 status-presentation.js `RING_TINTS` 是同一份，顺序也
+/// 必须一样 —— 颜色按 id 哈希取，同一个 id 在两端要落到同一个色。
+/// tests/test-status-presentation.js 逐项比对这两张表。
+///
+/// 为什么是静态的：一个「一直在动」的标记会让整屏永远出帧，而这台机器上 Web 端
+/// 实测过 —— 关掉图形加速后屏幕上一个永续动画就能吃掉一个核。谁在跑这件事由描边、
+/// 图标、色和文字一起说，不需要它动。
+const List<int> ringTints = [
+  0xFF7FB0FF,
+  0xFFF7B98A,
+  0xFF86CDF0,
+  0xFFC2A8FF,
+  0xFFA8D47E,
+  0xFFF2A3BF,
+  0xFF7FD3C2,
+  0xFFF0C66A,
+];
+
+/// 同一件东西每次都挑到同一档；彼此之间看起来是随机的。用 id 而不是随机数：列表
+/// 每次重画都换色会看着像在闪。哈希算法与 Web 的 ringTint 逐位一致（UTF-16 code
+/// unit × 31，取 32 位无符号）。
+Color ringTintFor(String? seed) {
+  final text = seed ?? '';
+  var hash = 0;
+  for (var i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.codeUnitAt(i)) & 0xFFFFFFFF;
+  }
+  return Color(ringTints[hash % ringTints.length]);
+}
+
 Color statusToneColor(String tone) {
   switch (tone) {
     case 'info':
@@ -502,7 +532,7 @@ String sanitizeReason(Object? text) {
   return safe;
 }
 
-/// 统一的状态徽章。图标恒在、无障碍名恒在；只有 running 会转圈。
+/// 统一的状态徽章。图标恒在、无障碍名恒在；只有 running 会戴那圈静态光晕。
 class StatusBadge extends StatelessWidget {
   const StatusBadge({
     super.key,
@@ -537,7 +567,7 @@ class StatusBadge extends StatelessWidget {
     final safeReason = sanitizeReason(reason);
     final color = spec.color;
     final icon = spec.spinner
-        ? _SpinningGlyph(glyph: spec.icon, fontSize: fontSize)
+        ? _RunningGlyph(glyph: spec.icon, fontSize: fontSize, color: color)
         : Text(spec.icon, style: TextStyle(fontSize: fontSize));
 
     final chip = Container(
@@ -583,34 +613,34 @@ class StatusBadge extends StatelessWidget {
   }
 }
 
-class _SpinningGlyph extends StatefulWidget {
-  const _SpinningGlyph({required this.glyph, required this.fontSize});
+/// 运行标记：图标外面一圈**静态**的光晕，不再旋转。对应 Web 的
+/// `.mc-status.st-spin .mc-status-ico`（那边也是同一个静态光晕）。
+///
+/// 谁在跑这件事由图标、色调、文案和（列表上的）静态描边一起说，不靠「一直在动」：
+/// 屏幕上有东西永远在动，合成器就永远不归零，Web 端实测关掉图形加速时这类动画能
+/// 吃掉一个核。系统「减弱动态效果」下连这圈光晕也去掉，只留图标。
+class _RunningGlyph extends StatelessWidget {
+  const _RunningGlyph({
+    required this.glyph,
+    required this.fontSize,
+    required this.color,
+  });
 
   final String glyph;
   final double fontSize;
-
-  @override
-  State<_SpinningGlyph> createState() => _SpinningGlyphState();
-}
-
-class _SpinningGlyphState extends State<_SpinningGlyph>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 2400),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
-    final glyph = Text(widget.glyph, style: TextStyle(fontSize: widget.fontSize));
-    // 尊重系统「减弱动态效果」设置。
-    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) return glyph;
-    return RotationTransition(turns: _controller, child: glyph);
+    final text = Text(glyph, style: TextStyle(fontSize: fontSize));
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) return text;
+    return Container(
+      padding: const EdgeInsets.all(1.5),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: color.withValues(alpha: 0.3), width: 1.5),
+      ),
+      child: text,
+    );
   }
 }
