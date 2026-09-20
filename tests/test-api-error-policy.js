@@ -76,6 +76,45 @@ test('401/403, billing, invalid request, context, tool/config errors fail fast',
   }
 });
 
+test('vendor CLI login-required text classifies as auth and never auto-retries', () => {
+  // WorkBuddy (codebuddy) with no /login session answers every turn with a
+  // stream-json result whose only detail lives in errors[] — the message field
+  // degrades to the opaque subtype "error_during_execution". Classification
+  // must read through to the errors[] text.
+  const codebuddy = decide({
+    source: 'codebuddy_result',
+    provider: 'codebuddy',
+    code: 'error_during_execution',
+    message: 'error_during_execution',
+    errors: ['Authentication required. Please use /login command to sign in to your account'],
+  });
+  assert.equal(codebuddy.error.category, 'authentication_permission');
+  assert.equal(codebuddy.action, 'fail_fast');
+  assert.equal(codebuddy.error.retryable, false);
+  // Note: sanitizeMessage deliberately over-redacts the word "Authentication"
+  // (auth + 8 chars looks like a token); assert on the actionable remainder.
+  assert.match(codebuddy.error.rootCause, /\/login command to sign in/);
+
+  const qoder = decide({
+    source: 'qoder_result',
+    provider: 'qoder',
+    code: 'error_during_execution',
+    message: 'error_during_execution',
+    errors: ['Error: not logged in, please run /login first'],
+  });
+  assert.equal(qoder.error.category, 'authentication_permission');
+  assert.equal(qoder.action, 'fail_fast');
+
+  // A real message still wins over errors[].
+  const real = decide({
+    source: 'claude_result',
+    provider: 'claude',
+    message: 'API Error: 503 overloaded',
+    errors: ['ignored'],
+  });
+  assert.equal(real.error.category, 'provider_transient');
+});
+
 test('trusted quota/context details refine generic HTTP status without overriding explicit auth', () => {
   const quota403 = decide({
     httpStatus: 403,
