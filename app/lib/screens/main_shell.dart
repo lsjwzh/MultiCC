@@ -18,6 +18,7 @@ import '../services/voice_launch_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
 import '../utils/manual_order.dart';
+import '../utils/overlay_geometry.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
 import '../widgets/directory_card.dart';
@@ -121,11 +122,11 @@ class _MainShellState extends State<MainShell> {
         if (didPop) return;
         // Back priority: close the active chat first, then the fleet panel.
         if (active != null) {
-          mgr.goToSessionList();
+          unawaited(mgr.requestCloseChat());
         } else if (fleetOpen) {
           // Routes through the panel's own collapse animation when it is
           // mounted, so back exits the same way a drag-down does.
-          mgr.requestCloseFleetDir();
+          unawaited(mgr.requestCloseFleetDir());
         }
       },
       child: Scaffold(
@@ -165,11 +166,24 @@ class _MainShellState extends State<MainShell> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  CHAT SHEET — a draggable bottom sheet hosting an open session over the home.
-//  Default height 3/4; drag the handle up to go fullscreen, down to collapse
-//  back to the dashboard. The chat's own message ListView keeps its scroll
-//  controller — only the handle drives the sheet, so the two never fight.
+//  CHAT SHEET — a draggable sheet hosting an open session over the home.
+//
+//  默认态盖满内容区（100%）：首页那根 AppBar 留在外面，它还是活的 —— ☰ 开抽屉、
+//  状态徽章、⋯ 菜单都点得到，换下一个任务不用先把对话关掉。展开态才连页头（以及
+//  状态栏）一起盖，控制条上那颗「收起」把它放回默认态。往下拖过一半就落回首页。
+//
+//  This mirrors the web console's `#chat-layer` (`public/air.js`): the directory
+//  page underneath is never unmounted, the conversation is just a layer over it.
+//  The chat's own message ListView keeps its scroll controller — only the bar
+//  drives the sheet, so the two never fight.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// 这两个量两个浮层共用（对话、目录详情），定义与「为什么」在
+// utils/overlay_geometry.dart —— 停位不一致的话，上面那层会露出下面那层的拖柄。
+double _overlaySnapFraction(BuildContext context) =>
+    overlaySnapFraction(MediaQuery.of(context));
+double _overlayContentTop(BuildContext context) =>
+    overlayContentTop(MediaQuery.of(context));
 
 class _ChatSheet extends StatefulWidget {
   final SettingsService settings;
@@ -186,14 +200,19 @@ class _ChatSheetState extends State<_ChatSheet>
   late final AnimationController _anim;
   bool _collapsing = false;
 
+  // 展开态：连页头一起盖（真满屏）。默认态停在内容区顶端，页头留在外面 —— 所以
+  // 只有展开之后页头才是点不到的，控制条上的「收起」是那会儿的出口。
+  bool _expanded = false;
+
+  // 收起时要用的 manager（`dispose` 里不能读 context，摘注册只能靠它）。
+  SessionManager? _mgr;
+
   // Deep-link focus captured once from the SessionManager when this sheet
   // mounts (task-board "jump to message"). Forwarded to ChatView; null for a
   // normal open -> ChatView's focus path stays dormant.
   bool _focusCaptured = false;
   String? _focusMessageId;
 
-  static const double _snapHalf =
-      0.9; // default opened height (matches fleet panel)
   static const double _dismissBelow = 0.5; // drag below this → collapse home
 
   @override
@@ -205,10 +224,18 @@ class _ChatSheetState extends State<_ChatSheet>
       upperBound: 1,
       duration: const Duration(milliseconds: 260),
     );
-    // Entrance: slide up from the bottom to the 3/4 snap.
+    // Entrance: 从屏幕下沿升到默认位（盖满内容区）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _anim.animateTo(_snapHalf, curve: Curves.easeOutCubic);
+      if (mounted) {
+        _anim.animateTo(_overlaySnapFraction(context), curve: Curves.easeOutCubic);
+      }
     });
+    // 返回键、以及首页的 ☰ 要「先收对话再干下一件事」时走这条路（见
+    // SessionManager.requestCloseChat）：直接把 activeSession 清掉，这一层会被
+    // 从树上抽走 —— 它是「啪」地消失，不是滑下去。
+    final mgr = context.read<SessionManager>();
+    _mgr = mgr;
+    mgr.chatCollapseHandler = _collapse;
   }
 
   @override
@@ -228,6 +255,11 @@ class _ChatSheetState extends State<_ChatSheet>
 
   @override
   void dispose() {
+    // 只摘掉自己注册的那一个：换会话会把这一层换成新的 key，而新 State 的
+    // initState 先跑、旧 State 的 dispose 后跑 —— 无条件清会把新注册的那份抹掉。
+    if (_mgr?.chatCollapseHandler == _collapse) {
+      _mgr!.chatCollapseHandler = null;
+    }
     _anim.dispose();
     super.dispose();
   }
@@ -237,33 +269,50 @@ class _ChatSheetState extends State<_ChatSheet>
     _anim.value = (_anim.value - dy / height).clamp(0.0, 1.0);
   }
 
-  void _onDragEnd(double velocity, double height) {
+  void _onDragEnd(double velocity, double height, double snapDefault) {
     final v = velocity / height; // fraction/sec; +down, -up
     double target;
     if (v > 1.3) {
-      target = _anim.value < _snapHalf ? 0.0 : _snapHalf;
+      // 往下甩：默认位以上就停在默认位，否则一路落回首页。
+      target = _anim.value < snapDefault ? 0.0 : snapDefault;
     } else if (v < -1.3) {
-      target = 1.0;
+      target = 1.0; // 往上甩 = 展开
     } else if (_anim.value < _dismissBelow) {
       target = 0.0;
-    } else if (_anim.value < (_snapHalf + 1.0) / 2) {
-      target = _snapHalf;
+    } else if (_anim.value < (snapDefault + 1.0) / 2) {
+      target = snapDefault;
     } else {
       target = 1.0;
     }
     if (target == 0.0) {
       _collapse();
-    } else {
-      _anim.animateTo(target, curve: Curves.easeOutCubic);
+      return;
     }
+    // 拖出来的落点也要让控制条上的按钮跟着换（拖到底 ≠ 只在按钮上点过）。
+    if (_expanded != (target == 1.0)) setState(() => _expanded = target == 1.0);
+    _anim.animateTo(target, curve: Curves.easeOutCubic);
+  }
+
+  /// 展开 / 收起：默认位（盖满内容区，页头留着）与满屏（连页头一起盖）之间走一趟。
+  void _toggleExpanded() {
+    final next = !_expanded;
+    setState(() => _expanded = next);
+    _anim.animateTo(
+      next ? 1.0 : _overlaySnapFraction(context),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   // Animate the sheet down, then drop the active session → back to the home.
   void _collapse() {
     if (_collapsing) return;
     _collapsing = true;
+    // manager 先取好：动画结束时这一层可能已经被换掉（换会话），那时再
+    // context.read 就不合法了，而等着开抽屉的人还要被叫醒。
+    final mgr = _mgr;
     _anim.animateTo(0.0, curve: Curves.easeInCubic).then((_) {
-      if (mounted) context.read<SessionManager>().goToSessionList();
+      if (mounted) mgr?.goToSessionList();
+      mgr?.notifyLayerCollapsed();
     });
   }
 
@@ -271,26 +320,39 @@ class _ChatSheetState extends State<_ChatSheet>
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
     final h = mq.size.height;
+    final statusBar = mq.padding.top;
+    final contentTop = _overlayContentTop(context);
+    final snapDefault = _overlaySnapFraction(context);
 
     return AnimatedBuilder(
       animation: _anim,
       builder: (context, _) {
         final frac = _anim.value;
-        final scrimOp = (frac.clamp(0.0, _snapHalf) / _snapHalf) * 0.5;
-        final fullProg = ((frac - _snapHalf) / (1 - _snapHalf)).clamp(0.0, 1.0);
-        final topInset = mq.padding.top * fullProg; // status-bar gap near full
-        final radius = (1 - fullProg) * 18;
+        // 默认位往上到满屏这一段：展开态头一件事是把让出去的状态栏补回来（页头
+        // 被盖住了，聊天内容得退到状态栏下面，不然第一行顶到刘海里去）。
+        final fullProg = ((frac - snapDefault) / (1 - snapDefault)).clamp(
+          0.0,
+          1.0,
+        );
+        final topInset = statusBar * fullProg;
         final top = h * (1 - frac);
+        // 遮罩跟着升起来淡入，默认位时整块都在浮层底下（看不见），只在升降过程里
+        // 露一下。它永远不越过内容区顶端 —— 页头留着给人点，就不能被压暗、更不能
+        // 被它吃掉点击。点它 = 收起对话。
+        final scrimOp = (frac / snapDefault).clamp(0.0, 1.0) * 0.5;
 
         return Stack(
           children: [
-            // Dim scrim over the home; tap to collapse.
-            Positioned.fill(
+            Positioned(
+              top: contentTop,
+              left: 0,
+              right: 0,
+              bottom: 0,
               child: IgnorePointer(
                 ignoring: scrimOp < 0.02,
                 child: GestureDetector(
                   onTap: _collapse,
-                  child: Container(
+                  child: ColoredBox(
                     color: Colors.black.withValues(alpha: scrimOp),
                   ),
                 ),
@@ -301,45 +363,122 @@ class _ChatSheetState extends State<_ChatSheet>
               right: 0,
               top: top,
               height: h - top,
-              child: ClipRRect(
-                borderRadius: BorderRadius.vertical(
-                  top: Radius.circular(radius),
+              child: Container(
+                // 齐平的一条边压在页头下面（对齐 Web `#chat-layer` 的 border-top），
+                // 不再是「浮在半空的圆角卡片」—— 这一层现在盖满整个内容区。
+                decoration: const BoxDecoration(
+                  color: Color(0xFFffffff),
+                  border: Border(top: BorderSide(color: AppColors.line)),
                 ),
-                child: Container(
-                  color: const Color(0xFFffffff),
-                  child: Column(
-                    children: [
-                      SizedBox(height: topInset),
-                      _SheetHandle(
-                        onDrag: (dy) => _onDrag(dy, h),
-                        onDragEnd: (v) => _onDragEnd(v, h),
-                      ),
-                      Expanded(
-                        // Top inset is already handled by the handle above, so
-                        // neutralise ChatView's own SafeArea top (keep bottom
-                        // for the keyboard).
-                        child: MediaQuery(
-                          data: mq.copyWith(
-                            padding: mq.padding.copyWith(top: 0),
-                          ),
-                          child: ChangeNotifierProvider<ChatProvider>.value(
-                            value: widget.provider,
-                            child: ChatView(
-                              settings: widget.settings,
-                              onCollapse: _collapse,
-                              focusMessageId: _focusMessageId,
-                            ),
+                child: Column(
+                  children: [
+                    SizedBox(height: topInset),
+                    _ChatSheetBar(
+                      expanded: _expanded,
+                      onToggleExpand: _toggleExpanded,
+                      onDrag: (dy) => _onDrag(dy, h),
+                      onDragEnd: (v) => _onDragEnd(v, h, snapDefault),
+                    ),
+                    Expanded(
+                      // Top inset is already handled by the bar above, so
+                      // neutralise ChatView's own SafeArea top (keep bottom
+                      // for the keyboard).
+                      child: MediaQuery(
+                        data: mq.copyWith(
+                          padding: mq.padding.copyWith(top: 0),
+                        ),
+                        child: ChangeNotifierProvider<ChatProvider>.value(
+                          value: widget.provider,
+                          child: ChatView(
+                            settings: widget.settings,
+                            onCollapse: _collapse,
+                            focusMessageId: _focusMessageId,
                           ),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
             ),
           ],
         );
       },
+    );
+  }
+}
+
+// 浮层顶上的控制条：中间那条拖柄（整条都能拖，往下甩 = 关掉对话），右边一颗
+// 「展开 / 收起」。默认态页头还在外面，所以这一条不需要「关闭」—— 收起是聊天页
+// 自己那颗 ⌄、这条拖柄、以及 Android 返回键的事。
+class _ChatSheetBar extends StatelessWidget {
+  final void Function(double dy) onDrag;
+  final void Function(double velocity) onDragEnd;
+  final bool expanded;
+  final VoidCallback onToggleExpand;
+  const _ChatSheetBar({
+    required this.onDrag,
+    required this.onDragEnd,
+    required this.expanded,
+    required this.onToggleExpand,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: (d) => onDrag(d.delta.dy),
+      onVerticalDragEnd: (d) => onDragEnd(d.velocity.pixelsPerSecond.dy),
+      child: Container(
+        // 满宽要写明：这一条挂在 Column 底下（crossAxisAlignment 默认 center），
+        // 不给宽度它就缩成里面那条拖柄的 42px —— 白底和那条细线也跟着缩水。
+        width: double.infinity,
+        height: 36,
+        decoration: const BoxDecoration(
+          color: AppColors.panel,
+          border: Border(bottom: BorderSide(color: AppColors.line)),
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // 拖柄真居中（两边摆什么按钮都不影响它）。
+            Container(
+              width: 42,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFF8b9cae),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Positioned(
+              right: 6,
+              child: TextButton.icon(
+                key: const ValueKey('chat-sheet-expand'),
+                onPressed: onToggleExpand,
+                icon: Icon(
+                  expanded
+                      ? Icons.close_fullscreen_rounded
+                      : Icons.open_in_full_rounded,
+                  size: 15,
+                ),
+                label: Text(
+                  expanded ? '收起' : '展开',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: expanded
+                      ? AppColors.blue
+                      : const Color(0xFF47617c),
+                  backgroundColor: expanded ? const Color(0xFFe6f1fc) : null,
+                  minimumSize: const Size(0, 28),
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -532,12 +671,22 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     // Air 自带完整的壳（侧栏、任务头部、主区），这里不再给它套一层 Scaffold：
     // 两层 AppBar 会并排出现，两个抽屉也会互相盖住。非 Air 的老首页保持原样。
     if (_air) {
+      // ☰ 要开的是内层 Scaffold 自己的抽屉，而对话 / 目录详情浮层挂在它上面 ——
+      // 先让最上面那一层滑落，抽屉才不会被压在底下（屏幕上什么也看不到）。
+      final mgr = context.read<SessionManager>();
       return AirTasksView(
         settings: widget.settings,
         onOpenDestination: _openNavigationDestination,
         // 语音通话是原生独占的（麦克风要 HTTPS），老首页那一版入口随整块首页
         // 一起下线了，这里把它接回 Air 侧栏。
         onOpenVoiceCall: _openGlobalVoice,
+        beforeOpenNavigation: () async {
+          if (mgr.activeSessionId != null) {
+            await mgr.requestCloseChat();
+          } else if (mgr.activeFleetDirId != null) {
+            await mgr.requestCloseFleetDir();
+          }
+        },
       );
     }
     final mgr = context.watch<SessionManager>();
@@ -1606,11 +1755,11 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
 
   // Sheet geometry, mirroring _ChatSheetState so the two layers of this Stack
   // move identically. _anim.value == the fraction of the screen height the
-  // sheet covers, measured from the bottom edge (0 = fully off-screen).
+  // sheet covers, measured from the bottom edge (0 = fully off-screen). 默认停位
+  // 也共用（盖满内容区、页头留在外面），见 _overlaySnapFraction。
   late final AnimationController _anim;
   bool _collapsing = false;
 
-  static const double _snapDefault = 0.9; // opened height (matches chat sheet)
   static const double _dismissBelow = 0.5; // released below this → fall away
 
   // Tab selection for the fleet detail sheet: 0 = 会话 (sessions), 1 = 任务板
@@ -1646,7 +1795,9 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
     );
     // Entrance: slide up from the bottom edge to the default snap.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _anim.animateTo(_snapDefault, curve: Curves.easeOutCubic);
+      if (mounted) {
+        _anim.animateTo(_overlaySnapFraction(context), curve: Curves.easeOutCubic);
+      }
     });
     // Let the Android back button animate this panel out instead of yanking it
     // out of the Stack (see SessionManager.requestCloseFleetDir).
@@ -1675,18 +1826,18 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
     _anim.value = (_anim.value - dy / height).clamp(0.0, 1.0);
   }
 
-  void _onDragEnd(double velocity, double height) {
+  void _onDragEnd(double velocity, double height, double snapDefault) {
     final v = velocity / height; // fraction/sec; +down, -up
     double target;
     if (v > 1.3) {
       // Flung down: from above the snap it settles there, otherwise it falls.
-      target = _anim.value < _snapDefault ? 0.0 : _snapDefault;
+      target = _anim.value < snapDefault ? 0.0 : snapDefault;
     } else if (v < -1.3) {
       target = 1.0;
     } else if (_anim.value < _dismissBelow) {
       target = 0.0;
-    } else if (_anim.value < (_snapDefault + 1.0) / 2) {
-      target = _snapDefault;
+    } else if (_anim.value < (snapDefault + 1.0) / 2) {
+      target = snapDefault;
     } else {
       target = 1.0;
     }
@@ -1707,6 +1858,9 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
       // user grabbed the sheet again on its way down), so re-check that it
       // really landed at the bottom before tearing the panel out of the Stack.
       if (mounted && _anim.value == 0.0) widget.mgr.closeFleetDir();
+      // 就算没收成（被重新抓住/被换掉），也要把等「滑落完了」的人叫醒 ——
+      // 首页的 ☰ 就是在等这一下，然后再去开抽屉（见 requestCloseFleetDir）。
+      widget.mgr.notifyLayerCollapsed();
     });
   }
 
@@ -1989,6 +2143,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
     final h = mq.size.height;
+    final contentTop = _overlayContentTop(context);
+    final snapDefault = _overlaySnapFraction(context);
 
     return AnimatedBuilder(
       animation: _anim,
@@ -1996,51 +2152,57 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
         final frac = _anim.value;
         // Scrim tracks the entrance and fades back out as the sheet falls away.
         // 0.5 at rest, same as the chat sheet stacked above it.
-        final scrimOp = (frac.clamp(0.0, _snapDefault) / _snapDefault) * 0.5;
-        final fullProg =
-            ((frac - _snapDefault) / (1 - _snapDefault)).clamp(0.0, 1.0);
+        final scrimOp = (frac / snapDefault).clamp(0.0, 1.0) * 0.5;
+        final fullProg = ((frac - snapDefault) / (1 - snapDefault)).clamp(
+          0.0,
+          1.0,
+        );
         final topInset = mq.padding.top * fullProg; // status-bar gap near full
-        final radius = (1 - fullProg) * 18;
         final top = h * (1 - frac);
         // Below the snap the sheet SLIDES off the bottom rather than shrinking:
         // its box stays a full snap tall and simply hangs past the screen edge
         // (the Stack clips it). Resizing instead would relayout the session list
         // on every drag frame — visible reflow — and squeeze the Column past its
         // handle height near zero, tripping a RenderFlex overflow on the way out.
-        final boxFrac = frac < _snapDefault ? _snapDefault : frac;
+        final boxFrac = frac < snapDefault ? snapDefault : frac;
 
         return Stack(
           children: [
-            // Dim the dashboard behind; tap outside the sheet to dismiss it.
-            Positioned.fill(
+            // 遮罩只盖内容区（页头留在外面给人点，就不能被压暗、更不能吃掉点击），
+            // 默认位时它整块都在面板底下，只在升降的过程里露一下。点它 = 收起。
+            Positioned(
+              top: contentTop,
+              left: 0,
+              right: 0,
+              bottom: 0,
               child: IgnorePointer(
                 ignoring: scrimOp < 0.02,
                 child: GestureDetector(
                   onTap: _collapse,
-                  child: Container(
+                  child: ColoredBox(
                     color: Colors.black.withValues(alpha: scrimOp),
                   ),
                 ),
               ),
             ),
             // At rest the sheet reaches the physical bottom edge of the screen
-            // (top = 0.1·h, height = 0.9·h). The previous version was an
-            // unpositioned Stack child, which pins to the TOP — which is what
-            // left a strip of dashboard showing through beneath it.
+            // (top = content top, height = everything below it). The previous
+            // version was an unpositioned Stack child, which pins to the TOP —
+            // which is what left a strip of dashboard showing through beneath it.
             Positioned(
               left: 0,
               right: 0,
               top: top,
               height: h * boxFrac,
-              child: ClipRRect(
-                borderRadius: BorderRadius.vertical(
-                  top: Radius.circular(radius),
-                ),
-                child: Container(
+              child: Container(
+                // 与对话浮层同一副形状：齐平压在页头下面的一条边，不再是浮在
+                // 半空的圆角卡片（圆角会在页头底下露出两个缺口）。
+                decoration: const BoxDecoration(
                   color: AppColors.panel,
-                  padding: EdgeInsets.only(top: topInset),
-                  child: sheet,
+                  border: Border(top: BorderSide(color: AppColors.line)),
                 ),
+                padding: EdgeInsets.only(top: topInset),
+                child: sheet,
               ),
             ),
           ],
@@ -2052,7 +2214,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
         children: [
           _SheetHandle(
             onDrag: (dy) => _onDrag(dy, mq.size.height),
-            onDragEnd: (v) => _onDragEnd(v, mq.size.height),
+            onDragEnd: (v) =>
+                _onDragEnd(v, mq.size.height, _overlaySnapFraction(context)),
           ),
           Expanded(child: _buildBody(mq)),
         ],
@@ -2091,6 +2254,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
                           onVerticalDragEnd: (d) => _onDragEnd(
                             d.velocity.pixelsPerSecond.dy,
                             mq.size.height,
+                            _overlaySnapFraction(context),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
