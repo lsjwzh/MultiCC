@@ -133,3 +133,142 @@ test('new cron creates its fixed Air task before the schedule becomes visible', 
   assert.equal(disk.length, 1);
   assert.equal(disk[0].taskId, 'tsk_created');
 });
+
+test('an archived fixed task stops the rule instead of spawning a session or a task', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-broken-binding-'));
+  const previous = process.env.MULTICC_DATA_DIR;
+  process.env.MULTICC_DATA_DIR = root;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MULTICC_DATA_DIR;
+    else process.env.MULTICC_DATA_DIR = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(root, 'scheduled_tasks.json'), JSON.stringify([{
+    id: 'cron_archived', name: '每小时巡检', dirId: 'dir-1', cli: 'claude',
+    cron: '0 * * * *', prompt: '检查服务健康', enabled: true,
+    taskId: 'tsk_archived', taskSessionId: 'task-archived', taskBindingVersion: 1,
+    createdAt: '2026-09-01T00:00:00.000Z',
+  }]));
+  const modulePath = require.resolve('../plugins/cron/cron-tasks');
+  delete require.cache[modulePath];
+  const cron = require(modulePath);
+  t.after(() => cron.stop());
+  let creates = 0;
+  const deliveries = [];
+  const broken = [];
+  cron.init({
+    directories: new Map([['dir-1', { id: 'dir-1', name: '项目一', path: root }]]),
+    clis: ['claude', 'codex'],
+    getTask: async id => ({ ok: true, task: { id, title: '每小时巡检' }, sessionId: `task-${id}`,
+      ownerShellId: `shell-${id}`, readOnly: id === 'tsk_archived' }),
+    createTask: async () => { creates++; return { ok: true, taskId: 'tsk_unexpected', sessionId: 'task-unexpected' }; },
+    sendTaskMessage: async (taskId) => { deliveries.push(taskId); return { ok: true, decision: 'continue' }; },
+    taskSummary: id => ({ title: '每小时巡检', status: id === 'tsk_archived' ? 'archived' : 'active',
+      readOnly: id === 'tsk_archived', sessionId: `task-${id}`, runtime: { cli: 'claude' } }),
+    notifyBroken: info => broken.push(info),
+  });
+  const routes = new Map();
+  const app = {};
+  for (const method of ['get', 'post', 'patch', 'delete']) app[method] = (route, handler) => routes.set(`${method.toUpperCase()} ${route}`, handler);
+  cron.mount(app);
+  const run = async () => {
+    const res = response();
+    await routes.get('POST /api/cron/:id/run')({ params: { id: 'cron_archived' }, body: {} }, res, error => { throw error; });
+    return res;
+  };
+  for (let index = 0; index < 3; index++) {
+    const res = await run();
+    assert.equal(res.body.ok, false);
+    assert.equal(res.body.taskId, 'tsk_archived', 'the schedule keeps its own identity');
+  }
+  assert.equal(creates, 0, 'a broken binding never creates a replacement task');
+  assert.deepEqual(deliveries, [], 'nothing is delivered anywhere else');
+  assert.equal(broken.length, 1, 'the break is reported once, not once per interval');
+
+  const listResponse = response();
+  await routes.get('GET /api/cron')({}, listResponse, error => { throw error; });
+  const view = listResponse.body[0];
+  assert.equal(view.taskId, 'tsk_archived');
+  assert.equal(view.taskBindingBroken, true);
+  assert.match(view.taskBindingError, /归档|只读/);
+  assert.equal(view.runCount, 3);
+  assert.equal(view.lastStatus, 'error');
+});
+
+test('rebind creates exactly one replacement fixed task and refuses while the binding is healthy', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-rebind-'));
+  const previous = process.env.MULTICC_DATA_DIR;
+  process.env.MULTICC_DATA_DIR = root;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MULTICC_DATA_DIR;
+    else process.env.MULTICC_DATA_DIR = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(root, 'scheduled_tasks.json'), JSON.stringify([{
+    id: 'cron_rebind', name: '库存同步', dirId: 'dir-1', cli: 'codex',
+    cron: '0 * * * *', prompt: '同步库存', enabled: true,
+    taskId: 'tsk_gone', taskBindingVersion: 1, taskBindingError: '固定任务已归档或只读',
+    createdAt: '2026-09-01T00:00:00.000Z',
+  }]));
+  const modulePath = require.resolve('../plugins/cron/cron-tasks');
+  delete require.cache[modulePath];
+  const cron = require(modulePath);
+  t.after(() => cron.stop());
+  const created = [];
+  const known = new Set(['tsk_gone']);
+  const deliveries = [];
+  cron.init({
+    directories: new Map([['dir-1', { id: 'dir-1', name: '项目一', path: root }]]),
+    clis: ['claude', 'codex'],
+    getTask: async id => {
+      if (!known.has(id)) throw Object.assign(new Error('missing'), { code: 'task_not_found' });
+      return { ok: true, task: { id, title: '库存同步' }, sessionId: `task-${id}`, ownerShellId: `shell-${id}`,
+        readOnly: id === 'tsk_gone' };
+    },
+    createTask: async input => {
+      created.push(input);
+      const taskId = `tsk_rebound_${created.length}`;
+      known.add(taskId);
+      return { ok: true, taskId, sessionId: `task-${taskId}` };
+    },
+    sendTaskMessage: async (taskId) => { deliveries.push(taskId); return { ok: true, decision: 'continue' }; },
+    taskSummary: id => ({ title: '库存同步', status: id === 'tsk_gone' ? 'archived' : 'active',
+      readOnly: id === 'tsk_gone', sessionId: `task-${id}`, runtime: { cli: 'codex' } }),
+  });
+  const routes = new Map();
+  const app = {};
+  for (const method of ['get', 'post', 'patch', 'delete']) app[method] = (route, handler) => routes.set(`${method.toUpperCase()} ${route}`, handler);
+  cron.mount(app);
+  const rebind = async () => {
+    const res = response();
+    await routes.get('POST /api/cron/:id/rebind')({ params: { id: 'cron_rebind' }, body: {} }, res, error => { throw error; });
+    return res;
+  };
+
+  const first = await rebind();
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.body.taskId, 'tsk_rebound_1');
+  assert.equal(first.body.previousTaskId, 'tsk_gone');
+  assert.equal(created.length, 1, 'rebind creates exactly one fixed task');
+  assert.equal(created[0].title, '库存同步');
+  assert.equal(created[0].cli, 'codex');
+  assert.match(created[0].clientMsgId, /^cron-rebind:cron_rebind:tsk_gone$/);
+  assert.equal(first.body.task.taskBindingBroken, false);
+  assert.equal(first.body.task.taskRebindHistory.length, 1);
+  assert.equal(first.body.task.taskRebindHistory[0].from, 'tsk_gone');
+
+  const second = await rebind();
+  assert.equal(second.statusCode, 409);
+  assert.equal(second.body.error, 'binding_healthy');
+  assert.equal(created.length, 1, 'a healthy binding is never rotated');
+
+  const runResponse = response();
+  await routes.get('POST /api/cron/:id/run')({ params: { id: 'cron_rebind' }, body: {} }, runResponse, error => { throw error; });
+  assert.equal(runResponse.body.ok, true);
+  assert.deepEqual(deliveries, ['tsk_rebound_1']);
+
+  const disk = JSON.parse(fs.readFileSync(path.join(root, 'scheduled_tasks.json'), 'utf8'));
+  assert.equal(disk[0].taskId, 'tsk_rebound_1');
+  assert.equal(disk[0].taskBindingError, '');
+  assert.equal(disk[0].taskRebindHistory.length, 1);
+});

@@ -115,6 +115,34 @@ async function taskEntry(taskId) {
   return entry;
 }
 
+// A schedule must never rotate its own identity. When the bound task can no
+// longer receive work we stop firing, record the break and tell the user once;
+// rotation only happens through the explicit POST /api/cron/:id/rebind action.
+const BINDING_BREAK_CODES = new Set(['task_read_only', 'task_not_found', 'task_archived', 'task_owner_missing']);
+
+function markBindingBroken(task, error) {
+  task.taskBindingError = error?.message || error?.code || '固定任务绑定失败';
+  task.taskBindingBrokenAt = task.taskBindingBrokenAt || Date.now();
+  const fingerprint = task.taskId || 'unbound';
+  if (task.taskBindingNotifiedFor === fingerprint) return;
+  task.taskBindingNotifiedFor = fingerprint;
+  try {
+    const dir = deps.directories?.get?.(task.dirId);
+    deps.notifyBroken?.({
+      id: task.id, name: task.name, taskId: task.taskId || null, dirId: task.dirId,
+      sessionId: task.taskSessionId || null, dirName: dir?.name || null,
+      code: error?.code || 'task_binding_broken', error: task.taskBindingError,
+      message: `定时规则「${task.name}」已停止：固定 Air 任务不可写（${task.taskBindingError}），请在定时中心重新绑定。`,
+    });
+  } catch (_) { /* notification is best effort; the break itself is already durable */ }
+}
+
+function clearBindingBreak(task) {
+  task.taskBindingError = '';
+  task.taskBindingBrokenAt = null;
+  task.taskBindingNotifiedFor = null;
+}
+
 async function ensureTaskInner(task) {
   if (deps.ready) await deps.ready;
   const dir = deps.directories.get(task.dirId);
@@ -140,7 +168,7 @@ async function ensureTaskInner(task) {
     const entry = await taskEntry(task.taskId);
     task.taskSessionId = entry?.sessionId || task.taskSessionId || null;
     task.taskBindingVersion = 1;
-    task.taskBindingError = '';
+    clearBindingBreak(task);
     return { taskId: task.taskId, sessionId: task.taskSessionId, entry };
   }
 
@@ -154,7 +182,7 @@ async function ensureTaskInner(task) {
         task.taskId = migratedTaskId;
         task.taskSessionId = entry?.sessionId || task.lastSessionId;
         task.taskBindingVersion = 1;
-        task.taskBindingError = '';
+        clearBindingBreak(task);
         save();
         return { taskId: task.taskId, sessionId: task.taskSessionId, entry, migrated: true };
       } catch (_) {
@@ -179,7 +207,7 @@ async function ensureTaskInner(task) {
   task.taskId = created.taskId;
   task.taskSessionId = created.sessionId || null;
   task.taskBindingVersion = 1;
-  task.taskBindingError = '';
+  clearBindingBreak(task);
   save();
   return { taskId: task.taskId, sessionId: task.taskSessionId, entry: created, created: true };
 }
@@ -192,6 +220,41 @@ async function ensureTask(task) {
   finally { bindingFlights.delete(task.id); }
 }
 
+// Explicit repair for a schedule whose fixed task was archived or deleted.
+// GitHub-style identity immutability: nothing rotates the binding implicitly.
+async function rebindTask(task, { force = false, reason = 'manual' } = {}) {
+  if (typeof deps.createTask !== 'function') {
+    throw Object.assign(new Error('Air 任务服务尚未就绪'), { code: 'task_service_unavailable' });
+  }
+  const previousTaskId = task.taskId || null;
+  if (previousTaskId && !force) {
+    try {
+      await taskEntry(previousTaskId);
+      return { ok: false, code: 'binding_healthy', taskId: previousTaskId, previousTaskId };
+    } catch (error) {
+      if (!BINDING_BREAK_CODES.has(error?.code)) throw error;
+    }
+  }
+  const created = await deps.createTask({
+    dirId: task.dirId,
+    title: task.name,
+    cli: task.cli || 'claude',
+    clientMsgId: taskClientMsgId('cron-rebind', task.id, previousTaskId || 'unbound'),
+  });
+  if (!created?.ok || !created.taskId) {
+    throw Object.assign(new Error(created?.error || created?.code || '重建固定任务失败'), { code: created?.code || 'task_create_failed' });
+  }
+  task.taskRebindHistory = [...(task.taskRebindHistory || []),
+    { from: previousTaskId, to: created.taskId, at: Date.now(), reason }].slice(-10);
+  task.taskId = created.taskId;
+  task.taskSessionId = created.sessionId || null;
+  task.lastSessionId = task.taskSessionId;
+  task.taskBindingVersion = 1;
+  clearBindingBreak(task);
+  save();
+  return { ok: true, taskId: task.taskId, sessionId: task.taskSessionId, previousTaskId };
+}
+
 async function migrateTasks() {
   if (!deps?.createTask || !deps?.getTask) return { migrated: 0, errors: [] };
   let migrated = 0;
@@ -202,7 +265,7 @@ async function migrateTasks() {
       await ensureTask(task);
       if (!before && task.taskId) migrated++;
     } catch (error) {
-      task.taskBindingError = error.message || error.code || '固定任务绑定失败';
+      markBindingBroken(task, error);
       errors.push({ id: task.id, code: error.code || 'task_binding_failed', error: task.taskBindingError });
     }
   }
@@ -225,14 +288,17 @@ async function fireTask(task, reason, deliveryKey = null) {
     });
     if (!result?.ok) throw Object.assign(new Error(result?.error || result?.code || '任务入队失败'), { code: result?.code || 'task_delivery_failed' });
     task.lastError = '';
-    task.taskBindingError = '';
+    clearBindingBreak(task);
     task.lastStatus = result.decision === 'queued' ? 'queued' : 'ok';
     task.lastReceiptId = result.receiptId || null;
     task.lastDecision = result.decision || 'continue';
   } catch (error) {
     task.lastStatus = 'error';
     task.lastError = error.message || error.code || '任务入队失败';
+    // The fixed task is gone/archived: never spawn a replacement on our own,
+    // surface it once and let the explicit rebind action rotate the identity.
     if (!task.taskId) task.taskBindingError = task.lastError;
+    else if (BINDING_BREAK_CODES.has(error?.code)) markBindingBroken(task, error);
   }
   task.lastRunAt = attemptedAt;
   if (binding?.sessionId || result?.sessionId) {
@@ -285,6 +351,9 @@ function toView(task) {
     taskStatus: summary?.status || (task.taskId ? 'unknown' : 'binding'),
     taskReadOnly: summary?.readOnly === true,
     taskBindingError: task.taskBindingError || '',
+    taskBindingBroken: !!task.taskBindingError,
+    taskBindingBrokenAt: task.taskBindingBrokenAt || null,
+    taskRebindHistory: Array.isArray(task.taskRebindHistory) ? task.taskRebindHistory : [],
     taskUrl: task.taskId ? `/air?task=${encodeURIComponent(task.taskId)}&dir=${encodeURIComponent(task.dirId)}` : null,
     lastReceiptId: task.lastReceiptId || null,
     lastDecision: task.lastDecision || null,
@@ -371,6 +440,15 @@ function mount(app) {
     res.json({ ok: true });
   });
 
+  app.post('/api/cron/:id/rebind', (req, res, next) => Promise.resolve().then(async () => {
+    const task = tasks.find(x => x.id === req.params.id);
+    if (!task) return res.status(404).json({ error: 'task not found' });
+    const result = await rebindTask(task, { force: req.body?.force === true, reason: req.body?.reason || 'manual' });
+    if (!result.ok) return res.status(409).json({ error: result.code || 'rebind_failed', taskId: result.taskId || null });
+    console.log(`[multicc/cron] rebound ${task.id} (${task.name}) → Air task ${result.taskId} (was ${result.previousTaskId || 'unbound'})`);
+    res.json({ ...result, task: toView(task) });
+  }).catch(next));
+
   app.post('/api/cron/:id/run', (req, res, next) => Promise.resolve().then(async () => {
     const task = tasks.find(x => x.id === req.params.id);
     if (!task) return res.status(404).json({ error: 'task not found' });
@@ -405,4 +483,4 @@ function stop() {
 }
 
 module.exports = { init, stop, mount, cronValidate, cronNext, _fireTask: fireTask,
-  _ensureTask: ensureTask, _migrateTasks: migrateTasks };
+  _ensureTask: ensureTask, _rebindTask: rebindTask, _migrateTasks: migrateTasks };
