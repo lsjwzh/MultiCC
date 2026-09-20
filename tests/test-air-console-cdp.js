@@ -384,12 +384,22 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(cover.active, true, '目录视图里 #library 带 .active（当年盖住圈的就是它）');
     assert.equal(cover.bg, 'rgb(239, 246, 255)', '它还是不透明的');
     await assertRingDrawn(page, '.space-card', '当前目录卡片（目录视图）');
-    // 关掉动画不等于摘掉圈：静音版是晕动症用户唯一的「这条在跑」信号，所以它也得
-    // 真的画出来。静音版和会动的那版画在同一处覆盖层上，这里换着偏好再读一次像素。
+    // 圈的颜色是「按 id 挑」而不是「每次随机」：整页重来一遍，同一张卡片还得是同一
+    // 个色。列表本来每 4 秒就随快照重画一次，随机会让同一行一直在换颜色。
+    const tintOf = () => page.evaluate(`getComputedStyle(document.querySelector('.space-card')).getPropertyValue('--ring-tint').trim()`);
+    const firstTint = await tintOf();
+    assert.match(firstTint, /^#[0-9a-f]{6}$/i, `圈的 --ring-tint 该是调色板里的颜色，实际是 ${JSON.stringify(firstTint)}`);
+    await page.navigate('/air?dir=d3');
+    assert.ok(await page.waitFor(`document.querySelector('.space-card.ring-running')!==null`));
+    assert.equal(await tintOf(), firstTint, '同一个目录重画之后应该还是同一个颜色');
+    // 圈对任何人都已经不动了（air.css 那段有原因：软件光栅下「一直有东西在动」就是
+    // 合成器永远不 idle）。所以这里不再有「静音版」这一说 —— 换到 reduced-motion
+    // 偏好，看到的还是同一个圈、同一个颜色，四条边照样要画出来：晕动症用户不该
+    // 因此丢掉「这条在跑」。顺带把「圈上不许挂动画」钉在这里，动画回到圈上不该
+    // 只靠肉眼在用户机器上发现。
     await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-    // 先确认读的真是静音版，不然下面那次读像素会由动画蒙混过关。
     assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('.space-card'),'::before').animationName`), 'none',
-      '偏好生效了：这一版是不动的');
+      '圈是静态描边：prefers-reduced-motion 下当然还是不动');
     await page.screenshot('08-ring-directory-reduced-motion');
     await assertRingDrawn(page, '.space-card', '当前目录卡片（目录视图 · 关掉动画）');
     await page.send('Emulation.setEmulatedMedia', { features: [] });
