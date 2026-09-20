@@ -376,6 +376,13 @@
   // 一份，晚的是「什么时候写」。
   function navigate(dir, task = null, options = {}) {
     saveDraft();
+    // 换台不另写一条历史。从「已经开着对话」再去看另一个任务，只是浮层里换了个人；
+    // 要是每换一次都 push，来回对照三个任务之后后退键得按三下才回到目录 —— 而
+    // 那三下每一次都只是同一件事。所以只有「从没有对话 → 打开一个任务」才是新
+    // 的一步（后退于是正好等于「把浮层关掉」）。airChat 记的是「这一条是我们为了
+    // 打开对话推出来的」，dismissChat 靠它决定退回去还是就地改写。
+    const wasTask = !!taskId;
+    const state = { airChat: !!task };
     if (dir !== directoryId) {
       directoryTasksExpanded = false;
       directoryTaskFilter.query = '';
@@ -388,7 +395,8 @@
     closeDetails();
     if (task && options.remember !== false) rememberTask(task);
     closeOverlays();
-    history.pushState({}, '', routeUrl());
+    if (options.replace || wasTask) history.replaceState(state, '', routeUrl());
+    else history.pushState(state, '', routeUrl());
     closeNav();
     render();
     void refreshEntry();
@@ -1509,6 +1517,10 @@
       $('task-title').textContent = dir?.name || '先添加工作目录';
       $('task-state').textContent = dir?.path || '添加目录后即可创建任务。';
     }
+    // 浮层那一条的标题跟着页头走。默认态它是藏起来的（页头上一行就写着同一件事），
+    // 只有展开之后页头被盖住，任务名才只剩它一处 —— 所以这里只管镜像，不管显示。
+    const barTitle = $('chat-bar-title');
+    if (barTitle) barTitle.textContent = $('task-title').textContent;
     applyTaskTitleEditing(selectedEntry?.task || null);
     for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share', 'pin-task',
       'details-toggle', 'chat-more']) $(id).hidden = !taskId;
@@ -1580,22 +1592,23 @@
     setFrameActive(frame, false);
   }
 
-  /* 帧永远住在 #task-content 里 —— #empty 后面、#task-details 前面。
+  /* 帧永远住在 #chat-layer 里（#chat-bar 下面那一格），而 #chat-layer 又只在
+     #task-content 之内活动 —— 所以帧的几何仍然由内容区决定：浮层盖住目录详情、
+     展开时盖住页头，帧跟着一起长，不需要谁再去量一次。
      这里原来在「#conversation 已经被交回池子（id 摘掉了）、池子里又没有这个任务的
      帧」时落到 document.body.append(frame)。body 是横向 flex，而 iframe 的固有宽度
      300px 作为 flex 项的 min-width:auto 压不下去 —— 那一行于是被分成 main 93px +
      帧 300px：页头（flex-wrap + 面包屑也 wrap）竖着摞成一条窄列、标题只剩一个字，
      对话跑到右边整屏高。手机上「新打开一个任务就错位」就是这条路：
      先看过某任务 → 点工作目录卡/目录库回到无任务（帧进池子）→ 再开一个没开过的任务。
-     after 传「紧跟哪一个」：当前帧还在 #task-content 里就排在它后面，否则排到最后
-     —— 后面的位置本来就被 #task-details 占着，插在它前面即可。 */
+     after 传「紧跟哪一个」：当前帧还在这一层里就排在它后面，否则排到最后。 */
   function mountFrame(frame, after) {
-    const host = $('task-content');
+    const host = $('chat-layer');
     if (!host) { document.body.append(frame); return; }
     // 已经在家里就别再碰它：在 DOM 里挪一个 iframe（哪怕只是换个相邻位置）浏览器会把它
     // 整个重载一遍 —— 帧池攒的那点热乎气全没了。只有挂错地方（body 上）才搬。
     if (frame.parentNode === host) return;
-    const anchor = after && after.parentNode === host ? after.nextSibling : $('task-details');
+    const anchor = after && after.parentNode === host ? after.nextSibling : null;
     host.insertBefore(frame, anchor || null);
   }
 
@@ -1647,6 +1660,130 @@
     evictFrames();
   }
 
+  /* ── 对话浮层：打开任务 = 把这一层升上来，不是换掉底页 ──
+     底页（#empty 的目录详情）一直在，所以「关掉对话」是把这一层滑落回去，
+     「换一个任务」只是把这一层里的帧换人 —— 两条路都不必重建底页，切换于是
+     只有一步的距离：侧栏点一下就是换台。展开 = 这一层改成 fixed 连页头一起
+     盖（真满屏），页头那颗按钮再点回来。展开态不落盘、不写地址：刷新回来
+     还是浮层，跟 App 的 sheet 不记忆展开一样。
+
+     下面这两个开关必须成对出现在每一次 render 里（render 是唯一的落点）：
+     谁都不该自己去 add('is-open')。 */
+  const CHAT_SLIDE_MS = 260;      // 与 air.css 里 #chat-layer 的过渡时长一致
+  let _chatParkTimer = null;
+
+  function cancelChatPark() { clearTimeout(_chatParkTimer); _chatParkTimer = null; }
+
+  function openChatLayer() {
+    const layer = $('chat-layer');
+    if (!layer) return;
+    cancelChatPark();                     // 滑落途中又打开：不 park 了，帧还是热的
+    // 手指正按着的时候别动位移：拖到一半时轮询回来的那次 render 会把层弹回原位。
+    if (!layer.classList.contains('is-dragging')) layer.style.transform = '';
+    layer.classList.add('is-open');
+  }
+
+  /* 关层但先别 park 帧：hidden 一打，滑下去的就是个空壳。等滑完再把帧交回池子，
+     那之前重新打开同一个任务（快路径 + cancelChatPark）它就是热的、不重载。 */
+  function closeChatLayer() {
+    const layer = $('chat-layer');
+    setChatExpanded(false);
+    if (!layer) return;
+    cancelChatPark();
+    layer.style.transform = '';
+    layer.classList.remove('is-open');
+    const parkedTask = _frameHoldsTask;
+    const frame = $('conversation');
+    if (!parkedTask || !frame) return;
+    _chatParkTimer = setTimeout(() => {
+      _chatParkTimer = null;
+      // 这 260ms 里可能又开了别的任务、又回到了任务态、或者帧已经被换掉 ——
+      // 任何一种都不是「这个帧可以收起来了」。
+      if (_frameHoldsTask !== parkedTask || taskId) return;
+      if ($('conversation') !== frame) return;
+      _framePool.set(parkedTask, { frame, lastUsed: Date.now() });
+      parkFrame(frame);
+      _frameHoldsTask = null;
+      evictFrames();
+    }, CHAT_SLIDE_MS);
+  }
+
+  function setChatExpanded(expanded) {
+    const layer = $('chat-layer');
+    if (!layer) return;
+    layer.classList.toggle('is-expanded', expanded);
+    const button = $('chat-expand');
+    if (button) {
+      button.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+      button.title = expanded ? '收起：只盖内容区' : '展开：连页头一起盖';
+      const text = button.querySelector('.chat-bar-label');
+      if (text) text.textContent = expanded ? '收起' : '展开';
+    }
+    // 展开是要连页头一起盖掉的，详情抽屉（z-index 15）就更是底下的东西了：
+    // 先收掉，免得它从浮层边上露出一条。
+    if (expanded) closeDetails();
+  }
+
+  function isChatExpanded() { return $('chat-layer')?.classList.contains('is-expanded') ?? false; }
+
+  function toggleChatExpanded() { setChatExpanded(!isChatExpanded()); }
+
+  /* 关掉对话回到目录详情。从目录详情点进来的那些（airChat 标记）直接退回去 ——
+     后退键和「关闭」于是是同一条路：回到刚才那一页，而不是在历史里多留一条
+     一模一样的目录详情（点十次任务就得多按十次后退，那正是「换台不是换页」
+     要避免的东西）。直接落在 ?task=… 上的（书签、通知链接）没有来路可退，
+     就把当前这条改写成目录详情。 */
+  function dismissChat() {
+    saveDraft();
+    if (!history.state?.airChat) { navigate(directoryId, null, { replace: true }); return; }
+    // 先自己把状态落回「没有对话」再退历史：popstate 要等到下一个 tick，这中间
+    // 任何一次 render（比如轮询回来的 entry）都会看见还没清掉的 taskId，把刚滑
+    // 下去的浮层重新升起来。render 顺手把浮层滑走、把帧排进池子。
+    taskId = null;
+    entry = null;
+    render();
+    history.back();
+  }
+
+  /* 手机上这一层是 App 那个底部 sheet 的等价物：往下拖 = 关掉对话。拖到一半
+     放开就弹回去，超过四分之一才认。桌面也能拖，但那边有按钮，不必知道这条。 */
+  function wireChatBar() {
+    const bar = $('chat-bar');
+    const layer = $('chat-layer');
+    if (!bar || !layer) return;
+    let dragging = false, fromY = 0, offset = 0;
+    bar.addEventListener('pointerdown', event => {
+      // 按钮上按下的是「点」，不是「拖」。
+      if (event.target.closest('button')) return;
+      dragging = true;
+      fromY = event.clientY;
+      offset = 0;
+      layer.classList.add('is-dragging');
+      // 捕获之后指针移出这条也能收到事件；捕获失败不影响拖拽（只是拖出条身会断）。
+      try { bar.setPointerCapture(event.pointerId); } catch (_) { /* 指针已经没了 */ }
+    });
+    bar.addEventListener('pointermove', event => {
+      if (!dragging) return;
+      offset = Math.max(0, event.clientY - fromY);       // 只往下拖
+      layer.style.transform = `translateY(${offset}px)`;
+    });
+    const endDrag = () => {
+      if (!dragging) return;
+      dragging = false;
+      layer.classList.remove('is-dragging');
+      if (offset > layer.offsetHeight / 4) {
+        // 交给正常的关层：它会在同一帧里摘掉 is-open 并清掉行内位移，于是这一层
+        // 从手指停下的地方接着滑出去，而不是先弹回原位再滑一遍。
+        dismissChat();
+      } else {
+        layer.style.transform = '';       // 没到线，弹回去
+      }
+      offset = 0;
+    };
+    bar.addEventListener('pointerup', endDrag);
+    bar.addEventListener('pointercancel', endDrag);
+  }
+
   function render() {
     if (!data) return;
     renderSetupCard();
@@ -1695,23 +1832,21 @@
     }
 
     const hasTask = !!taskId;
-    $('empty').hidden = hasTask;
+    // #empty 就是「目录详情」这一页，它不再给谁让位：有对话时它是被浮层盖住的那一层，
+    // 没对话时它就是页面上唯一的那一层。所以这里只管浮层开不开，不动 #empty —— 它
+    // 连 hidden 都不打（滚动位置、筛选、展开状态都靠这一点活着）。
     if (!hasTask) {
-      // 没任务时把这个帧交回池子：藏起来、让它在后台安静下来，但不卸掉 —— 刚看过又
-      // 点回来的时候它就是热的。此后 #conversation 暂时不在页面上，读它的地方都写了 ?.。
-      const frame = $('conversation');
-      if (frame && _frameHoldsTask) {
-        _framePool.set(_frameHoldsTask, { frame, lastUsed: Date.now() });
-        parkFrame(frame);
-        _frameHoldsTask = null;
-        evictFrames();
-      }
+      // 关层 = 把这个帧交回池子：滑落完之后藏起来、让它在后台安静下来，但不卸掉 ——
+      // 刚看过又点回来的时候它就是热的。此后 #conversation 暂时不在页面上，读它的
+      // 地方都写了 ?.。
+      closeChatLayer();
       $('delivery-card').hidden = true;
       closeDetails();
     } else {
       // Task identity is resolved by chat-task-boot, but rendering stays on the
       // original full Chat page. Air only supplies a compact light theme.
       openConversation(taskId);
+      openChatLayer();
     }
   }
 
@@ -2287,7 +2422,9 @@
   let frameInputSyncedTask = null;
   let frameInputHandler = null;
   function syncFrame() {
-    const doc = $('conversation').contentDocument;
+    // `?.` 不是多余的：帧交回池子之后（关层滑完那一下）ID 就被摘了，而这一手还
+    // 可能被一次迟到的 load 事件叫起来。
+    const doc = $('conversation')?.contentDocument;
     bindComposerControls();
     renderComposerControls();
     syncQuickActions();
@@ -2334,6 +2471,7 @@
       // 记录，谁就把它记完。
       if (recentTaskIds[0] !== selected && pendingReorderId !== selected) { rememberTask(selected); render(); }
       $('task-title').textContent = entry.task.title;
+      if ($('chat-bar-title')) $('chat-bar-title').textContent = entry.task.title;
       applyTaskTitleEditing(entry.task);
       $('task-state').textContent = taskStateText(entry);
       renderDelivery(entry);
@@ -2511,6 +2649,11 @@
   // 帧的 load 接线都在 wireConversationFrame 里：池子里的每个帧都要接，不只是最初这一个。
   wireConversationFrame($('conversation'));
   dismissOnFrame();
+  // 浮层自己的两颗按钮与拖柄。按钮走 click 而不是 pointerup：拖柄认的是位移，
+  // 按钮认的是「点」，混在一起会让「按住展开键稍微划一下」变成拖拽。
+  $('chat-expand').onclick = toggleChatExpanded;
+  $('chat-close').onclick = dismissChat;
+  wireChatBar();
   // 回到桌面宽度，工具又摆回那一行（浮层的样式只在 760px 以下生效）。留着这个类
   // 会让下一次变窄时菜单凭空弹出来。
   matchMedia('(min-width: 761px)').addEventListener('change', event => {
@@ -2665,6 +2808,10 @@
       if (consoleOpen) { setConsole(false); return; }
       if ($('task-header').classList.contains('options-open')) { closeOptions(); return; }
       if (document.querySelector('#task-pins .pin-tab.is-open')) { closePinPanels(); return; }
+      // 对话浮层也在这条链上，而且是最后让位的那一层：展开态先收回默认（页头回来），
+      // 再 Esc 才关掉整个对话 —— 跟「一层一层地退」一个意思，只是这一层自己有两档。
+      if (isChatExpanded()) { setChatExpanded(false); return; }
+      if (taskId) { dismissChat(); return; }
       closeNav(); closeDetails(); frameMoreController()?.close(); $('chat-more').setAttribute('aria-expanded', 'false');
     }
   });

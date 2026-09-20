@@ -469,7 +469,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #notice { flex-shrink: 0; min-height: 0; padding: 0 28px; color: var(--warning); background: #fff4e9; font-size: 12px; line-height: 2.2; }
 #notice:empty { display: none; }
 #task-layout { min-height: 0; flex: 1; display: flex; }
-#task-content { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; background: linear-gradient(145deg, #fff, #f7faff); }
+#task-content { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; overflow: hidden; background: linear-gradient(145deg, #fff, #f7faff); }
 #empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 34px; color: var(--muted); }
 #directory-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 /* 四张统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
@@ -572,7 +572,55 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* Dropping files anywhere on the card reads as the card lighting up. */
 #quick-task-form.is-dropping { border-color: #8fbde8; box-shadow: 0 10px 30px #3155761f, 0 0 0 3px #dcecfb; }
 #quick-task-status { min-width: 0; flex: 1; overflow: hidden; color: #718499; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
-#conversation { min-height: 220px; flex: 1; width: 100%; border: 0; background: transparent; }
+/* ── 对话浮层 ────────────────────────────────────────────────────────────────
+   对话是「浮在目录详情之上的一层」，不是「换掉目录详情的那一页」。#empty 一直在
+   下面（不 hidden、不卸载），这一层默认贴满内容区盖住它 —— 页头与侧栏留在外面，
+   换下一个任务仍然是一步。两种形态：
+
+     · 默认：absolute inset:0，就是 #task-content 那一格，100% 盖住内容区。
+     · 展开：position:fixed inset:0 + 更高的 z-index，连页头与侧栏一起盖（真满屏）。
+       fixed 在这里是相对视口的：#task-content / #task-layout / main 都没有
+       transform / filter，只有 position:relative —— 那不会把 fixed 拉回局部坐标。
+
+   收起用 transform 滑落，是为了「层」这件事看得见：现在关掉对话是滑回目录详情，
+   不是换屏。visibility 跟着位移一起收（延迟到滑完），否则关闭态还会吃到点击。 */
+#chat-layer {
+  position: absolute; z-index: 14; inset: 0;
+  display: flex; flex-direction: column;
+  background: linear-gradient(145deg, #fff, #f7faff);
+  border-top: 1px solid var(--line);
+  transform: translateY(100%);
+  visibility: hidden;
+  transition: transform 260ms cubic-bezier(.22, .61, .36, 1), visibility 0s linear 260ms;
+}
+#chat-layer.is-open { transform: none; visibility: visible; transition: transform 260ms cubic-bezier(.22, .61, .36, 1), visibility 0s; }
+/* 展开 = 连页头一起盖。桌面侧栏（z-index:30）与页头（16）都在 33 以下，控制台面板
+   （41）与 ⌘K（50）仍在上面 —— 那是两层「临时打开」的东西，不该被对话压住。 */
+#chat-layer.is-expanded { position: fixed; z-index: 33; inset: 0; border-top: 0; }
+/* 手指拖着的时候不要过渡：位移要贴着手指走。 */
+#chat-layer.is-dragging { transition: none; }
+
+/* 浮层自己的控制条。手机上它就是 App 那条拖柄（往下拖 = 关掉对话），桌面上它
+   放「展开 / 关闭」两颗按钮 —— 展开之后页头被盖住，这两颗按钮是唯一的出口。 */
+#chat-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  min-height: 32px; padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, .86);
+  backdrop-filter: blur(12px);
+  touch-action: none;
+}
+#chat-bar-handle { display: none; }
+#chat-bar-title { min-width: 0; flex: 1; overflow: hidden; color: var(--muted); font-size: 11.5px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
+/* 默认态不重复任务名：页头那一行就在上面写着同一件事。展开之后页头没了，它才是标题。 */
+#chat-layer:not(.is-expanded) #chat-bar-title { display: none; }
+#chat-bar button { display: flex; align-items: center; gap: 5px; min-height: 26px; padding: 3px 9px; color: #47617c; border: 0; background: transparent; font-size: 11.5px; }
+#chat-bar button:hover { background: #eef4fb; }
+#chat-bar #chat-close { min-width: 30px; justify-content: center; padding: 3px 7px; font-size: 17px; line-height: 1; }
+#chat-expand[aria-pressed="true"] { color: #1c6fbe; background: #e6f1fc; }
+.chat-bar-glyph { font-size: 13px; line-height: 1; }
+
+#conversation { min-height: 0; flex: 1; width: 100%; border: 0; background: transparent; }
 
 #delivery-card { margin: 0 0 14px; padding: 15px; border: 1px solid #d6e7f8; border-radius: 13px; background: #f5faff; }
 .delivery-copy h2 { margin-top: 3px; color: #285270; }
@@ -1186,6 +1234,17 @@ body.console-open #console-panel { transform: none; visibility: visible; }
   .console-title h2 { font-size: 19px; }
   #palette { top: 68px; max-height: min(520px, calc(100dvh - 110px)); }
   #palette footer { gap: 10px; }
+
+  /* 手机上这一层是 App 那个底部 sheet 的等价物，比桌面多一条居中的把手（App 的
+     42×4 拖柄，往下甩就是关层 —— 手机上没有 Esc，页头那两颗按钮也不是手势）。
+     条身压到 40px 是因为它整条都在吃对话的高度：把手画在按钮行上方 4px 的空白
+     里，不跟按钮抢位置，也不额外占一行；标题只在展开态出现（默认态页头的任务名
+     就在上一行，再说一遍是同一句话读两次），所以默认态这一条就是「把手 + 两颗
+     按钮」，按 justify-content 靠右站。 */
+  #chat-bar { position: relative; justify-content: flex-end; min-height: 40px; padding: 0 4px 0 10px; }
+  #chat-bar-handle { display: block; position: absolute; top: 4px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: #cfdbe8; }
+  #chat-bar button { min-height: 30px; padding: 5px 10px; }
+  #chat-bar #chat-close { min-width: 34px; }
 }
 
 /* 矮屏（横屏手机、被压扁的窗口）同样分不出那三段：固定内容（目录卡、导航、
