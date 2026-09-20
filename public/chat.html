@@ -603,7 +603,10 @@
     .tool-icon { font-size: 14px; }
     .tool-name { font-weight: 600; color: var(--chat-blue, #79c0ff); }
     .tool-desc { color: var(--chat-muted, #8b949e); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tool-card.tool-running .tool-icon { animation: blink 1s infinite; } .tool-card.tool-running .tool-desc::after { content: ''; animation: tool-dots 1.2s steps(1) infinite; } @keyframes tool-dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+    /* 跑着的工具只闪图标，不再有一个逐帧改 content 的省略号：content 一变就是一次
+       文本重排 + 重绘，而且 1.2s 一圈永远不停，正好砸在「工具在跑、人正盯着看」的
+       那段时间上。省略号改成静态的，运行状态仍然由 .tool-icon 的闪烁和右侧耗时表达。 */
+    .tool-card.tool-running .tool-icon { animation: blink 1s infinite; } .tool-card.tool-running .tool-desc::after { content: '\2026'; }
     .tool-arrow { color: var(--chat-muted, #6e7681); transition: transform 0.2s; font-size: 12px; }
     .tool-card.open .tool-arrow { transform: rotate(90deg); }
     .tool-body {
