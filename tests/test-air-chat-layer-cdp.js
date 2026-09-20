@@ -39,7 +39,9 @@ const geometry = `(() => {
   const sidebar = document.getElementById('sidebar');
   const empty = document.getElementById('empty');
   const bar = document.getElementById('chat-bar');
-  const title = document.getElementById('chat-bar-title');
+  // 任务标题已经跟随 #task-header 移进浮层；chat-bar 不再复制一份标题。
+  const legacyTitle = document.getElementById('chat-bar-title');
+  const taskTitle = document.getElementById('task-title');
   const handle = document.getElementById('chat-bar-handle');
   const r = { layer: rect(layer), content: rect(content), header: rect(header) };
   const hit = (x, y) => {
@@ -60,8 +62,8 @@ const geometry = `(() => {
     barH: Math.round(bar.getBoundingClientRect().height),
     bar: rect(bar),
     handleH: Math.round(handle.getBoundingClientRect().height),
-    titleShown: getComputedStyle(title).display !== 'none',
-    titleText: title.textContent,
+    titleShown: !!legacyTitle && getComputedStyle(legacyTitle).display !== 'none',
+    titleText: taskTitle?.textContent || '',
     pressed: document.getElementById('chat-expand').getAttribute('aria-pressed'),
     label: document.querySelector('#chat-expand .chat-bar-label').textContent,
     url: location.search,
@@ -69,17 +71,12 @@ const geometry = `(() => {
   };
 })()`;
 
-const frameHeaderClearance = `(() => {
-  const layer = document.getElementById('chat-layer').getBoundingClientRect();
-  const bar = document.getElementById('chat-bar').getBoundingClientRect();
-  const frame = document.getElementById('conversation');
-  const context = frame.contentDocument.getElementById('chat-context-bar').getBoundingClientRect();
-  const style = getComputedStyle(frame.contentDocument.getElementById('chat-context-bar'));
-  return {
-    barLeft: Math.round(bar.left - layer.left),
-    contextRight: Math.round(context.right),
-    paddingRight: Math.round(parseFloat(style.paddingRight)),
-  };
+const chatHeaderStateGeometry = `(() => {
+  const rect = el => { const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; };
+  const header = document.getElementById('task-header');
+  const breadcrumb = header.querySelector('.breadcrumb');
+  const state = document.getElementById('task-state');
+  return { header: rect(header), breadcrumb: rect(breadcrumb), state: rect(state), flexGrow: getComputedStyle(state).flexGrow, paddingRight: Math.round(parseFloat(getComputedStyle(header).paddingRight)) };
 })()`;
 
 // 侧栏里那一行任务；点它就是「换台」。
@@ -184,7 +181,7 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     assert.equal(idle.emptyHidden, false, '目录详情从不 hidden —— 关掉对话要能原样露出来');
     assert.ok(idle.emptyRect.h > 100, `目录详情要占着内容区：${JSON.stringify(idle.emptyRect)}`);
 
-    // ── 打开任务：浮层升上来，正好盖住内容区 ────────────────────────────────
+    // ── 打开任务：标题与状态一同进入浮层，浮层盖住目录详情 ─────────────────
     assert.equal(await page.evaluate(clickTask('任务 A')), true, '侧栏里点得到任务 A');
     assert.ok(await page.waitFor(frameReady('task-a')), '对话帧要立起来');
     assert.ok(await page.waitFor(`document.getElementById('chat-layer').classList.contains('is-open')`), '浮层要升上来');
@@ -196,9 +193,12 @@ test('Air opens a conversation as an overlay over the directory page, and expand
       `浮卡右边也要能看到底页：${JSON.stringify(open)}`);
     assert.ok(open.layer.y + open.layer.h < open.content.y + open.content.h,
       `浮卡底边也要能看到底页：${JSON.stringify(open)}`);
-    assert.ok(open.layer.y >= open.header.y + open.header.h - 1, `浮层不该伸到页头上去：${JSON.stringify(open)}`);
-    assert.equal(open.headerHit.inHeader, true, `页头要留在外面当快捷入口（谁在上面：${open.headerHit.tag}）`);
-    assert.equal(open.headerHit.inLayer, false, `默认态浮层不许盖到页头：${JSON.stringify(open.headerHit)}`);
+    assert.ok(open.header.x >= open.layer.x && open.header.y >= open.layer.y
+      && open.header.x + open.header.w <= open.layer.x + open.layer.w
+      && open.header.y + open.header.h <= open.layer.y + open.layer.h,
+    `任务标题和状态必须整体进入聊天浮层顶部：${JSON.stringify(open)}`);
+    assert.equal(open.headerHit.inHeader, true, `页头节点仍是标题操作的语义容器：${open.headerHit.tag}`);
+    assert.equal(open.headerHit.inLayer, true, `默认态也应把标题与状态带进浮层：${JSON.stringify(open.headerHit)}`);
     assert.equal(open.sidebarHit.inSidebar, true, `侧栏也要留在外面，换台才是一步：${JSON.stringify(open.sidebarHit)}`);
     assert.equal(open.contentHit.inLayer, true, `内容区里最上面的是浮层：${JSON.stringify(open.contentHit)}`);
     assert.equal(open.emptyHidden, false, '被盖住不等于被 hidden');
@@ -206,11 +206,14 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     assert.equal(open.pressed, 'false');
     assert.equal(open.label, '展开');
     assert.ok(open.bar.w <= 70 && open.bar.h <= 34, `右上只留两个紧凑图标：${JSON.stringify(open.bar)}`);
-    const clearance = await page.evaluate(frameHeaderClearance);
-    assert.ok(clearance.paddingRight >= 92, `iframe 现有状态行给角标让位，不得叠字：${JSON.stringify(clearance)}`);
+    const headerState = await page.evaluate(chatHeaderStateGeometry);
+    assert.equal(headerState.flexGrow, '0', `运行状态只能包住内容，不能把标题行撑满：${JSON.stringify(headerState)}`);
+    assert.ok(headerState.state.w < headerState.breadcrumb.w * 0.55,
+      `彩虹状态圈应是内容宽度，不能吃掉标题后的剩余空位：${JSON.stringify(headerState)}`);
+    assert.ok(headerState.paddingRight >= 80, `标题行必须给右上浮层操作留出安全区：${JSON.stringify(headerState)}`);
     await page.screenshot('01-chat-layer-default');
 
-    // ── 展开：连页头一起盖 ──────────────────────────────────────────────────
+    // ── 展开：浮层从带留白的卡片变为主区全屏 ───────────────────────────────
     await page.evaluate(`document.getElementById('chat-expand').click()`);
     assert.ok(await page.waitFor(`document.getElementById('chat-layer').classList.contains('is-expanded')`), '要进展开态');
     const expanded = await page.evaluate(geometry);
@@ -231,7 +234,7 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     assert.ok(await page.waitFor(`!document.getElementById('chat-layer').classList.contains('is-expanded')`), '要退回默认态');
     const collapsed = await page.evaluate(geometry);
     assert.deepEqual(collapsed.layer, open.layer, `收起=回到同一张浮卡：${JSON.stringify(collapsed)}`);
-    assert.equal(collapsed.headerHit.inHeader, true, '收起之后页头又是页头了');
+    assert.equal(collapsed.headerHit.inLayer, true, '收起后标题仍留在聊天浮层顶部');
     assert.equal(collapsed.pressed, 'false');
 
     // ── 关闭：滑落回去，底页原样还在（它从来没被卸载过） ────────────────────
@@ -242,6 +245,7 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     assert.equal(closed.emptyHidden, false, '关掉对话 = 露出目录详情，它一直是活的');
     assert.ok(closed.emptyRect.h > 100, `目录详情要在原位：${JSON.stringify(closed.emptyRect)}`);
     assert.equal(closed.headerHit.inHeader, true, `页头还是页头：${JSON.stringify(closed.headerHit)}`);
+    assert.equal(closed.headerHit.inLayer, false, `关闭后页头应回到目录详情：${JSON.stringify(closed.headerHit)}`);
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), 'MultiCC', '页头回到目录');
     // 帧不是被卸掉，是交回池子：260ms 的滑落之后 id 摘掉、藏起来。
     assert.ok(await page.waitFor(`!document.getElementById('conversation')`), '关掉之后当前帧要交回池子（只藏不卸）');
@@ -285,9 +289,8 @@ test('Air switches conversations without piling up history, and back closes the 
   });
 });
 
-// 手机上这一层是 App 那个底部 sheet 的等价物：默认停在页头下面盖满内容区（页头留着，
-// 那是「换下一台」最快的那一步），往下甩 = 关掉。桌面同一个几何，多的是那两颗按钮。
-test('Air keeps the mobile overlay under the header and lets a downward fling close it', async t => {
+// 手机上标题同样属于聊天浮层；默认全屏、往下甩 = 关掉。桌面同一个结构，多的是右上角按钮。
+test('Air keeps the mobile title inside the overlay and lets a downward fling close it', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   await withCdpHarness({ routes: buildAirRoutes(), screenshotDir: screenshotDir() }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
@@ -300,8 +303,8 @@ test('Air keeps the mobile overlay under the header and lets a downward fling cl
     assert.deepEqual({ x: open.layer.x, y: open.layer.y, w: open.layer.w, h: open.layer.h },
       { x: open.content.x, y: open.content.y, w: open.content.w, h: open.content.h },
       `手机上默认态同样是 100% 内容区：${JSON.stringify(open)}`);
-    assert.equal(open.layer.h, open.viewport.h - open.header.h, `内容区 = 视口减去页头：${JSON.stringify(open)}`);
-    assert.equal(open.headerHit.inHeader, true, `手机上的页头同样留在外面：${JSON.stringify(open.headerHit)}`);
+    assert.equal(open.layer.h, open.viewport.h, `手机默认态应由聊天浮层占满：${JSON.stringify(open)}`);
+    assert.equal(open.headerHit.inLayer, true, `手机标题也必须位于聊天浮层顶部：${JSON.stringify(open.headerHit)}`);
     assert.ok(open.handleH >= 3, `手机上要有那条拖柄：${open.handleH}px`);
     assert.ok(open.barH <= 44, `控制条要压得够薄，别吃掉对话：${open.barH}px`);
     await page.screenshot('05-chat-layer-mobile');
@@ -320,7 +323,7 @@ test('Air keeps the mobile overlay under the header and lets a downward fling cl
     assert.equal(closed.url.includes('task='), false, `甩掉之后地址也要跟着回到目录：${closed.url}`);
     assert.equal(closed.emptyHidden, false, '底页照旧还在');
 
-    // 展开态在手机上仍然连页头一起盖。
+    // 展开态在手机上维持同一份完整聊天浮层。
     assert.equal(await page.evaluate(clickTask('任务 B')), true);
     assert.ok(await page.waitFor(frameReady('task-b')), 'B 的对话帧要立起来');
     await page.evaluate(`document.getElementById('chat-expand').click()`);
