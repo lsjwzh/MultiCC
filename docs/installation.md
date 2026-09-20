@@ -143,6 +143,7 @@ Under the hood: `POST /api/update` with `{"force": true|false}` starts it, `GET
 ## Prerequisites
 
 - **Node.js** >= 22.16 (the server uses the built-in `node:sqlite` module; both `server.js` and the `./multicc` manager refuse to start below this floor)
+- **macOS 11+**: Node 22 covers it, but Homebrew stopped building Intel bottles, so old Intel Macs should use the [portable bundle](portable.md) (macOS 11+, no Node, no compiler) instead of this installer
 - **tmux** (for terminal mode; chat mode works without it)
 - **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)).
 

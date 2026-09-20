@@ -47,13 +47,18 @@ jobs:
         include:
           - os: macos-latest
             platform: macos
-            targets: --mac
+            native_platform: darwin
+            # One Electron config builds both dmgs, so the job has to stage,
+            # rebuild and package once per arch (see the loop below).
+            archs: "arm64 x64"
           - os: windows-latest
             platform: windows
-            targets: --win
+            native_platform: win32
+            archs: "x64"
           - os: ubuntu-latest
             platform: linux
-            targets: --linux
+            native_platform: linux
+            archs: "x64"
     steps:
       - uses: actions/checkout@v4
 
@@ -78,61 +83,19 @@ jobs:
           console.log(`versions aligned at ${root.version}`);
           '
 
-      - name: Stage server bundle (production deps)
-        shell: bash
-        run: |
-          set -euo pipefail
-          node scripts/desktop-bundle-server.js --out desktop/.staging/app-server --install
-
       - name: Install desktop toolchain
         shell: bash
         working-directory: desktop
         run: npm ci --no-audit --no-fund
 
-      # better-sqlite3 ships Node prebuilds; the desktop backend runs under the
-      # Electron binary (ELECTRON_RUN_AS_NODE), so its staged copy must be
-      # rebuilt against Electron's ABI or require() fails at first Database().
-      - name: Rebuild native modules for Electron ABI
-        shell: bash
-        working-directory: desktop
-        run: |
-          set -euo pipefail
-          # @electron/rebuild v4 names the Electron version flag --version;
-          # parseArgs rejects unknown options before any rebuild starts. Run from
-          # desktop/ so the CLI finds its project root (and the pinned electron
-          # copy) next to the toolchain instead of at the repo root.
-          node_modules/.bin/electron-rebuild \
-            --module-dir .staging/app-server \
-            --force --which-module better-sqlite3 \
-            --version "$ELECTRON_VERSION" \
-            --dist-url https://electronjs.org/headers
-          # electron-rebuild exits 0 after printing "No native modules found", so
-          # a rebuild that did nothing would ship a Node-ABI better-sqlite3 and
-          # crash the packaged server at the first Database() call.
-          node -e '
-          const fs = require("node:fs");
-          const path = require("node:path");
-          const mod = path.join(".staging", "app-server", "node_modules", "better-sqlite3");
-          if (!fs.existsSync(mod)) {
-            console.error("::error::staged tree has no better-sqlite3 to rebuild");
-            process.exit(1);
-          }
-          const found = [];
-          (function walk(dir) {
-            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-              const p = path.join(dir, entry.name);
-              if (entry.isDirectory()) { if (entry.name !== "src" && entry.name !== "deps") walk(p); }
-              else if (entry.name.endsWith(".node")) found.push(p);
-            }
-          })(mod);
-          if (!found.length) {
-            console.error("::error::better-sqlite3 has no native binding — the Electron ABI rebuild produced nothing");
-            process.exit(1);
-          }
-          console.log(`electron ABI binding(s): ${found.join(", ")}`);
-          '
-
-      - name: Build desktop installers (macOS signing if secrets present)
+      # Stage → rebuild → gate → package, once per target arch.
+      #
+      # This has to be a loop, not three separate steps: desktop/package.json
+      # asks electron-builder for both mac arches, and a single staged tree
+      # belongs to one arch only. Staging once on the arm64 runner is exactly
+      # how the x64 dmg ended up carrying arm64 better-sqlite3 — it installs
+      # fine, and only the first `new Database()` on an Intel Mac fails.
+      - name: Stage, rebuild and package per arch
         shell: bash
         working-directory: desktop
         env:
@@ -145,13 +108,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          build_args=(--publish never ${{ matrix.targets }})
           signing_status="unsigned (code signing not configured for this platform; verify via SHA256SUMS.txt)"
+          identity_args=()
           if [ "${{ matrix.platform }}" = "macos" ]; then
             if [ -n "${MAC_CSC_LINK:-}" ]; then
               export CSC_LINK="$MAC_CSC_LINK"
               export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-}"
-              build_args+=(--config.mac.identity="Developer ID Application")
+              identity_args+=(--config.mac.identity="Developer ID Application")
               if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
                 signing_status="signed (Developer ID) + notarized"
               else
@@ -159,13 +122,68 @@ jobs:
               fi
             else
               # No signing material: keep electron-builder honest about it.
-              build_args+=(--config.mac.identity=null)
+              identity_args+=(--config.mac.identity=null)
               echo "::warning::Building UNSIGNED macOS dmg — configure MAC_CSC_LINK / MAC_CSC_KEY_PASSWORD (+ APPLE_* for notarization) secrets to sign."
               signing_status="unsigned (MAC_CSC_LINK secret not configured)"
             fi
           fi
           echo "DESKTOP_SIGNING_STATUS=$signing_status" >> "$GITHUB_ENV"
-          npx electron-builder "${build_args[@]}"
+
+          for arch in ${{ matrix.archs }}; do
+            echo "::group::staging app-server for $arch"
+            rm -rf .staging
+            node ../scripts/desktop-bundle-server.js \
+              --out .staging/app-server \
+              --install \
+              --arch "$arch" --platform "${{ matrix.native_platform }}"
+            echo "::endgroup::"
+
+            echo "::group::native modules for Electron ($arch)"
+            # better-sqlite3 ships Node prebuilds; the desktop backend runs under
+            # the Electron binary (ELECTRON_RUN_AS_NODE), so its staged copy must
+            # be rebuilt against Electron's ABI or require() fails at the first
+            # Database() call.
+            # @electron/rebuild v4 names the Electron version flag --version;
+            # parseArgs rejects unknown options before any rebuild starts. Run
+            # from desktop/ so the CLI finds its project root (and the pinned
+            # electron copy) next to the toolchain instead of at the repo root.
+            node_modules/.bin/electron-rebuild \
+              --module-dir .staging/app-server \
+              --arch "$arch" \
+              --force --which-module better-sqlite3 \
+              --version "$ELECTRON_VERSION" \
+              --dist-url https://electronjs.org/headers
+            echo "::endgroup::"
+
+            echo "::group::arch gate ($arch)"
+            # electron-rebuild exits 0 after printing "No native modules found",
+            # so prove the tree really holds this arch's binaries: right arch,
+            # right container format, and not empty (scripts/native-arch.js).
+            node ../scripts/native-arch.js \
+              --root .staging/app-server \
+              --expect-arch "$arch" \
+              --expect-platform "${{ matrix.native_platform }}"
+            # (the staging step already proves better-sqlite3 is in the tree —
+            # scripts/desktop-bundle-server.js refuses to finish without it)
+            echo "::endgroup::"
+
+            echo "::group::electron-builder ($arch)"
+            # `--mac --x64` is NOT enough to pin the arch: desktop/package.json
+            # declares `arch` per target, and an explicit config arch list wins
+            # over the CLI flag (verified against electron-builder 26.15.3 —
+            # `--mac --x64` still yields arm64+x64). The `target:arch` form is
+            # the documented way to build exactly one arch.
+            case "${{ matrix.platform }}" in
+              macos) target_args=(--mac "dmg:$arch") ;;
+              windows) target_args=(--win "nsis:$arch") ;;
+              linux) target_args=(--linux "AppImage:$arch" "deb:$arch") ;;
+              *) echo "::error::unknown platform ${{ matrix.platform }}"; exit 1 ;;
+            esac
+            # ${arr[@]+"${arr[@]}"} keeps an empty array from tripping `set -u`
+            # on the bash 3.2 that macOS runners may still use.
+            npx electron-builder --publish never "${target_args[@]}" ${identity_args[@]+"${identity_args[@]}"}
+            echo "::endgroup::"
+          done
 
       - name: Write sidecars, checksum manifest, signing status
         shell: bash
@@ -196,9 +214,95 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Self-contained bundles (scripts/portable-bundle.js): the server + its
+  # production deps + a pinned official Node runtime, for machines that cannot
+  # install Node or the Electron desktop app (macOS 11/12, Intel Macs, no
+  # compiler, no Homebrew). "build" produces the installers; this produces the
+  # unzip-and-run artifacts, and the release job below attaches both.
+  portable:
+    needs: clean-install
+    name: portable bundle (${{ matrix.platform }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+          - os: macos-latest
+            platform: darwin
+            arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: arm64
+          - os: windows-latest
+            platform: win32
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Builds the bundle; the runtime that ships inside it is pinned
+          # separately (--node-version, Node 22 for the macOS 11 floor).
+          node-version: 22
+
+      - name: Build portable bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ runner.arch }}" in
+            ARM64) host_arch=arm64 ;;
+            X64) host_arch=x64 ;;
+            *) host_arch=unknown ;;
+          esac
+          # A plain string, not an array: macOS runners may still be bash 3.2,
+          # where an empty array under `set -u` is an unbound-variable error.
+          extra_flags=""
+          if [ "$host_arch" != "${{ matrix.arch }}" ]; then
+            # Cross-arch: npm still resolves the target's optional deps and
+            # prebuilds, and scripts/native-arch.js still gates arch + format.
+            # Only the "boot the bundled runtime" smoke is skipped, because this
+            # runner cannot execute the target binary.
+            extra_flags="--no-verify"
+          fi
+          node scripts/portable-bundle.js \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --out dist-portable $extra_flags
+
+      - name: Zip (Windows ships a zip, not a tarball)
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = node -p "require('./package.json').version"
+          $name = "multicc-portable-$version-win32-x64"
+          Compress-Archive -Path "dist-portable/$name" -DestinationPath "dist-portable/$name.zip"
+          $hash = (Get-FileHash "dist-portable/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Set-Content -NoNewline -Encoding ascii "dist-portable/$name.zip.sha256"
+
+      - name: Upload portable artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist-portable/*.tar.gz
+            dist-portable/*.tar.gz.sha256
+            dist-portable/*.zip
+            dist-portable/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: attach desktop assets to release
-    needs: build
+    # Both producers, not just the installers: a failed portable build must stop
+    # the release instead of publishing a Release whose assets are incomplete.
+    needs: [build, portable]
     # Only real tag pushes publish; workflow_dispatch validates builds only.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -209,6 +313,12 @@ jobs:
         with:
           path: desktop-out
           pattern: desktop-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: desktop-out
+          pattern: portable-*
           merge-multiple: true
 
       - name: Wait for the APK release to exist (release.yml owns creation)
@@ -236,9 +346,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          # One consolidated manifest covering all three OSes.
+          # One consolidated manifest covering every artifact.
           cat desktop-out/SHA256SUMS-*.txt | sort -u > desktop-out/SHA256SUMS.txt
           rm desktop-out/SHA256SUMS-*.txt
+          # Portable bundles ship their own sidecar hashes; fold them in so
+          # SHA256SUMS.txt covers them too.
+          for sidecar in desktop-out/*.tar.gz.sha256 desktop-out/*.zip.sha256; do
+            [ -f "$sidecar" ] && cat "$sidecar" >> desktop-out/SHA256SUMS.txt
+          done
+          sort -u -o desktop-out/SHA256SUMS.txt desktop-out/SHA256SUMS.txt
           gh release upload "$TAG" desktop-out/* --clobber
           echo "uploaded assets:"
           gh release view "$TAG" --json assets -q '.assets[].name'
@@ -265,12 +381,19 @@ jobs:
             `multicc-desktop-${VERSION}-linux-x64.AppImage`,
             `multicc-desktop-${VERSION}-linux-x64.deb`,
           ];
-          for (const name of [...installers, 'SHA256SUMS.txt',
+          const portables = [
+            `multicc-portable-${VERSION}-darwin-arm64.tar.gz`,
+            `multicc-portable-${VERSION}-darwin-x64.tar.gz`,
+            `multicc-portable-${VERSION}-linux-arm64.tar.gz`,
+            `multicc-portable-${VERSION}-linux-x64.tar.gz`,
+            `multicc-portable-${VERSION}-win32-x64.zip`,
+          ];
+          for (const name of [...installers, ...portables, 'SHA256SUMS.txt',
             'SIGNING-STATUS-macos.txt', 'SIGNING-STATUS-windows.txt', 'SIGNING-STATUS-linux.txt']) {
             if (!names.has(name)) throw new Error(`missing release asset: ${name}`);
           }
           for (const name of names) {
-            if (/\.(dmg|exe|AppImage|deb)$/.test(name) && name.startsWith('multicc-desktop-')) {
+            if (/^(multicc-desktop-.*\.(dmg|exe|AppImage|deb)|multicc-portable-.*\.(tar\.gz|zip))$/.test(name)) {
               assert.ok(names.has(`${name}.sha256`), `missing sidecar for ${name}`);
             }
           }
