@@ -231,6 +231,7 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
   const upstreamRequests = [];
   let upstream;
   let proxy;
+  let codexMount;
   try {
     upstream = await listenLocal((request, response) => {
       const chunks = [];
@@ -274,7 +275,7 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
 
     const router = require('cli-provider-router');
     const packageVersion = require('cli-provider-router/package.json').version;
-    assert.match(packageVersion, /^0\.(?:[3-9]|\d{2,})\./);
+    assert.equal(packageVersion, '0.5.1');
     assert.match(String(router.API_VERSION), /^1\./);
 
     const providers = integrationProviders(upstream.url);
@@ -307,12 +308,13 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
       onActivity: event => activityObserved.push(event),
     });
     app.use(express.json());
-    runtime.mountProtocolProxies(app, {
+    codexMount = runtime.mountProtocolProxies(app, {
       protocols: ['codex'],
       authorizeProxyRequest, onProxyOutcome,
       onUsageObserved: event => usageObserved.push(event),
       onActivity: event => activityObserved.push(event),
     });
+    assert.equal(typeof codexMount.codex.close, 'function');
     proxy = await listenLocal(app);
 
     // This startup probe previously reached the upstream's 404 fallback and
@@ -502,6 +504,7 @@ test('installed CPR 0.3+ cpr mode proxies Claude and Codex through explicit host
     assert.equal(path.dirname(codexHomesDir), temp);
   } finally {
     if (proxy) await closeLocal(proxy.server);
+    if (codexMount?.codex?.close) await codexMount.codex.close();
     if (upstream) await closeLocal(upstream.server);
     if (oldCprHome === undefined) delete process.env.CPR_HOME;
     else process.env.CPR_HOME = oldCprHome;
@@ -699,6 +702,10 @@ test('server is a thin runtime consumer and keeps CC-Switch import read-only', (
   assert.match(server, /multicc_provider_router_shadow_comparisons_total/);
   assert.match(server, /multicc_provider_router_shadow_differences_total/);
   assert.match(server, /multicc_provider_router_shadow_errors_total/);
+  assert.match(server, /onTransportRotate:\s*event\s*=>/);
+  assert.match(server, /multicc_provider_dispatcher_rotations_total/);
+  assert.match(server, /codexProxyMounts\.codex\?\.close\?\.\(\)/);
+  assert.equal(server.includes('installProviderFetchPolicy'), false);
   assert.match(server, /logger\.info\('provider_router_runtime'/);
   assert.match(server, /createProviderRoutes\(/);
   assert.match(server, /providerRoutes\.mountCatalogRoutes\(app\)/);

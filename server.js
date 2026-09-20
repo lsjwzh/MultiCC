@@ -1344,9 +1344,10 @@ app.use(express.json({ limit: '50mb' }));
 // Codex 协议代理端点：官方 relay 与 responses-compat（XFYun 流稳定化）。
 // Responses↔Chat 转换桥已退役——主流国产服务商均已原生支持 /responses。
 // 必须在 express.json() 之后挂载，以便 req.body 已解析。详见 docs/codex-proxy-contract.md。
-providerRouterRuntime.mountProtocolProxies(app, {
+const codexProxyMounts = providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['codex'],
   getPort: () => PORT, authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, codexOfficialRelay: { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) }, // multi-account: providers marked settingsConfig.officialAccount resolve the account's own auth.json
+  onTransportRotate: event => { metrics.inc('multicc_provider_dispatcher_rotations_total'); logger.warn('provider_dispatcher_rotated', event); },
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
@@ -2923,7 +2924,7 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   qwenAudioSupervisor,
   sessionHibernationRuntime,
 });
-shutdownCoordinator.onClose(() => { taskShellHost.close(); workspaceAdmission.close(); });
+shutdownCoordinator.onClose(() => { taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.());
 // Terminal error handler: catches errors that reach next(err) or throw out of
 // async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
 // generic {error, requestId} so clients can't fingerprint the filesystem.

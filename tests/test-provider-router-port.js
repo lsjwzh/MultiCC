@@ -324,6 +324,22 @@ test('protocol mounts preserve request activity for liveness and TaskRun drain f
   assert.equal(mounted.onActivity, onActivity);
 });
 
+test('Codex mount preserves CPR transport observability and close lifecycle', () => {
+  const calls = [];
+  const controller = { close() {} };
+  const router = fakeRouter({ calls });
+  router.mountCodexProxy = (_app, mountOptions) => {
+    calls.push({ method: 'mountCodexProxy', mountOptions });
+    return controller;
+  };
+  const onTransportRotate = () => {};
+  const mounted = createCprPort(router).mountProtocolProxies({ use() {}, post() {} }, {
+    protocols: ['codex'], onTransportRotate,
+  });
+  assert.equal(mounted.codex, controller);
+  assert.equal(calls[0].mountOptions.onTransportRotate, onTransportRotate);
+});
+
 test('protocol mounts install attempt preflight ahead of the CPR handler', () => {
   const calls = [];
   const uses = [];
