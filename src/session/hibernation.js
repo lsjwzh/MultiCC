@@ -3,12 +3,13 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createHibernationReclaimer } = require('./hibernation-reclaimer');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_HIBERNATE_IDLE_MS = 7 * DAY_MS;
-const DEFAULT_HIBERNATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_HIBERNATE_IDLE_MS = DAY_MS;
+const DEFAULT_HIBERNATE_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_HIBERNATE_STARTUP_DELAY_MS = 30 * 1000;
-const DEFAULT_HIBERNATE_BATCH_SIZE = 5;
+const DEFAULT_HIBERNATE_BATCH_SIZE = 16;
 const WORKSPACE_STATES = new Set(['planned', 'awake', 'hibernating', 'hibernated', 'thawing']);
 const EXCLUDED_TYPES = new Set(['commander', 'gateway', 'worker', 'aux', 'system']);
 
@@ -126,7 +127,7 @@ function createSessionHibernationRuntime(options = {}) {
   const idleMs = numericOption(options.idleMs, DEFAULT_HIBERNATE_IDLE_MS);
   const intervalMs = numericOption(options.intervalMs, DEFAULT_HIBERNATE_INTERVAL_MS);
   const startupDelayMs = numericOption(options.startupDelayMs, DEFAULT_HIBERNATE_STARTUP_DELAY_MS);
-  const batchSize = Math.max(1, Math.min(5, Number(options.batchSize) || DEFAULT_HIBERNATE_BATCH_SIZE));
+  const batchSize = Math.max(1, Math.min(64, Number(options.batchSize) || DEFAULT_HIBERNATE_BATCH_SIZE));
   const tails = new Map();
   const operations = new Set();
   let sweepPromise = null;
@@ -258,17 +259,18 @@ function createSessionHibernationRuntime(options = {}) {
     return serialized(sessionId, () => ensureAwakeUnlocked(sessionId));
   }
 
-  async function hibernateUnlocked(sessionId, { eligibilityChecked = false } = {}) {
+  async function hibernateUnlocked(sessionId, { eligibilityChecked = false, ignoreIdle = false } = {}) {
     const record = records.get(sessionId);
     if (!record) return { ok: false, code: 'session_not_found' };
     if (stateOf(record) === 'hibernated') return { ok: true, already: true };
-    const preliminary = evaluateSessionEligibility(record, { nowMs: now(), idleMs });
+    const effectiveIdleMs = ignoreIdle ? 0 : idleMs;
+    const preliminary = evaluateSessionEligibility(record, { nowMs: now(), idleMs: effectiveIdleMs });
     if (!eligibilityChecked && !preliminary.eligible) {
       publish('hibernate', 'skip', sessionId, preliminary.reasons[0] || 'ineligible');
       return { ok: false, skipped: true, code: preliminary.reasons[0] || 'ineligible' };
     }
     const blockers = await inspectBlockers(sessionId, record);
-    const verdict = evaluateSessionEligibility(record, { nowMs: now(), idleMs, blockers });
+    const verdict = evaluateSessionEligibility(record, { nowMs: now(), idleMs: effectiveIdleMs, blockers });
     if (!verdict.eligible) {
       publish('hibernate', 'skip', sessionId, verdict.reasons[0] || 'ineligible');
       return { ok: false, skipped: true, code: verdict.reasons[0] || 'ineligible' };
@@ -318,31 +320,18 @@ function createSessionHibernationRuntime(options = {}) {
     return serialized(sessionId, () => hibernateUnlocked(sessionId, options));
   }
 
+  const reclaimer = createHibernationReclaimer({
+    records, now, idleMs, batchSize, eligible: evaluateSessionEligibility,
+    hibernate, publish, isStopped: () => stopped,
+  });
+
   function sweep() {
     if (sweepPromise) return sweepPromise;
     const work = (async () => {
-      const candidates = [];
-      for (const record of records.values()) {
-        const preliminary = evaluateSessionEligibility(record, { nowMs: now(), idleMs });
-        if (!preliminary.eligible) {
-          if (record?.taskBoundTaskId && record.kind === 'chat') publish('sweep', 'skip', record.id, preliminary.reasons[0] || 'ineligible');
-          continue;
-        }
-        const blockers = await inspectBlockers(record.id, record);
-        const verdict = evaluateSessionEligibility(record, { nowMs: now(), idleMs, blockers });
-        if (verdict.eligible) candidates.push({ record, lastWorkMs: verdict.lastWorkMs });
-        else if (record?.taskBoundTaskId && record.kind === 'chat') publish('sweep', 'skip', record.id, verdict.reasons[0] || 'ineligible');
-      }
-      candidates.sort((left, right) => left.lastWorkMs - right.lastWorkMs || left.record.id.localeCompare(right.record.id));
-      let hibernated = 0;
-      let failed = 0;
-      for (const candidate of candidates.slice(0, batchSize)) {
-        const result = await hibernate(candidate.record.id, { eligibilityChecked: true });
-        if (result.ok && result.hibernated) hibernated += 1;
-        else if (!result.skipped) failed += 1;
-      }
+      const candidates = reclaimer.candidatesFor();
+      const result = await reclaimer.runCandidates(candidates);
       publish('sweep', 'success', null, null);
-      return { ok: true, considered: candidates.length, hibernated, failed };
+      return { ok: true, considered: candidates.length, ...result };
     })();
     sweepPromise = work.finally(() => { sweepPromise = null; });
     return sweepPromise;
@@ -464,11 +453,12 @@ function createSessionHibernationRuntime(options = {}) {
     stopped = true;
     if (timer) clearTimeoutFn(timer);
     timer = null;
-    await Promise.allSettled([...(sweepPromise ? [sweepPromise] : []), ...operations, ...tails.values()]);
+    await Promise.allSettled([...(sweepPromise ? [sweepPromise] : []), reclaimer.settleCapacity(), ...operations, ...tails.values()]);
   }
 
   function status() {
-    return Object.freeze({ stopped, scheduled: !!timer, sweeping: !!sweepPromise, activeOperations: operations.size });
+    return Object.freeze({ stopped, scheduled: !!timer, sweeping: !!sweepPromise,
+      capacityReclaims: reclaimer.pendingCapacity(), activeOperations: operations.size });
   }
 
   return Object.freeze({
@@ -478,6 +468,7 @@ function createSessionHibernationRuntime(options = {}) {
     ensureAwake,
     hibernate,
     isLocked,
+    reclaimForCapacity: reclaimer.reclaimForCapacity,
     reconcileStartup,
     start,
     status,

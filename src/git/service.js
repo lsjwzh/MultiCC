@@ -592,7 +592,11 @@ async function gitWorktreeRemove(dirPath, worktreePath, branch, opts = {}) {
     progress('remove');
     if (worktreePath && fs.existsSync(worktreePath)) {
       try {
-        await execGit(dirPath, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), worktreePath]);
+        // Git requires force twice for a worktree containing an untracked
+        // nested repository or carrying the locked bit. The caller already
+        // obtained explicit destructive confirmation and made the backup;
+        // do not leave the task half-deleted for a second flavor of dirtiness.
+        await execGit(dirPath, ['worktree', 'remove', ...(opts.force ? ['--force', '--force'] : []), worktreePath]);
       } catch (error) {
         // Tolerate a worktree the repo no longer tracks (base .git re-created
         // underneath us): leave the stray directory on disk and carry on so

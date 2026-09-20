@@ -64,14 +64,30 @@ test('deletion marks and removes every merged identity before history cleanup', 
   assert.equal(f.board.tasks.alias, undefined);
 });
 
-test('delete preflight refusal preserves writable state and content', async t => {
-  const f = harness(t, { prepareTaskDelete: async () => {
-    throw Object.assign(new Error('task_workspace_unmerged'), { code: 'task_workspace_unmerged' });
-  } });
-  assert.equal((await f.call('delete')).body.error, 'task_workspace_unmerged');
+test('delete reports every workspace risk, then forwards explicit force to cleanup', async t => {
+  const calls = [];
+  const f = harness(t, {
+    prepareTaskDelete: async (_task, _ids, options) => {
+      calls.push(['prepare', options]);
+      if (!options.force) throw Object.assign(new Error('task_workspace_dirty'), {
+        code: 'task_workspace_dirty', reasons: ['task_workspace_dirty', 'task_workspace_unmerged'],
+      });
+    },
+    purgeTaskData: async (_task, ids, options) => calls.push(['purge', ids, options]),
+  });
+  const refused = await f.call('delete');
+  assert.equal(refused.body.error, 'task_workspace_dirty');
+  assert.deepEqual(refused.body.reasons, ['task_workspace_dirty', 'task_workspace_unmerged']);
   assert.equal(f.board.tasks.old.deleting, undefined);
   assert.equal(f.board.tasks.old.title, 'Historical task');
-  assert.deepEqual(f.purged, []);
+  assert.deepEqual(calls, [['prepare', { force: false }]]);
+
+  assert.equal((await f.call('delete', '', { force: true })).body.deleted, true);
+  assert.deepEqual(calls, [
+    ['prepare', { force: false }],
+    ['prepare', { force: true }],
+    ['purge', ['old'], { force: true }],
+  ]);
 });
 
 test('a legacy planned task deletes its own clean worktree without a chat session', async t => {
@@ -92,6 +108,50 @@ test('a legacy planned task deletes its own clean worktree without a chat sessio
   await host.purgeTaskData(task, ['old']);
   assert.equal(fs.existsSync(worktreePath), false);
   assert.equal((await git('branch', '--list', 'task-branch')).stdout.trim(), '');
+});
+
+test('confirmed task deletion backs up and removes a dirty, ahead worktree', async t => {
+  const { execFile } = require('node:child_process');
+  const exec = require('node:util').promisify(execFile);
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'multicc-task-force-delete-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const git = (...args) => exec('git', args, { cwd: root });
+  await git('init', '-b', 'main');
+  await git('-c', 'user.name=test', '-c', 'user.email=test@local', 'commit', '--allow-empty', '-m', 'initial');
+  const worktreePath = path.join(root, 'task-worktree');
+  await git('worktree', 'add', '-b', 'task-branch', worktreePath);
+  const gitInWorktree = (...args) => exec('git', args, { cwd: worktreePath });
+  fs.writeFileSync(path.join(worktreePath, 'committed.txt'), 'committed\n');
+  fs.writeFileSync(path.join(worktreePath, '.gitignore'), 'ignored-repo/\n');
+  await gitInWorktree('add', 'committed.txt', '.gitignore');
+  await gitInWorktree('-c', 'user.name=test', '-c', 'user.email=test@local', 'commit', '-m', 'task commit');
+  fs.appendFileSync(path.join(worktreePath, 'committed.txt'), 'dirty\n');
+  fs.writeFileSync(path.join(worktreePath, 'draft.txt'), 'untracked\n');
+  const ignoredRepo = path.join(worktreePath, 'ignored-repo');
+  fs.mkdirSync(ignoredRepo);
+  await exec('git', ['init'], { cwd: ignoredRepo });
+  fs.writeFileSync(path.join(ignoredRepo, 'ignored-local-code.txt'), 'not backed up\n');
+
+  const task = { id: 'old', dirId: 'd', refs: [], worktreePath, branch: 'task-branch', deleting: true };
+  const host = createTaskLifecycleHost({ records: new Map(), getBoard: () => ({ tasks: { old: task }, modules: {} }),
+    getShell: () => ({ purgeTasks() {} }), getHistory: () => [], getState: () => null, getRunState: () => 'idle',
+    getHistoryService: () => null, destroySession: () => assert.fail('no dedicated chat'),
+    directories: new Map([['d', { id: 'd', path: root, baseBranch: 'main' }]]), persist() {} });
+
+  await assert.rejects(host.prepareTaskDelete(task, ['old']), error => {
+    assert.deepEqual(error.reasons, ['task_workspace_dirty', 'task_workspace_unmerged']);
+    return true;
+  });
+  await host.purgeTaskData(task, ['old'], { force: true });
+
+  assert.equal(fs.existsSync(worktreePath), false);
+  assert.equal((await git('branch', '--list', 'task-branch')).stdout.trim(), '');
+  const backupRoot = path.join(root, '.git', 'multicc-backups');
+  const [operationId] = fs.readdirSync(backupRoot);
+  const backup = path.join(backupRoot, operationId);
+  assert.equal(fs.existsSync(path.join(backup, 'repository.bundle')), true);
+  assert.match(fs.readFileSync(path.join(backup, 'dirty.patch'), 'utf8'), /dirty/);
+  assert.equal(fs.readFileSync(path.join(backup, 'untracked', 'draft.txt'), 'utf8'), 'untracked\n');
 });
 
 test('manual task title sync updates only its bound session and broadcasts both planes', () => {
@@ -123,6 +183,7 @@ test('busy tasks are unchanged and failed deletion stays blocked until cleanup r
     purgeTaskData: async () => { if (fail) throw Object.assign(new Error('disk'), { code: 'disk_failure' }); } });
   assert.equal((await f.call('post', '/status', { status: 'archived' })).body.error, 'task_busy');
   assert.equal((await f.call('delete')).body.error, 'task_busy');
+  assert.equal((await f.call('delete', '', { force: true })).body.error, 'task_busy');
   assert.equal(f.board.tasks.old.deleting, undefined);
   busy = false;
   assert.equal((await f.call('delete')).body.error, 'disk_failure');

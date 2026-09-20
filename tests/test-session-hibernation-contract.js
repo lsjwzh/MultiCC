@@ -53,12 +53,16 @@ test('management task board renders hibernated state without manual controls', (
   assert.doesNotMatch(ui, /manualThaw|hibernateButton|手动休眠/);
 });
 
-test('hibernation tests are explicitly registered in deterministic scripts', () => {
+test('worktree reclamation is an explicit deterministic gate', () => {
   const scripts = JSON.parse(read('package.json')).scripts;
   const all = Object.values(scripts).join(' ');
   for (const file of [
     'tests/test-session-hibernation.js',
     'tests/test-session-hibernation-git.js',
     'tests/test-session-hibernation-contract.js',
+    'tests/test-worktree-reclamation-gate.js',
   ]) assert.match(all, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(scripts['test:worktree-reclamation'], /tests\/test-worktree-reclamation-gate\.js/);
+  assert.match(scripts['test:deterministic'], /npm run test:worktree-reclamation/,
+    'the default deterministic gate must execute active reclamation scenarios directly');
 });

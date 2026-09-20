@@ -217,11 +217,14 @@ iframe 可以直接取得完整 Chat，避免重新出现第二个面向用户�
 待核验；不得把 Aux 分类成功或普通父 PID 消失伪造为这些凭证。跨壳接管、撤销与
 完整 RoleBinding/ChangeSet 迁移也仍是后续包。
 
-默认名额：执行 8、驻留 128、同时恢复 2，可由 `MULTICC_WORKSPACE_RUN_LIMIT` /
-`MULTICC_WORKSPACE_RESIDENT_LIMIT` / `MULTICC_WORKSPACE_RESTORE_LIMIT` 设置。
-已驻留的存量目录照常保留；超过驻留预算后新目录会排队。此阶段暂停旧自动休眠，
-不自动提交 dirty 或卸载目录来腾出容量。旧进程状态不明的占用需要单独核验，不能
-通过浏览器按钮无条件清除。Terminal/外部进程不构成已验证的停写屏障。
+默认名额：全局执行 8、每个项目目录驻留 128、全局同时恢复 2，可由
+`MULTICC_WORKSPACE_RUN_LIMIT` / `MULTICC_WORKSPACE_RESIDENT_LIMIT` /
+`MULTICC_WORKSPACE_RESTORE_LIMIT` 设置。空闲任务目录会主动安全休眠；某个项目达到
+驻留预算时，准入会在该项目内按最久未使用顺序回收，立即同步 registry 后重试。
+活跃 writer、Git 冲突/进行中的 Git 操作和无法安全保存的 ignored 用户文件继续保留。
+Terminal/外部进程不构成已验证的停写屏障。
+`npm run test:worktree-reclamation` 是默认 deterministic 守门的一部分，使用真实 Git/SQLite
+验证定时主动回收、危险现场跳过、休眠后恢复，以及目录满时同目录 LRU 回收后重新准入。
 
 验证包括 SQLite 双连接争抢、真实临时 Git 物化、结束回调竞态、模糊启动保留，
 Docker 内模拟 Codex 的主流程/容量/取消/重启和 Chromium 操作；不等同真实模型、

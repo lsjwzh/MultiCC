@@ -78,12 +78,12 @@ function bound(id, lastWorkAt = iso(10 * DAY), extra = {}) {
   };
 }
 
-test('eligibility starts at the exact seven-day edge and uses a conservative exclusion table', () => {
+test('eligibility starts at the exact one-day edge and uses a conservative exclusion table', () => {
   const now = 20 * DAY;
-  assert.equal(DEFAULT_HIBERNATE_IDLE_MS, 7 * DAY);
-  assert.equal(DEFAULT_HIBERNATE_BATCH_SIZE, 5);
-  assert.equal(evaluateSessionEligibility(bound('edge', iso(now - 7 * DAY)), { nowMs: now }).eligible, true);
-  assert.equal(evaluateSessionEligibility(bound('fresh', iso(now - 7 * DAY + 1)), { nowMs: now }).eligible, false);
+  assert.equal(DEFAULT_HIBERNATE_IDLE_MS, DAY);
+  assert.equal(DEFAULT_HIBERNATE_BATCH_SIZE, 16);
+  assert.equal(evaluateSessionEligibility(bound('edge', iso(now - DAY)), { nowMs: now }).eligible, true);
+  assert.equal(evaluateSessionEligibility(bound('fresh', iso(now - DAY + 1)), { nowMs: now }).eligible, false);
   const excluded = [
     { kind: 'terminal' }, { taskBoundTaskId: null }, { taskExecutionSlot: true },
     { ephemeral: true }, { experimentalMode: 'tui' }, { type: 'commander' },
@@ -131,9 +131,9 @@ test('startup persists legacy lastWorkAt backfill before scanning', async () => 
   assert.ok(h.writes.some(write => write.source === 'startup.hibernate-last-work-backfill'));
 });
 
-test('sweep is oldest-first, capped at five and non-reentrant', async () => {
+test('sweep is oldest-first, bounded and non-reentrant', async () => {
   const records = new Map();
-  for (let i = 0; i < 7; i += 1) records.set(`s${i}`, bound(`s${i}`, iso((i + 1) * DAY)));
+  for (let i = 0; i < 18; i += 1) records.set(`s${i}`, bound(`s${i}`, iso((i + 1) * 30 * 60 * 1000)));
   let gateResolve;
   const gate = new Promise(resolve => { gateResolve = resolve; });
   let detaches = 0;
@@ -148,8 +148,45 @@ test('sweep is oldest-first, capped at five and non-reentrant', async () => {
   assert.equal(first, joined, 'concurrent sweeps join the same promise');
   gateResolve();
   const result = await first;
-  assert.equal(result.hibernated, 5);
-  assert.deepEqual([...records.values()].filter(r => r.workspaceState === 'hibernated').map(r => r.id), ['s0', 's1', 's2', 's3', 's4']);
+  assert.equal(result.hibernated, 16);
+  assert.deepEqual([...records.values()].filter(r => r.workspaceState === 'hibernated').map(r => r.id),
+    Array.from({ length: 16 }, (_, index) => `s${index}`));
+});
+
+test('sweep skips an unsafe oldest checkout instead of starving safe younger candidates', async () => {
+  const records = new Map([
+    ['unsafe', bound('unsafe', iso(DAY), { _detachError: 'HIBERNATE_UNKNOWN_IGNORED' })],
+    ['safe-a', bound('safe-a', iso(2 * DAY))],
+    ['safe-b', bound('safe-b', iso(3 * DAY))],
+  ]);
+  const h = harness({ records, batchSize: 2 });
+  const result = await h.runtime.sweep();
+  assert.equal(result.hibernated, 2);
+  assert.equal(result.failed, 1);
+  assert.equal(records.get('unsafe').workspaceState, 'awake');
+  assert.equal(records.get('safe-a').workspaceState, 'hibernated');
+  assert.equal(records.get('safe-b').workspaceState, 'hibernated');
+});
+
+test('capacity reclaim is directory-scoped, ignores idle age and continues past blockers', async () => {
+  const blocked = bound('blocked-old', iso(DAY), { _blocked: true });
+  const fresh = bound('fresh-safe', iso(20 * DAY - 1), { dirId: 'dir-1' });
+  const other = bound('other-directory', iso(DAY), { dirId: 'dir-2' });
+  const records = new Map([blocked, fresh, other].map(record => [record.id, record]));
+  const h = harness({
+    records,
+    directories: new Map([
+      ['dir-1', { id: 'dir-1', path: '/repo', baseBranch: 'main' }],
+      ['dir-2', { id: 'dir-2', path: '/other', baseBranch: 'main' }],
+    ]),
+    inspectBlockers: async (_id, record) => record._blocked ? ['active_writer'] : [],
+  });
+  const result = await h.runtime.reclaimForCapacity({ dirId: 'dir-1', count: 1 });
+  assert.equal(result.hibernated, 1);
+  assert.equal(result.attempted, 2);
+  assert.equal(blocked.workspaceState, 'awake');
+  assert.equal(fresh.workspaceState, 'hibernated', 'capacity pressure may reclaim a fresh but inactive checkout');
+  assert.equal(other.workspaceState, 'awake', 'another directory cannot pay this directory capacity debt');
 });
 
 test('hibernate is idempotent, uses required transitions and records safe failure codes', async () => {
