@@ -55,6 +55,10 @@ test('process and stream retries reuse the owned turn without appending a second
     /reasonCode: 'codex_transport_continuation', \.\.\.currentRouteOptions\(\)/,
     'native continuation must remain pinned to the current physical Auto route');
   assert.equal(processBody.includes('spawnChat(retryInvocation, true, finalizePlan.retry.attempt)'), true);
+  assert.equal((server.match(/planRetryBlockedFinalization\(/g) || []).length, 2,
+    'process and stream retry failures share the terminal blocked-retry planner');
+  assert.equal(server.includes('const blockedPlan = planTurnFinalization('), false,
+    'a retry failure must never re-enter the ordinary retry planner directly');
   assert.equal(processBody.includes('appendChatMessage(sessionName'), false,
     'retry runner reuses the already durable canonical user event');
 

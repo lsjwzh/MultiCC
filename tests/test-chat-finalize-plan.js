@@ -7,6 +7,7 @@ const path = require('node:path');
 const {
   classifyProcessExit,
   planTurnFinalization,
+  planRetryBlockedFinalization,
   resolveTurnFinalization,
 } = require('../src/chat/finalize-plan');
 
@@ -120,6 +121,24 @@ test('central API policy decision runs before legacy empty-exit retry', () => {
     },
   }));
   assert.equal(failFast.action, 'finalize');
+});
+
+test('a blocked retry is a terminal disposition and cannot recursively plan another retry', () => {
+  const retry = planTurnFinalization(base({
+    pendingStreamError: 'response.completed disconnected',
+    nativeSession: true,
+    codexDisconnectAttempt: 1,
+    resultEvent: false,
+  }));
+  assert.equal(retry.action, 'continue-codex');
+  const blocked = planRetryBlockedFinalization(retry, {
+    retryUnavailableReason: 'run_not_active',
+  });
+  assert.equal(blocked.action, 'finalize');
+  assert.equal(blocked.facts.retryUnavailable, true);
+  assert.equal(blocked.facts.retryUnavailableReason, 'run_not_active');
+  assert.equal(blocked.facts.apiError, true);
+  assert.equal(types(resolveTurnFinalization(blocked)).includes('mark-retry-planned'), false);
 });
 
 test('close-time adapter state blocks retry without changing runner-owned classification facts', () => {
@@ -372,5 +391,6 @@ test('finalize planner remains pure and exported from chat index', () => {
   assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false);
   const chat = require('../src/chat');
   assert.equal(chat.planTurnFinalization, planTurnFinalization);
+  assert.equal(chat.planRetryBlockedFinalization, planRetryBlockedFinalization);
   assert.equal(chat.resolveTurnFinalization, resolveTurnFinalization);
 });
