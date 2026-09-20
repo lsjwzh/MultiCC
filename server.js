@@ -1366,8 +1366,7 @@ const sessionGitRuntime = createSessionGitRuntime({
   // later; the ports only fire at request time, after composition completes.
   resolveTaskWorktree: id => taskBoardRuntime?.taskWorktree?.info(id) || null,
   cleanupTaskWorktree: (id, o) => taskBoardRuntime?.taskWorktree?.cleanupWorktree(id, o),
-  existsSync: fs.existsSync, now: Date.now, random: Math.random,
-  logger: console,
+  existsSync: fs.existsSync, now: Date.now, random: Math.random, asyncHandler, logger: console,
 });
 const mergeStateCached = sessionGitRuntime.mergeStateCached;
 const classifyStateMachine = createClassifyStateMachine({

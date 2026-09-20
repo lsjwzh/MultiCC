@@ -401,6 +401,7 @@ test('bulk merge-state refreshes are bounded, Fleet-fair, and prioritize interac
     existsSync: () => true,
     now: () => 1000,
     random: () => 0,
+    asyncHandler: handler => handler,
     logger: { log() {}, warn() {} },
     cacheTtlMs: 1000,
     cacheJitterMs: 0,

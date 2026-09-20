@@ -14,6 +14,7 @@ const {
   gitRelocateWorktree,
   gitMergeBack,
   gitSyncFromBase,
+  gitWorktreeMergeState,
 } = require('../src/git/service');
 
 const execFileAsync = promisify(execFile);
@@ -39,6 +40,23 @@ async function sessionIn(dir, id) {
   const added = await gitWorktreeAdd(dir.path, id, dir.baseBranch);
   return { id, dirId: dir.id, worktreePath: added.worktreePath, branch: added.branch };
 }
+
+test('merge operations treat a reclaimed worktree as unavailable without spawning git', async () => {
+  const missing = path.join(os.tmpdir(), `multicc-reclaimed-${process.pid}-${Date.now()}`);
+  const dir = { id: 'repo', path: missing, baseBranch: 'main' };
+  const session = {
+    id: 'hibernated', branch: 'multicc/hibernated', worktreePath: path.join(missing, 'worktree'),
+    workspaceState: 'hibernated',
+  };
+  const merge = await gitMergeBack(dir, session);
+  assert.deepEqual(merge, {
+    ok: false, code: 'worktree_missing', error: 'session has no worktree',
+  });
+  const state = await gitWorktreeMergeState(dir, session);
+  assert.deepEqual(state, {
+    mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'hibernated',
+  });
+});
 
 test('dirty worktree removal is refused by default and forced removal is recoverable', async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-git-'));

@@ -28,7 +28,7 @@ function assertDependencies(deps) {
   for (const name of [
     'gitWorktreeMergeState', 'gitBaseBranch', 'gitRunQueued', 'gitMergeBack',
     'gitSyncFromBase', 'gitRebaseResolve', 'appendEvent', 'workspaceBroadcast',
-    'existsSync', 'now', 'random',
+    'existsSync', 'now', 'random', 'asyncHandler',
   ]) assertFunction(deps[name], name);
   if (!deps.logger || typeof deps.logger.log !== 'function'
       || typeof deps.logger.warn !== 'function') {
@@ -57,6 +57,19 @@ function blockedGitResult(error) {
     operationId: error && error.operationId,
     queueDepth: error && error.queueDepth,
     error: errorText(error),
+  };
+}
+
+function failedGitResult(error) {
+  if (error && ['SESSION_ACTIVE', 'SESSION_LEASED'].includes(error.code)) {
+    return blockedGitResult(error);
+  }
+  return {
+    ok: false,
+    code: 'git_operation_failed',
+    operationId: error && error.operationId,
+    queueDepth: error && error.queueDepth,
+    error: 'Git operation failed',
   };
 }
 
@@ -354,7 +367,18 @@ function createSessionGitRuntime(rawDeps) {
   }
 
   function hasWorktree(record, res, message) {
-    if (record.worktreePath && record.branch) return true;
+    if (record.worktreePath && record.branch && deps.existsSync(record.worktreePath)) return true;
+    if (record.workspaceState === 'hibernated') {
+      res.status(409).json({
+        ok: false,
+        blocked: true,
+        code: 'workspace_hibernated',
+        reasons: ['hibernated'],
+        workspaceState: 'hibernated',
+        error: '工作区已休眠；发送消息后会自动恢复',
+      });
+      return false;
+    }
     res.status(400).json({ error: message });
     return false;
   }
@@ -809,9 +833,15 @@ function createSessionGitRuntime(rawDeps) {
       const info = resolveTaskInfo(req, res);
       if (!info) return;
       const identity = taskIdentity(info);
-      const result = await deps.gitMergeBack(info.dir, identity);
+      if (!hasWorktree(identity, res, '任务 worktree 不存在')) return;
+      const result = await deps.gitMergeBack(info.dir, identity).catch(error => {
+        deps.logger.warn(`[multicc] task merge ${identity.id} failed: ${errorText(error)}`);
+        return failedGitResult(error);
+      });
       if (!result.ok) {
-        return res.status(result.conflicts && result.conflicts.length ? 409 : 400).json(result);
+        const status = result.conflicts && result.conflicts.length ? 409
+          : (result.code === 'git_operation_failed' ? 500 : 400);
+        return res.status(status).json(result);
       }
       deps.logger.log(`[multicc] task merge ${identity.branch} → ${info.dir.baseBranch}: `
         + (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
@@ -859,9 +889,14 @@ function createSessionGitRuntime(rawDeps) {
       if (!found) return;
       const { persisted, dir } = found;
       if (!hasWorktree(persisted, res, '该会话没有 worktree，无需合并')) return;
-      const result = await deps.gitMergeBack(dir, persisted);
+      const result = await deps.gitMergeBack(dir, persisted).catch(error => {
+        deps.logger.warn(`[multicc] merge ${persisted.id} failed: ${errorText(error)}`);
+        return failedGitResult(error);
+      });
       if (!result.ok) {
-        return res.status(result.conflicts && result.conflicts.length ? 409 : 400).json(result);
+        const status = result.conflicts && result.conflicts.length ? 409
+          : (result.code === 'git_operation_failed' ? 500 : 400);
+        return res.status(status).json(result);
       }
       deps.logger.log(`[multicc] merge ${persisted.branch} → ${dir.baseBranch}: `
         + (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
@@ -951,12 +986,16 @@ function createSessionGitRuntime(rawDeps) {
       throw new TypeError('[session-git] app must expose get() and post()');
     }
     if (mountedApps.has(app)) return app;
-    registerReadRoutes(app);
+    const guardedApp = {
+      get: (route, handler) => app.get(route, deps.asyncHandler(handler)),
+      post: (route, handler) => app.post(route, deps.asyncHandler(handler)),
+    };
+    registerReadRoutes(guardedApp);
     if (typeof deps.resolveTaskWorktree === 'function'
         && typeof deps.cleanupTaskWorktree === 'function') {
-      registerTaskRoutes(app);
+      registerTaskRoutes(guardedApp);
     }
-    registerWriteRoutes(app);
+    registerWriteRoutes(guardedApp);
     mountedApps.add(app);
     return app;
   }

@@ -760,8 +760,10 @@ async function gitRelocateWorktree(oldDir, targetDir, session, opts = {}) {
 }
 
 async function mergeStateWith(execGit, dir, session) {
-  if (!dir || !session || !session.worktreePath || !session.branch) {
-    return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'no-worktree' };
+  if (!dir || !session || !session.worktreePath || !session.branch
+      || !fs.existsSync(session.worktreePath)) {
+    const reason = session && session.workspaceState === 'hibernated' ? 'hibernated' : 'no-worktree';
+    return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason };
   }
   const worktreePath = session.worktreePath;
   const baseBranch = dir.baseBranch || await baseBranchWith(execGit, dir.path);
@@ -820,7 +822,10 @@ async function checkMergedJsSyntax(worktreePath, fromRef, toRef, execGit) {
 }
 
 async function gitMergeBack(dir, session, opts = {}) {
-  if (!dir || !session || !session.branch || !session.worktreePath) return { ok: false, error: 'session has no worktree' };
+  if (!dir || !session || !session.branch || !session.worktreePath
+      || !fs.existsSync(session.worktreePath)) {
+    return { ok: false, code: 'worktree_missing', error: 'session has no worktree' };
+  }
   return defaultRepoActor.run(dir.path, 'merge-back', async ({ execGit, progress, operationId: id }) => {
     const dirPath = dir.path;
     const branch = session.branch;

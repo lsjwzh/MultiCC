@@ -85,6 +85,7 @@ function createFixture(overrides = {}) {
     existsSync: overrides.existsSync || (() => true),
     now: () => clock,
     random: () => 0,
+    asyncHandler: overrides.asyncHandler || (handler => handler),
     logger: {
       log: value => calls.logs.push(value),
       warn: value => calls.warnings.push(value),
@@ -119,6 +120,12 @@ test('mountRoutes installs the ten routes once per app', () => {
     'POST /api/sessions/:id/rebase',
     'POST /api/sessions/:id/sync',
   ].sort());
+});
+
+test('every Git route is registered through the shared async error boundary', () => {
+  let wrapped = 0;
+  createFixture({ asyncHandler: handler => { wrapped += 1; return handler; } });
+  assert.equal(wrapped, 10);
 });
 
 test('production host delegates the complete Git route surface through narrow ports', () => {
@@ -582,6 +589,29 @@ test('merge preserves conflict and non-conflict legacy status codes', async () =
   assert.equal(response400.statusCode, 400);
 });
 
+test('merge contains unexpected git failures instead of rejecting the request handler', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitMergeBack: async () => {
+        const error = new Error('spawn git ENOENT');
+        error.code = 'ENOENT';
+        throw error;
+      },
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('POST /api/sessions/:id/merge'), {
+    params: { id: 's1' },
+  });
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.body, {
+    ok: false,
+    code: 'git_operation_failed',
+    operationId: undefined,
+    queueDepth: undefined,
+    error: 'Git operation failed',
+  });
+});
+
 test('sync maps actor rejection metadata and conflict response broadcasts state', async () => {
   const rejected = createFixture({
     implementations: {
@@ -667,6 +697,25 @@ test('route lookups preserve legacy 404/400 DTOs', async () => {
   });
   assert.equal(noWorktree.statusCode, 400);
   assert.deepEqual(noWorktree.body, { error: '该会话没有 worktree，无需合并' });
+});
+
+test('hibernated worktrees block all git mutations before invoking git', async () => {
+  const records = new Map([['s1', {
+    id: 's1', dirId: 'd1', branch: 'multicc/s1', worktreePath: '/repo/wt-s1',
+    workspaceState: 'hibernated', taskState: { classifyState: 'D' },
+  }]]);
+  const fixture = createFixture({ records, existsSync: target => target === '/repo' });
+  for (const route of ['merge', 'sync', 'rebase']) {
+    const response = await invoke(fixture.app.routes.get(`POST /api/sessions/:id/${route}`), {
+      params: { id: 's1' },
+    });
+    assert.equal(response.statusCode, 409, route);
+    assert.equal(response.body.code, 'workspace_hibernated', route);
+    assert.deepEqual(response.body.reasons, ['hibernated'], route);
+  }
+  assert.equal(fixture.calls.merge.length, 0);
+  assert.equal(fixture.calls.sync.length, 0);
+  assert.equal(fixture.calls.rebase.length, 0);
 });
 
 test('parseDiffFiles handles M/A/D, binary, rename, spaces and non-ASCII paths', () => {
@@ -1017,6 +1066,16 @@ test('task merge merges the task branch identity and reports conflicts as 409', 
   });
   assert.equal(conflictResponse.statusCode, 409);
   assert.deepEqual(conflictResponse.body.conflicts, ['src/conflict.js']);
+});
+
+test('task merge rejects a missing physical worktree before invoking git', async () => {
+  const fixture = createTaskFixture({ existsSync: () => false });
+  const response = await invoke(fixture.app.routes.get('POST /api/task-board/tasks/:taskId/merge'), {
+    params: { taskId: 'tsk-1' },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body, { error: '任务 worktree 不存在' });
+  assert.equal(fixture.calls.merge.length, 0);
 });
 
 test('task cleanup-worktree delegates to the board service and maps blocked outcomes to 409', async () => {
