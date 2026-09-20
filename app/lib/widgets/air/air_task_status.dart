@@ -8,6 +8,8 @@
 /// 都从这里取值，所以同一条任务在两个地方不可能显示成两种状态。
 library;
 
+import 'package:flutter/material.dart';
+
 import '../../services/air_service.dart';
 import '../../utils/status_presentation.dart';
 
@@ -17,6 +19,62 @@ CanonicalStatus airTaskStatus(AirTask task) =>
 
 StatusSpec airTaskSpec(AirTask task) =>
     statusSpecOf(StatusDomain.task, airTaskStatus(task));
+
+/// Air 面上每个状态叫什么 —— 逐条对着 Web `public/air-admin.js` 的 `STATUS_COPY`。
+///
+/// 为什么不直接用注册表的 `labelKey`（App 词典里 running 是「进行中」、waiting 是
+/// 「等待中」）：Web 的 Air 面自带一份中文（`air.html` 里没有 t()，`air.js` 的
+/// `label()` 查的也是这份 Air 词表），说的是跟阶段、资源去向（[airLabel]）同源的那
+/// 套词。两套词混着用，同一行就会冒出两个词说同一件事 —— 徽标写「进行中」、旁边那
+/// 行写「执行中」，读的人得先猜它们是不是一回事。
+const Map<CanonicalStatus, String> airStatusCopy = {
+  CanonicalStatus.idle: '空闲',
+  CanonicalStatus.queued: '排队中',
+  CanonicalStatus.running: '执行中',
+  CanonicalStatus.waiting: '等待回答',
+  CanonicalStatus.blocked: '等待配置',
+  CanonicalStatus.error: '执行异常',
+  CanonicalStatus.succeeded: '执行成功',
+  CanonicalStatus.done: '已完成',
+  CanonicalStatus.cancelled: '已取消',
+  CanonicalStatus.archived: '已归档',
+  CanonicalStatus.offline: '已离线',
+  CanonicalStatus.unknown: '状态未知',
+};
+
+/// Air 面上的状态词。兜底是原样的状态名，同 Web 的 `STATUS_COPY[status] || status`。
+String airStatusLabel(CanonicalStatus status) =>
+    airStatusCopy[status] ?? status.name;
+
+/// Air 面的状态徽标：词走 [airStatusCopy]，可见文案和无障碍名是同一个词（同 Web
+/// `statusBadge()` 那句「translate 恒等于可见文案」）。侧栏的任务行、目录首页的
+/// 任务卡都从这里取，所以一条任务在两个地方不可能写成两种状态。
+class AirTaskStatusBadge extends StatelessWidget {
+  const AirTaskStatusBadge({
+    super.key,
+    required this.task,
+    this.fontSize = 10.5,
+    this.dense = false,
+  });
+
+  final AirTask task;
+  final double fontSize;
+  final bool dense;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = airTaskStatus(task);
+    final word = airStatusLabel(status);
+    return StatusBadge(
+      domain: StatusDomain.task,
+      status: status,
+      label: word,
+      semanticLabel: word,
+      fontSize: fontSize,
+      dense: dense,
+    );
+  }
+}
 
 /// 只有注册表说 spinner 的状态才配转圈 —— 「在跑」全局只有这一个定义，所以这
 /// 里不写 `runState == 'running'`。
@@ -75,14 +133,25 @@ List<AirTask> airUrgentTasks(Iterable<AirTask> tasks) =>
 
 /// 任务行的第二层信息：状态徽标已经说了「在不在跑」，这里补记录类型、阶段和
 /// 资源去向（同 Web 的 `taskDetail`）。
+///
+/// 阶段（看板那一列）只有计划记录才有 —— `workflowStage` 是那类记录自己的字段，
+/// 观察型记录（从对话里长出来的任务）永远是 null。所以不要拿 `status` 兜底：它是
+/// 生命周期（active/done/archived），跟「在不在跑」无关，翻出来是「进行中」，
+/// 而同一行上的徽标正说着「空闲」/「执行成功」—— 一行话自相矛盾。Web 的侧栏
+/// （`public/air.js` 的 `renderSidebarTasks`）早就是这个规矩：非计划记录不出阶段词。
 String airTaskDetail(AirTask task) {
+  final stage = task.recordType == 'planned'
+      ? airLabel(task.workflowStage ?? task.status)
+      : '';
   final bits = <String>[
-    if (task.recordType == 'planned') '计划',
+    if (stage.isNotEmpty) '计划 · $stage',
   ];
-  final stage = airLabel(task.workflowStage ?? task.status);
-  if (stage.isNotEmpty) bits.add(stage);
   final held = task.resourceText;
-  if (held.isNotEmpty && held != stage) bits.add(held);
+  // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）——
+  // 同 Web 侧栏那句 `!badgeText.includes(part)`。比的是徽标上那个词（[airStatusCopy]），
+  // 不是词典里的词：一行上只有一套词的时候，这两句才真的能对上。
+  final badge = airStatusLabel(airTaskStatus(task));
+  if (held.isNotEmpty && held != stage && !badge.contains(held)) bits.add(held);
   return bits.join(' · ');
 }
 

@@ -491,7 +491,11 @@
       const copy = node('span');
       const meta = node('small', null, 'task-meta');
       meta.append(statusBadge(task));
-      const stage = label(task.workflowStage || task.status);
+      // 阶段只有计划记录才有（`workflowStage` 是计划看板那一列，记录类型由行首那个
+      // ◇ 标着）：观察型记录这个字段恒为 null，拿 `status` 兜底写出来的「进行中」是
+      // 生命周期词，跟徽标说的不是一回事 —— 徽标「空闲」「执行成功」，旁边一行「进行
+      // 中」。同侧栏 `renderSidebarTasks`。
+      const stage = task.recordType === 'planned' ? label(task.workflowStage || task.status) : '';
       const detail = holdText(task.resource);
       const extra = [stage, detail].filter(part => part && !label(taskStatus(task)).includes(part)).join(' · ');
       if (extra) meta.append(node('em', extra, 'task-note'));
@@ -2811,6 +2815,10 @@
       // 对话浮层也在这条链上，而且是最后让位的那一层：展开态先收回默认（页头回来），
       // 再 Esc 才关掉整个对话 —— 跟「一层一层地退」一个意思，只是这一层自己有两档。
       if (isChatExpanded()) { setChatExpanded(false); return; }
+      // 任务详情是挂在页头右边、压在对话浮层上面的一格（z-index 15 > 浮层 14），
+      // 也是刚刚才点开的那一层：最后打开的最先退，所以它排在对话前面。反过来先关
+      // 掉背后的对话，这一格还留在原地 —— 看上去就像 Esc 什么都没关。
+      if (!$('task-details').hidden) { closeDetails(); return; }
       if (taskId) { dismissChat(); return; }
       closeNav(); closeDetails(); frameMoreController()?.close(); $('chat-more').setAttribute('aria-expanded', 'false');
     }

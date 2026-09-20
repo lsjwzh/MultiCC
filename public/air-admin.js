@@ -132,16 +132,23 @@
   }
 
   /** 行的第二层信息：徽标已经说了「在不在跑」，这里补记录类型、阶段和资源去向。 */
+  //
+  // 阶段只有计划记录才有：`workflowStage` 是计划看板的那一列，观察型记录（从对话
+  // 里长出来的任务）这个字段恒为 null。所以不要拿 `status` 兜底 —— 它是生命周期
+  // （active/done/archived），label 出来就是「进行中」，而同一行上的徽标正说着
+  // 「空闲」/「执行成功」，一行话自相矛盾。侧栏（`air.js` 的 renderSidebarTasks）
+  // 早就是这个规矩，这里向它对齐。
   function taskDetail(task, context) {
     const bits = [];
-    if (task.recordType === 'planned') bits.push('计划');
-    const stage = context.label(task.workflowStage || task.status);
-    if (stage) bits.push(stage);
+    const stage = task.recordType === 'planned' ? context.label(task.workflowStage || task.status) : '';
+    if (stage) bits.push(`计划 · ${stage}`);
     const resource = task.resource || {};
     const held = resource.capacityReason ? context.label(resource.capacityReason)
       : resource.lease && resource.lease !== 'idle' ? context.label(resource.lease)
         : context.label(resource.residency);
-    if (held && held !== stage) bits.push(held);
+    // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
+    const badgeText = context.label(taskStatus(task));
+    if (held && held !== stage && !badgeText.includes(held)) bits.push(held);
     return bits.join(' · ');
   }
 
