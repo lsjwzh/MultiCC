@@ -113,7 +113,29 @@
     for (const task of data?.tasks || []) if (isRunning(task)) dirs.add(task.dirId);
     return dirs;
   }
-  function applyRing(element, on) { if (element) element.classList.toggle('ring-running', !!on); }
+  /** 圈的颜色：同一件东西每次挑到同一档（按 id 哈希），彼此之间看起来是随机的。 */
+  const RING_TINTS = ['#7fb0ff', '#f7b98a', '#86cdf0', '#c2a8ff', '#a8d47e', '#f2a3bf', '#7fd3c2', '#f0c66a'];
+  function ringTint(seed) {
+    const text = seed == null ? '' : String(seed);
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+    return RING_TINTS[hash % RING_TINTS.length];
+  }
+  /**
+   * 圈是「这条在跑」的唯一视觉信号，但它不再逐帧动画：一个静态的加粗描边，颜色按
+   * seed（任务/目录 id）从 RING_TINTS 里挑。用 id 而不是随机数，是因为列表每 4 秒
+   * 随快照重画一次 —— 随机会让同一行的颜色每刷一次就换一次，看着像在闪。
+   * 没给 seed（临时节点、老调用点）就一个字都不写，css 里那条 `var(--ring-tint,
+   * var(--accent))` 会退回主题强调色：圈不会因为少一个参数就整个消失。
+   */
+  function applyRing(element, on, seed) {
+    if (!element) return;
+    const ring = !!on;
+    element.classList.toggle('ring-running', ring);
+    // 摘圈的时候顺手把色也清掉：行是复用出来的，留着就是上一条任务的旧颜色。
+    if (!ring || seed == null) element.style.removeProperty('--ring-tint');
+    else element.style.setProperty('--ring-tint', ringTint(seed));
+  }
 
   /** 状态徽标：图标 + 中文标签，可访问名称与可见文案是同一句话。 */
   function statusBadge(task, opts = {}) {
@@ -185,7 +207,7 @@
         openTask();
       }
     };
-    applyRing(row, isRunning(task));
+    applyRing(row, isRunning(task), task.id);
     const body = make('span', null, 'task-row-open');
     const copy = make('span');
     // 两排：标题在上，徽标 + 目录/阶段在下。徽标原来占着最左边一列（这一行是三列
@@ -381,7 +403,7 @@
       const executingCount = unfinished.filter(isRunning).length;
       const row = action('', () => navigate(directory.id), 'admin-directory-row');
       // 任务对应的目录也要带圈：一个「有活在跑」的目录不该等到点进去才发现。
-      applyRing(row, running.has(directory.id));
+      applyRing(row, running.has(directory.id), directory.id);
       const copy = make('span');
       copy.append(make('strong', directory.name || directory.id), make('small', directory.path || ''));
       const counts = make('span', null, 'admin-directory-counts');
