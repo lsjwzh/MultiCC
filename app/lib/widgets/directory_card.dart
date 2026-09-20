@@ -7,7 +7,7 @@ import '../theme.dart';
 import '../utils/session_status_helpers.dart';
 import 'git_status_row.dart';
 import 'project_stat_pill.dart';
-import 'rainbow_border.dart';
+import 'running_border.dart';
 
 /// Immutable display data for one dashboard directory card.
 ///
@@ -215,8 +215,9 @@ class DirectoryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return RainbowBorder(
+    return RunningBorder(
       running: view.running,
+      seed: view.id,
       borderRadius: BorderRadius.circular(8),
       child: LongPressDraggable<String>(
         data: view.id,

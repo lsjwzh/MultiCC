@@ -5,8 +5,9 @@
  * Rules this stylesheet exists to enforce:
  *   · status is never carried by colour alone — the icon is always rendered, and
  *     every badge has an accessible name (WCAG 1.4.1 / colour-vision deficiency);
- *   · only `running` may animate (.st-spin), so an errored card stops spinning
- *     the instant it turns red;
+ *   · only `running` may wear the running mark (.st-spin) — and it is static,
+ *     because a page that always has something moving never lets the compositor
+ *     go idle (see the note above the rule);
  *   · the badge stays inside a 44px-wide touch target on small screens and never
  *     forces a card to reflow.
  */
@@ -102,17 +103,37 @@
   .mc-status-pill { background: transparent; border-color: currentColor; }
 }
 
-/* ── Animation ───────────────────────────────────────────────────────────────
- * Scoped to .st-spin, which status-presentation.js sets only for `running` and
- * clears on every update — that is what kills a stale spinner on running→error. */
-@keyframes mc-status-spin { to { transform: rotate(360deg); } }
-
+/* ── Running mark ────────────────────────────────────────────────────────────
+ * .st-spin is still set by status-presentation.js for `running` alone and
+ * cleared on every update — that is what kills a stale running mark on
+ * running→error. What changed (2026-09-20): the icon no longer rotates.
+ *
+ * Why: the browser this was measured on runs with hardware acceleration off
+ * (--use-gl=disabled, software raster), so ANY element that keeps animating
+ * keeps the whole compositor producing frames — an idle-looking page still
+ * burned ~1 core. After the running ring went static, this rotation was the
+ * last always-on animation on the Air page (~0.10 of the remaining 0.31).
+ * Motion is not the signal here: the icon, its tone colour and the text label
+ * are, and Air additionally carries the static tinted ring. So the mark stays
+ * — a static halo instead of a spin — and nothing on the page moves on its
+ * own. The "only running may animate" invariant survives as "only running
+ * wears this mark".
+ *
+ * tests/test-air-paint-budget.js pins the two halves of that: no rotation, and
+ * a halo that is a plain static shadow. */
 .mc-status.st-spin .mc-status-ico {
-  animation: mc-status-spin 2.4s linear infinite;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-fg, currentColor) 30%, transparent);
 }
 
+@supports not (background: color-mix(in srgb, red 20%, transparent)) {
+  .mc-status.st-spin .mc-status-ico { box-shadow: 0 0 0 2px currentColor; opacity: .35; }
+}
+
+/* The file no longer animates anything, so there is nothing to opt out of —
+ * except the halo, which is a decoration and can go when motion is unwelcome. */
 @media (prefers-reduced-motion: reduce) {
-  .mc-status.st-spin .mc-status-ico { animation: none; opacity: .85; }
+  .mc-status.st-spin .mc-status-ico { box-shadow: none; }
 }
 
 /* ── High contrast / forced colours ──────────────────────────────────────────

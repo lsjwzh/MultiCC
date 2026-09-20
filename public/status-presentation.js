@@ -479,6 +479,30 @@
       + '</span>';
   }
 
+  // ── Running mark: one static tint per row ──────────────────────────────────
+  //
+  // 「这条在跑」在每一页上都是同一件事：一个**静态**的加粗浅色描边（Air 的卡片和
+  // 侧栏行走 .ring-running，老看板的卡片和目录块走 .card-border-rainbow）。这里
+  // 只放颜色，两个页面都从这一份取 —— 颜色按 id 哈希定，不按随机数：列表每几秒
+  // 随快照重画一次，随机会让同一行每刷一次就换一个色，看着像在闪。
+  //
+  // 为什么是静态的：这台机器上 Chrome 关着图形加速（--use-gl=disabled，走软件光
+  // 栅），屏幕上只要有东西一直在动，合成器就永远不归零 —— 逐帧改 border-color 和
+  // box-shadow 的老彩虹圈实测约 1.0 核里的大头，去掉后 0.31 核，其中 0.10 还是别
+  // 处的 spinner。颜色本身有门槛：tests/test-air-console-cdp.js 从边框里侧向内扫
+  // 7px 取最饱和的像素，要求 max-min ≥ 60，所以每一档都留了余量。
+  const RING_TINTS = Object.freeze([
+    '#7fb0ff', '#f7b98a', '#86cdf0', '#c2a8ff', '#a8d47e', '#f2a3bf', '#7fd3c2', '#f0c66a',
+  ]);
+
+  /** 同一件东西每次都挑到同一档；彼此之间看起来是随机的。 */
+  function ringTint(seed) {
+    const text = seed == null ? '' : String(seed);
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+    return RING_TINTS[hash % RING_TINTS.length];
+  }
+
   const api = Object.freeze({
     SESSION_STATUSES,
     TASK_STATUSES,
@@ -487,6 +511,8 @@
     FREEZE_REASON_STATUS,
     CLASSIFY_LETTER_STATUS,
     TONE_CLASSES,
+    RING_TINTS,
+    ringTint,
     coerceStatus,
     classifyStatus,
     freezeReasonStatus,
