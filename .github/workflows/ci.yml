@@ -10,13 +10,16 @@ permissions:
 
 jobs:
   deterministic:
-    name: Node ${{ matrix.node }} deterministic + native smoke
+    name: Node ${{ matrix.node }} deterministic + storage runtime smoke
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        node: [20.x, 22.x]
+        # 22.16 is the floor: storage is `node:sqlite`, which ships inside Node
+        # since 22.5. Node 20 has no such module, so running this suite there
+        # tested a runtime MultiCC refuses to start on.
+        node: [22.x, 24.x]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

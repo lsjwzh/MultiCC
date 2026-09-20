@@ -23,7 +23,7 @@ exceptions cannot accumulate.
 migration strategy and a live source anchor. A new risky `~/.multicc`, package-
 root config/memory or legacy cron root fails unless it is classified.
 
-Both checks run inside `test:deterministic` on Node 20 and 22 in CI.
+Both checks run inside `test:deterministic` on Node 22 and 24 in CI.
 
 ## Existing repository artifacts: migration strategy
 

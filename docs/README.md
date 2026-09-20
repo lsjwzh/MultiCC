@@ -20,7 +20,7 @@ The eleven documents the README links to directly.
 | [API reference](api-reference.md) | REST endpoints by domain (`/api/sessions`, `/api/sessions/:id/switch-cli`, `/api/cli/:cli/install`, `/api/voice/*`, `/api/push/*`) and the `/ws/chat` WebSocket protocol with ws-ticket auth. |
 | [How MultiCC compares](ecosystem-comparison.md) | 12-project landscape and head-to-head tables: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, cc-connect, CloudCLI, Superset, Orca, cockpit-tools — and what MultiCC is *worse* at. |
 | [FAQ](faq.md) | Troubleshooting: HTTPS / TLS, microphone secure-context, port conflicts, provider setup. |
-| [Tech stack](tech-stack.md) | Runtime dependencies and what each is for: Express, ws, better-sqlite3, sherpa-onnx-node, cli-provider-router, chokidar 5, Flutter. |
+| [Tech stack](tech-stack.md) | Runtime dependencies and what each is for: Express, ws, node:sqlite, sherpa-onnx-node, cli-provider-router, chokidar 5, Flutter. |
 
 ## Design & contracts
 

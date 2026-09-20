@@ -39,7 +39,11 @@ async function run(command, args, cwd, env = process.env) {
   await run('git', ['config', '--global', 'url.file:///candidate.insteadOf', 'https://github.com/lsjwzh/MultiCC.git'], candidate);
   await run('bash', [`${candidate}/install.sh`, '--branch', tag, '--dir', installed,
     '--no-service', '--token', 'clean-install-test', '--port', '3000'], '/home/node');
-  assert.ok(fs.existsSync(path.join(installed, 'node_modules/better-sqlite3')));
+  // Storage ships inside Node (node:sqlite since 22.5). Proving the installed
+  // tree can open a database is the meaningful check; asserting a compiled
+  // addon in node_modules would only re-introduce what we removed.
+  await run('node', ['--disable-warning=ExperimentalWarning', '-e',
+    "const { DatabaseSync } = require('node:sqlite'); new DatabaseSync(':memory:').close();"], installed);
   assert.equal(fs.statSync(path.join(installed, '.env')).mode & 0o777, 0o600);
   assert.equal(require(`${installed}/package.json`).version, version);
   assert.equal(JSON.parse(fs.readFileSync(`${installed}/docker-source.json`)).sourceDigest, manifest.sourceDigest);

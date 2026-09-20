@@ -8,20 +8,28 @@
 
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+const { databaseConstructor } = require('../src/sqlite/driver');
 const paths = require('../src/paths');
 const { _writeAtomic } = require('../src/orchestration/store');
 const { _loadDatabaseState, _stateDigest } = require('../src/orchestration/sqlite-store');
 
+// Resolved on first use, so merely requiring this module (tests do) never loads
+// the SQLite engine or prints its experimental warning.
+let defaultDatabase = null;
+
 function exportSnapshot({
   databaseFile,
   targetFile,
-  DatabaseImpl = Database,
+  DatabaseImpl = null,
   fsImpl = fs,
   now = Date.now,
 } = {}) {
   if (!databaseFile || !targetFile) throw new TypeError('databaseFile and targetFile are required');
   if (!fsImpl.existsSync(databaseFile)) throw new Error(`orchestration database not found: ${databaseFile}`);
+  if (!DatabaseImpl) {
+    if (!defaultDatabase) defaultDatabase = databaseConstructor();
+    DatabaseImpl = defaultDatabase;
+  }
   const db = new DatabaseImpl(databaseFile, { readonly: true, fileMustExist: true });
   let state;
   try {

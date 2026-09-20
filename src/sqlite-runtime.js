@@ -1,12 +1,17 @@
 'use strict';
 
 const fs = require('fs');
+const { databaseConstructor } = require('./sqlite/driver');
 
-const REBUILD_COMMAND = 'npm rebuild better-sqlite3 --foreground-scripts';
+// SQLite stopped being a compiled dependency: Node 22.16+ ships the engine in
+// core as `node:sqlite`, and src/sqlite/driver.js is the only place MultiCC
+// opens it. So the CC-Switch import can fail for exactly one reason — a Node
+// older than the floor in package.json — and there is nothing to rebuild.
+const RUNTIME_REQUIREMENT = 'Node 22.16 or newer';
 
-function nativeRuntimeMessage() {
-  return 'SQLite native runtime is unavailable. Run `' + REBUILD_COMMAND +
-    '` in the MultiCC directory, then retry.';
+function sqliteUnavailableMessage() {
+  return 'SQLite is unavailable in this Node.js runtime. MultiCC needs '
+    + RUNTIME_REQUIREMENT + ' (it ships SQLite in core as `node:sqlite`).';
 }
 
 function makeError(message, code, reason, cause) {
@@ -17,16 +22,14 @@ function makeError(message, code, reason, cause) {
   return error;
 }
 
-// `require("better-sqlite3")` only loads its JavaScript constructor. The native
-// addon is loaded lazily by the first `new Database(...)`, so a successful
-// require is not a sufficient health check. This adapter always opens and closes
-// an in-memory database before reporting the runtime as ready.
+// Opening a database is the only honest health check: a module that loads can
+// still fail on the first statement. This adapter always opens and closes an
+// in-memory database before reporting the runtime as ready.
 //
-// Failed probes are deliberately not cached. If an administrator rebuilds the
-// addon while MultiCC is running, the next status/import request can recover
-// without restarting the server.
+// Failed probes are deliberately not cached, so an administrator who upgrades
+// Node while MultiCC is running can recover without restarting the server.
 function createSqliteRuntime({
-  loadDatabase = () => require('better-sqlite3'),
+  loadDatabase = () => databaseConstructor(),
   existsSync = fs.existsSync,
 } = {}) {
   function probe() {
@@ -69,7 +72,7 @@ function createSqliteRuntime({
         dbFound: true,
         dbPath: normalizedPath,
         reason: runtime.reason,
-        message: nativeRuntimeMessage(),
+        message: sqliteUnavailableMessage(),
       };
     }
 
@@ -96,7 +99,7 @@ function createSqliteRuntime({
     const runtime = probe();
     if (!runtime.available) {
       throw makeError(
-        nativeRuntimeMessage(),
+        sqliteUnavailableMessage(),
         'SQLITE_NATIVE_RUNTIME_UNAVAILABLE',
         'native-runtime-unavailable',
         runtime.cause,
@@ -124,7 +127,7 @@ function createSqliteRuntime({
 }
 
 module.exports = {
-  REBUILD_COMMAND,
+  RUNTIME_REQUIREMENT,
   createSqliteRuntime,
-  nativeRuntimeMessage,
+  sqliteUnavailableMessage,
 };

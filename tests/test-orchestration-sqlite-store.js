@@ -455,22 +455,34 @@ test('private file permissions fail closed instead of being silently ignored', a
   );
 });
 
-test('better-sqlite3 is a direct dependency with install/update self-healing guards', () => {
+test('storage has no compiled dependency: SQLite comes from Node, not an addon', () => {
   const root = path.join(__dirname, '..');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
-  assert.ok(manifest.dependencies['better-sqlite3']);
-  assert.equal(
-    lock.packages[''].dependencies['better-sqlite3'],
-    manifest.dependencies['better-sqlite3'],
-  );
+  assert.equal(manifest.dependencies['better-sqlite3'], undefined,
+    'a compiled addon must not be a production dependency: it is what forced every bundle to match an ABI');
+  // Kept as a devDependency on purpose: tests/test-sqlite-driver.js runs the
+  // same statements through both engines, so a behavior change in the built-in
+  // SQLite shows up as a failure instead of as silently different data.
+  assert.ok(manifest.devDependencies['better-sqlite3'], 'the cross-driver oracle must stay available to tests');
 
-  const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
-  const launcher = fs.readFileSync(path.join(root, 'multicc'), 'utf8');
-  const nativeCheck = fs.readFileSync(path.join(root, 'scripts/check-native-deps.js'), 'utf8');
-  assert.match(installer, /npm install/);
-  assert.match(installer, /npm rebuild better-sqlite3 --foreground-scripts/);
-  assert.match(launcher, /npm install/);
-  assert.match(launcher, /npm rebuild better-sqlite3 --foreground-scripts/);
-  assert.match(nativeCheck, /new Database\(':memory:'\)/);
+  const driver = fs.readFileSync(path.join(root, 'src/sqlite/driver.js'), 'utf8');
+  assert.match(driver, /require\('node:sqlite'\)/);
+  for (const file of ['src/task-run/store.js', 'src/task-shell/store.js',
+    'src/orchestration/sqlite-store.js', 'src/quota/provider-limit-cache.js', 'src/sqlite-runtime.js']) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.match(source, /sqlite\/driver|require\('\.\/sqlite\/driver'\)/, `${file} must use the shared driver`);
+    assert.doesNotMatch(source, /require\('better-sqlite3'\)/, `${file} must not require the addon`);
+  }
+
+  // install.sh and the ./multicc manager used to carry a "rebuild the native
+  // binding" hatch. Nothing is compiled any more, so that repair path would
+  // have been a lie told to whoever hit it.
+  for (const file of ['install.sh', 'multicc']) {
+    const text = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.doesNotMatch(text, /npm rebuild better-sqlite3/, `${file} must not advertise a rebuild that cannot help`);
+    assert.match(text, /SQLite/, `${file} must still explain what the runtime check failed on`);
+  }
+  const sqliteCheck = fs.readFileSync(path.join(root, 'scripts/check-sqlite-runtime.js'), 'utf8');
+  assert.match(sqliteCheck, /new Database\(':memory:'\)/);
 });
