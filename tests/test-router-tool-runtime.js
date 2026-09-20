@@ -218,6 +218,44 @@ test('list_secrets projects metadata only', async t => {
   );
 });
 
+test('generate_image is capability-scoped to an eligible host bridge and keeps its artifact-only result', async t => {
+  const calls = [];
+  const { runtime } = fixture(t, {
+    imageBridge: {
+      isEligible: session => session?.id === 'caller',
+      generate: async input => {
+        calls.push(input);
+        return { ok: true, artifact: { url: '/artifacts/image_safe/image.png', path: '/private/not-exposed.png' } };
+      },
+    },
+  });
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-image', taskId: 'task-a' });
+  const result = await runtime.execute(capability, 'generate_image', {
+    prompt: 'a calm blue circle', reference_image_paths: ['/workspace/reference.png'],
+  });
+  assert.equal(result.artifact.url, '/artifacts/image_safe/image.png');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].context.sessionId, 'caller');
+  assert.equal(calls[0].session.id, 'caller');
+  await assert.rejects(
+    runtime.execute(capability, 'generate_image', { prompt: 'x', credential: 'no' }),
+    error => error.code === 'invalid_arguments',
+  );
+});
+
+test('generate_image is unavailable to a non-eligible session without invoking the bridge', async t => {
+  let calls = 0;
+  const { runtime } = fixture(t, {
+    imageBridge: { isEligible: () => false, generate: async () => { calls += 1; } },
+  });
+  const capability = runtime.issueContext({ sessionId: 'caller', turnId: 'turn-no-image' });
+  await assert.rejects(
+    runtime.execute(capability, 'generate_image', { prompt: 'x' }),
+    error => error.code === 'image_generation_unavailable' && error.statusCode === 409,
+  );
+  assert.equal(calls, 0);
+});
+
 test('get_task_context is read-only, paginated and scoped to the caller capability', async t => {
   const calls = [];
   const { runtime } = fixture(t, { getTaskContext: async (context, query) => {

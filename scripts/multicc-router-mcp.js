@@ -198,6 +198,21 @@ const EXTERNAL_WAIT_ID_SCHEMA = {
 };
 
 const TOOLS = [
+  ...(process.env.MULTICC_IMAGE_BRIDGE === '1' ? [{
+    name: 'generate_image',
+    title: 'Generate image',
+    description: 'Generate one raster image through the host-owned Official Codex image bridge. The current session is eligible and its OAuth credential remains in MultiCC; it is never exposed to this process. Use a concise, complete image prompt. Optional reference images must be absolute paths inside the current workspace. The result contains a local /artifacts/... URL; include it in the final user-facing answer.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['prompt'],
+      properties: {
+        prompt: { type: 'string', minLength: 1, maxLength: 16384, description: 'Complete image-generation prompt.' },
+        reference_image_paths: { type: 'array', maxItems: 4, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 1024 }, description: 'Optional absolute PNG, JPEG, or WebP paths within the current workspace.' },
+      },
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }] : []),
   {
     name: 'get_task_context',
     title: 'Get task-shell context',
