@@ -34,6 +34,36 @@
 - 验证：`tests/test-cron-task-first.js` 新增两项——固定任务被归档时连续触发不创建任何会话/任务、
   仅提醒一次；`rebind` 只创建一个新固定任务、绑定健康时拒绝换绑、随后投递落到新任务。
 
+### 升级路径自动收敛历史扇出（来源版本 <= 2.0.2）
+
+上面说的是「新触发不再分叉」；这里说的是**已经分叉出来的历史数据怎么在升级时自动收敛**——
+它们是旧版本写下的数据，不能只靠新代码不再犯错。
+
+- 入口就是升级路径本身：`./multicc update` 在重启新进程之前把「升级前版本」写进
+  `.multicc_upgrade`；新进程启动时读它，只有来源版本 `<= 2.0.2`（或版本无从得知）才执行这次
+  一次性清理。`install.sh` 写下的 `.multicc_channel` 里的 `# installed:` 作为兜底来源；两者都
+  没有时按「未知」处理并仍然执行同一套保守检测，所以手动 `git pull` 的安装也能自愈。
+- 只归档，不合并、不删除：固定任务是 task-shell 身份，`merge-tasks` 会以
+  `task_shell_identity_immutable` 拒绝把它作为合并目标，历史投递无法并回固定任务，只能用归档
+  把它们从活动列表收敛掉（归档可恢复）。
+- 识别规则（`plugins/cron/fanout-migration.js`，纯函数选候选 + 一次批量写入）必须同时满足：
+  任务未归档；不是任何规则当前绑定的固定任务（含 disabled 规则，这是最关键的一道闸）；不是别的
+  规则绑定的任务；`origin:session / recordType:observed`；没有 `chatSessionId`（没有属于自己的会话
+  绑定）、没有 `ownerShellId`（不属于任何 shell）、没有 `routing`（不是派发出来的任务）；标题是
+  某条规则 prompt 的前缀（>= 12 字符）或正好等于规则名。命中后用**单次** board mutation 全部
+  归档——一次升级可能命中数百个，逐个持久化会整板写几百遍。
+- 幂等与安全：跑完在数据目录写 `cron_fanout_migration.json`（`applied` + 计数 + 失败项 + 来源
+  版本），之后不再扫描；个别任务没归档成功（例如仍有 open run）会记进失败项并停止重试，任务仍留在
+  板上可见；归档端口不可用时**不写** applied 标记，下次启动重试。任何异常都被吞掉并记日志——它
+  绝不能影响 `/readyz`，因此 `./multicc update` 的 readiness 语义不变。
+- 可观测：每次真正跑过的 pass（含「没有可清理的」和「本数据目录已清理过」）都会把结果写到
+  `logs/cron-fanout-cleanup.log`；`./multicc update` 在重启前先删掉这份旧文件，readyness 之后
+  （且仅在升级来源版本 `<= 2.0.2` 时）等它出现并打印，因此升级输出里的
+  `archived N stale scheduled-task copy/copies from M rule(s)` 一定是这一次的结果。数据目录里的
+  applied 标记是长期审计入口。
+- 覆盖：`tests/test-cron-fanout-migration.js`（检测、版本闸、幂等、失败与端口缺失、cron runtime
+  接线）以及 `tests/test-task-board.js` 新增的批量归档端口用例（单次写入、跳过 open run、从不删除）。
+
 ## 2026-09-11：Air 接管管理首页与子页面外壳
 
 `/manage` 现在直接进入 `/air?view=overview`，原管理首页已由 Air 控制台替代。控制台原生汇总目录、
