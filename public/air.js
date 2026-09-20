@@ -1521,10 +1521,6 @@
       $('task-title').textContent = dir?.name || '先添加工作目录';
       $('task-state').textContent = dir?.path || '添加目录后即可创建任务。';
     }
-    // 浮层那一条的标题跟着页头走。默认态它是藏起来的（页头上一行就写着同一件事），
-    // 只有展开之后页头被盖住，任务名才只剩它一处 —— 所以这里只管镜像，不管显示。
-    const barTitle = $('chat-bar-title');
-    if (barTitle) barTitle.textContent = $('task-title').textContent;
     applyTaskTitleEditing(selectedEntry?.task || null);
     for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share', 'pin-task',
       'details-toggle', 'chat-more']) $(id).hidden = !taskId;
@@ -1790,8 +1786,28 @@
     bar.addEventListener('pointercancel', endDrag);
   }
 
+  /* 任务页头和浮层不是两套组件。打开任务时把原来的页头原样搬进浮层；离开任务时
+     再放回 notice 前面。节点本身不重建，所以标题编辑、Pin、详情、更多、刷新以及
+     各自已经绑定的处理器全部还是同一份。移动 iframe 会触发重载，移动普通 header
+     不会；帧池仍只由 mountFrame 管。 */
+  function setTaskHeaderInChat(inChat) {
+    const header = $('task-header');
+    const layer = $('chat-layer');
+    const noticeBand = $('notice');
+    if (!header || !layer || !noticeBand) return;
+    const mounted = header.parentElement === layer;
+    if (mounted !== inChat) {
+      closeOptions();
+      if (inChat) layer.insertBefore(header, layer.firstChild);
+      else noticeBand.before(header);
+    }
+    header.classList.toggle('is-chat-header', inChat);
+  }
+
   function render() {
     if (!data) return;
+    const hasTask = !!taskId;
+    setTaskHeaderInChat(hasTask);
     renderSetupCard();
     if (!directoryId && taskId) directoryId = data.tasks.find(task => task.id === taskId)?.dirId;
     if (!directoryId || !data.directories.some(directory => directory.id === directoryId)) directoryId = data.directories[0]?.id || null;
@@ -1837,7 +1853,6 @@
       window.MultiCCAirAdmin?.render('overview', adminContext());
     }
 
-    const hasTask = !!taskId;
     // #empty 就是「目录详情」这一页，它不再给谁让位：有对话时它是被浮层盖住的那一层，
     // 没对话时它就是页面上唯一的那一层。所以这里只管浮层开不开，不动 #empty —— 它
     // 连 hidden 都不打（滚动位置、筛选、展开状态都靠这一点活着）。
@@ -2477,7 +2492,6 @@
       // 记录，谁就把它记完。
       if (recentTaskIds[0] !== selected && pendingReorderId !== selected) { rememberTask(selected); render(); }
       $('task-title').textContent = entry.task.title;
-      if ($('chat-bar-title')) $('chat-bar-title').textContent = entry.task.title;
       applyTaskTitleEditing(entry.task);
       $('task-state').textContent = taskStateText(entry);
       renderDelivery(entry);
