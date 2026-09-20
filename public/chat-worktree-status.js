@@ -20,7 +20,17 @@
     // first falls behind its base branch (or falls further), not on every 5s poll.
     let lastWarnedBehind = 0;
 
+    // 工作区被回收（休眠 / 手工清理）：服务端在 merge-status 里给 worktreeMissing，
+    // 老一点的口径只给 reason='hibernated'。两种都算「本地没有 checkout」——
+    // 没有可同步的 worktree，也没有可比的落后量。
+    function isReclaimed(st) {
+      return !!(st && (st.worktreeMissing === true || st.reason === 'hibernated'));
+    }
+
     function mergeStatusText(st) {
+      // A reclaimed workspace has no checkout: "clean" would be wrong and
+      // "behind" would advertise a sync the server refuses.
+      if (isReclaimed(st)) return tt('worktreeReclaimed');
       if (!st || (!st.mergeReady && !(st.dirty || st.ahead > 0))) return tt('worktreeClean');
       // Dirty/ahead exist but merge is blocked — show why.
       if (!st.mergeReady && !st.baseCheckedOut) {
@@ -134,21 +144,28 @@
       const behind = (st && Number(st.behind)) || 0;
       const branch = (st && st.branch) || '';
       const base = (st && st.baseBranch) || 'main';
+      // 工作区被回收（休眠 / 手工清理）时记录仍留着 branch + worktreePath：既没有
+      // 可同步的 checkout，也没有落后的可比对对象。说清状态、不给那颗点不动的
+      // 「同步」（它只会拿到 409）；「强制同步」留着 —— 它把指令交给了会话，
+      // 投递时会先把工作区恢复出来。
+      const reclaimed = isReclaimed(st);
       const bar = document.getElementById('worktree-bar');
       if (bar) {
         if (branch) {
           bar.classList.add('show');
-          bar.classList.toggle('behind', behind > 0);
-          const label = behind > 0
-            ? tt('behindLabel', { branch, base, n: behind })
-            : `⎇ ${branch}`;
+          bar.classList.toggle('behind', behind > 0 && !reclaimed);
+          const label = reclaimed
+            ? tt('worktreeReclaimed')
+            : behind > 0
+              ? tt('behindLabel', { branch, base, n: behind })
+              : `⎇ ${branch}`;
           bar.innerHTML = '';
           const span = document.createElement('span');
           span.className = 'worktree-label';
           span.textContent = label;
-          span.title = label;
+          span.title = reclaimed ? `${label}（${branch}）` : label;
           bar.appendChild(span);
-          if (behind > 0) {
+          if (behind > 0 && !reclaimed) {
             const btn = document.createElement('button');
             btn.id = 'worktree-sync-btn';
             btn.textContent = tt('sync');
@@ -163,10 +180,12 @@
           bar.innerHTML = '';
         }
       }
-      if (behind > lastWarnedBehind) {
-        notice(tt('behindBanner', { branch, base, n: behind }));
+      if (!reclaimed) {
+        if (behind > lastWarnedBehind) {
+          notice(tt('behindBanner', { branch, base, n: behind }));
+        }
+        lastWarnedBehind = behind;
       }
-      lastWarnedBehind = behind;
       applyConflictBanner(st);
     }
 

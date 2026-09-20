@@ -95,6 +95,43 @@ void main() {
     });
   });
 
+  group('WorktreeReclaimedBanner', () {
+    testWidgets('说清工作区已回收，只留强制同步', (tester) async {
+      var forced = 0;
+      await tester.pumpWidget(
+        _host(
+          WorktreeReclaimedBanner(
+            branch: 'multicc/task-a',
+            onForceSync: () => forced++,
+          ),
+        ),
+      );
+
+      expect(find.byKey(const Key('worktree-reclaimed-bar')), findsOneWidget);
+      expect(find.text('💤 工作区已休眠回收，发一条消息即可恢复'), findsOneWidget);
+      // 分支名进 tooltip：横幅上留的是状态，细节不占一行。
+      expect(find.byTooltip('💤 工作区已休眠回收，发一条消息即可恢复（multicc/task-a）'), findsOneWidget);
+      // 没有 checkout 就没有可点的「同步」（点了只会拿到 409），只剩强制同步：
+      // 它把指令交给会话，投递时先把工作区恢复出来。
+      expect(find.byKey(const Key('worktree-sync-btn')), findsNothing);
+      await tester.tap(find.byKey(const Key('worktree-reclaimed-force-sync-btn')));
+      expect(forced, 1);
+    });
+
+    testWidgets('在途时强制同步禁用', (tester) async {
+      await tester.pumpWidget(
+        _host(WorktreeReclaimedBanner(onForceSync: () {}, forceSyncing: true)),
+      );
+      expect(find.text('正在发送…'), findsOneWidget);
+      expect(
+        tester
+            .widget<TextButton>(find.byKey(const Key('worktree-reclaimed-force-sync-btn')))
+            .onPressed,
+        isNull,
+      );
+    });
+  });
+
   group('WorktreeForceSyncButton', () {
     testWidgets('在途时按钮禁用并改文案', (tester) async {
       var pressed = 0;
