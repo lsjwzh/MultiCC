@@ -129,6 +129,21 @@ test('accepted duplicate without launch and failed materialization both release 
   assert.equal(fs.existsSync(f.record.worktreePath), true);
   assert.equal(f.host.snapshot().workspaces[0].residency, 'retained');
   assert.equal(f.host.snapshot().leases.length, 0);
+  f.deps.validate = async () => ({ ok: true });
+  const retry = f.descriptor('retry'), retryGuard = await f.host.beforeDeliver(retry);
+  assert.equal(f.host.snapshot().workspaces[0].residency, 'resident');
+  assert.deepEqual(f.host.snapshot().workspaces[0].pins, [], 'successful validation clears the transient failure pin');
+  await retryGuard.complete({ accepted: false });
+});
+test('post-materialization role failure releases the lease without pinning a healthy worktree', async t => {
+  const f = await hostFixture(t), d = f.descriptor('role-failure');
+  f.store.set('receipt', 'bad-role', { id: 'bad-role', taskId: 'missing-task', roleSnapshotId: 'missing-snapshot' });
+  d.opts.taskShellReceiptId = 'bad-role';
+  await assert.rejects(f.host.beforeDeliver(d), { code: 'role_snapshot_unverified' });
+  const workspace = f.host.snapshot().workspaces[0];
+  assert.equal(workspace.residency, 'resident');
+  assert.deepEqual(workspace.pins, []);
+  assert.equal(f.host.snapshot().leases.length, 0);
 });
 test('resident pressure enters directory-scoped hibernation, reconciles immediately and retries admission', async t => {
   let victimPath;
