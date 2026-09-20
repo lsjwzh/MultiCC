@@ -395,6 +395,7 @@ test('move settles the source as moved and replants the unanswered request on th
   // the signal turn id mirrored so getTurnId correlates a session that has not
   // run a turn of its own yet.
   const target = states.get('chat-2');
+  assert.equal(target.classifyState, 'W');
   assert.deepEqual(target.pendingUserInput, {
     requestId: 'usrq-m1',
     turnId: 'turn-1',

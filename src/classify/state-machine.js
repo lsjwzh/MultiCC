@@ -1067,9 +1067,14 @@ function createClassifyStateMachine(rawDeps) {
           })
           : null;
         if (suggestion) {
-          // Keep the original task identity/name until the user decides. The
-          // auxiliary verdict remains in the audit log; rule-owned state is untouched.
-          annotateChatTurn(sessionName, turnId, { taskId: currentTaskId, auxRunId: runId }, { anchorMessageId });
+          // The task identity split already happened inside propose(): the
+          // judged turn is attributed to the new task right away, and the
+          // dialog only decides whether that task also gets its own shell.
+          annotateChatTurn(sessionName, turnId, {
+            taskId: suggestion.taskId || currentTaskId,
+            taskName: suggestion.taskId ? suggestion.title : undefined,
+            auxRunId: runId,
+          }, { anchorMessageId });
           setTaskState(sessionName, { auxRunId: runId });
           return;
         }
