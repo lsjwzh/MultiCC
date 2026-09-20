@@ -314,6 +314,13 @@ test('--detach hands off to a background launcher that --stop can still drain', 
   const pidFile = path.join(dataDir, 'portable-launcher.pid');
   let owner = null;
   let serverPid = null;
+  // A failing assertion must not leave a detached supervisor and its server
+  // behind: SIGKILLing the supervisor alone orphans the child (that is exactly
+  // why --stop asks it to drain). Read the server pid defensively instead.
+  const serverPidFromDisk = () => {
+    try { return JSON.parse(fs.readFileSync(path.join(dataDir, 'desktop-runtime.json'), 'utf8')).pid || null; }
+    catch (_) { return null; }
+  };
   try {
     await waitFor(async () => (await httpStatus(`http://127.0.0.1:${port}/readyz`)) === 200,
       { timeoutMs: 60_000, what: 'the detached launcher to bring the server up' });
@@ -335,7 +342,7 @@ test('--detach hands off to a background launcher that --stop can still drain', 
       { timeoutMs: 30_000, what: 'no detached process to survive --stop' });
     assert.equal(fs.existsSync(pidFile), false, 'the detached launcher must clean its pid file up');
   } finally {
-    for (const pid of [serverPid, owner]) {
+    for (const pid of [serverPid, serverPidFromDisk(), owner]) {
       if (pid && readPidAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch (_) {} }
     }
   }
