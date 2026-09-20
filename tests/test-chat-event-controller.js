@@ -92,7 +92,7 @@ function fakeDocument() {
   return { document, ids };
 }
 
-function controllerFixture() {
+function controllerFixture(hostOverrides) {
   const { document } = fakeDocument();
   const messages = new FakeElement('div');
   const rawLiveUi = liveUiApi.createLiveUi({
@@ -211,6 +211,7 @@ function controllerFixture() {
     consumeUserInputRequestId(requestId) { calls.push(['consume-input', requestId]); },
     getUserInputRequestId: () => pendingInputId,
     rearmUnread() {},
+    ...hostOverrides,
   };
   const controller = eventApi.createEventController({ state, host, liveUi, historyStore, historyView });
   return {
@@ -1548,4 +1549,35 @@ test('a refusal with its own reason is shown as prose instead of a bare code', (
   assert.ok(shown.some(value => value.startsWith('Error: taskSwitchingRefused')),
     `the reader gets the reason, not the code: ${shown.join(' | ')}`);
   assert.equal(fixture.state.isStreaming, false);
+});
+
+test('system warning with authAction routes to the auth-action renderer, with plain-text fallback', () => {
+  const authAction = { kind: 'vendor_login_terminal', cli: 'codebuddy', label: 'WorkBuddy', loginCommand: '/login' };
+
+  // Host without the hook: falls back to the plain system message.
+  const plain = controllerFixture();
+  assert.equal(plain.controller.handleEvent({
+    type: 'system', subtype: 'warning', message: 'no hook', authAction,
+  }, plain.controller.beginGeneration()), true);
+  assert.deepEqual(plain.calls, [['system', 'no hook']]);
+
+  // Host with the hook: rendered as an action card, not a plain system line.
+  const authCalls = [];
+  const hooked = controllerFixture({
+    addAuthActionMsg(text, action) {
+      authCalls.push([text, action]);
+      return action && action.kind === 'vendor_login_terminal';
+    },
+  });
+  assert.equal(hooked.controller.handleEvent({
+    type: 'system', subtype: 'warning', message: 'auth required', authAction,
+  }, hooked.controller.beginGeneration()), true);
+  assert.deepEqual(authCalls, [['auth required', authAction]]);
+  assert.deepEqual(hooked.calls.filter(c => c[0] === 'system'), [], 'handled action must not double-render as plain text');
+
+  // A hook that declines (returns not-true) still falls back to plain text.
+  assert.equal(hooked.controller.handleEvent({
+    type: 'system', subtype: 'warning', message: 'other action', authAction: { kind: 'unknown' },
+  }, hooked.controller.beginGeneration()), true);
+  assert.deepEqual(hooked.calls.filter(c => c[0] === 'system'), [['system', 'other action']]);
 });

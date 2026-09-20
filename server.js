@@ -515,7 +515,7 @@ function debugLogClaudeInvoke(session, args) {
   } catch (_) {}
 }
 
-const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
+const { vendorLoginTerminalCmd } = require('./src/cli-adapters/vendor-login'); const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
   isWindows,
   claudeArgs: CLAUDE_ARGS,
   claudeChatDisallowedTools: CLAUDE_CHAT_DISALLOWED_TOOLS,
@@ -1101,7 +1101,7 @@ async function createSession(id) {
     const launchSession = provEnv.qualifiedModel ? { ...persisted, model: provEnv.qualifiedModel } : persisted;
     // Login flows run the CLI's own interactive login command, not the TUI.
     const loginCmd = persisted.loginFlow === 'codex-login' ? `${cliCommands.codex} login`
-      : persisted.loginFlow === 'claude-auth-login' ? `${cliCommands.claude} auth login` : null;
+      : persisted.loginFlow === 'claude-auth-login' ? `${cliCommands.claude} auth login` : vendorLoginTerminalCmd(persisted.loginFlow, cliCommands);
     const terminalCmd = loginCmd || provider.buildTerminalCmd(launchSession || {});
     await tmuxCreateSession(id, cwd, 80, 24, terminalCmd, termEnv);
   } else {
@@ -1541,7 +1541,7 @@ function createSessionRecord(input) {
 }
 
 mountSessionCreateRoutes(app, {
-  directories, createSessionRecord, asyncHandler,
+  directories, createSessionRecord, asyncHandler, sessions: persistedSessions,
   createTask: input => taskShellHost.createTask(input), getRecord: id => persistedSessions.get(id),
 });
 

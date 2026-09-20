@@ -100,7 +100,16 @@ function sourceMessage(raw) {
   if (typeof raw === 'string') return raw;
   if (!raw || typeof raw !== 'object') return '';
   const nested = raw.error && typeof raw.error === 'object' ? raw.error : {};
-  return raw.message || nested.message || raw.detail || raw.reason || '';
+  const direct = raw.message || nested.message || raw.detail || raw.reason;
+  // Claude-envelope result events carry the human-readable failure in errors[]
+  // (e.g. WorkBuddy's "Authentication required. Please use /login …") while
+  // the message field degrades to the opaque subtype "error_during_execution".
+  if (direct && String(direct).trim().toLowerCase() !== 'error_during_execution') return direct;
+  if (Array.isArray(raw.errors)) {
+    const fromErrors = raw.errors.map(entry => String(entry || '').trim()).filter(Boolean).join(' | ');
+    if (fromErrors) return fromErrors;
+  }
+  return direct || '';
 }
 
 function sanitizeMessage(value, fallback = 'Upstream API request failed', maxLength = MAX_SANITIZED_MESSAGE) {
@@ -341,7 +350,7 @@ function textFallbackCategory(message) {
   // user to re-login would be the wrong remedy. Mirrors structuredCategory's
   // 403 refinement below.
   if (/\b402\b|insufficient (?:balance|quota)|billing|usage limit|credit balance|额度不足|余额不足|剩余额度/.test(text)) return 'billing_quota';
-  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication failed|authorization failed|invalid api key|insufficient scope/.test(text)) return 'authentication_permission';
+  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication (?:failed|required)|authorization failed|invalid api key|insufficient scope|please (?:use|run)\s*\/login|not logged in|login required|未登录|请先登录|尚未登录/.test(text)) return 'authentication_permission';
   if (/\b429\b|rate limit|too many requests/.test(text)) return 'rate_limit';
   if (/context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit/.test(text)) return 'context_token_limit';
   if (/invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error/.test(text)) return 'tool_protocol';
@@ -425,7 +434,12 @@ function normalizeApiError(raw = {}, context = {}, deps = {}) {
   const upstream = TRUSTED_TEXT_SOURCES.has(source) ? extractUpstreamError(raw) : {};
   const code = normalizeCode(context.code || upstream.code || raw.code || nested.code || upstream.type || raw.type || nested.type);
   const httpStatus = httpStatusOf(raw) ?? upstream.httpStatus ?? null;
-  const message = upstream.message || sourceMessage(raw);
+  // The Claude-envelope failure subtype "error_during_execution" is an opaque
+  // placeholder, not a message: when it is all the extractor found, fall
+  // through to sourceMessage so the errors[] text can speak instead.
+  const upstreamMessage = String(upstream.message || '').trim().toLowerCase() === 'error_during_execution'
+    ? '' : upstream.message;
+  const message = upstreamMessage || sourceMessage(raw);
   const rawCategory = normalizeCode(context.category || raw.category || nested.category);
   const explicit = structuredCategory(httpStatus, code, rawCategory);
   const trustedTextCategory = TRUSTED_TEXT_SOURCES.has(source)

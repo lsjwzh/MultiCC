@@ -2,6 +2,7 @@
 
 const { isErrorOnlyText, retryNotice } = require('./api-error-policy');
 const { SYSTEM_PREFIX } = require('../session/delivery');
+const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
 
 function cleanIdentity(value) {
   return value == null ? '' : String(value).trim();
@@ -375,14 +376,35 @@ function createApiErrorHost(options = {}) {
     } = safe;
     setTaskState(sessionName, { apiError: durableSafe }, { save: true });
     if (!decision.duplicate) {
-      const message = retryNotice(decision);
+      // Vendor-auth CLIs (WorkBuddy/Qoder) own their account: an auth failure
+      // can only be fixed by logging in inside the vendor TUI. Attach a
+      // structured action so clients can render a one-click "open login
+      // terminal" button instead of a dead-end text notice.
+      const vendorLogin = decision.error.category === 'authentication_permission'
+        ? vendorLoginForCli(identity.cli) : null;
+      const authAction = vendorLogin ? {
+        kind: 'vendor_login_terminal',
+        cli: identity.cli,
+        label: vendorLogin.label,
+        loginCommand: vendorLogin.loginCommand,
+      } : null;
+      const baseMessage = retryNotice(decision);
+      const message = vendorLogin
+        ? `${baseMessage} ${vendorLogin.label} 使用厂商独立账号：点下方按钮打开登录终端，输入 ${vendorLogin.loginCommand} 完成登录后再重新发送。`
+        : baseMessage;
       chatBroadcast(sessionName, {
         type: 'api_error_policy',
         state: decision.action === 'retry' ? 'retry_wait' : 'failed',
         message,
         ...safe,
+        ...(authAction ? { authAction } : {}),
       });
-      if (!deferNotice) chatBroadcast(sessionName, { type: 'system', subtype: 'warning', message });
+      if (!deferNotice) {
+        chatBroadcast(sessionName, {
+          type: 'system', subtype: 'warning', message,
+          ...(authAction ? { authAction } : {}),
+        });
+      }
     }
     return decision;
   }
