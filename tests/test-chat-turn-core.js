@@ -186,6 +186,29 @@ test('an authoritative error-only snapshot reconciles earlier streamed error del
   assert.equal(runtime.snapshot('streamed-error').visibleOutputObserved, false);
 });
 
+test('provider-cause evidence outranks the proxy generic status at turn close', () => {
+  // The relay records "upstream HTTP 429" generically; the CLI's own envelope or
+  // error event names the cause ("You have exceeded the 5-hour usage quota…").
+  // Both close paths must hand the specific record to the policy — reading the
+  // proxy record first made every quota wall a retryable rate limit.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  assert.equal(source.split('boundaryErrorEnvelope || runner.apiErrorRaw || proxyFailure').length - 1, 2,
+    'both the process and stream close paths must prefer provider-owned evidence over the proxy status');
+  assert.equal(/proxyFailure \|\| boundaryErrorEnvelope/.test(source), false,
+    'the generic proxy record must never shadow the provider diagnosis');
+
+  // The policy then classifies the specific record: a quota wall is never a
+  // short retry, with or without the relay status riding along.
+  const { normalizeApiError } = require('../src/chat/api-error-policy');
+  const quotaText = 'You have exceeded the 5-hour usage quota. It will reset at 2026-09-20 18:11:35 +0800 CST.';
+  for (const raw of [
+    { source: 'codex_event', provider: 'codex', message: quotaText },
+    { source: 'codex_event', provider: 'codex', message: quotaText, httpStatus: 429 },
+  ]) {
+    assert.equal(normalizeApiError(raw, { source: raw.source, provider: raw.provider }).category, 'billing_quota');
+  }
+});
+
 test('attempt semantic DLP runs before Claude and adapter state mutation', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
   const claudeStart = source.indexOf('function applyClaudeChatEvent(');

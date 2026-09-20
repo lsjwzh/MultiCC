@@ -9,6 +9,7 @@ const {
   decideApiErrorPolicy,
   createApiErrorPolicyRuntime,
   parseRetryAfter,
+  resetAfterFromText,
   retryNotice,
   claudeErrorEnvelope,
   isErrorOnlyText,
@@ -56,7 +57,70 @@ test('real Claude and Codex samples converge on the same stable taxonomy', () =>
     'provider_transient',
     'provider_transient',
     'unknown',
+    'billing_quota',
   ]);
+});
+
+test('a subscription quota wall is never retried, however it is transported', () => {
+  // Real production text: the Codex CLI's 5-hour quota wall, first persisted as
+  // an assistant error envelope and simultaneously observed by the proxy as
+  // "upstream HTTP 429". Reading only the status turned it into a rate limit
+  // with a three-second retry that could never succeed.
+  const quotaText = 'You have exceeded the 5-hour usage quota. It will reset at 2026-09-20 18:11:35 +0800 CST. We recommend upgrading your plan for more quota, or waiting for the reset.';
+  const now = Date.parse('2026-09-20T14:00:00+08:00');
+  const decideAt = raw => decideApiErrorPolicy(raw, {
+    source: raw.source, provider: raw.provider, phase: 'before_first_token',
+  }, { now: () => now, random: () => 0 });
+
+  const envelope = detectErrorEnvelope('codex', `Codex 出错：${quotaText}`);
+  assert.equal(envelope.source, 'codex_event');
+  const textOnly = decideAt(envelope);
+  assert.equal(textOnly.error.category, 'billing_quota');
+  assert.equal(textOnly.action, 'wait_reset');
+  assert.equal(textOnly.reason, 'quota_reset_required');
+  assert.equal(textOnly.delayMs, 15_095_000, 'the reset instant in the message becomes the wait');
+
+  const over429 = decideAt({ source: 'codex_event', provider: 'codex', httpStatus: 429, message: quotaText });
+  assert.equal(over429.error.category, 'billing_quota');
+  assert.equal(over429.action, 'wait_reset');
+
+  const noReset = decideAt({
+    source: 'codex_event', provider: 'codex', httpStatus: 429,
+    message: 'Your quota has been exhausted for this billing period.',
+  });
+  assert.equal(noReset.error.category, 'billing_quota');
+  assert.equal(noReset.action, 'fail_fast');
+  assert.equal(noReset.reason, 'billing_quota_not_retryable');
+
+  // A provider-owned rate-limit code, and plain rate-limit prose, keep the
+  // bounded retry they are entitled to.
+  const coded = decideAt({
+    source: 'codex_event', provider: 'codex', httpStatus: 429,
+    code: 'rate_limit_error', message: 'rate limit',
+  });
+  assert.equal(coded.error.category, 'rate_limit');
+  assert.equal(coded.action, 'retry');
+  const prose = decideAt({
+    source: 'codex_event', provider: 'codex', httpStatus: 429,
+    message: "This request would exceed your account's rate limit. Please try again later.",
+  });
+  assert.equal(prose.error.category, 'rate_limit');
+  assert.equal(prose.action, 'retry');
+});
+
+test('reset guidance is read from provider prose only when it is unambiguous', () => {
+  const now = Date.parse('2026-09-20T14:00:00+08:00');
+  assert.equal(resetAfterFromText('It will reset at 2026-09-20 18:11:35 +0800 CST.', now), 15_095_000);
+  assert.equal(resetAfterFromText('Your limit resets at 2026-09-20T18:11:35+08:00.', now), 15_095_000);
+  assert.equal(resetAfterFromText('will reset in 12 minutes', now), 720_000);
+  assert.equal(resetAfterFromText('will reset in 2 hours', now), 7_200_000);
+  // A timezone-less wall clock, a past instant and an absurd horizon are all
+  // refused so the policy falls back to a plain non-retryable quota failure.
+  assert.equal(resetAfterFromText('Your limit will reset at 5pm.', now), null);
+  assert.equal(resetAfterFromText('reset at 2026-09-19 10:00:00 +0800', now), null);
+  assert.equal(resetAfterFromText('reset in 90 days', now), null);
+  assert.equal(resetAfterFromText('', now), null);
+  assert.equal(resetAfterFromText(null, now), null);
 });
 
 test('401/403, billing, invalid request, context, tool/config errors fail fast', () => {

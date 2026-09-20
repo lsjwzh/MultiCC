@@ -2,7 +2,7 @@
   "source": "MultiCC production logs and persisted assistant error events",
   "observedWindow": {
     "from": "2026-06-24T00:00:00.000Z",
-    "to": "2026-07-24T03:00:00.000Z"
+    "to": "2026-09-20T10:00:00.000Z"
   },
   "sanitized": true,
   "samples": [
@@ -71,6 +71,14 @@
       "code": "provider_error",
       "message": "provider error",
       "observedOccurrences": 27
+    },
+    {
+      "provider": "codex",
+      "source": "codex_event",
+      "httpStatus": 429,
+      "code": "UPSTREAM_HTTP_ERROR",
+      "message": "Codex 出错：You have exceeded the 5-hour usage quota. It will reset at 2026-09-20 18:11:35 +0800 CST. We recommend upgrading your plan for more quota, or waiting for the reset. Request id: [ID]",
+      "observedOccurrences": 1
     }
   ],
   "notObserved": [
