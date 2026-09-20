@@ -420,7 +420,8 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
 function stubRepoRoot(dir) {
   fs.writeFileSync(path.join(dir, 'package.json'),
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
-  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'scripts/multicc-router-mcp.js',
+  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/manage.html',
+    'scripts/multicc-router-mcp.js',
     'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -429,18 +430,47 @@ function stubRepoRoot(dir) {
   return dir;
 }
 
-function stageWithStubNpm(body) {
+function stageWithStubNpm(body, extraArgs = []) {
   const root = stubRepoRoot(tmpdir('desktop-stage-root-'));
   const bin = tmpdir('desktop-stage-bin-');
   const npm = path.join(bin, process.platform === 'win32' ? 'npm.cmd' : 'npm');
   fs.writeFileSync(npm, `#!/bin/sh\n${body}\n`);
   fs.chmodSync(npm, 0o755);
   return spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'desktop-bundle-server.js'),
-    '--out', path.join(root, 'staged'), '--repo-root', root, '--install'], {
+    '--out', path.join(root, 'staged'), '--repo-root', root, '--install', ...extraArgs], {
     encoding: 'utf8',
     env: { ...process.env, PATH: [bin, ...process.env.PATH.split(path.delimiter)].join(path.delimiter) },
   });
 }
+
+test('desktop-bundle-server stages for the target arch, not the build host', { timeout: 60_000 }, () => {
+  if (process.platform === 'win32') return; // the stub npm is a POSIX shell script
+  const { parseArgs, crossArchNpmEnv } = require(path.join(ROOT, 'scripts', 'desktop-bundle-server.js'));
+  assert.equal(parseArgs(['--arch', 'x64', '--platform', 'darwin']).arch, 'x64');
+  assert.deepEqual(crossArchNpmEnv({ arch: 'x64', platform: 'darwin' }), {
+    npm_config_arch: 'x64', npm_config_cpu: 'x64', npm_config_platform: 'darwin', npm_config_os: 'darwin',
+  });
+  assert.deepEqual(crossArchNpmEnv({}), {}, 'no target flags must leave the host defaults alone');
+  // A typo has to fail here: --arch arn64 would quietly stage for the host and
+  // put arm64 better-sqlite3 into the x64 dmg again.
+  const bad = spawnSync(process.execPath,
+    [path.join(ROOT, 'scripts', 'desktop-bundle-server.js'), '--arch', 'arn64'], { encoding: 'utf8' });
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /unsupported --arch arn64/);
+
+  // npm's own view of the target is the --os/--cpu flag pair; prebuild-install
+  // reads the npm_config_* environment (that is what picks the addon binary).
+  const staged = stageWithStubNpm(
+    'mkdir -p node_modules/express node_modules/better-sqlite3\n'
+    + 'echo "ARGS:$@"; env | grep -E "^npm_config_(os|cpu|arch|platform)=" | sort',
+    ['--arch', 'x64', '--platform', 'darwin']);
+  assert.equal(staged.status, 0, staged.stderr);
+  assert.match(staged.stdout, /ARGS:install --omit=dev --no-audit --no-fund --os=darwin --cpu=x64/);
+  for (const key of ['npm_config_arch=x64', 'npm_config_cpu=x64',
+    'npm_config_platform=darwin', 'npm_config_os=darwin']) {
+    assert.match(staged.stdout, new RegExp(`^${key}$`, 'm'), `${key} must reach the staged npm`);
+  }
+});
 
 test('desktop-bundle-server names why npm did not complete', { timeout: 60_000 }, () => {
   if (process.platform === 'win32') return; // the stub npm is a POSIX shell script
@@ -687,6 +717,27 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   }
   assert.match(wf, /desktop-release-assets\.js/);
   assert.match(wf, /SIGNING-STATUS/, 'unsigned state must be explicit');
+  // One staged app-server tree belongs to one arch: the x64 dmg shipped arm64
+  // better-sqlite3 because a single tree (staged on the arm64 runner) served
+  // both mac dmgs. Staging/rebuilding/packaging per arch plus the arch gate is
+  // what makes that impossible, so pin all three.
+  assert.match(wf, /for arch in \$\{\{ matrix\.archs \}\}/);
+  assert.match(wf, /--arch "\$arch" --platform "\$\{\{ matrix\.native_platform \}\}"/);
+  assert.match(wf, /scripts\/native-arch\.js/);
+  assert.match(wf, /--expect-arch "\$arch"/);
+  // `--mac --x64` does NOT pin the arch: desktop/package.json declares `arch`
+  // per target, and an explicit config arch list wins over the CLI flag
+  // (electron-builder 26.15.3: `--mac --x64` still yields arm64+x64, which
+  // would put the last staged tree into both dmgs). Only the `target:arch`
+  // form builds exactly one arch per pass.
+  assert.match(wf, /--mac "dmg:\$arch"/);
+  assert.doesNotMatch(wf, /electron-builder .*"--\$arch"/);
+  // Portable bundles are built by the same workflow and must land on the same
+  // release; a failed portable build blocks publishing instead of shipping a
+  // half-populated Release.
+  assert.match(wf, /scripts\/portable-bundle\.js/);
+  assert.match(wf, /needs: \[build, portable\]/);
+  assert.match(wf, /multicc-portable-\$\{VERSION\}-darwin-x64\.tar\.gz/);
 });
 
 test('desktop icon is a square PNG of at least 512px', () => {

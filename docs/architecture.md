@@ -37,9 +37,8 @@ multicc/
 │   ├── wait-injector.js          # Legacy wait/recovery compatibility layer
 │   ├── session-delivery.js       # Typed continuation/system/retry admission boundary
 │   ├── detached.js               # run-detached task lifecycle (setsid, polling, completion)
-│   ├── tts-service.js            # Edge/OpenAI/Volcano TTS with WebSocket streaming
-│   ├── voice.js                  # Classic voice: STT + LLM refinement + vocabulary
-│   ├── asr-local.js              # Local sherpa-onnx SenseVoice ASR
+│   ├── voice/                    # Classic voice: STT + LLM refinement + vocabulary
+│   │                             # (speech.js, tts-service.js, asr-local.js, config.js)
 │   ├── push.js / push-runtime.js # VAPID, Bark, webhook notification delivery
 │   ├── share.js                  # Session sharing (snapshot links, password auth)
 │   ├── memory/ , memory-store.js # Per-session + shared agent memory

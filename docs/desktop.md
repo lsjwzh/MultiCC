@@ -14,6 +14,10 @@
 | Windows | `multicc-desktop-<版本>-windows-x64.exe` | NSIS 安装器，按用户安装，无需管理员 |
 | Linux | `multicc-desktop-<版本>-linux-x64.AppImage` / `.deb` | AppImage 加执行权限后直接运行；deb 用系统包管理器安装 |
 
+> 老机器装不了这里列出的包时（Electron 44 需要 **macOS 13+**，Homebrew 也不再给 Intel 供 bottle），
+> 用 **[便携版](portable.md)**：内置 Node 22 运行时与全部依赖，支持 **macOS 11+**（含 Mac Pro 2013
+> 这类 Intel 老机器），解压双击 `MultiCC.app` 即可，不用装任何东西。
+
 版本号与 MultiCC 服务端一致（如 `2.0.0`）。安装包**不包含**手机 APK——Android 客户端请从同一 Release 页获取 `multicc.apk`。
 
 ### 首次启动会发生什么

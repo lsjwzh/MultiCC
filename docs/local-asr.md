@@ -1,7 +1,13 @@
 # 本地语音识别（Local ASR）
 
-`src/asr-local.js` 用 sherpa-onnx 在 Node 进程内跑 **SenseVoiceSmall int8**（阿里
+`src/voice/asr-local.js` 用 sherpa-onnx 在 Node 进程内跑 **SenseVoiceSmall int8**（阿里
 FunASR/FunAudioLLM 家族模型），替代云端 Whisper API 的跨境往返。
+
+> ⚠️ **平台下限**：`sherpa-onnx-node` 的 `darwin-x64` 预编译二进制要求 **macOS 15+**
+> （`darwin-arm64` 同样偏新），而且它是原生 addon，无法在更老的系统上编译回退。
+> 因此 macOS 11–14 上本地 ASR 不可用：`isAvailable()` 为 false，语音输入/流式通道
+> 自动回退云端 Whisper，其它功能不受影响。便携版（[portable.md](portable.md)）在
+> 这些老机器上就是走这条回退路径。
 
 ## 为什么
 
