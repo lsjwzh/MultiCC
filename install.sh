@@ -57,17 +57,17 @@ check_runtime_dependencies() {
     return 0
   fi
 
-  # Exit 10 means better-sqlite3 is the only broken native dependency. Its
-  # package may be present while its ABI-specific binding is missing (for
-  # example after an install with lifecycle scripts disabled), so rebuild it
-  # once and verify by constructing a real in-memory database again.
+  # Exit 10 means the Node runtime cannot open a SQLite database. That is the
+  # version floor, not a broken install: SQLite ships inside Node as
+  # node:sqlite since 22.5, so there is nothing to rebuild.
   if [ "$check_rc" -eq 10 ]; then
-    warn "better-sqlite3 native binding is unavailable — rebuilding it once"
-    if npm rebuild better-sqlite3 --foreground-scripts 2>&1; then
-      check_rc=0
-      node scripts/check-runtime-deps.js || check_rc=$?
-      [ "$check_rc" -eq 0 ] && return 0
-    fi
+    err "This Node runtime cannot open SQLite databases."
+    echo ""
+    echo "  MultiCC stores its durable state in SQLite and needs Node 22.16 or newer"
+    echo "  (\`node:sqlite\` is built into Node since 22.5). Current runtime:"
+    node -v
+    echo ""
+    echo "  Install a newer Node, or use the portable bundle, which ships its own runtime."
   fi
   return "$check_rc"
 }
@@ -402,7 +402,7 @@ else
   echo "  Common causes:"
   echo "    - Network or npm registry connectivity issues"
   echo "    - Disk space or permission problems"
-  echo "    - better-sqlite3 prebuild not available for your platform (rare; falls back to compilation)"
+  echo "    - native build tools missing for an optional package (see the npm log above)"
   echo ""
   if [ "$IS_MACOS" = true ]; then
     echo "  If it's a native compilation error, install build tools:"

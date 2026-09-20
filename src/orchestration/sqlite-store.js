@@ -11,6 +11,7 @@
 const crypto = require('crypto');
 const nodeFs = require('fs');
 const nodePath = require('path');
+const { databaseConstructor } = require('../sqlite/driver');
 const {
   SCHEMA_VERSION,
   OrchestrationStoreCorruptError,
@@ -100,12 +101,12 @@ class OrchestrationSqliteConflictError extends OrchestrationSqliteError {
   }
 }
 
-function loadDatabaseConstructor(requireFn = require) {
+function loadDatabaseConstructor() {
   try {
-    return requireFn('better-sqlite3');
+    return databaseConstructor();
   } catch (cause) {
     throw new OrchestrationSqliteError(
-      'better-sqlite3 is unavailable; run npm install (or npm rebuild better-sqlite3 --foreground-scripts)',
+      'SQLite is unavailable in this Node.js runtime; MultiCC needs Node 22.16 or newer (node:sqlite)',
       { cause },
     );
   }
@@ -864,7 +865,6 @@ function createOrchestrationSqliteStore({
   fsImpl = nodeFs,
   pathImpl = nodePath,
   now = Date.now,
-  requireFn = require,
   Database: DatabaseOverride = null,
   hooks = {},
 } = {}) {
@@ -872,7 +872,7 @@ function createOrchestrationSqliteStore({
     throw new TypeError('[orchestration-sqlite-store] create requires an injected { file }');
   }
   if (typeof now !== 'function') throw new TypeError('[orchestration-sqlite-store] now must be a function');
-  const Database = DatabaseOverride || loadDatabaseConstructor(requireFn);
+  const Database = DatabaseOverride || loadDatabaseConstructor();
   let migration = { migrated: false, legacyDigest: null };
   const migrationStartedAt = process.hrtime.bigint();
   if (!fsImpl.existsSync(file)) {

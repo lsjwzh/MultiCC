@@ -21,13 +21,9 @@
 | `multicc-portable-<版本>-linux-x64.tar.gz` | Linux 64 位 |
 | `multicc-portable-<版本>-linux-arm64.tar.gz` | Linux arm64 |
 | `multicc-portable-<版本>-win32-x64.zip` | Windows 64 位（zip，不是 tar.gz） |
-| `multicc-portable-<版本>-<平台>-<架构>.tar.gz.sha256` | 同名压缩包的 SHA-256 |
+| `multicc-portable-<版本>-<平台>-<架构>.tar.gz.sha256` | 同名压缩包的 SHA-256（Windows 是 `.zip.sha256`） |
 
-Windows 用 zip 分发（打包脚本不装归档器，CI 里用 `Compress-Archive` 生成，同样附 `.sha256`）：
-
-```powershell
-Compress-Archive -Path multicc-portable-<版本>-win32-x64 -DestinationPath multicc-portable-<版本>-win32-x64.zip
-```
+Windows 用 zip 分发：`scripts/portable-bundle.js` 用包内自带的流式 zip writer（`scripts/zip-archive.js`，零依赖）**自己打包**，不依赖 runner 上的 `Compress-Archive`/`zip`，同样附 `.sha256`。因为归档结果直接进 Release，它和 tarball 走同一条代码路径、同一套校验。
 
 ```bash
 shasum -a 256 -c multicc-portable-<版本>-darwin-x64.tar.gz.sha256
@@ -35,7 +31,7 @@ tar -xzf multicc-portable-<版本>-darwin-x64.tar.gz
 cd multicc-portable-<版本>-darwin-x64
 ```
 
-解压后体积约 290 MB（含 127 MB 的 Node 运行时与 162 MB 的服务端依赖），压缩包约 68 MB（darwin-x64 实测；其它平台略有差异）。请**整体解压**：`.app` 里的运行时和 `.command` 脚本必须保持相对位置。
+解压后体积约 270 MB（含约 124 MB 的 Node 运行时与约 146 MB 的服务端依赖），压缩包约 62 MB（darwin 实测；Windows zip 约 63 MB，其它平台略有差异）。请**整体解压**：`.app` 里的运行时和 `.command` 脚本必须保持相对位置。
 
 ## 启动 / 停止 / 状态
 
@@ -44,6 +40,17 @@ cd multicc-portable-<版本>-darwin-x64
 3. 停止：双击 `停止 MultiCC.command`。查看状态：双击 `查看状态 MultiCC.command`。
 
 > 请用 `停止 MultiCC.command` 而不是直接强杀进程：它会请求监管进程优雅排空（走 `/api/desktop-shutdown`）再退出；强杀可能让正在进行的回复或状态写入丢失。
+
+Linux / Windows 是同一套启动器，只是把 `.command` 换成脚本：
+
+| 动作 | Linux | Windows |
+|------|-------|---------|
+| 启动（占用当前终端，日志可见） | `./start-multicc.sh` | `Start-MultiCC.cmd` |
+| 启动（后台） | `./start-multicc.sh --detach` | `Start-MultiCC.cmd --detach` |
+| 停止 | `./stop-multicc.sh` | `Stop-MultiCC.cmd` |
+| 状态 | `./status-multicc.sh` | `Status-MultiCC.cmd` |
+
+> Windows 上停止走的是**停止请求文件**（`portable-launcher.stop`），不是信号：Windows 没有 SIGTERM，`process.kill` 在那里等于直接终止进程，会留下没人监管的服务端。监管进程每 500ms 轮询该请求并走同一条优雅排空路径；若它长时间不响应，包装脚本会用 `taskkill /T` 兜底收掉整棵进程树。
 
 `.command` 包装脚本等价于直接运行包内的启动器，且不占用终端窗口：
 
@@ -84,7 +91,7 @@ R="$(pwd)/MultiCC.app/Contents/Resources"
 两个硬约束决定了包里的版本，不要随手改：
 
 - **Node 钉在 22.23.2（LTS，官方维护到 2027-04）**。Node 22 的 `darwin-x64` 官方二进制用 `-mmacosx-version-min=11.0` 构建；Node 24 起官方 macOS 二进制改为 13.5，跟「最新」就会静默丢掉本包服务的老机器。构建脚本据此把 `LSMinimumSystemVersion` 写成 11.0（Node ≥ 24 时自动变 13.5），并对 Node < 22.16（服务端 `node:sqlite` 下限）直接报错。
-- **`better-sqlite3` 用预编译二进制**。它发布的 `darwin-x64` prebuild 目标为 10.7，所以老机器上不需要 Xcode、不需要编译。打包会为**目标架构**（而不是构建机）解析 prebuild 与可选依赖，并在打包结束前用**包内运行时**真实加载一次 `better-sqlite3` 做冒烟验证——架构或 ABI 不匹配会直接让构建失败，而不是等到用户机器上 `require()` 才崩。
+- **SQLite 不再是需要编译的模块**。服务端用的是 Node 核心里的 `node:sqlite`（Node 22.16+ 起内置），所以包里没有任何需要匹配 ABI 或现场编译的 SQLite 加载项，也就没有 Xcode / node-gyp / prebuild 的失败面。打包结束前会用**包内运行时**真实建一个内存库做冒烟验证——运行时缺 `node:sqlite` 会直接让构建失败，而不是等到用户机器上才崩。
 
 ## 已知限制
 
@@ -101,7 +108,7 @@ R="$(pwd)/MultiCC.app/Contents/Resources"
   ```
 
   卸载便携版时，这些 CLI 连同数据目录都不受 `MultiCC.app` 删除影响。
-- **Windows 运行时用 zip**：解压需要 `unzip`（Git for Windows 自带）。
+- **Windows 用 zip 分发**：资源管理器双击解压即可。Windows 包里的运行时是 `Resources\runtime\node.exe`（官方 win-x64 压缩包没有 `bin/` 层），入口是 `Start-MultiCC.cmd` / `Stop-MultiCC.cmd` / `Status-MultiCC.cmd`。
 
 ## 自己构建
 
@@ -112,14 +119,14 @@ node scripts/portable-bundle.js --platform darwin --arch x64 --out ./dist-portab
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `--platform` | 构建机平台 | `darwin` / `linux` / `win32` |
-| `--arch` | 构建机架构 | `x64` / `arm64`（可与构建机不同，脚本按目标架构解析 prebuild） |
+| `--arch` | 构建机架构 | `x64` / `arm64`（可与构建机不同，脚本按目标架构解析可选 prebuild） |
 | `--node-version` | `22.23.2` | 低于 22.16 直接报错；≥ 24 会把 macOS 下限抬到 13.5 |
 | `--out` | `<repo>/dist-portable` | 输出目录 |
 | `--runtime-tarball` | 无 | 用本地 Node 压缩包代替下载（**不校验 sha256**，仅离线构建用） |
 | `--cache-dir` | 系统临时目录 | Node 压缩包与 `SHASUMS256.txt` 的缓存 |
-| `--no-install` / `--no-runtime` / `--no-verify` / `--no-archive` | 全开 | 分别跳过依赖安装 / 内置运行时 / 原生冒烟验证 / tar.gz 归档 |
+| `--no-install` / `--no-runtime` / `--no-verify` / `--no-archive` | 全开 | 分别跳过依赖安装 / 内置运行时 / 运行时 SQLite 冒烟验证 / 归档（darwin·linux 打 tar.gz，win32 打 zip） |
 
-构建过程：下载目标平台的官方 Node 压缩包并用 `SHASUMS256.txt` 校验 → 用 `scripts/desktop-bundle-server.js` 的 `stageServer()` 落一份服务端（含 `--os/--cpu` 与 prebuild 目标 env）→ 复制 `scripts/portable-launcher.js` 与 `desktop/lib/*` → 写 `.app`/包装脚本/说明 → 原生冒烟 + 架构门（`scripts/native-arch.js`）→ 归档并写 `.sha256`。
+构建过程：下载目标平台的官方 Node 压缩包并用 `SHASUMS256.txt` 校验 → 用 `scripts/desktop-bundle-server.js` 的 `stageServer()` 落一份服务端（含 `--os/--cpu` 与 prebuild 目标 env，并丢掉服务端从不加载的可选 SQLite 加载项）→ 复制 `scripts/portable-launcher.js` 与 `desktop/lib/*` → 写 `.app`/包装脚本/说明 → 运行时 SQLite 冒烟 + 架构门（`scripts/native-arch.js`，只针对可选的本地 ASR 二进制）→ 归档并写 `.sha256`。
 
 产物结构（macOS）：
 
@@ -130,7 +137,7 @@ multicc-portable-<版本>-darwin-x64/
 │   ├── Info.plist                        # LSMinimumSystemVersion = 11.0
 │   └── Resources/
 │       ├── app-server/                   # server.js + src/ + public/ + node_modules
-│       ├── runtime/                      # 官方 Node 22（bin/node、bin/npm）
+│       ├── runtime/                      # 官方 Node 22（bin/node、bin/npm；Windows 为 runtime/node.exe）
 │       └── launcher/                     # portable-launcher.js + lib/（与 desktop/lib 同源）
 ├── 启动 MultiCC.command / 停止 MultiCC.command / 查看状态 MultiCC.command
 └── 使用说明.txt
@@ -149,6 +156,6 @@ Linux / Windows 用同一棵 `Resources/` 树（无 `.app`），入口是 `start
 | 需要安装的东西 | 无（解压即用） | 安装包（dmg/exe/AppImage/deb） |
 | 数据目录 | `MultiCCPortable` | `MultiCC` |
 | 升级方式 | 替换 `.app` / `Resources` | 新安装包覆盖 |
-| 包体 | ~290 MB 解压 / ~68 MB 压缩（含 127 MB Node 运行时） | dmg/exe/AppImage：Electron 运行时 + 同一份 app-server |
+| 包体 | ~270 MB 解压 / ~62 MB 压缩（含约 124 MB Node 运行时） | dmg/exe/AppImage：Electron 运行时 + 同一份 app-server |
 
 两者的后端、Web UI、端口策略、数据布局与优雅关闭协议完全一致——便携版就是包内 Node 直接跑同一个服务端，并把桌面版的进程监管逻辑（`desktop/lib`）原样复用，不带 Electron。

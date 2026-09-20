@@ -31,7 +31,7 @@
 ```
 express                 ^4.22.2        HTTP server and routing
 ws                      ^8.21.1        WebSocket server
-better-sqlite3          ^12.6.2        Read-only cc-switch provider database import
+node:sqlite             (Node 22.16+)  All SQLite storage: orchestration, task-runs, cc-switch import
 cli-provider-router     (git pin)      Local proxy that routes per-role model traffic
 sherpa-onnx-node        ^1.13.4        Local on-device ASR (SenseVoice)
 multer                  ^2.2.0         Bounded multipart file uploads

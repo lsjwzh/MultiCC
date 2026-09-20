@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { extractArtifactReferences } = require('../artifact-reference');
+const { databaseConstructor } = require('../sqlite/driver');
 
 const SCHEMA_VERSION = 5;
 const TERMINAL_EXECUTION_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
@@ -494,7 +495,7 @@ function createTaskRunStore({ file, now = Date.now, Database = null, fsImpl = fs
     throw new TaskRunStoreError('an absolute SQLite file path is required', 'TASK_RUN_STORE_PATH_REQUIRED');
   }
   if (typeof now !== 'function') throw new TypeError('now must be a function');
-  const DatabaseCtor = Database || require('better-sqlite3');
+  const DatabaseCtor = Database || databaseConstructor();
   const dir = path.dirname(file);
   fsImpl.mkdirSync(dir, { recursive: true, mode: 0o700 });
 

@@ -348,6 +348,106 @@ test('--detach hands off to a background launcher that --stop can still drain', 
   }
 });
 
+// Windows has no signals: `process.kill(pid, 'SIGTERM')` there terminates the
+// supervising launcher outright and leaves the server it was supervising
+// orphaned — the supervisor only drains on request. So the stop request goes
+// through a marker file the supervisor polls. That path is exercised here with
+// platform forced to win32, on a real detached supervisor, because it cannot be
+// reached by running the CLI on macOS.
+test('--stop on Windows asks the supervisor through the stop marker, not a signal', { timeout: 180_000 }, async () => {
+  const scratch = tmpdir('multicc-portable-win-stop-');
+  const resources = path.join(scratch, 'Resources');
+  const dataDir = path.join(scratch, 'userdata');
+  stageFakeServer(resources);
+  const port = await reservePort();
+  const launcherArgs = ['--resources', resources, '--data', dataDir, '--port', String(port), '--no-open'];
+
+  let owner = null;
+  let serverPid = null;
+  const serverPidFromDisk = () => {
+    try { return JSON.parse(fs.readFileSync(path.join(dataDir, 'desktop-runtime.json'), 'utf8')).pid || null; }
+    catch (_) { return null; }
+  };
+  try {
+    const parent = spawnSync(process.execPath, [LAUNCHER, '--start', '--detach', ...launcherArgs], { encoding: 'utf8' });
+    assert.match(`${parent.stdout}${parent.stderr}`, /starting in the background/);
+    await waitFor(async () => (await httpStatus(`http://127.0.0.1:${port}/readyz`)) === 200,
+      { timeoutMs: 60_000, what: 'the detached supervisor to bring the server up' });
+    owner = Number(fs.readFileSync(path.join(dataDir, 'portable-launcher.pid'), 'utf8').trim());
+    serverPid = await waitFor(serverPidFromDisk, { timeoutMs: 10_000, what: 'the server pid' });
+
+    const paths = launcherScript.resolvePortablePaths({
+      resources, env: { ...process.env, MULTICC_PORTABLE_HOME: dataDir },
+    });
+    const { createLauncher } = launcherScript;
+    const windowsLauncher = createLauncher({
+      paths,
+      platform: 'win32',
+      logger: { log() {}, error() {} },
+      spawnImpl: spawn,
+    });
+    const result = await windowsLauncher.stop();
+
+    assert.equal(result.ownerSignalled, true, 'the supervisor must be asked to stop, not killed');
+    const markerFile = path.join(dataDir, 'portable-launcher.stop');
+    assert.equal(fs.existsSync(markerFile), false, 'the consumed stop request must not be left behind');
+    await waitFor(() => !readPidAlive(serverPid) && !readPidAlive(owner),
+      { timeoutMs: 30_000, what: 'both the supervisor and its server to exit' });
+    assert.equal(await httpStatus(`http://127.0.0.1:${port}/readyz`), 0, 'the port must be free again');
+  } finally {
+    for (const pid of [serverPid, serverPidFromDisk(), owner]) {
+      if (pid && readPidAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch (_) {} }
+    }
+  }
+});
+
+test('the runtime binary sits where each platform\'s official archive puts it', () => {
+  // The win-x64 zip has node.exe at the runtime root; the unix tarballs have
+  // bin/node. Writing the Windows bundle died on this ("runtime archive has no
+  // bin/node.exe") the first time it was ever built.
+  assert.equal(bundleScript.runtimeNodePath('/b/Resources', 'win32'), path.join('/b/Resources', 'runtime', 'node.exe'));
+  assert.equal(bundleScript.runtimeNodePath('/b/Resources', 'darwin'), path.join('/b/Resources', 'runtime', 'bin', 'node'));
+  assert.equal(bundleScript.runtimeNodePath('/b/Resources', 'linux'), path.join('/b/Resources', 'runtime', 'bin', 'node'));
+
+  const launcherSource = fs.readFileSync(LAUNCHER, 'utf8');
+  assert.match(launcherSource, /platform === 'win32'\s*\n\s*\? path\.join\(resources, 'runtime', 'node\.exe'\)/,
+    'the launcher must resolve the same path the builder writes');
+  const cmd = fs.readFileSync(path.join(ROOT, 'scripts', 'portable-bundle.js'), 'utf8');
+  assert.match(cmd, /Resources\\\\runtime\\\\node\.exe/, 'the .cmd wrapper must call the bundled node.exe');
+  assert.doesNotMatch(cmd, /Resources\\\\runtime\\\\bin\\\\node\.exe/, 'no bin/ level exists on Windows');
+});
+
+test('the Windows bundle is zipped by us, not by a platform-specific tool', async () => {
+  const { createZipArchive, collectEntries } = require(path.join(ROOT, 'scripts', 'zip-archive.js'));
+  const { readZip } = require(path.join(ROOT, 'src', 'session', 'handoff-zip.js'));
+  const scratch = tmpdir('multicc-zip-archive-');
+  const root = path.join(scratch, 'multicc-portable-1.0.0-win32-x64');
+  fs.mkdirSync(path.join(root, 'Resources', 'empty'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'Resources', '使用说明.txt'), 'portable\n');
+  fs.mkdirSync(path.join(root, 'Resources', 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'Resources', 'runtime', 'node.exe'), 'MZ');
+  fs.writeFileSync(path.join(root, 'Resources', 'big.bin'), Buffer.alloc(4096, 7));
+
+  const entries = collectEntries(root, { logger: { log() {} } });
+  assert.ok(entries.some(entry => entry.name === 'Resources/使用说明.txt'));
+  assert.ok(entries.some(entry => entry.name === 'Resources/empty/'), 'empty directories must survive the round trip');
+
+  const out = path.join(scratch, 'bundle.zip');
+  const result = createZipArchive({ rootDir: root, out, logger: { log() {} } });
+  assert.equal(result.entries, entries.length);
+  assert.ok(fs.statSync(out).size > 0);
+
+  // Reading it back with the repo's own reader proves structure and CRCs; the
+  // same writer feeds users, so a corrupt archive would be a shipped artifact.
+  const read = readZip(fs.readFileSync(out));
+  const byName = new Map(read.map(entry => [entry.name, entry.data]));
+  assert.equal(byName.get('multicc-portable-1.0.0-win32-x64/Resources/使用说明.txt').toString('utf8'), 'portable\n');
+  assert.equal(byName.get('multicc-portable-1.0.0-win32-x64/Resources/runtime/node.exe').toString('utf8'), 'MZ');
+  assert.equal(byName.get('multicc-portable-1.0.0-win32-x64/Resources/big.bin').length, 4096);
+  assert.equal(byName.has('multicc-portable-1.0.0-win32-x64/Resources/empty/'), false,
+    'directory entries carry no data and the reader drops them');
+});
+
 test('portable build wiring: lifecycle lib is shared with the desktop shell, not forked', () => {
   assert.deepEqual(bundleScript.LAUNCHER_LIB_FILES, [
     'port-chooser.js', 'health-probe.js', 'backend-supervisor.js', 'orphan-reclaim.js', 'desktop-env.js',
@@ -361,10 +461,13 @@ test('portable build wiring: lifecycle lib is shared with the desktop shell, not
   assert.doesNotMatch(source, /require\('\.\/lib\//,
     'no literal ./lib require: in the repo those modules live in desktop/lib');
 
-  // The build must pin the runtime target, or prebuild-install fetches the
-  // BUILD HOST's ABI (147 on a Node 26 box) instead of the bundled Node 22's.
+  // The build must pin the runtime target, or a prebuilt binary is fetched for
+  // the BUILD HOST (ABI 147 on a Node 26 box) instead of the bundled Node 22's.
   const build = fs.readFileSync(path.join(ROOT, 'scripts', 'portable-bundle.js'), 'utf8');
   assert.match(build, /npm_config_target: args\.nodeVersion/);
   assert.match(build, /npm_config_arch: args\.arch/);
-  assert.match(build, /verifyStagedNative\(\{/);
+  // Storage must be proved against the bundled runtime itself: this is the
+  // check that would catch a pinned runtime without a working node:sqlite.
+  assert.match(build, /verifyRuntimeSqlite\(\{/);
+  assert.match(build, /node:sqlite/);
 });

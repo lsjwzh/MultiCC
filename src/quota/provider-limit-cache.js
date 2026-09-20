@@ -32,12 +32,13 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { readJson, recoverFromBackup } = require('../state/store');
+const { databaseConstructor } = require('../sqlite/driver');
 
 const STALE_MS_DEFAULT = 10 * 60 * 1000; // bar freshness threshold for "过期" UI
 const DATABASE_SCHEMA_VERSION = 1;
 
-function loadDatabaseConstructor(requireFn = require) {
-  return requireFn('better-sqlite3');
+function loadDatabaseConstructor() {
+  return databaseConstructor();
 }
 
 function isObject(value) {
@@ -424,7 +425,6 @@ function createProviderLimitCache({
   legacyJsonFile = null,
   now = Date.now,
   logger = console,
-  requireFn = require,
   Database: DatabaseOverride = null,
   fsImpl = fs,
   pathImpl = path,
@@ -432,7 +432,7 @@ function createProviderLimitCache({
   if (!file || typeof file !== 'string') {
     throw new TypeError('[provider-limit-cache] createProviderLimitCache requires { file }');
   }
-  const Database = DatabaseOverride || loadDatabaseConstructor(requireFn);
+  const Database = DatabaseOverride || loadDatabaseConstructor();
   const dir = pathImpl.dirname(file);
   fsImpl.mkdirSync(dir, { recursive: true, mode: 0o700 });
 

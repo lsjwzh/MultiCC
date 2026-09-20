@@ -28,8 +28,6 @@ concurrency:
   group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  ELECTRON_VERSION: 44.1.1
 
 jobs:
   clean-install:
@@ -64,10 +62,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Node 22, not 20: @electron/rebuild 4.x declares engines node>=22.12,
-          # and better-sqlite3 ships no ABI 115 (Node 20) prebuild — the staged
-          # install would fall back to a source build that npm's bundled
-          # node-gyp cannot run on windows-latest (it does not know VS 18).
+          # Node 22 is the floor MultiCC declares (package.json engines) and the
+          # same major the portable bundle pins. Nothing here is compiled: the
+          # server's storage is the SQLite inside Node itself, and the only
+          # native payload left is an optional prebuilt ASR package.
           node-version: 22
 
       - name: Preflight — desktop version matches root package.json
@@ -88,14 +86,14 @@ jobs:
         working-directory: desktop
         run: npm ci --no-audit --no-fund
 
-      # Stage → rebuild → gate → package, once per target arch.
+      # Stage → gate → package, once per target arch.
       #
       # This has to be a loop, not three separate steps: desktop/package.json
       # asks electron-builder for both mac arches, and a single staged tree
       # belongs to one arch only. Staging once on the arm64 runner is exactly
-      # how the x64 dmg ended up carrying arm64 better-sqlite3 — it installs
-      # fine, and only the first `new Database()` on an Intel Mac fails.
-      - name: Stage, rebuild and package per arch
+      # how the x64 dmg once ended up carrying an arm64 binary — it installs
+      # fine, and only the first require() on an Intel Mac fails.
+      - name: Stage and package per arch
         shell: bash
         working-directory: desktop
         env:
@@ -138,33 +136,20 @@ jobs:
               --arch "$arch" --platform "${{ matrix.native_platform }}"
             echo "::endgroup::"
 
-            echo "::group::native modules for Electron ($arch)"
-            # better-sqlite3 ships Node prebuilds; the desktop backend runs under
-            # the Electron binary (ELECTRON_RUN_AS_NODE), so its staged copy must
-            # be rebuilt against Electron's ABI or require() fails at the first
-            # Database() call.
-            # @electron/rebuild v4 names the Electron version flag --version;
-            # parseArgs rejects unknown options before any rebuild starts. Run
-            # from desktop/ so the CLI finds its project root (and the pinned
-            # electron copy) next to the toolchain instead of at the repo root.
-            node_modules/.bin/electron-rebuild \
-              --module-dir .staging/app-server \
-              --arch "$arch" \
-              --force --which-module better-sqlite3 \
-              --version "$ELECTRON_VERSION" \
-              --dist-url https://electronjs.org/headers
-            echo "::endgroup::"
-
             echo "::group::arch gate ($arch)"
-            # electron-rebuild exits 0 after printing "No native modules found",
-            # so prove the tree really holds this arch's binaries: right arch,
-            # right container format, and not empty (scripts/native-arch.js).
+            # There is no ABI rebuild step any more: SQLite comes from Electron's
+            # own Node (verified against Electron 44.1.1 / Node 24.19, where
+            # node:sqlite opens and writes), and the ASR package is N-API plus
+            # prebuilt. What still needs proving is that whatever prebuilt binary
+            # did land belongs to this arch — a build-host binary installs fine
+            # and only fails at the first require() on the target machine.
+            # --allow-none: that binary is optional, so a platform without it is
+            # a valid tree, not a silently empty one.
             node ../scripts/native-arch.js \
               --root .staging/app-server \
               --expect-arch "$arch" \
-              --expect-platform "${{ matrix.native_platform }}"
-            # (the staging step already proves better-sqlite3 is in the tree —
-            # scripts/desktop-bundle-server.js refuses to finish without it)
+              --expect-platform "${{ matrix.native_platform }}" \
+              --allow-none
             echo "::endgroup::"
 
             echo "::group::electron-builder ($arch)"
@@ -275,20 +260,35 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --out dist-portable $extra_flags
 
-      - name: Zip (Windows ships a zip, not a tarball)
-        if: matrix.platform == 'win32'
-        shell: pwsh
+
+      # The bundle is only "built" until someone boots it. This runs the real
+      # entry points (--start/--status/--stop through the shipped launcher and
+      # runtime) on every runner that can execute the target runtime — including
+      # windows-latest, where the stop path goes through a marker file instead
+      # of a signal and had never been executed in CI before.
+      - name: Smoke the built bundle
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          $version = node -p "require('./package.json').version"
-          $name = "multicc-portable-$version-win32-x64"
-          Compress-Archive -Path "dist-portable/$name" -DestinationPath "dist-portable/$name.zip"
-          $hash = (Get-FileHash "dist-portable/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Set-Content -NoNewline -Encoding ascii "dist-portable/$name.zip.sha256"
+          set -euo pipefail
+          case "${RUNNER_ARCH}" in
+            ARM64) host_arch=arm64 ;;
+            X64) host_arch=x64 ;;
+            *) host_arch=unknown ;;
+          esac
+          if [ "$host_arch" != "${{ matrix.arch }}" ]; then
+            echo "cross-arch build ($host_arch -> ${{ matrix.arch }}): skipping the boot smoke, this runner cannot execute the target runtime"
+            exit 0
+          fi
+          version=$(node -p "require('./package.json').version")
+          node scripts/portable-smoke.js \
+            --bundle "dist-portable/multicc-portable-$version-${{ matrix.platform }}-${{ matrix.arch }}"
 
       - name: Upload portable artifacts
         uses: actions/upload-artifact@v4
         with:
+          # win32 archives itself as a .zip (scripts/zip-archive.js) because a
+          # tarball is not a thing Windows users can double-click; macOS/Linux
+          # ship .tar.gz. Both land here with their .sha256 sidecar.
           name: portable-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             dist-portable/*.tar.gz
