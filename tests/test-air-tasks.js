@@ -69,6 +69,87 @@ test('Air list resolves legacy reference directories and never includes provider
   assert.equal(response.tasks[0].workflowStage, 'inbox'); assert.equal(JSON.stringify(response).includes('private'), false);
 });
 
+test('Air lists and pins hide unseparated tasks across decisions and restarts, then show the same identity after separation', async t => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const { createTaskShellRuntime } = require('../src/task-shell/runtime');
+  const path = require('node:path');
+  const { createAirPinRuntime } = require('../src/workspace/pins');
+  for (const decision of ['pending', 'defer', 'keep']) await t.test(decision, async t => {
+    const board = { tasks: {} };
+    const f = fixture(t, {
+      getDirectory: id => id === 'd1' ? { id } : null,
+      // Like the persisted board, this index has no embedded/ready fields.
+      indexTask: task => {
+        board.tasks[task.id] = { id: task.id, title: task.title, chatSessionId: task.sessionId,
+          refs: [{ sessionId: task.sessionId, dirId: task.dirId }] };
+        return { ok: true };
+      },
+    });
+    const source = await f.runtime.createStandalone({ dirId: 'd1', title: 'Source', clientMsgId: 'source' });
+    f.histories.set(source.sessionId, [{ id: 'u0', role: 'user', content: 'Old goal', taskId: source.taskId }]);
+    const sent = await f.runtime.send(source.shellId, { text: 'New goal', clientMsgId: 'new-goal' });
+    f.histories.get(source.sessionId).push(
+      { id: 'u1', role: 'user', content: 'New goal', turnId: 'turn-1', clientMsgId: sent.receiptId },
+      { id: 'a1', role: 'assistant', content: 'Result', turnId: 'turn-1' });
+    f.statuses.set(source.sessionId, { busy: false });
+    const suggestion = f.runtime.separation.propose(source.sessionId, sent.receiptId, {
+      turnId: 'turn-1', anchorMessageId: 'a1', separation: { title: 'New goal' },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(board.tasks[suggestion.taskId], 'already indexed tasks must also be hidden');
+    if (decision !== 'pending') await f.runtime.separation.decide(source.sessionId, suggestion.id, decision);
+    f.runtime = createTaskShellRuntime(f.ports);
+    const pinsFile = path.join(path.dirname(f.file), 'air-pins.json');
+    createAirPinRuntime({ file: pinsFile, listTaskIds: () => Object.keys(board.tasks) })
+      .replace([source.taskId, suggestion.taskId]);
+    const handlers = new Map();
+    mountAirRoutes({ get: (url, fn) => handlers.set(url, fn), post: (url, fn) => handlers.set(`POST ${url}`, fn) }, {
+      pinsFile, getBoard: () => board, records: f.records,
+      directories: new Map([['d1', { id: 'd1', path: '/repo' }]]), clis: ['codex'],
+      admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+      shell: { listTasks: () => f.runtime.listTasks(), taskAccess: task => f.runtime.taskAccess(task),
+        migrateTaskSessions: () => f.runtime.migrateTaskSessions([]) },
+    });
+    const before = airResponse();
+    await handlers.get('/api/air')({}, before);
+    assert.deepEqual(JSON.parse(before.body).tasks.map(task => task.id), [source.taskId]);
+    assert.deepEqual(JSON.parse(before.body).taskPins, [source.taskId]);
+    const pins = airResponse(); handlers.get('/api/air/pins')({}, pins);
+    assert.deepEqual(JSON.parse(pins.body).taskIds, [source.taskId]);
+    const toggle = airResponse();
+    handlers.get('POST /api/air/pins/toggle')({ body: { taskId: suggestion.taskId } }, toggle);
+    assert.equal(toggle.statusCode, 404);
+    assert.ok(f.store.get('task', suggestion.taskId), 'filtering must preserve conversation identity');
+    assert.ok(f.store.get('link', `${source.shellId}:${suggestion.taskId}`));
+
+    const separated = await f.runtime.separation.decide(source.sessionId, suggestion.id, 'separate');
+    assert.equal(separated.taskId, suggestion.taskId);
+    const after = airResponse();
+    await handlers.get('/api/air')({ headers: { 'if-none-match': before.headers.etag } }, after);
+    assert.equal(after.statusCode, 200, 'separation invalidates the list ETag');
+    assert.deepEqual(JSON.parse(after.body).tasks.map(task => task.id), [source.taskId, suggestion.taskId]);
+    assert.deepEqual(JSON.parse(after.body).taskPins, [source.taskId, suggestion.taskId]);
+  });
+});
+
+test('Air hides incomplete separation but keeps idle, planned and legacy standalone tasks', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const tasks = [
+    { id: 'partial', separatedFromTaskId: 'source', embedded: false, ready: false },
+    { id: 'idle', ready: true }, { id: 'planned', ready: false },
+    { id: 'separated', separatedFromTaskId: 'source', embedded: false, ready: true },
+  ];
+  const board = { tasks: Object.fromEntries([...tasks, { id: 'legacy' }].map(task => [task.id, { id: task.id }])) };
+  const handlers = new Map();
+  mountAirRoutes({ get: (url, fn) => handlers.set(url, fn), post() {} }, {
+    records: new Map(), directories: new Map(), getBoard: () => board, clis: [],
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    shell: { listTasks: () => tasks, taskAccess: () => ({ readOnly: false }) },
+  });
+  const res = airResponse(); await handlers.get('/api/air')({}, res);
+  assert.deepEqual(JSON.parse(res.body).tasks.map(task => task.id), ['idle', 'planned', 'separated', 'legacy']);
+});
+
 test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行中', async () => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
