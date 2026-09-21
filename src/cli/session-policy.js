@@ -162,7 +162,7 @@ function createSessionPolicy(options) {
 
   function validEffortForCli(cli, effort) {
     if (!effort) return true;
-    if (cli === 'codex') {
+    if (cli === 'codex' || cli === 'codex-exp') {
       return CODEX_REASONING_LEVELS.has(effort) || CODEX_REASONING_56_LEVELS.has(effort);
     }
     if (cli === 'opencode') return OPENCODE_VARIANTS.has(effort);
@@ -244,7 +244,7 @@ function createSessionPolicy(options) {
   function effectiveSessionEffort(session) {
     if (!session) return null;
     const cli = session.cli || 'claude';
-    if (cli === 'codex') return codexReasoningLevel(session) || codexDefaultReasoningLevel();
+    if (cli === 'codex' || cli === 'codex-exp') return codexReasoningLevel(session) || codexDefaultReasoningLevel();
     if (cli === 'opencode') {
       const effort = normalizeEffort(session.effort);
       return effort && OPENCODE_VARIANTS.has(effort) ? effort : null;

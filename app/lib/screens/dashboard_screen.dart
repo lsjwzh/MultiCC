@@ -122,6 +122,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 (e) => _chip(
                   switch (e.key) {
                     'codex' => 'Codex',
+                    'codex-exp' => 'Codex Exp',
                     'opencode' => 'OpenCode',
                     'zcode' => 'ZCode',
                     'qoder' => 'Qoder CN',
@@ -130,6 +131,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   '${e.value}',
                   switch (e.key) {
                     'codex' => AppColors.codex,
+                    'codex-exp' => AppColors.codex,
                     'opencode' => AppColors.opencode,
                     'zcode' => AppColors.zcode,
                     'qoder' => AppColors.qoder,
@@ -251,6 +253,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final active = s['active'] == true;
     final cli = switch (s['cli'] ?? 'claude') {
       'codex' => 'Codex',
+      'codex-exp' => 'Codex Exp',
       'opencode' => 'OpenCode',
       'zcode' => 'ZCode',
       'qoder' => 'Qoder CN',

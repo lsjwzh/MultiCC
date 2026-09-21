@@ -140,7 +140,7 @@ function compatibleClisForFormat(apiFormat) {
   if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'opencode', 'zcode'];
   // Kimi Code joins the OpenAI-family pool (moonshot's own API is
   // OpenAI-compatible).
-  return ['codex', 'opencode', 'zcode', 'kimi'];
+  return ['codex', 'codex-exp', 'opencode', 'zcode', 'kimi'];
 }
 
 function providerSupportsCli(provider, cli) {
@@ -161,7 +161,7 @@ function providerSupportsCli(provider, cli) {
 // pools and therefore resolve globally by provider id; appTypeForCli remains a
 // legacy single-pool default only.
 function appTypeForCli(cli) {
-  if (cli === 'codex') return 'codex';
+  if (cli === 'codex' || cli === 'codex-exp') return 'codex';
   if (cli === 'claude' || cli === 'opencode') return 'claude';
   return null;
 }

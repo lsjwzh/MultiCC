@@ -20,6 +20,11 @@ const OFFICIAL_INSTALL_SPECS = Object.freeze({
     command: 'npm install -g @openai/codex',
     display: 'npm install -g @openai/codex',
   },
+  'codex-exp': {
+    auto: true,
+    command: 'npm install -g @openai/codex',
+    display: 'npm install -g @openai/codex',
+  },
   opencode: {
     auto: true,
     command: 'npm install -g opencode-ai',
@@ -484,10 +489,11 @@ function createCliSwitchRuntime(options) {
 
   function cliSwitchDefaults(cli) {
     const providerDefaults = options.getProviderDefaults() || {};
+    const providerPool = cli === 'codex-exp' ? 'codex' : cli;
     return {
-      provider: providerDefaults[cli] || null,
+      provider: providerDefaults[providerPool] || null,
       model: null,
-      effort: cli === 'codex' ? options.codexDefaultReasoningLevel() : null,
+      effort: cli === 'codex' || cli === 'codex-exp' ? options.codexDefaultReasoningLevel() : null,
       subagent: null,
       agent: null,
     };
@@ -693,7 +699,7 @@ function createCliSwitchRuntime(options) {
     if (pending.cli !== (session.cli || 'claude') || pending.fresh) {
       options.activateCliState(target, pending.cli, { fresh: pending.fresh, defaults: cliSwitchDefaults(pending.cli) });
     }
-    if (target.cli === 'codex' && target.cliSessionId && target.provider !== pending.profile.provider) {
+    if ((target.cli === 'codex' || target.cli === 'codex-exp') && target.cliSessionId && target.provider !== pending.profile.provider) {
       options.synchronizeCodexSessionRoute({ logicalSessionId: session.id,
         nativeSessionId: target.cliSessionId, fromProviderId: target.provider,
         toProviderId: pending.profile.provider });

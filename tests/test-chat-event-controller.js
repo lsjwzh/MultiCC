@@ -1180,6 +1180,19 @@ test('Codex assistant path appends text and materializes tool cards without Clau
   assert.equal(tool.isError, false);
 });
 
+test('Codex Exp uses the Codex assistant and tool-card rendering path', () => {
+  const fixture = controllerFixture();
+  fixture.state.currentCli = 'codex-exp';
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({ type: 'assistant', message: { content: [
+    { type: 'text', text: 'native delta' },
+    { type: 'tool_use', id: 'codex-exp-tool', name: 'Bash', input: { command: 'pwd' } },
+  ] } }, generation);
+  assert.equal(fixture.state.currentTextContent, 'native delta');
+  assert.equal(fixture.tools.length, 1);
+  assert.equal(fixture.state.currentToolCards.get('id:codex-exp-tool').inputJson, '{"command":"pwd"}');
+});
+
 test('OpenCode cumulative assistant snapshots render every text part without a refresh', () => {
   const fixture = controllerFixture();
   fixture.state.currentCli = 'opencode';

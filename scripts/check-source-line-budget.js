@@ -27,8 +27,8 @@ const MIGRATION_DEBT = Object.freeze({
   // committed high-water mark, so it is re-registered here; the next main_shell
   // split must ratchet it down and retire this entry once the file is <= target.
   'app/lib/screens/main_shell.dart': Object.freeze({
-    ceiling: 3166,
-    byteCeiling: 122028,
+    ceiling: 3164,
+    byteCeiling: 121973,
     target: 3000,
   }),
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;

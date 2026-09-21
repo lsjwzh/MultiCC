@@ -46,9 +46,10 @@
     { value: 'deepseek-v4-flash', label: 'deepseek-v4-flash（快速）' },
     { value: 'deepseek-v4-pro', label: 'deepseek-v4-pro（深度）' },
   ]);
+  const isCodexCli = cli => cli === 'codex' || cli === 'codex-exp';
 
   function supportsManagedProvider(cli) {
-    return cli === 'claude' || cli === 'codex' || cli === 'opencode' || cli === 'zcode';
+    return cli === 'claude' || isCodexCli(cli) || cli === 'opencode' || cli === 'zcode';
   }
 
   // Qoder CN's real catalog comes from `qoderclicn --list-models` via
@@ -241,7 +242,7 @@
   }
 
   async function showModelPicker({ title = tt('modelTitle'), okText = tt('create'), current = '', providerId = '', cli = 'claude' } = {}) {
-    if (cli === 'codex') await refreshCodexCatalog();
+    if (isCodexCli(cli)) await refreshCodexCatalog();
     return new Promise((resolve) => {
       let closed = false;
       const overlay = document.createElement('div');
@@ -256,12 +257,12 @@
       // Alias-mapped relays: list the tiers directly, each reading
       // "opus · GLM5.2 · glm-5.2" (别名 - 展示名 - 真实id); map a stored wire id back to its tier.
       const effectiveProviderId = providerId
-        || (_providerData.defaults && _providerData.defaults[cli]) || '';
+        || (_providerData.defaults && _providerData.defaults[isCodexCli(cli) ? 'codex' : cli]) || '';
       const tiers = cli === 'zcode' ? [] : providerAliasTiers(effectiveProviderId);
       const vendorOptions = vendorModelOptions(cli);
       const provider = catalog.findProvider(_providerData, '', effectiveProviderId);
       const providerModels = provider ? catalog.modelsFor(provider) : [];
-      const liveCodex = cli === 'codex' && (!provider || provider.isOfficial)
+      const liveCodex = isCodexCli(cli) && (!provider || provider.isOfficial)
         ? codexPickerOptions() : [];
       const optionList = liveCodex.length
         ? [...liveCodex, { value: '__custom__', labelKey: 'custom' }]
@@ -292,12 +293,12 @@
 
       const custom = document.createElement('input');
       custom.type = 'text';
-      custom.placeholder = cli === 'codex'
+      custom.placeholder = isCodexCli(cli)
         ? 'wire model ID，如 gpt-5.6-sol' : '模型 ID，如 claude-opus-4-8';
       custom.value = isKnown ? '' : cur;
       custom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;display:none;';
       box.appendChild(custom);
-      if (cli === 'codex') {
+      if (isCodexCli(cli)) {
         const hint = document.createElement('div');
         hint.style.cssText = 'font-size:11px;color:#8b949e;line-height:1.45;margin:-5px 0 12px;';
         hint.textContent = codexCatalogHint();
@@ -347,10 +348,10 @@
     let defaultProviderId = '';
     if (supportsManagedProvider(cli)) {
       try {
-        if (cli === 'codex' && typeof root.loadCodexModels === 'function') {
+        if (isCodexCli(cli) && typeof root.loadCodexModels === 'function') {
           await root.loadCodexModels({ forceRefresh: true });
         }
-        const appType = cli === 'codex' ? 'codex' : 'claude';
+        const appType = isCodexCli(cli) ? 'codex' : 'claude';
         const providerUrl = window.MultiCCFleetSharing?.apiUrlForDirectory(
           `/api/providers?cli=${encodeURIComponent(cli)}`,
           dirId,
@@ -435,7 +436,7 @@
   function applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId, cli }) {
     if (!preset) return;
     if (!supportsManagedProvider(cli)) return;
-    if (cli !== 'claude' && cli !== 'codex') return;
+    if (cli !== 'claude' && !isCodexCli(cli)) return;
     const presetCli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
     const dialogCli = isClaude ? 'claude' : 'codex';
     if (presetCli && presetCli !== dialogCli) return;
@@ -482,7 +483,7 @@
     let opts;
     let asyncFill = null;
     const vendorOptions = vendorModelOptions(cli);
-    const liveCodex = cli === 'codex' && (!prov || prov.isOfficial)
+    const liveCodex = isCodexCli(cli) && (!prov || prov.isOfficial)
       ? codexPickerOptions() : [];
     if (vendorOptions) {
       opts = vendorOptions;
@@ -573,7 +574,7 @@
 
       const title = document.createElement('div');
       title.style.cssText = 'font-size:15px;color:#f2f4f7;font-weight:600;margin-bottom:14px;';
-      const CLI_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
+      const CLI_LABELS = { claude: 'Claude', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
       title.textContent = `新建 ${CLI_LABELS[cli] || cli} ${kind === 'chat' ? 'Chat' : 'Terminal'}`;
       box.appendChild(title);
 
@@ -704,7 +705,7 @@
       modelCustom.style.cssText = 'width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;margin-bottom:6px;display:none;box-sizing:border-box;';
       box.appendChild(modelCustom);
 
-      if (cli === 'codex') {
+      if (isCodexCli(cli)) {
         const catalogHint = document.createElement('div');
         catalogHint.style.cssText = 'font-size:11px;color:#8b949e;line-height:1.45;margin-bottom:8px;';
         catalogHint.textContent = codexCatalogHint();
@@ -886,7 +887,7 @@
     });
     if (!result.owned) return;
     if (result.error) { showApiError(result.error); return; }
-    const hint = (sess.cli || 'claude') === 'codex' ? '（Codex 仅新会话首轮生效）' : '（下一轮对话生效）';
+    const hint = isCodexCli(sess.cli || 'claude') ? '（Codex 仅新会话首轮生效）' : '（下一轮对话生效）';
     showToast(`${next.trim() ? '角色已更新' : '已清除会话角色（继承工作区默认）'} ${hint}`);
     loadDashboard();
   }

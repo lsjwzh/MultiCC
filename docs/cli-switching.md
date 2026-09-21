@@ -1,6 +1,6 @@
 # Multi-CLI switching
 
-> One conversation, eight coding CLIs. Switch mid-task without losing the thread, without changing directory, and without re-explaining what you are doing.
+> One conversation, nine coding CLIs. Switch mid-task without losing the thread, without changing directory, and without re-explaining what you are doing.
 
 This is MultiCC's defining feature, so it is worth being precise about what it does — and what it deliberately does *not* do.
 
@@ -12,6 +12,7 @@ This is MultiCC's defining feature, so it is worth being precise about what it d
 |---|---|---|---|
 | Claude Code | `claude` | yes | `npm install -g @anthropic-ai/claude-code` |
 | OpenAI Codex | `codex` | yes | `npm install -g @openai/codex` |
+| Codex Exp (app-server) | `codex-exp` | yes — shares the Codex Responses provider pool | `npm install -g @openai/codex` |
 | OpenCode | `opencode` | yes | `npm install -g opencode-ai` |
 | ZCode (GLM) | `zcode` | yes | manual — install the ZCode desktop app from <https://zcode.z.ai> (its bundled CLI is what MultiCC drives) |
 | Kimi Code (Moonshot) | `kimi` | yes — OpenAI-format providers only (`KIMI_API_KEY`/`KIMI_BASE_URL` injection) | `npm install -g @moonshot-ai/kimi-code` |
@@ -22,6 +23,8 @@ This is MultiCC's defining feature, so it is worth being precise about what it d
 Source of truth: `SUPPORTED_CHAT_CLIS` in `src/cli-switch.js`, install specs in `src/cli/switch-runtime.js`.
 
 **Chat sessions only.** Terminal sessions are pinned to the CLI they were created with; so are system sessions (`aux`, `gateway`), which are switched by their bridge controller instead. `POST /api/sessions/:id/switch-cli` returns `400` for anything that is not a chat session.
+
+`codex-exp` is additionally chat-only at creation time. It is an opt-in adapter for Codex app-server JSON-RPC and requires Codex `>=0.154.0`; the normal `codex` entry continues to use `exec --json` unchanged.
 
 ---
 

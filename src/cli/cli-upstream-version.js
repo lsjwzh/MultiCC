@@ -25,6 +25,7 @@ const https = require('node:https');
 const NPM_PACKAGES = Object.freeze({
   claude: '@anthropic-ai/claude-code',
   codex: '@openai/codex',
+  'codex-exp': '@openai/codex',
   opencode: 'opencode-ai',
   kimi: '@moonshot-ai/kimi-code',
   codebuddy: '@tencent-ai/codebuddy-code',

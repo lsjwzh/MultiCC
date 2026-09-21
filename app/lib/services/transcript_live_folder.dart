@@ -241,7 +241,7 @@ class TranscriptLiveFolder {
         ensureAssistantMsg();
         if (message['textSnapshot'] == true) {
           currentMsg!.content = text;
-        } else if (_cliOf() == SessionCli.codex) {
+        } else if (_cliOf().isCodexFamily) {
           currentMsg!.content += text;
         } else if (currentMsg!.content.isEmpty) {
           currentMsg!.content = text;

@@ -55,7 +55,7 @@ function createRolloutPathResolver(deps = {}) {
   // the probe one signal, never throw into the liveness endpoint.
   function resolve(record) {
     try {
-      if (!record || record.cli !== 'codex' || !record.cliSessionId) return null;
+      if (!record || !['codex', 'codex-exp'].includes(record.cli) || !record.cliSessionId) return null;
       const dir = sessionsDirFor(record);
       if (!dir) return null;
       const key = `${dir}::${record.cliSessionId}`;

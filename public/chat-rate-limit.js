@@ -136,6 +136,7 @@
     return null;
   }
   function isRelayBaseUrl(baseUrl) { return relayProtocolFromBaseUrl(baseUrl) !== null; }
+  function isCodexCli(cli) { return cli === 'codex' || cli === 'codex-exp'; }
   function arkPlanFromBaseUrl(baseUrl) {
     if (!baseUrl || typeof baseUrl !== 'string') return null;
     try { const p = new URL(baseUrl).pathname.toLowerCase(); if (p.includes('/coding')) return 'coding-plan'; if (p.includes('/plan')) return 'agent-plan'; } catch (_) {}
@@ -151,7 +152,7 @@
     const relayProtocol = relayProtocolFromBaseUrl(currentProviderBaseUrl);
     if (relayProtocol) return cli === relayProtocol || cli === 'opencode';
     if (provider === 'glm' || provider === 'codex') {
-      if (cli === 'codex' || cli === 'opencode') return true;
+      if (isCodexCli(cli) || cli === 'opencode') return true;
       return provider === 'glm' && isZhipuBaseUrl(currentProviderBaseUrl);
     }
     return cli === 'claude' || cli === 'opencode';
@@ -295,7 +296,7 @@
     // concrete Provider identity. Once a Provider is known, its own balance
     // endpoint decides the bar species (Codex window / GLM window / money / no
     // bar). Neither the Codex CLI nor a URL shape may select this host account.
-    isVisible: () => currentCli === 'codex' && !currentProviderId && !currentProviderPending,
+    isVisible: () => isCodexCli(currentCli) && !currentProviderId && !currentProviderPending,
     getUrl: () => `/api/quota/bars/refresh${quotaBarParams({ kind: 'codex' })}`,
     storageKey: 'multicc.codex.quota.v1',
   });
@@ -382,7 +383,7 @@
 
   function activeProviderMatchesCli() {
     if (currentCli === 'opencode') return true;
-    return currentProviderAppType === (currentCli === 'codex' ? 'codex' : 'claude');
+    return currentProviderAppType === (isCodexCli(currentCli) ? 'codex' : 'claude');
   }
 
   function renderCurrent() {
@@ -504,7 +505,7 @@
   let currentBalanceBar = null;
   function balanceStorageKey(session) { return `multicc.usageBalance.${String(session || '').trim()}`; }
   function balanceMatchesCli(cli) {
-    return cli === 'codex' || cli === 'opencode'
+    return isCodexCli(cli) || cli === 'opencode'
       || isDeepseekBaseUrl(currentProviderBaseUrl)
       // 借道 provider 借来的可能是预付费余额（DeepSeek 等），事件由 relay 透传。
       || isRelayBaseUrl(currentProviderBaseUrl);
@@ -573,7 +574,7 @@
     // fetch per real switch, for the one bar that just became visible.
     if (next === 'opencode') { opencodeSlot.clearBackoff(); opencodeSlot.refresh(); }
     else if (next === 'qoder') { qoderSlot.clearBackoff(); qoderSlot.refresh(); }
-    else if (next === 'codex') { codexSlot.clearBackoff(); codexSlot.refresh(); }
+    else if (isCodexCli(next)) { codexSlot.clearBackoff(); codexSlot.refresh(); }
     // No claude auto-fetch on switch: its 5h is passive (the live event) and the
     // weekly scrape is fetch-on-click, so an auto-scrape would pop needs_login /
     // unavailable states the user did not ask for.
@@ -586,7 +587,7 @@
     // session's concrete provider catalog supplies appType; currentCli is only
     // a compatibility fallback, never the bar-kind decision.
     const nextAppType = String(meta.appType || relayProtocolFromBaseUrl(next)
-      || (nextId ? (currentCli === 'codex' ? 'codex' : 'claude') : ''));
+      || (nextId ? (isCodexCli(currentCli) ? 'codex' : 'claude') : ''));
     const nextPending = meta.pending === true;
     const changed = next !== currentProviderBaseUrl || nextId !== currentProviderId
       || nextAppType !== currentProviderAppType || nextPending !== currentProviderPending;
