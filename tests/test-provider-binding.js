@@ -8,6 +8,7 @@ const {
   isProviderBinding,
   toLegacyProviderView,
 } = require('../src/providers/binding');
+const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 
 test('ProviderBinding is narrow, immutable, and maps to a narrow legacy view', () => {
   const binding = createProviderBinding({
@@ -67,8 +68,8 @@ test('sub-agent binding validates agentRole and routeName', () => {
   );
 });
 
-test('every production chat CLI, including Kimi, can cross the narrow binding boundary', () => {
-  for (const cli of ['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi']) {
+test('every production chat CLI can cross the narrow binding boundary', () => {
+  for (const cli of SUPPORTED_CHAT_CLIS) {
     assert.equal(createProviderBinding({ sessionId: `session-${cli}`, cli }).cli, cli);
   }
 });
