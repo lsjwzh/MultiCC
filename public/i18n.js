@@ -225,6 +225,8 @@ function applyI18n(root) {
   scope.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
   scope.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle); });
   scope.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+  // contenteditable 的占位是 CSS ::before 读 attr(data-placeholder) 画的，不是 placeholder 属性。
+  scope.querySelectorAll('[data-i18n-data-placeholder]').forEach((el) => { el.setAttribute('data-placeholder', t(el.dataset.i18nDataPlaceholder)); });
   scope.querySelectorAll('[data-i18n-aria-label]').forEach((el) => { el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel)); });
   scope.querySelectorAll('[data-i18n-value]').forEach((el) => { el.value = t(el.dataset.i18nValue); });
   scope.querySelectorAll('.lang-toggle').forEach((el) => { el.textContent = t('language'); });

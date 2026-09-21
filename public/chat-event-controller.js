@@ -7,6 +7,13 @@
       && /stream disconnected before completion|response\.completed/i.test(value);
   }
 
+  // 内置官方供应商的名字是服务端数据（'Codex 官方'），展示时按身份翻译。
+  function displayProviderName(value) {
+    const api = global && global.MultiCCProviderCatalog;
+    return api && api.providerDisplayName
+      ? api.providerDisplayName(value || '') : (value || '');
+  }
+
   const PROGRESS_PHASES = Object.freeze({
     starting: '正在启动',
     thinking: '正在处理',
@@ -271,8 +278,8 @@
         else state.sessionProvider = message.providerId || '';
       }
       if (message.providerName !== undefined) {
-        if (autoMode) state.activeProviderName = message.providerRoute ? (message.providerName || '') : '';
-        else state.sessionProviderDisplayName = message.providerName || '';
+        if (autoMode) state.activeProviderName = message.providerRoute ? displayProviderName(message.providerName) : '';
+        else state.sessionProviderDisplayName = displayProviderName(message.providerName);
       }
       if (autoMode) state.activeProviderModel = visibleProviderModel(message.providerRoute?.model);
       if (message.cliStates) state.sessionCliStates = message.cliStates;
@@ -427,7 +434,7 @@
       switch (message.type) {
         case 'provider_route_event':
           if (message.providerId) state.activeProviderId = message.providerId;
-          if (message.providerName) state.activeProviderName = message.providerName;
+          if (message.providerName) state.activeProviderName = displayProviderName(message.providerName);
           applyProviderRouteModel(message);
           host.updateProviderBtn?.();
           break;

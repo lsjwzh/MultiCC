@@ -424,7 +424,7 @@ function applyCliUi(cli) {
   if (cliBtn) {
     cliBtn.textContent = `CLI: ${meta.label}`;
     cliBtn.style.borderColor = meta.color;
-    cliBtn.title = `当前 ${meta.label}；点击切换 CLI（通过结构化 checkpoint 交接上下文）`;
+    cliBtn.title = tt('cliSwitchTitle', { cli: meta.label });
   }
   document.title = `MultiCC Chat · ${meta.label}`;
   // Warm the per-CLI live model list cache (localStorage, see shared/models.js)
@@ -491,7 +491,7 @@ function dbgState() {
     `<span class="dbg-badge"><b>msgEl</b> ${!!currentMsgEl}</span>`,
     `<span class="dbg-badge"><b>session</b> ${sessionId ? sessionId.slice(0, 8) : '-'}</span>`,
   ];
-  if (stuck) badges.push('<span class="dbg-badge bad">&#9888; STUCK: thinking 显示中但已不在 streaming</span>');
+  if (stuck) badges.push('<span class="dbg-badge bad">' + tt('dbgStuck') + '</span>');
   _dbgStateEl.innerHTML = badges.join('');
 }
 
@@ -638,7 +638,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     statusEl.className = 'connected';
     statusEl.title = '';
     statusEl.onclick = () => forceReconnect('status click');
-    dbg('ws', 'onopen — 连接已建立');
+    dbg('ws', tt('dbgWsOpen'));
     // If we'd shown the disconnect banner, replace it with a reconnected marker.
     _eventGeneration = chatEventController?.beginGeneration() || 0;
     if (chatLiveUi.clearDisconnectBanner()) {
@@ -837,7 +837,7 @@ function attachForkButton(msgEl) {
       const url = `${location.pathname}?session=${encodeURIComponent(newId)}${location.hash}`;
       window.open(url, '_blank');
       // Lightweight in-place toast via the existing debug-log channel.
-      dbg('chat', `已分叉: ${newId} (replay ${n} 条) → 新标签页已打开`);
+      dbg('chat', tt('dbgSessionForked', { id: newId, n }));
     } catch (err) {
       _chatAlert(tt('msgForkFailed', { error: chatApi.errorText(err) }), { danger: true });
     } finally {
@@ -1168,7 +1168,7 @@ function updateContextBar(usage, modelUsage) {
     contextWindow: _contextWindow,
     sessionTokens: _sessionTokens,
     providerWindows: _providerTokenWindows,
-    providerLabel: _providerName || _providerId || 'Provider',
+    providerLabel: _providerCatalog.providerDisplayName(_providerName || '') || _providerId || 'Provider',
     turnMeta: _turnMeta,
     contextTrace: _contextTrace,
     formatTokens: _providerCatalog.formatCompactTokens,
@@ -1785,7 +1785,7 @@ function applyCliSwitchState(info) {
   _activeProviderId = ''; _activeProviderName = ''; _activeProviderModel = '';
   if (info.provider !== undefined) _sessionProvider = info.provider || '';
   if (info.providerSelection !== undefined) _sessionProviderSelection = info.providerSelection || null;
-  if (info.providerName !== undefined) _sessionProviderDisplayName = info.providerName || '';
+  if (info.providerName !== undefined) _sessionProviderDisplayName = _providerCatalog.providerDisplayName(info.providerName || '');
   if (info.model !== undefined) _sessionModel = info.model || '';
   if (info.effectiveModel !== undefined) _sessionEffectiveModel = info.effectiveModel || info.model || '';
   if (info.effort !== undefined) _sessionEffort = info.effort || '';
@@ -2057,7 +2057,7 @@ function updateMemoryBtn() {
   memoryBtn.textContent = set ? tt('memorySet') : tt('memory');
   // 同 updateRoleBtn：展开成图标后 ✓ 得由 data-state 画出来。
   memoryBtn.dataset.state = set ? 'set' : 'off';
-  memoryBtn.title = '会话记忆库：私有（仅本会话）＋公共（项目共享）。原生 CLI 会话启动时形成快照，写入会立即持久化。点击查看/编辑';
+  memoryBtn.title = tt('memoryLibraryTitle');
 }
 
 // Folder-memory editor: two scopes (own = private to this session, shared =
@@ -2931,7 +2931,7 @@ const _chatRecovery = window.MultiCCChatRecoveryService.create({
 
 /* ── Start ── */
 // Entry resolution lives outside the archive/system renderer.
-dbg('state', TASK_MODE ? 'page loaded — task 模式启动' : 'page loaded — 开始连接');
+dbg('state', TASK_MODE ? tt('dbgPageLoadedTask') : tt('dbgPageLoadedConnect'));
 bootChatEntry();
 
 /* ════════════════════════════════════════════════════════════════════════════

@@ -4,6 +4,10 @@
   if (!root || !root.document) return;
   const document = root.document;
   const catalogApi = root.MultiCCProviderCatalog;
+  // 内置官方供应商的名字是服务端数据（'Codex 官方'），展示时按身份翻译；编辑框里
+  // 仍读原始 name，免得把英文写回记录。见 public/provider-catalog.js。
+  const displayName = provider => (catalogApi && catalogApi.providerDisplayName
+    ? catalogApi.providerDisplayName(provider) : (provider && provider.name) || '');
   const protocols = [
     ['all', t('airProviderProtocolAll')],
     ['anthropic', 'Anthropic Messages'],
@@ -130,7 +134,7 @@
     form.elements.authToken.placeholder = provider?.hasToken ? t('airProviderTokenKeep', { mask: provider.tokenMask || t('airProviderSet') }) : t('airProviderTokenUnset');
     fillAliases(form, provider?.aliasMap);
     syncDialogProtocol();
-    el('air-provider-form-title').textContent = provider ? t('airProviderEditTitle', { name: provider.name }) : t('airProviderFormTitleNew');
+    el('air-provider-form-title').textContent = provider ? t('airProviderEditTitle', { name: displayName(provider) }) : t('airProviderFormTitleNew');
     el('air-provider-save').textContent = provider ? t('airProviderSave') : t('airProviderCreate');
     el('air-provider-form-error').textContent = '';
     dialog.showModal();
@@ -181,7 +185,7 @@
     const head = make('div', null, 'air-provider-card-head');
     const title = make('div');
     title.append(make('span', provider.appType === 'claude' ? 'C' : 'O', `provider-cli-mark ${provider.appType}`));
-    const copy = make('span'); copy.append(make('strong', provider.name), make('small', `${cliName(provider.appType)} · ${protocolName(provider.apiFormat)}`));
+    const copy = make('span'); copy.append(make('strong', displayName(provider)), make('small', `${cliName(provider.appType)} · ${protocolName(provider.apiFormat)}`));
     title.append(copy);
     const tags = make('div', null, 'air-provider-tags');
     if (data.defaults[provider.appType] === provider.id) tags.append(make('span', t('airProviderGlobalDefault'), 'default'));
@@ -224,7 +228,7 @@
       const select = make('select'); select.dataset.cli = cli;
       const native = make('option', t('airProviderDefaultNative', { cli: cliName(cli) })); native.value = ''; select.append(native);
       for (const provider of data.providers.filter(item => item.appType === cli)) {
-        const option = make('option', `${provider.name} · ${protocolName(provider.apiFormat)}${provider.model ? ` · ${provider.model}` : ''}`);
+        const option = make('option', `${displayName(provider)} · ${protocolName(provider.apiFormat)}${provider.model ? ` · ${provider.model}` : ''}`);
         option.value = provider.id; select.append(option);
       }
       select.value = data.defaults[cli] || '';
@@ -272,10 +276,10 @@
   }
 
   async function removeProvider(provider) {
-    if (!confirm(t('airProviderDeleteConfirm', { name: provider.name }))) return;
+    if (!confirm(t('airProviderDeleteConfirm', { name: displayName(provider) }))) return;
     try {
       await context.api(`/api/providers/${encodeURIComponent(provider.appType)}/${encodeURIComponent(provider.id)}`, undefined, 'DELETE');
-      context.notice(t('airProviderDeleted', { name: provider.name }));
+      context.notice(t('airProviderDeleted', { name: displayName(provider) }));
       await load();
     } catch (error) {
       const refs = catalogApi.deleteReferenceDisplayData(error);
