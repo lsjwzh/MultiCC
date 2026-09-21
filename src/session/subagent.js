@@ -17,7 +17,7 @@ function normalizeSubagentInput({ cli, provider = null, subagent = null, validPr
   const clearing = subagent === null || subagent === ''
     || (typeof subagent === 'object' && Object.keys(subagent).length === 0);
   if (clearing) return { ok: true, value: null, cleared: true };
-  const appType = cli || 'claude';
+  const appType = cli === 'codex-exp' ? 'codex' : (cli || 'claude');
   if (appType !== 'claude' && appType !== 'codex') {
     return { ok: false, error: 'subagent routing is only supported by Claude and Codex' };
   }

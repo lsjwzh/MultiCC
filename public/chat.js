@@ -401,6 +401,7 @@ const cliBtn = document.getElementById('cli-btn');
 const CLI_META = {
   claude: { label: 'Claude', color: '#f78166' },
   codex: { label: 'Codex', color: '#2ea043' },
+  'codex-exp': { label: 'Codex Exp', color: '#20a66a' },
   opencode: { label: 'OpenCode', color: '#388bfd' },
   zcode: { label: 'ZCode', color: '#a371f7' },
   qoder: { label: 'Qoder CN', color: '#ff8a3d' },
@@ -1704,7 +1705,7 @@ modelBtn?.addEventListener('click', async () => {
       model: picked.model,
       effort: picked.effort,
       ...((configCli === 'claude' || configCli === 'opencode' || configCli === 'qoder' || configCli === 'codebuddy') ? { agent: picked.agent } : {}),
-      ...((configCli === 'claude' || configCli === 'codex') ? { subagent: picked.subagent } : {}),
+      ...((configCli === 'claude' || configCli === 'codex' || configCli === 'codex-exp') ? { subagent: picked.subagent } : {}),
     });
     if (data.deferred) {
       await loadSessionModel();
@@ -1812,7 +1813,7 @@ function updateProviderBtn() {
   const catalogUrl = quotaProvider?.baseUrl || '';
   const baseUrl = catalogUrl || (!(_sessionProviderSelection?.mode === 'auto') ? _sessionProviderBaseUrl : '');
   window.MultiCCChatRateLimit?.setProviderBaseUrl?.(baseUrl, quotaProviderId, {
-    appType: quotaProvider?.appType || (_sessionCli === 'codex' ? 'codex' : 'claude'),
+    appType: quotaProvider?.appType || ((_sessionCli === 'codex' || _sessionCli === 'codex-exp') ? 'codex' : 'claude'),
     pending: _sessionProviderSelection?.mode === 'auto' && !quotaProviderId,
   });
   updateModelBtn();

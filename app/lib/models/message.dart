@@ -278,7 +278,7 @@ ChatMessage? streamingAssistantTail(List<ChatMessage> messages) {
 }
 
 /// Which CLI binary this session drives.
-enum SessionCli { claude, codex, opencode, zcode, qoder, codebuddy, dsh }
+enum SessionCli { claude, codex, codexExp, opencode, zcode, qoder, codebuddy, dsh }
 
 /// Interactive TUI terminal, or stream-json chat.
 enum SessionKind { terminal, chat }
@@ -289,6 +289,8 @@ SessionCli? tryParseCli(String? s) {
       return SessionCli.claude;
     case 'codex':
       return SessionCli.codex;
+    case 'codex-exp':
+      return SessionCli.codexExp;
     case 'opencode':
       return SessionCli.opencode;
     case 'zcode':
@@ -314,6 +316,7 @@ SessionKind _parseKind(String? s) =>
 extension SessionCliX on SessionCli {
   String get name => switch (this) {
     SessionCli.codex => 'codex',
+    SessionCli.codexExp => 'codex-exp',
     SessionCli.opencode => 'opencode',
     SessionCli.zcode => 'zcode',
     SessionCli.qoder => 'qoder',
@@ -325,12 +328,17 @@ extension SessionCliX on SessionCli {
   /// Provider pool this CLI maps to. codex has its own pool;
   /// claude/opencode/zcode share the Anthropic-compatible 'claude' pool.
   /// Qoder CN owns its account/BYOK settings and does not expose a MultiCC pool.
-  String get appType => this == SessionCli.codex ? 'codex' : 'claude';
+  bool get isCodexFamily =>
+      this == SessionCli.codex || this == SessionCli.codexExp;
+
+  String get appType => isCodexFamily ? 'codex' : 'claude';
+  String get poolKey => this == SessionCli.codexExp ? 'codex' : name;
 
   /// Human-readable label for UI display.
   String get displayName => switch (this) {
     SessionCli.claude => 'Claude',
     SessionCli.codex => 'Codex',
+    SessionCli.codexExp => 'Codex Exp',
     SessionCli.opencode => 'OpenCode',
     SessionCli.zcode => 'ZCode',
     SessionCli.qoder => 'Qoder CN',
@@ -349,13 +357,13 @@ extension SessionCliX on SessionCli {
       this == SessionCli.opencode ||
       this == SessionCli.qoder ||
       this == SessionCli.codebuddy;
-  bool get supportsSubagent =>
-      this == SessionCli.claude || this == SessionCli.codex;
+  bool get supportsSubagent => this == SessionCli.claude || isCodexFamily;
   bool get supportsEffort => this != SessionCli.zcode && this != SessionCli.dsh;
 
   String get effortFieldLabel => switch (this) {
     SessionCli.claude => 'Effort',
     SessionCli.codex => 'Reasoning Level',
+    SessionCli.codexExp => 'Reasoning Level',
     SessionCli.opencode => 'Variant',
     SessionCli.zcode => '',
     SessionCli.qoder => 'Reasoning Effort',
@@ -366,6 +374,7 @@ extension SessionCliX on SessionCli {
   String get defaultEffort => switch (this) {
     SessionCli.claude => 'medium',
     SessionCli.codex => 'xhigh',
+    SessionCli.codexExp => 'xhigh',
     SessionCli.opencode => '',
     SessionCli.zcode => '',
     SessionCli.qoder => '',
@@ -383,6 +392,14 @@ extension SessionCliX on SessionCli {
       'ultracode',
     ],
     SessionCli.codex => const [
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ],
+    SessionCli.codexExp => const [
       'low',
       'medium',
       'high',
@@ -535,7 +552,7 @@ String effortShortNameForCli(SessionCli cli, String? effort) {
       v.isEmpty) {
     return 'Default';
   }
-  if (cli == SessionCli.codex ||
+  if (cli.isCodexFamily ||
       cli == SessionCli.opencode ||
       cli == SessionCli.qoder ||
       cli == SessionCli.codebuddy) {

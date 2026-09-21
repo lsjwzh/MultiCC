@@ -6,7 +6,7 @@ const { providerSelectionDto } = require('./providers/auto-provider-config');
 // native-CLI implementation details (cwd/worktreePath/cliSessionId), large
 // prompt/memory blobs, credentials, and Error objects.
 
-const SUPPORTED_CLIS = new Set(['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh']);
+const SUPPORTED_CLIS = new Set(['claude', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh']);
 const SUPPORTED_KINDS = new Set(['chat', 'terminal']);
 const SENSITIVE_KEY = /(?:token|secret|password|stack|(?:^|_)path|cwd|cliSessionId|worktree)/i;
 

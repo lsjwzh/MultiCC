@@ -179,6 +179,7 @@ void main() {
       expect(value?.usedPercentage, 100);
       expect(value?.resetsAtMs, 2000000000000);
       expect(value?.matchesCli('codex'), isTrue);
+      expect(value?.matchesCli('codex-exp'), isTrue);
       expect(value?.matchesCli('claude'), isFalse);
       final opencode = UsageWindowLimit.fromEvent({
         'rateLimitType': 'weekly',

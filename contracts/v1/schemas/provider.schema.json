@@ -16,7 +16,7 @@
     "model": { "type": ["string", "null"], "maxLength": 160 },
     "modelOptions": { "type": "array", "maxItems": 100, "items": { "type": "string", "maxLength": 160 } },
     "aliasOnly": { "type": "boolean" },
-    "compatibleClis": { "type": "array", "uniqueItems": true, "maxItems": 4, "items": { "enum": ["claude", "codex", "opencode", "zcode", "kimi"] } },
+    "compatibleClis": { "type": "array", "uniqueItems": true, "maxItems": 5, "items": { "enum": ["claude", "codex", "codex-exp", "opencode", "zcode", "kimi"] } },
     "hasCredentials": { "type": "boolean" },
     "isOfficial": { "type": "boolean" }
   }

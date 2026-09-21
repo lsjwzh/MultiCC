@@ -242,6 +242,7 @@ function resolveCliCommands(options = {}) {
   return {
     claude: resolveClaude(context),
     codex: resolveCodex(context),
+    'codex-exp': resolveCodex(context),
     opencode: resolveOpencode(context),
     zcode: resolveZcode(context),
     qoder: resolveQoder(context),

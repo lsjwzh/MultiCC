@@ -128,7 +128,7 @@ function createProviderRouterRuntime(options = {}) {
     const cli = overrides.cli || value.cli || 'claude';
     const requestedProvider = overrides.providerId !== undefined ? overrides.providerId : value.provider;
     const providerId = !value.loginFlow && typeof providers.normalizeOfficialProviderId === 'function'
-      ? providers.normalizeOfficialProviderId(cli, requestedProvider) : requestedProvider;
+      ? providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli, requestedProvider) : requestedProvider;
     return port.createBinding({
       sessionId: overrides.sessionId || value.id || value.sessionId,
       cli, providerId,
@@ -140,7 +140,7 @@ function createProviderRouterRuntime(options = {}) {
   }
 
   function hostOwnsOfficialCodexHome(binding) {
-    if (mode !== 'cpr' || binding.cli !== 'codex' || !binding.providerId) return false;
+    if (mode !== 'cpr' || !['codex', 'codex-exp'].includes(binding.cli) || !binding.providerId) return false;
     const provider = providers.getProvider('codex', binding.providerId);
     return typeof providers.isOfficialCodexOAuthProvider === 'function'
       && providers.isOfficialCodexOAuthProvider(provider);

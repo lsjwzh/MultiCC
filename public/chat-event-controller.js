@@ -7,6 +7,10 @@
       && /stream disconnected before completion|response\.completed/i.test(value);
   }
 
+  function isCodexCli(cli) {
+    return cli === 'codex' || cli === 'codex-exp';
+  }
+
   // 内置官方供应商的名字是服务端数据（'Codex 官方'），展示时按身份翻译。
   function displayProviderName(value) {
     const api = global && global.MultiCCProviderCatalog;
@@ -883,7 +887,7 @@
             state.currentMsgEl = createAssistantBubble();
           }
           if (message.textSnapshot === true) state.currentTextContent = block.text;
-          else if (state.currentCli === 'codex') {
+          else if (isCodexCli(state.currentCli)) {
             // A duplicated WS frame appends the same block twice; codex blocks
             // are complete items, so an exact repeat of a long block at the
             // current tail is a replay artifact, not new content.
@@ -894,7 +898,7 @@
           else if (!state.currentTextContent) state.currentTextContent = block.text;
           host.renderCurrentText?.();
           host.maybeScrollToBottom?.();
-        } else if (state.currentCli === 'codex' && block.type === 'tool_use' && block.id) {
+        } else if (isCodexCli(state.currentCli) && block.type === 'tool_use' && block.id) {
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
           let tool = findCurrentToolCardById(block.id);
           if (!tool) {

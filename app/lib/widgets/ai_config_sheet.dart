@@ -113,7 +113,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   late final TextEditingController _subCustomCtrl;
 
   bool get _isClaude => widget.cli == SessionCli.claude;
-  bool get _isCodex => widget.cli == SessionCli.codex;
+  bool get _isCodex => widget.cli.isCodexFamily;
   bool get _isQoder => widget.cli == SessionCli.qoder;
   String get _defaultEffort => widget.cli.defaultEffort;
 
@@ -124,7 +124,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (_provider.isEmpty) {
       for (final p in widget.providers) {
         if (p['builtinOfficial'] == true &&
-            p['id'] == '${widget.cli.name}-official') {
+            p['id'] == '${widget.cli.poolKey}-official') {
           _provider = p['id'].toString();
           break;
         }
@@ -792,7 +792,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 items: [
                   if (!widget.providers.any((p) =>
                       p['builtinOfficial'] == true &&
-                      p['id'] == '${widget.cli.name}-official'))
+                      p['id'] == '${widget.cli.poolKey}-official'))
                     const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
                   ...autoGroups.map(
                     (group) => DropdownMenuItem(
@@ -1098,7 +1098,7 @@ Future<List<Map<String, dynamic>>> prepareAIConfigInputs(
     try {
       await ClaudeModelsService(settings: settings).load();
     } catch (_) {}
-  } else if (cli == SessionCli.codex) {
+  } else if (cli.isCodexFamily) {
     try {
       await CodexModelsService(settings: settings).load(forceRefresh: true);
     } catch (_) {}

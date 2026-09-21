@@ -141,12 +141,14 @@ function createProviderRoutes(rawDeps) {
   }
 
   function validProviderId(cli, id) {
-    if (typeof deps.providers.normalizeOfficialProviderId === 'function') id = deps.providers.normalizeOfficialProviderId(cli, id);
+    const appType = deps.providers.appTypeForCli(cli);
+    if (typeof deps.providers.normalizeOfficialProviderId === 'function') {
+      id = deps.providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli, id);
+    }
     if (id == null || id === '') return { ok: true, value: null };
     // Qoder CN remains vendor-managed. OpenCode and ZCode both support the two
     // MultiCC pools, so their provider ids are looked up globally and then
     // constrained by the provider's declared protocol compatibility.
-    const appType = deps.providers.appTypeForCli(cli);
     const appTypes = typeof deps.providers.appTypesForCli === 'function'
       ? deps.providers.appTypesForCli(cli)
       : (appType ? [appType] : []);

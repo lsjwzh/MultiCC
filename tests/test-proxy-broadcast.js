@@ -93,6 +93,31 @@ test('onDelta attributes accepted main proxy deltas to the bound provider attemp
   });
 });
 
+test('codex-exp observes but suppresses the lossy proxy delta sidecar', () => {
+  const { sent, chatBroadcast } = harness();
+  const audited = [];
+  let observed = 0;
+  const attemptRuntime = {
+    observeProxyDelta() {
+      observed += 1;
+      return { accepted: true, sessionId: 's-exp' };
+    },
+  };
+  const { onDelta } = createProxyBroadcasters(chatBroadcast, {
+    attemptRuntime,
+    resolveCli: sessionId => sessionId === 's-exp' ? 'codex-exp' : 'codex',
+    audit: (sessionId, event) => audited.push({ sessionId, event }),
+  });
+
+  onDelta({ type: 'text', text: 'duplicate' }, {
+    sessionId: 's-exp', role: 'main', providerId: 'provider-a',
+  });
+
+  assert.equal(observed, 1, 'attempt ownership is still checked');
+  assert.equal(sent.length, 0, 'app-server is the only assistant delta source');
+  assert.equal(audited[0].event.code, 'native_delta_authoritative');
+});
+
 test('onDelta fails closed and audits unbound, ambiguous, ended, or errored proxy deltas', () => {
   const { sent, chatBroadcast } = harness();
   const audited = [];

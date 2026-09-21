@@ -45,6 +45,7 @@
       "enum": [
         "claude",
         "codex",
+        "codex-exp",
         "opencode",
         "zcode",
         "qoder",

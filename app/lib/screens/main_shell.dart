@@ -1950,9 +1950,7 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
             .map((e) => (e as Map).cast<String, dynamic>())
             .toList();
         final defaults = d['defaults'];
-        if (defaults is Map && defaults[initialCli.name] != null) {
-          defaultProviderId = defaults[initialCli.name].toString();
-        }
+        if (defaults is Map) defaultProviderId = defaults[initialCli.poolKey]?.toString();
       }
     } catch (_) {}
 

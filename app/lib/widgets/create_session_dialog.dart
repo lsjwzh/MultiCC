@@ -91,7 +91,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   final _customModelCtrl = TextEditingController();
 
   bool get _isClaude => _pickedCli == SessionCli.claude;
-  bool get _isCodex => _pickedCli == SessionCli.codex;
+  bool get _isCodex => _pickedCli.isCodexFamily;
+  Iterable<SessionCli> get _selectableClis => SessionCli.values.where(
+        (cli) => widget.kind == SessionKind.chat || cli != SessionCli.codexExp,
+      );
   bool get _isQoder => _pickedCli == SessionCli.qoder;
   String get _defaultEffort => _pickedCli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
@@ -120,8 +123,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _pickedCli = widget.defaultCli ?? SessionCli.claude;
     // If the requested default CLI isn't installed on this host, fall back to
     // the first available one (or keep Claude when nothing is known).
-    if (!_cliAvailable(_pickedCli)) {
-      for (final cli in SessionCli.values) {
+    if (!_selectableClis.contains(_pickedCli) || !_cliAvailable(_pickedCli)) {
+      for (final cli in _selectableClis) {
         if (_cliAvailable(cli)) {
           _pickedCli = cli;
           break;
@@ -451,7 +454,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     // Claude has a provider pool, but Claude Official exposes no modelOptions —
     // warm the CLI-bundle list so the dropdown upgrades once it lands.
     if (cli == SessionCli.claude) _loadClaudeModels();
-    if (cli == SessionCli.codex) {
+    if (cli.isCodexFamily) {
       try {
         await CodexModelsService(
           settings: widget.settings,
@@ -468,8 +471,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           .toList();
       String? defaultProviderId;
       final defaults = d['defaults'];
-      if (defaults is Map && defaults[cli.name] != null) {
-        defaultProviderId = defaults[cli.name].toString();
+      if (defaults is Map && defaults[cli.poolKey] != null) {
+        defaultProviderId = defaults[cli.poolKey].toString();
       }
       setState(() {
         _providers = providers;
@@ -609,7 +612,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               dropdownColor: const Color(0xFFffffff),
               style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
               decoration: sheetInputDecoration(),
-              items: SessionCli.values
+              items: _selectableClis
                   .map(
                     (cli) => DropdownMenuItem<SessionCli>(
                       value: cli,
