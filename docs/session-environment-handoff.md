@@ -41,8 +41,12 @@ curl -s "$MULTICC_BASE_URL/api/sessions/<id>/bundle.zip?passphrase=<≥6位口�
 ```
 
 得到一个标准 zip（任何解压工具可打开）：`skills/`、`assets/`、`git.bundle`
-是真实文件；`meta.json` 是明文摘要（只有计数，无标签/路径）；`manifest.json`
-是加密的敏感载荷（聊天历史、记忆、上下文依赖）。
+是真实文件；`meta.json` 是明文摘要——格式与版本、导出时间、计数、**CLI 类型**
+（接收方据此确认要装哪个 CLI）与 git 说明（基分支名，或「没带 git 载荷」的原因），
+但**不含**会话 id、会话标签、磁盘路径与仓库远端；`manifest.json` 是加密的敏感
+载荷（聊天历史、记忆、上下文依赖）。下载文件名用导出时间戳（
+`multicc-handoff-<yyyymmdd-hhmmss>.zip`）而不是会话 id —— 文件名会流经浏览器
+下载历史、代理日志与邮件附件，同样不能在明文里带身份。
 
 ### JSON 容器（v1/v2 兼容）
 
@@ -127,6 +131,11 @@ bundle 不带任何 provider 信息：源会话挂在哪个 provider、该 provi
 上不存在（源机可能用的是另一家线路），导入后请在会话设置里改成本机可用的
 模型，否则会拿跨 provider 的模型名去请求。
 
+要区分清楚的是 **CLI 类型**（`claude` / `codex`）：它仍然随包并在导入时沿用，
+因为它不是 provider 选择，而是这次 handoff 要落到哪个 CLI 上；`targetProviderId`
+指向的 provider、以及不指定时取的「本机默认 provider」，也都是按这个源 CLI 取的。
+两个导入入口目前只有 `targetProviderId`，没有 `targetCli`。
+
 被移除的旧行为：v1 起 payload 里带 `providerState`（`providerId` /
 `providerName` / 逐字的 spawn env / codex 凭据文件），导入时又把它明文写成
 新会话记忆目录里的 `.handoff-provider.json`。那份文件没有任何代码读回，
@@ -160,7 +169,8 @@ codex 的 `OPENAI_API_KEY` 与整份 codex home 副本），而生成的 HANDOFF
 - provider 选择、环境变量与凭据都不在包里（见上「Provider 不随包传播」），
   目标机用本机 provider 承接。
 - 记忆 scope 采集只收普通文件、跳过点文件（`.handoff-provider.json` 这类
-  历史残留不会被再带走一轮）。
+  历史残留不会被再带走一轮）；会话 fork 复制私有记忆目录时用同一规则
+  （残留凭据不会在会话之间增殖），导入侧对旧包里的同名点文件同样按名拒绝。
 - 导入的文件名/路径经过白名单校验，拒绝 `..`、绝对路径、反斜杠与控制字符；
   zip 读取层额外校验每个条目的 CRC32、条目数与总解压体积上限（防压缩炸弹），
   拒绝 zip64。
@@ -173,6 +183,10 @@ codex 的 `OPENAI_API_KEY` 与整份 codex home 副本），而生成的 HANDOFF
 - 自动技能检测基于名称匹配（记忆与近 300 轮对话），内置共享规则种子文本
   已从检测语料中剔除，不会把随发行版自带的 `multicc-artifact` 误打包。
 - v1/v2 旧 bundle 仍可导入（按原行为恢复）。
+- CLI 类型随包且导入时强制沿用（导入参数只有 `dirId` / `targetProviderId` /
+  `label`，没有 `targetCli`），导入前也不检查目标机是否装了该 CLI：源机用
+  `claude`、目标机只装了 `codex` 时，导入仍会成功并留下一个装好 CLI 之前
+  跑不起来的会话。
 - zip 容器由内置的最小 zip 实现（`src/session/handoff-zip.js`）读写，支持
   store/deflate；已验证与系统 unzip 互操作。
 - 已在两个**真实在线实例**之间跑过双向实测（Docker 任务壳实验环境 ↔ 本机主

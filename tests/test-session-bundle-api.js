@@ -265,7 +265,7 @@ async function stopServer() {
   // memory file (ordinary memory still is).
   const exportedPayload = decryptBundle({ salt, iv, ct, tag }, PASSPHRASE);
   assert.ok(!('providerState' in exportedPayload), 'payload must not carry providerState');
-  assert.ok(!('envKeys' in exportedPayload.contextDeps), 'contextDeps must not carry provider env key names');
+  assert.ok(!('envKeys' in (exportedPayload.contextDeps || {})), 'contextDeps must not carry provider env key names');
   assert.equal(exportedPayload.memoryFiles['source-notes.md'], 'source memory content\n',
     'ordinary source memory still travels');
   assert.ok(!Object.keys(exportedPayload.memoryFiles).some(name => name.startsWith('.')),
@@ -324,6 +324,13 @@ async function stopServer() {
     { headers: { Authorization: `Bearer ${TOKEN}` } });
   assert.equal(zipResponse.status, 200);
   assert.match(zipResponse.headers.get('content-type') || '', /zip/);
+  // The download filename rides in the clear — browser download history, proxy
+  // logs, a mail attachment — so it must not name the source session; the
+  // container's plaintext-summary promise covers the header too.
+  const disposition = zipResponse.headers.get('content-disposition') || '';
+  assert.ok(!disposition.includes(sourceId),
+    `zip download name must not leak the source session id: ${disposition}`);
+  assert.match(disposition, /filename="multicc-handoff-\d{8}-\d{6}\.zip"/, disposition);
   const zipBuf = Buffer.from(await zipResponse.arrayBuffer());
   assert.equal(zipBuf.readUInt32LE(0), 0x04034b50, 'response body is a zip archive');
   // Standard-tool interop is covered by unit tests; here verify structure via
@@ -342,7 +349,7 @@ async function stopServer() {
   const zipManifest = decryptBundle(
     JSON.parse(zipEntries.find(e => e.name === 'manifest.json').data.toString('utf8')), PASSPHRASE);
   assert.ok(!('providerState' in zipManifest), 'zip manifest must not carry providerState');
-  assert.ok(!('envKeys' in zipManifest.contextDeps), 'zip manifest must not carry provider env key names');
+  assert.ok(!('envKeys' in (zipManifest.contextDeps || {})), 'zip manifest must not carry provider env key names');
   const assetEntries = zipEntries.filter(e => e.name.startsWith('assets/'));
   assert.ok(assetEntries.length >= 1, JSON.stringify(zipNames));
   assert.deepEqual(assetEntries[0].data, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
