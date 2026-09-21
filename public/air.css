@@ -600,6 +600,9 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-mode { display: flex; gap: 3px; width: fit-content; margin: 0 0 16px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); }
 .directory-mode button { min-height: 30px; padding: 0 16px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .directory-mode button[aria-selected="true"] { background: var(--panel); color: var(--accent-strong); box-shadow: 0 1px 4px #35577d14; }
+.directory-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
+.directory-toolbar .directory-mode { margin: 0; }
+#directory-memo { flex-shrink: 0; }
 #directory-terminals { display: none; }
 #empty.is-terminal-mode #directory-terminals { display: block; }
 #empty.is-terminal-mode > #setup-card,
@@ -818,6 +821,9 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #directory-grid strong, #directory-grid small { display: block; overflow-wrap: anywhere; }
 #directory-grid strong { margin-bottom: 7px; font-size: 15px; }
 #directory-grid small + small { margin-top: 9px; color: #3e75ad; }
+.directory-card { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.directory-card > button { flex: 1; width: 100%; }
+.directory-memo { align-self: flex-end; padding: 4px 12px; color: var(--accent-strong); font-size: 12px; }
 
 /* Every view paints the same surface under the one header band, so switching
    modes no longer looks like a second panel opening. */

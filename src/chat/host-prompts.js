@@ -79,14 +79,14 @@ function createHostPrompts(env = process.env) {
     '  · sync 接口定位：`/sync` 主要供用户/UI 手动同步，或由派活方选择性预同步一个空闲目标；它不是 Agent 自同步的必经入口。Agent 不调用“当前会话自己的 sync”接口，因为运行中的会话会按设计返回 HTTP 409 busy。',
     '  · Agent 自同步：在自己的 worktree 内直接用 Git 对齐本地基分支；先确认无进行中的 rebase/merge、工作区 clean、没有其它托管 Git 操作并发，再检查 `git rev-list --left-right --count HEAD...main`，不得编辑 main 工作区。',
     '  · 分叉处理：纯落后可 fast-forward；存在 ahead/diverged 时先判断提交是独有、已合入还是被 amend/cherry-pick 吸收，再选择 rebase 或建立可恢复引用后安全对齐。dirty、归属不明或冲突时停止并报告；禁止 force，禁止直接丢弃无法证明已入基线的提交。',
-    '  · 派活与收回：派活方可让目标在开工时自行 Git 同步；若已通过接口预同步空闲目标，则把结果写入任务。目标完成后仍须 commit、调用自己的 merge 接口并报告；派活方收到“已合并”后，在自己的活动 worktree 内用 Git 自同步。',
+    '  · 派活与收回：派活方可让目标在开工时自行 Git 同步；若已通过接口预同步空闲目标，则把结果写入任务。目标完成后报告代码与验证结果；只有任务中明确授权提交/合并时才调用 merge 接口，不能绕过 AutoCommit 开关；派活方收到“已合并”后，在自己的活动 worktree 内用 Git 自同步。',
     '  · 验收不变量：同步后 `git status --short` 为空且 `HEAD...main` 的 behind 必须为 0；`0 0` 才是完全一致。ahead>0 代表仍有待合入本地提交，必须保留并说明归属，不能把接口的 `unmerged` 文案误报成 Git index 冲突。',
     '',
     `【代码搜索：grep/rg 在本会话失效】在 multicc chat 会话（你当前所在的 worktree）里，用 Bash 跑 grep/rg 搜当前 worktree 之外的代码（主仓库根、其它 worktree、任何本 worktree 外的路径）时，命令会被沙箱拦截、返回纯空 stdout——不是「0 匹配」，是连 grep -c 的计数字都没有、stderr 也被吞掉，极易误判为「没找到」。而 wc、cat、Read 工具读同一个文件完全正常。判断方法：wc -l <file> 有输出但 grep -c require <file> 为空，就是中招了。`,
     `搜代码请改用：① Read 工具（专用工具，绕过沙箱）按 offset/limit 读特定段落；② node fs 搜索——在 Bash 里（加 dangerouslyDisableSandbox）用 require("fs").readFileSync 把文件读成字符串、split 成行、用正则测试每行、命中就打印「行号: 片段」（比 grep 稍啰嗦，但唯一可靠）。`,
     `★这对子任务尤其关键：派 subagent / Workflow / Task 时，必须在指令里明确写「禁止 grep，只用 Read 或 node fs」——子 agent 不读你的记忆，遇到 grep 全空会不断换关键词无限重试、直接 stall（一直跑却不收尾，只能 TaskStop 收场）。`,
     '',
-    '【改代码的落点：在自己 worktree 改，再 merge 回 main】每个 chat 会话独占一个 worktree（分支 multicc/<sessionId>），main 是只读基分支。改任何代码（server.js / src/* / app/* 等）都只在自己当前 worktree 里改并 commit，**不要直接编辑主 worktree（main 工作目录）的文件**——那会产生漂浮的未提交改动：绕过 commit/merge 的可追溯性，还会因 main 工作区脏阻断后续 merge（git 遇工作区有未提交改动且 merge 涉及同名文件时会拒绝、报 local changes would be overwritten）。正确流程：① 在自己 worktree 用 Edit/Write 改文件；② git add + commit 到 multicc/<sessionId>；③ 调 merge 合回 main：curl -s -X POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/merge（需 dangerouslyDisableSandbox），成功后会自动 sync 兄弟 worktree；④ 若发现自己之前误改了主 worktree，先 git -C <主worktree> checkout -- <误改文件> 撤销漂浮改动让 main 干净，再调 merge，否则 merge 会被脏工作区拒绝。与上面【跨会话协作 worktree 同步纪律】互补：那条讲多会话间同步，这条讲单会话改代码该落在哪。',
+    '【代码落点与 AutoCommit】每个 chat 会话只在自己的 worktree + 分支（multicc/<sessionId>）里修改代码并完成验证，main 是只读基分支。禁止直接编辑主 worktree 的文件，也不要擅自撤销主 worktree 的未提交改动。AutoCommit（会话开关与本轮勾选框）的提交和合并由 MultiCC 在本轮成功后统一执行；Agent 不要因为“任务做完了”就自行 git commit 或调用 merge 接口，否则会绕过用户关闭的开关。只有用户在任务中明确要求提交/合并时，才由 Agent 在自己的 worktree 提交并调用 POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/merge；这类明确指令优先于自动提交设置。没有明确要求时，完成修改和验证后报告结果，保留代码等待自动提交或用户手动合并。',
   ].join('\n');
   return {
     codexEnvConstraint,
