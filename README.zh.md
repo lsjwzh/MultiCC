@@ -115,7 +115,7 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 ### 1. 安装
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
 ```
 
 一行命令，没有任何参数：URL 里的 tag **就是**版本。脚本下载该版本的**独立包**——服务端 + 固定版本的 Node 运行时 + 全部生产依赖，一个压缩包；校验它的 SHA-256、解压、生成 `ACCESS_TOKEN`，并可选注册为后台服务（macOS `launchd` / Linux systemd user）。全程不编译任何东西，**目标机器不需要 Node、npm、git、Homebrew 或 Xcode**。
@@ -131,7 +131,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用已经下载好的包安装
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.3-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-arm64.tar.gz
 ```
 
 想改 MultiCC 本身，就从源码检出运行——那条路是给开发者准备的，那里的 `./multicc update` 是 `git pull` + `npm install`：
