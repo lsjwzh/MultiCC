@@ -1,6 +1,7 @@
 'use strict';
 
 const { desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
+const cliUpstream = require('./cli-upstream-version');
 
 const crypto = require('node:crypto');
 const os = require('node:os');
@@ -63,6 +64,13 @@ const CLI_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
 // 比 install 短得多: --version 是本地调用, 但个别 CLI 冷启动较慢, 给 8s 兜底。
 const CLI_VERSION_TIMEOUT_MS = Number(process.env.CLI_VERSION_TIMEOUT_MS || 8000);
 const CLI_VERSION_MAX_BUFFER = 64 * 1024;
+
+// 最新版探测与本地版本探测分开缓存: 上游 registry 会超时/限流, 本地 `--version`
+// 不会。两者共用一个 TTL, 但互不覆盖 —— 上游挂了不该让「当前版本」这一栏也空掉。
+const CLI_LATEST_TTL_MS = 24 * 60 * 60 * 1000;
+// 启动后先等一会儿再探, 别和进程启动时的其它初始化抢网络/CPU。
+const UPDATE_WATCH_STARTUP_DELAY_MS = 15 * 1000;
+const UPDATE_WATCH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function cliHandoffSummary(session) {
   const handoff = session && session.pendingCliHandoff;
@@ -129,7 +137,11 @@ function createCliSwitchRuntime(options) {
   // 会 spawn 的那个二进制; execFile 缺省走 child_process, 测试可注入假实现。
   const cliCommandsOverride = options.cliCommands;
   const execFileVersionOverride = options.execFileVersion;
+  const fetchLatestVersionOverride = options.fetchLatestVersion;
+  const registryBaseOverride = options.registryBase;
   const versionCache = { at: 0, versions: null };
+  const latestCache = { at: 0, latest: null };
+  let updateWatchStarted = false;
 
   function resolveCliCommandMap() {
     if (cliCommandsOverride && typeof cliCommandsOverride === 'object') return cliCommandsOverride;
@@ -142,6 +154,11 @@ function createCliSwitchRuntime(options) {
   function resolveExecFile() {
     if (typeof execFileVersionOverride === 'function') return execFileVersionOverride;
     return require('node:child_process').execFile;
+  }
+
+  function resolveFetchLatestVersion() {
+    if (typeof fetchLatestVersionOverride === 'function') return fetchLatestVersionOverride;
+    return pkg => cliUpstream.fetchLatestVersion(pkg, { registryBase: registryBaseOverride });
   }
 
   function resolveSpawn() {
@@ -242,17 +259,31 @@ function createCliSwitchRuntime(options) {
     });
   }
 
-  // 汇总所有受支持 CLI 的当前版本。force=true 或缓存过期(1 天)才重新探测;
-  // 不可用/未解析到路径的 CLI 直接标记 available:false 且不 spawn(避免 ENOENT
-  // 噪声与无谓子进程)。探测并发进行, 单个失败不影响其它。
-  async function collectCliVersions({ force = false } = {}) {
+  // 「哪些 CLI 现在有会话在用」。升级是就地替换二进制: 正在跑的进程持有旧 inode,
+  // 本身不受影响, 但升级瞬间新起的 turn 可能读到半写状态。前端拿这个数字把确认框
+  // 的文案说准 —— 只提示, 不阻断。逐会话 try: 读不出来就少报一个, 绝不抛。
+  function cliInUseCounts() {
+    const counts = {};
+    if (typeof records.values !== 'function') return counts;
+    for (const session of records.values()) {
+      const cli = session && session.cli;
+      const id = session && session.id;
+      if (!cli || !id) continue;
+      try {
+        if (chatSessions.has(id) || options.hasLiveBackgroundTasks(id)) {
+          counts[cli] = (counts[cli] || 0) + 1;
+        }
+      } catch (_) { /* 只影响提示文案 */ }
+    }
+    return counts;
+  }
+
+  // 本地 `--version` 探测(原样保留: 不可用的 CLI 标记 available:false 且不 spawn,
+  // 避免 ENOENT 噪声与无谓子进程; 并发进行, 单个失败不影响其它)。
+  async function probeLocalVersions({ force }) {
     const now = clock();
     if (!force && versionCache.versions && (now - versionCache.at) < CLI_VERSION_TTL_MS) {
-      return {
-        versions: versionCache.versions,
-        cached: true,
-        checkedAt: new Date(versionCache.at).toISOString(),
-      };
+      return { versions: versionCache.versions, at: versionCache.at, cached: true };
     }
     const commands = resolveCliCommandMap();
     const availability = options.cliAvailabilitySummary() || {};
@@ -269,7 +300,97 @@ function createCliSwitchRuntime(options) {
     }));
     versionCache.at = now;
     versionCache.versions = next;
-    return { versions: next, cached: false, checkedAt: new Date(now).toISOString() };
+    return { versions: next, at: now, cached: false };
+  }
+
+  // 上游最新版。只对「已安装 且 有 npm 源」的 CLI 发请求: qoder(curl 脚本安装)与
+  // zcode(手动装桌面版)没有可比对的发布源, 一律 latest:null —— 前端据此显示
+  // 「无法检测最新版」, 而不是把它当成「已是最新」。整体 best-effort: 解析不到就是
+  // null, 永不 reject。
+  async function probeLatestVersions({ force, versions }) {
+    const now = clock();
+    const fresh = !force && latestCache.latest && (now - latestCache.at) < CLI_LATEST_TTL_MS;
+    if (fresh) return { latest: latestCache.latest, at: latestCache.at, cached: true };
+    const fetchLatest = resolveFetchLatestVersion();
+    const next = {};
+    await Promise.all(supportedClis.map(async (cli) => {
+      const pkg = cliUpstream.npmPackageFor(cli);
+      const entry = versions[cli];
+      if (!pkg || !entry || !entry.available) { next[cli] = null; return; }
+      try {
+        next[cli] = await fetchLatest(pkg);
+      } catch (_) {
+        next[cli] = null;
+      }
+    }));
+    latestCache.at = now;
+    latestCache.latest = next;
+    return { latest: next, at: now, cached: false };
+  }
+
+  // 合并成对外契约。原有字段(cmd/available/version/error)一个不动, 只新增
+  // latest/updateAvailable/updateSource/inUseCount, 老客户端继续照旧读。
+  function decorateVersions(versions, latest, inUse = {}) {
+    const out = {};
+    for (const cli of supportedClis) {
+      const entry = versions[cli] || { cmd: null, available: false, version: null, error: null };
+      const pkg = cliUpstream.npmPackageFor(cli);
+      const verdict = cliUpstream.classifyUpdate(entry.version, latest ? latest[cli] : null);
+      out[cli] = {
+        ...entry,
+        latest: verdict.latest,
+        updateAvailable: verdict.updateAvailable,
+        updateSource: pkg ? 'npm' : null,
+        inUseCount: inUse[cli] || 0,
+      };
+    }
+    return out;
+  }
+
+  async function collectCliVersions({ force = false } = {}) {
+    const local = await probeLocalVersions({ force });
+    const upstream = await probeLatestVersions({ force, versions: local.versions });
+    const versions = decorateVersions(local.versions, upstream.latest, cliInUseCounts());
+    const updateCount = Object.values(versions).filter(entry => entry.updateAvailable).length;
+    return {
+      versions,
+      cached: local.cached && upstream.cached,
+      checkedAt: new Date(Math.max(local.at, upstream.at)).toISOString(),
+      lastCheckedAt: new Date(local.at).toISOString(),
+      latestCheckedAt: new Date(upstream.at).toISOString(),
+      updateCount,
+    };
+  }
+
+  function invalidateVersionCaches() {
+    versionCache.at = 0;
+    versionCache.versions = null;
+    latestCache.at = 0;
+    latestCache.latest = null;
+  }
+
+  // 启动后探一次, 之后每 24h 一次。两个 timer 都 unref: 检测永远不该把一个进程
+  // 留在世上, 也不该在重启时拖住退出。检测失败只记一行日志 —— 待更新角标是纯提示,
+  // 它坏了不能让服务坏。
+  function startUpdateWatch() {
+    if (updateWatchStarted) return updateWatchStarted;
+    updateWatchStarted = true;
+    const run = () => {
+      Promise.resolve()
+        .then(() => collectCliVersions({ force: true }))
+        .catch(error => {
+          const logger = options.logger || console;
+          const message = (error && error.message) || String(error);
+          if (logger && typeof logger.warn === 'function') {
+            logger.warn(`[multicc] CLI update check failed: ${message}`);
+          }
+        });
+    };
+    const startup = setTimeout(run, UPDATE_WATCH_STARTUP_DELAY_MS);
+    if (typeof startup.unref === 'function') startup.unref();
+    const interval = setInterval(run, UPDATE_WATCH_INTERVAL_MS);
+    if (typeof interval.unref === 'function') interval.unref();
+    return true;
   }
 
   // spawn 的 PATH 追加常见二进制目录(homebrew/local/user-local)。
@@ -344,6 +465,8 @@ function createCliSwitchRuntime(options) {
         const avail = options.cliAvailabilitySummary();
         if (avail && avail[cli] && avail[cli].available) {
           job.status = 'done';
+          // 装/升级成功 -> 两份缓存都作废, 下一次读取立刻反映新版本(角标随之消失)。
+          invalidateVersionCaches();
         } else {
           job.status = 'error';
           job.error = '安装已完成, 但未在 PATH 找到可执行文件, 请重开终端或手动配置 PATH';
@@ -714,17 +837,49 @@ function createCliSwitchRuntime(options) {
     }));
 
     // GET /api/cli/versions — 报告 multicc 实际派生的每个 CLI 二进制的当前版本
-    // (`<bin> --version`, 缓存 1 天, ?refresh=1 强制重探)。只读、只提示, 绝不
-    // 自动升级或替换二进制; 供切换面板显示"当前版本"并让用户自行决定何时更新。
+    // (`<bin> --version`, 缓存 1 天, ?refresh=1 强制重探) 与上游发布的最新版。
+    // 本地探测只读; 最新版只在 GET 时读缓存/按 TTL 重探, 绝不自动升级或替换二进制。
+    // 待更新只是提示, 装不装由用户在浮层里点「升级」决定(POST .../upgrade)。
     app.get('/api/cli/versions', asyncHandler(async (req, res) => {
       const force = !!(req.query && (req.query.refresh === '1' || req.query.force === '1'));
       const result = await collectCliVersions({ force });
       return res.json({ ok: true, ...result });
     }));
+
+    // POST /api/cli/:cli/upgrade — 跑官方安装命令做原地升级。
+    // 刻意不复用 /install 的 `alreadyInstalled` 短路: 那条捷径的语义是「没装才装」,
+    // 而升级的前提恰恰是已经装了。其余(同一 CLI 串行、8 分钟超时、日志尾部、
+    // 失败分类提示)与安装完全同一条链路。成功后 exit 处理里会作废版本缓存。
+    app.post('/api/cli/:cli/upgrade', asyncHandler(async (req, res) => {
+      const cli = String((req.params && req.params.cli) || '').trim().toLowerCase();
+      if (!supportedClis.includes(cli)) {
+        return res.status(400).json({ ok: false, error: 'unsupported cli' });
+      }
+      const spec = installSpecs[cli];
+      if (!spec) {
+        return res.status(400).json({ ok: false, error: 'unsupported cli' });
+      }
+      if (spec.auto === false) {
+        return res.status(400).json({ ok: false, manual: true, error: spec.manual });
+      }
+      const running = findRunningInstallJob(cli);
+      if (running) {
+        return res.status(409).json({ ok: false, running: true, jobId: running.id });
+      }
+      const job = launchInstallJob(cli);
+      return res.status(202).json({
+        ok: true,
+        jobId: job.id,
+        cli: job.cli,
+        command: job.command,
+        inUseCount: cliInUseCounts()[cli] || 0,
+      });
+    }));
   }
 
   return Object.freeze({
     mountRoutes,
+    startUpdateWatch,
     cliSwitchDefaults,
     cliSwitchGitSnapshot,
     cliSwitchBusyState,

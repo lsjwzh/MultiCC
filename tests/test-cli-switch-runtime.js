@@ -95,6 +95,9 @@ function createHarness(overrides = {}) {
     spawnProcess: overrides.spawnProcess,
     cliCommands: overrides.cliCommands,
     execFileVersion: overrides.execFileVersion,
+    // 默认桩: 不打真实 npm registry。想断言「有新版」的用例自己注入一个。
+    fetchLatestVersion: overrides.fetchLatestVersion || (async () => null),
+    registryBase: overrides.registryBase,
   });
   const app = {
     routes: {},
@@ -128,7 +131,12 @@ function createHarness(overrides = {}) {
     await app.routes['GET /api/cli/versions']({ params: {}, query, body: {} }, res);
     return res;
   }
-  return { runtime, session, records, chat, effects, app, invoke, invokeSpecs, invokeInstall, invokeStatus, invokeVersions };
+  async function invokeUpgrade(cli) {
+    const res = createResponse();
+    await app.routes['POST /api/cli/:cli/upgrade']({ params: { cli }, body: {} }, res);
+    return res;
+  }
+  return { runtime, session, records, chat, effects, app, invoke, invokeSpecs, invokeInstall, invokeStatus, invokeVersions, invokeUpgrade };
 }
 
 test('dependency boundary fails closed before registering a route', () => {
@@ -667,3 +675,159 @@ test('a pending profile applies once at an idle boundary; live steering retains 
   assert.equal(h.session.cliSessionId, 'claude-native'); assert.equal(h.session.pendingConfiguration, undefined);
   assert.equal(h.effects.filter(e => e === 'stream-close:s1').length, 1);
 });
+
+// ── 上游最新版比对 + 一键升级 ─────────────────────────────────────────────
+// 「有没有新版」是两个独立事实的组合: 本地 `--version` 与上游发布的 latest。
+// 这里钉的是两者的边界 —— 谁查不到、谁不该被查、谁只该被提示而不该被自动动。
+
+test('cli/versions compares against the published version and counts the updates', async () => {
+  const published = { '@anthropic-ai/claude-code': '2.0.2', '@openai/codex': '0.20.0' };
+  const exec = fakeExecFile({ '/bin/claude': 'claude v2.0.1', '/bin/codex': 'codex-cli 0.20.0' });
+  const harness = createHarness({
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    fetchLatestVersion: async pkg => published[pkg] || null,
+    availability: { claude: { available: true }, codex: { available: true } },
+  });
+  const res = await harness.invokeVersions();
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.versions.claude.latest, '2.0.2');
+  assert.equal(res.body.versions.claude.updateSource, 'npm');
+  assert.equal(res.body.versions.claude.updateAvailable, true);
+  // 同版本不算待更新 —— 否则每次打开页面都在催升级
+  assert.equal(res.body.versions.codex.latest, '0.20.0');
+  assert.equal(res.body.versions.codex.updateAvailable, false);
+  assert.equal(res.body.updateCount, 1);
+  assert.match(res.body.latestCheckedAt, /^\d{4}-/);
+});
+
+test('cli/versions never claims an update where there is no comparable source', async () => {
+  const exec = fakeExecFile({ '/bin/qoderclicn': '1.1.4', '/bin/zcode': '0.16.5' });
+  const asked = [];
+  const harness = createHarness({
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    fetchLatestVersion: async pkg => { asked.push(pkg); return '9.9.9'; },
+    availability: { qoder: { available: true }, zcode: { available: true }, kimi: { available: false } },
+  });
+  const res = await harness.invokeVersions();
+  // qoder(curl 脚本装)与 zcode(手动装桌面版)没有可查的发布源: latest 只能是 null,
+  // 前端据此显示「无法检测」而不是「已是最新」。
+  assert.equal(res.body.versions.qoder.latest, null);
+  assert.equal(res.body.versions.qoder.updateSource, null);
+  assert.equal(res.body.versions.qoder.updateAvailable, false);
+  assert.equal(res.body.versions.zcode.updateAvailable, false);
+  assert.equal(res.body.updateCount, 0);
+  // 没有 npm 源的、以及压根没装的, 都不该去打网络
+  assert.deepEqual(asked, []);
+});
+
+test('cli/versions reports inUseCount so the upgrade dialog can name the risk', async () => {
+  const exec = fakeExecFile({ '/bin/claude': '2.0.1', '/bin/opencode': '1.18.18' });
+  const options = {
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    fetchLatestVersion: async () => '2.0.2',
+    availability: { claude: { available: true }, opencode: { available: true } },
+  };
+  // 唯一的活动会话 s1 跑的是 claude -> 只有 claude 被计为「正在使用」
+  const busy = await createHarness(options).invokeVersions();
+  assert.equal(busy.body.versions.claude.inUseCount, 1);
+  assert.equal(busy.body.versions.opencode.inUseCount, 0);
+  // 没有任何活动会话时不谎报占用
+  const quiet = await createHarness({ ...options, chat: false }).invokeVersions();
+  assert.equal(quiet.body.versions.claude.inUseCount, 0);
+});
+
+test('upgrade runs the official command even though the cli is already installed', async () => {
+  let proc = null;
+  const fakeSpawn = () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    // claude 是可用的 -> /install 会短路, /upgrade 不能短路
+    availability: { claude: { available: true } },
+  });
+  const install = await harness.invokeInstall('claude');
+  assert.equal(install.statusCode, 200);
+  assert.equal(install.body.alreadyInstalled, true);
+
+  const res = await harness.invokeUpgrade('claude');
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.cli, 'claude');
+  assert.equal(res.body.command, 'npm install -g @anthropic-ai/claude-code');
+  assert.ok(proc, '升级必须真的起了安装进程');
+
+  const status = await harness.invokeStatus(res.body.jobId);
+  assert.equal(status.body.job.status, 'running');
+});
+
+test('upgrade refuses unsupported clis and manual-only installs', async () => {
+  const harness = createHarness();
+  const unknown = await harness.invokeUpgrade('nope');
+  assert.equal(unknown.statusCode, 400);
+  assert.equal(unknown.body.ok, false);
+  const manual = await harness.invokeUpgrade('zcode');
+  assert.equal(manual.statusCode, 400);
+  assert.equal(manual.body.manual, true);
+  assert.match(manual.body.error, /ZCode/);
+});
+
+test('upgrade returns 409 while a job for the same cli is still running', async () => {
+  const fakeSpawn = () => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    return ee;
+  };
+  const harness = createHarness({ spawnProcess: fakeSpawn });
+  const first = await harness.invokeUpgrade('claude');
+  assert.equal(first.statusCode, 202);
+  const second = await harness.invokeUpgrade('claude');
+  assert.equal(second.statusCode, 409);
+  assert.equal(second.body.running, true);
+  assert.equal(second.body.jobId, first.body.jobId);
+});
+
+test('a successful upgrade invalidates both caches so the badge clears on the next read', async () => {
+  let proc = null;
+  const fakeSpawn = () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+  let installed = 'claude v2.0.1';
+  const exec = (cmd, args, _options, cb) => cb(null, installed, '');
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: exec,
+    fetchLatestVersion: async () => '2.0.2',
+    availability: { claude: { available: true } },
+  });
+
+  const before = await harness.invokeVersions();
+  assert.equal(before.body.versions.claude.version, '2.0.1');
+  assert.equal(before.body.updateCount, 1);
+
+  const started = await harness.invokeUpgrade('claude');
+  assert.equal(started.statusCode, 202);
+  installed = 'claude v2.0.2'; // 升级把二进制真的换掉了
+  proc.emit('exit', 0, null);
+
+  const after = await harness.invokeVersions();
+  assert.equal(after.body.cached, false, '升级成功后必须重探, 而不是回放旧缓存');
+  assert.equal(after.body.versions.claude.version, '2.0.2');
+  assert.equal(after.body.versions.claude.updateAvailable, false);
+  assert.equal(after.body.updateCount, 0);
+});
+
