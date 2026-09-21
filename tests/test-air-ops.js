@@ -18,6 +18,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
+// 页面上的 t() 由 i18n.js 提供；沙箱里没有它，模块一取文案就会 ReferenceError。
+const { t, getLocale } = require('./helpers/i18n-translator');
 
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public/air-ops.js'), 'utf8');
@@ -186,6 +188,8 @@ function buildContext({ fetchImpl, confirmResult = true, pushInfo = null, qrcode
     togglePush: async () => { context.__toggled = (context.__toggled || 0) + 1; return true; },
     getPushInfo: () => pushInfo,
     console: createSandboxConsole(),
+    t,
+    getLocale,
   };
   context.window = context;
   vm.createContext(context);
@@ -473,7 +477,10 @@ test('restart reports how many turns it will interrupt', async () => {
 });
 
 // ── Push ───────────────────────────────────────────────────────────────────
-test('the push button carries a Chinese label, because Air ships no dictionary', async () => {
+// 沙箱里的 t() 是中文词典（见 helpers/i18n-translator），所以断言照旧是中文原文；
+// 要守的是「标签由模块自己重画」—— pwa.js 自带一份英文兜底标签，它的状态事件
+// 不能把这里的中文盖掉。
+test('the push button labels itself, and pwa.js\'s own label never wins', async () => {
   const fetchImpl = scriptedFetch({
     '/api/server-info': [{ json: { uptimeMs: 900 } }],
     '/api/version-check': [{ json: { current: '1.6.10', updateAvailable: false } }],
@@ -596,7 +603,7 @@ test('the module stays inert on a page without the ops region', async () => {
     addEventListener() {},
     removeEventListener() {},
   };
-  const context = { document, setTimeout: () => 0, setInterval: () => 0, clearTimeout() {}, fetch: fetchImpl, console: createSandboxConsole() };
+  const context = { document, setTimeout: () => 0, setInterval: () => 0, clearTimeout() {}, fetch: fetchImpl, console: createSandboxConsole(), t, getLocale };
   context.window = context;
   vm.createContext(context);
   assert.doesNotThrow(() => vm.runInContext(SOURCE, context, { filename: 'air-ops.js' }));

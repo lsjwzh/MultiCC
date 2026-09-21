@@ -59,33 +59,40 @@
   let directoryTasksExpanded = false;
   const directoryTaskFilter = { query: '', status: 'open' };
 
+  // 状态/阶段/阻断原因的文案一律现取 t()：这些表在 render 的每一行上被读，
+  // 而 t() 查不到 key 只会回显 key 本身，所以漏翻是看得见的（不会静默变成中文）。
   const stateNames = {
-    active: '进行中', succeeded: '成功', unknown: '结果待核验', failed: '失败', error: '失败', cancelled: '已取消',
-    workspace_execution_capacity: '等待执行名额', workspace_resident_capacity: '等待目录容量',
-    workspace_restore_capacity: '等待目录准备名额', planned: '执行时准备目录', resident: '目录已准备',
-    retained: '目录已保留', hibernated: '目录已休眠', reserved: '准备执行', materializing: '正在准备目录',
-    starting: '正在启动', running: '执行中', uncertain: '等待核实执行状态', idle: '空闲', queued: '排队中',
-    waiting: '等待回答', archived: '已归档', stale: '建议已过期',
+    active: t('airStateActive'), succeeded: t('airStateSucceeded'), unknown: t('airStateUnknown'), failed: t('airStateFailed'), error: t('airStateFailed'), cancelled: t('airStateCancelled'),
+    workspace_execution_capacity: t('airStateExecCapacity'), workspace_resident_capacity: t('airStateResidentCapacity'),
+    workspace_restore_capacity: t('airStateRestoreCapacity'), planned: t('airStatePlanned'), resident: t('airStateResident'),
+    retained: t('airStateRetained'), hibernated: t('airStateHibernated'), reserved: t('airStateReserved'), materializing: t('airStateMaterializing'),
+    starting: t('airStateStarting'), running: t('airStateRunning'), uncertain: t('airStateUncertain'), idle: t('airStateIdle'), queued: t('airStateQueued'),
+    waiting: t('airStateWaiting'), archived: t('airStateArchived'), stale: t('airStateStale'),
     // 工作流阶段（src/task-board/planning.js WORKFLOW_STAGES）五个都要有词：任务行
     // 会把阶段当补充信息写在徽标后面，漏一个就有一行蹦出英文。
-    inbox: '待处理', ready: '待执行', doing: '进行中', review: '待验收', done: '已完成',
+    inbox: t('airStageInbox'), ready: t('airStageReady'), doing: t('airStateActive'), review: t('airStageReview'), done: t('airStageDone'),
   };
   const blockerNames = {
-    view_changed: '已有新输入或视图变化，旧建议不能迟到改投。',
-    final_run_result_required: '等待本轮最终执行结果。',
-    run_not_succeeded: '本轮失败、取消或仍在等待回答。',
-    code_observation_required: '本轮最终代码版本尚未核实。',
-    integration_receipt_required: '等待本轮代码按项目流程合入基分支。',
-    baseline_revalidation_required: '基分支已变化，需要重新核验交付记录。',
-    source_writer_barrier_required: '尚不能确认源工作目录持续停写。',
-    separation_application_required: '独立任务尚未创建并记录生效凭证。',
-    fork_source_dirty: '源工作目录仍有未交付修改，暂不能分离。',
-    fork_source_busy: '源任务仍在执行，等本轮结束后再分离。',
-    workspace_busy: '源工作目录仍有写入者，暂不能建立停写屏障。',
-    separation_barrier_unavailable: '当前运行时不支持分离停写屏障。',
-    delivery_evidence_unavailable: '当前运行时无法读取交付事实。',
-    separation_application_unavailable: '当前运行时无法写入分离生效凭证。',
+    view_changed: t('airBlockViewChanged'),
+    final_run_result_required: t('airBlockFinalRunResult'),
+    run_not_succeeded: t('airBlockRunNotSucceeded'),
+    code_observation_required: t('airBlockCodeObservation'),
+    integration_receipt_required: t('airBlockIntegrationReceipt'),
+    baseline_revalidation_required: t('airBlockBaselineRevalidation'),
+    source_writer_barrier_required: t('airBlockSourceWriterBarrier'),
+    separation_application_required: t('airBlockSeparationApplication'),
+    fork_source_dirty: t('airBlockForkSourceDirty'),
+    fork_source_busy: t('airBlockForkSourceBusy'),
+    workspace_busy: t('airBlockWorkspaceBusy'),
+    separation_barrier_unavailable: t('airBlockBarrierUnavailable'),
+    delivery_evidence_unavailable: t('airBlockDeliveryEvidenceUnavailable'),
+    separation_application_unavailable: t('airBlockApplicationUnavailable'),
   };
+  // 交付进度四步的兜底文案（服务端没给 step.label 时用）。顺序必须和服务端
+  // attribution.steps 的语义顺序一致 —— legacyStage 那个下标是按这个顺序算的。
+  const DELIVERY_STEP_FALLBACKS = [
+    t('airStepTurnSucceeded'), t('airStepCodeDelivered'), t('airStepSourceStable'), t('airStepAttribution'),
+  ];
 
   const label = value => stateNames[value] || value || '';
   const node = (tag, text, className) => {
@@ -197,8 +204,8 @@
     try { result = raw ? JSON.parse(raw) : {}; }
     catch (_) {
       const message = /<!doctype|<html/i.test(raw)
-        ? 'Air 服务接口尚未加载。请重启 MultiCC 服务后刷新页面。'
-        : `Air 服务返回了无法识别的数据（HTTP ${response.status}）。`;
+        ? t('airErrApiNotLoaded')
+        : t('airErrBadResponse', { status: response.status });
       throw Object.assign(new Error(message), { code: 'air_invalid_response', status: response.status });
     }
     if (!response.ok || result.ok === false) {
@@ -289,7 +296,7 @@
       .slice(0, needle ? 6 : 5)
       .map(directory => ({
         kind: 'directory', dirId: directory.id,
-        title: directory.name, detail: directory.path || '工作目录',
+        title: directory.name, detail: directory.path || t('airDirectoryFallback'),
       }));
     // 顺序即相关度：手上的任务在前，然后是当前目录，最后是其余任务。
     const pool = [...recentPool(), ...data.tasks];
@@ -300,7 +307,7 @@
       seen.add(task.id);
       tasks.push({
         kind: 'task', dirId: task.dirId, id: task.id,
-        title: task.title || '未命名任务',
+        title: task.title || t('airUntitledTask'),
         detail: `${directoryName(task.dirId)} · ${label(taskStatus(task))}`,
       });
       if (tasks.length >= (needle ? 8 : 6)) break;
@@ -316,15 +323,15 @@
       const copy = node('span', null, 'palette-copy');
       copy.append(node('strong', item.title), node('small', item.detail));
       button.append(node('span', item.kind === 'task' ? '◆' : '▣', 'palette-mark'), copy,
-        node('span', item.kind === 'task' ? '任务' : '目录', 'palette-kind'));
+        node('span', item.kind === 'task' ? t('airKindTask') : t('airKindDirectory'), 'palette-kind'));
       button.onclick = () => choosePalette(index);
       return button;
     }));
-    if (!paletteItems.length) $('palette-results').append(node('p', '没有匹配的工作目录或任务。', 'empty-list'));
+    if (!paletteItems.length) $('palette-results').append(node('p', t('airPaletteNoMatch'), 'empty-list'));
     const directories = paletteItems.filter(item => item.kind === 'directory').length;
     $('palette-note').textContent = paletteItems.length
-      ? `${directories} 个目录 · ${paletteItems.length - directories} 个任务`
-      : '目录与任务一起搜';
+      ? t('airPaletteCounts', { dirs: directories, tasks: paletteItems.length - directories })
+      : t('airPaletteSearchHint');
   }
   function choosePalette(index = paletteIndex) {
     const item = paletteItems[index];
@@ -435,7 +442,10 @@
     if (resource?.lease && resource.lease !== 'idle') return label(resource.lease);
     return '';
   }
-  function directoryName(id) { return data?.directories.find(directory => directory.id === id)?.name || '未知目录'; }
+  // 日期/时间要跟着语言走（zh-CN 的短日期带「月/日」，英文界面里就是残留）。
+  // 实现统一放在 i18n.js 的 getLocale()，这里只留个别名，避免两处各写一份。
+  const locale = getLocale;
+  function directoryName(id) { return data?.directories.find(directory => directory.id === id)?.name || t('airUnknownDirectory'); }
 
   function renderDirectories() {
     if (!data) return;
@@ -448,11 +458,13 @@
       const taskCount = data.tasks.filter(task => task.dirId === directory.id).length;
       const activeCount = data.tasks.filter(task => task.dirId === directory.id && isRunningTask(task)).length;
       button.append(node('strong', '▣ ' + directory.name), node('small', directory.path),
-        node('small', `${taskCount} 个任务${activeCount ? ` · ${activeCount} 个执行中` : ''}`));
+        node('small', activeCount
+          ? t('airDirTaskCountActive', { total: taskCount, active: activeCount })
+          : t('airDirTaskCount', { total: taskCount })));
       button.onclick = () => navigate(directory.id);
       return button;
     }));
-    if (!directories.length) $('directory-grid').append(node('p', query ? '没有匹配的工作目录。' : '还没有工作目录。', 'empty-list'));
+    if (!directories.length) $('directory-grid').append(node('p', query ? t('airDirNoMatch') : t('airDirNoneYet'), 'empty-list'));
   }
 
   function renderDirectoryOverview() {
@@ -467,20 +479,20 @@
       return card;
     };
     $('directory-stats').replaceChildren(
-      stat('进行中', current.length, `${running.length} 个正在执行`, 'blue'),
-      stat('计划任务', planned.length, '待开始或继续规划'),
-      stat('已完成', tasks.filter(task => task.status === 'done').length, '仍保留在本目录', 'green'),
-      stat('全部记录', tasks.length, `${tasks.filter(task => task.status === 'archived').length} 个已归档`),
+      stat(t('airStateActive'), current.length, t('airDirRunningNow', { n: running.length }), 'blue'),
+      stat(t('airDirStatPlanned'), planned.length, t('airDirStatPlannedHint')),
+      stat(t('airStageDone'), tasks.filter(task => task.status === 'done').length, t('airDirStatDoneHint'), 'green'),
+      stat(t('airStatusAllRecords'), tasks.length, t('airDirArchivedCount', { n: tasks.filter(task => task.status === 'archived').length })),
     );
     const filtered = window.MultiCCAirAdmin?.filterTasks?.(tasks, directoryTaskFilter, () => '')
       || [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
     const rows = directoryTasksExpanded
       ? filtered
       : [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, recentRowLimit());
-    $('directory-task-heading').textContent = directoryTasksExpanded ? '全部任务' : '最近任务';
+    $('directory-task-heading').textContent = directoryTasksExpanded ? t('airDirAllTasks') : t('airRecentTasks');
     $('directory-overview-count').textContent = directoryTasksExpanded
-      ? `${filtered.length} / ${tasks.length} 个任务`
-      : `${tasks.length} 个任务`;
+      ? t('airDirCountOfTotal', { shown: filtered.length, total: tasks.length })
+      : t('airDirTaskCount', { total: tasks.length });
     $('directory-task-controls').hidden = !directoryTasksExpanded;
     if ($('directory-task-search').value !== directoryTaskFilter.query) $('directory-task-search').value = directoryTaskFilter.query;
     $('directory-task-status').value = directoryTaskFilter.status;
@@ -501,24 +513,24 @@
       const detail = holdText(task.resource);
       const extra = [stage, detail].filter(part => part && !label(taskStatus(task)).includes(part)).join(' · ');
       if (extra) meta.append(node('em', extra, 'task-note'));
-      copy.append(node('strong', task.title || '未命名任务'), meta);
+      copy.append(node('strong', task.title || t('airUntitledTask')), meta);
       button.append(node('span', task.recordType === 'planned' ? '◇' : '›', 'directory-task-mark'), copy,
-        node('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
+        node('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString(locale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
       button.onclick = () => navigate(directoryId, task.id);
-      const remove = node('button', '删除', 'task-delete danger');
+      const remove = node('button', t('delete'), 'task-delete danger');
       remove.type = 'button';
       remove.dataset.action = 'delete';
-      remove.setAttribute('aria-label', `删除任务 ${task.title || '未命名任务'}`);
+      remove.setAttribute('aria-label', t('airDeleteTaskAria', { title: task.title || t('airUntitledTask') }));
       remove.onclick = event => { event.stopPropagation(); void deleteTaskById(task); };
       row.append(button, remove);
       return row;
     }));
-    if (!rows.length) $('directory-task-list').append(node('p', '这里还没有任务。可以直接在下方描述第一个目标。', 'directory-task-empty'));
+    if (!rows.length) $('directory-task-list').append(node('p', t('airDirNoTasks'), 'directory-task-empty'));
     // 截掉的那些得有个去处，否则「最近任务」看着就是全部。数字用的是这个目录
     // 的全部任务数，不是剩下的条数 —— 说的是「还有多少」，不是「还差几行」。
     const more = $('directory-task-more');
     more.hidden = !directoryTasksExpanded && tasks.length <= rows.length;
-    more.textContent = directoryTasksExpanded ? '收起，返回最近任务' : `查看全部 ${tasks.length} 个任务 ›`;
+    more.textContent = directoryTasksExpanded ? t('airDirCollapseToRecent') : t('airDirViewAllTasks', { n: tasks.length });
     renderQuickPills();
     for (const element of [$('quick-task-input'), $('quick-task-submit'),
       $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
@@ -572,21 +584,21 @@
     const status = directoryGitView.status;
     const dirId = directoryId;
     if (!status || !dirId || document.querySelector('.push-repo-dialog')) return;
-    if (!status.upstream) { notice('这个仓库没有上游分支，先设好 remote/上游再推。'); return; }
-    if (!status.ahead) { notice('没有待推送的提交。'); return; }
+    if (!status.upstream) { notice(t('airGitNoUpstream')); return; }
+    if (!status.ahead) { notice(t('airGitNoPendingPush')); return; }
     const ahead = status.ahead;
-    const branch = status.branch || '当前分支';
+    const branch = status.branch || t('airGitCurrentBranch');
     const dialog = node('dialog', null, 'push-repo-dialog');
     const form = node('form');
-    form.append(node('span', 'GIT PUSH', 'eyebrow'), node('h2', '推送到远端？'));
-    form.append(node('p', `把 ${branch} 上的 ${ahead} 个提交推送到 ${status.upstream}。只推已经提交的内容，工作区里的文件不动。`));
+    form.append(node('span', 'GIT PUSH', 'eyebrow'), node('h2', t('airGitPushTitle')));
+    form.append(node('p', t('airGitPushBody', { branch, ahead, upstream: status.upstream })));
     const error = node('p', '', 'push-repo-error');
     error.setAttribute('role', 'alert');
     const footer = node('div', null, 'push-repo-footer');
-    const cancel = node('button', '取消');
+    const cancel = node('button', t('cancel'));
     cancel.type = 'button';
     cancel.onclick = () => dialog.close();
-    const confirm = node('button', `推送 ${ahead} 个提交`);
+    const confirm = node('button', t('airGitPushConfirm', { n: ahead }));
     confirm.type = 'submit';
     confirm.classList.add('primary');
     footer.append(cancel, confirm);
@@ -600,13 +612,13 @@
         const result = await api(`/api/directories/${encodeURIComponent(dirId)}/push`, {});
         dialog.close();
         notice(result.pushed
-          ? `已推送 ${result.before?.ahead ?? ahead} 个提交到 ${status.upstream}。`
-          : '没有待推送的提交。');
+          ? t('airGitPushed', { n: result.before?.ahead ?? ahead, upstream: status.upstream })
+          : t('airGitNoPendingPush'));
         // 推完这一颗就该变成「已与上游同步」：作废时间戳，让下一笔重新读。
         directoryGitView.fetchedAt = 0;
         await loadDirectoryGit();
       } catch (cause) {
-        error.textContent = `Push 失败：${cause.message}`;
+        error.textContent = t('airGitPushFailed', { msg: cause.message });
         cancel.disabled = false;
         confirm.disabled = false;
       }
@@ -624,15 +636,15 @@
     const note = $('directory-git-note');
     const list = $('directory-git-list');
     if (directoryGitView.error) {
-      brief.replaceChildren(node('p', `读取 Git 状态失败：${directoryGitView.error}`, 'directory-git-empty error'));
-      if (note) note.textContent = '读取失败';
+      brief.replaceChildren(node('p', t('airGitStatusFailed', { msg: directoryGitView.error }), 'directory-git-empty error'));
+      if (note) note.textContent = t('airGitReadFailed');
       if (list) list.hidden = true;
       return;
     }
     const status = directoryGitView.status;
     if (!status) {
-      brief.replaceChildren(node('p', '正在读取 Git 状态…', 'directory-git-empty'));
-      if (note) note.textContent = '读取中…';
+      brief.replaceChildren(node('p', t('airGitReading'), 'directory-git-empty'));
+      if (note) note.textContent = t('airGitReadingShort');
       if (list) list.hidden = true;
       return;
     }
@@ -648,26 +660,26 @@
     const pushable = !!status.upstream && status.ahead > 0;
     if (target) {
       const aheadText = status.upstream
-        ? (status.ahead ? `↑ ${status.ahead} 个提交未推送` : '已与上游同步')
-        : (status.ahead ? `↑ ${status.ahead} 个提交未合入 ${status.baseBranch}` : `与基分支 ${status.baseBranch} 一致`);
+        ? (status.ahead ? t('airGitAheadUnpushed', { n: status.ahead }) : t('airGitInSyncUpstream'))
+        : (status.ahead ? t('airGitAheadUnmerged', { n: status.ahead, base: status.baseBranch }) : t('airGitInSyncBase', { base: status.baseBranch }));
       if (pushable) {
         const push = node('button', null, 'directory-git-chip warn is-action');
         push.type = 'button';
-        push.title = `把这 ${status.ahead} 个提交推送到 ${status.upstream}`;
+        push.title = t('airGitPushTip', { n: status.ahead, upstream: status.upstream });
         push.setAttribute('aria-label', push.title);
-        push.append(node('span', aheadText), node('span', '推送', 'directory-git-chip-hint'));
+        push.append(node('span', aheadText), node('span', t('airGitPushHint'), 'directory-git-chip-hint'));
         push.onclick = () => void openPushRepoDialog();
         chips.append(push);
       } else {
         chips.append(chip(aheadText, status.ahead ? 'warn' : 'ok'));
       }
-      if (status.upstream && status.behind) chips.append(chip(`↓ 落后上游 ${status.behind} 个提交`, 'warn'));
+      if (status.upstream && status.behind) chips.append(chip(t('airGitBehindUpstream', { n: status.behind }), 'warn'));
     }
     chips.append(chip(status.dirtyFiles?.length
-      ? `● ${status.dirtyFiles.length} 个未提交文件（主检出）`
-      : '主检出工作区干净', status.dirtyFiles?.length ? 'warn' : 'ok'));
+      ? t('airGitDirtyFiles', { n: status.dirtyFiles.length })
+      : t('airGitMainClean'), status.dirtyFiles?.length ? 'warn' : 'ok'));
     const actions = node('div', null, 'directory-git-actions');
-    const logButton = node('button', directoryGitView.logOpen ? '收起 Git 记录' : '查看 Git 记录', 'subtle');
+    const logButton = node('button', directoryGitView.logOpen ? t('airGitLogCollapse') : t('airGitLogView'), 'subtle');
     logButton.type = 'button';
     logButton.onclick = () => void toggleDirectoryGitLog();
     actions.append(logButton);
@@ -675,15 +687,15 @@
     if (status.dirtyFiles?.length) {
       const files = node('details', null, 'directory-git-files');
       files.append(node('summary',
-        `未提交文件 ${status.dirtyFiles.length} 个 — 在主检出里直接改的，不属于任何任务 worktree`));
+        t('airGitDirtySummary', { n: status.dirtyFiles.length })));
       const fileList = node('ul');
       const shown = status.dirtyFiles.slice(0, 50);
       for (const file of shown) fileList.append(node('li', `${file.status || 'M'}  ${file.path}`));
-      if (status.dirtyFiles.length > shown.length) fileList.append(node('li', `…还有 ${status.dirtyFiles.length - shown.length} 个`));
+      if (status.dirtyFiles.length > shown.length) fileList.append(node('li', t('airGitMoreFiles', { n: status.dirtyFiles.length - shown.length })));
       files.append(fileList);
       brief.append(files);
     }
-    if (note) note.textContent = status.upstream ? `上游 ${status.upstream}` : '无上游分支，按基分支统计';
+    if (note) note.textContent = status.upstream ? t('airGitUpstreamNote', { upstream: status.upstream }) : t('airGitNoUpstreamNote');
     if (list) {
       list.hidden = !directoryGitView.logOpen;
       if (directoryGitView.logOpen) paintDirectoryGitLog(list);
@@ -694,7 +706,7 @@
     directoryGitView.logOpen = !directoryGitView.logOpen;
     if (directoryGitView.logOpen && !directoryGitView.commits && !directoryGitView.logError) {
       const list = $('directory-git-list');
-      list.replaceChildren(node('p', '正在读取提交记录…', 'directory-git-empty'));
+      list.replaceChildren(node('p', t('airGitReadingLog'), 'directory-git-empty'));
       try {
         const result = await api(`/api/git/log?dirId=${encodeURIComponent(directoryId)}&limit=30`);
         directoryGitView.commits = result.commits || [];
@@ -707,13 +719,13 @@
 
   function paintDirectoryGitLog(list) {
     if (directoryGitView.logError) {
-      list.replaceChildren(node('p', `读取提交记录失败：${directoryGitView.logError}`, 'directory-git-empty error'));
+      list.replaceChildren(node('p', t('airGitLogFailed', { msg: directoryGitView.logError }), 'directory-git-empty error'));
       return;
     }
     const commits = directoryGitView.commits;
     if (!commits) return;
     if (!commits.length) {
-      list.replaceChildren(node('p', '暂无提交记录。', 'directory-git-empty'));
+      list.replaceChildren(node('p', t('airGitNoCommits'), 'directory-git-empty'));
       return;
     }
     list.replaceChildren(...commits.map(commit => {
@@ -723,7 +735,7 @@
       head.setAttribute('aria-expanded', String(directoryGitView.openHash === commit.hash));
       const copy = node('span', null, 'directory-git-commit-copy');
       copy.append(node('code', commit.short || String(commit.hash || '').slice(0, 7)),
-        node('strong', commit.subject || '(无标题)'));
+        node('strong', commit.subject || t('airGitNoSubject')));
       head.append(copy,
         node('time', commit.date ? commit.date.replace('T', ' ').slice(0, 16) : ''),
         node('small', `${commit.author || '—'}${commit.refs ? ` · ${commit.refs}` : ''}`));
@@ -732,7 +744,7 @@
       if (directoryGitView.openHash === commit.hash) {
         const detail = node('div', null, 'directory-git-commit-detail');
         if (commit.__stat) detail.append(node('div', commit.__stat, 'directory-git-stat'));
-        detail.append(node('pre', commit.__diff || '正在读取 diff…', 'directory-git-diff'));
+        detail.append(node('pre', commit.__diff || t('airGitDiffReading'), 'directory-git-diff'));
         item.append(detail);
       }
       return item;
@@ -751,12 +763,12 @@
       try {
         const result = await api(`/api/git/commit-diff?dirId=${encodeURIComponent(directoryId)}&hash=${encodeURIComponent(commit.hash)}`);
         commit.__stat = result.stat || '';
-        commit.__diff = result.error ? `读取 diff 失败：${result.error}`
-          : result.diff || '（该提交无可显示的 diff，可能是空合并提交）';
-        if (result.truncated) commit.__diff += '\n⚠ diff 过长已截断';
+        commit.__diff = result.error ? t('airGitDiffFailed', { msg: result.error })
+          : result.diff || t('airGitNoDiff');
+        if (result.truncated) commit.__diff += t('airGitDiffTruncated');
       } catch (error) {
         commit.__stat = '';
-        commit.__diff = `读取 diff 失败：${error.message}`;
+        commit.__diff = t('airGitDiffFailed', { msg: error.message });
       }
     }
     paintDirectoryGit();
@@ -769,7 +781,7 @@
   async function uploadQuickTaskFiles(files) {
     $('quick-task-attach').disabled = true;
     for (const file of Array.from(files || [])) {
-      const chip = node('span', `上传中 · ${file.name}`, 'quick-task-file');
+      const chip = node('span', t('airQuickUploading', { name: file.name }), 'quick-task-file');
       $('quick-task-files').append(chip);
       try {
         const form = new FormData(); form.append('file', file, file.name);
@@ -778,7 +790,7 @@
         if (!response.ok || !result.path) throw new Error(result.error || `HTTP ${response.status}`);
         chip.textContent = file.name;
         chip.dataset.path = result.path;
-        const remove = node('button', '×'); remove.type = 'button'; remove.setAttribute('aria-label', `移除 ${file.name}`);
+        const remove = node('button', '×'); remove.type = 'button'; remove.setAttribute('aria-label', t('airQuickRemoveFile', { name: file.name }));
         remove.onclick = () => chip.remove(); chip.append(remove);
       } catch (error) {
         chip.classList.add('error'); chip.textContent = `${file.name} · ${error.message}`;
@@ -926,18 +938,18 @@
     if (!ai || !role) return;
     const route = quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
-      : quickRuntime.providerName || quickRuntime.provider || '默认线路';
-    setPillText(ai, [quickCli(), route, quickRuntime.model || '默认模型'].join(' · '));
-    ai.title = '新任务的 AI 配置：CLI、线路与模型（创建后即生效）';
-    role.textContent = quickRoles.length ? `${quickRoles.length} 个角色` : '＋ 角色';
-    role.title = '新任务的角色上下文（写入第一条消息）';
+      : quickRuntime.providerName || quickRuntime.provider || t('airQuickDefaultRoute');
+    setPillText(ai, [quickCli(), route, quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
+    ai.title = t('airQuickAiTitle');
+    role.textContent = quickRoles.length ? t('airQuickRoleCount', { n: quickRoles.length }) : t('airQuickAddRole');
+    role.title = t('airQuickRoleTitle');
     for (const pill of [ai, role]) pill.disabled = !directoryId;
   }
 
   function openQuickConfiguration() {
     if (!directoryId) return;
     window.MultiCCAirSettings.configuration(
-      { task: { title: '新任务' }, configuration: { ...quickRuntime, cli: quickCli() } }, data?.clis,
+      { task: { title: t('airNewTask') }, configuration: { ...quickRuntime, cli: quickCli() } }, data?.clis,
       runtime => { quickRuntime = runtime; quickRuntimeDirty = true; renderQuickPills(); },
     );
   }
@@ -958,14 +970,14 @@
     if (quickRecorder && quickRecorder.state === 'recording') { quickRecorder.stop(); return; }
     let stream;
     try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch (_) { quickStatus('无法访问麦克风，请检查浏览器权限。'); return; }
+    catch (_) { quickStatus(t('airQuickMicDenied')); return; }
     quickRecorderChunks = [];
     const mime = window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : undefined;
     try { quickRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
     catch (_) {
       stream.getTracks().forEach(track => track.stop());
-      quickStatus('浏览器不支持录音。');
+      quickStatus(t('airQuickRecordUnsupported'));
       return;
     }
     quickRecorder.ondataavailable = event => { if (event.data?.size) quickRecorderChunks.push(event.data); };
@@ -974,21 +986,21 @@
       button.classList.remove('rec');
       const blob = new Blob(quickRecorderChunks, { type: 'audio/webm' });
       if (!blob.size) { quickStatus(''); return; }
-      quickStatus('转写中…');
+      quickStatus(t('airQuickTranscribing'));
       try {
         const form = new FormData(); form.append('file', blob, 'recording.webm');
         const response = await fetch('/api/voice/stt', { method: 'POST', body: form });
         const result = await response.json();
-        if (!response.ok || !result.text) throw new Error(result.error || '没有识别到内容');
+        if (!response.ok || !result.text) throw new Error(result.error || t('airQuickNoSpeech'));
         const input = $('quick-task-input');
         input.value = input.value ? `${input.value} ${result.text.trim()}` : result.text.trim();
         input.focus();
         quickStatus('');
-      } catch (error) { quickStatus(`转写失败：${error.message}`); }
+      } catch (error) { quickStatus(t('airQuickTranscribeFailed', { msg: error.message })); }
     };
     quickRecorder.start();
     button.classList.add('rec');
-    quickStatus('录音中，点 🎙 结束。');
+    quickStatus(t('airQuickRecording'));
   }
 
   function renderQuickGoalLimits() {
@@ -1013,7 +1025,7 @@
     const typed = $('quick-task-input').value.trim();
     if (!typed) return;
     const paths = [...$('quick-task-files').querySelectorAll('[data-path]')].map(chip => chip.dataset.path);
-    const text = typed + (paths.length ? `\n\n附件：${paths.join(' ')}` : '');
+    const text = typed + (paths.length ? t('airQuickAttachments', { paths: paths.join(' ') }) : '');
     // The pill's runtime is pinned onto the task at creation; the route it names
     // takes effect immediately, exactly as it does on the chat's own composer.
     const runtime = { cli: quickRuntime.cli || data.clis[0] || 'claude' };
@@ -1030,11 +1042,11 @@
     let created = null;
     $('quick-task-submit').disabled = true;
     if ($('quick-task-dialog').open) $('quick-task-dialog-directory').disabled = true;
-    quickStatus('正在创建固定任务…');
+    quickStatus(t('airQuickCreating'));
     try {
       const title = typed.split(/\n/).find(Boolean).trim().slice(0, 120);
       created = await api('/api/air/tasks', { dirId: targetDirectoryId, title, clientMsgId: attempt.createId, ...runtime });
-      quickStatus('任务已创建，正在写入角色与第一条消息…');
+      quickStatus(t('airQuickWritingFirstMessage'));
       // Roles are bound before the first message: the binding speaks for the
       // next message, and the next message is exactly the one below.
       if (quickRoles.length) {
@@ -1072,7 +1084,7 @@
         closeNewTaskComposer();
         await refresh();
         navigate(targetDirectoryId, created.taskId);
-        notice(`任务已创建，但第一条消息未确认送达：${error.message}。草稿已保留。`);
+        notice(t('airQuickFirstMessageUnconfirmed', { msg: error.message }));
       } else quickStatus(error.message);
     } finally {
       $('quick-task-submit').disabled = false;
@@ -1082,13 +1094,13 @@
 
   function scheduleTime(value) {
     if (!value) return '—';
-    return new Intl.DateTimeFormat('zh-CN', {
+    return new Intl.DateTimeFormat(locale(), {
       month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
     }).format(new Date(value));
   }
 
   function scheduleRuntime(task) {
-    return [task.cli, task.provider, task.model, task.effort].filter(Boolean).join(' · ') || '跟随任务配置';
+    return [task.cli, task.provider, task.model, task.effort].filter(Boolean).join(' · ') || t('airScheduleFollowTask');
   }
 
   function scheduleAction(text, action, className = '') {
@@ -1104,14 +1116,14 @@
     const enabled = scheduleTasks.filter(task => task.enabled).length;
     const errors = scheduleTasks.filter(task => task.lastStatus === 'error' || task.taskBindingError).length;
     $('schedule-summary').replaceChildren(
-      node('span', `${scheduleTasks.length} 条规则`),
-      node('span', `${enabled} 条启用`),
-      node('span', errors ? `${errors} 条需处理` : '固定任务均正常', errors ? 'warning' : 'healthy'),
+      node('span', t('airScheduleRuleCount', { n: scheduleTasks.length })),
+      node('span', t('airScheduleEnabledCount', { n: enabled })),
+      node('span', errors ? t('airScheduleErrorCount', { n: errors }) : t('airScheduleAllHealthy'), errors ? 'warning' : 'healthy'),
     );
     list.replaceChildren();
     if (!scheduleTasks.length) {
       const empty = node('div', null, 'schedule-empty');
-      empty.append(node('strong', '还没有定时任务'), node('p', '新建规则时会同时创建一个固定 Air 任务，后续运行都在该任务中继续。'));
+      empty.append(node('strong', t('airScheduleNoneYet')), node('p', t('airScheduleNoneHint')));
       list.append(empty);
       return;
     }
@@ -1120,42 +1132,42 @@
       const head = node('header', null, 'schedule-card-head');
       const title = node('div');
       title.append(node('span', 'SCHEDULE', 'eyebrow'), node('h3', task.name));
-      head.append(title, node('span', task.enabled ? '已启用' : '已停用', `schedule-badge ${task.enabled ? 'enabled' : ''}`));
+      head.append(title, node('span', task.enabled ? t('airScheduleEnabled') : t('airScheduleDisabled'), `schedule-badge ${task.enabled ? 'enabled' : ''}`));
 
       const timing = node('div', null, 'schedule-timing');
       const expression = node('code', task.cron);
       const next = node('div');
-      next.append(node('small', '下次运行'), node('strong', task.enabled ? scheduleTime(task.nextRunAt) : '已暂停'));
+      next.append(node('small', t('airScheduleNextRun')), node('strong', task.enabled ? scheduleTime(task.nextRunAt) : t('airSchedulePaused')));
       const previous = node('div');
-      previous.append(node('small', '最近触发'), node('strong', task.lastRunAt ? scheduleTime(task.lastRunAt) : '尚未运行'));
+      previous.append(node('small', t('airScheduleLastFired')), node('strong', task.lastRunAt ? scheduleTime(task.lastRunAt) : t('airScheduleNeverRan')));
       timing.append(expression, next, previous);
 
       const fixed = node('button', null, `schedule-fixed-task ${task.taskBindingError || !task.taskId ? 'broken' : ''}`);
       fixed.type = 'button';
       fixed.disabled = !task.taskId;
       const fixedCopy = node('span');
-      fixedCopy.append(node('small', '固定 Air 任务'), node('strong', task.taskTitle || task.name),
-        node('small', task.taskBindingError || (task.taskId ? `${task.taskId} · ${scheduleRuntime(task)}` : '正在建立任务绑定')));
+      fixedCopy.append(node('small', t('airScheduleFixedTask')), node('strong', task.taskTitle || task.name),
+        node('small', task.taskBindingError || (task.taskId ? `${task.taskId} · ${scheduleRuntime(task)}` : t('airScheduleBinding'))));
       fixed.append(node('span', task.taskBindingError ? '!' : '↗', 'schedule-task-mark'), fixedCopy);
       if (task.taskId) fixed.onclick = () => navigate(task.dirId, task.taskId);
 
       const state = node('div', null, `schedule-state ${task.lastStatus === 'error' ? 'error' : ''}`);
-      const stateLabel = task.lastStatus === 'queued' ? '已进入固定任务队列'
-        : task.lastStatus === 'ok' ? '最近一次已接收'
-          : task.lastStatus === 'error' ? (task.lastError || '最近一次运行失败') : '等待首次运行';
-      state.append(node('span', stateLabel), node('small', `${task.dirName} · 已触发 ${task.runCount || 0} 次`));
+      const stateLabel = task.lastStatus === 'queued' ? t('airScheduleQueued')
+        : task.lastStatus === 'ok' ? t('airScheduleLastAccepted')
+          : task.lastStatus === 'error' ? (task.lastError || t('airScheduleLastFailed')) : t('airScheduleAwaitingFirstRun');
+      state.append(node('span', stateLabel), node('small', t('airScheduleFiredCount', { dir: task.dirName, n: task.runCount || 0 })));
 
       const prompt = node('p', task.prompt, 'schedule-prompt');
       const actions = node('footer', null, 'schedule-actions');
-      const run = scheduleAction('▶ 立即运行', () => runSchedule(task.id), 'primary subtle');
+      const run = scheduleAction(t('airScheduleRunNow'), () => runSchedule(task.id), 'primary subtle');
       // A rule whose fixed task was archived stops executing until a new fixed
       // task is bound; that repair is explicit, never automatic.
       const rebind = task.taskBindingError
-        ? scheduleAction('⛑ 重新绑定固定任务', () => rebindSchedule(task.id), 'primary subtle')
+        ? scheduleAction(t('airScheduleRebind'), () => rebindSchedule(task.id), 'primary subtle')
         : null;
-      const toggle = scheduleAction(task.enabled ? '暂停' : '启用', () => toggleSchedule(task.id, !task.enabled));
-      const edit = scheduleAction('编辑规则', () => openScheduleDialog(task.id));
-      const remove = scheduleAction('删除规则', () => deleteSchedule(task.id), 'danger');
+      const toggle = scheduleAction(task.enabled ? t('airSchedulePause') : t('airScheduleEnable'), () => toggleSchedule(task.id, !task.enabled));
+      const edit = scheduleAction(t('airScheduleEdit'), () => openScheduleDialog(task.id));
+      const remove = scheduleAction(t('airScheduleDelete'), () => deleteSchedule(task.id), 'danger');
       actions.append(run, ...(rebind ? [rebind] : []), toggle, edit, node('span'), remove);
       card.append(head, timing, fixed, state, prompt, actions);
       list.append(card);
@@ -1169,7 +1181,7 @@
       scheduleTasks = await api('/api/cron');
       renderSchedules();
     } catch (error) {
-      if (mode === 'schedules') notice(`定时任务读取失败：${error.message}`);
+      if (mode === 'schedules') notice(t('airScheduleLoadFailed', { msg: error.message }));
     } finally { scheduleLoading = false; }
   }
 
@@ -1198,8 +1210,8 @@
     form.elements.dirId.disabled = !!current?.taskId;
     form.elements.cli.disabled = !!current?.taskId;
     $('schedule-fixed-note').hidden = !current?.taskId;
-    $('schedule-dialog-title').textContent = current ? '编辑定时规则' : '新建定时任务';
-    $('schedule-save').textContent = current ? '保存规则' : '创建并绑定任务';
+    $('schedule-dialog-title').textContent = current ? t('airScheduleEditTitle') : t('airNewScheduledTask');
+    $('schedule-save').textContent = current ? t('airScheduleSaveRule') : t('airScheduleCreateAndBind');
     $('schedule-error').textContent = '';
     $('schedule-dialog').showModal();
   }
@@ -1221,7 +1233,7 @@
       await api('/api/cron' + (id ? `/${encodeURIComponent(id)}` : ''), body, id ? 'PATCH' : 'POST');
       $('schedule-dialog').close();
       await Promise.all([refreshSchedules(), refresh()]);
-      notice(id ? '定时规则已更新；固定任务和历史保持不变。' : '定时任务已创建，并绑定到唯一的 Air 任务。');
+      notice(id ? t('airScheduleRuleUpdated') : t('airScheduleCreated'));
     } catch (error) { $('schedule-error').textContent = error.message; }
     finally { $('schedule-save').disabled = false; }
   }
@@ -1230,18 +1242,18 @@
     try {
       const result = await api(`/api/cron/${encodeURIComponent(id)}/run`, {});
       await Promise.all([refreshSchedules(), refresh()]);
-      notice(result.decision === 'queued' ? '固定任务正在忙碌，本次执行已经排队。' : '执行指令已经送入固定 Air 任务。');
-    } catch (error) { notice(`运行失败：${error.message}`); }
+      notice(result.decision === 'queued' ? t('airScheduleBusyQueued') : t('airScheduleSentToTask'));
+    } catch (error) { notice(t('airScheduleRunFailed', { msg: error.message })); }
   }
 
   async function rebindSchedule(id) {
-    if (!window.confirm('为这条规则绑定一个新的固定 Air 任务？旧的固定任务和历史都不会被删除。')) return;
+    if (!window.confirm(t('airScheduleRebindConfirm'))) return;
     try {
       const result = await api(`/api/cron/${encodeURIComponent(id)}/rebind`, {});
       await Promise.all([refreshSchedules(), refresh()]);
-      notice(`已重新绑定固定任务：${result.taskId}`);
+      notice(t('airScheduleRebound', { id: result.taskId }));
     } catch (error) {
-      notice(error.code === 'binding_healthy' ? '固定任务当前可写，无需重新绑定。' : `重新绑定失败：${error.message}`);
+      notice(error.code === 'binding_healthy' ? t('airScheduleBindingHealthy') : t('airScheduleRebindFailed', { msg: error.message }));
     }
   }
 
@@ -1249,16 +1261,16 @@
     try {
       await api(`/api/cron/${encodeURIComponent(id)}`, { enabled }, 'PATCH');
       await refreshSchedules();
-    } catch (error) { notice(`更新失败：${error.message}`); }
+    } catch (error) { notice(t('airScheduleUpdateFailed', { msg: error.message })); }
   }
 
   async function deleteSchedule(id) {
-    if (!window.confirm('删除这条定时规则？固定 Air 任务及其历史会继续保留。')) return;
+    if (!window.confirm(t('airScheduleDeleteConfirm'))) return;
     try {
       await api(`/api/cron/${encodeURIComponent(id)}`, undefined, 'DELETE');
       await refreshSchedules();
-      notice('定时规则已删除；固定 Air 任务和历史没有删除。');
-    } catch (error) { notice(`删除失败：${error.message}`); }
+      notice(t('airScheduleDeleted'));
+    } catch (error) { notice(t('airScheduleDeleteFailed', { msg: error.message })); }
   }
 
   /** 侧栏「最近任务」那一条带子。单独抽出来是因为它有两个调用点：整页 render，
@@ -1272,7 +1284,7 @@
     // 在列表变短、或中间真落了一次重排时会把 scrollTop 夹小 —— 与其赌浏览器什么时候
     // 夹，不如画完自己回填一次（真短了，浏览器随后照旧夹到新的上限）。
     const scrollTop = list.scrollTop;
-    $('task-list-title').textContent = '最近任务';
+    $('task-list-title').textContent = t('airRecentTasks');
     $('task-count').textContent = tasks.length;
     list.replaceChildren(...tasks.map(task => {
       const elsewhere = task.dirId !== directoryId;
@@ -1289,7 +1301,7 @@
       meta.append(node('em', directoryName(task.dirId), 'task-dir'));
       // 手机上 pin 住的那几条就排在这份列表的最上面，标记说明它们为什么在那儿。
       if (isPinned(task.id)) meta.append(node('span', '📌', 'task-pin'));
-      const stage = task.recordType === 'planned' ? `计划 · ${label(task.workflowStage || task.status)}` : '';
+      const stage = task.recordType === 'planned' ? t('airSidebarPlanned', { stage: label(task.workflowStage || task.status) }) : '';
       // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
       const badgeText = label(taskStatus(task));
       const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
@@ -1302,7 +1314,7 @@
     // 抬起动画要跨过一次重画（点开 → 渲染 → 延迟换位）不能断：这条带子重建之后
     // 把抬起的类补回去，否则第一拍里那张卡会先落下去再飞。
     if (pendingReorderId) taskMotion()?.lift(list, pendingReorderId);
-    if (!tasks.length) list.append(node('small', '还没有打开过任务。这个目录里的任务会出现在这里。', 'empty-list'));
+    if (!tasks.length) list.append(node('small', t('airSidebarNoTasks'), 'empty-list'));
   }
 
   // ── 侧栏点开一条任务 ────────────────────────────────────────────────────
@@ -1372,7 +1384,7 @@
     if (!taskId) return;
     const known = (data?.tasks || []).find(task => task.id === taskId);
     if (!isPinned(taskId) && taskPins.length >= PIN_LIMIT) {
-      notice(`最多只能 Pin ${PIN_LIMIT} 个任务，先取消一个再钉。`);
+      notice(t('airPinLimit', { n: PIN_LIMIT }));
       return;
     }
     try {
@@ -1382,9 +1394,9 @@
       renderPins();
       renderSidebarTasks();
       paintPinButton();
-      notice(isPinned(taskId) ? `已 Pin 住「${known?.title || taskId}」` : '已取消 Pin');
+      notice(isPinned(taskId) ? t('airPinned', { title: known?.title || taskId }) : t('airUnpinned'));
     } catch (error) {
-      notice(`Pin 失败：${error.message}`);
+      notice(t('airPinFailed', { msg: error.message }));
     }
   }
 
@@ -1425,8 +1437,8 @@
       const open = node('button', null, 'pin-open');
       open.type = 'button';
       const stage = label(task.workflowStage || task.status);
-      open.title = `${task.title || '未命名任务'} · ${directoryName(task.dirId)}${stage ? ` · ${stage}` : ''}`;
-      open.setAttribute('aria-label', `展开 ${task.title || '未命名任务'} 的详情`);
+      open.title = `${task.title || t('airUntitledTask')} · ${directoryName(task.dirId)}${stage ? ` · ${stage}` : ''}`;
+      open.setAttribute('aria-label', t('airPinExpandAria', { title: task.title || t('airUntitledTask') }));
       // 缩略态只有「状态图标 + 标题」；完整标题、目录、阶段、状态中文全在下面
       // 那张卡片里。胶囊自己的宽度不动 —— 横向伸长会把旁边几个 pin 推着一起
       // 挪（用户说的「晃眼」就是这个），卡片绝对定位，别人一步都不动。
@@ -1435,22 +1447,22 @@
       const panelMeta = node('div', null, 'pin-panel-meta');
       panelMeta.append(statusBadge(task), node('em', directoryName(task.dirId), 'task-dir'));
       if (stage) panelMeta.append(node('span', stage));
-      const go = node('button', '打开任务', 'pin-panel-open');
+      const go = node('button', t('airOpenTask'), 'pin-panel-open');
       go.type = 'button';
       go.onclick = () => navigate(task.dirId, task.id);
-      panel.append(node('strong', task.title || '未命名任务', 'pin-panel-title'), panelMeta, go);
+      panel.append(node('strong', task.title || t('airUntitledTask'), 'pin-panel-title'), panelMeta, go);
       open.setAttribute('aria-expanded', 'false');
       open.setAttribute('aria-controls', panel.id);
       const status = node('span', null, 'pin-status');
       status.append(statusBadge(task));
       const copy = node('span', null, 'pin-copy');
-      copy.append(node('strong', task.title || '未命名任务', 'pin-title'));
+      copy.append(node('strong', task.title || t('airUntitledTask'), 'pin-title'));
       open.append(status, copy);
       open.onclick = () => setPinPanelOpen(tab, !tab.classList.contains('is-open'));
       const remove = node('button', '×', 'pin-x');
       remove.type = 'button';
-      remove.title = '取消 Pin';
-      remove.setAttribute('aria-label', `取消 Pin ${task.title || '未命名任务'}`);
+      remove.title = t('airUnpin');
+      remove.setAttribute('aria-label', t('airUnpinAria', { title: task.title || t('airUntitledTask') }));
       remove.onclick = event => { event.stopPropagation(); void togglePin(task.id); };
       // 悬停到别的 pin 上时，把点开着的那张收掉：两张卡片同时挂着很吵。
       tab.onmouseenter = () => closePinPanels(tab);
@@ -1465,21 +1477,21 @@
     if (!button) return;
     const on = isPinned(taskId);
     button.setAttribute('aria-pressed', String(on));
-    button.title = on ? '取消 Pin' : 'Pin 到页顶';
-    button.setAttribute('aria-label', on ? '取消 Pin' : 'Pin 到页顶');
+    button.title = on ? t('airUnpin') : t('airPinToTop');
+    button.setAttribute('aria-label', on ? t('airUnpin') : t('airPinToTop'));
     const name = button.querySelector('.air-tool-name');
     // 手机浮层里图标旁边是要跟名字的，这个名字得跟着状态走（桌面上它不显示）。
-    if (name) name.textContent = on ? '取消 Pin' : 'Pin 到页顶';
+    if (name) name.textContent = on ? t('airUnpin') : t('airPinToTop');
   }
 
   function applyTaskTitleEditing(task = null) {
     const titleEditable = !!(taskId && task);
     $('task-title').classList.toggle('editable', titleEditable);
     if (titleEditable) {
-      $('task-title').title = '双击更改任务标题';
+      $('task-title').title = t('airTitleEditHint');
       $('task-title').tabIndex = 0;
       $('task-title').setAttribute('aria-keyshortcuts', 'Enter F2');
-      $('task-title').setAttribute('aria-label', `任务标题：${task.title}。双击或按回车更改`);
+      $('task-title').setAttribute('aria-label', t('airTitleEditAria', { title: task.title }));
     } else {
       $('task-title').removeAttribute('title');
       $('task-title').removeAttribute('tabindex');
@@ -1492,22 +1504,22 @@
     const selectedEntry = entry?.task?.id === taskId ? entry : null;
     const adminHeadings = {
       // 「谁在等我」的整页。控制台那一格只放最近更新的几条，这里是完整清单。
-      attention: ['MultiCC Air › 控制台', '谁在等我', '跨所有工作目录：等我回答、出错要处理或卡在资源的任务。'],
-      docs: ['MultiCC Air › 系统工具', '服务与文档', 'Agent 产物、本地页面和服务登记。'],
-      memory: ['MultiCC Air › 系统工具', '记忆图谱', '项目记忆、会话记忆与文件编辑。'],
-      taskgraph: ['MultiCC Air › 系统工具', '任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接。'],
-      settings: ['MultiCC Air › 系统设置', '设置中心', 'AI、连接、通知和资源配置。'],
-      voice: ['MultiCC Air › 设置中心', '语音设置', '识别、转写与实时语音能力。'],
-      goal: ['MultiCC Air › 设置中心', 'Goal 预检', '任务目标与自动分类规则。'],
-      provider: ['MultiCC Air › 设置中心', 'CLI 与 Provider', '全局供应商、账号与线路管理。'],
-      aux: ['MultiCC Air › 设置中心', 'AI Assistant', '意图分类与摘要服务的模型设置与运行记录。'],
-      global: ['MultiCC Air › 设置中心', '全局配置', '语言、执行与通用偏好。'],
-      push: ['MultiCC Air › 设置中心', '推送通知', 'Web Push 与备用提醒通道。'],
-      tunnel: ['MultiCC Air › 设置中心', '外网穿透', '国内 SakuraFrp / 海外 Tailscale 分流接入与状态。'],
-      bridges: ['MultiCC Air › 设置中心', '消息桥接', '微信、飞书及其他消息入口。'],
-      resources: ['MultiCC Air › 设置中心', 'Agent 资源', 'Skills 与历史资源管理。'],
-      skillsync: ['MultiCC Air › 设置中心', '技能同步', '跨 CLI 的 Skills 同步状态。'],
-      storage: ['MultiCC Air › 设置中心', '临时上传', '上传缓存、空间占用与清理。'],
+      attention: [t('airCrumbConsole'), t('airAdminAttention'), t('airAdminAttentionHint')],
+      docs: [t('airCrumbTools'), t('airDocs'), t('airAdminDocsHint')],
+      memory: [t('airCrumbTools'), t('airMemoryGraph'), t('airAdminMemoryHint')],
+      taskgraph: [t('airCrumbTools'), t('airTaskGraph'), t('airAdminTaskGraphHint')],
+      settings: [t('airCrumbSystemSettings'), t('airSettingsCenter'), t('airAdminSettingsHint')],
+      voice: [t('airCrumbSettings'), t('airAdminVoice'), t('airAdminVoiceHint')],
+      goal: [t('airCrumbSettings'), t('airAdminGoal'), t('airAdminGoalHint')],
+      provider: [t('airCrumbSettings'), t('airAdminProvider'), t('airAdminProviderHint')],
+      aux: [t('airCrumbSettings'), t('airAdminAux'), t('airAdminAuxHint')],
+      global: [t('airCrumbSettings'), t('airAdminGlobal'), t('airAdminGlobalHint')],
+      push: [t('airCrumbSettings'), t('airAdminPush'), t('airAdminPushHint')],
+      tunnel: [t('airCrumbSettings'), t('airTunnel'), t('airAdminTunnelHint')],
+      bridges: [t('airCrumbSettings'), t('airBridges'), t('airAdminBridgesHint')],
+      resources: [t('airCrumbSettings'), t('airAdminResources'), t('airAdminResourcesHint')],
+      skillsync: [t('airCrumbSettings'), t('airAdminSkillSync'), t('airAdminSkillSyncHint')],
+      storage: [t('airCrumbSettings'), t('airAdminStorage'), t('airAdminStorageHint')],
     };
     // The card stands for the current directory, so it stays lit while that
     // directory's own page is open; the directory library itself is ⌘K / the
@@ -1517,27 +1529,27 @@
     $('schedules').classList.toggle('active', mode === 'schedules');
     document.querySelectorAll('[data-air-view]').forEach(button => button.classList.toggle('active', button.dataset.airView === mode));
     if (adminModes.has(mode)) {
-      const heading = adminHeadings[mode] || ['MultiCC Air › 系统工具', mode, ''];
+      const heading = adminHeadings[mode] || [t('airCrumbTools'), mode, ''];
       $('task-breadcrumb').textContent = heading[0];
       $('task-title').textContent = heading[1];
       $('task-state').textContent = heading[2];
     } else if (mode === 'library') {
-      $('task-breadcrumb').textContent = 'MultiCC Air';
-      $('task-title').textContent = '工作目录';
-      $('task-state').textContent = '按名称或路径切换项目。';
+      $('task-breadcrumb').textContent = t('airCrumbRoot');
+      $('task-title').textContent = t('airWorkspace');
+      $('task-state').textContent = t('airHeaderLibraryHint');
     } else if (mode === 'schedules') {
-      $('task-breadcrumb').textContent = 'MultiCC Air › 自动运行';
-      $('task-title').textContent = '定时任务';
-      $('task-state').textContent = '时间规则与固定任务分离；所有运行继续写入同一任务。';
+      $('task-breadcrumb').textContent = t('airCrumbAutoRun');
+      $('task-title').textContent = t('airScheduledTasks');
+      $('task-state').textContent = t('airHeaderSchedulesHint');
     } else if (taskId) {
-      $('task-breadcrumb').textContent = `目录库 › ${dir?.name || '工作目录'} › 任务`;
-      $('task-title').textContent = selectedEntry?.task.title || '正在读取任务…';
+      $('task-breadcrumb').textContent = t('airCrumbDirTask', { dir: dir?.name || t('airWorkspace') });
+      $('task-title').textContent = selectedEntry?.task.title || t('airHeaderLoadingTask');
       if (selectedEntry) renderStateSummary($('task-state'), taskStateSegments(selectedEntry));
-      else $('task-state').textContent = '正在读取本轮、任务与资源状态…';
+      else $('task-state').textContent = t('airHeaderLoadingState');
     } else {
-      $('task-breadcrumb').textContent = 'MultiCC Air › 工作目录';
-      $('task-title').textContent = dir?.name || '先添加工作目录';
-      $('task-state').textContent = dir?.path || '添加目录后即可创建任务。';
+      $('task-breadcrumb').textContent = t('airCrumbDirLibrary');
+      $('task-title').textContent = dir?.name || t('airHeaderNoDirectory');
+      $('task-state').textContent = dir?.path || t('airHeaderNoDirectoryHint');
     }
     applyTaskTitleEditing(selectedEntry?.task || null);
     for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share', 'pin-task',
@@ -1662,7 +1674,7 @@
       if (pooled) _framePool.delete(task);   // 帧已经被 LRU 收走了，只留下这条记录
       const frame = document.createElement('iframe');
       frame.id = 'conversation';
-      frame.title = '任务对话';
+      frame.title = t('airTaskConversation');
       // 帧属于哪个任务要跟着元素走：地址会被帧内的 location.replace 换成会话页，
       // 重载对账（reconcileFrameTask）认的是这份标记。
       frame.dataset.task = task;
@@ -1733,11 +1745,11 @@
     const button = $('chat-expand');
     if (button) {
       button.setAttribute('aria-pressed', expanded ? 'true' : 'false');
-      const action = expanded ? '收起浮层' : '展开浮层';
+      const action = expanded ? t('airCollapseLayer') : t('airExpandLayer');
       button.title = action;
       button.setAttribute('aria-label', action);
       const text = button.querySelector('.chat-bar-label');
-      if (text) text.textContent = expanded ? '收起' : '展开';
+      if (text) text.textContent = expanded ? t('airCollapse') : t('airExpand');
     }
     // 展开是要连页头一起盖掉的，详情抽屉（z-index 15）就更是底下的东西了：
     // 先收掉，免得它从浮层边上露出一条。
@@ -1830,7 +1842,7 @@
     if (!directoryId && taskId) directoryId = data.tasks.find(task => task.id === taskId)?.dirId;
     if (!directoryId || !data.directories.some(directory => directory.id === directoryId)) directoryId = data.directories[0]?.id || null;
     const dir = data.directories.find(directory => directory.id === directoryId);
-    $('directory-name').textContent = dir?.name || '先添加工作目录';
+    $('directory-name').textContent = dir?.name || t('airHeaderNoDirectory');
     $('directory-path').textContent = dir?.path || '';
     $('create').disabled = !dir;
     // 有活在跑的目录也带圈：不必切过去才知道那个目录正忙。
@@ -1866,8 +1878,8 @@
 
     // 面板打开时才渲染它的内容：控制台不是页面，所以它不是「当前视图」。
     if (consoleOpen) {
-      $('console-here').textContent = dir ? `· 当前 ${dir.name}` : '';
-      $('console-close').textContent = taskId ? '返回任务' : '关闭控制台';
+      $('console-here').textContent = dir ? t('airConsoleHere', { name: dir.name }) : '';
+      $('console-close').textContent = taskId ? t('airBackToTask') : t('airCloseConsole');
       window.MultiCCAirAdmin?.render('overview', adminContext());
     }
 
@@ -1895,10 +1907,10 @@
   function taskStateSegments(value) {
     const unstartedPlan = value.task?.recordType === 'planned' && !value.messages?.length
       && !value.execution?.busy && !value.execution?.pending;
-    const execution = unstartedPlan ? '计划待执行'
+    const execution = unstartedPlan ? t('airStatePlanNotStarted')
       : label(value.execution?.pending ? 'waiting' : value.execution?.status || (value.execution?.busy ? 'running' : 'idle'));
     const lifecycle = label(value.task?.status || value.status);
-    return [execution && `本轮 ${execution}`, lifecycle && `任务 ${lifecycle}`].filter(Boolean);
+    return [execution && t('airSegExecution', { state: execution }), lifecycle && t('airSegLifecycle', { state: lifecycle })].filter(Boolean);
   }
 
   function taskStateText(value) {
@@ -1932,7 +1944,7 @@
     try {
       await api(`/api/air/tasks/${encodeURIComponent(taskId)}/delivery/reconcile`, {});
       await refreshEntry();
-      notice('合并记录已重新核验；任务归属仍以完整交付条件为准。');
+      notice(t('airReconcileDone'));
     } catch (error) { notice(error.message); }
     finally { buttons.forEach(button => { button.disabled = false; }); }
   }
@@ -1949,23 +1961,23 @@
   // 后端能力都在 task-board 路由上（status / relocate / DELETE），这里只是把
   // 它们接到任务详情面板。
   const TASK_ACTION_ERRORS = {
-    task_busy: '任务正在执行或排队中，等它空闲下来再操作。',
-    task_archived: '任务已归档。',
-    task_deleting: '任务正在删除中，请稍等。',
-    title_required: '任务标题不能为空。',
-    title_too_long: '任务标题最多 40 个字符。',
-    task_workspace_dirty: '工作区还有未提交改动，需要再次确认后才能删除。',
-    task_workspace_unmerged: '工作区还有未合并到基分支的提交，需要再次确认后才能删除。',
-    task_session_shared: '会话还被其他任务共享，无法删除。',
-    shell_workspace_referenced: '工作区被其他会话引用，无法删除。',
-    task_shell_shared: '任务的会话壳还挂着别的任务，不能整体移动。',
-    carry_apply_failed: '未提交改动套用到目标仓库失败（两个目录的代码上下文不兼容），任务仍留在原处。',
-    active: '会话仍活跃，请稍后再试。',
-    unmerged: '还有未合并到基分支的提交：请先在任务详情里合并，再移动。',
+    task_busy: t('airErrTaskBusy'),
+    task_archived: t('airErrTaskArchived'),
+    task_deleting: t('airErrTaskDeleting'),
+    title_required: t('airErrTitleRequired'),
+    title_too_long: t('airErrTitleTooLong'),
+    task_workspace_dirty: t('airErrWorkspaceDirty'),
+    task_workspace_unmerged: t('airErrWorkspaceUnmerged'),
+    task_session_shared: t('airErrSessionShared'),
+    shell_workspace_referenced: t('airErrShellWorkspaceReferenced'),
+    task_shell_shared: t('airErrShellShared'),
+    carry_apply_failed: t('airErrCarryApplyFailed'),
+    active: t('airErrSessionActive'),
+    unmerged: t('airErrUnmergedMove'),
   };
   function taskActionError(error) {
     return TASK_ACTION_ERRORS[error?.code || ''] || TASK_ACTION_ERRORS[error?.message || '']
-      || TASK_ACTION_ERRORS[(error?.reasons || [])[0] || ''] || error?.message || '操作失败';
+      || TASK_ACTION_ERRORS[(error?.reasons || [])[0] || ''] || error?.message || t('airErrActionFailed');
   }
 
   function taskDeleteRisks(error) {
@@ -1980,10 +1992,10 @@
     const risks = taskDeleteRisks(error);
     if (!risks.dirty && !risks.unmerged) return false;
     const findings = [
-      ...(risks.dirty ? ['• 有未提交的代码改动或未跟踪文件'] : []),
-      ...(risks.unmerged ? ['• 有尚未合入基分支（如 main）的提交'] : []),
+      ...(risks.dirty ? [t('airDeleteRiskDirty')] : []),
+      ...(risks.unmerged ? [t('airDeleteRiskUnmerged')] : []),
     ];
-    return window.confirm(`任务「${title}」的工作区检测到风险：\n\n${findings.join('\n')}\n\n仍然删除会直接移除 worktree 和分支。MultiCC 会在仓库的 .git/multicc-backups 中备份 Git 能识别的提交、改动和未跟踪文件；Git 忽略的文件不会被备份。\n\n仍然删除？`);
+    return window.confirm(t('airDeleteRiskConfirm', { title, findings: findings.join('\n') }));
   }
 
   // 按钮点击即禁用、回来再放开；错误码统一翻成中文。
@@ -2002,7 +2014,7 @@
     await taskAction(archive ? 'archive' : 'restore', async () => {
       await api(`/api/task-board/tasks/${encodeURIComponent(taskId)}/status`, { status: archive ? 'archived' : 'active' });
       await refresh();
-      notice(archive ? '任务已归档；归档的任务不再执行，随时可以恢复。' : '任务已恢复。');
+      notice(archive ? t('airTaskArchived') : t('airTaskRestored'));
     });
   }
 
@@ -2010,7 +2022,7 @@
     const selectedId = task?.id || taskId;
     if (!selectedId) return;
     const title = task?.title || (selectedId === taskId ? entry?.task?.title : '') || selectedId;
-    if (!window.confirm(`删除任务「${title}」？\n\n它的专属会话与 worktree 会被直接删除。此操作不可撤销。`)) return;
+    if (!window.confirm(t('airDeleteTaskConfirm', { title }))) return;
     await taskAction('delete', async () => {
       const path = `/api/task-board/tasks/${encodeURIComponent(selectedId)}`;
       try {
@@ -2024,7 +2036,7 @@
       // 删除当前打开的任务时先退回目录；从列表删别的任务则留在原地，让筛选和滚动容器继续可用。
       if (selectedId === taskId) navigate(task?.dirId || directoryId);
       await refresh();
-      notice('任务已删除。');
+      notice(t('airTaskDeleted'));
     });
   }
 
@@ -2038,12 +2050,12 @@
   function openMoveDialog() {
     if (!taskId || !data || !entry) return;
     const targets = data.directories.filter(directory => directory.id !== directoryId);
-    if (!targets.length) { notice('还没有其他工作目录可以移动。'); return; }
+    if (!targets.length) { notice(t('airMoveNoTargets')); return; }
     const dialog = node('dialog', null, 'move-task-dialog');
     const form = node('form');
     form.method = 'dialog';
-    form.append(node('span', 'MOVE TASK', 'eyebrow'), node('h2', `移动「${entry.task?.title || taskId}」`));
-    form.append(node('p', '选择目标工作目录。工作区会迁到目标仓库，未提交的改动和新文件一起带走；正在执行的任务不能移动。'));
+    form.append(node('span', 'MOVE TASK', 'eyebrow'), node('h2', t('airMoveTitle', { title: entry.task?.title || taskId })));
+    form.append(node('p', t('airMoveHint')));
     const list = node('div', null, 'move-task-targets');
     let chosen = null;
     for (const directory of targets) {
@@ -2058,9 +2070,9 @@
     }
     form.append(list);
     const footer = node('div', null, 'move-task-footer');
-    const cancel = node('button', '取消');
+    const cancel = node('button', t('cancel'));
     cancel.type = 'submit';
-    const confirm = node('button', '移动');
+    const confirm = node('button', t('airMoveConfirm'));
     confirm.type = 'button'; confirm.disabled = true; confirm.classList.add('primary');
     confirm.onclick = async () => {
       if (!chosen) return;
@@ -2070,10 +2082,11 @@
         dialog.close();
         const directory = data.directories.find(item => item.id === chosen);
         const carried = result.carried
-          ? `；已带走未提交改动${result.carried.files ? `和 ${result.carried.files} 个新文件` : ''}` : '';
+          ? (result.carried.files ? t('airMoveCarriedWithFiles', { n: result.carried.files }) : t('airMoveCarried'))
+          : '';
         await refresh();
         navigate(chosen, taskId);
-        notice(`任务已移动到 ${directory?.name || '目标目录'}${carried}。`);
+        notice(t('airMoveDone', { dir: directory?.name || t('airMoveTargetFallback'), carried }));
       } catch (error) {
         notice(taskActionError(error));
         confirm.disabled = false;
@@ -2093,9 +2106,9 @@
     const currentTitle = String(entry.task.title || '').trim();
     const dialog = node('dialog', null, 'rename-task-dialog');
     const form = node('form');
-    form.append(node('span', 'TASK TITLE', 'eyebrow'), node('h2', '更改任务标题'));
-    form.append(node('p', '标题会同步到任务列表与任务会话；手动标题不会再被自动归类覆盖。'));
-    const label = node('label', '任务标题');
+    form.append(node('span', 'TASK TITLE', 'eyebrow'), node('h2', t('airTitleDialogTitle')));
+    form.append(node('p', t('airTitleDialogHint')));
+    const label = node('label', t('airTitleField'));
     const input = node('input');
     input.name = 'title'; input.type = 'text'; input.required = true; input.maxLength = 40;
     input.autocomplete = 'off'; input.value = currentTitle;
@@ -2103,16 +2116,16 @@
     const error = node('p', '', 'rename-task-error');
     error.setAttribute('role', 'alert');
     const footer = node('div', null, 'rename-task-footer');
-    const cancel = node('button', '取消');
+    const cancel = node('button', t('cancel'));
     cancel.type = 'button'; cancel.onclick = () => dialog.close();
-    const save = node('button', '保存');
+    const save = node('button', t('save'));
     save.type = 'submit'; save.classList.add('primary');
     footer.append(cancel, save);
     form.append(label, error, footer);
     form.onsubmit = async event => {
       event.preventDefault();
       const title = input.value.trim();
-      if (!title) { error.textContent = '任务标题不能为空。'; input.focus(); return; }
+      if (!title) { error.textContent = t('airErrTitleRequired'); input.focus(); return; }
       if (title === currentTitle) { dialog.close(); return; }
       input.disabled = true; save.disabled = true; error.textContent = '';
       try {
@@ -2126,9 +2139,9 @@
         dialog.close();
         render();
         syncFrame();
-        notice('任务标题已更新。');
+        notice(t('airTitleUpdated'));
       } catch (cause) {
-        error.textContent = taskActionError(cause) || '任务标题更新失败。';
+        error.textContent = taskActionError(cause) || t('airTitleUpdateFailed');
         input.disabled = false; save.disabled = false; input.focus();
       }
     };
@@ -2152,89 +2165,89 @@
     const failed = ['error', 'failed', 'cancelled'].includes(executionStatus);
     const unstartedPlan = value.task?.recordType === 'planned' && !value.messages?.length && !run;
     const currentTitle = value.task.title;
-    const targetTitle = separation?.targetTitle || candidate?.title || candidate?.taskName || '建议任务';
+    const targetTitle = separation?.targetTitle || candidate?.title || candidate?.taskName || t('airAttrSuggestedTask');
     const card = $('delivery-card');
     card.hidden = false;
 
-    let eyebrow = 'MULTICC · 本轮状态';
-    let title = '本轮状态已记录';
-    let text = '任务保持当前归属，可以继续输入下一步。';
+    let eyebrow = t('airAttrEyebrowTurnState');
+    let title = t('airAttrTurnRecorded');
+    let text = t('airAttrTurnRecordedText');
     const legacyStage = integration?.baselineCurrent ? 3 : integration ? 2
       : run?.outcome === 'succeeded' && !run.pendingInput ? 1 : 0;
     const deliverySteps = Array.isArray(attribution.steps) && attribution.steps.length
       ? attribution.steps.slice(0, 4).map((step, index) => ({
-        key: step.key || String(index), label: step.label || ['本轮成功', '代码交付', '源现场稳定', '任务归属'][index],
+        key: step.key || String(index), label: step.label || DELIVERY_STEP_FALLBACKS[index],
         status: ['done', 'pending', 'blocked', 'skipped'].includes(step.status) ? step.status : 'pending',
       }))
-      : ['本轮成功', '代码交付', '源现场稳定', '任务归属'].map((label, index) => ({
+      : DELIVERY_STEP_FALLBACKS.map((label, index) => ({
         key: String(index), label, status: index < legacyStage ? 'done' : 'pending',
       }));
 
     if (capacity) {
-      eyebrow = 'MULTICC · 执行资源';
-      title = `${label(capacity)} · 现有工作现场正在保留`;
-      text = '消息已绑定当前任务；资源可用后继续，不会停止其他服务或删除未交付修改。';
+      eyebrow = t('airAttrEyebrowResources');
+      title = t('airAttrCapacityTitle', { state: label(capacity) });
+      text = t('airAttrCapacityText');
     } else if (pending) {
-      eyebrow = 'MULTICC · 等待回答';
-      title = '本轮需要你的回答';
-      text = '回答仍提交给原任务与原请求，不会因为归属建议改变目标。';
+      eyebrow = t('airAttrEyebrowPending');
+      title = t('airAttrPendingTitle');
+      text = t('airAttrPendingText');
     } else if (candidate?.state === 'stale' && !separation) {
-      eyebrow = 'MULTICC · 归属建议未应用';
-      title = '本次归属建议已过期';
-      text = '你已继续输入或切换视图，迟到的分类与合并事件不会改投已经接受的消息。';
+      eyebrow = t('airAttrEyebrowStale');
+      title = t('airAttrStaleTitle');
+      text = t('airAttrStaleText');
     } else if (separation?.state === 'separated') {
-      eyebrow = 'MULTICC · 分离已生效';
-      title = `已创建独立任务「${targetTitle}」`;
-      text = '本轮已按停写屏障锁定的版本应用到新任务；源任务原始对话保持不变。';
+      eyebrow = t('airAttrEyebrowSeparated');
+      title = t('airAttrSeparatedTitle', { title: targetTitle });
+      text = t('airAttrSeparatedText');
     } else if (separation?.state === 'kept') {
-      eyebrow = 'MULTICC · 分离建议已处理';
-      title = '本轮保留在当前任务';
-      text = '你已选择不创建独立任务；第 4 步以「已跳过」记录，不会伪装成分离生效。';
+      eyebrow = t('airAttrEyebrowKept');
+      title = t('airAttrKeptTitle');
+      text = t('airAttrKeptText');
     } else if (separation) {
-      eyebrow = separation.phase === 'blocked' ? 'MULTICC · 分离暂未生效' : 'MULTICC · 建议独立任务';
-      title = separation.phase === 'blocked' ? `「${targetTitle}」尚未建立` : `是否将本轮分离为「${targetTitle}」`;
+      eyebrow = separation.phase === 'blocked' ? t('airAttrEyebrowSepBlocked') : t('airAttrEyebrowSepSuggest');
+      title = separation.phase === 'blocked' ? t('airAttrSepBlockedTitle', { title: targetTitle }) : t('airAttrSepSuggestTitle', { title: targetTitle });
       const firstBlocker = attribution.blockers?.find(reason => reason !== 'separation_application_required');
       text = separation.phase === 'blocked'
-        ? (blockerNames[firstBlocker] || separation.lastError?.message || '完整交付与停写核验通过后可安全重试。')
-        : '确认后会创建一个独立任务壳与工作目录，不改写当前任务的原始对话。';
+        ? (blockerNames[firstBlocker] || separation.lastError?.message || t('airAttrSepBlockedFallback'))
+        : t('airAttrSepSuggestText');
     } else if (candidate && running) {
-      eyebrow = 'MULTICC · 本轮执行中';
-      title = '归属将在本轮交付后确认';
-      text = `可能关联「${targetTitle}」，当前仍在「${currentTitle}」中执行。`;
+      eyebrow = t('airAttrEyebrowRunning');
+      title = t('airAttrRunningTitle');
+      text = t('airAttrRunningText', { target: targetTitle, current: currentTitle });
     } else if (candidate && (run?.outcome !== 'succeeded' || run?.pendingInput)) {
-      eyebrow = 'MULTICC · 尚未满足归属条件';
-      title = '本轮未成功或仍需回答';
-      text = `建议目标仍是「${targetTitle}」，原问题继续绑定当前任务。`;
+      eyebrow = t('airAttrEyebrowNotEligible');
+      title = t('airAttrNotEligibleTitle');
+      text = t('airAttrNotEligibleText', { target: targetTitle });
     } else if (candidate && !integration) {
-      eyebrow = 'MULTICC · 本轮成功，等待交付';
-      title = `建议归入「${targetTitle}」`;
-      text = '执行成功不等于任务完成或归属生效；相关代码按项目流程交付后再核验。';
+      eyebrow = t('airAttrEyebrowAwaitDelivery');
+      title = t('airAttrSuggestTitle', { title: targetTitle });
+      text = t('airAttrAwaitDeliveryText');
     } else if (candidate && !integration?.baselineCurrent) {
-      eyebrow = 'MULTICC · 交付记录待核验';
-      title = `建议归入「${targetTitle}」`;
-      text = '已有合并记录，但基分支状态发生变化；重新核验前保持当前任务。';
+      eyebrow = t('airAttrEyebrowDeliveryRecheck');
+      title = t('airAttrSuggestTitle', { title: targetTitle });
+      text = t('airAttrDeliveryRecheckText');
     } else if (candidate) {
-      eyebrow = 'MULTICC · 交付已核验';
-      title = `建议归入「${targetTitle}」· 等待源现场稳定`;
-      text = '代码交付已核验；持续停写屏障与原子归属尚未完成，不提前转移工作区或消息。';
+      eyebrow = t('airAttrEyebrowDeliveryVerified');
+      title = t('airAttrVerifiedWaitingTitle', { title: targetTitle });
+      text = t('airAttrDeliveryVerifiedText');
     } else if (running) {
-      eyebrow = 'MULTICC · 本轮执行中';
-      title = '任务正在当前工作目录执行';
-      text = '本轮结果、代码交付与任务完成会分别记录；执行期间下一条消息仍发送到当前任务。';
+      eyebrow = t('airAttrEyebrowRunning');
+      title = t('airAttrExecutingTitle');
+      text = t('airAttrExecutingText');
     } else if (failed || (run && run.outcome !== 'succeeded')) {
-      eyebrow = 'MULTICC · 本轮未成功';
-      title = '任务保持进行中';
-      text = '失败、取消或等待回答都不会被误写成任务完成，后续可以在当前任务重试或继续。';
+      eyebrow = t('airAttrEyebrowTurnFailed');
+      title = t('airAttrTurnFailedTitle');
+      text = t('airAttrTurnFailedText');
     } else if (run) {
-      eyebrow = 'MULTICC · 本轮结果';
-      title = integration ? '本轮成功，交付记录已保存' : '本轮成功，任务仍保持当前归属';
-      text = integration ? '代码交付与任务生命周期分别记录；完成一轮不会自动勾掉任务。' : '如果包含代码修改，仍需按项目流程完成交付。';
+      eyebrow = t('airAttrEyebrowTurnResult');
+      title = integration ? t('airAttrRunOkIntegrated') : t('airAttrRunOkKept');
+      text = integration ? t('airAttrRunOkIntegratedText') : t('airAttrRunOkKeptText');
     } else {
-      eyebrow = unstartedPlan ? 'MULTICC · 计划任务' : 'MULTICC · 等待下一步';
-      title = unstartedPlan ? '计划尚未执行' : '任务已就绪';
+      eyebrow = unstartedPlan ? t('airAttrEyebrowPlanned') : t('airAttrEyebrowNextStep');
+      title = unstartedPlan ? t('airAttrPlanNotRun') : t('airAttrTaskReady');
       text = unstartedPlan
-        ? '任务说明与验收标准已保存在计划卡中；发送第一条消息后才开始执行。'
-        : '新消息将继续发送到当前任务；首次执行时才会准备所需工作目录。';
+        ? t('airAttrPlanNotRunText')
+        : t('airAttrTaskReadyText');
     }
 
     $('delivery-eyebrow').textContent = eyebrow;
@@ -2249,11 +2262,11 @@
     // 「这条以后归到哪个任务」，占地方，手机上让位。所以类得分开，不能共用一个。
     const thirdClass = capacity ? 'ts-cap' : candidate || separationPending ? 'ts-attr' : null;
     renderStateSummary(summary, [...taskStateSegments(value),
-      capacity ? label(capacity) : separationPending ? '分离待生效' : candidate ? '归属待核验' : ''], [...STATE_CLASSES, thirdClass]);
-    summary.title = `${title}。${text} 点击查看详情。`;
+      capacity ? label(capacity) : separationPending ? t('airAttrSepPending') : candidate ? t('airAttrPendingVerify') : ''], [...STATE_CLASSES, thirdClass]);
+    summary.title = t('airAttrSummaryTitle', { title, text });
     $('delivery-destination').textContent = separation?.state === 'separated' && separation.targetTaskId === value.task.id
-      ? `当前已是分离后的独立任务「${currentTitle}」`
-      : `下一条消息仍发送到「${currentTitle}」`;
+      ? t('airAttrDestinationSeparated', { title: currentTitle })
+      : t('airAttrDestinationNext', { title: currentTitle });
     const steps = [...$('delivery-steps').children];
     steps.forEach((step, index) => {
       const item = deliverySteps[index] || { label: step.textContent, status: 'pending' };
@@ -2266,15 +2279,15 @@
       else if (deliverySteps.slice(0, index).every(previous => ['done', 'skipped'].includes(previous.status))) step.classList.add('current');
     });
     const actions = [];
-    if (integration) actions.unshift(actionButton('重新核验交付', reconcileDelivery, 'reconcile'));
+    if (integration) actions.unshift(actionButton(t('airReconcileDelivery'), reconcileDelivery, 'reconcile'));
     if (['kept', 'separated'].includes(separation?.state) && separation.targetTaskId && separation.targetTaskId !== value.task.id) {
-      actions.push(actionButton(separation.state === 'separated' ? '打开独立任务' : '打开关联任务',
+      actions.push(actionButton(separation.state === 'separated' ? t('airOpenSeparatedTask') : t('airOpenRelatedTask'),
         () => navigate(value.task.dirId || directoryId, separation.targetTaskId), 'open-separated'));
     }
     // “留在当前会话”只决定壳，不撤销已经拆出的任务 ID。关联任务自己的
     // 详情页因此始终保留签出入口，之后任何时候都能迁到独立会话。
     if (separation?.state === 'kept' && separation.targetTaskId === value.task.id && value.sessionId) {
-      actions.push(actionButton('签出到独立会话',
+      actions.push(actionButton(t('airCheckoutSeparateSession'),
         () => decideSeparation(value, separation, 'separate'), 'separation-accept'));
     }
     // 分离建议的持久入口：聊天帧里的弹窗/挂起卡依赖 WS 推送与页面时机，容易
@@ -2282,11 +2295,11 @@
     // 直接重试。只在查看源任务时显示 —— 决定落在源会话上。
     if (separation && !['kept', 'separated'].includes(separation.state)
         && separation.sourceTaskId === value.task.id && value.sessionId) {
-      actions.push(actionButton(separation.phase === 'blocked' ? '重试签出' : '签出独立会话',
+      actions.push(actionButton(separation.phase === 'blocked' ? t('airRetryCheckout') : t('airCheckoutSeparateSession'),
         () => decideSeparation(value, separation, 'separate'), 'separation-accept'));
-      actions.push(actionButton('稍后处理',
+      actions.push(actionButton(t('airSepDefer'),
         () => decideSeparation(value, separation, 'defer'), 'separation-defer'));
-      actions.push(actionButton('留在当前会话',
+      actions.push(actionButton(t('airSepKeep'),
         () => decideSeparation(value, separation, 'keep'), 'separation-keep'));
     }
     $('delivery-actions').replaceChildren(...actions);
@@ -2298,57 +2311,57 @@
       try {
         result = await api(`/api/sessions/${encodeURIComponent(value.sessionId)}/task-separation/${encodeURIComponent(separation.id)}`, { decision });
       } catch (error) {
-        // 分离错误码与交付卡 blocker 共用一套中文文案，比裸英文 message 可读。
+        // 分离错误码与交付卡 blocker 共用一套文案，比裸英文 message 可读。
         throw Object.assign(error, { message: blockerNames[error?.code] || taskActionError(error) });
       }
       if (decision === 'separate' && result?.taskId) {
         navigate(value.task.dirId || directoryId, result.taskId);
-        notice(`已创建独立任务「${separation.targetTitle || ''}」。`);
+        notice(t('airSeparatedCreated', { title: separation.targetTitle || '' }));
         return;
       }
       await refreshEntry();
-      notice(decision === 'defer' ? '会话签出已挂起，可稍后在聊天页或这里继续处理。' : '关联任务已留在当前会话，之后仍可签出。');
+      notice(decision === 'defer' ? t('airSepDeferred') : t('airSepKept'));
     });
   }
 
   function renderDetails(value) {
     const attribution = value.attribution || {};
     const roleText = value.roleBindings
-      ? (value.roleBindings.bindings.map(binding => binding.name).join('、') || '无附加角色') + ` · 版本 ${value.roleBindings.version}`
-      : value.configuration.rolePresetId || '本任务配置';
+      ? (value.roleBindings.bindings.map(binding => binding.name).join(t('airRoleSeparator')) || t('airNoAttachedRoles')) + t('airRoleVersion', { n: value.roleBindings.version })
+      : value.configuration.rolePresetId || t('airTaskConfig');
     const groups = [
-      detailGroup('计划与任务生命周期', [
-        ['任务 ID', value.task.id],
-        ['任务类型', value.task.recordType === 'planned' ? '计划任务' : '执行任务'],
-        ['工作阶段', value.task.recordType === 'planned' ? label(value.task.workflowStage) || '待处理' : '—'],
-        ['任务状态', label(value.task.status || value.status)],
-        ['访问方式', value.readOnly ? '只读；可显式 fork' : '可继续执行'],
+      detailGroup(t('airDetailPlanLifecycle'), [
+        [t('airDetailTaskId'), value.task.id],
+        [t('airDetailTaskType'), value.task.recordType === 'planned' ? t('airDirStatPlanned') : t('airDetailTaskTypeExec')],
+        [t('airDetailStage'), value.task.recordType === 'planned' ? label(value.task.workflowStage) || t('airStageInbox') : '—'],
+        [t('airDetailStatus'), label(value.task.status || value.status)],
+        [t('airDetailAccess'), value.readOnly ? t('airDetailReadOnly') : t('airDetailWritable')],
       ]),
-      detailGroup('代码与交付', [
-        ['本轮结果', attribution.run ? `${label(attribution.run.outcome)}${attribution.run.pendingInput ? ' · 等待回答' : ''}` : '尚无已核验的本轮结果'],
-        ['代码版本', attribution.run?.codeObserved ? '已观测最终版本' : '尚未核实'],
-        ['交付状态', attribution.integration ? (attribution.integration.baselineCurrent ? '已合入基分支，版本有效' : '有合并记录，等待重新核验') : '尚无覆盖本轮代码的合并凭证'],
-        ['源现场', attribution.barrier ? '写入者已停止，最终版本已锁定' : '尚无可验证的停写屏障'],
-        ['任务归属', attribution.application ? `已签出独立会话 · ${attribution.separation?.targetTaskId || ''}`
-          : attribution.separation?.state === 'kept' ? '任务 ID 已拆分，关联在当前会话'
-            : attribution.separation ? '任务 ID 已拆分，等待选择会话' : attribution.steps?.[3]?.status === 'done' ? '准入时已锁定当前任务' : '尚未核验'],
+      detailGroup(t('airDetailCodeDelivery'), [
+        [t('airDetailTurnResult'), attribution.run ? `${label(attribution.run.outcome)}${attribution.run.pendingInput ? t('airDetailWaitingAnswer') : ''}` : t('airDetailNoTurnResult')],
+        [t('airDetailCodeRevision'), attribution.run?.codeObserved ? t('airDetailCodeObserved') : t('airDetailUnverified')],
+        [t('airDetailDeliveryState'), attribution.integration ? (attribution.integration.baselineCurrent ? t('airDetailMergedValid') : t('airDetailMergeRecheck')) : t('airDetailNoMergeProof')],
+        [t('airDetailSourceSite'), attribution.barrier ? t('airDetailWriterStopped') : t('airDetailNoBarrier')],
+        [t('airDetailAttribution'), attribution.application ? t('airDetailCheckedOut', { id: attribution.separation?.targetTaskId || '' })
+          : attribution.separation?.state === 'kept' ? t('airDetailSplitKept')
+            : attribution.separation ? t('airDetailSplitPending') : attribution.steps?.[3]?.status === 'done' ? t('airDetailLockedAtAdmission') : t('airDetailUnverified')],
       ]),
-      detailGroup('角色与上下文', [
-        ['角色附件', roleText],
-        ['生效边界', '修改只影响下一条新消息'],
-        ['原生上下文', '角色变化时续接任务历史，不更换工作区'],
+      detailGroup(t('airDetailRolesContext'), [
+        [t('airDetailRoleAttachments'), roleText],
+        [t('airDetailEffectScope'), t('airDetailNextMessageOnly')],
+        [t('airDetailNativeContext'), t('airDetailRoleKeepsHistory')],
       ]),
-      detailGroup('执行资源', [
-        ['目录', value.resource.path || '首次执行时准备'],
-        ['分支', value.resource.branch || '尚未创建'],
-        ['资源状态', resourceText(value.resource)],
-        ['运行来源', value.sessionId],
+      detailGroup(t('airDetailResources'), [
+        [t('airDetailDirectory'), value.resource.path || t('airDetailPreparedOnFirstRun')],
+        [t('airDetailBranch'), value.resource.branch || t('airDetailNotCreated')],
+        [t('airDetailResourceState'), resourceText(value.resource)],
+        [t('airDetailRunSource'), value.sessionId],
       ]),
     ];
     if (value.task.description || value.task.acceptanceCriteria) {
       const plan = node('div', null, 'detail-plan-copy');
-      if (value.task.description) plan.append(node('strong', '任务说明'), node('p', value.task.description));
-      if (value.task.acceptanceCriteria) plan.append(node('strong', '验收标准'), node('p', value.task.acceptanceCriteria));
+      if (value.task.description) plan.append(node('strong', t('airDetailTaskDescription')), node('p', value.task.description));
+      if (value.task.acceptanceCriteria) plan.append(node('strong', t('airDetailAcceptance')), node('p', value.task.acceptanceCriteria));
       groups[0].append(plan);
     }
     const blockers = candidateBlockers(value);
@@ -2358,16 +2371,16 @@
       groups[1].append(list);
     }
     const actions = node('div', null, 'detail-actions');
-    if (attribution.integration) actions.append(actionButton('重新核验合并记录', reconcileDelivery, 'reconcile'));
+    if (attribution.integration) actions.append(actionButton(t('airReconcileMergeRecord'), reconcileDelivery, 'reconcile'));
     if (value.roleBindings && !value.readOnly) {
-      actions.append(actionButton('编辑角色上下文', () => window.MultiCCAirRoles.open({ taskId, roleBindings: value.roleBindings, api, onSaved: refreshEntry })));
+      actions.append(actionButton(t('airEditRoleContext'), () => window.MultiCCAirRoles.open({ taskId, roleBindings: value.roleBindings, api, onSaved: refreshEntry })));
     }
     const lifecycleStatus = value.task.status || value.status;
     actions.append(lifecycleStatus === 'archived'
-      ? actionButton('恢复任务', () => archiveTask(false), 'restore')
-      : actionButton('归档任务', () => archiveTask(true), 'archive'));
-    if (!value.readOnly) actions.append(actionButton('移动到其他目录…', openMoveDialog, 'move'));
-    const removeAction = actionButton('删除任务…', deleteTask, 'delete');
+      ? actionButton(t('airRestoreTask'), () => archiveTask(false), 'restore')
+      : actionButton(t('airArchiveTask'), () => archiveTask(true), 'archive'));
+    if (!value.readOnly) actions.append(actionButton(t('airMoveToOtherDir'), openMoveDialog, 'move'));
+    const removeAction = actionButton(t('airDeleteTask'), deleteTask, 'delete');
     removeAction.classList.add('danger');
     actions.append(removeAction);
     if (actions.childElementCount) groups[groups.length - 1].append(actions);
@@ -2453,22 +2466,22 @@
     // 才退回 id —— 不然下一轮生效的那条线路在药丸上是一串 UUID。
     const routeName = shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
-      : (pending?.providerName || shown?.providerName || shown?.provider) || '默认线路';
+      : (pending?.providerName || shown?.providerName || shown?.provider) || t('airQuickDefaultRoute');
     ai.hidden = !entry?.sessionId;
     ai.disabled = !entry || entry.readOnly;
-    ai.title = '任务 AI 配置：CLI、路由与模型（下一轮生效）';
+    ai.title = t('airTaskAiTitle');
     const roleCount = entry?.roleBindings?.bindings?.length || 0;
     role.hidden = !entry?.roleBindings;
     role.disabled = !entry || entry.readOnly;
-    role.textContent = roleCount ? `${roleCount} 个角色` : '＋ 角色';
-    role.title = '任务角色上下文';
+    role.textContent = roleCount ? t('airQuickRoleCount', { n: roleCount }) : t('airQuickAddRole');
+    role.title = t('airTaskRoleTitle');
     // 先把这条带子显出来再量宽度：隐藏时量到的 clientWidth 是 0，那样跑马灯得
     // 等到下一次轮询才启动，看上去就是「卡了一下」。
     setComposerBand(doc, row, !ai.hidden || !role.hidden);
     setPillText(ai, shown
       ? [shown.cli, routeName,
-        (pending ? shown.model : shown.effectiveModel || shown.model) || '默认模型',
-        pending ? '下轮生效' : ''].filter(Boolean).join(' · ')
+        (pending ? shown.model : shown.effectiveModel || shown.model) || t('airQuickDefaultModel'),
+        pending ? t('airTaskAiPending') : ''].filter(Boolean).join(' · ')
       : '');
   }
 
@@ -2519,8 +2532,8 @@
     if (entry?.task?.title) {
       const unstartedPlan = entry.task.recordType === 'planned' && !entry.messages?.length;
       input.placeholder = unstartedPlan
-        ? `补充或开始执行「${entry.task.title}」…`
-        : `继续描述「${entry.task.title}」的下一步…`;
+        ? t('airComposerPlaceholderPlan', { title: entry.task.title })
+        : t('airComposerPlaceholderNext', { title: entry.task.title });
     }
   }
 
@@ -2580,7 +2593,7 @@
           quickRuntime = { ...data.lastRuntime };
           renderQuickPills();
         }
-        notice(data.migration?.errors?.length ? `有 ${data.migration.errors.length} 份历史任务等待核验；原记录与工作区均已保留。` : '');
+        notice(data.migration?.errors?.length ? t('airMigrationPending', { n: data.migration.errors.length }) : '');
         render();
       }
       // 快照没变不等于对话没变：任务详情有自己的 ETag，照旧问一次（多半也是 304）。
@@ -2645,9 +2658,7 @@
   function paintLidSleep(enabled) {
     lidSleepRow.classList.toggle('on', !!enabled);
     lidSleepRow.setAttribute('aria-pressed', String(!!enabled));
-    lidSleepRow.title = enabled
-      ? '关盖时保持运行，不进入睡眠；电池降到 5% 以下会自动睡眠保护，插电或回充到 8% 后恢复（点击恢复关盖睡眠）'
-      : '关盖时保持运行（点击开启，需要在 Mac 上完成管理员授权；开启后附带 5% 掉电自动睡眠保护）';
+    lidSleepRow.title = enabled ? t('airLidSleepOnTitle') : t('airLidSleepOffTitle');
   }
   async function loadLidSleepRow() {
     if (!lidSleepRow) return;
@@ -2667,11 +2678,11 @@
     try {
       const result = await api('/api/settings/power', { enabled: wanted }, 'POST');
       paintLidSleep(result.enabled);
-      notice(result.enabled ? '已开启关盖保持运行' : '已恢复关盖睡眠');
+      notice(t(result.enabled ? 'airLidSleepOn' : 'airLidSleepOff'));
     } catch (error) {
       // 失败退回原状态：开关不能替服务点头。
       paintLidSleep(!wanted);
-      notice(`关盖运行设置失败：${error.message}`);
+      notice(t('airLidSleepFailed', { msg: error.message }));
     } finally { lidSleepBusy = false; }
   }
   if (lidSleepRow) lidSleepRow.onclick = () => { void toggleLidSleep(); };
@@ -2689,7 +2700,7 @@
     const frame = $('conversation');
     if (!taskId || !frame || frame.hidden) return;
     try { frame.contentWindow?.location.reload(); }
-    catch (error) { notice(`刷新会话失败：${error.message}`); }
+    catch (error) { notice(t('airReloadConversationFailed', { msg: error.message })); }
   }
   $('refresh').onclick = async () => {
     await refresh();

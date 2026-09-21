@@ -4,6 +4,16 @@
   const errorModel = global.MultiCCErrorEnvelope
     || (typeof module === 'object' && module.exports ? require('./error-envelope') : null);
 
+  // 文案走 i18n：浏览器里用 i18n.js 的 t()（就是 global.t），Node 测试或还在用旧
+  // 目录时回落到中文默认值——断言正是按中文写的。两条路径都插值，结果一致。
+  function tt(key, fallback, params) {
+    const out = typeof global.t === 'function' ? global.t(key, params) : '';
+    if (out && out !== key) return out;
+    return Object.keys(params || {}).reduce((text, name) => (
+      text.split(`{${name}}`).join(String(params[name]))
+    ), fallback);
+  }
+
   function bindHeaderMoreMenu(options) {
     const opts = options || {};
     const win = opts.window || global;
@@ -237,28 +247,38 @@
         if (!total) return null;
         const line = doc.createElement('div');
         line.className = 'msg-usage';
-        let tooltip = '本条消息 token 用量（非会话累计）\n';
+        const tokenLine = (key, fallback, part) => tt(key, fallback, {
+          input: number(part.input), output: number(part.output),
+          read: number(part.cacheRead), write: number(part.cacheWrite),
+        });
+        let tooltip = tt('usageMsgTokenTitle', '本条消息 token 用量（非会话累计）') + '\n';
         if (main) {
-          tooltip += `— 主 — 输入 ${number(main.input)} 输出 ${number(main.output)} 缓存读 ${number(main.cacheRead)} 缓存写 ${number(main.cacheWrite)}\n`;
+          tooltip += tokenLine('usageMsgTokenMainLine', '— 主 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', main) + '\n';
         }
         if (sub) {
-          tooltip += `— 辅 — 输入 ${number(sub.input)} 输出 ${number(sub.output)} 缓存读 ${number(sub.cacheRead)} 缓存写 ${number(sub.cacheWrite)}\n`;
+          tooltip += tokenLine('usageMsgTokenSubLine', '— 辅 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', sub) + '\n';
           for (const provider of (roleBreakdown.subByProvider || [])) {
-            tooltip += `    · ${provider.name || provider.providerId} / ${provider.model || '?'}: ↑入 ${number(provider.inputTokens)} ↓出 ${number(provider.outputTokens)}\n`;
+            tooltip += `    · ${tt('usageMsgTokenProviderLine', '{name} / {model}: ↑入 {input} ↓出 {output}', {
+              name: provider.name || provider.providerId, model: provider.model || '?',
+              input: number(provider.inputTokens), output: number(provider.outputTokens),
+            })}\n`;
           }
         }
         line.title = tooltip.trim();
-        metric(line, 'u-in', `↑入 ${number(totals.input)}`);
-        metric(line, 'u-out', `↓出 ${number(totals.output)}`);
-        if (totals.cacheRead) metric(line, 'u-cache', `♻读 ${number(totals.cacheRead)}`);
-        if (totals.cacheWrite) metric(line, 'u-cache', `♻写 ${number(totals.cacheWrite)}`);
+        metric(line, 'u-in', tt('usageBadgeIn', '↑入 {n}', { n: number(totals.input) }));
+        metric(line, 'u-out', tt('usageBadgeOut', '↓出 {n}', { n: number(totals.output) }));
+        if (totals.cacheRead) metric(line, 'u-cache', tt('usageBadgeCacheRead', '♻读 {n}', { n: number(totals.cacheRead) }));
+        if (totals.cacheWrite) metric(line, 'u-cache', tt('usageBadgeCacheWrite', '♻写 {n}', { n: number(totals.cacheWrite) }));
+        const roleBadge = (key, fallback, part) => tt(key, fallback, { input: short(part.input), output: short(part.output) });
         if (main) metric(
-          line, 'u-role', `主 ↑${short(main.input)} ↓${short(main.output)}`,
-          `本条消息主循环：输入 ${number(main.input)} / 输出 ${number(main.output)}`,
+          line, 'u-role', roleBadge('usageBadgeMain', '主 ↑{input} ↓{output}', main),
+          tt('usageMsgTokenMainTooltip', '本条消息主循环：输入 {input} / 输出 {output}',
+            { input: number(main.input), output: number(main.output) }),
         );
         if (sub) metric(
-          line, 'u-role', `辅 ↑${short(sub.input)} ↓${short(sub.output)}`,
-          `本条消息子任务：输入 ${number(sub.input)} / 输出 ${number(sub.output)}`,
+          line, 'u-role', roleBadge('usageBadgeSub', '辅 ↑{input} ↓{output}', sub),
+          tt('usageMsgTokenSubTooltip', '本条消息子任务：输入 {input} / 输出 {output}',
+            { input: number(sub.input), output: number(sub.output) }),
         );
         return line;
       }
@@ -266,11 +286,13 @@
       if (input + output + cacheRead + cacheWrite === 0) return null;
       const line = doc.createElement('div');
       line.className = 'msg-usage';
-      line.title = `本条消息 token 用量（非会话累计）\n输入 ${number(input)}\n输出 ${number(output)}\n缓存读 ${number(cacheRead)}\n缓存写 ${number(cacheWrite)}`;
-      metric(line, 'u-in', `↑入 ${number(input)}`);
-      metric(line, 'u-out', `↓出 ${number(output)}`);
-      if (cacheRead) metric(line, 'u-cache', `♻读 ${number(cacheRead)}`);
-      if (cacheWrite) metric(line, 'u-cache', `♻写 ${number(cacheWrite)}`);
+      line.title = tt('usageMsgTokenTitle', '本条消息 token 用量（非会话累计）') + '\n' +
+        tt('usageMsgTokenSimple', '输入 {input}\n输出 {output}\n缓存读 {read}\n缓存写 {write}',
+          { input: number(input), output: number(output), read: number(cacheRead), write: number(cacheWrite) });
+      metric(line, 'u-in', tt('usageBadgeIn', '↑入 {n}', { n: number(input) }));
+      metric(line, 'u-out', tt('usageBadgeOut', '↓出 {n}', { n: number(output) }));
+      if (cacheRead) metric(line, 'u-cache', tt('usageBadgeCacheRead', '♻读 {n}', { n: number(cacheRead) }));
+      if (cacheWrite) metric(line, 'u-cache', tt('usageBadgeCacheWrite', '♻写 {n}', { n: number(cacheWrite) }));
       return line;
     }
 
@@ -289,9 +311,9 @@
         const date = new Date(timestamp);
         const clock = [date.getHours(), date.getMinutes(), date.getSeconds()]
           .map(value => String(value).padStart(2, '0')).join(':');
-        metric(line, '', `🕰 ${clock}`, '回复时间');
+        metric(line, '', `🕰 ${clock}`, tt('usageTimingTooltipReply', '回复时间'));
       }
-      if (hasDuration) metric(line, '', `⏱ ${fmtDuration(duration)}`, '本次交互耗时');
+      if (hasDuration) metric(line, '', `⏱ ${fmtDuration(duration)}`, tt('usageTimingTooltipDuration', '本次交互耗时'));
       return line;
     }
 
