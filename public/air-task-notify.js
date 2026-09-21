@@ -6,8 +6,9 @@
  * idea on the standalone chat page).
  *
  *   task transitions to a terminal "completed" state AND isn't currently open
- *        └─► ① sidebar row gets `.unseen`  ② ding + 朗读「任务已完成」
- *             ③ floating completion panel ([打开][✕])
+ *        └─► ① sidebar row gets `.unseen` (always, visible or background)
+ *        └─► ② voice ding + 朗读「任务已完成」 (background tab only)
+ *        └─► ③ floating completion panel ([打开][✕]) (visible page only)
  *   user opens the task
  *        └─► ① `.unseen` cleared  ② voice cancelled  ③ floating panel hidden
  *
@@ -209,8 +210,9 @@
 
     function voiceNudge(task) {
       if (!voiceEnabled()) return;
-      // 页面藏在后台时出声没有意义（也常被浏览器拒），只刷侧边栏/浮动提示。
-      if (visibility() !== 'visible') return;
+      // 前台盯着页面时只刷侧边栏亮点/浮动条即可，不吵人；页面退到后台（切走/隐藏）
+      // 时才用语音补一句提醒。浏览器对隐藏标签页的语音有节流，能做就做、做不了静默降级。
+      if (visibility() === 'visible') return;
       const now = Date.now();
       if (now - lastVoiceAt < VOICE_COOLDOWN) return;
       lastVoiceAt = now;
