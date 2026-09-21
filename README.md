@@ -139,9 +139,11 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | b
 
 One line, no flags: the tag in the URL *is* the version. The script downloads that
 release's **standalone package** — the server plus a pinned Node runtime plus every
-production dependency, in one archive — verifies its SHA-256, unpacks it, generates
-an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd` /
-Linux systemd user). Nothing is compiled, and **the target machine needs no Node,
+production dependency, in one archive — verifies its SHA-256, installs it at the
+stable `~/MultiCC` path, clears macOS download quarantine, generates an
+`ACCESS_TOKEN`, starts the service and opens the browser, and optionally registers
+a background service (macOS `launchd` / Linux systemd user). The UI is ready when
+the command returns. Nothing is compiled, and **the target machine needs no Node,
 npm, git, Homebrew or Xcode**.
 
 <details>
@@ -156,6 +158,10 @@ curl -sSL .../install.sh | bash -s -- --version latest
 
 # From a package you already downloaded
 curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-arm64.tar.gz
+
+# Server/automation installs: install without starting, or start without a browser
+curl -sSL .../install.sh | bash -s -- --no-start
+curl -sSL .../install.sh | bash -s -- --no-open
 ```
 
 To hack on MultiCC itself, run it from a checkout — that path is for developers, and

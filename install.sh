@@ -20,18 +20,21 @@
 # only tools it needs are curl (or wget), tar and a SHA-256 utility.
 #
 # Options:
-#   --dir <path>        Install into this directory (default: ./MultiCC)
+#   --dir <path>        Install into this directory (default: ~/MultiCC)
 #   --version <v>       Release to install: v2.0.4 (default) or "latest"
 #   --token <xxx>       Pre-set ACCESS_TOKEN (default: auto-generate)
 #   --port <port>       Server port (default: 3000)
 #   --from <path|url>   Install from a local archive/directory or URL instead
 #                       of GitHub Releases (offline / air-gapped installs)
 #   --no-service        Skip the start-on-login setup
+#   --no-start          Install and configure only; do not start MultiCC
+#   --no-open           Start MultiCC but do not open a browser
 #   --help              Show this help
 #
+# The normal path starts MultiCC and opens the browser before this script exits.
 # After install:
-#   cd MultiCC && ./multicc start     # start in the background, opens the browser
-#   cd MultiCC && ./multicc service install   # start automatically on login
+#   cd ~/MultiCC && ./multicc status  # show the running version and URL
+#   cd ~/MultiCC && ./multicc service install  # start automatically on login
 # ============================================================================
 
 set -euo pipefail
@@ -79,6 +82,8 @@ INSTALL_DIR=""
 ACCESS_TOKEN=""
 PORT="3000"
 NO_SERVICE=false
+NO_START=false
+NO_OPEN=false
 VERSION=""
 FROM=""
 
@@ -94,6 +99,8 @@ while [ $# -gt 0 ]; do
     --version|-V) need_val "$1" "$#"; VERSION="$2"; shift 2 ;;
     --from)      need_val "$1" "$#"; FROM="$2"; shift 2 ;;
     --no-service) NO_SERVICE=true; shift ;;
+    --no-start)   NO_START=true; NO_SERVICE=true; shift ;;
+    --no-open)    NO_OPEN=true; shift ;;
     --no-apk)     warn "--no-apk is no longer needed; APK builds are always on demand"; shift ;;
     # `--branch` and `--no-clone` belonged to the old git-clone installer. They
     # are kept as compatibility shims so an older published command line still
@@ -117,17 +124,21 @@ No Node, npm, git, Homebrew or Xcode required: the standalone package ships
 its own runtime.
 
 Options:
-  --dir <path>        Install into this directory (default: ./MultiCC)
+  --dir <path>        Install into this directory (default: ~/MultiCC)
   --version <v>       Release to install: v${INSTALLER_VERSION} (default) or "latest"
   --token <xxx>       Pre-set ACCESS_TOKEN (default: auto-generate)
   --port <port>       Server port (default: 3000)
   --from <path|url>   Install from a local archive/directory or URL instead of GitHub
   --no-service        Skip the start-on-login setup
+  --no-start          Install and configure only; do not start MultiCC
+  --no-open           Start MultiCC but do not open a browser
   --help              Show this help
 
+The normal path starts MultiCC and opens the browser before this script exits.
+
 After install:
-  cd MultiCC && ./multicc start             # start (background + opens the browser)
-  cd MultiCC && ./multicc service install   # start automatically on login
+  cd ~/MultiCC && ./multicc status           # show the running version and URL
+  cd ~/MultiCC && ./multicc service install  # start automatically on login
 HELP
       exit 0
       ;;
@@ -266,7 +277,11 @@ fi
 ok "MultiCC ${VERSION_NUMBER} (${PLATFORM}-${ARCH})"
 
 # ── Install directory ─────────────────────────────────────────────────────
-INSTALL_DIR="${INSTALL_DIR:-$PWD/MultiCC}"
+# A curl-piped installer inherits whichever directory the terminal happened to
+# be in. Installing there is surprising and, on macOS, can put the bundle in a
+# TCC-protected Downloads/Desktop directory. Use a stable per-user path instead;
+# --dir remains available for operators who want another location.
+INSTALL_DIR="${INSTALL_DIR:-${HOME:-$PWD}/MultiCC}"
 PARENT_DIR="$(dirname "$INSTALL_DIR")"
 mkdir -p "$PARENT_DIR"
 INSTALL_DIR="$(cd "$PARENT_DIR" && pwd)/$(basename "$INSTALL_DIR")"
@@ -297,7 +312,26 @@ cleanup() {
 trap cleanup EXIT
 
 is_multicc_install() {
-  [ -f "$1/multicc" ] || [ -f "$1/multicc.cmd" ] || [ -d "$1/MultiCC.app" ]
+  # A source checkout also has a root `multicc` command. Treating that single
+  # filename as an installed bundle would let the default ~/MultiCC path replace
+  # a developer's repository. Require the platform's shipped manifest + runtime.
+  case "$PLATFORM" in
+    darwin)
+      [ -f "$1/multicc" ] \
+        && [ -f "$1/MultiCC.app/Contents/Resources/bundle-manifest.json" ] \
+        && [ -f "$1/MultiCC.app/Contents/Resources/runtime/bin/node" ]
+      ;;
+    win32)
+      [ -f "$1/multicc.cmd" ] \
+        && [ -f "$1/Resources/bundle-manifest.json" ] \
+        && [ -f "$1/Resources/runtime/node.exe" ]
+      ;;
+    *)
+      [ -f "$1/multicc" ] \
+        && [ -f "$1/Resources/bundle-manifest.json" ] \
+        && [ -f "$1/Resources/runtime/bin/node" ]
+      ;;
+  esac
 }
 
 if [ -e "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]; then
@@ -414,8 +448,9 @@ if [ -n "$ARCHIVE" ]; then
       fi
       # The archive carries the bundle's own top-level directory; shed it so the
       # install directory is the bundle root and not a bundle inside a bundle.
-      if [ "$(ls -A "$UNPACK_DIR" | wc -l | tr -d ' ')" = "1" ]; then
-        INNER="$UNPACK_DIR/$(ls -A "$UNPACK_DIR" | head -1)"
+      ENTRY_COUNT="$(find "$UNPACK_DIR" -mindepth 1 -maxdepth 1 -exec printf x \; | wc -c | tr -d ' ')"
+      if [ "$ENTRY_COUNT" = "1" ]; then
+        INNER="$(find "$UNPACK_DIR" -mindepth 1 -maxdepth 1 -print -quit)"
         if [ -d "$INNER" ]; then
           for entry in "$INNER"/* "$INNER"/.[!.]*; do
             [ -e "$entry" ] || continue
@@ -547,19 +582,53 @@ if [ "$NO_SERVICE" = false ]; then
   fi
 fi
 
+# ── Start now ─────────────────────────────────────────────────────────────
+# Installation is only "one click" if the user reaches a working UI before the
+# command returns. This call is safe even when service install already started
+# the instance: `multicc start` reuses it and opens the existing URL.
+START_OK=false
+ACTUAL_URL=""
+if [ "$NO_START" = false ]; then
+  step "Starting MultiCC"
+  START_ARGS=(start)
+  [ "$NO_OPEN" = true ] && START_ARGS+=(--no-open)
+  if "${MULTICC_CMD[@]}" "${START_ARGS[@]}"; then
+    START_OK=true
+    ACTUAL_URL="$("${MULTICC_CMD[@]}" url 2>/dev/null || true)"
+    if [ "$NO_OPEN" = true ]; then
+      ok "MultiCC is ready${ACTUAL_URL:+ at $ACTUAL_URL}"
+    else
+      ok "MultiCC is ready${ACTUAL_URL:+ at $ACTUAL_URL}; the browser has been opened"
+    fi
+  else
+    warn "MultiCC was installed, but it did not become ready."
+    echo "       Run '$CMD_NAME log -f' in $INSTALL_DIR to see the startup error."
+  fi
+else
+  info "Installed without starting (--no-start)"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────
 echo ""
 echo "${C_BOLD}${C_GREEN}╔══════════════════════════════════════════════════════╗${C_RESET}"
-echo "${C_BOLD}${C_GREEN}║${C_RESET}  ${C_BOLD}Installation Complete!${C_RESET}"
+if [ "$NO_START" = false ] && [ "$START_OK" = false ]; then
+  echo "${C_BOLD}${C_GREEN}║${C_RESET}  ${C_BOLD}Installation Complete — startup needs attention${C_RESET}"
+else
+  echo "${C_BOLD}${C_GREEN}║${C_RESET}  ${C_BOLD}Installation Complete!${C_RESET}"
+fi
 echo "${C_BOLD}${C_GREEN}╚══════════════════════════════════════════════════════╝${C_RESET}"
 echo ""
-echo "  ${C_BOLD}Start MultiCC:${C_RESET}"
-echo "    cd $INSTALL_DIR && $START_CMD"
-echo ""
-echo "  ${C_BOLD}Then open:${C_RESET}"
-echo "    Local:      ${C_CYAN}http://localhost:${PORT}${C_RESET}"
-echo "    Chat:       ${C_CYAN}http://localhost:${PORT}/chat${C_RESET}"
-echo "    Dashboard:  ${C_CYAN}http://localhost:${PORT}/manage${C_RESET}"
+if [ "$START_OK" = true ]; then
+  echo "  ${C_BOLD}MultiCC is running:${C_RESET}"
+  echo "    ${C_CYAN}${ACTUAL_URL:-http://localhost:${PORT}}${C_RESET}"
+elif [ "$NO_START" = true ]; then
+  echo "  ${C_BOLD}Start MultiCC:${C_RESET}"
+  echo "    cd $INSTALL_DIR && $START_CMD"
+else
+  echo "  ${C_BOLD}Retry startup:${C_RESET}"
+  echo "    cd $INSTALL_DIR && $START_CMD"
+  echo "    cd $INSTALL_DIR && $CMD_NAME log -f"
+fi
 if [ "$PORT" != "3000" ]; then
   echo "    (port is taken? it moves forward automatically; 'multicc url' prints the real one)"
 fi
@@ -585,3 +654,10 @@ echo "  so replacing or updating the package never touches them."
 echo ""
 ok "Happy building!"
 echo ""
+
+# A downloaded and configured bundle that cannot boot is not a successful
+# one-command install. Keep the files in place for diagnosis, but signal failure
+# to automation and copy/paste installers.
+if [ "$NO_START" = false ] && [ "$START_OK" = false ]; then
+  exit 1
+fi
