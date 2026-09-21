@@ -115,12 +115,35 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 ### 1. 安装
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash -s -- --branch v2.0.3
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
 ```
 
-脚本会自动识别系统、检查依赖、克隆仓库、安装依赖、生成 `ACCESS_TOKEN`，并可选注册为后台服务（macOS `launchd`）。安装过程不会构建 Android APK。
+一行命令，没有任何参数：URL 里的 tag **就是**版本。脚本下载该版本的**独立包**——服务端 + 固定版本的 Node 运行时 + 全部生产依赖，一个压缩包；校验它的 SHA-256、解压、生成 `ACCESS_TOKEN`，并可选注册为后台服务（macOS `launchd` / Linux systemd user）。全程不编译任何东西，**目标机器不需要 Node、npm、git、Homebrew 或 Xcode**。
 
-**前置要求**：Node.js **>= 22.16**、`tmux`（仅终端模式需要）、以及至少一个已登录的编程 CLI 在 `PATH` 上。
+<details>
+<summary>安装参数，以及从源码运行</summary>
+
+```bash
+# 装到别处（默认 ~/MultiCC），并跳过开机自启的询问
+curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
+
+# 总是装最新 release，而不是 URL 里那个 tag
+curl -sSL .../install.sh | bash -s -- --version latest
+
+# 用已经下载好的包安装
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.3-darwin-arm64.tar.gz
+```
+
+想改 MultiCC 本身，就从源码检出运行——那条路是给开发者准备的，那里的 `./multicc update` 是 `git pull` + `npm install`：
+
+```bash
+git clone https://github.com/lsjwzh/MultiCC.git
+cd MultiCC && npm install && node server.js
+```
+
+</details>
+
+**前置要求**：`tmux`（仅终端模式需要）、以及至少一个已登录的编程 CLI 在 `PATH` 上。Node.js **不需要**——包里自带。
 
 <details>
 <summary><strong>不想碰终端？直接装桌面版</strong>（macOS / Windows / Linux）</summary>
@@ -134,16 +157,16 @@ MultiCC 同时是一个普通的桌面应用——双击图标，后端和界面
 2. 打开应用：先显示启动页，后端在本机回环端口就绪后自动进入主界面。
 3. 数据、配置、日志都在各平台标准的用户数据目录里，更新就是下载新的安装包覆盖。
 
-老 Mac 装不了桌面版时（Electron 要求 macOS 13+，Homebrew 也早已停止给 Intel 供应
-bottle），改用**便携版**：同一个后端与 Web UI，Node 运行时和依赖全在包里，解压即用，
-支持 macOS 11+（含 Intel 的 Mac Pro 2013 等），文件名
-`multicc-portable-<版本>-darwin-x64.tar.gz`。
+老 Mac 装不了桌面版时（Electron 壳要求 macOS 13+，Homebrew 也早已停止给 Intel 供应
+bottle），用上面那行安装命令即可——桌面版和安装脚本发的**是同一棵独立包**，只是一个多了
+窗口。它支持 macOS 11+（含 Intel 的 Mac Pro 2013 等），文件名
+`multicc-standalone-<版本>-darwin-x64.tar.gz`。
 
 桌面安装包从这个功能合入后的第一个 tag 发布起出现在 Releases 页；在那之前可以用
 `npm run desktop:dev` 从源码运行。
 
 **→ 安装、首次启动、启动失败处理、数据与日志位置、安全模型、签名状态：[桌面版文档](docs/desktop.md)**
-**→ 老机器 / 没有 Node 的机器：[便携版文档](docs/portable.md)**
+**→ 老机器 / 没有 Node 的机器：[独立版文档](docs/standalone.md)**
 
 </details>
 
@@ -152,14 +175,15 @@ Android APK 只在发布 `vX.Y.Z` tag 时由 GitHub release workflow 构建一�
 `/manage` 的 **APK 区域**（现位于 Air 控制台的主机设置里）优先使用非空的本地 `public/multicc.apk`；本地没有时，
 只提供与当前服务端 package 版本完全一致的 Release `multicc.apk`，不会回退到
 `latest`。安装和 `./multicc update` 都不会构建 APK。从 v1.6.1 开始，每个稳定
-release 都会附带签名 APK，远程兜底立即生效。同一个 Release 页也会附带桌面
-安装包和校验文件（见上面的桌面版说明）。
+release 都会附带签名 APK，远程兜底立即生效。同一个 Release 里还有
+`install.sh` 下载的**独立包**、建立在它之上的桌面安装包，以及它们的校验文件
+（`SHA256SUMS.txt` 覆盖全部）。
 
 ### 2. 启动
 
 ```bash
-cd MultiCC
-./multicc start
+cd ~/MultiCC        # 安装脚本的默认目录（--dir 可以改）
+./multicc start     # 从源码检出运行也是同一个命令
 ```
 
 打开 **<http://localhost:3000>** —— 直接落在 **Air 控制台**（`/air`）。
@@ -186,13 +210,23 @@ cd MultiCC
 ### 4. 后续更新
 
 ```bash
-./multicc update           # 拉最新代码、按需重装依赖、重启
-./multicc update --force   # 无论工作区什么样，都落到远端那份代码上
+./multicc update           # 装最新 release，数据不受影响
+./multicc update --check   # 只对比版本
 ```
 
-日常的脏工作区不带参数的 `update` 自己就能处理：dev 渠道下它会先把改动 stash 成 `multicc-auto-update`，快进 `main`，再 pop 回来。`--force` 是给这样处理不了的情况准备的——pop 回来时和刚拉下来的代码冲突、stable 渠道的 `git checkout <tag>` 因为本地改动而拒绝、或者你的分支上有本地提交、不带参数的 `update` 只会说一句「nothing to update」。加上它就一定落到远端那份代码：工作区的全部改动（**包括未跟踪文件**）先备份进一个带标签的 `multicc-force-update-<时间戳>` stash，然后强制切换（dev 渠道是 `git reset --hard origin/main`，stable 渠道是 `git checkout -f <tag>`）。**不会删任何东西，但也不会自动恢复** —— 更新后你拿到的是一个干净的检出，本地改动请自己用 `git stash list` / `git stash pop` 取回。唯一的例外：stable 渠道下 `--force` 仍然只在有更新的 release 时才动手，已经在最新 tag 上时它会停下，并打印出让你手动执行的 `git checkout -f`。
+用包装的话，事情就这么简单：`update` 下载对应平台的新独立包、校验 SHA-256、解压到安装目录旁边，
+再原地把目录换掉——一个脱离当前进程的助手等正在跑的服务端退出，把旧目录改名挪开、把新目录
+就位、重启。中途任何一步失败都会还原成旧版本。会话、Provider 和聊天历史都在每用户数据目录里，
+升级永远不碰它们（装成包之后，网页里的自更新入口是故意关掉的：对它们来说**包本身**就是升级）。
+
+<details>
+<summary>从源码检出运行（git 语义）</summary>
+
+在源码检出里，`./multicc update` 是 `git pull` + `npm install` + 重启：dev 渠道下它会先把改动 stash 成 `multicc-auto-update`，快进 `main`，再 pop 回来。`--force` 是给这样处理不了的情况准备的——pop 回来时和刚拉下来的代码冲突、stable 渠道的 `git checkout <tag>` 因为本地改动而拒绝、或者你的分支上有本地提交、不带参数的 `update` 只会说一句「nothing to update」。加上它就一定落到远端那份代码：工作区的全部改动（**包括未跟踪文件**）先备份进一个带标签的 `multicc-force-update-<时间戳>` stash，然后强制切换（dev 渠道是 `git reset --hard origin/main`，stable 渠道是 `git checkout -f <tag>`）。**不会删任何东西，但也不会自动恢复** —— 更新后你拿到的是一个干净的检出，本地改动请自己用 `git stash list` / `git stash pop` 取回。唯一的例外：stable 渠道下 `--force` 仍然只在有更新的 release 时才动手，已经在最新 tag 上时它会停下，并打印出让你手动执行的 `git checkout -f`。
 
 也可以在网页里点：**Air 控制台左侧栏底部的版本号** → 弹窗显示当前版本、最新版本和一个「强制更新」勾选框 → 确认后 MultiCC 就在后台跑同一个更新，日志实时显示在弹窗里，跑完自动重启服务、服务回来后自动刷新页面。更新失败时弹窗会保留完整输出，并提供「强制更新重试」。
+
+</details>
 
 **→ 安装参数、`./multicc` 服务管理命令、systemd 配置、App 编译：[Installation](docs/installation.md)**
 
@@ -200,7 +234,7 @@ cd MultiCC
 
 ## 配置速览
 
-所有配置都在仓库根目录的 `.env` 里，安装脚本会帮你写好 `ACCESS_TOKEN` 和 `PORT`。
+所有配置都在同一个 env 文件里。用包装的话，它是每用户数据目录里的 `multicc.env`——`./multicc config path` 打印路径，`./multicc config set PORT 3000` 直接改；从源码检出运行则是仓库根目录的 `.env`。两种情况下安装脚本都会帮你写好 `ACCESS_TOKEN` 和 `PORT`。
 
 ```env
 PORT=3000
@@ -292,7 +326,7 @@ curl -X POST "http://localhost:3000/api/sessions/$SESSION_ID/switch-cli" \
 有。macOS（dmg）、Windows（exe）、Linux（AppImage / deb）安装包都在 Releases 页。双击即用，后端和界面全部在本机自动启动，无需 Node 和终端。详见 **[桌面版文档](docs/desktop.md)**。
 
 **老 Mac（比如 Mac Pro 2013）装不上桌面版，Node 也升不上去怎么办？**
-用**便携版**（`multicc-portable-<版本>-darwin-x64.tar.gz`）：Node 22 运行时、服务端和全部生产依赖都打包在内，解压后双击 `MultiCC.app` 即可，不需要 Node、Homebrew、Xcode，也不需要编译原生模块，支持 macOS 11+ 的 Intel 与 Apple Silicon 机器。详见 **[便携版文档](docs/portable.md)**。
+用**独立版**：一行命令安装（`install.sh` 下载 `multicc-standalone-<版本>-darwin-x64.tar.gz`，也可以自己下载解压），Node 22 运行时、服务端和全部生产依赖都打包在内，不需要 Node、Homebrew、Xcode，也不需要编译原生模块，支持 macOS 11+ 的 Intel 与 Apple Silicon 机器；桌面版其实就是同一棵树外面加了个 Electron 壳。详见 **[独立版文档](docs/standalone.md)**。
 
 **MultiCC 提供 HTTPS 吗？**
 不提供。局域网直连仍是明文 HTTP；麦克风、PWA 安装这类需要安全上下文的功能，请在本机用 `http://localhost`，或者走一个真正终止 TLS 的隧道。
@@ -329,7 +363,7 @@ cd MultiCC && ./multicc update --force
 | **[Multi-CLI switching](docs/cli-switching.md)** | 核心卖点：checkpoint 格式、会话复用语义、API、一键安装 |
 | [Installation](docs/installation.md) | 安装参数、升级、`./multicc` 命令、systemd、App 编译 |
 | [桌面版 Desktop app](docs/desktop.md) | macOS / Windows / Linux 桌面安装包：首启、故障处理、数据与日志位置、安全模型、签名 |
-| [便携版 Portable bundle](docs/portable.md) | 老机器 / 没有 Node 的机器：自包含（内置 Node 22 + 全部依赖）、macOS 11+ 与 Intel 支持、`.app` 双击包装、数据位置与已知限制 |
+| [独立版 Standalone package](docs/standalone.md) | 其他形态都在外面包一层的发行本体：结构、`multicc` 命令、升级、数据位置，以及它为什么能在 macOS 11+/Intel 上跑而不需要 Node |
 | [Configuration](docs/configuration.md) | 全部环境变量、provider、语音、通知 |
 | [Features](docs/features.md) | 完整功能参考 |
 | [Architecture](docs/architecture.md) | 仓库结构、消息流、设计决策 |

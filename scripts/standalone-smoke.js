@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// Boot a *built* portable bundle the way a user does, prove the server answers,
+// Boot a *built* standalone bundle the way a user does, prove the server answers,
 // then stop it and prove nothing was left behind.
 //
 // Why this is a script and not an inline CI snippet: the launcher's Windows path
@@ -11,7 +11,7 @@
 // win32 bundle, and window users' bug reports can be reproduced with the same
 // one command.
 //
-//   node scripts/portable-smoke.js --bundle dist-portable/multicc-portable-1.2.3-win32-x64
+//   node scripts/standalone-smoke.js --bundle dist-standalone/multicc-standalone-1.2.3-win32-x64
 //
 // It uses only the bundle's own runtime and the launcher's public flags: nothing
 // here can pass while the shipped entry points are broken.
@@ -48,7 +48,7 @@ function resolveBundleLayout(bundleDir) {
   const nodeBin = win
     ? path.join(resources, 'runtime', 'node.exe')
     : path.join(resources, 'runtime', 'bin', 'node');
-  const launcher = path.join(resources, 'launcher', 'portable-launcher.js');
+  const launcher = path.join(resources, 'launcher', 'standalone-launcher.js');
   return { resources, nodeBin, launcher, server: path.join(resources, 'app-server', 'server.js') };
 }
 
@@ -104,11 +104,11 @@ async function smokeBundle({ bundleDir, timeoutMs = DEFAULT_TIMEOUT_MS, keepData
   // Data goes to a throwaway home: the smoke must not read or write the real
   // user's sessions, and removing it proves the bundle keeps state outside
   // its own (read-only) tree.
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-portable-smoke-'));
-  const env = { ...process.env, MULTICC_PORTABLE_HOME: home };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-standalone-smoke-'));
+  const env = { ...process.env, MULTICC_STANDALONE_HOME: home };
   const infoFile = path.join(home, 'desktop-runtime.json');
   const result = { home, origin: null, steps: [] };
-  const record = step => { result.steps.push(step); logger.log(`[portable-smoke] ${step}`); };
+  const record = step => { result.steps.push(step); logger.log(`[standalone-smoke] ${step}`); };
 
   try {
     const port = await pickPort();
@@ -166,7 +166,7 @@ async function smokeBundle({ bundleDir, timeoutMs = DEFAULT_TIMEOUT_MS, keepData
 function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log('usage: portable-smoke.js --bundle <bundle-dir> [--timeout-ms <n>] [--keep-data]');
+    console.log('usage: standalone-smoke.js --bundle <bundle-dir> [--timeout-ms <n>] [--keep-data]');
     return 0;
   }
   return smokeBundle({
@@ -174,10 +174,10 @@ function main(argv = process.argv.slice(2)) {
     timeoutMs: args.timeoutMs,
     keepData: args.keepData,
   }).then(result => {
-    console.log(`[portable-smoke] PASS — ${result.steps.join(' → ')}`);
+    console.log(`[standalone-smoke] PASS — ${result.steps.join(' → ')}`);
     return 0;
   }).catch(error => {
-    console.error(`[portable-smoke] FAIL — ${error.message}`);
+    console.error(`[standalone-smoke] FAIL — ${error.message}`);
     return 1;
   });
 }

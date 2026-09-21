@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// Portable launcher — the entry point of a self-contained MultiCC bundle,
+// Standalone launcher — the entry point of a self-contained MultiCC bundle,
 // started by the Node runtime that ships inside the bundle
 // (Resources/runtime/bin/node). It gives a bundle that nobody installs the
 // same startup contract the Electron desktop shell has:
@@ -23,7 +23,7 @@
 //   Resources/launcher/     this file + lib/ (copies of desktop/lib)
 //
 // Writable state never lives inside the bundle: it goes to the per-user data
-// directory (see portableDataDir), so replacing or upgrading the bundle keeps
+// directory (see standaloneDataDir), so replacing or upgrading the bundle keeps
 // sessions, providers and chat history.
 
 const fs = require('fs');
@@ -45,7 +45,12 @@ const {
   resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs,
 } = require(path.join(LIB_DIR, 'desktop-env'));
 
-const APP_DIRNAME = 'MultiCCPortable';
+const APP_DIRNAME = 'MultiCCStandalone';
+// Bundles released before the portable→standalone unification wrote everything
+// to MultiCCPortable. Their data is the user's sessions and providers, so an
+// existing legacy directory keeps being used instead of being silently
+// orphaned by the rename (see dataDir()).
+const LEGACY_APP_DIRNAME = 'MultiCCPortable';
 const DEFAULT_START_PORT = 3000;
 const DETACH_FLAG = '--detached-child';
 // Node prints "SQLite is an experimental feature" the first time node:sqlite
@@ -56,43 +61,56 @@ const SQLITE_WARNING = 'ExperimentalWarning';
 const STOP_REQUEST_TTL_MS = 5 * 60 * 1000;
 
 function defaultResourcesDir({ env = process.env, dirname = __dirname } = {}) {
-  return path.resolve(env.MULTICC_PORTABLE_RESOURCES || path.join(dirname, '..'));
+  return path.resolve(
+    env.MULTICC_STANDALONE_RESOURCES || env.MULTICC_PORTABLE_RESOURCES || path.join(dirname, '..'),
+  );
+}
+
+function perUserAppDir({ platform, env, homedir, name }) {
+  if (platform === 'darwin') return path.join(homedir, 'Library', 'Application Support', name);
+  if (platform === 'win32') {
+    const appData = env.APPDATA || path.join(homedir, 'AppData', 'Roaming');
+    return path.join(appData, name);
+  }
+  const configHome = env.XDG_CONFIG_HOME || path.join(homedir, '.config');
+  return path.join(configHome, name);
 }
 
 // Electron's userData conventions, so the bundle behaves like a normal app
-// instead of scattering files next to the binary. MULTICC_PORTABLE_HOME
+// instead of scattering files next to the binary. MULTICC_STANDALONE_HOME
 // overrides it (tests, USB-stick installs, side-by-side runs).
-function portableDataDir({
+function standaloneDataDir({
   platform = process.platform, env = process.env, homedir = os.homedir(),
 } = {}) {
-  if (env.MULTICC_PORTABLE_HOME) return path.resolve(env.MULTICC_PORTABLE_HOME);
-  if (platform === 'darwin') return path.join(homedir, 'Library', 'Application Support', APP_DIRNAME);
-  if (platform === 'win32') {
-    const appData = env.APPDATA || path.join(homedir, 'AppData', 'Roaming');
-    return path.join(appData, APP_DIRNAME);
-  }
-  const configHome = env.XDG_CONFIG_HOME || path.join(homedir, '.config');
-  return path.join(configHome, APP_DIRNAME);
+  const explicit = env.MULTICC_STANDALONE_HOME || env.MULTICC_PORTABLE_HOME;
+  if (explicit) return path.resolve(explicit);
+  const current = perUserAppDir({ platform, env, homedir, name: APP_DIRNAME });
+  const legacy = perUserAppDir({ platform, env, homedir, name: LEGACY_APP_DIRNAME });
+  // A pre-rename install keeps its directory: moving it would be a data
+  // migration for no gain, and picking the new one would hide every existing
+  // session from the user.
+  if (legacy !== current && fs.existsSync(legacy) && !fs.existsSync(current)) return legacy;
+  return current;
 }
 
-function resolvePortablePaths({
+function resolveStandalonePaths({
   resources = defaultResourcesDir(),
   env = process.env,
   platform = process.platform,
   homedir = os.homedir(),
 } = {}) {
-  const userData = portableDataDir({ platform, env, homedir });
+  const userData = standaloneDataDir({ platform, env, homedir });
   return {
     resources,
     userData,
     runtimeDir: path.join(resources, 'runtime'),
     // The official Windows zip keeps node.exe at the runtime root; the unix
     // tarballs keep it in bin/. The bundle builder mirrors this exactly
-    // (scripts/portable-bundle.js runtimeNodePath) — keep the two in step.
+    // (scripts/standalone-bundle.js runtimeNodePath) — keep the two in step.
     runtimeNode: platform === 'win32'
       ? path.join(resources, 'runtime', 'node.exe')
       : path.join(resources, 'runtime', 'bin', 'node'),
-    launcherPath: path.join(resources, 'launcher', 'portable-launcher.js'),
+    launcherPath: path.join(resources, 'launcher', 'standalone-launcher.js'),
     desktopEnv: resolveDesktopEnv({ isPackaged: true, resourcesPath: resources, userData }),
   };
 }
@@ -100,12 +118,11 @@ function resolvePortablePaths({
 // The server child runs under the bundled runtime, and that same runtime must
 // win on PATH: `claude`/`codex`/other Node-based CLIs spawned for a session
 // would otherwise fall back to whatever (too old) Node the host has.
-function buildPortableChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, runtimeNode }) {
-  const env = buildChildEnv({ port, desktopEnv, baseEnv, dotenv });
-  if (runtimeNode) {
-    const binDir = path.dirname(runtimeNode);
-    env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
-  }
+// buildChildEnv already puts it there for a packaged layout (runtimeNode comes
+// from resolveDesktopEnv, so the desktop shell gets it too) — this only adds
+// the standalone-specific bits on top.
+function buildStandaloneChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, runtimeNode }) {
+  const env = buildChildEnv({ port, desktopEnv, baseEnv, dotenv, runtimeNode });
   // Storage is node:sqlite, which Node still labels experimental and announces
   // on stderr at load. That line is noise in a shipped app's log, not a warning
   // the user can act on.
@@ -146,7 +163,7 @@ function parseArgs(argv) {
 
 function createLogger({ logFile } = {}) {
   const write = (level, message) => {
-    const line = `${new Date().toISOString()} [portable] ${message}`;
+    const line = `${new Date().toISOString()} [standalone] ${message}`;
     if (level === 'error') console.error(line); else console.log(line);
     if (!logFile) return;
     // Logging must never break startup: the data dir may not exist yet.
@@ -189,7 +206,7 @@ async function probeReady(origin, { fetchImpl = fetch, timeoutMs = 1_500 } = {})
 }
 
 function createLauncher({
-  paths = resolvePortablePaths(),
+  paths = resolveStandalonePaths(),
   env = process.env,
   logger,
   spawnImpl = spawn,
@@ -208,9 +225,9 @@ function createLauncher({
   // MultiCC" wrapper) can ask it to drain instead of yanking the server out
   // from under it: the supervisor treats a child that exits on its own as a
   // crash and would restart it.
-  const pidFile = path.join(path.dirname(infoFile), 'portable-launcher.pid');
-  const stopRequestFile = path.join(path.dirname(infoFile), 'portable-launcher.stop');
-  if (!logger) logger = createLogger({ logFile: path.join(desktopEnv.logsDir, 'portable.log') });
+  const pidFile = path.join(path.dirname(infoFile), 'standalone-launcher.pid');
+  const stopRequestFile = path.join(path.dirname(infoFile), 'standalone-launcher.stop');
+  if (!logger) logger = createLogger({ logFile: path.join(desktopEnv.logsDir, 'standalone.log') });
   if (!openUrl) openUrl = origin => openBrowser(origin, { spawnImpl, platform, logger });
   const killTree = (pid, options) => killProcessTree(pid, options);
 
@@ -281,10 +298,12 @@ function createLauncher({
         writeStopRequest(owner);
       }
       // Give the owner time to drain the server over its normal path before we
-      // escalate to a tree kill.
-      for (let i = 0; i < 80; i += 1) {
-        const info = readRuntimeInfo(infoFile);
-        if (!info || !info.pid || !pidAlive(info.pid)) break;
+      // escalate to a tree kill. Wait for the OWNER to go, not just for the
+      // server pid to disappear: draining the server is only the first half of
+      // its teardown (reclaim + exit follow), and escalating inside that window
+      // tree-kills a launcher that was already stopping on its own — on Windows
+      // that is a taskkill racing its own orderly exit.
+      for (let i = 0; i < 80 && pidAlive(owner); i += 1) {
         await new Promise(resolve => setTimeout(resolve, 250));
       }
       if (pidAlive(owner)) {
@@ -313,7 +332,7 @@ function createLauncher({
       args.open ? '--open' : '--no-open',
     ];
     const child = spawnImpl(process.execPath, argv, {
-      detached: true, stdio: 'ignore', env: { ...env, MULTICC_PORTABLE_DETACHED: '1' },
+      detached: true, stdio: 'ignore', env: { ...env, MULTICC_STANDALONE_DETACHED: '1' },
     });
     if (child && typeof child.unref === 'function') child.unref();
     return child;
@@ -327,7 +346,7 @@ function createLauncher({
       if (args.open) openUrl(current.origin);
       return { started: false, origin: current.origin, pid: current.pid };
     }
-    if (args.detach && env.MULTICC_PORTABLE_DETACHED !== '1' && !args.detachedChild) {
+    if (args.detach && env.MULTICC_STANDALONE_DETACHED !== '1' && !args.detachedChild) {
       const child = detachSelf(args);
       logger.log(`starting in the background (pid ${child.pid}); logs: ${desktopEnv.logsDir}`);
       return { started: true, detached: true, pid: child.pid, origin: null };
@@ -350,7 +369,7 @@ function createLauncher({
       spawn: spawnImpl,
       execPath: process.execPath,
       serverEntry: desktopEnv.serverEntry,
-      buildEnv: ({ port: childPort }) => buildPortableChildEnv({
+      buildEnv: ({ port: childPort }) => buildStandaloneChildEnv({
         port: childPort, desktopEnv, baseEnv: env, dotenv, runtimeNode,
       }),
       fetchImpl,
@@ -409,17 +428,17 @@ function createLauncher({
 }
 
 function usage() {
-  console.log('MultiCC portable launcher\n'
-    + 'usage: portable-launcher.js [--start|--stop|--status] [--port <n>] [--no-open] [--detach] [--data <dir>] [--resources <dir>]');
+  console.log('MultiCC standalone launcher\n'
+    + 'usage: standalone-launcher.js [--start|--stop|--status] [--port <n>] [--no-open] [--detach] [--data <dir>] [--resources <dir>]');
 }
 
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   if (args.help) { usage(); return 0; }
   const resources = args.resources ? path.resolve(args.resources) : defaultResourcesDir();
-  const env = args.data ? { ...process.env, MULTICC_PORTABLE_HOME: args.data } : process.env;
-  const paths = resolvePortablePaths({ resources, env });
-  const logger = createLogger({ logFile: path.join(paths.desktopEnv.logsDir, 'portable.log') });
+  const env = args.data ? { ...process.env, MULTICC_STANDALONE_HOME: args.data } : process.env;
+  const paths = resolveStandalonePaths({ resources, env });
+  const logger = createLogger({ logFile: path.join(paths.desktopEnv.logsDir, 'standalone.log') });
   if (!fs.existsSync(paths.desktopEnv.serverEntry)) {
     logger.error(`bundle is incomplete: missing ${paths.desktopEnv.serverEntry}`);
     return 1;
@@ -427,7 +446,14 @@ async function main(argv = process.argv.slice(2)) {
   if (!fs.existsSync(paths.runtimeNode)) {
     logger.error(`bundled Node runtime is missing (${paths.runtimeNode})`);
   }
-  const launcher = createLauncher({ paths, env, logger });
+  // PORT in the bundle's config is the *starting* port, not a pin: the launcher
+  // still walks forward when it is taken. Without this, "multicc config set PORT"
+  // would look honoured while every start went to 3000 anyway.
+  const configuredPort = Number.parseInt(readEnvValues(paths.desktopEnv.envFile).PORT, 10);
+  const startPort = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535
+    ? configuredPort
+    : DEFAULT_START_PORT;
+  const launcher = createLauncher({ paths, env, logger, startPort });
 
   if (args.mode === 'status') {
     const state = await launcher.status();
@@ -482,7 +508,7 @@ async function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) {
   main().then(code => { if (code) process.exit(code); }).catch(error => {
-    console.error(`[portable] ${error && error.message}`);
+    console.error(`[standalone] ${error && error.message}`);
     process.exit(1);
   });
 }
@@ -492,7 +518,7 @@ module.exports = {
   DEFAULT_START_PORT,
   SQLITE_WARNING,
   STOP_REQUEST_TTL_MS,
-  buildPortableChildEnv,
+  buildStandaloneChildEnv,
   browserCommand,
   createLauncher,
   createLogger,
@@ -500,7 +526,7 @@ module.exports = {
   main,
   openBrowser,
   parseArgs,
-  portableDataDir,
+  standaloneDataDir,
   probeReady,
-  resolvePortablePaths,
+  resolveStandalonePaths,
 };
