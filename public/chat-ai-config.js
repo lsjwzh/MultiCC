@@ -191,11 +191,18 @@
     return id ? providersOf(state).find(provider => provider && provider.id === id) || null : null;
   }
 
+  // 内置官方供应商的名字是服务端数据（'Codex 官方'），展示时按身份翻译。
+  function displayProviderName(provider) {
+    const api = root && root.MultiCCProviderCatalog;
+    return api && api.providerDisplayName
+      ? api.providerDisplayName(provider) : (provider && provider.name) || '';
+  }
+
   function providerShortName(providerId, state) {
     if (!providerId) return translate(state, 'default');
     const provider = providersOf(state).find(item => item && item.id === providerId);
     return provider
-      ? provider.name
+      ? displayProviderName(provider)
       : ((state && state.providerDisplayName) || String(providerId).slice(0, 8));
   }
 
@@ -453,7 +460,7 @@
     const endpoint = provider.isOfficial
       ? tt('subscriptionSuffix', ' · 订阅')
       : (provider.baseUrl ? ' · ' + provider.baseUrl.replace(/^https?:\/\//, '') : '');
-    return provider.name + protocol + endpoint + (includeModel && provider.model ? ' · ' + provider.model : '');
+    return displayProviderName(provider) + protocol + endpoint + (includeModel && provider.model ? ' · ' + provider.model : '');
   }
 
   // Relative freshness for the cached limit, reusing the quota bar's resolver
