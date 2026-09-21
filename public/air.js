@@ -192,11 +192,6 @@
       ...(hasBody ? { body: JSON.stringify(body) } : {}),
     });
     if (conditional && response.status === 304) return { ok: true, unchanged: true };
-    if (conditional) {
-      const etag = response.headers.get('etag');
-      if (etag) resourceEtag.set(path, etag);
-      else resourceEtag.delete(path);
-    }
     const raw = await response.text();
     let result;
     try { result = raw ? JSON.parse(raw) : {}; }
@@ -208,6 +203,13 @@
     }
     if (!response.ok || result.ok === false) {
       throw Object.assign(new Error(result.message || result.error || result.code || `HTTP ${response.status}`), result);
+    }
+    // 校验符记在「这份正文已经被收下」之后：失败响应（Express 也会给错误体配一个
+    // ETag）要是被记下来，下一轮就会拿它换回 304 —— 一次失败被固化成永远读不到。
+    if (conditional) {
+      const etag = response.headers.get('etag');
+      if (etag) resourceEtag.set(path, etag);
+      else resourceEtag.delete(path);
     }
     return result;
   }
@@ -2525,8 +2527,15 @@
   async function refreshEntry() {
     const selected = taskId;
     if (!selected) return false;
+    const path = `/api/air/tasks/${encodeURIComponent(selected)}`;
+    // 条件请求的前提是「上一份正文还在手上」。entry 会被 navigate / popstate /
+    // dismissChat 清掉，ETag 却还留在表里：那时照旧带上 If-None-Match，服务端回
+    // 304，客户端既没有正文可画、又不肯再要一次，页头就永远停在「正在读取任务…」
+    // —— 状态行和 composer 上的 AI/角色胶囊一起空着，直到这条任务下次真的变了。
+    // 手里没有它的 entry，就先忘掉那个校验符，换一次真身回来。
+    if (entry?.task?.id !== selected) resourceEtag.delete(path);
     try {
-      const result = await apiConditional(`/api/air/tasks/${encodeURIComponent(selected)}`);
+      const result = await apiConditional(path);
       // 详情里 3.2MB 是消息正文；没变就别解析、别重建会话区（返回 false =
       // 「没变」，null = 「这次读失败」，调用方据此决定要不要重画和退避）。
       if (result.unchanged) return false;
