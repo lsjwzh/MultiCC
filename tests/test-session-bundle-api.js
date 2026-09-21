@@ -102,8 +102,22 @@ async function stopServer() {
   await fs.promises.writeFile(uploadPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
   await stopServer();
   await fs.promises.mkdir(path.join(dataRoot, 'chat_history'), { recursive: true });
+  // The source transcript carries the full machine-local attribution family (a
+  // real one does: taskName/taskShortCode/auxRunId ride next to taskId), plus an
+  // assistant prefix pair the source kept only because both entries were
+  // task-referenced. Import must drop every stamp without losing the pair.
+  const firstReply = '第一段回复：这是一段足够长的前缀内容，用于命中重试去重的前缀包含判定。';
+  const secondReply = `${firstReply}第二段补充说明。`;
+  const sourceStamps = { taskId: 'tsk-source-machine-only', taskName: '源机器任务',
+                         taskShortCode: 'Z9X8', taskStart: true, taskSource: 'aux',
+                         taskText: '源机器的任务文本', auxRunId: 'aux-run-source' };
+  const sourceHistory = [
+    { id: 'm-asset-1', role: 'user', ts: Date.now(), ...sourceStamps, content: `看这张截图 ${uploadPath}` },
+    { id: 'm-reply-1', role: 'assistant', ts: Date.now(), ...sourceStamps, content: firstReply },
+    { id: 'm-reply-2', role: 'assistant', ts: Date.now(), ...sourceStamps, content: secondReply },
+  ];
   await fs.promises.writeFile(path.join(dataRoot, 'chat_history', `${sourceId}.json`),
-    `${JSON.stringify({ id: 'm-asset-1', role: 'user', ts: Date.now(), taskId: 'tsk-source-machine-only', content: `看这张截图 ${uploadPath}` })}\n`);
+    `${sourceHistory.map(message => JSON.stringify(message)).join('\n')}\n`);
   await startServer();
   await git(sourceWorktree, ['add', '-A']);
   await git(sourceWorktree, ['-c', 'user.email=test@multicc.local', '-c', 'user.name=MultiCC Test',
@@ -157,9 +171,18 @@ async function stopServer() {
   assert.ok(response.data.restored.assets.restored >= 1, JSON.stringify(response.data.restored));
   const importedHistory = await fs.promises.readFile(
     path.join(dataRoot, 'chat_history', `${importedId}.json`), 'utf8');
-  // Source-machine task stamps must not ride along: on the target they name
-  // nonexistent tasks (or, on a same-instance re-import, pin live ones).
-  assert.ok(!importedHistory.includes('"taskId"'), 'imported messages must not carry source taskId stamps');
+  // Source-machine task attribution must not ride along: on the target it names
+  // nonexistent tasks (or, on a same-instance re-import, pins live ones).
+  for (const field of ['taskId', 'taskName', 'taskShortCode', 'taskStart', 'taskSource', 'taskText', 'auxRunId']) {
+    assert.ok(!importedHistory.includes(`"${field}"`), `imported messages must not carry source ${field} stamps`);
+  }
+  // ...and the strip must not cost a message: the source archive keeps three
+  // entries, including the prefix pair that only survived locally because both
+  // carried a taskId.
+  const importedMessages = importedHistory.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(importedMessages.length, 3, 'import must keep the whole source archive');
+  assert.ok(importedMessages.some(m => m.content === firstReply), 'the prefix reply survives import');
+  assert.ok(importedMessages.some(m => m.content === secondReply), 'the superset reply survives import');
   assert.ok(!importedHistory.includes(uploadPath), 'old temp path must be rewritten');
   const rewritten = importedHistory.match(/(\/[^"'\n]*multicc_handoff_[^"'\n]*\.png)/);
   assert.ok(rewritten, 'imported history references the restored asset');
@@ -167,6 +190,14 @@ async function stopServer() {
   assert.match(handoffDoc, /multicc_handoff_/);
   assert.match(handoffDoc, new RegExp(uploadPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   fs.rmSync(rewritten[1], { force: true });
+
+  // The archive marker must survive a boot: every start re-runs normalize over
+  // the on-disk transcript, and an unprotected pair would collapse on that read
+  // even though the import itself got it right.
+  await stopServer();
+  await startServer();
+  const afterRestart = (await api('GET', `/api/sessions/${importedId}/history`)).data;
+  assert.equal((afterRestart.messages || []).length, 3, 'the source archive survives a restart read');
 
   // ── v3 zip transport: export real zip bytes → import-zip end-to-end ──
   const { readZip } = require('../src/session/handoff-zip');
@@ -210,7 +241,10 @@ async function stopServer() {
     path.join(project, '.multicc-worktrees', zipId, 'session-feature.txt'), 'utf8'), 'session feature\n');
   const zipHistory = await fs.promises.readFile(
     path.join(dataRoot, 'chat_history', `${zipId}.json`), 'utf8');
-  assert.ok(!zipHistory.includes('"taskId"'), 'zip-imported messages must not carry source taskId stamps');
+  for (const field of ['taskId', 'taskName', 'taskShortCode', 'auxRunId']) {
+    assert.ok(!zipHistory.includes(`"${field}"`), `zip-imported messages must not carry source ${field} stamps`);
+  }
+  assert.equal(zipHistory.trim().split('\n').length, 3, 'zip import keeps the whole source archive');
   assert.ok(!zipHistory.includes(uploadPath), 'old temp path must be rewritten (zip import)');
   const zipRewritten = zipHistory.match(/(\/[^"'\n]*multicc_handoff_[^"'\n]*\.png)/);
   assert.ok(zipRewritten, 'zip-imported history references the restored asset');
@@ -226,13 +260,19 @@ async function stopServer() {
 
   // The seeded room was adopted into a board task at boot, and task teardown
   // refuses an unmerged workspace — so release the fixture's branch first, then
-  // dispose the task that owns the room, then the directory.
+  // dispose every task this fixture produced (the room and both imports, which
+  // attribution adopts once they have content), then the directory.
   await git(sourceWorktree, ['reset', '--hard', await git(project, ['rev-parse', 'HEAD'])]);
+  const fixtureSessionIds = new Set([sourceId, importedId, zipId]);
   const board = await api('GET', '/api/task-board');
-  const ownerTask = Object.values(board.data.tasks || {}).find(task => task.chatSessionId === sourceId);
-  assert.ok(ownerTask, 'the seeded room was adopted into a board task');
-  response = await api('DELETE', `/api/task-board/tasks/${ownerTask.id}`);
-  assert.equal(response.status, 200, JSON.stringify(response.data));
+  const ownedTasks = Object.values(board.data.tasks || {})
+    .filter(task => fixtureSessionIds.has(task.chatSessionId));
+  assert.ok(ownedTasks.some(task => task.chatSessionId === sourceId), 'the seeded room was adopted into a board task');
+  for (const task of ownedTasks) {
+    // force also releases each imported chat's own unmerged fixture branch.
+    response = await api('DELETE', `/api/task-board/tasks/${task.id}`, { force: true });
+    assert.equal(response.status, 200, JSON.stringify(response.data));
+  }
   response = await api('DELETE', `/api/directories/${dirId}?force=1`);
   assert.equal(response.status, 200, JSON.stringify(response.data));
   await stopServer();
