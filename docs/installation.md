@@ -5,15 +5,21 @@
 ## Install (one line, no flags)
 
 ```bash
+# macOS / Linux
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.ps1 | iex
 ```
 
 The tag in the URL **is** the version. The script downloads that release's
 **standalone package** — the server plus a pinned Node runtime plus every
 production dependency, in one archive — verifies its SHA-256, unpacks it into
-`~/MultiCC`, clears macOS download quarantine, writes `ACCESS_TOKEN` and `PORT`,
-optionally asks about start-on-login (macOS `launchd` / Linux systemd user;
-Windows has no service mode), starts MultiCC and opens the browser. Nothing is
+`~/MultiCC` (`%USERPROFILE%\MultiCC` on Windows), clears macOS download quarantine,
+writes `ACCESS_TOKEN` and `PORT`, optionally asks about start-on-login (macOS
+`launchd` / Linux systemd user / Windows Startup), starts MultiCC and opens the browser. Nothing is
 compiled, no APK is built, and **the target machine needs no Node, npm, git,
 Homebrew or Xcode**.
 
@@ -44,6 +50,10 @@ the authority for anything below.
 | `--no-service` | Skip the start-on-login setup |
 | `--no-start` | Install/configure only; also skips start-on-login setup |
 | `--no-open` | Start the server but do not open a browser |
+
+Windows PowerShell uses the same concepts with native parameter names:
+`-InstallDir`, `-Version`, `-From`, `-AccessToken`, `-Port`, `-NoService`,
+`-NoStart`, and `-NoOpen`.
 
 Older published command lines still work through compatibility shims: `--branch
 <tag>` is an alias for `--version`, `--no-clone` means "install from the current
