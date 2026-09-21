@@ -103,7 +103,7 @@ async function stopServer() {
   await stopServer();
   await fs.promises.mkdir(path.join(dataRoot, 'chat_history'), { recursive: true });
   await fs.promises.writeFile(path.join(dataRoot, 'chat_history', `${sourceId}.json`),
-    `${JSON.stringify({ id: 'm-asset-1', role: 'user', ts: Date.now(), content: `看这张截图 ${uploadPath}` })}\n`);
+    `${JSON.stringify({ id: 'm-asset-1', role: 'user', ts: Date.now(), taskId: 'tsk-source-machine-only', content: `看这张截图 ${uploadPath}` })}\n`);
   await startServer();
   await git(sourceWorktree, ['add', '-A']);
   await git(sourceWorktree, ['-c', 'user.email=test@multicc.local', '-c', 'user.name=MultiCC Test',
@@ -157,6 +157,9 @@ async function stopServer() {
   assert.ok(response.data.restored.assets.restored >= 1, JSON.stringify(response.data.restored));
   const importedHistory = await fs.promises.readFile(
     path.join(dataRoot, 'chat_history', `${importedId}.json`), 'utf8');
+  // Source-machine task stamps must not ride along: on the target they name
+  // nonexistent tasks (or, on a same-instance re-import, pin live ones).
+  assert.ok(!importedHistory.includes('"taskId"'), 'imported messages must not carry source taskId stamps');
   assert.ok(!importedHistory.includes(uploadPath), 'old temp path must be rewritten');
   const rewritten = importedHistory.match(/(\/[^"'\n]*multicc_handoff_[^"'\n]*\.png)/);
   assert.ok(rewritten, 'imported history references the restored asset');
@@ -207,6 +210,7 @@ async function stopServer() {
     path.join(project, '.multicc-worktrees', zipId, 'session-feature.txt'), 'utf8'), 'session feature\n');
   const zipHistory = await fs.promises.readFile(
     path.join(dataRoot, 'chat_history', `${zipId}.json`), 'utf8');
+  assert.ok(!zipHistory.includes('"taskId"'), 'zip-imported messages must not carry source taskId stamps');
   assert.ok(!zipHistory.includes(uploadPath), 'old temp path must be rewritten (zip import)');
   const zipRewritten = zipHistory.match(/(\/[^"'\n]*multicc_handoff_[^"'\n]*\.png)/);
   assert.ok(zipRewritten, 'zip-imported history references the restored asset');
