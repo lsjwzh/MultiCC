@@ -144,31 +144,62 @@ Notable responses:
 | `GET` | `/api/cli/install-specs` | Official install command for each CLI (or a manual-install note) |
 | `POST` | `/api/cli/:cli/install` | Start an install job (8-minute timeout, rolling 12 KB log) |
 | `GET` | `/api/cli/install-status/:jobId` | Poll job progress, log tail, and classified error |
+| `POST` | `/api/cli/:cli/upgrade` | Start an **upgrade** job for an already-installed CLI |
 
-### Checking installed CLI versions
+### Checking installed CLI versions and available updates
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/cli/versions` | Current `--version` of the exact binary multicc spawns for each CLI |
+| `GET` | `/api/cli/versions` | Installed `--version` **and** published latest for each CLI |
 
-Reports the version of the **same binary the host actually spawns** (resolved through `resolveCliCommands()`, i.e. `cliCommands`), so it never drifts from a stale install artifact the way a PATH-based or hook-based check can. It is **read-only and notify-only**: it does not upgrade, replace, or restart anything — the UI shows the current version and the user decides whether to run the official install/update command themselves.
+Two independent facts are reported per CLI and never conflated:
 
-Results are cached per server process for **1 day**; pass `?refresh=1` (or `?force=1`) to force a re-probe. Unavailable or unresolved CLIs are reported with `available: false` and are **not** spawned (no ENOENT child processes).
+- **installed** — the version of the **same binary the host actually spawns** (resolved through `resolveCliCommands()`, i.e. `cliCommands`), so it never drifts from a stale install artifact the way a PATH-based or hook-based check can.
+- **latest** — the version published upstream, read from the npm registry (`GET <registry>/<pkg>/latest`). The registry base follows `npm_config_registry`, so mirror users compare like with like instead of being told about a release they cannot install.
+
+Both halves are cached per server process for **1 day**; `?refresh=1` (or `?force=1`) forces a re-probe of both. The server also proactively probes **once shortly after startup and then once a day** (`startUpdateWatch()`, both timers `unref`'d), so opening the UI is normally a single cached read. Unavailable or unresolved CLIs are reported with `available: false` and are **not** spawned (no ENOENT child processes); the same goes for CLIs with no published source — no request is made for them at all.
+
+**`latest: null` means "cannot check", never "up to date".** `qoder` is installed by a curl script and `zcode` is a manual desktop install; neither publishes to a comparable source, so both report `updateSource: null` and the UI says so explicitly.
 
 ```jsonc
 {
   "ok": true,
   "cached": false,
-  "checkedAt": "2026-09-03T10:12:00.000Z",
+  "checkedAt": "2026-09-21T10:12:00.000Z",
+  "lastCheckedAt": "2026-09-21T10:12:00.000Z",
+  "latestCheckedAt": "2026-09-21T10:12:00.000Z",
+  "updateCount": 1,
   "versions": {
-    "qoder":  { "cmd": "/Users/me/.local/bin/qoderclicn", "available": true,  "version": "1.1.4", "error": null },
-    "claude": { "cmd": "/Users/me/.local/bin/claude",     "available": true,  "version": "2.0.1", "error": null },
-    "kimi":   { "cmd": "kimi",                            "available": false, "version": null,  "error": null }
+    "claude": { "cmd": "/Users/me/.local/bin/claude", "available": true, "version": "2.0.1",
+                "error": null, "latest": "2.0.2", "updateAvailable": true,
+                "updateSource": "npm", "inUseCount": 1 },
+    "qoder":  { "cmd": "/Users/me/.local/bin/qoderclicn", "available": true, "version": "1.1.4",
+                "error": null, "latest": null, "updateAvailable": false,
+                "updateSource": null, "inUseCount": 0 },
+    "kimi":   { "cmd": "kimi", "available": false, "version": null, "error": null,
+                "latest": null, "updateAvailable": false, "updateSource": null, "inUseCount": 0 }
   }
 }
 ```
 
-When a probe fails or the output has no `x.y.z` token, that CLI's `version` is `null` and `error` carries a short reason; the overall response stays `200 { ok: true }` so one bad binary never blanks the whole panel.
+`inUseCount` counts sessions currently holding that CLI (a live chat stream or live background work). It exists so the upgrade confirmation can say how many sessions are affected — it is a warning, not a lock.
+
+When a probe fails or the output has no `x.y.z` token, that CLI's `version` is `null` and `error` carries a short reason; the overall response stays `200 { ok: true }` so one bad binary never blanks the whole panel. The same is true of the upstream half: a registry timeout, a 404, a redirect loop or a non-semver body all resolve to `latest: null`.
+
+### Upgrading
+
+`POST /api/cli/:cli/upgrade` runs the CLI's official command from `OFFICIAL_INSTALL_SPECS` in place (`npm install -g …`), reusing the install job's 8-minute timeout, rolling 12 KB log and classified failure hints; poll it with `GET /api/cli/install-status/:jobId`.
+
+It deliberately does **not** reuse `/install`'s `alreadyInstalled` short-circuit: that shortcut means "only install when missing", while an upgrade is defined by the CLI already being present.
+
+| Status | Meaning |
+|---|---|
+| `202` | Job started (`jobId`, `command`, `inUseCount`) |
+| `400` | Unsupported CLI, or a manual-only install (`zcode` → `{ manual: true }`) |
+| `409` | A job for this CLI is already running |
+
+A successful job invalidates both version caches, so the next `/api/cli/versions` re-probes and the update badge clears on its own. A failed one does not: a half-finished npm install is exactly when you want the old reading kept.
+
 
 ---
 
