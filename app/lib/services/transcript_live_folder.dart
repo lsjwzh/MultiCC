@@ -110,10 +110,10 @@ class TranscriptLiveFolder {
     String Function()? sessionIdOf,
     void Function()? onChanged,
     void Function()? onTurnStart,
-  })  : _cliOf = cliOf ?? (() => SessionCli.claude),
-        _sessionIdOf = sessionIdOf ?? (() => ''),
-        _onChanged = onChanged,
-        _onTurnStart = onTurnStart;
+  }) : _cliOf = cliOf ?? (() => SessionCli.claude),
+       _sessionIdOf = sessionIdOf ?? (() => ''),
+       _onChanged = onChanged,
+       _onTurnStart = onTurnStart;
 
   /// The transcript the streaming tail lives in. Owned by the host; the
   /// folder appends at most one bubble per turn and mutates it in place.
@@ -192,13 +192,13 @@ class TranscriptLiveFolder {
         tc.result = c is String
             ? c
             : c is List
-                ? c
-                    .map(
-                      (item) =>
-                          item is Map ? (item['text'] ?? '').toString() : '',
-                    )
-                    .join('')
-                : c?.toString();
+            ? c
+                  .map(
+                    (item) =>
+                        item is Map ? (item['text'] ?? '').toString() : '',
+                  )
+                  .join('')
+            : c?.toString();
         tc.isError = raw['is_error'] == true;
         tc.isDone = true;
         tc.endedAt = DateTime.now().millisecondsSinceEpoch;
@@ -289,7 +289,7 @@ class TranscriptLiveFolder {
   }
 
   void partDelta(Map<String, dynamic> message) {
-    if (_cliOf() == SessionCli.claude) return;
+    if (_cliOf().isClaudeFamily) return;
     final delta = message['delta'];
     if (delta is! Map) return;
     final dType = delta['type']?.toString() ?? '';

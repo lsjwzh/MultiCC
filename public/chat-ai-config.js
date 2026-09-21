@@ -74,6 +74,7 @@
   const ZCODE_MODEL_OPTIONS = Object.freeze(['']);
   const ZCODE_SETUP_PROMPTED = new Set();
   let _autoProviderEditorApi = null;
+  const isClaudeCli = cli => cli === 'claude' || cli === 'claude-exp';
   const isCodexCli = cli => cli === 'codex' || cli === 'codex-exp';
 
   // Browser pages load auto-provider-editor.js first; Node tests resolve the
@@ -94,7 +95,7 @@
 
   function defaultEffort(cli) {
     if (isCodexCli(cli)) return 'xhigh';
-    if (cli === 'claude') return 'medium';
+    if (isClaudeCli(cli)) return 'medium';
     return '';
   }
 
@@ -103,7 +104,7 @@
     if (cli === 'opencode') return OPENCODE_VARIANT_OPTIONS;
     if (cli === 'qoder') return QODER_REASONING_OPTIONS;
     if (cli === 'codebuddy') return CODEBUDDY_REASONING_OPTIONS;
-    if (cli === 'claude') return EFFORT_OPTIONS;
+    if (isClaudeCli(cli)) return EFFORT_OPTIONS;
     return [];
   }
 
@@ -247,7 +248,7 @@
     if (tiers.length) return [...tiers.map(([tier]) => tier), '__custom__'];
     const options = providerModelOptions(providerId, state);
     if (options.length) return [...options, '__custom__'];
-    if (state && state.cli === 'claude') {
+    if (state && isClaudeCli(state.cli)) {
       // Prefer the live list extracted from the installed claude CLI's bundle
       // (1-day localStorage cache filled by loadClaudeModels(); see
       // public/shared/models.js) so new Anthropic releases appear without a
@@ -508,7 +509,7 @@
   // 子任务（子 agent）线路的判定只有一份：chat 的 AI 配置弹窗、Air 的任务 AI
   // 配置弹窗、以及创建任务时把线路钉进 runtime，都调这两个函数。服务端有对应的
   // src/session/subagent.js；客户端这边只负责「什么算设了」，别的地方别再手写。
-  const SUBAGENT_CLIS = Object.freeze(['claude', 'codex', 'codex-exp']);
+  const SUBAGENT_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp']);
 
   function supportsSubagentCli(cli) {
     return SUBAGENT_CLIS.includes(cli || '');
@@ -693,7 +694,7 @@
         </div>
         <div id="ai-agent-section">
           <div style="height:1px;background:var(--chat-line, #30363d);margin:4px 0 14px;"></div>
-          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${cli === 'claude' ? 'Claude Code' : cli === 'opencode' ? 'OpenCode' : cli === 'qoder' ? 'Qoder CN' : 'WorkBuddy'} Agent</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${isClaudeCli(cli) ? (cli === 'claude-exp' ? 'Claude Agent SDK' : 'Claude Code') : cli === 'opencode' ? 'OpenCode' : cli === 'qoder' ? 'Qoder CN' : 'WorkBuddy'} Agent</div>
           <div style="font-size:11px;color:var(--chat-muted, #8b949e);line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
           <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${cli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
           <datalist id="ai-agent-list">${cli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>
@@ -743,9 +744,9 @@
       if (!supportsProvider) providerSelect.value = '';
 
       effortSection.style.display = choicesForEffort.length ? '' : 'none';
-      agentSection.style.display = cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? '' : 'none';
+      agentSection.style.display = isClaudeCli(cli) || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? '' : 'none';
       subSection.style.display = supportsSubagentCli(cli) ? '' : 'none';
-      agentInput.value = cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? (config.agent || '') : '';
+      agentInput.value = isClaudeCli(cli) || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? (config.agent || '') : '';
       for (const choice of choicesForEffort) {
         const option = document.createElement('option');
         option.value = choice.value;
@@ -908,7 +909,7 @@
           providerSelection,
           model: primary ? primary.model || '' : selectedModel,
           effort: effortSelect.value,
-          agent: cli === 'claude' || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? agentInput.value.trim() : null,
+          agent: isClaudeCli(cli) || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? agentInput.value.trim() : null,
           subagent: resolveSubagent({ cli, providerId: subProviderSelect.value,
             primaryProviderId: primary ? primary.providerId : providerSelect.value, model: childModel }),
         });

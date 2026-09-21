@@ -90,11 +90,13 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   bool _customModel = false;
   final _customModelCtrl = TextEditingController();
 
-  bool get _isClaude => _pickedCli == SessionCli.claude;
+  bool get _isClaude => _pickedCli.isClaudeFamily;
   bool get _isCodex => _pickedCli.isCodexFamily;
   Iterable<SessionCli> get _selectableClis => SessionCli.values.where(
-        (cli) => widget.kind == SessionKind.chat || cli != SessionCli.codexExp,
-      );
+    (cli) =>
+        widget.kind == SessionKind.chat ||
+        (cli != SessionCli.codexExp && cli != SessionCli.claudeExp),
+  );
   bool get _isQoder => _pickedCli == SessionCli.qoder;
   String get _defaultEffort => _pickedCli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
@@ -110,8 +112,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   /// A CLI is selectable when the host reports it available. Unknown entries
   /// (empty availability map, e.g. cold start with no sessions to probe) fall
   /// back to available so the user is never blocked from creating a session.
-  bool _cliAvailable(SessionCli cli) =>
-      widget.cliAvailability[cli] ?? true;
+  bool _cliAvailable(SessionCli cli) => widget.cliAvailability[cli] ?? true;
 
   @override
   void initState() {
@@ -453,7 +454,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     }
     // Claude has a provider pool, but Claude Official exposes no modelOptions —
     // warm the CLI-bundle list so the dropdown upgrades once it lands.
-    if (cli == SessionCli.claude) _loadClaudeModels();
+    if (cli.isClaudeFamily) _loadClaudeModels();
     if (cli.isCodexFamily) {
       try {
         await CodexModelsService(
@@ -599,252 +600,269 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               ),
             ],
             if (!widget.basicMode) ...[
-            const SizedBox(height: 12),
-            // ── CLI picker (drives provider pool + model/effort/agent) ──
-            Text(
-              t('cliLabel'),
-              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<SessionCli>(
-              value: _pickedCli,
-              isExpanded: true,
-              dropdownColor: const Color(0xFFffffff),
-              style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
-              decoration: sheetInputDecoration(),
-              items: _selectableClis
-                  .map(
-                    (cli) => DropdownMenuItem<SessionCli>(
-                      value: cli,
-                      enabled: _cliAvailable(cli),
-                      child: Text(
-                        _cliAvailable(cli)
-                            ? cli.displayName
-                            : '${cli.displayName}${t('cliNotInstalledSuffix')}',
-                        style: TextStyle(
-                          color: _cliAvailable(cli)
-                              ? const Color(0xFF233249)
-                              : const Color(0xFF8a9aab),
+              const SizedBox(height: 12),
+              // ── CLI picker (drives provider pool + model/effort/agent) ──
+              Text(
+                t('cliLabel'),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
+              ),
+              const SizedBox(height: 4),
+              DropdownButtonFormField<SessionCli>(
+                value: _pickedCli,
+                isExpanded: true,
+                dropdownColor: const Color(0xFFffffff),
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
+                decoration: sheetInputDecoration(),
+                items: _selectableClis
+                    .map(
+                      (cli) => DropdownMenuItem<SessionCli>(
+                        value: cli,
+                        enabled: _cliAvailable(cli),
+                        child: Text(
+                          _cliAvailable(cli)
+                              ? cli.displayName
+                              : '${cli.displayName}${t('cliNotInstalledSuffix')}',
+                          style: TextStyle(
+                            color: _cliAvailable(cli)
+                                ? const Color(0xFF233249)
+                                : const Color(0xFF8a9aab),
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) {
+                  if (v != null) _onCliChanged(v);
+                },
+              ),
+              const SizedBox(height: 12),
+              // ── Role prompt with preset picker ──
+              Row(
+                children: [
+                  Text(
+                    t('rolePrompt'),
+                    style: const TextStyle(
+                      color: Color(0xFF6f8096),
+                      fontSize: 11,
+                    ),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    icon: const Icon(Icons.auto_awesome, size: 14),
+                    label: Text(
+                      _loadingPresets ? t('loading') : t('selectRolePreset'),
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF1267b5),
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: _loadingPresets ? null : _pickPreset,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              TextField(
+                controller: _roleCtrl,
+                maxLines: 3,
+                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
+                decoration: sheetInputDecoration(
+                  hint: t('optionalInheritFleetRole'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (_pickedCli.supportsProvider) ...[
+                // ── Provider ──
+                const Text(
+                  'Provider',
+                  style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
+                ),
+                const SizedBox(height: 4),
+                DropdownButtonFormField<String>(
+                  value: _pickedProvider ?? '',
+                  isExpanded: true,
+                  dropdownColor: const Color(0xFFffffff),
+                  style: const TextStyle(
+                    color: Color(0xFF233249),
+                    fontSize: 13,
+                  ),
+                  decoration: sheetInputDecoration(),
+                  items: [
+                    if (!_hasConcreteDefaultProvider)
+                      DropdownMenuItem(
+                        value: '',
+                        child: Text(
+                          t('defaultLogin'),
+                          style: const TextStyle(color: Color(0xFF233249)),
+                        ),
+                      ),
+                    ..._providers.map(
+                      (p) => DropdownMenuItem(
+                        value: p['id'] as String,
+                        child: ProviderOption(
+                          main:
+                              '${p['id'] == _defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
+                              '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
+                              '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
+                          detail: providerLimitDetail(p),
+                          mainStyle: const TextStyle(
+                            color: Color(0xFF233249),
+                            fontSize: 13,
+                          ),
                         ),
                       ),
                     ),
-                  )
-                  .toList(),
-              onChanged: (v) {
-                if (v != null) _onCliChanged(v);
-              },
-            ),
-            const SizedBox(height: 12),
-            // ── Role prompt with preset picker ──
-            Row(
-              children: [
-                Text(
-                  t('rolePrompt'),
-                  style: const TextStyle(
-                    color: Color(0xFF6f8096),
-                    fontSize: 11,
-                  ),
+                  ],
+                  onChanged: _onProviderChanged,
                 ),
-                const Spacer(),
-                TextButton.icon(
-                  icon: const Icon(Icons.auto_awesome, size: 14),
-                  label: Text(
-                    _loadingPresets ? t('loading') : t('selectRolePreset'),
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF1267b5),
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(0, 28),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  onPressed: _loadingPresets ? null : _pickPreset,
+              ] else ...[
+                const Text(
+                  'Qoder CN 使用自身账号 / BYOK 配置',
+                  style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
                 ),
               ],
-            ),
-            const SizedBox(height: 4),
-            TextField(
-              controller: _roleCtrl,
-              maxLines: 3,
-              style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
-              decoration: sheetInputDecoration(
-                hint: t('optionalInheritFleetRole'),
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (_pickedCli.supportsProvider) ...[
-              // ── Provider ──
-              const Text(
-                'Provider',
-                style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
+              // ── Model (linked to provider) ──
+              const SizedBox(height: 12),
+              Text(
+                t('model'),
+                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
               ),
               const SizedBox(height: 4),
               DropdownButtonFormField<String>(
-                value: _pickedProvider ?? '',
+                value: _customModel ? '__custom__' : _pickedModel,
                 isExpanded: true,
                 dropdownColor: const Color(0xFFffffff),
                 style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
                 decoration: sheetInputDecoration(),
                 items: [
-                  if (!_hasConcreteDefaultProvider)
-                    DropdownMenuItem(
-                      value: '',
+                  ...modelOptions.map(
+                    (e) => DropdownMenuItem(
+                      value: e.key,
                       child: Text(
-                        t('defaultLogin'),
+                        e.value,
                         style: const TextStyle(color: Color(0xFF233249)),
                       ),
                     ),
-                  ..._providers.map(
-                    (p) => DropdownMenuItem(
-                      value: p['id'] as String,
-                      child: ProviderOption(
-                        main:
-                            '${p['id'] == _defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
-                            '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
-                            '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
-                        detail: providerLimitDetail(p),
-                        mainStyle: const TextStyle(
-                          color: Color(0xFF233249),
-                          fontSize: 13,
-                        ),
-                      ),
+                  ),
+                  DropdownMenuItem(
+                    value: '__custom__',
+                    child: Text(
+                      t('customOption'),
+                      style: const TextStyle(color: Color(0xFF6f8096)),
                     ),
                   ),
                 ],
-                onChanged: _onProviderChanged,
+                onChanged: (v) {
+                  setState(() {
+                    if (v == '__custom__') {
+                      _customModel = true;
+                      _pickedModel = null;
+                    } else {
+                      _customModel = false;
+                      _pickedModel = v;
+                    }
+                  });
+                },
               ),
-            ] else ...[
-              const Text(
-                'Qoder CN 使用自身账号 / BYOK 配置',
-                style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-              ),
-            ],
-            // ── Model (linked to provider) ──
-            const SizedBox(height: 12),
-            Text(
-              t('model'),
-              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-            ),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<String>(
-              value: _customModel ? '__custom__' : _pickedModel,
-              isExpanded: true,
-              dropdownColor: const Color(0xFFffffff),
-              style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
-              decoration: sheetInputDecoration(),
-              items: [
-                ...modelOptions.map(
-                  (e) => DropdownMenuItem(
-                    value: e.key,
-                    child: Text(
-                      e.value,
-                      style: const TextStyle(color: Color(0xFF233249)),
-                    ),
-                  ),
-                ),
-                DropdownMenuItem(
-                  value: '__custom__',
-                  child: Text(
-                    t('customOption'),
-                    style: const TextStyle(color: Color(0xFF6f8096)),
+              if (_isCodex &&
+                  CodexModelsService.cached.diagnosticMessage.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  '${CodexModelsService.cached.diagnosticMessage}'
+                  '${CodexModelsService.cached.cliVersion.isNotEmpty ? ' · CLI ${CodexModelsService.cached.cliVersion}' : ''}',
+                  key: const ValueKey('codex-model-diagnostic'),
+                  style: const TextStyle(
+                    color: Color(0xFF6f8096),
+                    fontSize: 11,
+                    height: 1.35,
                   ),
                 ),
               ],
-              onChanged: (v) {
-                setState(() {
-                  if (v == '__custom__') {
-                    _customModel = true;
-                    _pickedModel = null;
-                  } else {
-                    _customModel = false;
-                    _pickedModel = v;
-                  }
-                });
-              },
-            ),
-            if (_isCodex &&
-                CodexModelsService.cached.diagnosticMessage.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                '${CodexModelsService.cached.diagnosticMessage}'
-                '${CodexModelsService.cached.cliVersion.isNotEmpty ? ' · CLI ${CodexModelsService.cached.cliVersion}' : ''}',
-                key: const ValueKey('codex-model-diagnostic'),
-                style: const TextStyle(
-                  color: Color(0xFF6f8096),
-                  fontSize: 11,
-                  height: 1.35,
+              if (_customModel) ...[
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _customModelCtrl,
+                  style: const TextStyle(
+                    color: Color(0xFF233249),
+                    fontSize: 13,
+                  ),
+                  decoration: sheetInputDecoration(
+                    hint: _isClaude
+                        ? t('claudeModelIdHint')
+                        : _isQoder
+                        ? 'Qoder 模型或分级 ID'
+                        : _pickedCli == SessionCli.codebuddy
+                        ? 'WorkBuddy 模型或档位 ID'
+                        : _pickedCli == SessionCli.dsh
+                        ? 'DeepSeek 模型 ID'
+                        : t('codexModelIdHint'),
+                  ),
+                  autofocus: true,
                 ),
-              ),
-            ],
-            if (_customModel) ...[
-              const SizedBox(height: 6),
-              TextField(
-                controller: _customModelCtrl,
-                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
-                decoration: sheetInputDecoration(
-                  hint: _isClaude
-                      ? t('claudeModelIdHint')
-                      : _isQoder
-                      ? 'Qoder 模型或分级 ID'
-                      : _pickedCli == SessionCli.codebuddy
-                      ? 'WorkBuddy 模型或档位 ID'
-                      : _pickedCli == SessionCli.dsh
-                      ? 'DeepSeek 模型 ID'
-                      : t('codexModelIdHint'),
+              ],
+              if (_pickedCli.supportsEffort) ...[
+                const SizedBox(height: 12),
+                Text(
+                  _pickedCli.effortFieldLabel,
+                  style: const TextStyle(
+                    color: Color(0xFF6f8096),
+                    fontSize: 11,
+                  ),
                 ),
-                autofocus: true,
-              ),
-            ],
-            if (_pickedCli.supportsEffort) ...[
-              const SizedBox(height: 12),
-              Text(
-                _pickedCli.effortFieldLabel,
-                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-              ),
-              const SizedBox(height: 4),
-              DropdownButtonFormField<String>(
-                value: _pickedEffort,
-                isExpanded: true,
-                dropdownColor: const Color(0xFFffffff),
-                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
-                decoration: sheetInputDecoration(),
-                items: _pickedCli.effortOptions
-                    .map(
-                      (e) => DropdownMenuItem(
-                        value: e,
-                        child: Text(
-                          _isClaude
-                              ? e
-                              : effortShortNameForCli(_pickedCli, e),
-                          style:
-                              const TextStyle(color: Color(0xFF233249)),
+                const SizedBox(height: 4),
+                DropdownButtonFormField<String>(
+                  value: _pickedEffort,
+                  isExpanded: true,
+                  dropdownColor: const Color(0xFFffffff),
+                  style: const TextStyle(
+                    color: Color(0xFF233249),
+                    fontSize: 13,
+                  ),
+                  decoration: sheetInputDecoration(),
+                  items: _pickedCli.effortOptions
+                      .map(
+                        (e) => DropdownMenuItem(
+                          value: e,
+                          child: Text(
+                            _isClaude
+                                ? e
+                                : effortShortNameForCli(_pickedCli, e),
+                            style: const TextStyle(color: Color(0xFF233249)),
+                          ),
                         ),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (v) =>
-                    setState(() => _pickedEffort = v ?? _defaultEffort),
-              ),
+                      )
+                      .toList(),
+                  onChanged: (v) =>
+                      setState(() => _pickedEffort = v ?? _defaultEffort),
+                ),
+              ],
+              if (_pickedCli.supportsAgent) ...[
+                const SizedBox(height: 12),
+                Text(
+                  '${_pickedCli.displayName} Agent',
+                  style: const TextStyle(
+                    color: Color(0xFF6f8096),
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                TextField(
+                  controller: _agentCtrl,
+                  maxLength: 80,
+                  style: const TextStyle(
+                    color: Color(0xFF233249),
+                    fontSize: 13,
+                  ),
+                  decoration: sheetInputDecoration(
+                    hint: _pickedCli == SessionCli.opencode
+                        ? t('agentBuildHint')
+                        : t('agentNameHint'),
+                  ).copyWith(counterText: ''),
+                ),
+              ],
             ],
-            if (_pickedCli.supportsAgent) ...[
-              const SizedBox(height: 12),
-              Text(
-                '${_pickedCli.displayName} Agent',
-                style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-              ),
-              const SizedBox(height: 4),
-              TextField(
-                controller: _agentCtrl,
-                maxLength: 80,
-                style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
-                decoration: sheetInputDecoration(
-                  hint: _pickedCli == SessionCli.opencode
-                      ? t('agentBuildHint')
-                      : t('agentNameHint'),
-                ).copyWith(counterText: ''),
-              ),
-            ],
-          ],
           ],
         ),
       ),

@@ -10,6 +10,7 @@ const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-r
 
 const adapters = [
   require('../src/cli-adapters/claude').createClaudeAdapter({}),
+  require('../src/cli-adapters/claude-exp').createClaudeExpAdapter({}),
   require('../src/cli-adapters/codex').createCodexAdapter({}),
   require('../src/cli-adapters/codex-exp').createCodexExpAdapter({}),
   require('../src/cli-adapters/opencode').createOpencodeAdapter({}),
@@ -21,7 +22,7 @@ const adapters = [
 ];
 const successResult = { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed' };
 const traces = {
-  claude: [successResult], qoder: [{ type: 'result', subtype: 'success', is_error: false }],
+  claude: [successResult], 'claude-exp': [successResult], qoder: [{ type: 'result', subtype: 'success', is_error: false }],
   codebuddy: [{ type: 'result', subtype: 'success', is_error: false }],
   codex: [{ type: 'turn.completed', usage: {} }],
   'codex-exp': [{ method: 'turn/completed', params: { turn: { id: 'turn-exp', status: 'completed' } } }],
@@ -55,7 +56,7 @@ for (const adapter of adapters) {
   });
 }
 
-for (const name of ['claude', 'qoder', 'codebuddy']) {
+for (const name of ['claude', 'claude-exp', 'qoder', 'codebuddy']) {
   const adapter = adapters.find(a => a.name === name);
   test(`${name}: historical result variants distinguish boundary from success`, () => {
     for (const result of [

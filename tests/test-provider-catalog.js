@@ -41,7 +41,7 @@ test('provider summaries are whitelisted and credential material is discarded', 
   assert.equal(provider.apiKey, undefined);
   assert.equal(provider.protocol, 'anthropic');
   assert.equal(provider.apiFormat, 'anthropic');
-  assert.deepEqual(provider.compatibleClis, ['claude', 'opencode', 'zcode']);
+  assert.deepEqual(provider.compatibleClis, ['claude', 'claude-exp', 'opencode', 'zcode']);
   assert.equal(provider.wireApi, '');
   assert.equal(provider.settingsConfig, undefined);
   assert.equal(provider.headers, undefined);

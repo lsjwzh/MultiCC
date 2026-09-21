@@ -7,7 +7,7 @@ const { isTaskRunWrapperText } = require('./context');
 const { describeRunFailure, recordRunError } = require('./errors');
 const { TERMINAL_EXECUTION_STATUSES } = require('./store');
 
-const TASK_RUN_CLIS = new Set(['claude', 'codex', 'codex-exp']);
+const TASK_RUN_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp']);
 
 function clean(value) { return value == null ? '' : String(value).trim(); }
 

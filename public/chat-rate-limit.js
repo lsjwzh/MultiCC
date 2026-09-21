@@ -155,7 +155,7 @@
       if (isCodexCli(cli) || cli === 'opencode') return true;
       return provider === 'glm' && isZhipuBaseUrl(currentProviderBaseUrl);
     }
-    return cli === 'claude' || cli === 'opencode';
+    return cli === 'claude' || cli === 'claude-exp' || cli === 'opencode';
   }
 
   // ── DOM painter ──

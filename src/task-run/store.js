@@ -1568,7 +1568,7 @@ function createTaskRunStore({ file, now = Date.now, Database = null, fsImpl = fs
       `).all(run.run_id);
       const claudeMainIsAggregate = events.some(event => (
         event.coverage === 'observed'
-        && event.cli === 'claude'
+        && (event.cli === 'claude' || event.cli === 'claude-exp')
         && event.role_kind === 'main'
         && event.source === 'reconciled'
       ));
@@ -1591,7 +1591,7 @@ function createTaskRunStore({ file, now = Date.now, Database = null, fsImpl = fs
         reasoning_tokens: 0,
       };
       for (const event of events) {
-        if (event.cli === 'claude' && event.role_kind === 'sub') continue;
+        if ((event.cli === 'claude' || event.cli === 'claude-exp') && event.role_kind === 'sub') continue;
         total.fresh_input_tokens += Number(event.fresh_input_tokens || 0);
         total.cache_read_tokens += Number(event.cache_read_tokens || 0);
         total.cache_write_tokens += Number(event.cache_write_tokens || 0);

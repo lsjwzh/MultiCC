@@ -128,7 +128,7 @@ function createProviderRouterRuntime(options = {}) {
     const cli = overrides.cli || value.cli || 'claude';
     const requestedProvider = overrides.providerId !== undefined ? overrides.providerId : value.provider;
     const providerId = !value.loginFlow && typeof providers.normalizeOfficialProviderId === 'function'
-      ? providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli, requestedProvider) : requestedProvider;
+      ? providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli, requestedProvider) : requestedProvider;
     return port.createBinding({
       sessionId: overrides.sessionId || value.id || value.sessionId,
       cli, providerId,

@@ -137,7 +137,7 @@ function normalizeApiFormat(value, appType, cfg = {}) {
 }
 
 function compatibleClisForFormat(apiFormat) {
-  if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'opencode', 'zcode'];
+  if (apiFormat === API_FORMATS.ANTHROPIC) return ['claude', 'claude-exp', 'opencode', 'zcode'];
   // Kimi Code joins the OpenAI-family pool (moonshot's own API is
   // OpenAI-compatible).
   return ['codex', 'codex-exp', 'opencode', 'zcode', 'kimi'];
@@ -162,7 +162,7 @@ function providerSupportsCli(provider, cli) {
 // legacy single-pool default only.
 function appTypeForCli(cli) {
   if (cli === 'codex' || cli === 'codex-exp') return 'codex';
-  if (cli === 'claude' || cli === 'opencode') return 'claude';
+  if (cli === 'claude' || cli === 'claude-exp' || cli === 'opencode') return 'claude';
   return null;
 }
 
@@ -1042,7 +1042,7 @@ function buildChildEnv(base, session, extra = {}) {
   // Claude always needs inherited ANTHROPIC_* routing keys stripped. ZCode needs
   // the same only for custom-provider sessions; provider-less ZCode must keep
   // the native Coding Plan environment untouched.
-  if (session && (session.cli === 'claude' || (session.cli === 'zcode' && session.provider))) {
+  if (session && (session.cli === 'claude' || session.cli === 'claude-exp' || (session.cli === 'zcode' && session.provider))) {
     for (const k of CLAUDE_ROUTING_KEYS) delete env[k];
   }
   if (session && session.cli === 'opencode') delete env.OPENCODE_CONFIG_CONTENT;
@@ -1369,7 +1369,7 @@ function resolveSpawnEnv(session) {
   }
   const cfg = p.appType === 'codex' ? effectiveCodexSettings(p) : parseConfig(p.settingsConfig);
 
-  if (session.cli === 'claude') {
+  if (session.cli === 'claude' || session.cli === 'claude-exp') {
     const env = {};
     const src = cfg.env || {};
     for (const k of Object.keys(src)) {

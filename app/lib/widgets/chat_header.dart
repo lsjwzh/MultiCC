@@ -1509,6 +1509,7 @@ class _ChatCliBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = switch (cli) {
       SessionCli.claude => const Color(0xFFc2622f),
+      SessionCli.claudeExp => const Color(0xFFdf7950),
       SessionCli.codex => const Color(0xFF1e8a55),
       SessionCli.codexExp => const Color(0xFF20a66a),
       SessionCli.opencode => const Color(0xFF6d4fd1),

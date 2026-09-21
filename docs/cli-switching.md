@@ -1,6 +1,6 @@
 # Multi-CLI switching
 
-> One conversation, nine coding CLIs. Switch mid-task without losing the thread, without changing directory, and without re-explaining what you are doing.
+> One conversation, ten coding CLIs. Switch mid-task without losing the thread, without changing directory, and without re-explaining what you are doing.
 
 This is MultiCC's defining feature, so it is worth being precise about what it does — and what it deliberately does *not* do.
 
@@ -11,6 +11,7 @@ This is MultiCC's defining feature, so it is worth being precise about what it d
 | CLI | Value | Provider support | One-click install from the UI |
 |---|---|---|---|
 | Claude Code | `claude` | yes | `npm install -g @anthropic-ai/claude-code` |
+| Claude Exp (Agent SDK) | `claude-exp` | yes — shares the Claude Messages provider pool | bundled with MultiCC; upgrade MultiCC to update the SDK |
 | OpenAI Codex | `codex` | yes | `npm install -g @openai/codex` |
 | Codex Exp (app-server) | `codex-exp` | yes — shares the Codex Responses provider pool | `npm install -g @openai/codex` |
 | OpenCode | `opencode` | yes | `npm install -g opencode-ai` |
@@ -24,7 +25,9 @@ Source of truth: `SUPPORTED_CHAT_CLIS` in `src/cli-switch.js`, install specs in 
 
 **Chat sessions only.** Terminal sessions are pinned to the CLI they were created with; so are system sessions (`aux`, `gateway`), which are switched by their bridge controller instead. `POST /api/sessions/:id/switch-cli` returns `400` for anything that is not a chat session.
 
-`codex-exp` is additionally chat-only at creation time. It is an opt-in adapter for Codex app-server JSON-RPC and requires Codex `>=0.154.0`; the normal `codex` entry continues to use `exec --json` unchanged.
+`claude-exp` and `codex-exp` are additionally chat-only at creation time. `claude-exp` runs each turn through the bundled `@anthropic-ai/claude-agent-sdk` while preserving the same native session UUID, Provider proxy, model, effort, agent, MCP, and subagent routing as the regular Claude path. `codex-exp` is the corresponding opt-in adapter for Codex app-server JSON-RPC and requires Codex `>=0.154.0`.
+
+Both experimental entries are isolated: normal `claude` continues to use the existing stream-json runner, and normal `codex` continues to use `exec --json`.
 
 ---
 

@@ -97,7 +97,7 @@ function toProviderDto(source = {}) {
       ? [...new Set(source.modelOptions.filter(item => typeof item === 'string').map(item => item.slice(0, 160)))].slice(0, 100)
       : [],
     aliasOnly: !!source.aliasOnly,
-    compatibleClis: Array.isArray(source.compatibleClis) ? source.compatibleClis.filter(item => ['claude', 'codex', 'codex-exp', 'opencode'].includes(item)) : [],
+    compatibleClis: Array.isArray(source.compatibleClis) ? source.compatibleClis.filter(item => ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode'].includes(item)) : [],
     hasCredentials: !!source.hasToken,
     isOfficial: !!source.isOfficial,
   };
