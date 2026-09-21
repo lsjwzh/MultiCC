@@ -23,9 +23,34 @@ async function gitRun(cwd, args, opts = {}) {
   return defaultRepoActor.runGit(cwd, args, opts);
 }
 
+// git's wording when macOS TCC has denied the directory. getcwd() is the first
+// call that fails, so the fatal names the *working directory* rather than
+// whatever git actually wanted to open — from a user's seat, "fatal: unable to
+// get current working directory: Operation not permitted" explains nothing.
+const GIT_PERMISSION_DENIED_RE =
+  /Operation not permitted|unable to get current working directory|\bEPERM\b|\bEACCES\b|Permission denied/i;
+
+function isPermissionDeniedGitError(error) {
+  return GIT_PERMISSION_DENIED_RE.test(errorText(error));
+}
+
 async function gitIsRepo(dirPath) {
   try { return await gitRun(dirPath, ['rev-parse', '--is-inside-work-tree']) === 'true'; }
-  catch (_) { return false; }
+  catch (error) {
+    // "Not a repository yet" and "not allowed to look" must not collapse into
+    // the same answer. Collapsing them makes the caller run `git init` into a
+    // directory the process cannot read, which fails identically every time the
+    // directory is registered — the user sees the same fatal forever and the
+    // real cause (a denied path) is never named. A denied path is not an empty
+    // path: report it as an error the caller can translate.
+    if (isPermissionDeniedGitError(error)) {
+      const denied = new Error(errorText(error) || `git is not allowed to read ${dirPath}`);
+      denied.code = 'GIT_PERMISSION_DENIED';
+      denied.path = dirPath;
+      throw denied;
+    }
+    return false;
+  }
 }
 
 async function gitHasCommit(dirPath) {
@@ -998,6 +1023,7 @@ module.exports = {
   gitRun,
   gitIsRepo,
   gitHasCommit,
+  isPermissionDeniedGitError,
   gitBaseBranch,
   gitWorktreeSnapshot,
   gitExportSessionBundle,

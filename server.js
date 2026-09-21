@@ -644,14 +644,19 @@ const invalidSessions = new Map();       // sessionId → reason; recovery is sk
 // Destructured so existing call sites are unchanged. ensureDirGitReady() and
 // the loadDirectories/saveDirectories persistence stay below in server.js.
 const {
-  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason,
+  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason, directoryWriteDenied,
 } = require('./src/directories');
 
 // Make sure a directory is a usable git repo; refuses $HOME and missing paths.
+// The write probe comes first: on a TCC-protected path macOS denies the
+// directory itself, and finding that out here names the problem without ever
+// spawning git — whose own failure ("unable to get current working directory")
+// tells the user nothing and repeats on every registration.
 async function ensureDirGitReady(dir) {
   if (gitReadyDirs.has(dir.id)) return { ok: true };
   if (isHomeOrAbove(dir.path)) return { ok: false, reason: 'home-or-above' };
   if (!fs.existsSync(dir.path)) return { ok: false, reason: 'path-missing' };
+  if (directoryWriteDenied(dir.path)) return { ok: false, reason: 'permission-denied: ' + dir.path };
   try {
     // Reject pathological dirs BEFORE any mutating git command. This check also
     // uses the asynchronous repository actor for existing repositories.
@@ -672,6 +677,10 @@ async function ensureDirGitReady(dir) {
     gitReadyDirs.add(dir.id);
     return { ok: true };
   } catch (e) {
+    // Reachable when the probe passed but git was denied anyway (the denial can
+    // sit on a parent path git has to resolve). Same user-facing conclusion, so
+    // it travels as the same reason code.
+    if (e && e.code === 'GIT_PERMISSION_DENIED') return { ok: false, reason: 'permission-denied: ' + (e.path || dir.path) };
     return { ok: false, reason: 'git-error: ' + e.message };
   }
 }

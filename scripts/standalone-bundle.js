@@ -295,6 +295,16 @@ function macosInfoPlist({ version, resourcesName }) {
   <string>${MACOS_FLOOR}</string>
   <key>NSHumanReadableCopyright</key>
   <string>MultiCC — MIT licensed; bundled Node runtime is MIT licensed</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>MultiCC 需要访问「桌面」才能把工作目录设在这里。</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>MultiCC 需要访问「文档」才能把工作目录设在这里。</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>MultiCC 需要访问「下载」才能把工作目录设在这里。</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>MultiCC 需要访问外接磁盘才能把工作目录设在这里。</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>MultiCC 需要访问网络磁盘才能把工作目录设在这里。</string>
   <key>ResourcesDirName</key>
   <string>${resourcesName}</string>
 </dict>

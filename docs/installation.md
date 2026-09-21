@@ -160,6 +160,7 @@ Installed from the standalone package, the requirements are only these:
 
 - **tmux** (terminal mode only; chat mode works without it). The package does not ship or install `tmux` — install it yourself with Homebrew / your system package manager if you want the terminal page.
 - **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)). The package's runtime is prepended to `PATH`, so these Node-based CLIs run on the bundled Node and you never install Node yourself.
+- **On macOS, don't use a protected location for a workspace** — Desktop, Documents, Downloads, iCloud Drive, removable and network volumes. macOS gates those behind per-process disk-access grants, so registering a directory there can fail with `Operation not permitted` no matter what you authorize. Use something like `~/working`; a symlink from a protected folder to the real repo works too. See [macOS disk permissions](standalone.md#macos-磁盘权限tcc为什么给权限常常给不上).
 
 Running from a source checkout adds one more:
 
