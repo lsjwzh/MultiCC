@@ -49,10 +49,18 @@ function mountAirRoutes(app, deps) {
     }
     return pinRuntime;
   };
-  /** 任务板现在的活任务集（合并掉的和已删的不算）—— pin 的存在性以它为准。 */
+  /** 独立任务列表与 pin 共用同一可见集合；会话内尚未隔离的任务只保留消息归属。 */
   function boardTasks() {
     const board = deps.getBoard?.() || {};
-    return Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId && !board.deletedTaskIds?.includes(t.id));
+    // The board index predates separation metadata. Read the canonical shell
+    // records so existing cards are hidden too, including after migration.
+    // A confirmed split can still be waiting for execution creation: it is not
+    // independent until ready. Ordinary planned tasks need no such check.
+    const unseparated = new Set((deps.shell.listTasks?.() || [])
+      .filter(task => task.embedded === true || (task.separatedFromTaskId && !task.ready))
+      .map(task => task.id));
+    return Object.values(board.tasks || {}).filter(t => !t.mergedIntoTaskId
+      && !board.deletedTaskIds?.includes(t.id) && !unseparated.has(t.id));
   }
   // 一次请求只读一次 admission 快照：这是整表读（workspace:record + lease），
   // 按卡片各读一次时 1069 张卡片要多花约 0.4s 的 CPU 与等量 JSON 解析。
