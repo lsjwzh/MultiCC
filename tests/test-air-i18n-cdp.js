@@ -212,6 +212,12 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
         one('#schedule-dialog-title', 'airNewScheduledTask'),
         one('#schedule-save', 'airScheduleCreateAndBind'),
         one('#console-close', 'airBackToTask'),
+        // 目录首页顶部那道 Chat / Terminal 切换（air-directory-mode.js）：Chat /
+        // Terminal 两个词本身中英同形（不在这条 notEqual 断言里），但终端那一块的
+        // 文案是翻出来的 —— 连同空态一起钉住（fixture 的 sessions 是空的）。
+        one('#directory-terminals [data-i18n="airTerminalsHeading"]', 'airTerminalsHeading'),
+        one('#directory-terminal-new [data-i18n="airNewTerminal"]', 'airNewTerminal'),
+        one('#directory-terminal-list .directory-terminal-empty', 'airTerminalsEmpty'),
         ...many('#sidebar .nav-row [data-i18n]', ['airConsole', 'airScheduledTasks']),
         ...many('#delivery-steps span', ['airStepTurnSucceeded', 'airStepCodeDelivered', 'airStepSourceStable', 'airStepAttribution']),
       ];
