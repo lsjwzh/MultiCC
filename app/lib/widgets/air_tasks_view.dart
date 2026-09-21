@@ -117,7 +117,6 @@ class _AirTasksViewState extends State<AirTasksView>
   String? _directoryId;
   String _error = '';
   bool _loading = false,
-      _opening = false,
       _submitting = false,
       _foreground = true;
   bool _openingTerminal = false;
@@ -252,8 +251,7 @@ class _AirTasksViewState extends State<AirTasksView>
     });
   }
 
-  /// 打开一个任务：先换出可续接的会话，再交给现有的聊天页。只读记录不能在这里
-  /// 接管，只能回到它原来的会话。
+  /// 点击后立即显示加载页，再解析可续接的会话；只读记录回到原来的会话。
   Future<void> _open(AirTask task) => _openTask(task.id);
 
   /// 按 id 打开任务对话。
@@ -262,36 +260,20 @@ class _AirTasksViewState extends State<AirTasksView>
   /// （[_openTaskFromGraph]）—— 图谱是跨目录的，那一行不一定在当前目录的快照
   /// 里，所以打开这件事按 id 收口，不要求先能拿到 [AirTask]。
   Future<void> _openTask(String taskId) async {
-    if (_opening) return;
-    _opening = true;
-    // 打开对话就是把引导交给聊天页（Web 第 2 步那颗「打开对话后继续」）。
     _tourKey.currentState?.handOffToChat();
-    try {
-      final entry = await _service.openTask(taskId);
-      if (!mounted) return;
-      final id =
-          (entry['readOnly'] == true
-                  ? entry['sourceSessionId']
-                  : entry['sessionId'])
-              as String?;
-      if (id == null) throw Exception('此任务没有可续接的会话，请从全部记录查看。');
-      final mgr = context.read<SessionManager>();
-      final loaded = mgr.sessions.where((s) => s.id == id).firstOrNull;
-      final session =
-          loaded ??
-          await SessionService(
-            settings: widget.settings,
-          ).fetchTaskBoundSession(id);
-      if (!mounted) return;
-      if (session == null) throw Exception('无法打开任务会话，请刷新后重试。');
-      await _store?.rememberTask(taskId);
-      mgr.openSession(session, historyArchive: true);
-      mgr.switchToSession(session.id);
-      if (mounted) setState(() {});
-    } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
-    } finally {
-      _opening = false;
+    final mgr = context.read<SessionManager>();
+    final task = _data?.tasks.where((task) => task.id == taskId).firstOrNull;
+    final opened = await mgr.openChatAfterLoad(
+      title: task?.title ?? t('chatOpeningTask'),
+      load: () => _service.openTaskSession(
+        taskId,
+        cachedSession: (id) => mgr.sessions
+            .where((session) => session.id == id).firstOrNull,
+      ),
+    );
+    if (mounted && opened) {
+      unawaited(_store?.rememberTask(taskId));
+      setState(() {});
     }
   }
 

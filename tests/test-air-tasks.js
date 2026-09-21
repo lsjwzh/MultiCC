@@ -2,6 +2,52 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const { fixture } = require('./helpers/task-shell');
 const { airResponse } = require('./helpers/air-response');
+
+test('navigation entry skips history reads while ordinary task details retain the transcript', async t => {
+  let historyReads = 0;
+  const f = fixture(t, { getHistory: () => { historyReads++; return [{ id: 'huge', role: 'user', content: 'x'.repeat(1024 * 1024) }]; } });
+  const sent = await f.runtime.send(f.a.id, { clientMsgId: 'seed', text: 'seed', intent: 'work' });
+  const task = f.runtime.listTasks().find(task => task.id === sent.taskId);
+  historyReads = 0;
+  const lean = await f.runtime.bindPlannedTask(task.id, { includeMessages: false });
+  assert.equal(historyReads, 0);
+  assert.deepEqual(lean.messages, []);
+  const full = await f.runtime.taskEntry(task.id);
+  assert.ok(historyReads > 0);
+  assert.ok(JSON.stringify(full).length > 1024 * 1024);
+  assert.equal(lean.sessionId, full.sessionId);
+  assert.equal(lean.readOnly, full.readOnly);
+});
+
+test('Air chat-open endpoint returns only authorized session metadata and skips delivery work', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map();
+  let readOnly = false;
+  const calls = [];
+  const record = { id: 'bound', kind: 'chat', dirId: 'd', cli: 'codex', taskBoundTaskId: 't', autoCommit: false,
+    memory: 'PRIVATE', rolePrompt: 'PRIVATE', providerSecret: 'PRIVATE' };
+  mountAirRoutes({ get: (p, fn) => handlers.set(p, fn), post() {} }, {
+    records: new Map([['bound', record], ['source', { id: 'source', kind: 'chat', dirId: 'd' }]]),
+    directories: new Map([['d', { path: '/repo' }]]),
+    shell: { taskEntry: async (id, options) => { calls.push([id, options]); return { sessionId: 'bound', sourceSessionId: 'source', readOnly }; },
+      attributionCandidate() { throw Error('must not inspect delivery when opening'); } },
+  });
+  const route = handlers.get('/api/air/tasks/:id/open');
+  const read = async () => { const res = { headersSent: false, json(value) { this.body = value; } }; await route({ params: { id: 't' } }, res); return res.body; };
+  const entry = await read();
+  assert.deepEqual(calls, [['t', { includeMessages: false }]]);
+  assert.equal(entry.session.id, 'bound');
+  assert.equal(entry.session.autoCommit, false);
+  assert.equal(entry.session.cwd, '/repo');
+  assert.ok(!JSON.stringify(entry).includes('PRIVATE'));
+  assert.ok(!Object.hasOwn(entry, 'messages'));
+  assert.ok(Buffer.byteLength(JSON.stringify(entry)) < 1024);
+  readOnly = true;
+  assert.equal((await read()).session.id, 'source', 'read-only tasks retain their original conversation');
+  readOnly = false; record.taskExecutionSlot = true;
+  assert.equal((await read()).session, null, 'execution slots never become ordinary chat entries');
+});
+
 function airFixture(t) {
   const f = fixture(t, { getDirectory: id => id === 'd1' ? { id } : null, unifiedAdmission: true });
   f.ports.createExecution = async task => {
@@ -14,6 +60,26 @@ function airFixture(t) {
   const { createTaskShellRuntime } = require('../src/task-shell/runtime');
   f.runtime = createTaskShellRuntime(f.ports); return f;
 }
+test('concurrent navigation and detail reads share binding, but keep their own history projection', async t => {
+  const f = airFixture(t);
+  const created = await f.runtime.createStandalone({ dirId: 'd1', title: 'Task', clientMsgId: 'opening' });
+  const task = f.store.get('task', created.taskId);
+  task.ready = false; task.bindingPending = true; f.store.set('task', task.id, task);
+  f.histories.set(task.sessionId, [{ id: 'm', role: 'user', content: 'Retained history' }]);
+  let release, bindings = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  f.ports.createExecution = async () => { bindings++; await gate; return { ok: true }; };
+  const { createTaskShellRuntime } = require('../src/task-shell/runtime');
+  const runtime = createTaskShellRuntime(f.ports);
+  const lean = runtime.bindPlannedTask(task.id, { includeMessages: false });
+  const full = runtime.bindPlannedTask(task.id);
+  release();
+  const [navigation, detail] = await Promise.all([lean, full]);
+  assert.equal(bindings, 1);
+  assert.deepEqual(navigation.messages, []);
+  assert.ok(detail.messages.some(m => m.content === 'Retained history'));
+  assert.equal(navigation.sessionId, detail.sessionId);
+});
 test('Air creates canonical standalone task metadata and repeated requests return the same task', async t => {
   const f = airFixture(t), input = { dirId: 'd1', title: 'New UI', cli: 'codex', clientMsgId: 'create-1' };
   const [a, b] = await Promise.all([f.runtime.createStandalone(input), f.runtime.createStandalone(input)]);

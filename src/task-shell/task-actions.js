@@ -34,24 +34,27 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     return { status: lifecycle.status || 'active', readOnly: lifecycle.status === 'archived' || lifecycle.deleting === true || (owner ? !owner.standalone && !task.taskFirst : task.origin !== 'board'), ownerShellId: owner?.id || null,
       sourceSessionId: owner?.sourceSessionId || null, forkedFromTaskId: task.forkedFromTaskId || null };
   }
-  async function taskEntry(id) {
+  async function taskEntry(id, { includeMessages = true } = {}) {
     const task = findTask(id), lifecycle = getTask(id) || task;
     const a = access(task), owner = a.ownerShellId && shell(a.ownerShellId);
     const sid = [task.sessionId, task.chatSessionId, a.sourceSessionId].find(id => id && getRecord(id)) || null;
-    const scope = owner ? chatScope(owner.id) : { sessionIds: [...new Set((task.refs || []).map(r => r.sessionId))] };
-    if (sid && !scope.sessionIds.includes(sid)) scope.sessionIds.push(sid);
-    for (const source of task.historySessionIds || []) if (!scope.sessionIds.includes(source)) scope.sessionIds.push(source);
-    const inherited = (task.forkedFromTaskId || task.separatedFromTaskId) ? (task.snapshotIds || []).flatMap(id => store.get('snapshot', id)?.messages || []).map(m => ({ ...m, inherited: true, content: m.content || m.evidenceExcerpt || '' })) : [];
-    const live = shellRecords(scope, getHistory, ports.getLiveState)
-      .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid));
-    // A separated task's transcript seed keeps the source message id, so the
-    // judged exchange exists both as an inherited snapshot excerpt and as a
-    // live record. The live record wins: it carries the full, current content.
-    const liveIds = new Set(live.map(m => m.sourceMessageId).filter(Boolean));
-    const messages = displayMessages(inherited.filter(m => !m.sourceMessageId || !liveIds.has(m.sourceMessageId)).concat(live), task, {
-      getTask: taskId => store.get('task', taskId) || getTask(taskId),
-      codeFor: ports.taskShortCode,
-    });
+    let messages = [];
+    if (includeMessages) {
+      const scope = owner ? chatScope(owner.id) : { sessionIds: [...new Set((task.refs || []).map(r => r.sessionId))] };
+      if (sid && !scope.sessionIds.includes(sid)) scope.sessionIds.push(sid);
+      for (const source of task.historySessionIds || []) if (!scope.sessionIds.includes(source)) scope.sessionIds.push(source);
+      const inherited = (task.forkedFromTaskId || task.separatedFromTaskId) ? (task.snapshotIds || []).flatMap(id => store.get('snapshot', id)?.messages || []).map(m => ({ ...m, inherited: true, content: m.content || m.evidenceExcerpt || '' })) : [];
+      const live = shellRecords(scope, getHistory, ports.getLiveState)
+        .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid));
+      // A separated task's transcript seed keeps the source message id, so the
+      // judged exchange exists both as an inherited snapshot excerpt and as a
+      // live record. The live record wins: it carries the full, current content.
+      const liveIds = new Set(live.map(m => m.sourceMessageId).filter(Boolean));
+      messages = displayMessages(inherited.filter(m => !m.sourceMessageId || !liveIds.has(m.sourceMessageId)).concat(live), task, {
+        getTask: taskId => store.get('task', taskId) || getTask(taskId),
+        codeFor: ports.taskShortCode,
+      });
+    }
     const execution = sid && getRecord(sid) ? await getExecution(sid) : { busy: false, status: 'idle' };
     return { ok: true, task: displayTask({ id, title: lifecycle.title || task.title,
       recordType: lifecycle.recordType || task.recordType || null,
@@ -64,20 +67,20 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       sessionId: sid, ...a, url: `/task-shell.html?task=${encodeURIComponent(id)}&board=1`,
       returnUrl: a.sourceSessionId ? `/chat.html?session=${encodeURIComponent(a.sourceSessionId)}` : null };
   }
-  async function bindPlannedTask(id) {
+  async function bindPlannedTask(id, options = {}) {
     const existing = store.get('task', id), indexed = findTask(id), lifecycle = getTask(id) || indexed;
     // An embedded task already has an identity and a board card, but explicitly
     // shares its source conversation until the user chooses “separate shell”.
     // Merely opening its Air detail must remain a read, never materialize the
     // reserved session/worktree behind the user's back.
-    if (existing?.embedded === true && !existing.ready) return taskEntry(id);
-    if ((existing?.ready && !existing.bindingPending) || lifecycle.status === 'archived' || lifecycle.deleting) return taskEntry(id);
+    if (existing?.embedded === true && !existing.ready) return taskEntry(id, options);
+    if ((existing?.ready && !existing.bindingPending) || lifecycle.status === 'archived' || lifecycle.deleting) return taskEntry(id, options);
     // A historical task with an existing execution cannot be rebound by a read.
-    if (!existing && indexed.chatSessionId) return taskEntry(id);
+    if (!existing && indexed.chatSessionId) return taskEntry(id, options);
     const dirId = existing?.dirId || ports.taskDirectory?.(indexed) || indexed.dirId;
-    if (!dirId || !ports.getDirectory?.(dirId)) return taskEntry(id);
+    if (!dirId || !ports.getDirectory?.(dirId)) return taskEntry(id, options);
     const key = `task-bind:${id}`;
-    if (forks.has(key)) return forks.get(key);
+    if (forks.has(key)) { await forks.get(key); return taskEntry(id, options); }
     const operation = (async () => {
       let task = store.get('task', id);
       if (!task) {
@@ -103,10 +106,9 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       }
       if (!(await indexTask(task))?.ok) throw fail('task_index_failed');
       delete task.bindingPending; store.set('task', id, task);
-      return taskEntry(id);
     })();
     forks.set(key, operation);
-    try { return await operation; } finally { forks.delete(key); }
+    try { await operation; return taskEntry(id, options); } finally { forks.delete(key); }
   }
   function assertBoardWritable(id) {
     if (access(id).readOnly) throw fail('task_board_read_only', 'Return to the original conversation or fork an independent task');

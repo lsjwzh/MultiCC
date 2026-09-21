@@ -381,7 +381,7 @@ function createTaskShellHost(deps) {
   return {
     mountRoutes: app => {
       mountTaskShellRoutes(app, { getRuntime, open,
-        taskEntry: id => getRuntime().bindPlannedTask(id),
+        taskEntry: (id, options) => getRuntime().bindPlannedTask(id, options),
         taskIndex: (id, options) => taskIndex(id, options),
         taskOperations: () => taskOperations(),
     attributionDecisions: () => attributionDecisions(),
@@ -472,7 +472,7 @@ function createTaskShellHost(deps) {
     settleAttribution: (id, receiptId, result) => getRuntime().settleAttribution(id, receiptId, result),
     createTask: input => getRuntime().createStandalone(input),
     roleBindings: id => getRuntime().roles.current(id), updateRoleBindings: (id, input) => getRuntime().roles.update(id, input),
-    taskAccess: task => getRuntime().taskAccess(task), taskEntry: id => getRuntime().bindPlannedTask(id),
+    taskAccess: task => getRuntime().taskAccess(task), taskEntry: (id, options) => getRuntime().bindPlannedTask(id, options),
     relocateTask: (taskId, dirId, options) => getRuntime().relocateTask(taskId, dirId, options),
     workspaceGroup: workspace.group, isWorkspaceBusy: workspace.busy, contextSeed,
     prepareContext: (id, options) => owns(id) ? getRuntime().prepareContext(id, options) : null,

@@ -31,6 +31,7 @@ import '../widgets/background_tasks_dock.dart';
 import '../widgets/floating_dock.dart';
 import '../widgets/chat_composer_fold.dart';
 import '../widgets/chat_header.dart';
+import '../widgets/chat_loading_view.dart';
 import '../widgets/chat_runtime_panels.dart';
 import '../widgets/chat_side_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
@@ -2298,6 +2299,13 @@ class _MessageListState extends State<_MessageList> {
   Widget build(BuildContext context) {
     final provider = context.watch<ChatProvider>();
     final messages = provider.messages;
+    if (!provider.historyApplied &&
+        !messages.any((m) => m.role == MessageRole.user || m.role == MessageRole.assistant)) {
+      return ChatLoadingView(
+        onRetry: provider.reconnect,
+        status: provider.statusText,
+      );
+    }
     // 每轮勾选框挂在最后一条用户消息上（Web 的 `_lastUserBubble`）。没被手动
     // 勾过的那一轮跟随会话级开关，所以这里要读一次会话记录里的值。
     final sessionAutoCommit = context.select<SessionManager, bool>(

@@ -33,6 +33,7 @@ import '../widgets/workspace_navigation_drawer.dart';
 import 'agent_resources_screen.dart';
 import 'bridge_settings_screen.dart';
 import 'chat_screen.dart';
+import '../widgets/chat_loading_view.dart';
 import 'provider_screen.dart';
 import 'push_settings_screen.dart';
 import 'memo_screen.dart';
@@ -117,11 +118,13 @@ class _MainShellState extends State<MainShell> {
     final fleetOpen = mgr.activeFleetDirId != null;
     return PopScope(
       // Only let the OS pop (exit) when nothing is layered on the dashboard.
-      canPop: active == null && !fleetOpen,
+      canPop: active == null && !fleetOpen && mgr.pendingChatOpen == null,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         // Back priority: close the active chat first, then the fleet panel.
-        if (active != null) {
+        if (mgr.pendingChatOpen != null) {
+          mgr.cancelPendingChatOpen();
+        } else if (active != null) {
           unawaited(mgr.requestCloseChat());
         } else if (fleetOpen) {
           // Routes through the panel's own collapse animation when it is
@@ -158,6 +161,9 @@ class _MainShellState extends State<MainShell> {
                 settings: widget.settings,
                 provider: active,
               ),
+            if (mgr.pendingChatOpen case final pending?)
+              Positioned.fill(child: ChatLoadingView(title: pending.title, error: pending.error,
+                onRetry: mgr.retryPendingChatOpen, onClose: mgr.cancelPendingChatOpen)),
           ],
         ),
       ),
@@ -1892,13 +1898,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
     }
   }
 
-  /// Open a session by id (called from the task-board detail sheet when a
-  /// session chip is tapped, or when a message is tapped to deep-link into the
-  /// chat). Task entries read full history, including messages hidden in the
-  /// ordinary session view. A session referenced by a task but no
-  /// longer loaded surfaces a SnackBar. The detail sheet pops itself before
-  /// calling this, so the fleet panel is the top layer and its context/mgr are
-  /// still live.
+  /// Task links open full history, with an optional message focus. Hidden
+  /// sessions resolve on the loading page rather than blocking navigation.
   void _openSessionById(String sessionId, {String? focusMessageId}) {
     // A task selection may have moved this shell while its cached chat stayed open.
     widget.mgr.allProviders[sessionId]?.reconnect();
@@ -1910,10 +1911,8 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
       }
     }
     if (match == null) {
-      // P3: a fleet miss may be a task-bound hidden chat session (fleet-hidden
-      // by design, directly addressable). Resolve it by marker; anything else
-      // (aux/gateway, execution slots, dead ids) keeps the not-found surface.
-      unawaited(_openTaskBoundSession(sessionId));
+      // Resolve hidden task sessions inside the loading page.
+      unawaited(_openTaskBoundSession(sessionId, focusMessageId: focusMessageId));
       return;
     }
     if (focusMessageId != null &&
@@ -1928,19 +1927,12 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
     }
   }
 
-  Future<void> _openTaskBoundSession(String sessionId) async {
-    final session = await SessionService(
-      settings: widget.settings,
-    ).fetchTaskBoundSession(sessionId);
-    if (!mounted) return;
-    if (session == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(t('tbSessionNotFound'))),
-      );
-      return;
-    }
-    widget.mgr.openSession(session, historyArchive: true);
-    widget.mgr.switchToSession(session.id);
+  Future<void> _openTaskBoundSession(String sessionId, {String? focusMessageId}) async {
+    await widget.mgr.openChatAfterLoad(title: t('chatOpeningTask'), focusMessageId: focusMessageId, load: () async {
+      final session = await SessionService(settings: widget.settings).fetchTaskBoundSession(sessionId);
+      if (session == null) throw StateError(t('tbSessionNotFound'));
+      return session;
+    });
   }
 
   Future<void> _createSession(SessionKind kind, {SessionCli? defaultCli}) async {

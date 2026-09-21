@@ -2608,5 +2608,8 @@
   "voiceStatusListening": "聆听中",
   "taskNotifyTitleDisabled": "任务提醒 (已关闭)",
   "taskNotifyTitleOff": "任务提醒 (点击开启系统通知)",
-  "taskNotifyTitleOn": "任务提醒 (系统通知已开启)"
+  "taskNotifyTitleOn": "任务提醒 (系统通知已开启)",
+  "chatOpeningTask": "正在打开任务对话…",
+  "chatLoadingHistory": "正在连接并加载聊天记录…",
+  "chatOpenFailed": "任务对话加载失败"
 }
