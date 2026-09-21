@@ -1661,12 +1661,11 @@ mountMemoryBrowserRoutes(app, {
 });
 
 // ── Cross-machine handoff: encrypted bundle v2 (memory scopes + skills + context deps
-// + provider + git); lives in src/routes/session-bundle.js, host wiring here. ──
+// + git); lives in src/routes/session-bundle.js, host wiring here. Provider state
+// deliberately does not travel — the target machine picks its own provider. ──
 createSessionBundleRoutes({
   persistedSessions,
   directories,
-  providers,
-  providerRouterRuntime,
   asyncHandler,
   appendEvent,
   createSessionRecord,

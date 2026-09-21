@@ -4,6 +4,7 @@
 // only Git commits; it never starts an AI CLI or touches the real data root.
 
 const assert = require('assert');
+const crypto = require('crypto');
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -18,6 +19,11 @@ const PORT = 41000 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${PORT}`;
 const TOKEN = 'session-bundle-api-test';
 const PASSPHRASE = 'bundle-test-passphrase';
+// Two distinct fake credentials: one sits on the source machine's disk (must
+// not be carried), one only ever exists inside a hand-built legacy bundle (must
+// not be re-planted by the import).
+const RESIDUE_SECRET = 'sk-legacy-source-provider-token';
+const LEGACY_SECRET = 'sk-legacy-bundle-payload-token';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-session-bundle-'));
 const dataRoot = assertTestDir(path.join(tmpRoot, 'data'));
 const project = path.join(tmpRoot, 'project');
@@ -44,8 +50,53 @@ async function api(method, route, body) {
   return { status: response.status, data };
 }
 
+// The bundle cipher, reimplemented here so the test can read the payload the
+// server produced and hand-build legacy payloads for the compatibility cases.
+function bundleKey(passphrase, saltB64) {
+  return crypto.pbkdf2Sync(passphrase, Buffer.from(saltB64, 'base64'), 200000, 32, 'sha256');
+}
+
+function decryptBundle(enc, passphrase) {
+  const decipher = crypto.createDecipheriv('aes-256-gcm', bundleKey(passphrase, enc.salt),
+    Buffer.from(enc.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(enc.tag, 'base64'));
+  const plain = Buffer.concat([decipher.update(Buffer.from(enc.ct, 'base64')), decipher.final()]);
+  return JSON.parse(plain.toString('utf8'));
+}
+
+function encryptBundle(payload, passphrase) {
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', bundleKey(passphrase, salt.toString('base64')), iv);
+  const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(payload), 'utf8')), cipher.final()]);
+  return { salt: salt.toString('base64'), iv: iv.toString('base64'),
+           ct: ct.toString('base64'), tag: cipher.getAuthTag().toString('base64') };
+}
+
+// Any file under `root` whose text contains `needle` — the blunt end-to-end
+// check that a secret never reached the imported session's disk footprint.
+function treeContaining(root, needle) {
+  const hits = [];
+  const walk = dir => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(abs); continue; }
+      let text = '';
+      try { text = fs.readFileSync(abs, 'utf8'); } catch (_) { continue; }
+      if (text.includes(needle)) hits.push(abs);
+    }
+  };
+  walk(root);
+  return hits;
+}
+
+// Booting a real server in this fixture is slow on a loaded machine (local ASR
+// warm-up alone is ~5s), and the fixture restarts it several times, so both the
+// readiness window and the shutdown grace are deliberately generous.
 async function waitForServer() {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     try {
       if ((await api('GET', '/api/directories')).status === 200) return;
     } catch (_) {}
@@ -59,8 +110,9 @@ async function startServer() {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), ACCESS_TOKEN: TOKEN, MULTICC_DATA_DIR: dataRoot,
            MULTICC_MEMORY_ROOT: path.join(dataRoot, 'memories') },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  server.stdout.on('data', chunk => { stderr += chunk.toString(); });
   server.stderr.on('data', chunk => { stderr += chunk.toString(); });
   await waitForServer();
 }
@@ -69,7 +121,12 @@ async function stopServer() {
   if (!server || server.exitCode !== null) return;
   const exited = new Promise(resolve => server.once('exit', resolve));
   server.kill('SIGTERM');
-  await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5000))]);
+  await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 20000))]);
+  // A surviving process would keep the port and silently starve the next boot.
+  if (server.exitCode === null) {
+    server.kill('SIGKILL');
+    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5000))]);
+  }
   server = null;
 }
 
@@ -118,6 +175,17 @@ async function stopServer() {
   ];
   await fs.promises.writeFile(path.join(dataRoot, 'chat_history', `${sourceId}.json`),
     `${sourceHistory.map(message => JSON.stringify(message)).join('\n')}\n`);
+  // The source session's own memory folder: one ordinary note (must travel) and
+  // a `.handoff-provider.json` left there by an older release (must NOT travel —
+  // it holds the sender's credential values and no code ever reads it back).
+  const sourceMemDir = path.join(memoryRoot, dirId, 'sessions', sourceId);
+  await fs.promises.mkdir(sourceMemDir, { recursive: true });
+  await fs.promises.writeFile(path.join(sourceMemDir, 'source-notes.md'), 'source memory content\n');
+  await fs.promises.writeFile(path.join(sourceMemDir, '.handoff-provider.json'), JSON.stringify({
+    sourceProviderId: null, sourceProviderName: 'Legacy Zhipu GLM',
+    env: { ANTHROPIC_AUTH_TOKEN: RESIDUE_SECRET, ANTHROPIC_BASE_URL: 'https://legacy.invalid' },
+    codexFiles: { 'auth.json': '{"OPENAI_API_KEY":"' + RESIDUE_SECRET + '"}' },
+  }, null, 2));
   await startServer();
   await git(sourceWorktree, ['add', '-A']);
   await git(sourceWorktree, ['-c', 'user.email=test@multicc.local', '-c', 'user.name=MultiCC Test',
@@ -191,6 +259,56 @@ async function stopServer() {
   assert.match(handoffDoc, new RegExp(uploadPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   fs.rmSync(rewritten[1], { force: true });
 
+  // ── Provider state must not travel, in either direction ──
+  // Export: the payload carries no providerState and no provider env key names,
+  // and the legacy dotfile in the source memory folder is not carried as a
+  // memory file (ordinary memory still is).
+  const exportedPayload = decryptBundle({ salt, iv, ct, tag }, PASSPHRASE);
+  assert.ok(!('providerState' in exportedPayload), 'payload must not carry providerState');
+  assert.ok(!('envKeys' in exportedPayload.contextDeps), 'contextDeps must not carry provider env key names');
+  assert.equal(exportedPayload.memoryFiles['source-notes.md'], 'source memory content\n',
+    'ordinary source memory still travels');
+  assert.ok(!Object.keys(exportedPayload.memoryFiles).some(name => name.startsWith('.')),
+    'dotfiles in a memory folder must not ride along: ' + Object.keys(exportedPayload.memoryFiles).join(','));
+  assert.ok(!JSON.stringify(exportedPayload).includes(RESIDUE_SECRET),
+    'the credential value sitting in the source memory folder must not reach the payload at all');
+  // Import: nothing provider-shaped lands in the imported session's memory, and
+  // the source credential never exists anywhere under the memory root on this machine.
+  const importedMemDir = path.join(memoryRoot, dirId, 'sessions', importedId);
+  assert.ok(fs.existsSync(path.join(importedMemDir, 'source-notes.md')), 'imported memory keeps ordinary files');
+  assert.ok(!fs.existsSync(path.join(importedMemDir, '.handoff-provider.json')),
+    'import must not write .handoff-provider.json');
+  assert.deepEqual(treeContaining(memoryRoot, RESIDUE_SECRET), [
+    path.join(sourceMemDir, '.handoff-provider.json'),
+  ], 'the source credential exists only in the fixture that planted it');
+  assert.ok(!handoffDoc.includes('.handoff-provider.json'), 'HANDOFF.md must not point at a provider file');
+  assert.match(handoffDoc, /Provider 不随包传播/, 'HANDOFF.md must state that provider state does not travel');
+
+  // Legacy bundle (exported by a release that still carried provider state, and
+  // whose memory folder held the plaintext file): it must still import, must be
+  // accepted, and must leave none of it behind.
+  const legacyPayload = {
+    ...exportedPayload,
+    providerState: { providerId: 'legacy-provider', providerName: 'Legacy Zhipu GLM',
+                     env: { ANTHROPIC_AUTH_TOKEN: LEGACY_SECRET }, codexFiles: { 'auth.json': '{}' } },
+    contextDeps: { ...exportedPayload.contextDeps, envKeys: ['ANTHROPIC_AUTH_TOKEN'] },
+    memoryFiles: { ...exportedPayload.memoryFiles,
+                   '.handoff-provider.json': JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: LEGACY_SECRET } }) },
+    gitBundleB64: null,
+    gitBundleNote: 'no git payload in legacy fixture',
+  };
+  response = await api('POST', '/api/sessions/import',
+    { ...encryptBundle(legacyPayload, PASSPHRASE), passphrase: PASSPHRASE, dirId, label: 'Legacy bundle' });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  const legacyId = response.data.sessionId;
+  const legacyMemDir = path.join(memoryRoot, dirId, 'sessions', legacyId);
+  assert.equal(await fs.promises.readFile(path.join(legacyMemDir, 'source-notes.md'), 'utf8'),
+    'source memory content\n');
+  assert.ok(!fs.existsSync(path.join(legacyMemDir, '.handoff-provider.json')),
+    'a legacy bundle must not re-plant the provider file');
+  assert.deepEqual(treeContaining(memoryRoot, LEGACY_SECRET), [],
+    'a legacy bundle must not re-plant the source provider credential');
+
   // The archive marker must survive a boot: every start re-runs normalize over
   // the on-disk transcript, and an unprotected pair would collapse on that read
   // even though the import itself got it right.
@@ -220,6 +338,11 @@ async function stopServer() {
   assert.equal(metaEntry.format, 'multicc-session-handoff');
   assert.equal(metaEntry.v, 3);
   assert.ok(metaEntry.counts.messages >= 1);
+  // The v3 manifest is the same payload: no provider state, no env key names.
+  const zipManifest = decryptBundle(
+    JSON.parse(zipEntries.find(e => e.name === 'manifest.json').data.toString('utf8')), PASSPHRASE);
+  assert.ok(!('providerState' in zipManifest), 'zip manifest must not carry providerState');
+  assert.ok(!('envKeys' in zipManifest.contextDeps), 'zip manifest must not carry provider env key names');
   const assetEntries = zipEntries.filter(e => e.name.startsWith('assets/'));
   assert.ok(assetEntries.length >= 1, JSON.stringify(zipNames));
   assert.deepEqual(assetEntries[0].data, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]));
@@ -236,6 +359,8 @@ async function stopServer() {
   assert.equal(zipImport.restored.gitRestored, true, JSON.stringify(zipImport.restored));
   assert.ok(zipImport.restored.assets.restored >= 1, JSON.stringify(zipImport.restored));
   const zipId = zipImport.sessionId;
+  assert.ok(!fs.existsSync(path.join(memoryRoot, dirId, 'sessions', zipId, '.handoff-provider.json')),
+    'zip import must not write .handoff-provider.json either');
   // The replayed commit landed in the zip-imported worktree too.
   assert.equal(await fs.promises.readFile(
     path.join(project, '.multicc-worktrees', zipId, 'session-feature.txt'), 'utf8'), 'session feature\n');
@@ -263,7 +388,7 @@ async function stopServer() {
   // dispose every task this fixture produced (the room and both imports, which
   // attribution adopts once they have content), then the directory.
   await git(sourceWorktree, ['reset', '--hard', await git(project, ['rev-parse', 'HEAD'])]);
-  const fixtureSessionIds = new Set([sourceId, importedId, zipId]);
+  const fixtureSessionIds = new Set([sourceId, importedId, legacyId, zipId]);
   const board = await api('GET', '/api/task-board');
   const ownedTasks = Object.values(board.data.tasks || {})
     .filter(task => fixtureSessionIds.has(task.chatSessionId));
