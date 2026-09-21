@@ -1690,3 +1690,65 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .directory-stat { padding: 14px 15px; border-radius: 18px; }
   .directory-stat strong { font-size: 23px; }
 }
+
+/* ── 任务完成未读提醒（air-task-notify.js）──────────────────────────────
+ * 统一事件源的三处消费之一：侧边栏「已完成但未打开」的任务行高亮。标记
+ * 跨刷新持久化，打开任务后由 JS 移除本类。 */
+#tasks button.unseen {
+  position: relative;
+  box-shadow: inset 0 0 0 2px var(--accent, #0d63c4);
+}
+#tasks button.unseen .task-meta .mc-status {
+  color: var(--accent-strong, #0a4d9e);
+  font-weight: 600;
+}
+#tasks button.unseen::after {
+  content: '';
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent, #0d63c4);
+  box-shadow: 0 0 0 2px var(--panel, #fff);
+}
+
+/* ── 浮动完成条（三处消费之二/三：③ 页面浮动提示 ──────────────────────── */
+.task-complete-float {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1200;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 340px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--panel, #fff);
+  color: var(--text, #233249);
+  border: 1px solid #d7e2f3;
+  box-shadow: 0 10px 34px rgba(18, 52, 96, .18);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.task-complete-float[hidden] { display: none; }
+.task-complete-float-text { min-width: 0; }
+.task-complete-float-title { font-weight: 700; color: var(--text, #233249); margin-bottom: 2px; }
+.task-complete-float-body { color: var(--text, #233249); overflow-wrap: anywhere; }
+.task-complete-float-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.task-complete-float-actions button { border-radius: 9px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.task-complete-open {
+  border: 1px solid var(--accent, #0d63c4);
+  background: var(--accent, #0d63c4);
+  color: #fff;
+  font-weight: 600;
+}
+.task-complete-open:hover { filter: brightness(1.05); }
+.task-complete-close {
+  border: 1px solid #d0d7e2;
+  background: transparent;
+  color: var(--text, #233249);
+}
+.task-complete-close:hover { background: #eef3fa; }

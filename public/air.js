@@ -53,6 +53,12 @@
   const resourceEtag = new Map();
   let pollFailures = 0;
   const POLL_MS = 4000;
+  // 任务完成未读提醒：统一事件源，三处消费（侧边栏未读高亮、语音、浮动完成条）。
+  // 唯一全局实例；openTask 走 navigate（同一路径也负责把未读标记清掉）。
+  const taskNotify = window.MultiCCTaskNotify?.create({
+    getCurrentTaskId: () => taskId,
+    openTask: task => navigate(task?.dirId, task?.id),
+  });
   const POLL_HIDDEN_MS = 15000;
   const POLL_MAX_MS = 30000;
   let quickCreateAttempt = null;
@@ -401,6 +407,8 @@
     taskId = task;
     mode = 'tasks';
     entry = null;
+    // 打开任务即消费触发源：清除侧边栏未读高亮、停语音、收浮动完成条。
+    if (task) taskNotify?.markOpened(typeof task === 'object' ? task?.id : task);
     closeDetails();
     if (task && options.remember !== false) rememberTask(task);
     closeOverlays();
@@ -1288,7 +1296,7 @@
     $('task-count').textContent = tasks.length;
     list.replaceChildren(...tasks.map(task => {
       const elsewhere = task.dirId !== directoryId;
-      const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : ''].filter(Boolean).join(' '));
+      const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : '', taskNotify?.isUnseen(task.id) ? 'unseen' : ''].filter(Boolean).join(' '));
       button.dataset.task = task.id;
       applyRing(button, isRunningTask(task), task.id);
       // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
@@ -2594,6 +2602,9 @@
           renderQuickPills();
         }
         notice(data.migration?.errors?.length ? t('airMigrationPending', { n: data.migration.errors.length }) : '');
+        // 统一事件源：这轮快照里刚翻终态且未打开的任务，会驱动侧边栏高亮、语音、
+        // 浮动完成条三处消费。置于 render() 之前，未读标记才能随本轮绘制即时生效。
+        taskNotify?.onSnapshot(data.tasks, taskId);
         render();
       }
       // 快照没变不等于对话没变：任务详情有自己的 ETag，照旧问一次（多半也是 304）。
