@@ -725,8 +725,12 @@ class AirService {
     );
   }
 
-  Future<void> addDirectory({required String name, required String path}) =>
-      _post('/api/directories', {'name': name, 'path': path, 'create': false});
+  Future<void> addDirectory({
+    required String name,
+    required String path,
+    bool create = true,
+  }) =>
+      _post('/api/directories', {'name': name, 'path': path, 'create': create});
 
   // ── 工作区分享 / 外部舰队（`src/routes/fleet-sharing.js`）─────────────────
   //

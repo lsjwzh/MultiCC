@@ -110,6 +110,13 @@ function friendlyDirReason(reason) {
   if (reason.startsWith('unsuitable: ')) return reason.slice('unsuitable: '.length);
   if (reason === 'home-or-above') return '不允许选择 $HOME 或更高层目录';
   if (reason === 'path-missing') return '目录不存在';
+  // macOS TCC denies git (getcwd → EPERM) inside Desktop/Documents/Downloads
+  // for processes without Full Disk Access; the bare git fatal is unreadable.
+  if (/Operation not permitted|EPERM|unable to get current working directory/i.test(reason)) {
+    return 'git 无权访问该目录（macOS 隐私保护会拦截「桌面/文档/下载」等受保护位置）。'
+      + '请到「系统设置 → 隐私与安全性 → 完全磁盘访问权限」给运行 MultiCC 的终端/Node 授权并重启后重试，'
+      + '或改选不受保护的目录。原始错误: ' + reason;
+  }
   return '无法将目录初始化为 git 仓库: ' + reason;
 }
 

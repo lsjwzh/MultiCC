@@ -466,8 +466,11 @@
       dialog(t('airTaskSettingsAddDirectory'), form => {
         const name = field(form, t('airTaskSettingsName')), path = field(form, t('airTaskSettingsAbsolutePath')); name.required = path.required = true;
         name.maxLength = 100; path.placeholder = '/Users/you/projects/example';
+        const create = node('input'); create.type = 'checkbox'; create.checked = true;
+        const createLabel = node('label', t('airTaskSettingsCreateIfMissing')); createLabel.prepend(create);
+        form.append(createLabel);
         form.append(node('p', t('airTaskSettingsAddDirectoryNote')));
-        return async () => { const result = await request('/api/directories', { name: name.value, path: path.value, create: false }); await onSaved(result); };
+        return async () => { const result = await request('/api/directories', { name: name.value, path: path.value, create: create.checked }); await onSaved(result); };
       });
     },
     configuration,
