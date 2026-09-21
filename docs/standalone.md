@@ -141,7 +141,7 @@ cd multicc-standalone-<版本>-darwin-x64
 
 ## 已知限制
 
-- **包未签名/未公证**（没有 Apple Developer ID 与公证凭据）。首次打开必须右键→打开，之后正常双击。校验来源请用 Release 里的 `.sha256`。
+- **包未签名/未公证**（没有 Apple Developer ID 与公证凭据）。首次打开必须右键→打开，之后正常双击。校验来源请用 Release 里的 `.sha256`。**未签名的直接后果之一是磁盘权限给不上**，见下面「macOS 磁盘权限」一节。
 - **本地语音识别（sherpa-onnx）需要 macOS 15+**：其 `darwin-x64` 二进制最低系统版本为 15.0。macOS 11–14 上会自动回退到云端 ASR（`src/voice/asr-local.js` 懒加载 + 失败回退），语音功能整体仍可用，只是精度/延迟按云端走。
 - **macOS 12 的 Safari 不支持 Web Push**：需要通知时请用 Chrome 打开界面（Web UI 的其它部分在 Monterey 的 Safari 17.6 上可用）。
 - **终端模式需要系统里的 `tmux`**：包不携带 `tmux`，聊天、任务板、文件浏览都不受影响，只有终端页/CLI 登录需要它。
@@ -155,6 +155,28 @@ cd multicc-standalone-<版本>-darwin-x64
 
   卸载独立版时，这些 CLI 连同数据目录都不受 `MultiCC.app` 删除影响。
 - **Windows 用 zip 分发**：资源管理器双击解压即可。Windows 包里的运行时是 `Resources\runtime\node.exe`（官方 win-x64 压缩包没有 `bin/` 层），入口是包根的 `multicc.cmd`。
+
+## macOS 磁盘权限（TCC）：为什么「给权限」常常给不上
+
+macOS 把「桌面 / 文档 / 下载 / iCloud 云盘 / 外接磁盘 / 网络磁盘」列为受保护位置。进程碰这些位置时，系统不是问一句就记住，而是**按「是谁在问」记一笔账**：授权挂在**发起进程链最上游的那个程序**（终端窗口、双击的 App、launchd）身上，并且**认的是那个可执行文件的精确路径**——不是「MultiCC 这个产品」，也不是包名。
+
+这解释了两件让用户以为是 bug 的事：
+
+- **给 `.app` 授了权，里面的 `git` 还是被拒**。独立包从 `MultiCC.app/Contents/MacOS/MultiCC`（一个 shell 脚本）起步，`exec` 包内 `Resources/runtime/bin/node`，再由它去 `spawn /usr/bin/git`。终端启动、双击 App、开机自启（launchd）是**三种不同的发起进程**，各自要各自授权。
+- **升级过 node 版本之后，之前授的权失效了**。授权认路径，`runtime/bin/node` 换了版本就是另一个路径、另一笔账。
+
+失败时的原始报错是 `fatal: unable to get current working directory: Operation not permitted`（git 第一个失败的调用是 `getcwd()`，所以它说的是「工作目录」，不是它真正想打开的东西），从用户角度看完全没法行动。现在 MultiCC 会把它翻译成一段可操作的指引：**指名要授权的对象**（按你当前的启动方式给出 `.app` 路径、或那个 node 二进制、或「你的终端」）、给出 `系统设置 → 隐私与安全性 → 完全磁盘访问权限` 的直达链接、并说明**授权后必须完全退出再重新启动**。
+
+排查顺序（从最常见的原因开始）：
+
+1. **确认不是 AppTranslocation**。从「下载」里直接双击运行、且目录还带着「来自网络」的隔离标记时，Gatekeeper 会把它放进 `/private/var/folders/.../AppTranslocation/<随机码>/d/` 这个**只读临时路径**里跑——路径每次启动都变，所以此时任何授权都记不住。启动日志里会直接打印这个警告。处理：把整个目录移出「下载」（例如 `~/Applications`），执行 `xattr -dr com.apple.quarantine "<安装目录>"`，再重启。安装脚本与 `multicc update` 解压后都会自动清掉这个标记，只有手动解压/手工搬运才需要自己执行。
+2. **确认要授权的是哪个对象**。报错里已经点名了，直接按它给的那一条做（终端 / `.app` / 二进制的绝对路径三选一）。launchd（开机自启）**不会弹窗**，只能手动加那个二进制，没有别的路径。
+3. **授权后完全退出再启动**。TCC 在进程启动时结算，热重启无效。
+4. **不想折腾就换位置**。`~/working` 这类不受保护的位置不需要任何授权，直接就能用；在 `~/Downloads/working` 里留个指向真实仓库的符号链接也照常工作（仓库本体在哪儿，git 就在哪儿跑）。
+
+代码侧的对应改动（都在这一版里）：注册目录时先探一次写（`directoryWriteDenied`，EPERM/EACCES 才算拒绝），在 spawn git 之前就把「这个目录根本不让碰」判出来；`gitIsRepo()` 不再把权限错误当成「不是 Git 仓库」——以前这个误判会让每次注册都重跑一次 `git init`，用户看到的是永远重复的同一条 fatal，真正的原因被埋掉；`MultiCC.app` 的 `Info.plist` 补上了 `NSDesktopFolderUsageDescription` / `NSDocumentsFolderUsageDescription` / `NSDownloadsFolderUsageDescription` / `NSRemovableVolumesUsageDescription` / `NSNetworkVolumesUsageDescription`——**没有这些键，macOS 连弹窗都不会弹，只会静默拒绝**；systemd/launchd 单元加了 `MULTICC_SERVICE=1`，好让指引知道该说「launchd 不会弹窗」。
+
+**还没解决的**（要动签名链路，属于独立改动）：包没有签名/公证，无法用 MDM/PPPC 预授权；`.app` 的入口是个 shell 脚本，TCC 归属不如编译出的 Mach-O 稳定；授权钉在运行时二进制的路径上，所以换了 node 版本的升级会让用户重授一次。真正的解法是 Developer ID 签名 + 公证（含嵌套的 `runtime/bin/node`），再考虑把入口换成编译产物。
 
 ## 自己构建
 

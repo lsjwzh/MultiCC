@@ -42,7 +42,7 @@ const { findFreePort } = require(path.join(LIB_DIR, 'port-chooser'));
 const { createBackendSupervisor, killProcessTree } = require(path.join(LIB_DIR, 'backend-supervisor'));
 const { reclaimOrphan, pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim'));
 const {
-  resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs,
+  resolveDesktopEnv, buildChildEnv, readEnvValues, ensureWritableDirs, translocationGuidance,
 } = require(path.join(LIB_DIR, 'desktop-env'));
 
 const APP_DIRNAME = 'MultiCCStandalone';
@@ -439,6 +439,11 @@ async function main(argv = process.argv.slice(2)) {
   const env = args.data ? { ...process.env, MULTICC_STANDALONE_HOME: args.data } : process.env;
   const paths = resolveStandalonePaths({ resources, env });
   const logger = createLogger({ logFile: path.join(paths.desktopEnv.logsDir, 'standalone.log') });
+  // Running from Gatekeeper's throwaway copy is not fatal, but it is the reason
+  // every permission the user grants evaporates — say so instead of letting them
+  // discover it as an inexplicable git failure later.
+  const gatekeeperWarning = translocationGuidance(__dirname);
+  if (gatekeeperWarning) logger.error(gatekeeperWarning);
   if (!fs.existsSync(paths.desktopEnv.serverEntry)) {
     logger.error(`bundle is incomplete: missing ${paths.desktopEnv.serverEntry}`);
     return 1;
