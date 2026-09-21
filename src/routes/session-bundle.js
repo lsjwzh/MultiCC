@@ -20,6 +20,29 @@ const ZIP_BODY_LIMIT = '160mb';
 const ZIP_MAX_ENTRIES = 6000;
 const ZIP_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 
+// Task attribution is machine-local. A carried message's taskId, taskName,
+// taskShortCode, taskStart, taskSource, taskText and auxRunId all name work
+// that happened on the SOURCE machine: on the target they name tasks that do
+// not exist, and on a same-instance re-import they name live tasks the copy
+// never belonged to — after which retention refuses to release the session
+// (TASK_HISTORY_REFERENCED) and no board/session delete cascade can complete.
+// The imported copy is deliberately task-agnostic, so the whole family goes.
+//
+// `_handoffArchive` marks an assistant entry as a deliberate archive record.
+// Normalization's retry-dedup pass collapses a prefix-contained assistant pair
+// unless the earlier one is protected — locally that protection is the task
+// reference we just removed, so the archive carries its own reason to be kept.
+const SOURCE_TASK_STAMP_FIELDS = [
+  'taskId', 'taskName', 'taskShortCode', 'taskStart', 'taskSource', 'taskText', 'auxRunId',
+];
+
+function stripSourceTaskStamps(message) {
+  const clean = { ...message };
+  for (const field of SOURCE_TASK_STAMP_FIELDS) delete clean[field];
+  if (clean.role === 'assistant' && !clean._interim) clean._handoffArchive = true;
+  return clean;
+}
+
 // Cross-machine handoff routes (Happier-parity: move a live session to another
 // machine). Two container formats share one payload builder / one restore path:
 //
@@ -345,11 +368,14 @@ function createSessionBundleRoutes(rawDeps) {
         catch (e) { /* dead paths are cosmetic; import must not fail on them */ }
       }
       if (Array.isArray(payload.messages)) {
-        const restored = assetMapping.length
-          ? payload.messages.map(m => (m && typeof m.content === 'string')
-            ? { ...m, content: handoffEnv.rewriteAssetPaths(m.content, assetMapping) }
-            : m)
-          : payload.messages;
+        const restored = payload.messages.map(m => {
+          if (!m || typeof m !== 'object') return m;
+          const clean = stripSourceTaskStamps(m);
+          if (assetMapping.length && typeof clean.content === 'string') {
+            clean.content = handoffEnv.rewriteAssetPaths(clean.content, assetMapping);
+          }
+          return clean;
+        });
         getChatHistoryService().replace(newSid, restored, { reason: 'bundle-import' });
       }
 
