@@ -2610,7 +2610,10 @@ window.MULTICC_I18N_CATALOG = {
     "voiceStatusListening": "聆听中",
     "taskNotifyTitleDisabled": "任务提醒 (已关闭)",
     "taskNotifyTitleOff": "任务提醒 (点击开启系统通知)",
-    "taskNotifyTitleOn": "任务提醒 (系统通知已开启)"
+    "taskNotifyTitleOn": "任务提醒 (系统通知已开启)",
+    "chatOpeningTask": "正在打开任务对话…",
+    "chatLoadingHistory": "正在连接并加载聊天记录…",
+    "chatOpenFailed": "任务对话加载失败"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -5222,6 +5225,9 @@ window.MULTICC_I18N_CATALOG = {
     "voiceStatusListening": "Listening",
     "taskNotifyTitleDisabled": "Task alerts (off)",
     "taskNotifyTitleOff": "Task alerts (click to enable system notifications)",
-    "taskNotifyTitleOn": "Task alerts (system notifications on)"
+    "taskNotifyTitleOn": "Task alerts (system notifications on)",
+    "chatOpeningTask": "Opening task conversation…",
+    "chatLoadingHistory": "Connecting and loading messages…",
+    "chatOpenFailed": "Could not load conversation"
   }
 };

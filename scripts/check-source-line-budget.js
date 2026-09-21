@@ -27,8 +27,8 @@ const MIGRATION_DEBT = Object.freeze({
   // committed high-water mark, so it is re-registered here; the next main_shell
   // split must ratchet it down and retire this entry once the file is <= target.
   'app/lib/screens/main_shell.dart': Object.freeze({
-    ceiling: 3174,
-    byteCeiling: 122149,
+    ceiling: 3166,
+    byteCeiling: 122028,
     target: 3000,
   }),
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
@@ -61,10 +61,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 的元素个数，行尾那个换行也算一格，所以对齐数字要用测试自己的量法，别用 wc -l。）
   // 目录首页的 Chat / Terminal 切换补 10 条键（airModeChat/Terminal、
   // airTerminals* 、airNewTerminal*），双语各 10 行 = +20 行；数字按测试自己的
-  // countLines 量法对齐。
+  // countLines 量法对齐。App 页内加载补 3 条键（中英共 6 行）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 5228,
-    maxBytes: 317714,
+    maxLines: 5234,
+    maxBytes: 318056,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
