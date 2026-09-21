@@ -321,6 +321,25 @@ jobs:
           node scripts/standalone-smoke.js \
             --bundle "dist-standalone/multicc-standalone-$version-${{ matrix.platform }}-${{ matrix.arch }}"
 
+      # POSIX install.sh is exercised by clean-install.yml in a fresh Linux
+      # container. Windows has a native PowerShell bootstrap, so execute that
+      # exact user path on windows-latest: verify zip + sidecar, install into a
+      # stable directory, configure, boot, query status and stop.
+      - name: Smoke the Windows one-click installer
+        if: matrix.platform == 'win32'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = node -p "require('./package.json').version"
+          $archive = Join-Path $PWD "dist-standalone/multicc-standalone-$version-win32-x64.zip"
+          $target = Join-Path $env:RUNNER_TEMP 'MultiCC-standalone-install'
+          & ./install.ps1 -From $archive -InstallDir $target -NoService -NoOpen
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed with $LASTEXITCODE" }
+          & (Join-Path $target 'multicc.cmd') status --json
+          if ($LASTEXITCODE -ne 0) { throw "installed bundle is not running" }
+          & (Join-Path $target 'multicc.cmd') stop
+          if ($LASTEXITCODE -ne 0) { throw "installed bundle did not stop cleanly" }
+
       - name: Upload standalone artifacts
         uses: actions/upload-artifact@v4
         with:

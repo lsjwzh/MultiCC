@@ -115,10 +115,16 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 ### 1. 安装
 
 ```bash
+# macOS / Linux
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
 ```
 
-一行命令，没有任何参数：URL 里的 tag **就是**版本。脚本下载该版本的**独立包**——服务端 + 固定版本的 Node 运行时 + 全部生产依赖，一个压缩包；校验 SHA-256、解压到稳定的 `~/MultiCC`、移除 macOS 下载隔离标记、生成 `ACCESS_TOKEN`、启动服务并自动打开浏览器，同时可选注册为后台服务（macOS `launchd` / Linux systemd user）。命令结束时界面已经可用；全程不编译任何东西，**目标机器不需要 Node、npm、git、Homebrew 或 Xcode**。
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.ps1 | iex
+```
+
+一行命令，没有任何参数：URL 里的 tag **就是**版本。脚本下载该版本的**独立包**——服务端 + 固定版本的 Node 运行时 + 全部生产依赖，一个压缩包；校验 SHA-256、解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）、移除 macOS 下载隔离标记、生成 `ACCESS_TOKEN`、启动服务并自动打开浏览器，同时可选注册为登录自启（macOS `launchd` / Linux systemd user / Windows Startup）。命令结束时界面已经可用；全程不编译任何东西，**目标机器不需要 Node、npm、git、Homebrew、Visual Studio 或 Xcode**。
 
 <details>
 <summary>安装参数，以及从源码运行</summary>
@@ -137,6 +143,10 @@ curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-a
 curl -sSL .../install.sh | bash -s -- --no-start
 curl -sSL .../install.sh | bash -s -- --no-open
 ```
+
+Windows 对应参数为 `-InstallDir`、`-Version`、`-From`、`-AccessToken`、
+`-Port`、`-NoService`、`-NoStart`、`-NoOpen`。需要传参数时先下载
+`install.ps1` 再执行；日常安装仍然只需上面的无参数一行命令。
 
 想改 MultiCC 本身，就从源码检出运行——那条路是给开发者准备的，那里的 `./multicc update` 是 `git pull` + `npm install`：
 
@@ -316,7 +326,7 @@ curl -X POST "http://localhost:3000/api/sessions/$SESSION_ID/switch-cli" \
 - 按会话的 **provider 与子 agent 路由**，精准控成本
 - **原生桌面与手机 App**、PWA、终端、网页聊天共用一个后端，每个稳定版都带签名 APK
 
-**较弱的地方：** 没有托管/云端方案、没有内置代码编辑器、CLI/服务端安装仅支持 macOS/Linux（Windows 由桌面版覆盖）、设计上单用户——没有团队 RBAC。
+**较弱的地方：** 没有托管/云端方案、没有内置代码编辑器、设计上单用户——没有团队 RBAC。
 
 调查范围：cc-switch、Ruflo、CLIProxyAPI、oh-my-claudecode、AionUi、vibe-kanban、cc-connect、CloudCLI、Superset、Orca、cockpit-tools——十一个同类，加上 MultiCC 本身，构成 12 项目横评。
 

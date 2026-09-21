@@ -822,13 +822,18 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   // form builds exactly one arch per pass.
   assert.match(wf, /--mac "dmg:\$arch"/);
   assert.doesNotMatch(wf, /electron-builder .*"--\$arch"/);
-  // Standalone packages are the primary distribution form (install.sh
-  // downloads exactly these) and are built by the same workflow, so they must
+  // Standalone packages are the primary distribution form (install.sh and
+  // install.ps1 download exactly these) and are built by the same workflow, so they must
   // land on the same release; a failed build blocks publishing instead of
   // shipping a half-populated Release.
   assert.match(wf, /scripts\/standalone-bundle\.js/);
   assert.match(wf, /needs: \[build, standalone\]/);
   assert.match(wf, /multicc-standalone-\$\{VERSION\}-darwin-x64\.tar\.gz/);
+  assert.match(wf, /multicc-standalone-\$\{VERSION\}-linux-arm64\.tar\.gz/);
+  assert.match(wf, /multicc-standalone-\$\{VERSION\}-win32-x64\.zip/);
+  assert.match(wf, /Smoke the Windows one-click installer/);
+  assert.match(wf, /\.\/install\.ps1 -From \$archive/,
+    'the Windows runner must execute the same native installer users receive');
 });
 
 test('desktop icon is a square PNG of at least 512px', () => {

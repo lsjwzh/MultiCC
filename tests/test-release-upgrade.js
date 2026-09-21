@@ -8,6 +8,7 @@ const ROOT = path.join(__dirname, '..');
 const pkg = require('../package.json');
 const lock = require('../package-lock.json');
 const installer = fs.readFileSync(path.join(ROOT, 'install.sh'), 'utf8');
+const windowsInstaller = fs.readFileSync(path.join(ROOT, 'install.ps1'), 'utf8');
 const manager = fs.readFileSync(path.join(ROOT, 'multicc'), 'utf8');
 const runtimeCheck = fs.readFileSync(path.join(ROOT, 'scripts/check-runtime-deps.js'), 'utf8');
 const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
@@ -19,11 +20,13 @@ const signerPin = fs.readFileSync(path.join(ROOT, 'app', 'android', 'release-cer
 // the version, and the script installs exactly that. Nothing about it may go
 // back to cloning a branch.
 const stableCommand = `curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${pkg.version}/install.sh | bash`;
+const stableWindowsCommand = `irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v${pkg.version}/install.ps1 | iex`;
 assert.equal(lock.version, pkg.version, 'package-lock root version must match package.json');
 assert.equal(lock.packages[''].version, pkg.version,
   'package-lock workspace version must match package.json');
 assert.ok(installer.includes(stableCommand), 'installer help must publish the release-tag command, not main');
 assert.ok(readme.includes(stableCommand), 'README stable command must use the release tag, not main');
+assert.ok(readme.includes(stableWindowsCommand), 'README Windows command must use the same release tag');
 // The prefix alone is not enough: `… | bash -s -- --branch v2.0.3` also contains
 // it, and that form is exactly what this release replaced. Pin the shape — the
 // advertised line ends at `| bash`, with any flags confined to the <details>
@@ -44,6 +47,7 @@ assert.match(readme, /--version latest/, 'README must send "newest release" thro
 // only the full-URL lines have to be the flagless one.
 const readmeZh = fs.readFileSync(path.join(ROOT, 'README.zh.md'), 'utf8');
 assert.ok(readmeZh.includes(stableCommand), 'README.zh.md must advertise the same flagless install line');
+assert.ok(readmeZh.includes(stableWindowsCommand), 'README.zh.md must advertise the Windows install line');
 for (const line of readmeZh.matchAll(/^curl -sSL https:\/\/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/[^\n]*$/gm)) {
   assert.equal(line[0], stableCommand, 'README.zh.md install line must be flagless, like the English one');
 }
@@ -114,6 +118,12 @@ assert.doesNotMatch(installer, /npm install/, 'the installer must not install de
 assert.doesNotMatch(installer, /\bgit (clone|pull)\b/, 'the installer must not use git');
 assert.match(installer, /multicc-standalone-\$\{VERSION_NUMBER\}/,
   'the installer must download the standalone package');
+assert.doesNotMatch(windowsInstaller, /npm (?:install|ci)/,
+  'the Windows installer must not install dependencies');
+assert.doesNotMatch(windowsInstaller, /\bgit (?:clone|pull)\b/,
+  'the Windows installer must not use git');
+assert.match(windowsInstaller, /multicc-standalone-\$ResolvedVersion-win32-x64\.zip/,
+  'the Windows installer must download the same standalone package family');
 assert.match(runtimeCheck, /requireFn\('@homebridge\/ciao'\)/);
 assert.match(manager, /Verifying runtime dependencies before service install/);
 assert.ok(manager.indexOf('Runtime dependencies are incomplete — running npm install') > manager.indexOf('do_install()'),
