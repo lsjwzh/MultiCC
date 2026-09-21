@@ -16,7 +16,7 @@
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
 ```
 
-URL 里的 tag 就是安装的版本；脚本只做四件事：下载该版本的独立包 → 校验 `.sha256` → 解压到安装目录 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）。整个过程不需要目标机器上有 Node、npm 或 git。
+URL 里的 tag 就是安装的版本。脚本把整条链路一次做完：下载对应平台的独立包 → 校验 `.sha256` → 解压到稳定的 `~/MultiCC` → 在 macOS 清除下载隔离标记 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）→ 启动并等待 `/readyz` → 打开浏览器。命令返回时界面已经能用；目标机器不需要 Node、npm 或 git。
 
 ```bash
 # 想装到别处（默认 ~/MultiCC）
@@ -30,6 +30,10 @@ curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用本地的包离线安装（跳过下载，仍然校验 .sha256）
 curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-arm64.tar.gz
+
+# 自动化/服务器：只安装不启动，或启动但不打开浏览器
+curl -sSL .../install.sh | bash -s -- --no-start
+curl -sSL .../install.sh | bash -s -- --no-open
 ```
 
 | 参数 | 默认 | 说明 |
@@ -40,11 +44,13 @@ curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-a
 | `--token <token>` | 自动生成 | 写入 `ACCESS_TOKEN` |
 | `--port <n>` | `3000` | 起始端口（被占用会自动往后找） |
 | `--no-service` | 关 | 不询问开机自启 |
+| `--no-start` | 关 | 只安装和配置，不启动；同时跳过开机自启设置 |
+| `--no-open` | 关 | 启动服务，但不打开浏览器 |
 | `--no-apk`、`--branch <tag>`、`--no-clone` | — | 旧命令行的兼容位：`--branch` 等价于 `--version`，`--no-clone` 等价于 `--from .`（从当前目录装），`--no-apk` 只打印一句提示（安装从来不构建 APK） |
 
 脚本会拒绝非空的非 MultiCC 目录，也会拒绝校验和不匹配或缺少运行时的包（宁可失败，也不装一个装不起来的包）。重复安装同一个目录是**原地替换**：先停掉在跑的实例、把旧目录挪到 `.old-<pid>` 作为回滚点，再改名就位；失败会把旧目录还原。
 
-装完脚本会打印访问令牌和这几个日常命令（都在安装目录下运行）。
+装完脚本会直接启动并打开界面，同时打印实际 URL、访问令牌和日常命令（都在安装目录下运行）。若启动未通过就绪检查，脚本会保留已安装文件、给出日志命令并返回失败，而不是把“解压成功”误报成“已经可用”。
 
 ## 日常命令
 
@@ -129,6 +135,8 @@ cd multicc-standalone-<版本>-darwin-x64
 ```
 
 `multicc update` 会下载对应平台的包与它的 `.sha256`、校验、解压到安装目录旁边，然后启动一个**脱离当前进程**的替换助手（用的是**新包**里的运行时）：它等父进程退出后把旧目录改名为 `<root>.old-<时间戳>`、把新包改名就位、删掉旧目录，最后按需重启。任何一步失败都会把旧目录还原——所以升级过程中断电最多是「还是旧版本」，不会是「什么都没有」。
+
+更新器按 SemVer 比较版本：若本机是尚未发布的测试版、版本号高于 GitHub 最新正式版，只会报告“本机版本更新”，不会把它自动降级。无法解析的版本号同样拒绝替换。
 
 镜像/内网环境请用新包手动替换：解压出 `multicc-standalone-<版本>-<平台>-<架构>/`，`./multicc stop` → 整个目录替换 → `./multicc start`；数据目录不在包里，不受影响。
 
