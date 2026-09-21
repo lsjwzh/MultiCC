@@ -222,6 +222,10 @@
                 <li><strong data-i18n="airSetupModel">准备模型</strong><span data-i18n="airSetupModelText">：在「CLI 与 Provider」里导入你已有的 API 线路，或直接使用 CLI 自带的登录。没有可用模型，任务无法执行。</span></li>
                 <li><strong data-i18n="airSetupAux">配置 AI Assistant</strong><span data-i18n="airSetupAuxText">：它是 MultiCC 的核心——消息分类、任务归属、自动推进都依赖它，</span><em data-i18n="airSetupAuxMust">必须配置</em><span data-i18n="airSetupAuxText2">。选一个便宜的 flash / 轻量模型即可，不必占用主力模型。</span></li>
               </ol>
+              <div id="setup-cli-missing" class="setup-warn" hidden>
+                <strong data-i18n="airSetupCliMissing">未检测到任何 CLI</strong><span data-i18n="airSetupCliMissingText">：MultiCC 通过 CLI 执行任务与模型调用，请先至少安装一个并登录，否则模型与 AI Assistant 都无法工作。</span>
+                <code id="setup-cli-missing-cmds"></code>
+              </div>
             </div>
             <div class="setup-actions">
               <button id="setup-provider" type="button" data-i18n="airSetupImport">导入模型 / 线路</button>

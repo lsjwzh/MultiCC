@@ -132,11 +132,33 @@
   let auxConfigured = null;
   let setupDismissed = stored('air:setup-dismissed', false);
   async function refreshAuxConfigured() {
+    let config = null;
     try {
-      const config = await api('/api/aux/config');
+      config = await api('/api/aux/config');
       auxConfigured = !!config.providerId;
     } catch (_) { return; }   // 查不到就维持现状，不把卡藏起来也不弹错误
     renderSetupCard();
+    void refreshCliMissing(config.cliAvailability);
+  }
+  // 一个 CLI 都没装时，模型下拉与 AI Assistant 都注定配不成——引导卡直接说清
+  // 「至少装一个」并给出官方安装命令，而不是让用户在空下拉里猜。
+  async function refreshCliMissing(cliAvailability) {
+    const box = $('setup-cli-missing');
+    if (!box) return;
+    const missing = !!cliAvailability && cliAvailability.claude === false && cliAvailability.codex === false;
+    box.hidden = !missing;
+    if (!missing) return;
+    const code = $('setup-cli-missing-cmds');
+    if (!code || code.textContent) return;
+    try {
+      const info = await api('/api/cli/install-specs');
+      const specs = (info && info.specs) || {};
+      const cmds = [
+        specs.claude && (specs.claude.display || specs.claude.command),
+        specs.codex && (specs.codex.display || specs.codex.command),
+      ].filter(Boolean);
+      code.textContent = cmds.join('   |   ');
+    } catch (_) { /* 取不到命令就留空，不打断引导 */ }
   }
   function renderSetupCard() {
     const card = $('setup-card');

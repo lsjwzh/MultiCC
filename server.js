@@ -1941,7 +1941,7 @@ const {
   providers,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
-  executeAuxHttp, providerLimitCache,
+  executeAuxHttp, providerLimitCache, getCliAvailability: () => cliAvailabilitySummary(), codexModelsRuntime: require('./src/routes/codex-models').defaultRuntime,
   broadcast: broadcastTo,
   // Aux health is fleet-wide: one transition changes the meaning of EVERY
   // session's judgement at once, and an already-open page has no other way to
