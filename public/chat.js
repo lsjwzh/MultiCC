@@ -427,25 +427,13 @@ function applyCliUi(cli) {
     cliBtn.title = `当前 ${meta.label}；点击切换 CLI（通过结构化 checkpoint 交接上下文）`;
   }
   document.title = `MultiCC Chat · ${meta.label}`;
-  // OpenCode: kick off background refresh of the local opencode CLI's model
-  // list so the AI-config picker dropdown is populated by the next open.
-  // loadOpenCodeModels() caches 1 day in localStorage (see shared/models.js).
-  if (next === 'opencode' && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig.refreshOpenCodeModels === 'function') {
-    // No rebuild hook: the 1-day localStorage cache this fills is read the next
-    // time the AI-config picker opens. (The old callback opened a stray no-arg
-    // showProviderPicker() overlay once the fetch landed.)
-    window.MultiCCChatAiConfig.refreshOpenCodeModels();
-  }
-  // Qoder CN: same warm-up. No rebuild callback — qoder has no provider picker
-  // to re-render, and the built-in tiers stay usable until the fetch lands.
-  if (next === 'qoder' && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig.refreshQoderModels === 'function') {
-    window.MultiCCChatAiConfig.refreshQoderModels();
-  }
-  // Claude: warm the CLI-bundle model list (/api/claude/models, 1-day cache in
-  // shared/models.js). No rebuild callback — the static table stays usable
-  // until the fetch lands, then the next picker open reads the cache.
-  if (next === 'claude' && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig.refreshClaudeModels === 'function') {
-    window.MultiCCChatAiConfig.refreshClaudeModels();
+  // Warm the per-CLI live model list cache (localStorage, see shared/models.js)
+  // so the AI-config picker shows the CLI's real catalog by the next open. No
+  // rebuild hook: each CLI's static tiers/fallback stay usable until the fetch
+  // lands, and the picker re-reads the cache on every open.
+  const modelRefresh = { opencode: 'refreshOpenCodeModels', qoder: 'refreshQoderModels', claude: 'refreshClaudeModels', codebuddy: 'refreshCodebuddyModels' }[next];
+  if (modelRefresh && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig[modelRefresh] === 'function') {
+    window.MultiCCChatAiConfig[modelRefresh]();
   }
 }
 // The merge/sync state that used to live here (ready, conflict, conflict files,

@@ -123,7 +123,7 @@ const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/providers/relay-share-store');
 const { mountOpenCodeModelRoutes } = require('./src/routes/opencode-models');
 const { mountOpenCodeQuotaRoutes } = require('./src/routes/opencode-quota');
-const { mountQoderModelRoutes } = require('./src/routes/qoder-models');
+const { mountQoderModelRoutes } = require('./src/routes/qoder-models'); const { mountCodebuddyModelRoutes } = require('./src/routes/codebuddy-models');
 const { mountQoderQuotaRoutes } = require('./src/routes/qoder-quota');
 const { mountCodexQuotaRoutes } = require('./src/routes/codex-quota'); const { createOfficialAccountStore, sanitizeLoginEnv } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex/accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountArkQuotaRoutes } = require('./src/routes/ark-quota');
@@ -2118,7 +2118,7 @@ mountOpenCodeModelRoutes(app); require('./src/routes/codex-models').mountCodexMo
 // GET /api/qoder/models — the Qoder CN catalog entitled to the logged-in
 // account (`qoderclicn --list-models`, cached for 1 day). Lets each qoder
 // session pick its own model instead of sharing ~/.qoder-cn/settings.json.
-mountQoderModelRoutes(app); require('./src/routes/claude-models').mountClaudeModelRoutes(app); // GET /api/claude/models — ids extracted from the local claude CLI bundle, cached 1 day (see src/routes/claude-models.js)
+mountQoderModelRoutes(app); mountCodebuddyModelRoutes(app); require('./src/routes/claude-models').mountClaudeModelRoutes(app); // GET /api/claude/models — ids extracted from the local claude CLI bundle, cached 1 day (see src/routes/claude-models.js)
 
 // GET /api/opencode/quota — drive whatever Chrome the user already has open
 // (src/chrome-cdp.js) to scrape the OpenCode Zen console's Go subscription
