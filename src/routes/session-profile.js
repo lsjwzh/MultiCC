@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
 const { normalizeSubagentInput } = require('../session/subagent');
 const fs = require('fs');
+const path = require('path');
 
 const { normalizeManualMemory } = require('../memory/runtime');
 const { taskShortCode } = require('../classify/task-short-code');
@@ -534,7 +535,14 @@ function createSessionProfileRoutes(rawDeps) {
           const dstMemDir = folderMemory.sessionDir(r.session);
           if (fs.existsSync(srcMemDir)) {
             fs.mkdirSync(dstMemDir, { recursive: true });
-            fs.cpSync(srcMemDir, dstMemDir, { recursive: true });
+            // Same invariant as the handoff exporter's scope reader: a dotfile
+            // in a memory folder is machine bookkeeping, not memory content.
+            // Copying them here would clone a legacy `.handoff-provider.json`
+            // (plaintext credentials) into every fork.
+            fs.cpSync(srcMemDir, dstMemDir, {
+              recursive: true,
+              filter: (srcPath) => !path.basename(srcPath).startsWith('.'),
+            });
           }
         } catch (e) {
           console.error(`[multicc/fork] memory copy failed ${src.id}→${newSid}:`, e.message);
