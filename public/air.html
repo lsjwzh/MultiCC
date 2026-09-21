@@ -19,7 +19,18 @@
 </head>
 <body>
   <aside id="sidebar" aria-label="工作目录与任务导航" data-i18n-aria-label="airSidebarNav">
-    <a class="brand" href="/air" aria-label="MultiCC Air 首页" data-i18n-aria-label="airHome"><span class="brand-mark">M</span><span>MultiCC <b>Air</b></span></a>
+    <div class="brand-row">
+      <a class="brand" href="/air" aria-label="MultiCC Air 首页" data-i18n-aria-label="airHome"><span class="brand-mark">M</span><span>MultiCC <b>Air</b></span></a>
+      <!-- CLI 待更新角标：常驻一颗小图标，有新版时挂数字角标，点开是升级浮层
+           （见 air-cli-update.js）。放在品牌行里而不是单开一栏 —— 它是提示，
+           不该占任务清单的高度，也不该在没事的时候显得像一件待办。 -->
+      <button id="cli-update-btn" class="cli-update-btn" type="button"
+              aria-haspopup="dialog" aria-expanded="false" aria-controls="cli-update-pop"
+              title="CLI 更新" data-i18n-title="airCliUpdateTitle" data-i18n-aria-label="airCliUpdateTitle">
+        <span id="cli-update-icon" aria-hidden="true">⇧</span>
+        <span id="cli-update-badge" class="cli-update-badge" hidden></span>
+      </button>
+    </div>
 
     <div class="space-card">
       <button id="library" class="space-main" type="button">
@@ -463,6 +474,24 @@
     <div class="schedule-form-actions" id="ops-actions"></div>
   </dialog>
 
+  <!-- CLI 升级浮层：锚在品牌行那颗图标下方，内容由 air-cli-update.js 填。
+       刻意放在 #sidebar 外面：窄屏下侧栏是 transform 的定位容器，里面的 fixed
+       元素会跟着侧栏一起平移，浮层就会跑到屏幕外。 -->
+  <div id="cli-update-pop" class="cli-update-pop" role="dialog" aria-modal="false"
+       aria-labelledby="cli-update-title" hidden>
+    <div class="cli-update-head">
+      <strong id="cli-update-title" data-i18n="airCliUpdateTitle">CLI 更新</strong>
+      <button type="button" id="cli-update-close" aria-label="关闭" data-i18n-aria-label="airDlgClose">×</button>
+    </div>
+    <p id="cli-update-summary" class="cli-update-summary"></p>
+    <div id="cli-update-rows" class="cli-update-rows"></div>
+    <pre id="cli-update-log" class="cli-update-log" hidden></pre>
+    <div class="cli-update-foot">
+      <span id="cli-update-checked" class="cli-update-checked"></span>
+      <button type="button" id="cli-update-refresh" data-i18n="airCliUpdateRecheck">重新检测</button>
+    </div>
+  </div>
+
   <script src="provider-catalog.js"></script>
   <script src="auto-provider-editor.js"></script>
   <script src="chat-ai-config.js"></script>
@@ -482,6 +511,9 @@
        air-ops.js re-owns only the label, which pwa.js would print in English. -->
   <script src="pwa.js"></script>
   <script src="air-ops.js"></script>
+  <!-- 侧栏左上角的 CLI 待更新图标与升级浮层。和 air-ops.js 一样自初始化，
+       不经过 air.js（air.js 是 IIFE，不向模块暴露上下文）。 -->
+  <script src="air-cli-update.js"></script>
   <!-- 对话帧重载后的对账要用同一套任务→会话解析（air.js reconcileFrameTask）。 -->
   <script src="chat-shell-entry.js"></script>
   <script src="air-task-motion.js"></script>

@@ -152,6 +152,93 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .brand b { color: var(--accent); font-weight: 580; }
 .brand-mark { display: grid; width: 28px; height: 28px; place-items: center; color: #fff; border-radius: 9px; background: linear-gradient(145deg, #3899f8, #116edb); box-shadow: 0 6px 16px #1475df30; }
 
+/* ── CLI 待更新角标（air-cli-update.js）────────────────────────────────────
+   图标是品牌行的一部分，不是新的一栏：它贴在「MultiCC Air」右边，平时只是一颗
+   灰图标，有新版才挂数字角标。角标的形色沿用版本行那颗 .ops-badge —— 同一个侧栏
+   里「有新东西」只该有一种表示法。 */
+.brand-row { display: flex; align-items: center; gap: 8px; margin: 0 4px 16px; }
+/* 特异性 (0,2,0) 压过下面「Air 2026」那段 .brand{margin:0 4px 18px} 的 (0,1,0)，
+   于是品牌行的留白只由 .brand-row 一处决定，老规则不用回头改。 */
+.brand-row .brand { flex: 1 1 auto; min-width: 0; margin: 0; }
+.cli-update-btn {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.cli-update-btn:hover,
+.cli-update-btn[aria-expanded="true"] { border-color: #c7ddf5; background: var(--blue-soft); color: var(--accent); }
+.cli-update-btn.has-update { color: var(--accent); }
+.cli-update-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 17px;
+  padding: 0 5px;
+  /* 白描边把角标从图标上「抬」起来：侧栏底色是浅色渐变，没有它数字会和图标糊在一起。 */
+  border: 2px solid #fff;
+  border-radius: 20px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+/* 浮层挂在 body 上（见 air.html）：窄屏侧栏是 transform 的定位容器，
+   放在里面会被一起平移。 */
+.cli-update-pop {
+  position: fixed;
+  z-index: 60;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(70vh, 520px);
+  overflow: auto;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 50px #263f5d2e;
+  color: var(--text);
+  font-size: 13px;
+}
+.cli-update-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cli-update-head strong { font-size: 13.5px; }
+.cli-update-head button { border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.cli-update-summary { margin: 6px 0 8px; color: var(--muted); font-size: 12px; }
+.cli-update-rows { display: grid; gap: 6px; }
+.cli-update-row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid var(--hairline); border-radius: 12px; }
+.cli-update-row.is-current { opacity: .72; }
+.cli-update-name { min-width: 0; flex: 1 1 auto; }
+.cli-update-name strong { display: block; font-size: 12.5px; }
+.cli-update-versions { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.cli-update-row button { flex: 0 0 auto; }
+.cli-update-log {
+  margin: 6px 0 0;
+  max-height: 120px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: #f4f8fd;
+  color: #40566f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  white-space: pre-wrap;
+}
+.cli-update-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--hairline); }
+.cli-update-checked { color: var(--muted); font-size: 10.5px; }
+.cli-update-foot button { padding: 4px 9px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--text); font-size: 12px; cursor: pointer; }
+.cli-update-foot button:hover { border-color: #c7ddf5; background: var(--blue-soft); }
+
 .space-card {
   overflow: hidden; margin-bottom: 2px; border: 1px solid rgba(196, 216, 237, .95); border-radius: 14px; background: rgba(255, 255, 255, .78); box-shadow: 0 8px 25px #4568870b;
   /* 侧栏是一列 flex，视口不够高时默认会把子项一起压扁。这张卡里有 fixed 内容的
@@ -1385,7 +1472,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
      手机上会把中间那些固定内容压扁（目录卡被裁），而这些恰恰是抽屉存在的理由；
      手机上滚动一屏比钉住一行值。 */
   #sidebar { position: fixed; inset: 0 auto 0 0; width: min(286px, calc(100% - 34px)); transform: translateX(-105%); box-shadow: 14px 0 70px #263f5d30; overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #sidebar > .brand-row, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > .caption, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   /* 任务区跟着抽屉一起滚，不再自己开第二层滚动条。 */
   #task-sidebar { overflow: visible; }
   #tasks { overflow: visible; }
@@ -1570,7 +1657,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
    是版本行还没长出更新提示、目录名还没换行时量到的下限。 */
 @media (max-height: 640px) {
   #sidebar { overflow-y: auto; overscroll-behavior: contain; }
-  #sidebar > .brand, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
+  #sidebar > .brand-row, #sidebar > .space-card, #sidebar > .nav-row, #sidebar > #task-sidebar, #sidebar > .side-bottom { flex: 0 0 auto; }
   #task-sidebar { overflow: visible; }
   #tasks { min-height: 0; overflow: visible; }
 }

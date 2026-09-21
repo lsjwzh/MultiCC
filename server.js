@@ -1590,6 +1590,8 @@ const cliSwitchRuntime = createCliSwitchRuntime({
 const cliSwitchGitSnapshot = cliSwitchRuntime.cliSwitchGitSnapshot;
 const consumePendingCliHandoff = cliSwitchRuntime.consumePendingCliHandoff;
 cliSwitchRuntime.mountRoutes(app, asyncHandler);
+// 启动后探一次 + 每 24h 一次 CLI 待更新状态(unref, 不阻止退出)。
+cliSwitchRuntime.startUpdateWatch();
 
 // PATCH + fork profile routes: label/model/effort/agent/rolePrompt/memory/provider/
 // subagent edits, and Happier-parity transcript fork. Handler logic lives in
