@@ -161,7 +161,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
         // Path changed → re-verify git readiness for the new location.
         git.unmarkReady(d.id);
         const ready = await git.ensureReady(d);
-        if (!ready.ok) return err('invalid', `无法将目录初始化为 git 仓库: ${ready.reason}`);
+        if (!ready.ok) return err('invalid', helpers.friendlyDirReason(ready.reason));
       }
     }
     if (body.rolePrompt !== undefined) {

@@ -724,6 +724,7 @@ class _AirTasksViewState extends State<AirTasksView>
     final path = TextEditingController();
     String error = '';
     var saving = false;
+    var create = true;
     final created = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -748,6 +749,19 @@ class _AirTasksViewState extends State<AirTasksView>
                     labelText: '本机绝对路径',
                     hintText: '/Users/you/projects/example',
                   ),
+                ),
+                CheckboxListTile(
+                  value: create,
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text(
+                    '路径不存在时，创建这个文件夹',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                  onChanged: saving
+                      ? null
+                      : (value) => update(() => create = value ?? true),
                 ),
                 const Text(
                   '添加目录后，可在其中创建任务并按需附加角色。',
@@ -786,6 +800,7 @@ class _AirTasksViewState extends State<AirTasksView>
                         await _service.addDirectory(
                           name: name.text.trim(),
                           path: path.text.trim(),
+                          create: create,
                         );
                         if (ctx.mounted) Navigator.pop(ctx, true);
                       } catch (e) {
