@@ -183,6 +183,10 @@ codex 的 `OPENAI_API_KEY` 与整份 codex home 副本），而生成的 HANDOFF
 - 自动技能检测基于名称匹配（记忆与近 300 轮对话），内置共享规则种子文本
   已从检测语料中剔除，不会把随发行版自带的 `multicc-artifact` 误打包。
 - v1/v2 旧 bundle 仍可导入（按原行为恢复）。
+- JSON 容器（v1/v2）响应体里的 `meta` 是**明文**的：`sessionId`、`label`、
+  `repoRemote`、技能名与各项计数都在里面——它是给调用方看的「包里有什么」摘要。
+  zip 容器刻意不含这些身份字段（见上文「导出」）。跨机器分发、且明文面越小越好
+  时请用 zip 容器。
 - CLI 类型随包且导入时强制沿用（导入参数只有 `dirId` / `targetProviderId` /
   `label`，没有 `targetCli`），导入前也不检查目标机是否装了该 CLI：源机用
   `claude`、目标机只装了 `codex` 时，导入仍会成功并留下一个装好 CLI 之前
