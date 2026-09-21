@@ -88,8 +88,9 @@ test('the Air landing page teaches model setup and mandatory AI Assist config', 
   // 第一步覆盖两条来路：导入已有线路，或用 CLI 自带登录
   assert.match(airHtml, /导入你已有的 API 线路/);
   assert.match(airHtml, /CLI 自带的登录/);
-  // AI Assist 的定位要说清三件事：核心、必须配置、flash 级弱模型就够
-  assert.match(airHtml, /AI Assistant<\/strong>：它是 MultiCC 的核心/);
+  // AI Assist 的定位要说清三件事：核心、必须配置、flash 级弱模型就够。i18n 之后
+  // 「配置 AI Assistant」和后半句各自带 data-i18n，中间隔着那个 span，所以这里容下它。
+  assert.match(airHtml, /AI Assistant<\/strong><span[^>]*>：它是 MultiCC 的核心/);
   assert.match(airHtml, /必须配置/);
   assert.match(airHtml, /flash \/ 轻量模型即可/);
 });
