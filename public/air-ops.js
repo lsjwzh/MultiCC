@@ -138,26 +138,26 @@
 
     if (!info) {
       icon.textContent = '⏳';
-      hint.textContent = '检查失败';
+      hint.textContent = t('airOpsCheckFailed');
       badge.hidden = true;
       return;
     }
     current.textContent = `v${info.current || '—'}`;
     if (info.updateAvailable) {
       icon.textContent = '🆕';
-      hint.textContent = '有新版';
+      hint.textContent = t('airOpsNewVersion');
       badge.textContent = `v${info.latestVersion || ''}`;
       badge.hidden = false;
     } else {
       icon.textContent = '📦';
-      hint.textContent = info.apiError ? '已是最新（离线）' : '已是最新';
+      hint.textContent = info.apiError ? t('airOpsUpToDateOffline') : t('airOpsUpToDate');
       badge.hidden = true;
     }
   }
 
   async function checkVersion() {
     const hint = el('air-ver-hint');
-    if (hint) hint.textContent = '检查中…';
+    if (hint) hint.textContent = t('airOpsChecking');
     try {
       const info = await get('/api/version-check');
       paintVersion(info);
@@ -175,7 +175,7 @@
     const input = document.createElement('input');
     input.type = 'checkbox';
     const text = document.createElement('span');
-    text.textContent = '强制更新：工作区有改动或历史分叉时也更新。本地改动会先备份到 git stash（不会自动恢复），代码将重置到远端最新。';
+    text.textContent = t('airOpsForceLabel');
     label.append(input, text);
     return { label, input };
   }
@@ -211,13 +211,13 @@
         const dialog = activeDialog && activeDialog.isOpen() ? activeDialog : null;
         if (state.unreachable) {
           sawUnreachable = true;
-          setVersionHint('服务重启中…', true);
-          if (dialog) dialog.setBody('服务正在重启，连接已暂时断开。这一步通常需要几秒钟。');
+          setVersionHint(t('airOpsServerRestarting'), true);
+          if (dialog) dialog.setBody(t('airOpsServerRestartingBody'));
         } else if (state.state === 'succeeded') {
-          setVersionHint('更新完成，正在重载…', true);
+          setVersionHint(t('airOpsUpdateDoneReloading'), true);
           if (dialog) {
-            dialog.setTitle('更新完成');
-            dialog.setBody('更新已完成，服务已重启。正在重新加载页面…');
+            dialog.setTitle(t('airOpsUpdateDoneTitle'));
+            dialog.setBody(t('airOpsUpdateDoneBody'));
             dialog.setLog(state.tail || '');
             dialog.setButtons([]);
           }
@@ -229,47 +229,47 @@
           return;
         } else if (state.state === 'failed' || state.state === 'stale') {
           const failed = state.state === 'failed';
-          setVersionHint(failed ? '更新失败' : '更新无响应');
+          setVersionHint(failed ? t('airOpsUpdateFailed') : t('airOpsUpdateNoResponse'));
           if (dialog) {
-            dialog.setTitle(failed ? '更新失败' : '更新失去响应');
+            dialog.setTitle(failed ? t('airOpsUpdateFailed') : t('airOpsUpdateLostTitle'));
             dialog.setBody(failed
-              ? `更新未完成（退出码 ${state.exitCode}）。服务没有被更新，下面是完整输出：`
-              : '更新进程超过 15 分钟没有任何输出，可能已被系统结束。下面是它最后的输出：');
-            dialog.setLog(state.tail || '(无输出)');
+              ? t('airOpsUpdateIncomplete', { code: state.exitCode })
+              : t('airOpsUpdateStale'));
+            dialog.setLog(state.tail || t('airOpsNoOutput'));
             const buttons = [];
             // The run's own record of whether it was forced beats this
             // closure's copy: the dialog may be re-attached from another tab.
             const wasForced = state.force != null ? !!state.force : !!force;
             if (!wasForced && failed) {
               buttons.push({
-                label: '强制更新重试',
+                label: t('airOpsForceRetry'),
                 kind: 'danger',
                 onClick: () => { dialog.close(); startUpdate(true); },
               });
             }
-            buttons.push({ label: '关闭', onClick: () => dialog.close() });
+            buttons.push({ label: t('airOpsClose'), onClick: () => dialog.close() });
             dialog.setButtons(buttons, () => dialog.close());
           }
           return;
         } else if (state.state === 'running') {
-          const lastLine = String(state.tail || '').trim().split('\n').pop() || '正在更新…';
+          const lastLine = String(state.tail || '').trim().split('\n').pop() || t('airOpsUpdating');
           setVersionHint(lastLine.slice(0, 40), true);
           if (dialog) {
-            dialog.setBody(sawUnreachable ? '服务已回来，正在收尾…' : '正在更新，请勿关闭本机。完成后服务会自动重启。');
+            dialog.setBody(sawUnreachable ? t('airOpsServerBackFinishing') : t('airOpsUpdatingBody'));
             dialog.setLog(state.tail || '');
           }
         } else if (dialog) {
           // 'idle' / 'scheduled': no log yet (the child writes its first line
           // after ~1s). Keep waiting; the timeout below is the backstop.
-          dialog.setBody('正在启动更新…');
+          dialog.setBody(t('airOpsStartingUpdate'));
         }
 
         if (Date.now() - startedAt > MAX_WAIT_MS) {
-          setVersionHint('更新超时');
+          setVersionHint(t('airOpsUpdateTimeout'));
           if (dialog) {
-            dialog.setTitle('更新超时');
-            dialog.setBody('等待超过 20 分钟仍未结束。请到服务器上查看 logs/update.log。');
-            dialog.setButtons([{ label: '关闭', onClick: () => dialog.close() }], () => dialog.close());
+            dialog.setTitle(t('airOpsUpdateTimeout'));
+            dialog.setBody(t('airOpsUpdateTimeoutBody'));
+            dialog.setButtons([{ label: t('airOpsClose'), onClick: () => dialog.close() }], () => dialog.close());
           }
           return;
         }
@@ -284,41 +284,41 @@
 
   async function startUpdate(force) {
     const dialog = openDialog();
-    dialog.setTitle('正在更新');
-    dialog.setBody('正在启动更新…');
+    dialog.setTitle(t('airOpsUpdatingTitle'));
+    dialog.setBody(t('airOpsStartingUpdate'));
     dialog.setExtra(null);
     dialog.setLog('');
-    dialog.setButtons([{ label: '后台运行', onClick: () => dialog.close() }], () => dialog.close());
+    dialog.setButtons([{ label: t('airOpsRunInBackground'), onClick: () => dialog.close() }], () => dialog.close());
 
     let result;
     try {
       result = await raw('/api/update', { force: !!force });
     } catch (error) {
-      dialog.setTitle('无法启动更新');
-      dialog.setBody(`请求失败：${error.message}`);
-      dialog.setButtons([{ label: '关闭', onClick: () => dialog.close() }], () => dialog.close());
+      dialog.setTitle(t('airOpsCannotStart'));
+      dialog.setBody(t('airOpsRequestFailed', { message: error.message }));
+      dialog.setButtons([{ label: t('airOpsClose'), onClick: () => dialog.close() }], () => dialog.close());
       return;
     }
 
     if (result.status === 409) {
       // Someone (or a previous tab) already started one — attach to it rather
       // than reporting an error the user can do nothing about.
-      dialog.setBody('已有一个更新正在进行，正在接管其进度…');
+      dialog.setBody(t('airOpsUpdateTakeover'));
       await pollUntilDone({ force: !!(result.data && result.data.status && result.data.status.force) });
       return;
     }
     if (!result.ok) {
       const data = result.data || {};
-      dialog.setTitle('无法启动更新');
+      dialog.setTitle(t('airOpsCannotStart'));
       dialog.setBody((data.error || `HTTP ${result.status}`) + (data.code ? `\n(${data.code})` : ''));
-      dialog.setButtons([{ label: '关闭', onClick: () => dialog.close() }], () => dialog.close());
+      dialog.setButtons([{ label: t('airOpsClose'), onClick: () => dialog.close() }], () => dialog.close());
       return;
     }
 
     if (result.data && result.data.activeStreaming > 0) {
-      status(`⚠️ 有 ${result.data.activeStreaming} 个会话正在输出，更新后的重启会中断它们（在途内容已保存）`, 'warn');
+      status(`⚠️ ${t('airOpsStreamingBusyUpdate', { count: result.data.activeStreaming })}`, 'warn');
     }
-    setVersionHint('正在更新…', true);
+    setVersionHint(t('airOpsUpdating'), true);
     await pollUntilDone({ force: !!force });
   }
 
@@ -328,24 +328,24 @@
     const currentText = `v${(info && info.current) || '—'}`;
     const latestText = info && info.latest ? info.latest : null;
 
-    dialog.setTitle(updateAvailable ? '发现新版本' : '更新 MultiCC');
+    dialog.setTitle(updateAvailable ? t('airOpsNewVersionFound') : t('airOpsUpdateMultiCC'));
     dialog.setBody([
-      `当前版本：${currentText}（通道：${(info && info.channel) || 'dev'}）`,
+      t('airOpsCurrentVersion', { current: currentText, channel: (info && info.channel) || 'dev' }),
       updateAvailable
-        ? `最新版本：${latestText}`
-        : (info && info.apiError ? '最新版本：无法连接检查服务（离线）' : `最新版本：${latestText || '未知'} — 当前已是最新`),
+        ? t('airOpsLatestVersion', { latest: latestText })
+        : (info && info.apiError ? t('airOpsLatestOffline') : t('airOpsLatestIsCurrent', { latest: latestText || t('airOpsUnknown') })),
       '',
-      '更新会拉取最新代码、必要时重装依赖，并在完成后自动重启服务。',
-      '重启会短暂断开所有会话；正在输出的会话会被中断，其在途内容会先保存。',
+      t('airOpsUpdateIntro'),
+      t('airOpsUpdateSessionsNote'),
     ].join('\n'));
 
     const { label, input } = forceCheckbox();
     dialog.setExtra(label);
     dialog.setLog('');
     dialog.setButtons([
-      { label: '取消', onClick: () => dialog.close() },
+      { label: t('airOpsCancel'), onClick: () => dialog.close() },
       {
-        label: updateAvailable ? '立即更新' : '仍要更新',
+        label: updateAvailable ? t('airOpsUpdateNow') : t('airOpsUpdateAnyway'),
         kind: 'primary',
         onClick: () => { const force = input.checked; dialog.close(); startUpdate(force); },
       },
@@ -362,10 +362,10 @@
       const running = await fetchUpdateStatus();
       if (running && running.running) {
         const dialog = openDialog();
-        dialog.setTitle('正在更新');
-        dialog.setBody('已有一个更新正在进行，正在接管其进度…');
+        dialog.setTitle(t('airOpsUpdatingTitle'));
+        dialog.setBody(t('airOpsUpdateTakeover'));
         dialog.setLog(running.tail || '');
-        dialog.setButtons([{ label: '后台运行', onClick: () => dialog.close() }], () => dialog.close());
+        dialog.setButtons([{ label: t('airOpsRunInBackground'), onClick: () => dialog.close() }], () => dialog.close());
         // Not awaited: the poll can run for many minutes, and holding the
         // guard that long would leave the version row unclickable — exactly
         // when the user who backgrounded the dialog wants it back.
@@ -374,7 +374,7 @@
       }
       const info = await checkVersion();
       if (!info) {
-        status('检查更新失败，请稍后再试', 'err');
+        status(t('airOpsCheckFailedRetry'), 'err');
         return;
       }
       await confirmThenUpdate(info);
@@ -420,8 +420,8 @@
     const uptimeMs = bootReading.uptimeMs + (Date.now() - bootReading.at);
     const started = new Date(Date.now() - uptimeMs);
     time.textContent = fmtClock(started);
-    time.title = started.toLocaleString();
-    if (uptime) uptime.textContent = `已运行 ${fmtUptime(uptimeMs)}`;
+    time.title = started.toLocaleString(getLocale());
+    if (uptime) uptime.textContent = t('airOpsUptime', { uptime: fmtUptime(uptimeMs) });
   }
 
   async function loadBootTime() {
@@ -461,7 +461,7 @@
     copy.append(heading, note);
     const link = document.createElement('a');
     link.href = href;
-    link.textContent = '下载';
+    link.textContent = t('airOpsDownload');
     link.className = 'primary';
     row.append(copy, link);
     return row;
@@ -469,11 +469,11 @@
 
   async function openApkPanel() {
     const dialog = openDialog();
-    dialog.setTitle('安装包');
-    dialog.setBody('正在读取…');
+    dialog.setTitle(t('airOpsInstallPackages'));
+    dialog.setBody(t('airOpsLoading'));
     dialog.setExtra(null);
     dialog.setLog('');
-    dialog.setButtons([{ label: '关闭', onClick: () => dialog.close() }], () => dialog.close());
+    dialog.setButtons([{ label: t('airOpsClose'), onClick: () => dialog.close() }], () => dialog.close());
 
     const extra = document.createElement('div');
     extra.className = 'ops-downloads';
@@ -494,7 +494,7 @@
       if (ios && ios.exists) {
         any = true;
         extra.append(downloadRow(
-          `iOS 安装包 · ${ios.versionName || '—'}${ios.versionCode ? `+${ios.versionCode}` : ''}`,
+          `${t('airOpsIosPackage')} · ${ios.versionName || '—'}${ios.versionCode ? `+${ios.versionCode}` : ''}`,
           `${fmtSize(ios.size)} · ${fmtMtime(ios.mtime)}`,
           ios.installPage || '/ios-ota',
         ));
@@ -502,19 +502,19 @@
     } catch (_) { /* not published on this host */ }
 
     if (!any) {
-      dialog.setBody('这台主机还没有可用的安装包。运行发布脚本后回到这里即可下载。');
+      dialog.setBody(t('airOpsNoPackages'));
       return;
     }
-    dialog.setBody('直接下载安装包，或打开 iOS 的免重启安装页。');
+    dialog.setBody(t('airOpsPackagesBody'));
     dialog.setExtra(extra);
   }
 
   // ── QR ─────────────────────────────────────────────────────────────────
   async function showQr() {
     const dialog = openDialog();
-    dialog.setTitle('扫码打开 MultiCC Air');
+    dialog.setTitle(t('airOpsQrTitle'));
     dialog.setLog('');
-    dialog.setButtons([{ label: '关闭', onClick: () => dialog.close() }], () => dialog.close());
+    dialog.setButtons([{ label: t('airOpsClose'), onClick: () => dialog.close() }], () => dialog.close());
 
     let url;
     try {
@@ -556,9 +556,9 @@
           }
         }
       }
-      dialog.setBody('用手机相机扫码，在同一网络下打开这台主机的 Air 控制台。');
+      dialog.setBody(t('airOpsQrBody'));
     } else {
-      dialog.setBody(`二维码组件未加载。手动访问：${url}`);
+      dialog.setBody(t('airOpsQrModuleMissing', { url }));
     }
   }
 
@@ -571,12 +571,12 @@
     const button = el('push-toggle');
     if (!button) return;
     const denied = permission === 'denied';
-    button.textContent = subscribed ? '推送已开' : '推送通知';
+    button.textContent = subscribed ? t('airOpsPushOn') : t('airOpsPushNotify');
     button.classList.toggle('on', subscribed);
     button.disabled = denied;
     button.title = denied
-      ? '浏览器已拒绝通知权限，请在站点设置里重新允许'
-      : (subscribed ? '已开启浏览器推送；点击关闭' : '开启浏览器推送通知');
+      ? t('airOpsPushDenied')
+      : (subscribed ? t('airOpsPushUnsubscribe') : t('airOpsPushSubscribe'));
   }
 
   function bindPush() {
@@ -588,15 +588,15 @@
     if (button) {
       button.onclick = async () => {
         if (typeof root.togglePush !== 'function') {
-          status('推送模块未加载', 'err');
+          status(t('airOpsPushModuleMissing'), 'err');
           return;
         }
-        status('正在处理推送订阅…');
+        status(t('airOpsPushWorking'));
         try {
           await root.togglePush();
           status('');
         } catch (error) {
-          status(`推送订阅失败：${error.message}`, 'err');
+          status(t('airOpsPushFailed', { message: error.message }), 'err');
         }
       };
     }
@@ -610,22 +610,20 @@
 
   // ── Restart ────────────────────────────────────────────────────────────
   async function restartService() {
-    const agreed = window.confirm(
-      '确定要重启 multicc 服务吗？\n这会短暂断开所有会话，随后自动重连（在途消息会先保存）。',
-    );
+    const agreed = window.confirm(t('airOpsRestartConfirm'));
     if (!agreed) return;
     try {
       const result = await raw('/api/restart', {});
       const data = result.data || {};
       if (!result.ok) {
-        status(`重启失败：${data.error || `HTTP ${result.status}`}`, 'err');
+        status(t('airOpsRestartFailed', { error: data.error || `HTTP ${result.status}` }), 'err');
         return;
       }
       status(data.activeStreaming > 0
-        ? `⚠️ 有 ${data.activeStreaming} 个会话正在输出，将先尝试保存其在途内容，再重启`
-        : '重启请求已发送，服务即将重启…', 'warn');
+        ? `⚠️ ${t('airOpsRestartStreaming', { count: data.activeStreaming })}`
+        : t('airOpsRestartSent'), 'warn');
     } catch (error) {
-      status(`重启请求失败：${error.message}`, 'err');
+      status(t('airOpsRestartRequestFailed', { message: error.message }), 'err');
     }
   }
 

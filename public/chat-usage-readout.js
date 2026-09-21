@@ -33,6 +33,17 @@
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
   }
 
+  // 文案一律走 i18n：浏览器里用 i18n.js 的 t()，Node 测试里没有它（断言按中文写），
+  // 或者线上还是旧目录时，都回落到这里的中文默认值。两条路径都插值，结果一致。
+  function tt(key, fallback, params) {
+    const scope = typeof window !== 'undefined' ? window : null;
+    const out = scope && typeof scope.t === 'function' ? scope.t(key, params) : '';
+    if (out && out !== key) return out;
+    return Object.keys(params || {}).reduce((text, name) => (
+      text.split(`{${name}}`).join(String(params[name]))
+    ), fallback);
+  }
+
   function escapeHtml(value) {
     return String(value == null ? '' : value)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -85,8 +96,10 @@
     if (!ctx.tokens) return { text: '', title: '', pct: 0, color: '', hasBar: false, exact: true };
     if (!ctx.usable) {
       return {
-        text: '上下文 —',
-        title: `本轮跨多次 API 请求合计上报 ${compactTokens(ctx.tokens)} tokens，超过 ${k(ctx.window)} 的窗口，无法据此折算单轮上下文占用。`,
+        text: tt('usageContextOverflow', '上下文 —'),
+        title: tt('usageContextOverflowTitle',
+          '本轮跨多次 API 请求合计上报 {tokens} tokens，超过 {window} 的窗口，无法据此折算单轮上下文占用。',
+          { tokens: compactTokens(ctx.tokens), window: k(ctx.window) }),
         pct: 0,
         color: 'var(--faint)',
         hasBar: false,
@@ -95,8 +108,8 @@
     }
     if (!ctx.window) {
       return {
-        text: `上下文 ${k(ctx.tokens)}`,
-        title: '当前模型的上下文窗口未知，只能给出占用量。',
+        text: tt('usageContextNoWindow', '上下文 {used}', { used: k(ctx.tokens) }),
+        title: tt('usageContextNoWindowTitle', '当前模型的上下文窗口未知，只能给出占用量。'),
         pct: 0, color: '#8b949e', hasBar: false, exact: ctx.exact,
       };
     }
@@ -104,11 +117,14 @@
     const window = `${(ctx.window / 1000).toFixed(0)}k`;
     return {
       text: ctx.exact
-        ? `上下文 ${k(ctx.tokens)} / ${window} · ${pct.toFixed(1)}%`
-        : `上下文 ≈${k(ctx.tokens)} / ${window} · 约 ${pct.toFixed(1)}%`,
-      title: ctx.exact
-        ? '最近一次 API 请求实际带入的上下文（新增输入 + 缓存读 + 缓存写）。'
-        : '本轮跨多次 API 请求合计上报，已剔除被重复计入的缓存读取；这是上下文占用的估算上限。',
+        ? tt('usageContextLine', '上下文 {used} / {window} · {pct}%',
+          { used: k(ctx.tokens), window, pct: pct.toFixed(1) })
+        : tt('usageContextLineEstimate', '上下文 ≈{used} / {window} · 约 {pct}%',
+          { used: k(ctx.tokens), window, pct: pct.toFixed(1) }),
+      title: tt(ctx.exact ? 'usageContextMeasuredTitle' : 'usageContextEstimatedTitle',
+        ctx.exact
+          ? '最近一次 API 请求实际带入的上下文（新增输入 + 缓存读 + 缓存写）。'
+          : '本轮跨多次 API 请求合计上报，已剔除被重复计入的缓存读取；这是上下文占用的估算上限。'),
       pct,
       color: pctColor(pct),
       hasBar: true,
@@ -125,9 +141,10 @@
     const out = count(usage.output_tokens);
     if (fresh + read + write + out === 0) return null;
     return {
-      label: '本轮计费',
-      value: `新增输入 ${fmt(fresh)} · 缓存读 ${fmt(read)} · 缓存写 ${fmt(write)} · 输出 ${fmt(out)}`,
-      title: '这是计费口径：一轮里每次 API 请求都会把常驻前缀作为「缓存读」再算一遍，所以它远大于上下文占用。',
+      label: tt('usageTurnBilled', '本轮计费'),
+      value: tt('usageTurnBilledDetail', '新增输入 {fresh} · 缓存读 {read} · 缓存写 {write} · 输出 {out}',
+        { fresh: fmt(fresh), read: fmt(read), write: fmt(write), out: fmt(out) }),
+      title: tt('usageTurnBilledTitle', '这是计费口径：一轮里每次 API 请求都会把常驻前缀作为「缓存读」再算一遍，所以它远大于上下文占用。'),
     };
   }
 
@@ -135,20 +152,21 @@
     const windows = sources.providerWindows;
     if (!windows || typeof windows !== 'object') return null;
     const entries = [];
-    for (const [key, prefix] of [['today', '日'], ['week', '周'], ['month', '月']]) {
+    const periods = [['today', 'usagePeriodDay', '日'], ['week', 'usagePeriodWeek', '周'], ['month', 'usagePeriodMonth', '月']];
+    for (const [key, labelKey, fallback] of periods) {
       if (!windows[key]) continue;
       const text = formatWindow(windows[key]);
-      if (text) entries.push(`${prefix} ${text}`);
+      if (text) entries.push(`${tt(labelKey, fallback)} ${text}`);
     }
     if (!entries.length && windows.all) {
       const text = formatWindow(windows.all);
-      if (text) entries.push(`总 ${text}`);
+      if (text) entries.push(tt('usagePeriodAll', '总 {v}', { v: text }));
     }
     if (!entries.length) return null;
     return {
-      label: `${sources.providerLabel || 'Provider'} 用量`,
+      label: tt('usageProviderUsage', '{provider} 用量', { provider: sources.providerLabel || 'Provider' }),
       value: entries.join('\n'),
-      title: 'MultiCC 按供应商统计的 token 用量，与上下文占用无关。',
+      title: tt('usageProviderUsageTitle', 'MultiCC 按供应商统计的 token 用量，与上下文占用无关。'),
     };
   }
 
@@ -162,7 +180,7 @@
       traceId: String(value.traceId),
       currentTask: {
         taskId: String(current.taskId || ''),
-        taskName: String(current.taskName || current.taskId || '当前任务'),
+        taskName: String(current.taskName || current.taskId || tt('usageContextCurrent', '当前任务')),
       },
       sources,
       managedOnly: value.managedOnly === true,
@@ -191,8 +209,12 @@
     if (meta && (meta.durationText || meta.turns)) {
       const parts = [];
       if (meta.durationText) parts.push(meta.durationText);
-      if (meta.turns) parts.push(`${meta.turns} 轮`);
-      details.push({ label: '本轮耗时', value: parts.join(' · '), title: '从提交到本轮结束的墙钟时间，以及 CLI 内部的往返轮数。' });
+      if (meta.turns) parts.push(tt('usageRounds', '{n} 轮', { n: meta.turns }));
+      details.push({
+        label: tt('usageTurnDuration', '本轮耗时'),
+        value: parts.join(' · '),
+        title: tt('usageTurnDurationTitle', '从提交到本轮结束的墙钟时间，以及 CLI 内部的往返轮数。'),
+      });
     }
 
     const session = sources.sessionTokens && typeof sources.sessionTokens === 'object'
@@ -201,9 +223,10 @@
     const sessionTotal = session ? count(session.input) + count(session.output) : 0;
     if (sessionTotal > 0) {
       details.push({
-        label: '会话累计',
-        value: `${fmt(sessionTotal)} tokens（in ${fmt(session.input)} / out ${fmt(session.output)}）`,
-        title: '整个会话累计的计费用量（含每次请求重复计入的缓存读取），不是当前上下文占用。',
+        label: tt('usageSessionTotal', '会话累计'),
+        value: tt('usageSessionTotalDetail', '{total} tokens（in {input} / out {output}）',
+          { total: fmt(sessionTotal), input: fmt(session.input), output: fmt(session.output) }),
+        title: tt('usageSessionTotalTitle', '整个会话累计的计费用量（含每次请求重复计入的缓存读取），不是当前上下文占用。'),
       });
     }
 
@@ -223,48 +246,68 @@
       parts.push(`<span class="usage-ctx-meter"><span style="width:${summary.pct}%;background:${color}"></span></span>`);
     }
     if (view.contextTrace) {
-      parts.push(`<span class="usage-context-link" aria-hidden="true">⌁ 引用 ${view.contextTrace.count}</span>`);
+      parts.push(`<span class="usage-context-link" aria-hidden="true">⌁ ${tt('usageContextSources', '引用 {n}', { n: view.contextTrace.count })}</span>`);
     }
-    if (view.details.length) parts.push('<span class="usage-ctx-more" aria-hidden="true">详情</span>');
+    if (view.details.length) parts.push(`<span class="usage-ctx-more" aria-hidden="true">${tt('usageDetail', '详情')}</span>`);
     return parts.join('');
   }
 
+  // 每个来源标签是 [i18n key, 中文默认值]：键用来查目录，值在拿不到 t() 时兜底。
   const GRAPH_KIND_LABELS = {
-    parent: '图谱·父任务',
-    grandparent: '图谱·祖父任务',
-    group: '图谱·同组任务',
-    shell: '图谱·同壳前序',
-    memory: '图谱·父任务记忆',
-    task: '任务图谱',
+    parent: ['usageContextGraphParent', '图谱·父任务'],
+    grandparent: ['usageContextGraphGrandparent', '图谱·祖父任务'],
+    group: ['usageContextGraphGroup', '图谱·同组任务'],
+    shell: ['usageContextGraphShell', '图谱·同壳前序'],
+    memory: ['usageContextGraphMemory', '图谱·父任务记忆'],
+    task: ['usageContextGraphTask', '任务图谱'],
+  };
+  const MEMORY_MODE_LABELS = {
+    builtin: ['usageContextMemoryBuiltin', '记忆·预制'],
+    machine: ['usageContextMemoryMachine', '记忆·机器全局'],
+    cli: ['usageContextMemoryCli', '记忆·CLI'],
+    shared: ['usageContextMemoryShared', '记忆·目录'],
+    task: ['usageContextMemoryTask', '记忆·任务'],
+    own: ['usageContextMemoryOwn', '记忆·私有'],
+    skill: ['usageContextMemorySkill', '记忆·技能'],
+    withdrawn: ['usageContextMemoryWithdrawn', '记忆·已撤回'],
   };
 
+  function modeLabelOf(pair, fallbackKey, fallback) {
+    return pair ? tt(pair[0], pair[1]) : tt(fallbackKey, fallback);
+  }
+
   function modeLabel(mode) {
-    if (mode === 'refilled') return '按需补取';
-    if (/^memory:/.test(mode)) return `记忆·${({ builtin: '预制', machine: '机器全局', cli: 'CLI', shared: '目录', task: '任务', own: '私有', skill: '技能', withdrawn: '已撤回' })[mode.slice(7)] || '检索'}`;
-    if (/^(task|context):/.test(mode)) return mode === 'task:current' ? '当前任务信息' : '上下文规则与检查点';
+    if (mode === 'refilled') return tt('usageContextRefilled', '按需补取');
+    const memory = /^memory:(.+)$/.exec(String(mode || ''));
+    if (memory) return modeLabelOf(MEMORY_MODE_LABELS[memory[1]], 'usageContextMemoryOther', '记忆·检索');
+    if (/^(task|context):/.test(mode)) return mode === 'task:current'
+      ? tt('usageContextModeTaskCurrent', '当前任务信息')
+      : tt('usageContextModeContext', '上下文规则与检查点');
     const graph = /^graph:(.+)$/.exec(String(mode || ''));
-    if (graph) return GRAPH_KIND_LABELS[graph[1]] || '任务图谱';
-    return '初始化导入';
+    if (graph) return modeLabelOf(GRAPH_KIND_LABELS[graph[1]], 'usageContextGraphTask', '任务图谱');
+    return tt('usageContextImported', '初始化导入');
   }
 
   function sourceMessagesHtml(source) {
     if (!Array.isArray(source.messages) || !source.messages.length) return '';
     const messages = source.messages.map(message => {
-      const role = message?.role === 'user' ? '用户' : '助手';
+      const role = message?.role === 'user'
+        ? tt('usageContextRoleUser', '用户')
+        : tt('usageContextRoleAssistant', '助手');
       const raw = typeof message?.content === 'string'
         ? message.content
         : JSON.stringify(message?.content ?? '');
       return `<div class="usage-context-message"><span>${role}</span>${escapeHtml(raw)}</div>`;
     }).join('');
-    return `<details class="usage-context-details"><summary>查看 ${source.messages.length} 条引用消息</summary>${messages}</details>`;
+    return `<details class="usage-context-details"><summary>${escapeHtml(tt('usageContextViewMessages', '查看 {n} 条引用消息', { n: source.messages.length }))}</summary>${messages}</details>`;
   }
 
   // 图谱上下文来源没有「消息」，只有实际注入的那一行节选。
   function sourceExcerptHtml(source) {
     const text = typeof source?.excerpt === 'string' ? source.excerpt.trim() : '';
     if (!text) return '';
-    return `<details class="usage-context-details"><summary>查看注入节选</summary>` +
-      `<div class="usage-context-message"><span>注入</span>${escapeHtml(text)}</div></details>`;
+    return `<details class="usage-context-details"><summary>${escapeHtml(tt('usageContextViewExcerpt', '查看注入节选'))}</summary>` +
+      `<div class="usage-context-message"><span>${escapeHtml(tt('usageContextRoleInjected', '注入'))}</span>${escapeHtml(text)}</div></details>`;
   }
 
   function contextTraceHtml(trace, detail, state) {
@@ -272,15 +315,15 @@
     const sourceDetails = detail && Array.isArray(detail.sources) ? detail.sources : [];
     const byKey = new Map(sourceDetails.map(source => [source.id || `${source.mode}:${source.taskId}`, source]));
     const rows = [
-      `<div class="usage-context-source"><span class="usage-context-kind">当前任务 · 原生上下文</span>` +
+      `<div class="usage-context-source"><span class="usage-context-kind">${escapeHtml(tt('usageContextCurrentNative', '当前任务 · 原生上下文'))}</span>` +
       `<strong>${escapeHtml(trace.currentTask.taskName)}</strong><code>${escapeHtml(trace.currentTask.taskId)}</code></div>`,
       ...trace.sources.map(source => {
         const full = byKey.get(source.id || `${source.mode}:${source.taskId}`) || source;
         const isGraph = /^(graph|memory|task|context):/.test(String(source.mode || ''));
-        const meta = `${modeLabel(source.mode)}${isGraph ? '' : ` · ${Number(source.messageCount) || 0} 条消息`}` +
-          `${Number(source.estimatedTokens) > 0 ? ` · 约 ${compactTokens(source.estimatedTokens)} tokens` : ''}` +
-          `${Number(source.omittedExchanges) > 0 ? ` · 更早 ${Number(source.omittedExchanges)} 轮未带入` : ''}` +
-          `${source.retained ? ' · 沿用（本轮未重发）' : ''}${source.truncated ? ' · 已截断' : ''}${source.version ? ` · v ${String(source.version).slice(0, 12)}` : ''}`;
+        const meta = `${modeLabel(source.mode)}${isGraph ? '' : ` · ${tt('usageContextMessages', '{n} 条消息', { n: Number(source.messageCount) || 0 })}`}` +
+          `${Number(source.estimatedTokens) > 0 ? ` · ${tt('usageContextApproxTokens', '约 {n} tokens', { n: compactTokens(source.estimatedTokens) })}` : ''}` +
+          `${Number(source.omittedExchanges) > 0 ? ` · ${tt('usageContextOmitted', '更早 {n} 轮未带入', { n: Number(source.omittedExchanges) })}` : ''}` +
+          `${source.retained ? ` · ${tt('usageContextRetainedShort', '沿用（本轮未重发）')}` : ''}${source.truncated ? ` · ${tt('usageContextTruncated', '已截断')}` : ''}${source.version ? ` · v ${String(source.version).slice(0, 12)}` : ''}`;
         return `<div class="usage-context-source"><span class="usage-context-kind">${escapeHtml(meta)}</span>` +
           `<strong>${escapeHtml(source.taskName || source.taskId)}</strong><code>${escapeHtml(source.path || source.id || source.taskId)}</code>` +
           `${source.reason ? `<small>${escapeHtml(source.reason)}</small>` : ''}${sourceMessagesHtml(full)}${sourceExcerptHtml(full)}</div>`;
@@ -289,14 +332,14 @@
     let action = '';
     if (trace.sources.length && !detail) {
       action = `<button type="button" class="usage-context-load"${state.loading ? ' disabled' : ''}>` +
-        `${state.loading ? '正在读取…' : '查看引用内容'}</button>`;
+        `${state.loading ? tt('usageContextLoading', '正在读取…') : tt('usageContextViewSources', '查看引用内容')}</button>`;
     }
     if (state.error) action += `<span class="usage-context-error">${escapeHtml(state.error)}</span>`;
-    const budget = trace.budget ? `<div class="usage-context-scope">托管上下文：约 ${Number(trace.budget.used)} / ${Number(trace.budget.limit)} tokens · 沿用 ${trace.retained.length} 项 · 省略 ${trace.omitted.length} 项</div>` : '';
-    const omissions = trace.omitted.length ? `<details><summary>查看省略原因</summary>${trace.omitted.map(s => `<div>${escapeHtml(s.id)} · ${escapeHtml(s.reason)}</div>`).join('')}</details>` : '';
+    const budget = trace.budget ? `<div class="usage-context-scope">${escapeHtml(tt('usageContextBudget', '托管上下文：约 {used} / {limit} tokens', { used: Number(trace.budget.used), limit: Number(trace.budget.limit) }))} · ${escapeHtml(tt('usageContextSelection', '沿用 {kept} 项 · 省略 {omitted} 项', { kept: trace.retained.length, omitted: trace.omitted.length }))}</div>` : '';
+    const omissions = trace.omitted.length ? `<details><summary>${escapeHtml(tt('usageContextViewOmitted', '查看省略原因'))}</summary>${trace.omitted.map(s => `<div>${escapeHtml(s.id)} · ${escapeHtml(s.reason)}</div>`).join('')}</details>` : '';
     const diagnostics = trace.diagnostics.map(s => `<div class="usage-context-error">${escapeHtml(s.path || '')} ${escapeHtml(s.reason)}</div>`).join('');
-    return `<div class="usage-context-section"><div class="usage-context-title">⌁ 本轮引用来源</div>${budget}${omissions}${diagnostics}` +
-      `${rows.join('')}${action}<div class="usage-context-scope">只列出 MultiCC 可验证的引用；模型原生历史、系统提示和临时工具读取不属于逐 token 拆分。</div></div>`;
+    return `<div class="usage-context-section"><div class="usage-context-title">${escapeHtml(tt('usageContextSourcesTitle', '⌁ 本轮引用来源'))}</div>${budget}${omissions}${diagnostics}` +
+      `${rows.join('')}${action}<div class="usage-context-scope">${escapeHtml(tt('usageContextManagedScope', '这里只列出 MultiCC 可验证的引用；模型原生历史、系统提示和临时工具读取不属于逐 token 拆分。'))}</div></div>`;
   }
 
   function detailHtml(view, traceDetail = null, traceState = {}) {
@@ -307,7 +350,7 @@
       `<span class="usage-detail-value">${escapeHtml(row.value).replace(/\n/g, '<br>')}</span>` +
       '</div>'
     ));
-    const usage = rows.length ? `<div class="usage-detail-title">本轮与会话用量</div>${rows.join('')}` : '';
+    const usage = rows.length ? `<div class="usage-detail-title">${escapeHtml(tt('usageDetailTitle', '本轮与会话用量'))}</div>${rows.join('')}` : '';
     return `${usage}${contextTraceHtml(view.contextTrace, traceDetail, traceState)}`;
   }
 
@@ -361,7 +404,7 @@
         traceError = '';
         paint();
         try { traceDetail = await load(view.contextTrace); }
-        catch (error) { traceError = error?.message || '引用内容读取失败'; }
+        catch (error) { traceError = error?.message || tt('usageContextLoadFailedShort', '引用内容读取失败'); }
         traceLoading = false;
         paint();
       });
@@ -387,8 +430,8 @@
         bar.innerHTML = summaryHtml(view);
         bar.title = view.summary.title || '';
         bar.setAttribute('aria-label', view.contextTrace
-          ? `上下文占用详情，${view.contextTrace.count} 个可追溯来源`
-          : '上下文占用详情');
+          ? tt('usageContextAriaCount', '上下文占用详情，{n} 个可追溯来源', { n: view.contextTrace.count })
+          : tt('usageContextAria', '上下文占用详情'));
         if (!view.details.length && !view.contextTrace) { pinned = false; setOpen(false); } else paint();
       },
       isOpen: () => open,

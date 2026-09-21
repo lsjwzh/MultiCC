@@ -33,9 +33,12 @@ test('the Air host-ops region renders, reads light, and drives the update flow',
       headers: { 'content-type': CONTENT_TYPE[extension] || 'application/octet-stream' },
     };
   }
+  // 只留 air-ops.js 是这个用例的本意（别的一起跑会把无关请求搅进来），但 i18n 现在是
+  // 页面骨架的一部分：空中文的 t() 由 /i18n.js 提供，不装它模块一取文案就 ReferenceError。
   const html = fs.readFileSync(path.join(publicDir, 'air.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
-    .replace('</body>', '<script src="/qrcode.min.js"></script><script src="/air-ops.js"></script></body>');
+    .replace('</body>', '<script src="/i18n-catalog.js"></script><script src="/i18n.js"></script>'
+      + '<script src="/qrcode.min.js"></script><script src="/air-ops.js"></script></body>');
   routes['/'] = { body: html, headers: { 'content-type': 'text/html; charset=utf-8' } };
 
   routes['/api/version-check'] = json({ current: '1.6.10', channel: 'dev', latest: 'v1.7.0', latestVersion: '1.7.0', updateAvailable: true });

@@ -9,17 +9,17 @@
       const draft = typeof draftSave === 'function';
       const dialog = node('dialog'), form = node('form'), rows = node('div'), error = node('p');
       error.setAttribute('role', 'alert');
-      const heading = node('h2', '角色上下文'), note = node('p', draft
-        ? '创建任务时会写入这些角色，第一条消息即按此执行。'
-        : '保存后对下一条新消息生效。正在执行和已经排队的消息保留原角色。');
-      const add = node('button', '＋ 添加角色'), save = node('button', draft ? '使用这些角色' : '保存角色'), close = node('button', '取消');
-      const preset = node('select'), placeholder = node('option', '从角色库附加…'); placeholder.value = ''; preset.append(placeholder);
-      preset.setAttribute('aria-label', '从角色库附加'); preset.disabled = true;
+      const heading = node('h2', t('airRoleEditorHeading')), note = node('p', draft
+        ? t('airRoleEditorDraftNote')
+        : t('airRoleEditorSavedNote'));
+      const add = node('button', t('airRoleEditorAddRole')), save = node('button', draft ? t('airRoleEditorUseRoles') : t('airRoleEditorSaveRoles')), close = node('button', t('airRoleEditorCancel'));
+      const preset = node('select'), placeholder = node('option', t('airRoleEditorPresetPlaceholder')); placeholder.value = ''; preset.append(placeholder);
+      preset.setAttribute('aria-label', t('airRoleEditorPresetAria')); preset.disabled = true;
       add.type = close.type = 'button'; save.type = 'submit'; save.className = 'primary';
       function row(binding = { name: '', prompt: '' }) {
         if (rows.children.length >= 8) return;
-        const section = node('fieldset'), nameLabel = node('label', '角色名称'), promptLabel = node('label', '角色说明');
-        const name = node('input'), prompt = node('textarea'), remove = node('button', '移除');
+        const section = node('fieldset'), nameLabel = node('label', t('airRoleEditorNameLabel')), promptLabel = node('label', t('airRoleEditorPromptLabel'));
+        const name = node('input'), prompt = node('textarea'), remove = node('button', t('airRoleEditorRemove'));
         name.value = binding.name; name.maxLength = 80; name.required = true;
         prompt.value = binding.prompt; prompt.rows = 4; prompt.maxLength = 40000; prompt.required = true;
         remove.type = 'button'; remove.onclick = () => section.remove();
@@ -30,7 +30,7 @@
         if (!dialog.isConnected) return;
         for (const p of data.presets || []) { const option = node('option', p.name || p.id); option.value = p.id; preset.append(option); }
         preset.disabled = false;
-      }).catch(() => { placeholder.textContent = '角色库暂不可用，可手动添加'; });
+      }).catch(() => { placeholder.textContent = t('airRoleEditorPresetUnavailable'); });
       preset.onchange = async () => {
         if (!preset.value) return;
         preset.disabled = true;
@@ -55,7 +55,7 @@
         try {
           await api(`/api/air/tasks/${encodeURIComponent(taskId)}/roles`, { bindings, expectedVersion: roleBindings.version, clientMsgId: request.clientMsgId });
           dialog.close(); await onSaved();
-        } catch (e) { error.textContent = e.message === 'role_version_conflict' ? '角色已在其他页面更新，请关闭后重新打开。' : e.message; }
+        } catch (e) { error.textContent = e.message === 'role_version_conflict' ? t('airRoleEditorVersionConflict') : e.message; }
         finally { save.disabled = false; }
       };
       dialog.addEventListener('close', () => dialog.remove(), { once: true });

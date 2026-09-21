@@ -26,28 +26,45 @@
     return String(count);
   }
 
+  // 字段名走 i18n：浏览器里用 i18n.js 的 t()，Node 测试或还在用旧目录时回落到
+  // 中文默认值——断言正是按中文写的。（工厂函数拿不到包装层的 root，自己找 window。）
+  function tt(key, fallback, params) {
+    const scope = typeof window !== 'undefined' ? window : null;
+    const out = scope && typeof scope.t === 'function' ? scope.t(key, params) : '';
+    if (out && out !== key) return out;
+    return Object.keys(params || {}).reduce((text, name) => (
+      text.split(`{${name}}`).join(String(params[name]))
+    ), fallback);
+  }
+
+  const FIELD_NEW = () => tt('usageFieldNew', '新');
+  const FIELD_CACHE_READ = () => tt('usageFieldCacheRead', '缓读');
+  const FIELD_CACHE_WRITE = () => tt('usageFieldCacheWrite', '缓写');
+  const FIELD_UNKNOWN = () => tt('usageFieldUnknown', '未分');
+  const FIELD_OUT = () => tt('usageFieldOut', '出');
+
   function formatUsageWindow(value) {
     const window = normalizeWindow(value);
     if (window.inputTokens + window.outputTokens === 0) return '';
     const output = formatCompactTokens(window.outputTokens);
     if (!window.breakdownKnown) {
-      return `入(含缓存):${formatCompactTokens(window.inputTokens)}/出:${output}`;
+      return `${tt('usageFieldInputInclCache', '入(含缓存)')}:${formatCompactTokens(window.inputTokens)}/${FIELD_OUT()}:${output}`;
     }
     const unknown = window.unattributedInputTokens;
-    return `新:${formatCompactTokens(window.freshInputTokens)}` +
-      `/缓读:${formatCompactTokens(window.cacheReadTokens)}` +
-      `/缓写:${formatCompactTokens(window.cacheWriteTokens)}` +
-      `${unknown ? `/未分:${formatCompactTokens(unknown)}` : ''}/出:${output}`;
+    return `${FIELD_NEW()}:${formatCompactTokens(window.freshInputTokens)}` +
+      `/${FIELD_CACHE_READ()}:${formatCompactTokens(window.cacheReadTokens)}` +
+      `/${FIELD_CACHE_WRITE()}:${formatCompactTokens(window.cacheWriteTokens)}` +
+      `${unknown ? `/${FIELD_UNKNOWN()}:${formatCompactTokens(unknown)}` : ''}/${FIELD_OUT()}:${output}`;
   }
 
   function formatUsageCumulative(value) {
     const stat = value && typeof value === 'object' ? value : {};
-    if (!stat.breakdownKnown) return `输入含缓存 ${formatCompactTokens(stat.inputTokens)}`;
+    if (!stat.breakdownKnown) return tt('usageFieldInputWithCache', '输入含缓存 {v}', { v: formatCompactTokens(stat.inputTokens) });
     const unknown = number(stat.unattributedInputTokens);
-    return `新 ${formatCompactTokens(stat.freshInputTokens)}` +
-      ` / 缓读 ${formatCompactTokens(stat.cacheReadTokens)}` +
-      ` / 缓写 ${formatCompactTokens(stat.cacheWriteTokens)}` +
-      `${unknown ? ` / 未分 ${formatCompactTokens(unknown)}` : ''}`;
+    return `${FIELD_NEW()} ${formatCompactTokens(stat.freshInputTokens)}` +
+      ` / ${FIELD_CACHE_READ()} ${formatCompactTokens(stat.cacheReadTokens)}` +
+      ` / ${FIELD_CACHE_WRITE()} ${formatCompactTokens(stat.cacheWriteTokens)}` +
+      `${unknown ? ` / ${FIELD_UNKNOWN()} ${formatCompactTokens(unknown)}` : ''}`;
   }
 
   function safeBaseUrl(value) {

@@ -674,8 +674,16 @@ test('web usage labels distinguish fresh input and cache from legacy consumed in
   const manage = fs.readFileSync(path.join(root, 'public', 'manage.js'), 'utf8');
   const manageHtml = fs.readFileSync(path.join(root, 'public', 'manage.html'), 'utf8');
   const catalog = fs.readFileSync(path.join(root, 'public', 'provider-catalog.js'), 'utf8');
-  for (const label of [/新:/, /缓读:/, /缓写:/, /入\(含缓存\):/, /输入含缓存/]) {
-    assert.match(catalog, label);
+  // The labels moved into the i18n catalogs (provider-catalog.js only holds the
+  // keys now), so the guard is: the zh wording still distinguishes fresh input
+  // and cache from the legacy consumed-input figure, and the renderer still asks
+  // for each label by key. The rendered strings themselves are asserted in
+  // test-provider-catalog.js.
+  const zhCatalog = JSON.parse(fs.readFileSync(path.join(root, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
+  for (const key of ['usageFieldNew', 'usageFieldCacheRead', 'usageFieldCacheWrite',
+    'usageFieldInputInclCache', 'usageFieldInputWithCache']) {
+    assert.ok(zhCatalog[key], `zh.json is missing ${key}`);
+    assert.match(catalog, new RegExp(`'${key}'`), `provider-catalog.js must render ${key} through i18n`);
   }
   assert.match(chat, /const _providerCatalog = window\.MultiCCProviderCatalog/);
   assert.match(chat, /_providerCatalog\.formatUsageWindow/);

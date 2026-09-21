@@ -194,6 +194,10 @@
     },
   };
   const getLang = () => localStorage.getItem('multicc_lang') || 'zh';
+  // 日期/时间也要跟着语言走：zh-CN 的短日期是「9月21日 14:30」，英文界面里那两个
+  // 汉字就是残留。所有 Intl / toLocaleString 都传 getLocale()，不要写字面量，也
+  // 不要留空让浏览器自己挑（浏览器是中文时英文界面照样冒汉字）。
+  const getLocale = () => (getLang() === 'zh' ? 'zh-CN' : 'en-US');
 
   function t(key, params) {
     const lang = getLang();
@@ -229,6 +233,7 @@ function applyI18n(root) {
 window.I18N = I18N;
 window.t = t;
 window.getLang = getLang;
+window.getLocale = getLocale;
 window.setLang = setLang;
 window.toggleLang = toggleLang;
 window.applyI18n = applyI18n;
