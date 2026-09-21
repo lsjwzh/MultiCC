@@ -1,7 +1,7 @@
 'use strict';
 
 function appTypeForCli(cli) {
-  if (cli === 'codex') return 'codex';
+  if (cli === 'codex' || cli === 'codex-exp') return 'codex';
   if (cli === 'claude' || cli === 'opencode') return 'claude';
   return null;
 }

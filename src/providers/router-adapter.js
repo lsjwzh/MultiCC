@@ -122,7 +122,7 @@ function createReadOnlyShadowRouter({ router, providerStore, codexHomesDir } = {
     API_VERSION: router.API_VERSION,
     CAPABILITIES: router.CAPABILITIES,
     resolveSpawnEnv(input) {
-      if (input.cli !== 'codex') return resolveSpawnEnv(input);
+      if (!['codex', 'codex-exp'].includes(input.cli)) return resolveSpawnEnv(input);
       if (!input.providerId) {
         return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: null };
       }

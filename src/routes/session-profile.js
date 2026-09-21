@@ -282,7 +282,7 @@ function createSessionProfileRoutes(rawDeps) {
       if (hasProviderSelectionPatch) {
         s.providerSelection = preparedProviderSelection.value;
         if (preparedPrimaryProvider && !hasProviderPatch) {
-          if (s.cli === 'codex' && s.cliSessionId
+          if ((s.cli === 'codex' || s.cli === 'codex-exp') && s.cliSessionId
               && s.provider !== preparedPrimaryProvider.providerId) {
             synchronizeRoute({
               logicalSessionId: s.id,
@@ -305,7 +305,7 @@ function createSessionProfileRoutes(rawDeps) {
         // Providerless Codex retains the real ~/.codex OAuth store. At this
         // idle route boundary synchronize only the exact native rollout with
         // the canonical managed-session root before changing its authority.
-        if (s.cli === 'codex' && s.cliSessionId && prevProvider !== v.value) {
+        if ((s.cli === 'codex' || s.cli === 'codex-exp') && s.cliSessionId && prevProvider !== v.value) {
           synchronizeRoute({
             logicalSessionId: s.id,
             nativeSessionId: s.cliSessionId,
@@ -396,7 +396,7 @@ function createSessionProfileRoutes(rawDeps) {
         s.subagent = checked.value;
         // A warm streaming process must relaunch to pick up CLAUDE_CODE_SUBAGENT_MODEL.
         if ((s.cli || 'claude') === 'claude') closeStream();
-        const subApp2 = (s.cli === 'codex') ? 'codex' : 'claude';
+        const subApp2 = (s.cli === 'codex' || s.cli === 'codex-exp') ? 'codex' : 'claude';
         const saName = s.subagent
           ? `${providerRouterRuntime.getProviderSummary(subApp2, s.subagent.providerId)?.name || s.subagent.providerId} / ${s.subagent.model}`
           : '默认(随主)';

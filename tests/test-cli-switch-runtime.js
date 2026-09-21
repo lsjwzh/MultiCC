@@ -228,7 +228,7 @@ test('route validation preserves missing, system, terminal and unsupported respo
   harness = createHarness();
   res = await harness.invoke({ body: { cli: 'unknown' } });
   assert.equal(res.statusCode, 400);
-  assert.match(res.body.error, /claude, codex, opencode, zcode, qoder/);
+  assert.match(res.body.error, /claude, codex, codex-exp, opencode, zcode, qoder/);
 });
 
 test('same CLI is a no-op; unavailable targets reject and busy targets defer', async () => {
@@ -392,6 +392,7 @@ test('install-specs returns the static official command table', async () => {
   assert.deepEqual(res.body.specs, {
     claude: { auto: true, command: 'npm install -g @anthropic-ai/claude-code', display: 'npm install -g @anthropic-ai/claude-code' },
     codex: { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
+    'codex-exp': { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
     opencode: { auto: true, command: 'npm install -g opencode-ai', display: 'npm install -g opencode-ai' },
     qoder: { auto: true, command: 'curl -fsSL https://qoder.cn/install | bash', display: 'curl -fsSL https://qoder.cn/install | bash' },
     zcode: { auto: false, manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)' },
@@ -830,4 +831,3 @@ test('a successful upgrade invalidates both caches so the badge clears on the ne
   assert.equal(after.body.versions.claude.updateAvailable, false);
   assert.equal(after.body.updateCount, 0);
 });
-

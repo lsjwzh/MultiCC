@@ -83,7 +83,7 @@ class ModelChipState extends State<ModelChip> {
       setState(() => _runtime = runtime);
     } catch (_) {}
     try {
-      if (selectedCli == SessionCli.codex) {
+      if (selectedCli.isCodexFamily) {
         await CodexModelsService(
           settings: widget.settings,
         ).load(forceRefresh: refreshCodex);
@@ -140,7 +140,7 @@ class ModelChipState extends State<ModelChip> {
       }
     }
     if (model == null || model.isEmpty) return '默认';
-    if (s.cli == SessionCli.codex) return CodexModelsService.labelFor(model);
+    if (s.cli.isCodexFamily) return CodexModelsService.labelFor(model);
     return modelDisplayName(s.cli, model, aliasMap: _aliasMapFor(s.provider));
   }
 

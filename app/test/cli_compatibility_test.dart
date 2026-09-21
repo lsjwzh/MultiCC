@@ -95,9 +95,14 @@ void main() {
         SessionCli.codex.effortOptions,
         ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
       );
+      expect(tryParseCli('codex-exp'), SessionCli.codexExp);
+      expect(SessionCli.codexExp.isCodexFamily, isTrue);
+      expect(SessionCli.codexExp.supportsSubagent, isTrue);
+      expect(SessionCli.codexExp.poolKey, 'codex');
 
       expect(SessionCli.opencode.supportsAgent, isTrue);
       expect(SessionCli.opencode.supportsSubagent, isFalse);
+      expect(SessionCli.opencode.poolKey, 'opencode');
       expect(SessionCli.opencode.effortFieldLabel, 'Variant');
       expect(SessionCli.opencode.effortOptions, contains('minimal'));
 
@@ -107,6 +112,7 @@ void main() {
       expect(SessionCli.zcode.effortOptions, isEmpty);
 
       expect(SessionCli.qoder.supportsProvider, isFalse);
+      expect(SessionCli.qoder.poolKey, 'qoder');
       expect(SessionCli.qoder.supportsAgent, isTrue);
       expect(SessionCli.qoder.supportsSubagent, isFalse);
       expect(SessionCli.qoder.effortFieldLabel, 'Reasoning Effort');

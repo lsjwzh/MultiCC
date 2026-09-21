@@ -129,9 +129,10 @@ async function deliverAfterPendingMemory(pendingMemory, emitProgress, deliver) {
   }
 }
 
-function appendAdapterAssistantText(current, text) {
+function appendAdapterAssistantText(current, text, options = {}) {
   const prior = String(current || '');
   const next = String(text || '');
+  if (options.delta === true) return `${prior}${next}`;
   return prior ? `${prior}\n\n${next}` : next;
 }
 
@@ -767,7 +768,7 @@ function createChatTurnEngine(deps) {
         turnProgressHeartbeat.updatePhase(sessionName, turn.turnId, 'thinking');
         if (!evt.text) continue;
         cs.currentAssistantText = redactProviderRouteCapability(
-          appendAdapterAssistantText(cs.currentAssistantText, evt.text),
+          appendAdapterAssistantText(cs.currentAssistantText, evt.text, { delta: evt.delta === true }),
         );
         forward(markReplaySafeAssistantEnvelope({
           type: 'assistant',
@@ -850,20 +851,27 @@ function createChatTurnEngine(deps) {
         // result, signature or raw provider envelope crosses this boundary.
         const reasoningProgress = adapterReasoningProgressEvent(evt);
         if (reasoningProgress) forward(reasoningProgress);
-        const tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id, result: evt.text || '' };
-        cs.currentToolCalls.push(tool);
-        getBackgroundTaskRuntime().recordMainToolUseId(sessionName, evt.id);
-        forward({
-          type: 'assistant',
-          message: { content: [{ type: 'tool_use', name: 'Thinking', id: evt.id, input: tool.input }] },
-        });
+        let tool = evt.id && cs.currentToolCalls.find(item => item.id === evt.id);
+        if (tool && evt.snapshot === true) {
+          tool.input = { text: evt.text || '' };
+          tool.result = evt.text || '';
+        } else {
+          tool = { name: 'Thinking', input: { text: evt.text || '' }, id: evt.id, result: evt.text || '' };
+          cs.currentToolCalls.push(tool);
+          getBackgroundTaskRuntime().recordMainToolUseId(sessionName, evt.id);
+        }
+        forward({ type: 'assistant',
+          message: { content: [{ type: 'tool_use', name: 'Thinking', id: evt.id, input: tool.input }] } });
         // codex reasoning arrives complete (no partial stream), so pair it with a
         // tool_result immediately — otherwise the Thinking card is stuck showing
         // 「running...」forever because no result ever follows.
-        forward({
-          type: 'user',
-          message: { content: [{ type: 'tool_result', tool_use_id: evt.id, content: evt.text || '', is_error: false }] },
-        });
+        if (evt.delta !== true || evt.completed === true) {
+          forward({
+            type: 'user',
+            message: { content: [{ type: 'tool_result', tool_use_id: evt.id, content: evt.text || '', is_error: false }] },
+          });
+          tool.endedAt = Date.now();
+        }
         continue;
       }
       if (evt.type === 'complete') {
@@ -1611,7 +1619,7 @@ function createChatTurnEngine(deps) {
           subagent: persisted.subagent, port: getPort(),
           officialOAuth: getClaudeOfficialViaProxy(),
         });
-        if (persisted.cli === 'codex') {
+        if (persisted.cli === 'codex' || persisted.cli === 'codex-exp') {
           const proxyRequired = providers.codexProxyConfigRequired({
             providerId: binding.providerId,
             subagent: persisted.subagent,

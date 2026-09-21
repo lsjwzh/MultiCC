@@ -192,7 +192,7 @@ function createOfficialImageBridge({
   const active = new Map();
 
   function providerFor(session) {
-    if (!session || session.cli !== 'codex' || !session.provider) return null;
+    if (!session || !['codex', 'codex-exp'].includes(session.cli) || !session.provider) return null;
     const provider = getProvider('codex', session.provider);
     return isOfficialCodexOAuthProvider(provider) ? provider : null;
   }

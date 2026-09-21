@@ -12,6 +12,20 @@ reasoning 完整到达特判、断流续跑）。把 codex 链路的接缝从 `e
 
 代价是接入一个 `[experimental]` 协议。因此方案是**分阶段 + 版本护栏 + 可回退**，不是切换。
 
+### 0.1 实验实现状态（2026-09-21）
+
+第一阶段已作为独立 Chat CLI `codex-exp` 落地，现有 `codex` 仍原样走 `exec --json`：
+
+- 每轮启动 `codex app-server --listen stdio://`，首次 `thread/start`，续轮
+  `thread/resume { excludeTurns: true }`，收到 `turn/completed` 后退出。
+- `initialize` 强制 Codex `>=0.154.0`；不满足时本轮明确失败。回退方式是切回独立的
+  `codex` CLI，不在同一轮静默改协议。
+- 原生 assistant delta、reasoning delta、command/MCP tool 事件、token usage 与
+  `item/tool/requestUserInput` 已投影到现有中性事件层。
+- v1 保持与旧 Codex 相同的 `approvalPolicy: never`、`sandbox: danger-full-access`；
+  交互审批和常驻双向 runner 留到下一阶段。
+- `codex-exp` 与 `codex` 各自保存 native thread 状态，但复用同一个 Codex Provider / Responses 路由池。
+
 ## 1. 先纠正问题的框架
 
 「不走 spawn，把自己当 TUI」这个提法里的**唯一变量搞错了位置**：

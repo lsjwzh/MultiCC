@@ -59,7 +59,7 @@ test('provider summaries are whitelisted and credential material is discarded', 
     hasToken: false,
     isOfficial: true,
   });
-  assert.deepEqual(oauthOnly.compatibleClis, ['codex', 'opencode'],
+  assert.deepEqual(oauthOnly.compatibleClis, ['codex', 'codex-exp', 'opencode'],
     'ZCode cannot replay another CLI OAuth subscription');
 
   const hostileOAuthDto = catalog.normalizeProvider({
@@ -69,9 +69,9 @@ test('provider summaries are whitelisted and credential material is discarded', 
     apiFormat: 'openai_responses',
     baseUrl: '',
     hasToken: false,
-    compatibleClis: ['codex', 'opencode', 'zcode'],
+    compatibleClis: ['codex', 'codex-exp', 'opencode', 'zcode'],
   });
-  assert.deepEqual(hostileOAuthDto.compatibleClis, ['codex', 'opencode'],
+  assert.deepEqual(hostileOAuthDto.compatibleClis, ['codex', 'codex-exp', 'opencode'],
     'the client boundary also rejects an injected ZCode OAuth compatibility flag');
 });
 
