@@ -4,6 +4,17 @@
 
 它为什么是唯一的形态：桌面版（Electron）与 Homebrew 都覆盖不到老 macOS，而 git pull + npm install 的装法要求目标机器有 git、有 Node、还能现场装依赖——这三件事在用户机器上都不该是前提。
 
+独立包不是 macOS 专用，当前 Release 固定构建五个目标：
+
+| 系统 | 架构 | 压缩格式 | 原生安装入口 |
+|------|------|----------|--------------|
+| macOS | Intel x64 / Apple Silicon arm64 | `.tar.gz` | `install.sh` |
+| Linux | x64 / arm64 | `.tar.gz` | `install.sh` |
+| Windows | x64 | `.zip` | `install.ps1` |
+
+五个包都由 `scripts/standalone-bundle.js` 生成，里面的服务端、Web UI、manifest、
+监管器、升级器与命令行完全相同；不同的只有官方 Node 运行时二进制、压缩格式和操作系统启动包装。
+
 | 路径 | 最低系统版本 | 老机器（macOS 11/12，含 Mac Pro 2013） |
 |------|-------------|--------------------------------------|
 | 桌面版 Electron 44 | macOS 13+（Chromium 152） | ❌ 装不上 |
@@ -13,10 +24,18 @@
 ## 安装（一行命令，无需任何参数）
 
 ```bash
+# macOS / Linux
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
 ```
 
-URL 里的 tag 就是安装的版本。脚本把整条链路一次做完：下载对应平台的独立包 → 校验 `.sha256` → 解压到稳定的 `~/MultiCC` → 在 macOS 清除下载隔离标记 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）→ 启动并等待 `/readyz` → 打开浏览器。命令返回时界面已经能用；目标机器不需要 Node、npm 或 git。
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.ps1 | iex
+```
+
+URL 里的 tag 就是安装的版本。两个脚本只负责各系统必须不同的下载、校验和解压；装好后全部进入同一个包内 `multicc` CLI。整条链路一次完成：下载对应平台的独立包 → 校验 `.sha256` → 解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）→ 在 macOS 清除下载隔离标记 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）→ 可选注册登录自启 → 启动并等待 `/readyz` → 打开浏览器。命令返回时界面已经能用；目标机器不需要 Node、npm、git、Homebrew、Visual Studio 或 Xcode。
+
+Windows 不是另一套产品：它下载 `multicc-standalone-<版本>-win32-x64.zip`，包内仍是同一个 `app-server/`、`launcher/`、manifest、升级器和固定 Node 22 运行时。PowerShell 只是 Windows 自带的薄安装外壳，等价于 macOS/Linux 的 `install.sh`。
 
 ```bash
 # 想装到别处（默认 ~/MultiCC）
@@ -48,6 +67,10 @@ curl -sSL .../install.sh | bash -s -- --no-open
 | `--no-open` | 关 | 启动服务，但不打开浏览器 |
 | `--no-apk`、`--branch <tag>`、`--no-clone` | — | 旧命令行的兼容位：`--branch` 等价于 `--version`，`--no-clone` 等价于 `--from .`（从当前目录装），`--no-apk` 只打印一句提示（安装从来不构建 APK） |
 
+Windows 对应参数为 `-InstallDir`、`-Version`、`-From`、`-AccessToken`、
+`-Port`、`-NoService`、`-NoStart`、`-NoOpen`。无参数时使用上面的一行命令；
+需要传参时下载 `install.ps1` 后在 PowerShell 里执行。
+
 脚本会拒绝非空的非 MultiCC 目录，也会拒绝校验和不匹配或缺少运行时的包（宁可失败，也不装一个装不起来的包）。重复安装同一个目录是**原地替换**：先停掉在跑的实例、把旧目录挪到 `.old-<pid>` 作为回滚点，再改名就位；失败会把旧目录还原。
 
 装完脚本会直接启动并打开界面，同时打印实际 URL、访问令牌和日常命令（都在安装目录下运行）。若启动未通过就绪检查，脚本会保留已安装文件、给出日志命令并返回失败，而不是把“解压成功”误报成“已经可用”。
@@ -66,7 +89,7 @@ curl -sSL .../install.sh | bash -s -- --no-open
 | `./multicc log -f` | 跟随日志 |
 | `./multicc config get\|set\|unset\|list\|path` | 读写数据目录里的 `multicc.env`（`list` 会把令牌打码） |
 | `./multicc update [--check]` | 下载并安装最新 release（数据不受影响） |
-| `./multicc service install\|uninstall\|status` | 开机自启（macOS launchd / Linux systemd user；Windows 不支持） |
+| `./multicc service install\|uninstall\|status` | 登录自启（macOS launchd / Linux systemd user / Windows Startup） |
 | `./multicc version` | 打印已安装版本 |
 
 通用选项：`--port <n>`、`--data <dir>`（等价于 `MULTICC_STANDALONE_HOME`，用于同机多实例或 U 盘安装）、`--no-open`。

@@ -21,6 +21,12 @@ function installVersions(relative) {
     .map(match => ({ url: match[1] }));
 }
 
+function windowsInstallVersions(relative) {
+  const source = read(relative);
+  return [...source.matchAll(/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/v(\d+\.\d+\.\d+)\/install\.ps1/g)]
+    .map(match => ({ url: match[1] }));
+}
+
 test('public stable install commands use package.json as their version source', () => {
   for (const relative of ['README.md', 'README.zh.md', 'docs/installation.md']) {
     const commands = installVersions(relative);
@@ -28,12 +34,22 @@ test('public stable install commands use package.json as their version source', 
     for (const command of commands) {
       assert.equal(command.url, pkg.version, `${relative} install tag drifted`);
     }
+    const windowsCommands = windowsInstallVersions(relative);
+    assert.ok(windowsCommands.length > 0, `${relative} must publish a stable Windows install command`);
+    for (const command of windowsCommands) {
+      assert.equal(command.url, pkg.version, `${relative} Windows install tag drifted`);
+    }
   }
 
   const installer = read('install.sh');
   const declared = installer.match(/^INSTALLER_VERSION="([^"]+)"/m);
   assert.ok(declared, 'install.sh must declare INSTALLER_VERSION');
   assert.equal(declared[1], pkg.version, 'installer version drifted from package.json');
+
+  const windowsInstaller = read('install.ps1');
+  const windowsDeclared = windowsInstaller.match(/^\$InstallerVersion\s*=\s*'([^']+)'/m);
+  assert.ok(windowsDeclared, 'install.ps1 must declare InstallerVersion');
+  assert.equal(windowsDeclared[1], pkg.version, 'Windows installer version drifted from package.json');
 });
 
 test('tag releases cannot bypass the relay-transparency regression gate', () => {
