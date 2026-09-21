@@ -3,7 +3,9 @@
   async function open({ taskId, api, notice }) {
     if (!taskId) return false;
     try {
-      await api(`/api/air/tasks/${encodeURIComponent(taskId)}/open`);
+      const entry = await api(`/api/air/tasks/${encodeURIComponent(taskId)}/open`);
+      root.__multiccAirTaskOpen = entry;
+      root.dispatchEvent(new CustomEvent('multicc-air-task-open', { detail: entry }));
       return true;
     } catch (error) {
       // Old hosts have no lightweight route; their chat-shell bootstrap still

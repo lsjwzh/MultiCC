@@ -20,15 +20,11 @@
     const requested = params.get('view');
     if (requested === 'directories') return 'library';
     if (requested === 'schedules') return 'schedules';
-    // 控制台是盖在原页面上的一层，不是一种页面模式。/manage 的入口会跳到
-    // ?view=overview，那个地址现在表示「打开控制台」，而不是「切到控制台页」。
     if (requested === 'overview') return 'tasks';
-    // 「跨目录活动」併进控制台之后，旧链接落在控制台上，而不是变成一个打不开的地址。
     if (requested === 'activity') return 'tasks';
     if (adminModes.has(requested)) return requested;
     return 'tasks';
   };
-  // 两个老入口都是「打开控制台」：控制台是盖在原页面上的一层，不是一种页面模式。
   // 跨目录看任务这件事现在只有这一个入口，所以 view=activity 和 view=overview 同义。
   let consoleOpen = ['overview', 'activity'].includes(initialParams.get('view'));
   let paletteOpen = false;
@@ -41,6 +37,7 @@
   let pinSignature = '';
   let directoryId = initialParams.get('dir');
   let taskId = initialParams.get('task');
+  window.addEventListener('multicc-air-task-open', () => { syncFrame(); });
   let entry = null;
   let mode = modeFrom(initialParams);
   let scheduleTasks = [];
@@ -2508,10 +2505,11 @@
       setComposerBand(doc, row, false);
       return;
     }
-    const pending = entry?.configuration?.pendingConfiguration;
+    const configEntry = entry?.task?.id === taskId && entry.configuration ? entry : window.__multiccAirTaskOpen?.taskId === taskId ? window.__multiccAirTaskOpen : null;
+    const pending = configEntry?.configuration?.pendingConfiguration;
     const shown = pending
-      ? { ...entry.configuration, ...(pending.profile || {}), cli: pending.cli || entry.configuration.cli }
-      : entry?.configuration;
+      ? { ...configEntry.configuration, ...(pending.profile || {}), cli: pending.cli || configEntry.configuration.cli }
+      : configEntry?.configuration;
     // `shown` is undefined for a task that carries no configuration at all — a
     // missing field must not take the whole render down with it, so every read
     // goes through `?.`.
@@ -2521,12 +2519,12 @@
     const routeName = shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
       : providerDisplayName((pending?.providerName || shown?.providerName || shown?.provider) || '') || t('airQuickDefaultRoute');
-    ai.hidden = !entry?.sessionId;
-    ai.disabled = !entry || entry.readOnly;
+    ai.hidden = !configEntry?.sessionId;
+    ai.disabled = !configEntry || configEntry.readOnly;
     ai.title = t('airTaskAiTitle');
-    const roleCount = entry?.roleBindings?.bindings?.length || 0;
-    role.hidden = !entry?.roleBindings;
-    role.disabled = !entry || entry.readOnly;
+    const roleCount = configEntry?.roleBindings?.bindings?.length || 0;
+    role.hidden = !configEntry?.roleBindings;
+    role.disabled = !configEntry || configEntry.readOnly;
     role.textContent = roleCount ? t('airQuickRoleCount', { n: roleCount }) : t('airQuickAddRole');
     role.title = t('airTaskRoleTitle');
     // 先把这条带子显出来再量宽度：隐藏时量到的 clientWidth 是 0，那样跑马灯得
@@ -2544,11 +2542,13 @@
     if (!controls || frameComposerBound === controls.doc) return;
     frameComposerBound = controls.doc;
     controls.ai.onclick = () => {
-      if (entry?.sessionId && !entry.readOnly) window.MultiCCAirSettings.configuration(entry, data.clis, refreshEntry);
+      const configEntry = entry?.task?.id === taskId && entry.configuration ? entry : window.__multiccAirTaskOpen;
+      if (configEntry?.sessionId && !configEntry.readOnly) window.MultiCCAirSettings.configuration(configEntry, data.clis, refreshEntry);
     };
     controls.role.onclick = () => {
-      if (entry?.roleBindings && !entry.readOnly) {
-        window.MultiCCAirRoles.open({ taskId, roleBindings: entry.roleBindings, api, onSaved: refreshEntry });
+      const configEntry = entry?.task?.id === taskId && entry.configuration ? entry : window.__multiccAirTaskOpen;
+      if (configEntry?.roleBindings && !configEntry.readOnly) {
+        window.MultiCCAirRoles.open({ taskId, roleBindings: configEntry.roleBindings, api, onSaved: refreshEntry });
       }
     };
   }
