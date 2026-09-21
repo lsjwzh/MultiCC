@@ -104,6 +104,7 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
   // 打开对话只核验轻量绑定；含审计历史的详情只在用户展开详情面板时读取。
   assert.match(openEntry, /\/api\/air\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/open/);
   assert.match(source, /MultiCCAirTaskEntry\?\.open\(\{ taskId, api, notice \}\)/);
+  assert.match(source, /window\.__multiccAirTaskOpen\?\.taskId === taskId/);
   assert.match(source, /taskId && !\$\('task-details'\)\.hidden\s*\? await refreshEntry\(\) : false/);
   assert.doesNotMatch(source, /void refreshEntry\(\);/, '导航不能再先下载完整详情');
   assert.match(source, /if \(snapshot\.unchanged && !entryChanged\) return;/);

@@ -180,8 +180,19 @@ function mountAirRoutes(app, deps) {
     const record = deps.records.get(targetId);
     const allowed = record?.kind === 'chat' && !record.taskExecutionSlot
       && !['aux', 'gateway'].includes(record.type);
+    const pending = record?.pendingConfiguration || null;
+    let roleBindings = null;
+    try { roleBindings = deps.shell.roleBindings(req.params.id); } catch (_) {}
     return { ok: true, taskId: req.params.id, readOnly: entry.readOnly,
       sessionId: entry.sessionId, sourceSessionId: entry.sourceSessionId,
+      configuration: allowed ? {
+        cli: record.cli, model: record.model, effectiveModel: deps.effectiveModel?.(record) || record.model || null,
+        effort: record.effort, provider: record.provider || null,
+        providerName: deps.providerName?.(record) || record.provider || null,
+        providerSelection: record.providerSelection || null, subagent: deps.serializeSubagent?.(record.subagent) || null,
+        pendingConfiguration: pending ? { ...pending, providerName: deps.providerName?.({ cli: pending.cli || record.cli, provider: pending.profile?.provider || null }) || null } : null,
+      } : null,
+      roleBindings,
       session: allowed ? {
         id: record.id, kind: 'chat', dirId: record.dirId, label: record.label,
         cli: record.cli, cwd: record.worktreePath || deps.directories.get(record.dirId)?.path || '',
