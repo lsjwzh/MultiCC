@@ -2,17 +2,12 @@
   'use strict';
 
   const $ = id => document.getElementById(id);
-  // 内置官方供应商的名字（'Codex 官方'）是服务端写进 provider 记录的**数据**，
-  // 前端按身份在渲染时翻译，历史记录里的中文才不会再漏出来；见
-  // public/provider-catalog.js。catalog 没加载时原样返回，不至于把药丸打空。
   const providerDisplayName = name => {
     const api = window.MultiCCProviderCatalog;
     return api && api.providerDisplayName ? api.providerDisplayName(name) : name;
   };
   function readRouteParams() {
     const params = new URLSearchParams(location.search);
-    // Retired planner bookmarks open the current console, including on an
-    // already-running server that still has the old /manage redirect loaded.
     if (params.get('view') === 'planner') {
       params.set('view', 'overview');
       history.replaceState(history.state, '', `${location.pathname}?${params}${location.hash}`);
@@ -277,17 +272,21 @@
     $('details-toggle').setAttribute('aria-expanded', 'false');
     $('task-state').setAttribute('aria-expanded', 'false');
   }
-  function toggleDetails(value = $('task-details').hidden) {
+  async function toggleDetails(value = $('task-details').hidden) {
     if (!taskId) return;
-    $('task-details').hidden = !value;
-    $('details-toggle').setAttribute('aria-expanded', String(value));
-    $('task-state').setAttribute('aria-expanded', String(value));
+    if (!value) return closeDetails();
+    $('task-details').hidden = false;
+    $('details-toggle').setAttribute('aria-expanded', 'true');
+    $('task-state').setAttribute('aria-expanded', 'true');
+    if (entry?.task?.id === taskId) return;
+    $('delivery-card').hidden = false;
+    $('delivery-title').textContent = t('airHeaderLoadingState');
+    $('delivery-text').textContent = '';
+    await refreshEntry();
   }
 
   // ── 控制台：从左侧展开的一层 ────────────────────────────────────────────
-  // 打开它不改地址、不卸载当前任务、不重建任何东西 —— 所以关掉能回到离开
-  // 时的原处。地址里唯一的痕迹是 /manage 的旧入口 ?view=overview，关掉的
-  // 时候顺手抹平，免得刷新又弹出来。
+  // 打开不改地址、不卸载任务；/manage 的旧 view=overview 入口在关闭时一并抹平。
   function applyConsole(open) {
     consoleOpen = !!open;
     document.body.classList.toggle('console-open', consoleOpen);
@@ -432,7 +431,7 @@
     else history.pushState(state, '', routeUrl());
     closeNav();
     render();
-    void refreshEntry();
+    void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
   }
   function setMode(next) {
     // 控制台不再是一种页面模式：任何还写着 setMode('overview') 的入口都换成
@@ -1537,6 +1536,18 @@
 
   function renderHeader(dir) {
     const selectedEntry = entry?.task?.id === taskId ? entry : null;
+    const listedTask = taskId ? data?.tasks?.find(task => task.id === taskId) : null;
+    const headerEntry = selectedEntry && listedTask ? {
+      ...selectedEntry,
+      status: selectedEntry.task.status ? selectedEntry.status : null,
+      task: { ...selectedEntry.task, title: listedTask.title || selectedEntry.task.title },
+      execution: {
+        ...selectedEntry.execution,
+        busy: isRunningTask(listedTask),
+        status: listedTask.runState || selectedEntry.execution?.status,
+      },
+    } : selectedEntry;
+    const selectedTask = headerEntry?.task || listedTask;
     const adminHeadings = {
       // 「谁在等我」的整页。控制台那一格只放最近更新的几条，这里是完整清单。
       attention: [t('airCrumbConsole'), t('airAdminAttention'), t('airAdminAttentionHint')],
@@ -1578,15 +1589,20 @@
       $('task-state').textContent = t('airHeaderSchedulesHint');
     } else if (taskId) {
       $('task-breadcrumb').textContent = t('airCrumbDirTask', { dir: dir?.name || t('airWorkspace') });
-      $('task-title').textContent = selectedEntry?.task.title || t('airHeaderLoadingTask');
-      if (selectedEntry) renderStateSummary($('task-state'), taskStateSegments(selectedEntry));
+      $('task-title').textContent = selectedTask?.title || t('airHeaderLoadingTask');
+      if (headerEntry) renderStateSummary($('task-state'), taskStateSegments(headerEntry));
+      else if (listedTask) renderStateSummary($('task-state'), taskStateSegments({
+        task: listedTask, messages: [], execution: {
+          busy: isRunningTask(listedTask), status: listedTask.runState || 'idle',
+        },
+      }));
       else $('task-state').textContent = t('airHeaderLoadingState');
     } else {
       $('task-breadcrumb').textContent = t('airCrumbDirLibrary');
       $('task-title').textContent = dir?.name || t('airHeaderNoDirectory');
       $('task-state').textContent = dir?.path || t('airHeaderNoDirectoryHint');
     }
-    applyTaskTitleEditing(selectedEntry?.task || null);
+    applyTaskTitleEditing(selectedTask || null);
     $('directory-memo').hidden = !dir || mode !== 'tasks' || !!taskId;
     for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share', 'pin-task',
       'details-toggle', 'chat-more']) $(id).hidden = !taskId;
@@ -2137,9 +2153,11 @@
   }
 
   function openTaskTitleDialog() {
-    if (!taskId || !entry?.task || document.querySelector('.rename-task-dialog')) return;
+    const task = entry?.task?.id === taskId
+      ? entry.task : data?.tasks?.find(candidate => candidate.id === taskId);
+    if (!taskId || !task || document.querySelector('.rename-task-dialog')) return;
     const selectedTaskId = taskId;
-    const currentTitle = String(entry.task.title || '').trim();
+    const currentTitle = String(task.title || '').trim();
     const dialog = node('dialog', null, 'rename-task-dialog');
     const form = node('form');
     form.append(node('span', 'TASK TITLE', 'eyebrow'), node('h2', t('airTitleDialogTitle')));
@@ -2634,9 +2652,10 @@
         // 浮动完成条三处消费。置于 render() 之前，未读标记才能随本轮绘制即时生效。
         taskNotify?.onSnapshot(data.tasks, taskId);
         render();
+        if (taskId) void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
       }
-      // 快照没变不等于对话没变：任务详情有自己的 ETag，照旧问一次（多半也是 304）。
-      const entryChanged = await refreshEntry();
+      const entryChanged = taskId && !$('task-details').hidden
+        ? await refreshEntry() : false;
       if (entryChanged === null) failed = true;
       // 定时任务与控制台概览只在真的有新数据时重画，否则每 4 秒白建一遍 DOM。
       if (snapshot.unchanged && !entryChanged) return;
@@ -2728,7 +2747,6 @@
     } finally { lidSleepBusy = false; }
   }
   if (lidSleepRow) lidSleepRow.onclick = () => { void toggleLidSleep(); };
-  // 展开「更多与系统」时对一次状态：这个开关在别处（设置中心、manage 页）也能改。
   const sideMore = $('side-more');
   if (sideMore) sideMore.addEventListener('toggle', () => { if (sideMore.open) void loadLidSleepRow(); });
   $('directory-search').oninput = renderDirectories;
@@ -2761,7 +2779,6 @@
     event.preventDefault();
     openTaskTitleDialog();
   };
-  // 点里面的哪一件工具都算用过了：浮层再晾在那儿，只会挡住它刚刚改的那一屏 ——
   // 「更多」还会在对话帧里开自己的菜单，两层叠着更乱。用捕获阶段收：那件工具自己
   // 的处理器会 stopPropagation（#chat-more 就是），冒泡到这里就晚了。
   $('task-tools').addEventListener('click', closeOptions, true);
@@ -2877,7 +2894,7 @@
   $('quick-auto-commit').onclick = () => clickFrameAction('auto-commit-btn');
   $('quick-share').onclick = () => clickFrameAction('share-btn');
   $('pin-task').onclick = () => { void togglePin(taskId); };
-  $('details-toggle').onclick = () => toggleDetails();
+  $('details-toggle').onclick = () => { void toggleDetails(); };
   // The conversation frame's chat page owns the More menu (items, handlers,
   // popover layer). The task-header trigger just reaches into that same-origin
   // frame to open/close it; the menu anchors itself to the frame's top-right,
@@ -2902,7 +2919,7 @@
     if (controller?.close) controller.close();
     $('chat-more').setAttribute('aria-expanded', 'false');
   });
-  $('task-state').onclick = () => toggleDetails();
+  $('task-state').onclick = () => { void toggleDetails(); };
   $('details-close').onclick = closeDetails;
   window.__multiccAirDeleteCurrentTask = () => deleteTask();
   $('schedule-create').onclick = () => openScheduleDialog();
@@ -2959,10 +2976,9 @@
     entry = null;
     closeDetails();
     closePalette();
-    // 后退/前进要如实反映地址：?view=overview 就是「控制台开着」。
     applyConsole(['overview', 'activity'].includes(params.get('view')));
     render();
-    void refreshEntry();
+    void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
     if (mode === 'schedules' || consoleOpen) void refreshSchedules().then(render);
   });
   window.addEventListener('pagehide', () => { saveDraft(); stopped = true; epoch++; clearTimeout(timer); });
@@ -2974,7 +2990,6 @@
     if (stopped || currentEpoch !== epoch) return;
     if (!document.hidden || !data) await refresh();
     if (stopped || currentEpoch !== epoch) return;
-    // 后台标签页不用盯着 4 秒；连续失败则退避，避免服务端打嗝时继续被敲。
     const base = document.hidden && data ? POLL_HIDDEN_MS : POLL_MS;
     const delay = pollFailures ? Math.min(base * 2 ** pollFailures, POLL_MAX_MS) : base;
     timer = setTimeout(() => poll(currentEpoch), delay);

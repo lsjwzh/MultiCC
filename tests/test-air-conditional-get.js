@@ -83,6 +83,7 @@ test('/api/air/tasks/:id 详情同样支持 304（3.5MB 的消息正文不再每
 
 test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'air.js'), 'utf8');
+  const openEntry = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-task-entry.js'), 'utf8');
   assert.match(source, /'If-None-Match': knownEtag/, '轮询要带上上一次的 ETag');
   assert.match(source, /if \(conditional && response\.status === 304\) return \{ ok: true, unchanged: true \}/);
   // 通用 api() 不能带条件请求：别的 GET 调用方收到「没变」会当成空数据。
@@ -100,8 +101,11 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
     'ETag 要记在收下正文之后');
   assert.match(source, /if \(result\.unchanged\) return false;/, '详情没变就不重建会话区');
   assert.match(source, /if \(!snapshot\.unchanged\) \{[\s\S]{0,900}?render\(\);/, '快照没变就整块跳过渲染');
-  // 快照没变不等于对话没变：详情仍然要问一次（多半也是 304）。
-  assert.match(source, /const entryChanged = await refreshEntry\(\);/);
+  // 打开对话只核验轻量绑定；含审计历史的详情只在用户展开详情面板时读取。
+  assert.match(openEntry, /\/api\/air\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/open/);
+  assert.match(source, /MultiCCAirTaskEntry\?\.open\(\{ taskId, api, notice \}\)/);
+  assert.match(source, /taskId && !\$\('task-details'\)\.hidden\s*\? await refreshEntry\(\) : false/);
+  assert.doesNotMatch(source, /void refreshEntry\(\);/, '导航不能再先下载完整详情');
   assert.match(source, /if \(snapshot\.unchanged && !entryChanged\) return;/);
   // 后台标签页别再按 4 秒敲；失败要退避，别在服务端打嗝时持续加码。
   assert.match(source, /const POLL_HIDDEN_MS = 15000;/);
