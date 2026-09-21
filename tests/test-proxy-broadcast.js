@@ -93,7 +93,7 @@ test('onDelta attributes accepted main proxy deltas to the bound provider attemp
   });
 });
 
-test('codex-exp observes but suppresses the lossy proxy delta sidecar', () => {
+for (const experimentalCli of ['claude-exp', 'codex-exp']) test(`${experimentalCli} observes but suppresses the lossy proxy delta sidecar`, () => {
   const { sent, chatBroadcast } = harness();
   const audited = [];
   let observed = 0;
@@ -105,7 +105,7 @@ test('codex-exp observes but suppresses the lossy proxy delta sidecar', () => {
   };
   const { onDelta } = createProxyBroadcasters(chatBroadcast, {
     attemptRuntime,
-    resolveCli: sessionId => sessionId === 's-exp' ? 'codex-exp' : 'codex',
+    resolveCli: sessionId => sessionId === 's-exp' ? experimentalCli : 'codex',
     audit: (sessionId, event) => audited.push({ sessionId, event }),
   });
 

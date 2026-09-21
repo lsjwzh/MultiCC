@@ -100,7 +100,7 @@
     const button = el('directory-terminal-new');
     if (creating || !dirId || !ctx) return;
     const preferred = ctx.defaultCli?.();
-    const cli = [preferred, ...(ctx.data?.clis || []), 'claude'].find(value => value && value !== 'codex-exp');
+    const cli = [preferred, ...(ctx.data?.clis || []), 'claude'].find(value => value && value !== 'codex-exp' && value !== 'claude-exp');
     creating = true;
     if (button) button.disabled = true;
     try {

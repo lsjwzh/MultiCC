@@ -353,7 +353,7 @@
     .sess-row-top,.sess-row-meta,.sess-row-bottom{display:flex;align-items:center;gap:6px;min-width:0}
     .sess-row-bottom{justify-content:space-between}
     .cli-chip{flex-shrink:0;display:inline-block;vertical-align:middle;font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
-    .cli-chip.claude{background:rgba(240,147,107,.16);color:var(--claude)}
+    .cli-chip.claude,.cli-chip.claude-exp{background:rgba(240,147,107,.16);color:var(--claude)}
     .cli-chip.codex,.cli-chip.codex-exp{background:rgba(127,212,154,.16);color:var(--codex)}
     .cli-chip.opencode{background:rgba(179,157,243,.16);color:var(--opencode)}
     .cli-chip.zcode{background:rgba(91,184,255,.16);color:var(--zcode)}
@@ -2437,7 +2437,7 @@
             ? runningSessions()
             : sess.filter(s => s.active);
           const active = running.length;
-          const claude = running.filter(s => (s.cli || 'claude') === 'claude').length;
+          const claude = running.filter(s => ['claude', 'claude-exp'].includes(s.cli || 'claude')).length;
           const codex = running.filter(s => s.cli === 'codex' || s.cli === 'codex-exp').length;
           // Dedup via the shared helper so the tile number matches the popup list.
           let wait = 0;

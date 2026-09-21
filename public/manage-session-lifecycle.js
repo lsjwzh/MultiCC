@@ -47,9 +47,10 @@
     { value: 'deepseek-v4-pro', label: 'deepseek-v4-pro（深度）' },
   ]);
   const isCodexCli = cli => cli === 'codex' || cli === 'codex-exp';
+  const isClaudeCli = cli => cli === 'claude' || cli === 'claude-exp';
 
   function supportsManagedProvider(cli) {
-    return cli === 'claude' || isCodexCli(cli) || cli === 'opencode' || cli === 'zcode';
+    return isClaudeCli(cli) || isCodexCli(cli) || cli === 'opencode' || cli === 'zcode';
   }
 
   // Qoder CN's real catalog comes from `qoderclicn --list-models` via
@@ -94,7 +95,7 @@
 
   function vendorModelOptions(cli) {
     if (cli === 'qoder') return qoderModelOptions();
-    if (cli === 'claude') return claudeModelOptions();
+    if (isClaudeCli(cli)) return claudeModelOptions();
     if (cli === 'codebuddy') return codebuddyModelOptions();
     if (cli === 'dsh') return DSH_MODEL_OPTIONS;
     return null;
@@ -366,7 +367,7 @@
 
     const result = await showCreateSessionDialog({
       cli, kind, providers, defaultProviderId,
-      isClaude: cli === 'claude',
+      isClaude: isClaudeCli(cli),
     });
     if (result === null) return; // cancelled
 
@@ -436,7 +437,7 @@
   function applyPresetDefaultsToDialog(preset, { providers, provSelect, modelSelect, modelCustom, effortSelect, isClaude, defaultProviderId, cli }) {
     if (!preset) return;
     if (!supportsManagedProvider(cli)) return;
-    if (cli !== 'claude' && !isCodexCli(cli)) return;
+    if (!isClaudeCli(cli) && !isCodexCli(cli)) return;
     const presetCli = preset.defaultCli === 'claude' ? 'claude' : 'codex';
     const dialogCli = isClaude ? 'claude' : 'codex';
     if (presetCli && presetCli !== dialogCli) return;
@@ -574,7 +575,7 @@
 
       const title = document.createElement('div');
       title.style.cssText = 'font-size:15px;color:#f2f4f7;font-weight:600;margin-bottom:14px;';
-      const CLI_LABELS = { claude: 'Claude', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
+      const CLI_LABELS = { claude: 'Claude', 'claude-exp': 'Claude Exp', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
       title.textContent = `新建 ${CLI_LABELS[cli] || cli} ${kind === 'chat' ? 'Chat' : 'Terminal'}`;
       box.appendChild(title);
 

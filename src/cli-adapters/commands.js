@@ -241,6 +241,7 @@ function resolveCliCommands(options = {}) {
   const context = createContext(options);
   return {
     claude: resolveClaude(context),
+    'claude-exp': process.execPath,
     codex: resolveCodex(context),
     'codex-exp': resolveCodex(context),
     opencode: resolveOpencode(context),

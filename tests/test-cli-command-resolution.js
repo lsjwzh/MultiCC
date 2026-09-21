@@ -65,6 +65,7 @@ try {
     logger: silentLogger(),
   }), {
     claude: '/custom/claude --flag',
+    'claude-exp': process.execPath,
     codex: '/custom/codex',
     'codex-exp': '/custom/codex',
     opencode: '/custom/opencode',
@@ -114,7 +115,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude', codex: 'codex', 'codex-exp': 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn', kimi: 'kimi', codebuddy: 'codebuddy', dsh: 'dsh',
+    claude: 'claude', 'claude-exp': process.execPath, codex: 'codex', 'codex-exp': 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn', kimi: 'kimi', codebuddy: 'codebuddy', dsh: 'dsh',
   }, 'POSIX fallback names remain stable when no executable exists');
   assert.deepStrictEqual(resolveCliCommands({
     isWindows: true,
@@ -123,7 +124,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude.exe', codex: 'codex.exe', 'codex-exp': 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe', kimi: 'kimi.exe', codebuddy: 'codebuddy.exe', dsh: 'dsh.exe',
+    claude: 'claude.exe', 'claude-exp': process.execPath, codex: 'codex.exe', 'codex-exp': 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe', kimi: 'kimi.exe', codebuddy: 'codebuddy.exe', dsh: 'dsh.exe',
   }, 'Windows fallback names remain stable when no executable exists');
 
   const source = fs.readFileSync(require.resolve('../src/cli-adapters/commands'), 'utf8');

@@ -10,7 +10,7 @@ function clean(value) {
 function protocolFor(cli, summary) {
   const explicit = clean(summary && (summary.apiFormat || summary.protocol));
   if (explicit) return explicit;
-  if (cli === 'claude') return 'anthropic';
+  if (cli === 'claude' || cli === 'claude-exp') return 'anthropic';
   if (cli === 'codex' || cli === 'codex-exp') return 'openai_responses';
   return clean(cli) || 'native';
 }

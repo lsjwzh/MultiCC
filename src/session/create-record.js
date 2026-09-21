@@ -7,7 +7,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
-  if (cli === 'codex-exp' && kind !== 'chat') return { ok: false, error: 'codex-exp only supports chat sessions' };
+  if ((cli === 'claude-exp' || cli === 'codex-exp') && kind !== 'chat') return { ok: false, error: `${cli} only supports chat sessions` };
   const loginFlowCli = { 'codex-login': 'codex', 'claude-auth-login': 'claude' }[loginFlow]
     || cliForLoginFlow(loginFlow);
   if (loginFlow && (loginFlowCli !== cli || kind !== 'terminal')) return { ok: false, error: 'loginFlow only supports whitelisted interactive login terminal sessions' };
@@ -32,7 +32,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   // login / OAuth subscription.
   const autoSelection = validateProviderSelection(providerSelection, { cli, providers }); if (!autoSelection.ok) return { ok: false, error: autoSelection.error }; let providerId;
   if (provider === undefined) {
-    const defaultPool = cli === 'codex-exp' ? 'codex' : cli;
+    const defaultPool = cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli;
     providerId = primaryProviderCandidate(autoSelection.value)?.providerId || providerDefaults[defaultPool] || null;
   } else {
     const v = validProviderId(cli, provider);
@@ -40,7 +40,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     providerId = v.value;
   }
   if (loginFlow) providerId = null;
-  else providerId = providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli, providerId);
+  else providerId = providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli, providerId);
   const loginEnvChecked = sanitizeLoginEnv(loginEnv, loginFlow);
   if (!loginEnvChecked.ok) return { ok: false, error: loginEnvChecked.error };
   // Sub-task route (Claude/Codex only), pinned at creation. Air tasks choose their

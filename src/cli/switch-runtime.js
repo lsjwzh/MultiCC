@@ -15,6 +15,10 @@ const OFFICIAL_INSTALL_SPECS = Object.freeze({
     command: 'npm install -g @anthropic-ai/claude-code',
     display: 'npm install -g @anthropic-ai/claude-code',
   },
+  'claude-exp': {
+    auto: false,
+    manual: 'Claude Exp 使用 MultiCC 内置的 Claude Agent SDK；请升级 MultiCC 来更新 SDK',
+  },
   codex: {
     auto: true,
     command: 'npm install -g @openai/codex',
@@ -69,6 +73,12 @@ const CLI_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
 // 比 install 短得多: --version 是本地调用, 但个别 CLI 冷启动较慢, 给 8s 兜底。
 const CLI_VERSION_TIMEOUT_MS = Number(process.env.CLI_VERSION_TIMEOUT_MS || 8000);
 const CLI_VERSION_MAX_BUFFER = 64 * 1024;
+const CLAUDE_AGENT_SDK_VERSION = (() => {
+  try {
+    const value = require('../../package.json').dependencies?.['@anthropic-ai/claude-agent-sdk'];
+    return typeof value === 'string' ? value.replace(/^[~^]/, '') : null;
+  } catch (_) { return null; }
+})();
 
 // 最新版探测与本地版本探测分开缓存: 上游 registry 会超时/限流, 本地 `--version`
 // 不会。两者共用一个 TTL, 但互不覆盖 —— 上游挂了不该让「当前版本」这一栏也空掉。
@@ -300,6 +310,10 @@ function createCliSwitchRuntime(options) {
         next[cli] = { cmd: cmd || null, available: false, version: null, error: null };
         return;
       }
+      if (cli === 'claude-exp') {
+        next[cli] = { cmd, available: true, version: CLAUDE_AGENT_SDK_VERSION, error: null };
+        return;
+      }
       const probed = await probeCliVersion(cmd);
       next[cli] = { cmd, available: true, version: probed.version, error: probed.error };
     }));
@@ -489,7 +503,7 @@ function createCliSwitchRuntime(options) {
 
   function cliSwitchDefaults(cli) {
     const providerDefaults = options.getProviderDefaults() || {};
-    const providerPool = cli === 'codex-exp' ? 'codex' : cli;
+    const providerPool = cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli;
     return {
       provider: providerDefaults[providerPool] || null,
       model: null,

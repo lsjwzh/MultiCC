@@ -57,7 +57,7 @@ test('CC-Switch import treats meta.apiFormat as the protocol source of truth', (
 
   const anthropic = providers.getProviderSummary('claude', 'cc-anthropic');
   assert.equal(anthropic.apiFormat, 'anthropic');
-  assert.deepEqual(anthropic.compatibleClis, ['claude', 'opencode', 'zcode']);
+  assert.deepEqual(anthropic.compatibleClis, ['claude', 'claude-exp', 'opencode', 'zcode']);
 });
 
 test('startup migration upgrades old provider records once and is byte-idempotent', () => {
