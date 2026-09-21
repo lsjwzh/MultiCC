@@ -48,6 +48,9 @@ function dirUnsuitableReason(exceeded) {
 // `ls-files` reports as a single dir entry, not their contents) must not count.
 // Returns null if the dir isn't a usable repo, so callers fall back to a raw walk.
 async function dirSuitabilityViaGit(dirPath) {
+  // A denied path throws out of gitIsRepo (GIT_PERMISSION_DENIED) on purpose:
+  // "git cannot read this" must reach the caller as a permission problem, not
+  // as "no repository here, so it must be an ordinary folder".
   if (!await gitIsRepo(dirPath)) return null;
   let out;
   try { out = await gitRun(dirPath, ['ls-files', '-o', '-m', '-z', '--exclude-standard']); }
@@ -104,6 +107,70 @@ async function dirSuitability(dirPath) {
   return dirUnsuitableReason(exceeded);
 }
 
+// macOS TCC denies the *directory itself*: the first syscall that touches it
+// fails with EPERM, before a single file is read. Probing with a real write
+// names that in milliseconds, and without spawning git — whose own failure
+// ("fatal: unable to get current working directory: Operation not permitted")
+// tells the user nothing. Other errno values are not denials and stay git's
+// business. fs is injectable so the denial path is testable without a real
+// protected folder.
+function directoryWriteDenied(dirPath, { mkdirSync = fs.mkdirSync, rmdirSync = fs.rmdirSync } = {}) {
+  const probe = path.join(dirPath, `.multicc-probe-${process.pid}`);
+  try { mkdirSync(probe); }
+  catch (error) {
+    return Boolean(error) && (error.code === 'EPERM' || error.code === 'EACCES');
+  }
+  try { rmdirSync(probe); } catch (_) {}
+  return false;
+}
+
+// macOS grants disk access to the *process that asked* (the "responsible
+// process"), and which process that is depends on how MultiCC was started — so
+// "grant Full Disk Access to MultiCC" is not an instruction a user can follow.
+// Name the exact object instead, derived from how we are actually running.
+// Kept in sync with desktop/lib/desktop-env.js (the server package cannot
+// require the launcher's copy of it).
+const APP_TRANSLOCATION_RE = /\/AppTranslocation\//;
+
+function macPermissionTargets({ execPath = process.execPath, env = process.env } = {}) {
+  const app = /^(.*\.app)\/Contents\//.exec(execPath);
+  return {
+    execPath,
+    appBundle: app ? app[1] : null,
+    desktop: env.MULTICC_DESKTOP === '1',
+    service: env.MULTICC_SERVICE === '1',
+    translocated: APP_TRANSLOCATION_RE.test(execPath),
+  };
+}
+
+function macPermissionGuidance(targets = macPermissionTargets()) {
+  const lines = [
+    'git 无权访问该目录：macOS 的隐私保护会拦截「桌面 / 文档 / 下载 / iCloud 云盘 / 外接磁盘」这些受保护位置。',
+  ];
+  if (targets.translocated) {
+    lines.push(
+      '另外：MultiCC 现在运行在 macOS 的随机只读副本里（AppTranslocation，通常是从「下载」里直接双击运行的后果），'
+      + '这种状态下任何授权都记不住。先把整个目录移出下载目录，并执行：'
+      + 'xattr -dr com.apple.quarantine "<安装目录>"，然后重新启动。');
+  }
+  lines.push('要授权的对象取决于你现在的启动方式：');
+  if (targets.service) {
+    lines.push(`· 开机自启（launchd）不会弹窗，只能手动添加这一个二进制：${targets.execPath}`);
+  } else if (targets.appBundle) {
+    lines.push(`· 双击 MultiCC.app 启动：给这个 App 授权 —— ${targets.appBundle}`);
+  } else if (targets.desktop) {
+    lines.push(`· 桌面版：给 MultiCC.app 授权（当前进程 ${targets.execPath}）`);
+  } else {
+    lines.push(`· 从终端启动：给你的终端 App（Terminal / iTerm）授权，或直接添加这个二进制：${targets.execPath}`);
+  }
+  lines.push(
+    '打开「系统设置 → 隐私与安全性 → 完全磁盘访问权限」，点 + 后按 Cmd+Shift+G 粘贴上面的路径；'
+    + '也可以在终端执行：open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"');
+  lines.push('授权后必须完全退出并重新启动 MultiCC（TCC 授权只在进程启动时生效）。'
+    + '最省事的替代方案：把工作目录放在不受保护的位置，例如 ~/working。');
+  return lines.join('\n');
+}
+
 // Turn an ensureDirGitReady reason code into a user-facing message.
 function friendlyDirReason(reason) {
   if (!reason) return '目录初始化失败';
@@ -112,10 +179,12 @@ function friendlyDirReason(reason) {
   if (reason === 'path-missing') return '目录不存在';
   // macOS TCC denies git (getcwd → EPERM) inside Desktop/Documents/Downloads
   // for processes without Full Disk Access; the bare git fatal is unreadable.
-  if (/Operation not permitted|EPERM|unable to get current working directory/i.test(reason)) {
-    return 'git 无权访问该目录（macOS 隐私保护会拦截「桌面/文档/下载」等受保护位置）。'
-      + '请到「系统设置 → 隐私与安全性 → 完全磁盘访问权限」给运行 MultiCC 的终端/Node 授权并重启后重试，'
-      + '或改选不受保护的目录。原始错误: ' + reason;
+  // The text is written for macOS and is also what a Linux EPERM gets — that
+  // predates this branch (the old message had the same shape), and a plain
+  // "Permission denied" is at least still named correctly in 原始错误.
+  if (reason.startsWith('permission-denied: ')
+    || /Operation not permitted|EPERM|unable to get current working directory/i.test(reason)) {
+    return macPermissionGuidance() + '\n原始错误: ' + reason;
   }
   return '无法将目录初始化为 git 仓库: ' + reason;
 }
@@ -128,4 +197,7 @@ module.exports = {
   dirSuitabilityViaGit,
   dirSuitability,
   friendlyDirReason,
+  macPermissionTargets,
+  macPermissionGuidance,
+  directoryWriteDenied,
 };

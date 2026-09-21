@@ -18,6 +18,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const DEV_DATA_DIRNAME = '.desktop-dev-data';
 // The desktop shell is local-only by construction: the window talks to a
@@ -151,6 +152,49 @@ function prependPathEntry(env, dir) {
   return env;
 }
 
+// ── macOS Gatekeeper/TCC safeguards ────────────────────────────────────────
+// A bundle that still carries the "downloaded from the internet" flag and is
+// run where it landed is executed by Gatekeeper from a random read-only
+// AppTranslocation path. Nothing about that works quietly: permissions the user
+// grants are recorded against a path that changes on the next launch, so they
+// can never stick, and file access fails in ways that read like bugs. Both
+// entry points share this module, which is why the detection lives here.
+const APP_TRANSLOCATION_RE = /\/AppTranslocation\//;
+
+function isAppTranslocated(target) {
+  return APP_TRANSLOCATION_RE.test(String(target || ''));
+}
+
+// Returns the message to print, or null when the process runs from a normal
+// location. `target` is any path inside the running bundle (__dirname works).
+function translocationGuidance(target) {
+  if (!isAppTranslocated(target)) return null;
+  const bundle = /^(.*\.app)\/Contents\//.exec(String(target));
+  const dir = bundle ? bundle[1].replace(/\/[^/]*\.app$/, '') : String(target);
+  return [
+    '[multicc] 警告：程序正从 macOS 的随机只读副本里运行（AppTranslocation）。',
+    '  原因：这个目录还带着「从网络下载」的隔离标记，Gatekeeper 就从临时路径运行它。',
+    '  后果：磁盘权限授权会记在那个每次启动都会变的临时路径上，等于授权不上（git 也会报 Operation not permitted）。',
+    '  处理：把整个目录移出「下载」目录，并去掉隔离标记——',
+    `    xattr -dr com.apple.quarantine "${dir}"`,
+    '  然后重新启动 MultiCC。',
+  ].join('\n');
+}
+
+// Strip the quarantine flag from a freshly unpacked bundle. Safe to call on any
+// platform (no-op off darwin) and never fatal: an unreadable xattr is not a
+// reason to refuse an installation.
+function dequarantine(dir, { platform = process.platform, logger = null } = {}) {
+  if (platform !== 'darwin') return false;
+  try {
+    execFileSync('xattr', ['-dr', 'com.apple.quarantine', dir], { stdio: 'ignore' });
+    return true;
+  } catch (error) {
+    if (logger && logger.log) logger.log(`[multicc] could not clear the download flag (${error.message})`);
+    return false;
+  }
+}
+
 function ensureWritableDirs(desktopEnv) {
   for (const dir of [desktopEnv.dataRoot, desktopEnv.memoryRoot, desktopEnv.logsDir,
     path.dirname(desktopEnv.envFile), path.dirname(desktopEnv.runtimeInfoFile)]) {
@@ -159,6 +203,7 @@ function ensureWritableDirs(desktopEnv) {
 }
 
 module.exports = {
+  APP_TRANSLOCATION_RE,
   DEV_DATA_DIRNAME,
   DESKTOP_LOOPBACK_HOST,
   resolveDesktopEnv,
@@ -168,4 +213,7 @@ module.exports = {
   ensureWritableDirs,
   prependPathEntry,
   runtimeNodeIn,
+  isAppTranslocated,
+  translocationGuidance,
+  dequarantine,
 };
