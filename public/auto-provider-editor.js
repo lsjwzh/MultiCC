@@ -15,6 +15,18 @@
   const AUTO_PREFIX = '__auto__:';
   const STYLE_ID = 'multicc-auto-provider-editor-style';
 
+  // 文案走页面上的全局 t()（i18n.js）：这个编辑器同时挂在 chat 的 AI 配置弹窗、
+  // manage 任务板和 Air 的任务配置里，语言得跟着页面走。没有 t()（Node 单测、
+  // CommonJS 复用）就回落到中文默认值 —— 那些断言正是按中文写的。
+  function tt(key, fallback, params) {
+    const scope = typeof window !== 'undefined' ? window : null;
+    const out = scope && typeof scope.t === 'function' ? scope.t(key, params) : '';
+    if (out && out !== key) return out;
+    return Object.keys(params || {}).reduce((text, name) => (
+      text.split(`{${name}}`).join(String(params[name]))
+    ), fallback);
+  }
+
   function protocolOf(provider) {
     // 'openai_chat' is a retired format value; providers still carrying it
     // belong to the openai_responses pool.
@@ -122,7 +134,7 @@
     const protocol = String(draft.protocol || '');
     if (!PROTOCOL_SET.has(protocol)) {
       if (!protocol) return Object.freeze({ ok: true, value: null, error: null, code: null });
-      return fail('无效的 Auto Provider 协议。', 'invalid_protocol');
+      return fail(tt('autoEditorInvalidProtocol', '无效的 Auto Provider 协议。'), 'invalid_protocol');
     }
     const source = Array.isArray(draft.candidates) ? draft.candidates : [];
     const candidates = [];
@@ -132,12 +144,14 @@
       if (!raw || raw.enabled === false) continue;
       const providerId = String(raw.providerId || '').trim();
       if (!providerId || ids.has(providerId)) {
-        return fail(providerId ? `Provider ${providerId} 重复。` : '候选 Provider 无效。',
+        return fail(providerId
+          ? tt('autoEditorDuplicateProvider', 'Provider {provider} 重复。', { provider: providerId })
+          : tt('autoEditorInvalidProvider', '候选 Provider 无效。'),
           providerId ? 'duplicate_provider' : 'invalid_provider');
       }
       const priority = Number(raw.priority == null ? index + 1 : raw.priority);
       if (!Number.isSafeInteger(priority) || priority < 1 || priority > 100) {
-        return fail('优先级必须是 1–100 的整数。', 'invalid_priority');
+        return fail(tt('autoEditorInvalidPriority', '优先级必须是 1–100 的整数。'), 'invalid_priority');
       }
       ids.add(providerId);
       candidates.push({
@@ -149,17 +163,18 @@
       });
     }
     if (candidates.length < 2) {
-      return fail('至少启用两个同协议 Provider。', 'insufficient_candidates');
+      return fail(tt('autoEditorInsufficientCandidates', '至少启用两个同协议 Provider。'), 'insufficient_candidates');
     }
     if (candidates.length > MAX_CANDIDATES) {
-      return fail(`最多启用 ${MAX_CANDIDATES} 个候选 Provider。`, 'too_many_candidates');
+      return fail(tt('autoEditorTooManyCandidates', '最多启用 {max} 个候选 Provider。', { max: MAX_CANDIDATES }),
+        'too_many_candidates');
     }
     candidates.sort((left, right) => left.priority - right.priority || left._index - right._index);
     const cleanCandidates = candidates.map(({ _index, ...candidate }) => candidate);
     const providers = Array.isArray(draft.providers) ? draft.providers : [];
     const crossesTrust = selectionCrossesTrust(cleanCandidates, providers);
     if (crossesTrust && draft.crossTrustConfirmed !== true) {
-      return fail('混合 Official 与自管 Provider 前，请先确认跨上游发送风险。',
+      return fail(tt('autoEditorCrossTrustRequired', '混合 Official 与自管 Provider 前，请先确认跨上游发送风险。'),
         'cross_trust_confirmation_required');
     }
     const requestedAttempts = Number(draft.maxAttempts) || 2;
@@ -230,9 +245,10 @@
     const onChange = typeof options.onChange === 'function' ? options.onChange : null;
 
     container.classList.add('multicc-auto-editor');
-    const title = element(document, 'div', 'multicc-auto-editor-title', 'Auto Provider 候选池');
+    const title = element(document, 'div', 'multicc-auto-editor-title',
+      tt('autoEditorTitle', 'Auto Provider 候选池'));
     const help = element(document, 'div', 'multicc-auto-editor-help',
-      '按优先级尝试；仅在首字节前且没有工具副作用时切换。新鲜额度已耗尽的候选会预先跳过。');
+      tt('autoEditorHelp', '按优先级尝试；仅在首字节前且没有工具副作用时切换。新鲜额度已耗尽的候选会预先跳过。'));
     const list = element(document, 'div', 'multicc-auto-editor-list');
     const error = element(document, 'div', 'multicc-auto-editor-error');
     error.setAttribute('role', 'alert');
@@ -240,15 +256,16 @@
     const warning = element(document, 'div', 'multicc-auto-editor-warning');
     warning.style.display = 'none';
     const warningText = element(document, 'div', '',
-      '已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。');
+      tt('autoEditorCrossTrustWarning', '已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。'));
     const confirmLabel = element(document, 'label');
     const confirm = document.createElement('input');
     confirm.type = 'checkbox';
     confirm.className = 'multicc-auto-editor-cross-trust-confirm';
-    confirmLabel.append(confirm, document.createTextNode('我确认允许本候选池跨这些上游发送对话上下文'));
+    confirmLabel.append(confirm, document.createTextNode(
+      tt('autoEditorCrossTrustConfirm', '我确认允许本候选池跨这些上游发送对话上下文')));
     warning.append(warningText, confirmLabel);
     const controls = element(document, 'div', 'multicc-auto-editor-controls');
-    const maxLabel = element(document, 'label', '', '最多尝试 ');
+    const maxLabel = element(document, 'label', '', tt('autoEditorMaxAttemptsLabel', '最多尝试 '));
     const maxAttempts = document.createElement('select');
     maxAttempts.className = 'multicc-auto-editor-max-attempts';
     for (let value = 2; value <= MAX_ATTEMPTS; value += 1) {
@@ -262,7 +279,7 @@
     const sticky = document.createElement('input');
     sticky.type = 'checkbox';
     sticky.className = 'multicc-auto-editor-sticky';
-    stickyLabel.append(sticky, document.createTextNode(' 成功后优先沿用'));
+    stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 成功后优先沿用')));
     controls.append(maxLabel, stickyLabel);
     container.replaceChildren(title, help, list, error, warning, controls);
 
@@ -350,7 +367,8 @@
         enabled.type = 'checkbox';
         enabled.className = 'multicc-auto-editor-enabled';
         enabled.checked = configuredSelection ? !!configured && configured.enabled !== false : defaultsById.has(providerId);
-        enabled.setAttribute('aria-label', `启用 ${provider.name || providerId}`);
+        enabled.setAttribute('aria-label',
+        tt('autoEditorEnableAria', '启用 {provider}', { provider: provider.name || providerId }));
         const name = element(document, 'span', 'multicc-auto-editor-name', String(formatProvider(provider) || providerId));
         name.title = name.textContent;
         const priority = document.createElement('input');
@@ -360,11 +378,13 @@
         priority.className = 'multicc-auto-editor-priority';
         priority.value = String(configured?.priority || defaultsById.get(providerId)?.priority
           || ++nextUnconfiguredPriority);
-        priority.title = '优先级（数字越小越优先）';
-        priority.setAttribute('aria-label', `${provider.name || providerId} 优先级`);
+        priority.title = tt('autoEditorPriorityTitle', '优先级（数字越小越优先）');
+        priority.setAttribute('aria-label',
+        tt('autoEditorPriorityAria', '{provider} 优先级', { provider: provider.name || providerId }));
         const model = document.createElement('select');
         model.className = 'multicc-auto-editor-model';
-        model.setAttribute('aria-label', `${provider.name || providerId} 模型`);
+        model.setAttribute('aria-label',
+        tt('autoEditorModelAria', '{provider} 模型', { provider: provider.name || providerId }));
         const preferredModel = candidateModel(provider, configured);
         const models = [...new Set([
           '', provider.model, ...(Array.isArray(provider.modelOptions) ? provider.modelOptions : []), preferredModel,
@@ -372,7 +392,7 @@
         for (const modelId of models) {
           const option = document.createElement('option');
           option.value = modelId;
-          option.textContent = modelId || 'Provider 默认';
+          option.textContent = modelId || tt('autoEditorProviderDefault', 'Provider 默认');
           model.appendChild(option);
         }
         model.value = preferredModel || '';
@@ -413,7 +433,7 @@
         render();
       },
       read() {
-        if (destroyed) return fail('Auto Provider 编辑器已关闭。', 'editor_destroyed');
+        if (destroyed) return fail(tt('autoEditorDestroyed', 'Auto Provider 编辑器已关闭。'), 'editor_destroyed');
         const result = serializeDraft({
           protocol,
           providers,

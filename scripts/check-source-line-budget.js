@@ -49,6 +49,16 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     maxBytes: DEFAULT_MAX_BYTES,
     reason: 'vendored minified QR encoder',
   }),
+  // 生成物，不是手写代码：scripts/generate-i18n.js 把 app/assets/i18n/{zh,en}.json
+  // 原样拼成这一份双语词典，键数就是产品的文案条数。Air 补齐英文之后它从 2634 行
+  // 长到 4988 行 —— 涨的是数据量，不是复杂度，改它也没有意义（谁都不该手改生成物）。
+  // 天花板压在当前高水位上，再涨必须回来改这里。真要瘦身只有一条路：按语言拆成
+  // 两个文件（各约 150KB，各自都能落在默认 3000 行以内），那是独立的一次改动。
+  'public/i18n-catalog.js': Object.freeze({
+    maxLines: 4988,
+    maxBytes: 302646,
+    reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
+  }),
 });
 
 function countLines(text) {

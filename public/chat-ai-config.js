@@ -153,6 +153,25 @@
     return state && typeof state.translate === 'function' ? state.translate(key) : key;
   }
 
+  // 文案走页面上的全局 t()（i18n.js）：Air 的任务 AI 配置、chat 的配置弹窗都用这一份
+  // 标签表，语言得跟着页面走。没有 t()（Node 单测、旧目录）就回落到中文默认值 ——
+  // manage/chat 的断言正是按中文写的。
+  function tt(key, fallback, params) {
+    const scope = typeof window !== 'undefined' ? window : null;
+    const out = scope && typeof scope.t === 'function' ? scope.t(key, params) : '';
+    if (out && out !== key) return out;
+    return Object.keys(params || {}).reduce((text, name) => (
+      text.split(`{${name}}`).join(String(params[name]))
+    ), fallback);
+  }
+
+  // 先问调用方注入的 translator（它只管自己认识的那几条 key，不认识的会把 key 原样
+  // 退回），再落到全局 t()，最后才是中文默认值。
+  function localized(state, key, fallback) {
+    const text = translate(state, key);
+    return text && text !== key ? text : tt(key, fallback);
+  }
+
   function effectiveProviderId(providerId, state) {
     const defaults = state && state.defaults && typeof state.defaults === 'object' ? state.defaults : {};
     return providerId || defaults[(state && state.cli) || 'claude'] || '';
@@ -344,18 +363,20 @@
         : `${value}${map[value].name ? ` · ${map[value].name}` : ''} · ${map[value].model}`;
     }
     if (value === '') {
-      if (state && state.cli === 'codex') return '默认（跟随 Provider）';
-      if (state && state.cli === 'qoder') return '默认（跟随 Qoder CN 设置）';
-      if (state && state.cli === 'codebuddy') return '默认（跟随 WorkBuddy 设置）';
-      if (state && state.cli === 'dsh') return '默认（跟随 DSH 配置）';
-      if (state && state.cli === 'zcode') return '默认（跟随 ZCode 设置）';
+      if (state && state.cli === 'codex') return localized(state, 'aiConfigDefaultFollowProvider', '默认（跟随 Provider）');
+      if (state && state.cli === 'qoder') return localized(state, 'aiConfigDefaultFollowQoder', '默认（跟随 Qoder CN 设置）');
+      if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
+      if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
+      if (state && state.cli === 'zcode') return localized(state, 'aiConfigDefaultFollowZcode', '默认（跟随 ZCode 设置）');
       return translate(state, 'default');
     }
     if (state && state.cli === 'codebuddy') {
       return ({
-        'default-model': 'default（默认档）', 'fast-model': 'fast（快速档）',
-        'balanced-model': 'balanced（均衡档）', 'primary-model': 'primary（主力档）',
-        'deep-model': 'deep（深度档）',
+        'default-model': localized(state, 'aiConfigTierDefault', 'default（默认档）'),
+        'fast-model': localized(state, 'aiConfigTierFast', 'fast（快速档）'),
+        'balanced-model': localized(state, 'aiConfigTierBalanced', 'balanced（均衡档）'),
+        'primary-model': localized(state, 'aiConfigTierPrimary', 'primary（主力档）'),
+        'deep-model': localized(state, 'aiConfigTierDeep', 'deep（深度档）'),
       })[value] || (value === '__custom__' ? translate(state, 'custom') : value);
     }
     if (state && state.cli === 'dsh') {
@@ -363,9 +384,11 @@
     }
     if (state && state.cli === 'qoder') {
       return ({
-        auto: 'Auto（智能路由）', ultimate: 'Ultimate（极致）',
-        performance: 'Performance（性能）', efficient: 'Efficient（经济）',
-        lite: 'Lite（轻量）',
+        auto: localized(state, 'aiConfigEffortAuto', 'Auto（智能路由）'),
+        ultimate: localized(state, 'aiConfigEffortUltimate', 'Ultimate（极致）'),
+        performance: localized(state, 'aiConfigEffortPerformance', 'Performance（性能）'),
+        efficient: localized(state, 'aiConfigEffortEfficient', 'Efficient（经济）'),
+        lite: localized(state, 'aiConfigEffortLite', 'Lite（轻量）'),
       })[value] || (value === '__custom__' ? translate(state, 'custom') : value);
     }
     const named = (state && state.claudeModelOptions || []).find(option => option.value === value);
@@ -393,7 +416,7 @@
     if (!provider) return '';
     const protocol = provider.apiFormat === 'openai_responses' ? ' [Responses]' : ' [Anthropic]';
     const endpoint = provider.isOfficial
-      ? ' · 订阅'
+      ? tt('subscriptionSuffix', ' · 订阅')
       : (provider.baseUrl ? ' · ' + provider.baseUrl.replace(/^https?:\/\//, '') : '');
     return provider.name + protocol + endpoint + (includeModel && provider.model ? ' · ' + provider.model : '');
   }

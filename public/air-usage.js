@@ -20,14 +20,14 @@
   const catalogApi = root.MultiCCProviderCatalog;
 
   const WINDOWS = [
-    ['today', '今天'],
-    ['week', '本周'],
-    ['month', '本月'],
-    ['all', '全部'],
+    ['today', t('airUsageToday')],
+    ['week', t('airUsageWeek')],
+    ['month', t('airUsageMonth')],
+    ['all', t('airUsageAll')],
   ];
   const METRICS = [
-    ['fresh', '新鲜 Token'],
-    ['inclusive', '含缓存 Token'],
+    ['fresh', t('airUsageMetricFresh')],
+    ['inclusive', t('airUsageMetricInclusive')],
   ];
   // Claude 官方模型在旧页里挑出来标琥珀色，这里沿用同一个判定，免得两边对不上。
   const OFFICIAL_MODEL = /claude|opus|haiku|sonnet|fable/i;
@@ -88,7 +88,7 @@
 
   function metricTabs() {
     const row = make('div', null, 'air-usage-tabs');
-    row.append(make('span', '统计口径', 'air-usage-tabs-label'));
+    row.append(make('span', t('airUsageMetricLabel'), 'air-usage-tabs-label'));
     for (const [value, label] of METRICS) {
       const tab = button(label, () => { activeMetric = value; renderGlobal(); }, 'air-usage-tab');
       tab.dataset.metric = value;
@@ -110,10 +110,10 @@
       });
       return tr;
     };
-    const totalLabel = activeMetric === 'inclusive' ? '含缓存总计' : '新鲜总计';
+    const totalLabel = activeMetric === 'inclusive' ? t('airUsageInclusiveTotal') : t('airUsageFreshTotal');
     const table = make('table', null, 'air-usage-table');
     const head = make('tr');
-    for (const [label, numeric] of [['模型', false], ['新鲜输入', true], ['输出', true], ['缓存写', true], ['缓存读', true], [totalLabel, true]]) {
+    for (const [label, numeric] of [[t('airUsageModel'), false], [t('airUsageFreshInput'), true], [t('airUsageOutput'), true], [t('airUsageCacheWrite'), true], [t('airUsageCacheRead'), true], [totalLabel, true]]) {
       const th = make('th', label);
       if (numeric) th.className = 'num';
       head.append(th);
@@ -150,7 +150,7 @@
     const freshTotal = sums.input + sums.output;
     const grandTotal = freshTotal + sums.cacheWrite + sums.cacheRead;
     const foot = make('tr');
-    [['合计', false], [tokens(sums.input), true], [tokens(sums.output), true],
+    [[t('airUsageTotal'), false], [tokens(sums.input), true], [tokens(sums.output), true],
       [tokens(sums.cacheWrite), true], [tokens(sums.cacheRead), true],
       [tokens(activeMetric === 'inclusive' ? grandTotal : freshTotal), true]].forEach(([text, numeric]) => {
       const cell = make('td', text);
@@ -172,7 +172,10 @@
     const totals = days.map(day => Object.values(byDay[day] || {}).reduce((sum, value) => sum + value, 0));
     const max = Math.max(...totals, 1);
     const box = make('div', null, 'air-usage-trend');
-    box.append(make('div', `近 ${days.length} 个有活动的日子（${fresh && hasFreshTrend ? '新鲜 token/天（输入+输出）' : `含缓存 token/天${fresh ? '（旧服务兼容回退）' : ''}`}）`, 'air-usage-trend-head'));
+    const detail = fresh && hasFreshTrend
+      ? t('airUsageTrendFreshDetail')
+      : `${t('airUsageTrendInclusiveDetail')}${fresh ? t('airUsageTrendFallbackNote') : ''}`;
+    box.append(make('div', t('airUsageTrendHead', { n: days.length, detail }), 'air-usage-trend-head'));
     days.forEach((day, index) => {
       const line = make('div', null, 'air-usage-trend-row');
       const bar = make('div', null, 'air-usage-trend-bar');
@@ -190,27 +193,27 @@
     if (!body) return;
     body.replaceChildren(windowTabs(), metricTabs());
     if (globalError) {
-      body.append(make('p', `加载失败：${globalError}`, 'air-usage-error'));
+      body.append(make('p', t('airUsageLoadFailed', { message: globalError }), 'air-usage-error'));
       return;
     }
     if (!globalUsage) {
-      body.append(make('p', '加载中…', 'air-usage-muted'));
+      body.append(make('p', t('airUsageLoading'), 'air-usage-muted'));
       return;
     }
     const windowData = (globalUsage.windows || {})[activeWindow] || {};
     if (!Object.keys(windowData).length) {
-      body.append(make('p', '该时段暂无数据', 'air-usage-muted'));
+      body.append(make('p', t('airUsageNoDataForWindow'), 'air-usage-muted'));
       return;
     }
     const { table, freshTotal, grandTotal, msgs } = modelRows(windowData);
     body.append(table);
     const selected = activeMetric === 'inclusive' ? grandTotal : freshTotal;
-    const generated = globalUsage.generatedAt ? new Date(globalUsage.generatedAt).toLocaleTimeString() : '';
+    const generated = globalUsage.generatedAt ? new Date(globalUsage.generatedAt).toLocaleTimeString(getLocale()) : '';
     const summary = make('p', null, 'air-usage-summary');
     summary.append(
-      make('span', `当前口径（${activeMetric === 'inclusive' ? '含缓存总计' : '新鲜总计'}）：`),
+      make('span', t('airUsageCurrentMetric', { label: activeMetric === 'inclusive' ? t('airUsageInclusiveTotal') : t('airUsageFreshTotal') })),
       make('strong', tokens(selected)),
-      make('span', ` · 新鲜：${tokens(freshTotal)} · 含缓存：${tokens(grandTotal)} · ${msgs} 次响应${generated ? ` · 扫描于 ${generated}` : ''}`),
+      make('span', ` · ${t('airUsageSummaryFresh', { v: tokens(freshTotal) })} · ${t('airUsageSummaryInclusive', { v: tokens(grandTotal) })} · ${t('airUsageSummaryResponses', { n: msgs })}${generated ? ` · ${t('airUsageSummaryScanned', { time: generated })}` : ''}`),
     );
     body.append(summary);
     const graph = trend();
@@ -219,7 +222,7 @@
 
   async function loadGlobal(force = false) {
     const body = el('air-usage-global');
-    if (force && body) body.replaceChildren(make('p', '重新扫描中…', 'air-usage-muted'));
+    if (force && body) body.replaceChildren(make('p', t('airUsageRescanning'), 'air-usage-muted'));
     try {
       globalUsage = await context.api(`/api/token-usage/global${force ? '?refresh=1' : ''}`);
       globalError = '';
@@ -235,11 +238,11 @@
     const body = el('air-usage-role');
     if (!body) return;
     if (roleError) {
-      body.replaceChildren(make('p', `加载失败：${roleError}`, 'air-usage-error'));
+      body.replaceChildren(make('p', t('airUsageLoadFailed', { message: roleError }), 'air-usage-error'));
       return;
     }
     if (!roleLedger || !Object.keys(roleLedger).length) {
-      body.replaceChildren(make('p', '暂无数据', 'air-usage-muted'));
+      body.replaceChildren(make('p', t('airUsageNoData'), 'air-usage-muted'));
       return;
     }
     const now = new Date();
@@ -259,7 +262,7 @@
       if (date >= monthStart) month += daySub;
     }
     const grid = make('div', null, 'air-usage-role-grid');
-    for (const [label, value] of [['今天', today], ['本周', week], ['本月', month], ['全部', all]]) {
+    for (const [label, value] of [[t('airUsageToday'), today], [t('airUsageWeek'), week], [t('airUsageMonth'), month], [t('airUsageAll'), all]]) {
       const tile = make('div', null, 'air-usage-role-tile');
       tile.append(make('small', label), make('strong', tokens(value)));
       grid.append(tile);
@@ -296,20 +299,20 @@
     page.append(make('span', 'TOKEN USAGE', 'eyebrow'));
 
     const global = card(
-      '全部 CLI 用量（Claude + Codex · 按模型 · 最准）',
-      '直接读取 ~/.claude/projects 与 ~/.codex/sessions 会话转录，覆盖本机全部 CLI 用量（Claude Code + Codex，含你在终端里直接跑的、与 multicc 无关的）。Claude 按 requestId 去重；Codex 取累计用量差分。与线路卡上的累计用量口径不同，此处为全局只读参考。琥珀色 = Claude 官方模型。',
-      button('重新扫描', () => void loadGlobal(true), 'air-usage-action'),
+      t('airUsageGlobalTitle'),
+      t('airUsageGlobalDesc'),
+      button(t('airUsageRescan'), () => void loadGlobal(true), 'air-usage-action'),
     );
     const globalBody = make('div'); globalBody.id = 'air-usage-global';
-    globalBody.append(make('p', '加载中…', 'air-usage-muted'));
+    globalBody.append(make('p', t('airUsageLoading'), 'air-usage-muted'));
     global.append(globalBody);
 
     const role = card(
-      '省主模型 Token',
-      '子任务（Task/Agent/Workflow）替主模型处理的 token 量，没派给子任务的话本要让主模型跑。直接从持久账本 token_by_role.json 读取。',
+      t('airUsageRoleTitle'),
+      t('airUsageRoleDesc'),
     );
     const roleBody = make('div'); roleBody.id = 'air-usage-role';
-    roleBody.append(make('p', '加载中…', 'air-usage-muted'));
+    roleBody.append(make('p', t('airUsageLoading'), 'air-usage-muted'));
     role.append(roleBody);
 
     page.append(global, role);

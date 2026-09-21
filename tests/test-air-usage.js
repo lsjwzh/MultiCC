@@ -15,6 +15,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
+// 页面上的 t() 由 i18n.js 提供；沙箱里没有它，模块一取文案就会 ReferenceError。
+const { t, getLocale } = require('./helpers/i18n-translator');
 
 const ROOT = path.join(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(ROOT, relative), 'utf8');
@@ -102,7 +104,7 @@ function createDocument() {
 // ── 驱动模块 ──────────────────────────────────────────────────────────────
 
 function loadModule(document) {
-  const sandbox = { document, MultiCCProviderCatalog: catalog, console: createSandboxConsole() };
+  const sandbox = { document, MultiCCProviderCatalog: catalog, console: createSandboxConsole(), t, getLocale };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(read('public/air-usage.js'), sandbox, { filename: 'air-usage.js' });
