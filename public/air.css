@@ -1717,6 +1717,16 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   background: var(--accent, #0d63c4);
   box-shadow: 0 0 0 2px var(--panel, #fff);
 }
+/* 出错的未读用红色调：完成是「来看结果」，出错是「要处理」，两者不该同色。 */
+#tasks button.unseen-error {
+  box-shadow: inset 0 0 0 2px var(--danger, #b64e43);
+}
+#tasks button.unseen-error .task-meta .mc-status {
+  color: var(--danger, #b64e43);
+}
+#tasks button.unseen-error::after {
+  background: var(--danger, #b64e43);
+}
 
 /* ── 浮动完成条（三处消费之二/三：③ 页面浮动提示 ──────────────────────── */
 .task-complete-float {
@@ -1738,6 +1748,8 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   line-height: 1.4;
 }
 .task-complete-float[hidden] { display: none; }
+.task-complete-float.is-error { border-color: var(--danger, #b64e43); }
+.task-complete-float.is-error .task-complete-float-title { color: var(--danger, #b64e43); }
 .task-complete-float-text { min-width: 0; }
 .task-complete-float-title { font-weight: 700; color: var(--text, #233249); margin-bottom: 2px; }
 .task-complete-float-body { color: var(--text, #233249); overflow-wrap: anywhere; }

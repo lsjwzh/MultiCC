@@ -111,6 +111,14 @@ function originDispatchIdForItem(item) {
     || null;
 }
 
+// The sender's own correlation id, when the entry came from a client send.
+// Deliveries without one (cron, dispatch, auto-continue) are not somebody's
+// typed message, and clients must not invent a bubble for them.
+function clientMsgIdForItem(item) {
+  const value = item?.payload?.options?.clientMsgId;
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
 function isControlItem(item) {
   return CONTROL_KINDS.has(workKind(item));
 }
@@ -239,7 +247,7 @@ function queuedText(item) {
   return String(value).slice(0, MAX_PUBLIC_MESSAGE_LENGTH);
 }
 
-function publicSchedule(schedule, queue = []) {
+function publicSchedule(schedule, queue = [], draft = null) {
   if (!schedule) return null;
   // A correlated request_user_input answer is a durable control hand-off, not
   // future user work. It must survive a crash while the asking process releases,
@@ -252,7 +260,10 @@ function publicSchedule(schedule, queue = []) {
     freezeReason: schedule.freezeReason || null,
     awaitingRequestId: schedule.awaitingRequestId || null,
     classifyState: classifyStateForSchedule(schedule),
-    active: schedule.active ? clone(schedule.active) : null,
+    active: withActiveInput(
+      schedule.active ? clone(schedule.active) : null,
+      draft ? activeItemForDraft(draft, schedule) : null,
+    ),
     queued: shown.map((item, index) => ({
       entryId: item.id,
       taskId: taskIdForItem(item),
@@ -265,11 +276,30 @@ function publicSchedule(schedule, queue = []) {
       priority: item.id === schedule.priorityEntryId,
       position: index + 1,
       admittedAt: item.createdAt,
+      clientMsgId: clientMsgIdForItem(item),
       text: queuedText(item),
     })),
     lastDecision: schedule.lastDecision ? clone(schedule.lastDecision) : null,
     updatedAt: schedule.updatedAt,
   };
+}
+
+function activeItemForDraft(draft, schedule) {
+  const key = schedule?.active?.deliveryId || schedule?.active?.entryId;
+  return key ? draft.outbox[key] || null : null;
+}
+
+// A claimed entry has already left `queued`, so from claim until the turn starts
+// the accepted input is renderable nowhere: the transcript only gains the user
+// record when the turn appends it, and the sending page's own bubble dies with
+// any reload or navigation. Carry it on the snapshot's `active` for exactly that
+// window; once `startedAt` is set the turn owns the message and history is the
+// only source, so the (up to 20KB) text stops travelling on every status read.
+function withActiveInput(active, item) {
+  if (!active || active.startedAt || !item) return active;
+  const clientMsgId = clientMsgIdForItem(item);
+  if (!clientMsgId) return active;
+  return { ...active, clientMsgId, text: queuedText(item) };
 }
 
 function createSessionWorkScheduler({
@@ -527,7 +557,7 @@ function createSessionWorkScheduler({
             return { ok: false, code: 'idempotency_conflict' };
           }
           return { ok: true, duplicate: true, shellReplay: true, entry: clone(existing), queued: false,
-            position: 0, schedule: publicSchedule(schedule, queueForDraft(draft, cleanSessionId)) };
+            position: 0, schedule: publicSchedule(schedule, queueForDraft(draft, cleanSessionId), draft) };
         }
         const control = options.taskShellControl;
         if (control) {
@@ -630,7 +660,7 @@ function createSessionWorkScheduler({
         position: specialAnswer
           ? 0
           : queue.findIndex(item => item.id === admitted.item.id) + 1,
-        schedule: publicSchedule(schedule, queue),
+        schedule: publicSchedule(schedule, queue, draft),
       };
     });
     if (result.ok && !result.shellReplay) {
@@ -715,7 +745,7 @@ function createSessionWorkScheduler({
       schedule.state = 'starting';
       schedule.freezeReason = null;
       schedule.updatedAt = at;
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId)) };
+      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft) };
     });
     if (result.ok) emit('claimed', {
       sessionId: item.sessionId,
@@ -744,7 +774,7 @@ function createSessionWorkScheduler({
       schedule.active.startedAt = schedule.active.startedAt || at;
       schedule.active.attempt = item.attempts;
       schedule.updatedAt = at;
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId)) };
+      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft) };
     });
     if (result.ok) emit('started', {
       sessionId: item.sessionId,
@@ -784,7 +814,7 @@ function createSessionWorkScheduler({
         schedule.freezeReason = 'incomplete_requires_resume';
       }
       schedule.updatedAt = at;
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId)) };
+      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, item.sessionId), draft) };
     });
     if (result.ok) emit('claim_released', {
       sessionId: item.sessionId,
@@ -812,7 +842,7 @@ function createSessionWorkScheduler({
       schedule.freezeReason = null;
       schedule.awaitingRequestId = null;
       schedule.updatedAt = Number(now());
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)) };
+      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft) };
     });
     if (result.ok) emit('assessing', {
       sessionId,
@@ -850,7 +880,7 @@ function createSessionWorkScheduler({
         schedule.classifyStateAt = at;
       }
       schedule.updatedAt = at;
-      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)) };
+      return { ok: true, schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft) };
     });
     if (result.ok) emit('frozen', {
       sessionId,
@@ -924,7 +954,7 @@ function createSessionWorkScheduler({
         ok: true,
         advanced: true,
         completed,
-        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
+        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft),
       };
     });
     // The explicit turn outcome travels WITH the scheduler bookkeeping event.
@@ -1039,7 +1069,7 @@ function createSessionWorkScheduler({
       return {
         ok: true,
         resolved,
-        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
+        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft),
       };
     });
     // taskId was missing here, so every resolution event reached the task board
@@ -1082,7 +1112,7 @@ function createSessionWorkScheduler({
     return store.read(draft => {
       const schedule = draft.sessionSchedules[sessionId];
       const current = schedule || newSchedule(sessionId, 0);
-      const result = publicSchedule(current, queueForDraft(draft, sessionId));
+      const result = publicSchedule(current, queueForDraft(draft, sessionId), draft);
       result.classifyState = canonicalClassifyState(sessionId, current);
       return result;
     });
@@ -1124,7 +1154,7 @@ function createSessionWorkScheduler({
           actor: String(actor || 'user').slice(0, 80),
           at,
         },
-        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
+        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft),
       };
     });
     if (result.ok) emit('queued_cancelled', {
@@ -1227,7 +1257,7 @@ function createSessionWorkScheduler({
           inheritedLineage: sameTask,
           at,
         },
-        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId)),
+        schedule: publicSchedule(schedule, queueForDraft(draft, sessionId), draft),
       };
     });
     if (result.ok) emit('queued_inserted', {
@@ -1295,7 +1325,7 @@ function createSessionWorkScheduler({
             actor: String(actor || 'user').slice(0, 80),
             at,
           },
-          schedule: publicSchedule(schedule, queue || []),
+          schedule: publicSchedule(schedule, queue || [], draft),
         };
       }
       const reordered = queue.slice();
@@ -1321,7 +1351,7 @@ function createSessionWorkScheduler({
           actor: String(actor || 'user').slice(0, 80),
           at,
         },
-        schedule: publicSchedule(schedule, next),
+        schedule: publicSchedule(schedule, next, draft),
       };
     });
     if (result.ok && !result.unchanged) {
@@ -1354,7 +1384,7 @@ function createSessionWorkScheduler({
         position: queue.findIndex(candidate => candidate.id === item.id) + 1,
         queued: selected?.id !== item.id,
         schedulerState: schedule.state,
-        schedule: publicSchedule(schedule, queue),
+        schedule: publicSchedule(schedule, queue, draft),
       };
     });
     if (!info) return { ok: false, code: 'entry_not_found' };
@@ -1382,6 +1412,7 @@ function createSessionWorkScheduler({
       .map(sessionId => publicSchedule(
         draft.sessionSchedules[sessionId],
         queueForDraft(draft, sessionId),
+        draft,
       )));
   }
 
@@ -1398,7 +1429,7 @@ function createSessionWorkScheduler({
       ])].sort();
       return ids.map((sessionId) => {
         const schedule = draft.sessionSchedules[sessionId] || newSchedule(sessionId, 0);
-        const projected = publicSchedule(schedule, queueForDraft(draft, sessionId));
+        const projected = publicSchedule(schedule, queueForDraft(draft, sessionId), draft);
         return safeQueueSummary(
           projected,
           canonicalClassifyState(sessionId, schedule) || projected.classifyState,
@@ -1509,7 +1540,7 @@ function createSessionWorkScheduler({
             classifyState: 'E',
             turnOutcome: 'failed',
             queued: queueForDraft(draft, sessionId).length,
-            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
+            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
           });
           continue;
         }
@@ -1525,7 +1556,7 @@ function createSessionWorkScheduler({
               entryId: schedule.active.entryId,
               taskId: schedule.active.taskId || null,
               queued: queueForDraft(draft, sessionId).length,
-              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
+              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
             });
             continue;
           }
@@ -1540,7 +1571,7 @@ function createSessionWorkScheduler({
               taskId: schedule.active.taskId || null,
               reason: schedule.freezeReason,
               queued: queueForDraft(draft, sessionId).length,
-              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
+              queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
             });
             continue;
           }
@@ -1572,7 +1603,7 @@ function createSessionWorkScheduler({
             classifyState: 'D',
             turnOutcome: 'succeeded',
             queued: queueForDraft(draft, sessionId).length,
-            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
+            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
           });
           continue;
         }
@@ -1587,7 +1618,7 @@ function createSessionWorkScheduler({
             taskId: schedule.active.taskId || null,
             reason: schedule.freezeReason,
             queued: queueForDraft(draft, sessionId).length,
-            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId)).queued,
+            queuedItems: publicSchedule(schedule, queueForDraft(draft, sessionId), draft).queued,
           });
           continue;
         }

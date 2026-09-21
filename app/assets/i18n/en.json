@@ -2160,6 +2160,7 @@
   "airTaskSettingsCliNote": "First pick the CLI that will run the task",
   "airTaskSettingsCloseAria": "Close AI config",
   "airTaskSettingsComponentsMissing": "AI config components did not load. Refresh the page and try again.",
+  "airTaskSettingsCreateIfMissing": "Create the directory if the path does not exist",
   "airTaskSettingsCurrentTask": "the current task",
   "airTaskSettingsCustomModelAria": "Custom model ID",
   "airTaskSettingsCustomModelOption": "Custom model…",
