@@ -1411,8 +1411,15 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
      挤不下时（窄屏，或标题本身比一整行还长）它自己换行回到第二行 —— 宁可多这一行，
      也要把状态整条留全，而不是压成省略号。 */
   .breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; padding-top: 0; padding-right: 0; }
+  /* 桌面那条 `#task-header.is-chat-header .breadcrumb { gap: 8px }`（id+双类）权重压过
+     上面这条纯类的 2px 行距，漏到手机上：对话页头两行时行距 8px，整条比收起来该有的
+     高度多 6px（68 vs ≤64）。手机上把行距钉回 2px，桌面仍走它自己的 8px。 */
+  #task-header.is-chat-header .breadcrumb { gap: 2px 8px; }
   #task-title { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 19px; }
-  #task-state { flex: 0 0 auto; min-height: 0; margin-top: 0; }
+  /* 皮肤那条 `#task-state { font-size: 12px }` 是桌面档、id 权重，会漏到手机上（皮肤
+     的手机档只压回了 #task-header / #task-title）。12px 时状态约 69px，标题(139)+状态
+     +间距就撑破 212px 的面包屑，状态被挤到第二行、页头翻倍高。手机上钉回 11px。 */
+  #task-state { flex: 0 0 auto; min-height: 0; margin-top: 0; font-size: 11px; }
   /* 「任务 进行中」这一段在手机上让位：「本轮 执行中」说了在不在跑（圈也在），
      「归属待核验」说了要不要管；任务生命周期在任务看板和详情面板里都是完整的一行。 */
   #task-state .ts-life { display: none; }
@@ -1667,7 +1674,10 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
 @media (max-width: 760px) {
   /* 抽屉宽度沿用上面那条「不许超出屏幕」的写法，只是设计稿给的宽度宽了 14px。 */
   #sidebar { width: min(300px, calc(100% - 34px)); }
-  #task-header { padding: 14px 16px; min-height: auto; }
+  /* 这里【故意不写】#task-header 的 padding：设计稿给的 14px 16px 会盖掉上面 760 断点里
+     量过的紧凑值（6px 10px），把设置/总览那类页头从 62px 抬到 80px，撑破「页头只有一行
+     ≤64px」的不变量（对话页头由 is-chat-header 自己那档管，不受影响）。按本块「给紧凑值
+     让路、不重述结构」的原则，页头内边距交回上面那条基础手机档。 */
   #task-title { font-size: 21px; }
   #empty { padding: 18px 16px 24px; }
   .directory-task-panel, .directory-git-panel, .admin-panel { border-radius: 20px; }
