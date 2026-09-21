@@ -88,7 +88,16 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
   // 通用 api() 不能带条件请求：别的 GET 调用方收到「没变」会当成空数据。
   assert.match(source, /const apiConditional = path => request\(path, \{ method: 'GET', body: undefined, conditional: true \}\);/);
   assert.match(source, /const snapshot = await apiConditional\('\/api\/air'\);/);
-  assert.match(source, /const result = await apiConditional\(`\/api\/air\/tasks\/\$\{encodeURIComponent\(selected\)\}`\);/);
+  assert.match(source, /const path = `\/api\/air\/tasks\/\$\{encodeURIComponent\(selected\)\}`;/);
+  assert.match(source, /const result = await apiConditional\(path\);/);
+  // 「没变」的前提是上一次那份正文还在手上。entry 会被 navigate / popstate /
+  // dismissChat 清掉，ETag 却还留着 —— 那时再问一次只会换回 304，页头就停在
+  // 「正在读取任务…」等这条任务下次真的变了。所以手里没有 entry 就先忘掉校验符。
+  assert.match(source, /if \(entry\?\.task\?\.id !== selected\) resourceEtag\.delete\(path\);/);
+  // 校验符只能记在正文被收下之后：失败响应也带 ETag（Express 自己生成的那个），
+  // 提前记下来等于把一次失败固化成「永远 304」。
+  assert.ok(source.indexOf('resourceEtag.set(path, etag)') > source.indexOf('if (!response.ok || result.ok === false)'),
+    'ETag 要记在收下正文之后');
   assert.match(source, /if \(result\.unchanged\) return false;/, '详情没变就不重建会话区');
   assert.match(source, /if \(!snapshot\.unchanged\) \{[\s\S]{0,900}?render\(\);/, '快照没变就整块跳过渲染');
   // 快照没变不等于对话没变：详情仍然要问一次（多半也是 304）。
