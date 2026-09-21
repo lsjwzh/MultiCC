@@ -2093,7 +2093,7 @@ function renderProviderList() {
     return `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap;">
       <div style="flex:1 1 200px;min-width:0">
-        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(p.name)} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'} · 可用于 ${(p.compatibleClis || []).map(x => x === 'claude' ? 'Claude' : x === 'codex' ? 'Codex' : 'OpenCode').join(' / ')}</span>${latBadge}</div>
+        <div style="font-size:13px;color:var(--text);font-weight:600">${escapeHtml(providerCatalog.providerDisplayName(p))} <span style="font-weight:400;font-size:11px;color:var(--faint)">${p.source === 'ccswitch' ? '· 来自 cc-switch' : '· 本地'} · 可用于 ${(p.compatibleClis || []).map(x => x === 'claude' ? 'Claude' : x === 'codex' ? 'Codex' : 'OpenCode').join(' / ')}</span>${latBadge}</div>
         <div data-quota-id="${escapeHtml(p.id)}" style="font-size:11px;font-weight:600;margin-top:3px;color:var(--faint)">余量 —</div>
         <div data-balance-id="${escapeHtml(p.id)}" style="display:none;font-size:11px;font-weight:600;margin-top:2px;color:var(--faint)"></div>
         ${statHtml ? `<div style="font-size:11px;color:var(--amber);margin-top:3px">${statHtml}</div>` : ''}

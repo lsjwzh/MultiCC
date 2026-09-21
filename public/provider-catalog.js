@@ -43,6 +43,61 @@
   const FIELD_UNKNOWN = () => tt('usageFieldUnknown', '未分');
   const FIELD_OUT = () => tt('usageFieldOut', '出');
 
+  // 内置官方供应商（Codex / Claude 官方）的名字是**服务端写进 provider 记录里的**，
+  // 属于数据而不是前端字面量：'Codex 官方' 由 src/providers/official-catalog.js 合成，
+  // 老的账号记录还带着 'Codex 官方 · <label>'（src/routes/*-accounts.js）。只改服务端
+  // 字面量只能影响之后新建的记录，历史记录里的中文会一直漏出来，所以这里按「身份」在
+  // 渲染时翻译一遍：zh 仍是中文原样，en 变英文，一条历史数据都不动。
+  const OFFICIAL_NAME_LITERALS = Object.freeze({
+    codex: Object.freeze(['Codex 官方', 'Codex Official']),
+    claude: Object.freeze(['Claude 官方', 'Claude Official']),
+  });
+  const OFFICIAL_SUFFIX_SEPARATOR = ' · ';
+
+  function officialKindFromName(value) {
+    const name = text(value, 240);
+    if (!name) return '';
+    for (const type of APP_TYPES) {
+      for (const literal of OFFICIAL_NAME_LITERALS[type]) {
+        if (name === literal || name.startsWith(literal + OFFICIAL_SUFFIX_SEPARATOR)) return type;
+      }
+    }
+    return '';
+  }
+
+  // 认内置官方身份：归一化后的 provider 看 id（builtinOfficial 会在 normalizeProvider
+  // 里丢掉，isOfficial 对内置记录是 false，所以 id 才是可靠信号），裸名字串走字面量匹配。
+  function officialProviderKind(value) {
+    if (value && typeof value === 'object') {
+      const id = text(value.id, 180).toLowerCase();
+      if (id === 'codex-official') return 'codex';
+      if (id === 'claude-official') return 'claude';
+      const appType = text(value.appType, 20).toLowerCase();
+      if (value.builtinOfficial === true && APP_TYPES.has(appType)) return appType;
+      return officialKindFromName(value.name);
+    }
+    return officialKindFromName(value);
+  }
+
+  // 'Codex 官方 · ab12cd' 里的后缀是用户起的别名或账号 id，不是能翻译的东西，原样留着。
+  function officialNameSuffix(value) {
+    const name = text(value && typeof value === 'object' ? value.name : value, 240);
+    const at = name.indexOf(OFFICIAL_SUFFIX_SEPARATOR);
+    return at === -1 ? '' : name.slice(at + OFFICIAL_SUFFIX_SEPARATOR.length);
+  }
+
+  // 传入 provider 记录或裸名字串，返回展示用名字。非内置官方供应商原样返回。
+  function providerDisplayName(value) {
+    const name = text(value && typeof value === 'object' ? value.name : value, 240);
+    const kind = officialProviderKind(value);
+    if (!kind) return name;
+    const base = kind === 'codex'
+      ? tt('providerOfficialCodex', 'Codex 官方')
+      : tt('providerOfficialClaude', 'Claude 官方');
+    const suffix = officialNameSuffix(value);
+    return suffix ? base + OFFICIAL_SUFFIX_SEPARATOR + suffix : base;
+  }
+
   function formatUsageWindow(value) {
     const window = normalizeWindow(value);
     if (window.inputTokens + window.outputTokens === 0) return '';
@@ -664,6 +719,8 @@
 
   return {
     normalizeProvider,
+    providerDisplayName,
+    officialProviderKind,
     normalizeCatalog,
     normalizeDefaults,
     normalizeModelOptions,

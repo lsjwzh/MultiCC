@@ -2415,16 +2415,16 @@
        running-count badge. Tap (or Enter/Space) expands the anchored panel,
        drag moves it and snaps to the nearest screen edge on release. Fully
        hidden while no task rows exist. -->
-  <button id="danmaku-fab" type="button" style="display:none" aria-expanded="false" aria-label="后台任务">
+  <button id="danmaku-fab" type="button" style="display:none" aria-expanded="false" aria-label="后台任务" data-i18n-aria-label="backgroundTasksTitle">
     <span class="dm-fab-circle" aria-hidden="true">&#9776;<span id="danmaku-fab-badge"></span></span>
   </button>
   <div id="danmaku-scrim"></div>
-  <div id="danmaku-panel" style="display:none" role="dialog" aria-label="后台任务详情">
+  <div id="danmaku-panel" style="display:none" role="dialog" aria-label="后台任务详情" data-i18n-aria-label="backgroundTaskDetail">
     <div id="danmaku-head">
       <span id="danmaku-dot" class="dm-dot-idle"></span>
-      <span id="danmaku-title">后台任务</span>
+      <span id="danmaku-title" data-i18n="backgroundTasksTitle">后台任务</span>
       <span id="danmaku-count"></span>
-      <button id="danmaku-collapse-btn" title="收起到悬浮球">&#9662;</button>
+      <button id="danmaku-collapse-btn" title="收起到悬浮球" data-i18n-title="danmakuCollapseToFab">&#9662;</button>
     </div>
     <div id="danmaku-body"></div>
   </div>
@@ -2444,7 +2444,7 @@
     <button class="hdr-btn lang-toggle" id="lang-btn" onclick="toggleLang()" data-hdr-icon="🌐" data-i18n-title="languageToggle" title="切换语言：中文 / English">中/EN</button>
     <button id="notify-btn" class="hdr-btn" data-hdr-icon="🔔" data-i18n-title="taskNotificationToggle" data-i18n="notifications" title="任务通知开关">通知</button>
     <button id="s2s-btn" class="hdr-btn session-only" data-hdr-icon="📞" data-i18n-title="voiceConversationToggle" data-i18n="voiceCall" title="实时语音通话（在本会话上下文里说话）">语音</button>
-    <button class="hdr-btn" id="chat-layout-btn" data-hdr-icon="↔" data-chat-layout title="调整聊天宽度">聊天宽度</button><button id="dbg-btn" class="hdr-btn" data-hdr-icon="🐛" data-i18n-title="debugPanel" data-i18n="debugPanel" title="Debug 面板">调试面板</button>
+    <button class="hdr-btn" id="chat-layout-btn" data-hdr-icon="↔" data-chat-layout data-i18n-title="chatWidthHint" data-i18n="chatWidthTitle" title="调整聊天宽度">聊天宽度</button><button id="dbg-btn" class="hdr-btn" data-hdr-icon="🐛" data-i18n-title="debugPanel" data-i18n="debugPanel" title="Debug 面板">调试面板</button>
     <button class="hdr-btn session-only" id="cli-btn" data-hdr-icon="⌨" data-i18n-title="switchCli" title="切换此逻辑会话使用的 CLI">CLI</button>
     <button class="hdr-btn session-only" id="model-btn" data-hdr-icon="🧩" data-i18n-title="switchAiConfig" title="切换该会话使用的 Provider / 模型 / 努力程度（下一轮对话生效）" style="display:none"></button>
     <button class="hdr-btn session-only" id="effort-btn" data-hdr-icon="⚡" data-i18n-title="switchEffort" title="切换该会话的思考努力程度（下一轮对话生效）" style="display:none"></button>
@@ -2454,7 +2454,7 @@
     <button class="hdr-btn session-only" id="auto-commit-btn" data-hdr-icon="🚀" data-i18n-title="autoCommitTitle" title="每轮执行成功后自动提交代码并合并回基分支" data-i18n="autoCommit">自动提交</button>
     <button class="hdr-btn session-only" id="share-btn" data-hdr-icon="🔗" data-i18n-title="shareSessionHint" title="把此会话分享到外部" data-i18n="share">分享</button>
     <button class="hdr-btn session-only" id="restart-spawn-btn" data-hdr-icon="♻️" data-i18n-title="restartSpawnHint" title="进程级重启：杀掉并重建该会话的 CLI 进程，保留对话上下文（↻ 重连无效时用）" data-i18n="restartSpawn">重启进程</button>
-    <button class="hdr-btn danger session-only" id="air-delete-task-btn" data-hdr-icon="⌫" title="删除当前任务" hidden>删除任务…</button>
+    <button class="hdr-btn danger session-only" id="air-delete-task-btn" data-hdr-icon="⌫" data-i18n-title="airDeleteTaskTitle" data-i18n="airDeleteTask" title="删除当前任务" hidden>删除任务…</button>
     <span id="header-more-wrap">
       <button class="hdr-btn" id="header-more-btn" data-hdr-icon="⋯" data-i18n-title="moreActions" title="更多操作" data-i18n="more">更多</button>
       <span id="header-more-menu"></span>
@@ -2493,7 +2493,7 @@
     <span class="ac-stale" id="ac-stale"></span>
     <span class="ac-state" id="ac-state"></span>
     <span class="ac-phase" id="ac-phase"></span>
-    <button type="button" class="ac-cancel-task" id="ac-cancel-task" title="立即取消正在执行的任务">✕ 取消</button>
+    <button type="button" class="ac-cancel-task" id="ac-cancel-task" data-i18n-title="cancelTurnFromBarTitle" data-i18n="cancelTurnFromBar" title="立即取消正在执行的任务">✕ 取消</button>
     <button type="button" class="ac-mark-done" id="ac-mark-done" data-i18n="markTurnSucceeded" data-i18n-title="markTurnSucceededTitle" title="把当前等待中的一轮手动标记为执行成功；不会完成任务板任务">✓ 执行成功</button>
   </div>
 
@@ -2503,21 +2503,21 @@
   <section id="pending-user-input-card" hidden aria-live="assertive" aria-labelledby="pending-user-input-title">
     <div class="pending-input-head">
       <span aria-hidden="true">❓</span>
-      <span id="pending-user-input-title">需要你的回答</span>
-      <button id="pending-user-input-collapse" type="button" class="pending-input-collapse" aria-label="收起为悬浮球" title="收起为悬浮球，可继续查看对话">收起</button>
+      <span id="pending-user-input-title" data-i18n="pendingInputCardTitle">需要你的回答</span>
+      <button id="pending-user-input-collapse" type="button" class="pending-input-collapse" aria-label="收起为悬浮球" data-i18n-aria-label="pendingInputCollapse" title="收起为悬浮球，可继续查看对话" data-i18n-title="pendingInputCollapseTitle" data-i18n="pendingInputCollapseShort">收起</button>
     </div>
     <div id="pending-user-input-question"></div>
     <div id="pending-user-input-reason" hidden></div>
     <div id="pending-user-input-options"></div>
     <div class="pending-input-answer-row">
-      <textarea id="pending-user-input-text" rows="1" placeholder="也可以输入自定义回答"></textarea>
-      <button id="pending-user-input-submit" type="button">提交</button>
-      <button id="pending-user-input-dismiss" type="button" class="pending-input-collapse" title="将历史或已处理的问题解除等待，不发送回答、不继续原任务">已解决 / 忽略</button>
+      <textarea id="pending-user-input-text" rows="1" placeholder="也可以输入自定义回答" data-i18n-placeholder="pendingInputCustomPlaceholder"></textarea>
+      <button id="pending-user-input-submit" type="button" data-i18n="pendingInputSubmit">提交</button>
+      <button id="pending-user-input-dismiss" type="button" class="pending-input-collapse" title="将历史或已处理的问题解除等待，不发送回答、不继续原任务" data-i18n-title="pendingInputDismissTitle" data-i18n="pendingInputDismiss">已解决 / 忽略</button>
     </div>
   </section>
   <!-- Collapsed-state floating bubble (shown when the card above is collapsed
        so the user can read conversation context; click to re-expand). -->
-  <button id="pending-user-input-fab" type="button" hidden aria-label="展开待答问题" title="有待答问题，点击展开">
+  <button id="pending-user-input-fab" type="button" hidden aria-label="展开待答问题" data-i18n-aria-label="pendingInputFabLabel" title="有待答问题，点击展开" data-i18n-title="pendingInputFabTitle">
     <span aria-hidden="true">❓</span>
   </button>
 
@@ -2530,15 +2530,15 @@
        available. Row 1 is the active CLI account; row 2 is the routed provider
        plus balance/cost metadata. The source labels are rendered by
        chat-rate-limit.js so equal-looking 5h windows cannot be confused. -->
-  <section id="usage-summary" aria-label="额度、余额与费用">
-    <div id="usage-primary-row" class="usage-summary-row usage-summary-primary" aria-label="当前 CLI 订阅限额">
+  <section id="usage-summary" aria-label="额度、余额与费用" data-i18n-aria-label="usageSummaryLabel">
+    <div id="usage-primary-row" class="usage-summary-row usage-summary-primary" aria-label="当前 CLI 订阅限额" data-i18n-aria-label="usagePrimaryRowLabel">
       <!-- OpenCode Go usage is scraped from opencode.ai; Qoder and Codex have
            their own native account endpoints. Only the active CLI is shown. -->
       <div id="opencode-quota-bar" class="usage-summary-bar" data-usage-role="native" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
       <div id="qoder-quota-bar" class="usage-summary-bar" data-usage-role="native" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
       <div id="codex-quota-bar" class="usage-summary-bar" data-usage-role="native" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
     </div>
-    <div id="usage-secondary-row" class="usage-summary-row usage-summary-secondary" aria-label="路由供应商额度、余额与本轮费用">
+    <div id="usage-secondary-row" class="usage-summary-row usage-summary-secondary" aria-label="路由供应商额度、余额与本轮费用" data-i18n-aria-label="usageSecondaryRowLabel">
       <div id="claude-rate-limit-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer;user-select:none"></div>
       <div id="usage-balance-bar" class="usage-summary-bar" data-usage-role="provider-balance" aria-live="polite" style="display:none"></div>
       <div id="ark-quota-bar" class="usage-summary-bar" data-usage-role="provider" role="button" tabindex="0" aria-live="polite" style="display:none;cursor:pointer"></div>
@@ -2553,19 +2553,19 @@
          Subscription windows measure an account over time and belong above;
          mixing the two on one line made both unreadable. Everything else the
          turn reports lives in the panel this row opens. -->
-    <div id="usage-context-row" class="usage-summary-row usage-summary-context" aria-label="本轮上下文占用">
+    <div id="usage-context-row" class="usage-summary-row usage-summary-context" aria-label="本轮上下文占用" data-i18n-aria-label="usageContextRowLabel">
       <div id="cost-bar" class="usage-summary-bar" data-usage-role="cost" role="button" tabindex="0" aria-live="polite" aria-expanded="false" aria-controls="usage-detail-pop"></div>
     </div>
-    <div id="usage-detail-pop" class="usage-detail-pop" role="dialog" aria-label="本轮与会话用量" aria-hidden="true" style="display:none"></div>
+    <div id="usage-detail-pop" class="usage-detail-pop" role="dialog" aria-label="本轮与会话用量" data-i18n-aria-label="usageDetailPopLabel" aria-hidden="true" style="display:none"></div>
   </section>
 
   <!-- Attachments area -->
   <div id="attach-area"></div>
 
   <div class="session-only" id="merge-hint">
-    <span class="merge-hint-text">当前 worktree 有可合并内容。</span>
-    <button id="merge-hint-diff-btn" class="ghost">查看 Diff</button>
-    <button id="merge-hint-btn">合并</button>
+    <span class="merge-hint-text" data-i18n="mergeHintReady">当前 worktree 有可合并内容。</span>
+    <button id="merge-hint-diff-btn" class="ghost" data-i18n="mergeHintViewDiff">查看 Diff</button>
+    <button id="merge-hint-btn" data-i18n="merge">合并</button>
     <button id="merge-hint-collapse-btn" class="mh-collapse" title="收起" aria-label="收起"
             data-i18n-title="mergeHintCollapse" data-i18n-aria-label="mergeHintCollapse">⌄</button>
   </div>
@@ -2575,7 +2575,7 @@
   <!-- Diff dock: side panel (desktop) / bottom sheet (narrow), collapsible to
        the floating button below. -->
   <div id="diff-modal">
-    <div id="diff-resize-handle" title="拖动调整大小" aria-hidden="true"></div>
+    <div id="diff-resize-handle" title="拖动调整大小" aria-hidden="true" data-i18n-title="diffResizeTitle"></div>
     <div id="diff-modal-inner">
       <div id="diff-modal-head">
         <div style="flex:1;min-width:0;">
@@ -2583,14 +2583,14 @@
           <div id="diff-subtitle"></div>
         </div>
         <button id="diff-min-btn" class="diff-head-btn" type="button"
-                title="最小化为悬浮图标" aria-label="最小化 Diff 面板">—</button>
+                title="最小化为悬浮图标" data-i18n-title="diffMinTitle" aria-label="最小化 Diff 面板" data-i18n-aria-label="diffMinLabel">—</button>
         <button id="diff-close-btn" class="diff-head-btn" type="button"
-                title="关闭" aria-label="关闭 Diff 面板">✕</button>
+                title="关闭" data-i18n-title="close" aria-label="关闭 Diff 面板" data-i18n-aria-label="diffCloseLabel">✕</button>
       </div>
       <!-- List view (default) -->
       <div id="diff-list-view">
-        <div id="diff-summary-bar" role="button" tabindex="0" aria-label="折叠/展开文件列表">
-          <span id="diff-summary-text">已更改 0 个文件</span>
+        <div id="diff-summary-bar" role="button" tabindex="0" aria-label="折叠/展开文件列表" data-i18n-aria-label="diffFileListToggle">
+          <span id="diff-summary-text" data-i18n="diffNoChanges">已更改 0 个文件</span>
           <span id="diff-summary-adds">+0</span>
           <span id="diff-summary-dels">−0</span>
           <span id="diff-summary-chevron">▾</span>
@@ -2600,7 +2600,7 @@
       <!-- Detail view (hidden by default) -->
       <div id="diff-detail-view">
         <div id="diff-detail-back">
-          <button id="diff-back-btn" type="button">‹ 返回列表</button>
+          <button id="diff-back-btn" type="button"><span aria-hidden="true">‹ </span><span data-i18n="diffBackToList">返回列表</span></button>
           <span id="diff-detail-path">
             <span id="diff-detail-dir"></span><span id="diff-detail-basename"></span>
           </span>
@@ -2608,7 +2608,7 @@
           <span id="diff-detail-stat"></span>
         </div>
         <div id="diff-ai-panel">
-          <div class="diff-ai-title">AI 改动摘要</div>
+          <div class="diff-ai-title" data-i18n="diffAiSummaryTitle">AI 改动摘要</div>
           <div id="diff-ai-content"></div>
         </div>
         <div id="diff-patch"></div>
@@ -2616,7 +2616,7 @@
     </div>
   </div>
   <button id="diff-dock-fab" type="button" hidden
-          title="展开 Diff 面板" aria-label="展开 Diff 面板">
+          title="展开 Diff 面板" data-i18n-title="diffExpandPanel" aria-label="展开 Diff 面板" data-i18n-aria-label="diffExpandPanel">
     <span class="diff-fab-circle" aria-hidden="true">Δ<span id="diff-dock-count"></span></span>
   </button>
 
@@ -2624,16 +2624,16 @@
        consumes composer height. Live count is the FAB badge; expanding shows
        at most five rows (live first, then recent terminal records) with links. -->
   <button id="dispatch-activity-fab" type="button" hidden
-           title="展开最近派发" aria-label="展开最近派发">
+           title="展开最近派发" data-i18n-title="dispatchActivityExpand" aria-label="展开最近派发" data-i18n-aria-label="dispatchActivityExpand">
     <span class="dispatch-activity-fab-circle" aria-hidden="true">⇅<span id="dispatch-activity-count"></span></span>
   </button>
   <section id="dispatch-activity-panel" hidden aria-live="polite"
            aria-labelledby="dispatch-activity-title">
     <div class="dispatch-activity-head">
       <span aria-hidden="true">⇅</span>
-      <span id="dispatch-activity-title">最近派发</span>
-      <button id="dispatch-activity-refresh" type="button" title="刷新" aria-label="刷新">↻</button>
-      <button id="dispatch-activity-collapse" type="button" title="收起" aria-label="收起">−</button>
+      <span id="dispatch-activity-title" data-i18n="dispatchActivityTitle">最近派发</span>
+      <button id="dispatch-activity-refresh" type="button" title="刷新" data-i18n-title="refresh" aria-label="刷新" data-i18n-aria-label="refresh">↻</button>
+      <button id="dispatch-activity-collapse" type="button" title="收起" data-i18n-title="mergeHintCollapse" aria-label="收起" data-i18n-aria-label="mergeHintCollapse">−</button>
     </div>
     <div id="dispatch-activity-list"></div>
   </section>
@@ -2680,14 +2680,14 @@
         <span class="dm-caret" aria-hidden="true">▾</span>
       </button>
     </div>
-    <span id="liveness-pill" title="" role="button" tabindex="0" aria-live="polite" style="display:none;position:fixed;right:18px;bottom:18px;z-index:30;margin:0;font-size:12px;color:var(--chat-danger, #ff7b72);background:var(--chat-danger-soft, #1b1113);border:1px solid var(--chat-danger, #f85149);box-shadow:var(--chat-shadow, 0 4px 16px #0008);border-radius:999px;padding:7px 12px;cursor:pointer;"><span id="liveness-pill-dot" class="lv-dot lv-unknown"></span><span id="liveness-pill-label"></span> · 点击终止并重试</span>
+    <span id="liveness-pill" title="" role="button" tabindex="0" aria-live="polite" style="display:none;position:fixed;right:18px;bottom:18px;z-index:30;margin:0;font-size:12px;color:var(--chat-danger, #ff7b72);background:var(--chat-danger-soft, #1b1113);border:1px solid var(--chat-danger, #f85149);box-shadow:var(--chat-shadow, 0 4px 16px #0008);border-radius:999px;padding:7px 12px;cursor:pointer;"><span id="liveness-pill-dot" class="lv-dot lv-unknown"></span><span id="liveness-pill-label"></span><span data-i18n="livenessRetryHint"> · 点击终止并重试</span></span>
   </div>
 
   <!-- Messages durably staged while the current provider turn is running. -->
   <details id="session-queue-dock" hidden>
     <summary>
-      <span>暂存消息 <strong id="session-queue-count">0</strong></span>
-      <span id="session-queue-hint">当前回复完成后自动发送</span>
+      <span><span data-i18n="sessionQueueTitle">暂存消息</span> <strong id="session-queue-count">0</strong></span>
+      <span id="session-queue-hint" data-i18n="sessionQueueHint">当前回复完成后自动发送</span>
     </summary>
     <div id="session-queue-list"></div>
   </details>
@@ -2696,7 +2696,7 @@
   <div id="input-bar" class="mc-composer mc-composer--chat">
     <button id="mic-btn" class="input-action-btn" title="Voice input">&#127908;</button>
     <button id="attach-btn" class="input-action-btn" title="Attach file">&#128206;</button>
-    <button id="goal-btn" class="input-action-btn" title="以 Goal 模式发送任务（先用 AI 预检目标与完成标准）">&#127919;</button>
+    <button id="goal-btn" class="input-action-btn" title="以 Goal 模式发送任务（先用 AI 预检目标与完成标准）" data-i18n-title="goalSendBtnTitle">&#127919;</button>
     <input id="file-input" type="file" style="display:none" multiple />
     <textarea id="input" rows="1" placeholder="Type a message… or paste files here" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
     <button id="send-btn" title="Send">&#10148;</button>
@@ -2710,20 +2710,20 @@
   <div id="voice-hud">
     <div class="vh-row vh-raw">
       <div class="vh-icon">🎤</div>
-      <div class="vh-text" id="vh-raw-text" contenteditable="true" data-placeholder="聆听中…"></div>
+      <div class="vh-text" id="vh-raw-text" contenteditable="true" data-placeholder="聆听中…" data-i18n-data-placeholder="voiceRawPlaceholder"></div>
     </div>
     <div class="vh-row vh-refined">
       <div class="vh-icon">✨</div>
-      <div class="vh-text" id="vh-refined-text" contenteditable="true" data-placeholder="（AI 处理中…）"></div>
+      <div class="vh-text" id="vh-refined-text" contenteditable="true" data-placeholder="（AI 处理中…）" data-i18n-data-placeholder="voiceRefinedPlaceholder"></div>
     </div>
     <div class="vh-bar">
       <div class="vh-status">
         <span class="vh-dot"></span>
-        <span id="vh-status-text">聆听中</span>
+        <span id="vh-status-text" data-i18n="voiceStatusListening">聆听中</span>
       </div>
       <div class="vh-btns">
-        <button id="vh-cancel" title="放弃并关闭">取消</button>
-        <button id="vh-send" class="vh-primary" title="停止听并直接发送">发送</button>
+        <button id="vh-cancel" title="放弃并关闭" data-i18n-title="voiceCancelTitle" data-i18n="cancel">取消</button>
+        <button id="vh-send" class="vh-primary" title="停止听并直接发送" data-i18n-title="voiceSendTitle" data-i18n="voiceSend">发送</button>
       </div>
     </div>
   </div>
@@ -2816,34 +2816,34 @@
   <!-- Goal mode modal -->
   <div id="goal-modal">
     <div id="goal-modal-inner">
-      <h3>&#127919; Goal 模式发送</h3>
-      <div class="goal-hint">发送前先用辅助 AI 预检：目标是否明确、完成标准是否清晰、能否独立执行。不符合会给出改写建议，你确认或修改后再真正执行。</div>
-      <label class="goal-label">任务</label>
-      <textarea id="goal-task" placeholder="描述你要达成的目标…"></textarea>
-      <label class="goal-label">检查维度（本次预检，默认取设置里的全局配置）</label>
+      <h3 data-i18n="goalModalTitle">&#127919; Goal 模式发送</h3>
+      <div class="goal-hint" data-i18n="goalModalHint">发送前先用辅助 AI 预检：目标是否明确、完成标准是否清晰、能否独立执行。不符合会给出改写建议，你确认或修改后再真正执行。</div>
+      <label class="goal-label" data-i18n="goalTaskLabel">任务</label>
+      <textarea id="goal-task" placeholder="描述你要达成的目标…" data-i18n-placeholder="goalTaskPlaceholder"></textarea>
+      <label class="goal-label" data-i18n="goalDimsLabel">检查维度（本次预检，默认取设置里的全局配置）</label>
       <div id="goal-dims" class="goal-dims">
-        <label><input type="checkbox" data-dim="objective" /> 目标明确</label>
-        <label><input type="checkbox" data-dim="criteria" /> 完成标准</label>
-        <label><input type="checkbox" data-dim="scope" /> 范围清晰</label>
-        <label><input type="checkbox" data-dim="executable" /> 可独立执行</label>
+        <label><input type="checkbox" data-dim="objective" /> <span data-i18n="goalDimObjective">目标明确</span></label>
+        <label><input type="checkbox" data-dim="criteria" /> <span data-i18n="goalDimCriteria">完成标准</span></label>
+        <label><input type="checkbox" data-dim="scope" /> <span data-i18n="goalDimScope">范围清晰</span></label>
+        <label><input type="checkbox" data-dim="executable" /> <span data-i18n="goalDimExecutable">可独立执行</span></label>
       </div>
-      <label class="goal-label">执行限制（本次任务，默认取设置里的全局配置；0 = 不限制）</label>
+      <label class="goal-label" data-i18n="goalLimitsLabel">执行限制（本次任务，默认取设置里的全局配置；0 = 不限制）</label>
       <div class="goal-limits">
-        <label>轮次上限<input id="goal-max-rounds" type="number" min="0" max="200" placeholder="轮" /></label>
-        <label>预算上限<input id="goal-max-budget" type="number" min="0" step="1000" placeholder="token" /></label>
+        <label><span data-i18n="goalMaxRounds">轮次上限</span><input id="goal-max-rounds" type="number" min="0" max="200" placeholder="轮" data-i18n-placeholder="goalMaxRoundsUnit" /></label>
+        <label><span data-i18n="goalMaxBudget">预算上限</span><input id="goal-max-budget" type="number" min="0" step="1000" placeholder="token" /></label>
       </div>
       <div id="goal-result" style="display:none">
         <div id="goal-verdict"></div>
         <div id="goal-detail"></div>
-        <label class="goal-label">改写版（可编辑，将作为实际执行的任务）</label>
-        <textarea id="goal-revised" placeholder="预检后这里给出可直接执行的版本"></textarea>
+        <label class="goal-label" data-i18n="goalRevisedLabel">改写版（可编辑，将作为实际执行的任务）</label>
+        <textarea id="goal-revised" placeholder="预检后这里给出可直接执行的版本" data-i18n-placeholder="goalRevisedPlaceholder"></textarea>
       </div>
       <div id="goal-error" class="goal-err" style="display:none"></div>
       <div class="modal-actions">
-        <button id="goal-cancel">取消</button>
-        <button id="goal-precheck" class="primary">预检</button>
-        <button id="goal-send" style="display:none" class="primary">以 Goal 模式发送</button>
-        <button id="goal-send-raw" style="display:none" title="跳过改写，用原任务直接以 Goal 模式执行">用原文发送</button>
+        <button id="goal-cancel" data-i18n="cancel">取消</button>
+        <button id="goal-precheck" class="primary" data-i18n="goalPrecheckBtn">预检</button>
+        <button id="goal-send" style="display:none" class="primary" data-i18n="goalSend">以 Goal 模式发送</button>
+        <button id="goal-send-raw" style="display:none" title="跳过改写，用原任务直接以 Goal 模式执行" data-i18n-title="goalSendRawTitle" data-i18n="goalSendRaw">用原文发送</button>
       </div>
     </div>
   </div>
@@ -2865,22 +2865,22 @@
     <div id="memo-modal-inner">
       <div id="memo-modal-head">
         <div style="flex:1;min-width:0;">
-          <div id="memo-title">📝 备忘</div>
+          <div id="memo-title" data-i18n="memoTitle">📝 备忘</div>
           <div id="memo-subtitle" style="font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
         </div>
-        <button class="hdr-btn" id="memo-send-btn" title="把光标所在行发到该工作区的某个 chat 会话">→ 发送当前行</button>
-        <button class="hdr-btn" id="memo-save-btn" title="保存 (Ctrl/Cmd+S)" style="background:#238636;border-color:#2ea043;color:#fff;">保存</button>
-        <button class="hdr-btn" id="memo-close-btn">关闭</button>
+        <button class="hdr-btn" id="memo-send-btn" title="把光标所在行发到该工作区的某个 chat 会话" data-i18n-title="memoSendLineTitle" data-i18n="memoSendLine">→ 发送当前行</button>
+        <button class="hdr-btn" id="memo-save-btn" title="保存 (Ctrl/Cmd+S)" data-i18n-title="memoSaveTitle" style="background:#238636;border-color:#2ea043;color:#fff;" data-i18n="save">保存</button>
+        <button class="hdr-btn" id="memo-close-btn" data-i18n="close">关闭</button>
       </div>
-      <textarea id="memo-text" spellcheck="false" placeholder="在这里写备忘…&#10;例：&#10;# todo&#10;- [ ] 任务一&#10;- [ ] 任务二"></textarea>
+      <textarea id="memo-text" spellcheck="false" placeholder="在这里写备忘…&#10;例：&#10;# todo&#10;- [ ] 任务一&#10;- [ ] 任务二" data-i18n-placeholder="memoPlaceholder"></textarea>
       <div id="memo-status" style="padding:6px 12px;font-size:11px;color:var(--faint);border-top:1px solid var(--border);font-family:monospace;"></div>
       <!-- Send-picker mini-modal (inside memo popup) -->
       <div id="memo-picker" class="modal-backdrop" style="z-index:20050;">
         <div class="picker-card">
-          <h3 style="font-size:13px;color:var(--text);margin-bottom:6px;">发送到 chat 会话</h3>
+          <h3 style="font-size:13px;color:var(--text);margin-bottom:6px;" data-i18n="memoPickerTitle">发送到 chat 会话</h3>
           <div id="memo-picker-preview"></div>
           <div id="memo-picker-list"></div>
-          <div style="text-align:right;"><button class="hdr-btn" onclick="memoPickerClose()">取消</button></div>
+          <div style="text-align:right;"><button class="hdr-btn" onclick="memoPickerClose()" data-i18n="cancel">取消</button></div>
         </div>
       </div>
     </div>

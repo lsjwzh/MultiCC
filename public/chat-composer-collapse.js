@@ -33,6 +33,12 @@
   var EASE = 0.3;         // per-frame approach; light damping eats inertia jitter
   var SETTLE_MS = 150;
 
+  // 文案走 i18n：浏览器里用 i18n.js 的 t()，Node/旧目录回落到中文默认值。
+  function tt(key, fallback) {
+    var out = typeof window.t === 'function' ? window.t(key) : '';
+    return out && out !== key ? out : fallback;
+  }
+
   var doc = document;
   var messages = doc.getElementById('messages');
   var card = doc.getElementById('input-bar');
@@ -48,7 +54,7 @@
   var pill = doc.createElement('button');
   pill.id = 'air-composer-pill';
   pill.type = 'button';
-  pill.setAttribute('aria-label', '展开输入框');
+  pill.setAttribute('aria-label', tt('airComposerExpand', '展开输入框'));
   var pillText = doc.createElement('span');
   pillText.className = 'ccp-text';
   var pillGo = doc.createElement('span');

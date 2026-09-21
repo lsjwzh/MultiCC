@@ -343,3 +343,68 @@ test('formatProviderQuotaBadge surfaces auth/config/unavailable fallbacks', () =
   assert.match(catalog.formatProviderQuotaBadge('kimi', { status: 'unavailable' }).text, /暂不可用/);
   assert.equal(catalog.formatProviderQuotaBadge('kimi', null), null);
 });
+
+// 内置官方供应商的名字是服务端写进记录里的数据（'Codex 官方'），英文界面里的那两个字
+// 不是前端字面量能解决的：老记录还带着 'Codex 官方 · <label>'，所以要在渲染时按身份翻。
+// 这里锁住三件事：zh 原样、en 翻成英文、历史记录的后缀不动。
+test('providerDisplayName keeps the official identity translatable', () => {
+  const codexBuiltin = { id: 'codex-official', appType: 'codex', builtinOfficial: true, name: 'Codex 官方' };
+  const claudeBuiltin = { id: 'claude-official', appType: 'claude', name: 'Claude 官方' };
+
+  // zh 是回落路径（没有 window.t），必须与改动前逐字一致，否则中文界面会被改坏。
+  assert.equal(catalog.providerDisplayName(codexBuiltin), 'Codex 官方');
+  assert.equal(catalog.providerDisplayName(claudeBuiltin), 'Claude 官方');
+
+  // 认身份的四个信号：id、builtinOfficial、裸名字串、老记录的前缀 + 后缀。
+  assert.equal(catalog.officialProviderKind(codexBuiltin), 'codex');
+  assert.equal(catalog.officialProviderKind({ id: 'x', appType: 'claude', builtinOfficial: true, name: '随便' }), 'claude');
+  assert.equal(catalog.officialProviderKind('Claude 官方'), 'claude');
+  assert.equal(catalog.officialProviderKind('Codex 官方 · ab12cd'), 'codex');
+
+  // 老记录（src/routes/*-accounts.js 建的）只换前缀，账号别名/后缀原样留着。
+  assert.equal(catalog.providerDisplayName({ id: 'p1', appType: 'codex', name: 'Codex 官方 · ab12cd' }),
+    'Codex 官方 · ab12cd');
+  assert.equal(catalog.providerDisplayName('Claude 官方 · 工作号'), 'Claude 官方 · 工作号');
+
+  // 普通供应商一个字符都不动。
+  assert.equal(catalog.providerDisplayName({ id: 'p2', appType: 'codex', name: 'Lab Responses' }), 'Lab Responses');
+  assert.equal(catalog.providerDisplayName('Codex 官方山寨'), 'Codex 官方山寨');
+  assert.equal(catalog.providerDisplayName(''), '');
+  assert.equal(catalog.providerDisplayName(null), '');
+  assert.equal(catalog.officialProviderKind({ id: 'gpt', appType: 'codex', name: 'Responses' }), '');
+
+  // normalizeProvider 会丢掉 builtinOfficial、isOfficial 对内置记录也是 false，
+  // 所以 id 才是归一化后唯一还在的身份信号——这条断了英文界面就会漏中文。
+  const normalized = catalog.normalizeProvider({ ...codexBuiltin, source: 'builtin' });
+  assert.equal(normalized.builtinOfficial, undefined);
+  assert.equal(catalog.providerDisplayName(normalized), 'Codex 官方');
+  assert.equal(catalog.officialProviderKind(normalized), 'codex');
+});
+
+test('providerDisplayName translates the builtin identity in English', () => {
+  // t() 就是 i18n.js 那个：这里用最小替身把 en 词典装到 window 上，模拟英文界面。
+  const previous = global.window;
+  global.window = {
+    t(key) {
+      const en = {
+        providerOfficialCodex: 'Codex Official',
+        providerOfficialClaude: 'Claude Official',
+      };
+      return en[key] || key;
+    },
+  };
+  try {
+    assert.equal(catalog.providerDisplayName({ id: 'codex-official', appType: 'codex', name: 'Codex 官方' }),
+      'Codex Official');
+    assert.equal(catalog.providerDisplayName({ id: 'claude-official', appType: 'claude', name: 'Claude 官方' }),
+      'Claude Official');
+    // 历史记录：前缀翻，后缀（用户别名）留着。
+    assert.equal(catalog.providerDisplayName({ id: 'p1', appType: 'codex', name: 'Codex 官方 · ab12cd' }),
+      'Codex Official · ab12cd');
+    assert.equal(catalog.providerDisplayName('Codex 官方'), 'Codex Official');
+    // 普通供应商不受影响，也不该被翻译。
+    assert.equal(catalog.providerDisplayName({ id: 'p2', appType: 'codex', name: 'Lab Responses' }), 'Lab Responses');
+  } finally {
+    if (previous === undefined) delete global.window; else global.window = previous;
+  }
+});

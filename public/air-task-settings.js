@@ -433,7 +433,7 @@
         if (draft) {
           await onSaved({ cli: currentCli, provider, providerSelection, model: model || null,
             effort: effortField.hidden ? null : effortSelect.value || null,
-            providerName: providers.find(candidate => candidate.id === provider)?.name || null, subagent });
+            providerName: catalogApi.providerDisplayName(providers.find(candidate => candidate.id === provider) || {}) || null, subagent });
           d.close();
           return;
         }

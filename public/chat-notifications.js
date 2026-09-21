@@ -6,6 +6,12 @@
 (function installChatNotifications(root) {
   const NOTIFY_COOLDOWN = 8000;
 
+  // 文案走 i18n：浏览器里用 i18n.js 的 t()，Node/旧目录回落到中文默认值。
+  function tt(key, fallback) {
+    const out = typeof root.t === 'function' ? root.t(key) : '';
+    return out && out !== key ? out : fallback;
+  }
+
   function normalizeNotificationType(type) {
     return type === 'waiting' || type === 'error' ? type : 'succeeded';
   }
@@ -78,12 +84,14 @@
         notifyBtn.style.background = '#1f6feb';
         notifyBtn.style.borderColor = '#58a6ff';
         notifyBtn.style.color = '#fff';
-        notifyBtn.title = pushOn ? '任务提醒 (系统通知已开启)' : '任务提醒 (点击开启系统通知)';
+        notifyBtn.title = pushOn
+          ? tt('taskNotifyTitleOn', '任务提醒 (系统通知已开启)')
+          : tt('taskNotifyTitleOff', '任务提醒 (点击开启系统通知)');
       } else {
         notifyBtn.style.background = '#21262d';
         notifyBtn.style.borderColor = '#30363d';
         notifyBtn.style.color = '#c9d1d9';
-        notifyBtn.title = '任务提醒 (已关闭)';
+        notifyBtn.title = tt('taskNotifyTitleDisabled', '任务提醒 (已关闭)');
       }
     }
 
