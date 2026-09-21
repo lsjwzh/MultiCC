@@ -2,6 +2,13 @@
   'use strict';
 
   const $ = id => document.getElementById(id);
+  // 内置官方供应商的名字（'Codex 官方'）是服务端写进 provider 记录的**数据**，
+  // 前端按身份在渲染时翻译，历史记录里的中文才不会再漏出来；见
+  // public/provider-catalog.js。catalog 没加载时原样返回，不至于把药丸打空。
+  const providerDisplayName = name => {
+    const api = window.MultiCCProviderCatalog;
+    return api && api.providerDisplayName ? api.providerDisplayName(name) : name;
+  };
   function readRouteParams() {
     const params = new URLSearchParams(location.search);
     // Retired planner bookmarks open the current console, including on an
@@ -946,7 +953,7 @@
     if (!ai || !role) return;
     const route = quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
-      : quickRuntime.providerName || quickRuntime.provider || t('airQuickDefaultRoute');
+      : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute');
     setPillText(ai, [quickCli(), route, quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
     ai.title = t('airQuickAiTitle');
     role.textContent = quickRoles.length ? t('airQuickRoleCount', { n: quickRoles.length }) : t('airQuickAddRole');
@@ -2474,7 +2481,7 @@
     // 才退回 id —— 不然下一轮生效的那条线路在药丸上是一串 UUID。
     const routeName = shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
-      : (pending?.providerName || shown?.providerName || shown?.provider) || t('airQuickDefaultRoute');
+      : providerDisplayName((pending?.providerName || shown?.providerName || shown?.provider) || '') || t('airQuickDefaultRoute');
     ai.hidden = !entry?.sessionId;
     ai.disabled = !entry || entry.readOnly;
     ai.title = t('airTaskAiTitle');
