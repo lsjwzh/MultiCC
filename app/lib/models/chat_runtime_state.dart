@@ -263,7 +263,7 @@ class UsageWindowLimit {
   bool matchesCli(String cli) {
     if (provider == 'opencode') return cli == 'opencode';
     if (provider == 'glm' || provider == 'codex') {
-      return cli == 'codex' || cli == 'opencode';
+      return cli == 'codex' || cli == 'codex-exp' || cli == 'opencode';
     }
     return cli == 'claude' || cli == 'opencode';
   }

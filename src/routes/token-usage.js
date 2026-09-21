@@ -423,7 +423,7 @@ function createTokenUsageRoutes(rawDeps) {
 
   function reconcileCodexRoleUsage(sessionId, usage, attribution = {}) {
     const persisted = deps.persistedSessions.get(sessionId);
-    if (!persisted || persisted.cli !== 'codex' || !usage) return false;
+    if (!persisted || !['codex', 'codex-exp'].includes(persisted.cli) || !usage) return false;
     const cacheRead = eventTokenCount(
       usage.cache_read_input_tokens == null
         ? usage.cached_input_tokens

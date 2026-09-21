@@ -176,7 +176,7 @@ function createCodexRolloutGuard(deps = {}) {
   // options.force (used by restart-spawn): archive EVERY rollout of the thread
   // regardless of size — the user explicitly asked to rebuild the context.
   function enforce(record, options = {}) {
-    if (!record || record.cli !== 'codex' || !record.cliSessionId) {
+    if (!record || !['codex', 'codex-exp'].includes(record.cli) || !record.cliSessionId) {
       return Object.freeze({ action: 'skipped' });
     }
     const force = options.force === true;

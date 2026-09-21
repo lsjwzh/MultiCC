@@ -74,6 +74,7 @@
   const ZCODE_MODEL_OPTIONS = Object.freeze(['']);
   const ZCODE_SETUP_PROMPTED = new Set();
   let _autoProviderEditorApi = null;
+  const isCodexCli = cli => cli === 'codex' || cli === 'codex-exp';
 
   // Browser pages load auto-provider-editor.js first; Node tests resolve the
   // same classic-script module through CommonJS. Keep this lazy so importing
@@ -92,13 +93,13 @@
   }
 
   function defaultEffort(cli) {
-    if (cli === 'codex') return 'xhigh';
+    if (isCodexCli(cli)) return 'xhigh';
     if (cli === 'claude') return 'medium';
     return '';
   }
 
   function effortOptions(cli) {
-    if (cli === 'codex') return CODEX_REASONING_OPTIONS;
+    if (isCodexCli(cli)) return CODEX_REASONING_OPTIONS;
     if (cli === 'opencode') return OPENCODE_VARIANT_OPTIONS;
     if (cli === 'qoder') return QODER_REASONING_OPTIONS;
     if (cli === 'codebuddy') return CODEBUDDY_REASONING_OPTIONS;
@@ -107,7 +108,7 @@
   }
 
   function effortLabel(cli) {
-    if (cli === 'codex') return 'Reasoning Level';
+    if (isCodexCli(cli)) return 'Reasoning Level';
     if (cli === 'opencode') return 'Variant';
     if (cli === 'qoder' || cli === 'codebuddy') return 'Reasoning Effort';
     return 'Effort';
@@ -117,7 +118,7 @@
     const value = effort || defaultEffort(cli);
     if (cli === 'zcode') return '';
     if (cli === 'opencode') return value ? `Variant ${value}` : '';
-    if (cli === 'codex' || cli === 'qoder' || cli === 'codebuddy') {
+    if (isCodexCli(cli) || cli === 'qoder' || cli === 'codebuddy') {
       return ({
         xhigh: 'Extra high', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
         max: 'Max', ultra: 'Ultra',
@@ -183,7 +184,8 @@
 
   function effectiveProviderId(providerId, state) {
     const defaults = state && state.defaults && typeof state.defaults === 'object' ? state.defaults : {};
-    return providerId || defaults[(state && state.cli) || 'claude'] || '';
+    const cli = (state && state.cli) || 'claude';
+    return providerId || defaults[isCodexCli(cli) ? 'codex' : cli] || '';
   }
 
   function findProvider(providerId, state) {
@@ -405,7 +407,7 @@
         : `${value}${map[value].name ? ` · ${map[value].name}` : ''} · ${map[value].model}`;
     }
     if (value === '') {
-      if (state && state.cli === 'codex') return localized(state, 'aiConfigDefaultFollowProvider', '默认（跟随 Provider）');
+      if (state && isCodexCli(state.cli)) return localized(state, 'aiConfigDefaultFollowProvider', '默认（跟随 Provider）');
       if (state && state.cli === 'qoder') return localized(state, 'aiConfigDefaultFollowQoder', '默认（跟随 Qoder CN 设置）');
       if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
       if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
@@ -506,7 +508,7 @@
   // 子任务（子 agent）线路的判定只有一份：chat 的 AI 配置弹窗、Air 的任务 AI
   // 配置弹窗、以及创建任务时把线路钉进 runtime，都调这两个函数。服务端有对应的
   // src/session/subagent.js；客户端这边只负责「什么算设了」，别的地方别再手写。
-  const SUBAGENT_CLIS = Object.freeze(['claude', 'codex']);
+  const SUBAGENT_CLIS = Object.freeze(['claude', 'codex', 'codex-exp']);
 
   function supportsSubagentCli(cli) {
     return SUBAGENT_CLIS.includes(cli || '');
@@ -719,7 +721,8 @@
         : cli === 'opencode'
           ? 'OpenCode 原生配置（OpenCode Go 等）'
           : translate(state, 'providerDefault');
-      const officialProvider = providersOf(state).find(p => p.builtinOfficial && p.appType === cli);
+      const providerAppType = isCodexCli(cli) ? 'codex' : cli;
+      const officialProvider = providersOf(state).find(p => p.builtinOfficial && p.appType === providerAppType);
       if (!officialProvider) providerSelect.appendChild(defaultProvider);
       for (const protocol of ['anthropic', 'openai_responses']) {
         if (autoProvidersForProtocol(protocol, providersOf(state)).length < 2) continue;
@@ -764,7 +767,7 @@
       subDefault.textContent = '随主';
       subProviderSelect.appendChild(subDefault);
       for (const provider of providersOf(state)) {
-        if (cli === 'codex' && provider.isOfficial) continue;
+        if (isCodexCli(cli) && provider.isOfficial) continue;
         const option = document.createElement('option');
         option.value = provider.id;
         option.textContent = providerLabel(provider, false) + providerLimitLabel(provider, state.translate, Date.now());
@@ -879,7 +882,7 @@
         const autoProtocol = autoProtocolFromValue(providerSelect.value);
         if (!autoProtocol) rebuildModels(providerSelect.value, '');
         syncAutoEditor();
-        if (cli === 'codex' && !providerSelect.value) subProviderSelect.value = '';
+        if (isCodexCli(cli) && !providerSelect.value) subProviderSelect.value = '';
         refreshSubUi();
       };
       modelSelect.onchange = () => {
@@ -985,7 +988,7 @@
     if (!catalog || typeof catalog.normalizeCatalog !== 'function') {
       throw new Error('MultiCCProviderCatalog is unavailable');
     }
-    const type = cli === 'codex' ? 'codex' : 'claude';
+    const type = isCodexCli(cli) ? 'codex' : 'claude';
     const raw = await api.json(`/api/providers?cli=${encodeURIComponent(cli || 'claude')}`);
     const normalized = catalog.normalizeCatalog(raw);
     return Object.freeze({

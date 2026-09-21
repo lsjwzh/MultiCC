@@ -76,7 +76,7 @@ function normalizeUsage(rawUsage) {
 function protocolFor(cli, explicit) {
   const protocol = clean(explicit);
   if (protocol) return protocol;
-  if (cli === 'codex') return 'openai-responses';
+  if (cli === 'codex' || cli === 'codex-exp') return 'openai-responses';
   if (cli === 'claude') return 'anthropic-messages';
   return cli || 'unknown';
 }

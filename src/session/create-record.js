@@ -7,6 +7,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
+  if (cli === 'codex-exp' && kind !== 'chat') return { ok: false, error: 'codex-exp only supports chat sessions' };
   const loginFlowCli = { 'codex-login': 'codex', 'claude-auth-login': 'claude' }[loginFlow]
     || cliForLoginFlow(loginFlow);
   if (loginFlow && (loginFlowCli !== cli || kind !== 'terminal')) return { ok: false, error: 'loginFlow only supports whitelisted interactive login terminal sessions' };
@@ -21,7 +22,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   const effortLevel = normalizeEffort(effort);
   if (effortLevel === undefined) return { ok: false, error: 'invalid effort' };
   if (!validEffortForCli(cli, effortLevel)) return { ok: false, error: 'invalid reasoning level' };
-  const sessionEffort = effortLevel || (cli === 'codex' ? codexDefaultReasoningLevel() : null);
+  const sessionEffort = effortLevel || (cli === 'codex' || cli === 'codex-exp' ? codexDefaultReasoningLevel() : null);
   const sessionAgent = normalizeCliAgent(cli, agent);
   if (sessionAgent === undefined) return { ok: false, error: 'invalid agent' };
   const rp = rolePrompt == null ? null : String(rolePrompt).trim();
@@ -31,14 +32,15 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   // login / OAuth subscription.
   const autoSelection = validateProviderSelection(providerSelection, { cli, providers }); if (!autoSelection.ok) return { ok: false, error: autoSelection.error }; let providerId;
   if (provider === undefined) {
-    providerId = primaryProviderCandidate(autoSelection.value)?.providerId || providerDefaults[cli] || null;
+    const defaultPool = cli === 'codex-exp' ? 'codex' : cli;
+    providerId = primaryProviderCandidate(autoSelection.value)?.providerId || providerDefaults[defaultPool] || null;
   } else {
     const v = validProviderId(cli, provider);
     if (!v.ok) return { ok: false, error: 'invalid provider' }; if (autoSelection.value && !autoSelection.value.candidates.some(candidate => candidate.enabled && candidate.providerId === v.value)) return { ok: false, error: 'Auto Provider fallback must be an enabled candidate' };
     providerId = v.value;
   }
   if (loginFlow) providerId = null;
-  else providerId = providers.normalizeOfficialProviderId(cli, providerId);
+  else providerId = providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli, providerId);
   const loginEnvChecked = sanitizeLoginEnv(loginEnv, loginFlow);
   if (!loginEnvChecked.ok) return { ok: false, error: loginEnvChecked.error };
   // Sub-task route (Claude/Codex only), pinned at creation. Air tasks choose their

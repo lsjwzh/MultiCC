@@ -24,6 +24,7 @@ String withTaskCode(String? code, String text) {
 Color cliBrandColor(SessionCli cli) => switch (cli) {
   SessionCli.claude => AppColors.claude,
   SessionCli.codex => AppColors.codex,
+  SessionCli.codexExp => AppColors.codex,
   SessionCli.opencode => AppColors.opencode,
   SessionCli.zcode => AppColors.zcode,
   SessionCli.qoder => AppColors.qoder,

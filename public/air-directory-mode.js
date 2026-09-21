@@ -99,7 +99,8 @@
   async function create() {
     const button = el('directory-terminal-new');
     if (creating || !dirId || !ctx) return;
-    const cli = ctx.defaultCli?.() || (ctx.data?.clis || [])[0] || 'claude';
+    const preferred = ctx.defaultCli?.();
+    const cli = [preferred, ...(ctx.data?.clis || []), 'claude'].find(value => value && value !== 'codex-exp');
     creating = true;
     if (button) button.disabled = true;
     try {

@@ -145,7 +145,7 @@ a:hover { text-decoration: underline; }
 .stat-card .stat-detail span { display: inline-flex; align-items: center; gap: 3px; }
 .stat-card .cli-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .cli-dot.claude { background: #f0936b; }
-.cli-dot.codex { background: #7fd49a; }
+.cli-dot.codex, .cli-dot.codex-exp { background: #7fd49a; }
 .cli-dot.other { background: var(--faint); }
 
 /* ── Filter bar ── */

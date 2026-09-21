@@ -107,7 +107,7 @@ function createFolderMemoryService(rawDeps) {
   }
 
   function primaryFileName(cli) {
-    return cli === 'codex' ? 'AGENTS.md' : 'CLAUDE.md';
+    return cli === 'codex' || cli === 'codex-exp' ? 'AGENTS.md' : 'CLAUDE.md';
   }
 
   function writeAutoFile(persisted, entries) {

@@ -610,7 +610,7 @@ class ChatProvider extends ChangeNotifier {
     // /api/codex/quota is only a legacy fallback when no concrete Provider is
     // known. A known Provider decides whether this Codex session has a Codex
     // window, GLM window, money balance, or no limit surface.
-    if (_cli != SessionCli.codex ||
+    if (!_cli.isCodexFamily ||
         _activeProviderId != null ||
         _providerSelection != null) {
       return null;
@@ -2200,7 +2200,7 @@ class ChatProvider extends ChangeNotifier {
   /// CLI; skips while one is in flight or after a recent error (vendor backoff)
   /// unless [force]. Callers: cli-switch hooks + the bar's tap handler.
   Future<void> refreshCodexQuota({bool force = false}) async {
-    if (_cli != SessionCli.codex ||
+    if (!_cli.isCodexFamily ||
         _activeProviderId != null ||
         _providerSelection != null) {
       return;

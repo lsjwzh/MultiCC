@@ -11,6 +11,7 @@ const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-r
 const adapters = [
   require('../src/cli-adapters/claude').createClaudeAdapter({}),
   require('../src/cli-adapters/codex').createCodexAdapter({}),
+  require('../src/cli-adapters/codex-exp').createCodexExpAdapter({}),
   require('../src/cli-adapters/opencode').createOpencodeAdapter({}),
   require('../src/cli-adapters/zcode').createZcodeAdapter({}),
   require('../src/cli-adapters/qoder').createQoderAdapter({}),
@@ -23,6 +24,7 @@ const traces = {
   claude: [successResult], qoder: [{ type: 'result', subtype: 'success', is_error: false }],
   codebuddy: [{ type: 'result', subtype: 'success', is_error: false }],
   codex: [{ type: 'turn.completed', usage: {} }],
+  'codex-exp': [{ method: 'turn/completed', params: { turn: { id: 'turn-exp', status: 'completed' } } }],
   opencode: [{ type: 'step_start' }, { type: 'step_finish', part: { reason: 'stop' } }],
   zcode: [{ type: 'step_finish', part: { reason: 'stop' } }],
   kimi: [{ role: 'meta', type: 'session.resume_hint', session_id: 'session-1' }],

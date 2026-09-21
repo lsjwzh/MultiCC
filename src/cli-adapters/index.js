@@ -5,6 +5,7 @@ const { resolveCliCommands } = require('./commands');
 const { createCliProviderRegistry } = require('./core');
 const { createClaudeAdapter } = require('./claude');
 const { createCodexAdapter } = require('./codex');
+const { createCodexExpAdapter } = require('./codex-exp');
 const { createOpencodeAdapter } = require('./opencode');
 const { createZcodeAdapter } = require('./zcode');
 const { createQoderAdapter } = require('./qoder');
@@ -50,6 +51,16 @@ function createCliAdapters(deps) {
       routerMcpScript,
       isResponseCompletedDisconnect: deps.isCodexResponseCompletedDisconnect,
       isTransportDisconnect: deps.isCodexTransportDisconnect,
+    }),
+    createCodexExpAdapter({
+      codexCmd: commands['codex-exp'],
+      codexReasoningConfigArg: deps.codexReasoningConfigArg,
+      codexModelConfigArg: deps.codexModelConfigArg,
+      codexReasoningLevel: deps.codexReasoningLevel,
+      envConstraint: deps.codexEnvConstraint,
+      multiccImgHint: deps.multiccImgHint,
+      routerMcpNode,
+      routerMcpScript,
     }),
     createOpencodeAdapter({
       cmd: commands.opencode,

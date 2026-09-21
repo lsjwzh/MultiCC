@@ -137,11 +137,13 @@ test('provider and wait adapters expose status without credentials, commands, UR
   const provider = toProviderDto({
     id: 'provider-1', appType: 'claude', protocol: 'anthropic', wireApi: 'messages',
     name: 'Provider', source: 'local', model: 'model-1', modelOptions: ['model-1', 'model-1'],
+    compatibleClis: ['claude', 'codex-exp', 'malicious-cli'],
     hasToken: true, token: 'provider-secret', tokenMask: 'sk-****', baseUrl: 'https://private.example/v1',
     cwd: '/private/provider', stack: 'private stack',
   });
   assertValid('provider.schema.json', provider);
   assert.equal(provider.hasCredentials, true);
+  assert.deepEqual(provider.compatibleClis, ['claude', 'codex-exp']);
 
   const wait = toWaitDto({
     id: 'w_safe', session: 'session-contract', mode: 'poll', checks: 1,

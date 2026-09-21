@@ -3,6 +3,7 @@
 const assert = require('assert');
 const { createClaudeAdapter } = require('../src/cli-adapters/claude');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
+const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
 const { createQoderAdapter } = require('../src/cli-adapters/qoder');
@@ -19,12 +20,13 @@ const codex = createCodexAdapter({
   isResponseCompletedDisconnect: message => message === 'response-disconnect',
   isTransportDisconnect: message => message === 'transport-disconnect',
 });
+const codexExp = createCodexExpAdapter({ codexCmd: 'codex' });
 const opencode = createOpencodeAdapter({ cmd: 'opencode' });
 const zcode = createZcodeAdapter({ cmd: 'zcode' });
 const qoder = createQoderAdapter({ cmd: 'qoderclicn' });
 const kimi = createKimiAdapter({ cmd: 'kimi' });
 
-for (const adapter of [claude, codex, opencode, zcode, qoder, kimi]) {
+for (const adapter of [claude, codex, codexExp, opencode, zcode, qoder, kimi]) {
   assert.strictEqual(typeof adapter.buildInvocation, 'function', `${adapter.name} buildInvocation`);
   assert.strictEqual(typeof adapter.decodeEvent, 'function', `${adapter.name} decodeEvent`);
   assert.strictEqual(adapter.shape, undefined, `${adapter.name} has no shape API`);
@@ -496,3 +498,4 @@ assert.strictEqual(
 }
 
 console.log('CLI adapter contract and decoder tests passed');
+require('./test-codex-exp-adapter');
