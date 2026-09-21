@@ -327,12 +327,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(skin.chat.cls.trim(), 'mc-composer__pill mc-composer__pill--ai', JSON.stringify(skin.chat));
     assert.equal(skin.chatRole.cls.trim(), 'mc-composer__pill mc-composer__pill--role', JSON.stringify(skin.chatRole));
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').closest('#task-details')!==null && document.getElementById('delivery-card').offsetHeight===0`), true, 'delivery details take no space above chat');
-    // 对话是浮在目录详情之上的一层（`#chat-layer`），层里第一条是它自己的控制条
-    //（手机上就是那条拖柄），下面才是对话帧。所以「贴着页头的两条」量的是层：
-    // 层顶上仍然不许夹着东西（收起的 delivery-card 已经塌成 0 高）。量帧本身
-    // 会把控制条那 32px 读成「中间夹了一层」。
-    assert.equal(await page.evaluate(`document.getElementById('chat-layer').getBoundingClientRect().top===document.getElementById('task-header').getBoundingClientRect().bottom`), true, 'two adjacent bands, no intervening delivery card');
-    assert.equal(await page.evaluate(`document.getElementById('conversation').getBoundingClientRect().top===document.getElementById('chat-bar').getBoundingClientRect().bottom`), true, '层里控制条下面紧跟着对话帧');
+    // 对话打开时 air.js 把 #task-header 搬进 #chat-layer，所以「页头带」和「对话帧」
+    // 都在层内：对话帧紧贴页头下沿，中间不许夹着东西（收起的 delivery-card 已塌成
+    // 0 高，见上一条）。量的必须是「对话帧 vs 页头」——量层（#chat-layer）会拿容器的
+    // 上沿去比自己孩子（页头）的下沿，永远不相等。控制条（#chat-bar）也不是页头与
+    // 对话帧之间的独立一层：它悬浮在页头右上角（见 air.css「两颗操作直接悬在浮层页头
+    // 右上角」），落在页头带的竖直范围内。
+    assert.equal(await page.evaluate(`document.getElementById('conversation').getBoundingClientRect().top===document.getElementById('task-header').getBoundingClientRect().bottom`), true, 'two adjacent bands, no intervening delivery card');
+    assert.equal(await page.evaluate(`(()=>{const b=document.getElementById('chat-bar').getBoundingClientRect(),h=document.getElementById('task-header').getBoundingClientRect();return b.top>=h.top&&b.bottom<=h.bottom})()`), true, '控制条悬浮在页头带内，不是页头与对话帧之间的独立一层');
     await page.evaluate(`document.getElementById('task-state').click()`);
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').offsetHeight>0 && document.getElementById('task-state').getAttribute('aria-expanded')==='true'`), true);
     await page.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -869,7 +871,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       // 手机上页头是「标题区」不是导航：面包屑、标题、状态、按钮原来叠四行占 142px。
       // 面包屑（在哪个目录）收进侧栏抽屉；状态跟标题同一行读，放不下才落回第二行；
       // 工具（含 ↻）收进「⋯」打开的一层浮层，页头就只剩那一行 —— 浮层不占位。
-      const mobileHeader = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const t=g('task-title'),s=g('task-state'),h=g('task-header');const tr=t.getBoundingClientRect(),sr=s.getBoundingClientRect();return {h:h.getBoundingClientRect().height,crumb:getComputedStyle(g('task-breadcrumb')).display,chatTop:g('chat-layer').getBoundingClientRect().top,sameLine:Math.abs(tr.top-sr.top)<12,titleClipped:t.scrollWidth>t.clientWidth+1,full:s.textContent,joined:[...s.children].map(c=>c.textContent).join(''),run:[...s.querySelectorAll('.ts-run')].map(e=>getComputedStyle(e).display),life:[...s.querySelectorAll('.ts-life')].map(e=>getComputedStyle(e).display),detail:getComputedStyle(g('details-toggle')).display,refreshParent:g('refresh').parentElement.className,options:getComputedStyle(g('task-options')).display,tools:getComputedStyle(g('task-tools')).display}})()`);
+      const mobileHeader = await page.evaluate(`(()=>{const g=id=>document.getElementById(id);const t=g('task-title'),s=g('task-state'),h=g('task-header');const tr=t.getBoundingClientRect(),sr=s.getBoundingClientRect();return {h:h.getBoundingClientRect().height,crumb:getComputedStyle(g('task-breadcrumb')).display,conv:g('conversation').getBoundingClientRect().top,hb:h.getBoundingClientRect().bottom,sameLine:Math.abs(tr.top-sr.top)<12,titleClipped:t.scrollWidth>t.clientWidth+1,full:s.textContent,joined:[...s.children].map(c=>c.textContent).join(''),run:[...s.querySelectorAll('.ts-run')].map(e=>getComputedStyle(e).display),life:[...s.querySelectorAll('.ts-life')].map(e=>getComputedStyle(e).display),detail:getComputedStyle(g('details-toggle')).display,refreshParent:g('refresh').parentElement.className,options:getComputedStyle(g('task-options')).display,tools:getComputedStyle(g('task-tools')).display}})()`);
       // 390 上一行就够（45px）；320 上「⋯」拿走的那 34px 让状态回到第二行 —— 宁可
       // 多这一行，也不把状态压成省略号，那正是 titleClipped 这条断言在守的事。
       // 两个宽度都比收起来之前的 85 / 93px 矮，工具一件也没少。
@@ -877,9 +879,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(mobileHeader.options, 'block', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.tools, 'none', '工具不能自己占一行：收在浮层里', JSON.stringify(mobileHeader));
       assert.equal(mobileHeader.crumb, 'none', JSON.stringify(mobileHeader));
-      // 贴着页头的那一条是对话浮层（`#chat-layer`）：层里第一条才是控制条（手机上
-      // 是那条拖柄），对话帧在它下面。量层，才是量「页头下面紧跟着对话这一条」。
-      assert.equal(mobileHeader.chatTop, mobileHeader.h, JSON.stringify(mobileHeader));
+      // 对话打开时 air.js 把 #task-header 搬进 #chat-layer，对话帧（#conversation）
+      // 紧贴页头下沿、中间不许夹东西 —— 和桌面那条同一个不变量：对话帧顶 === 页头底。
+      // 别写成「=== 页头高」：皮肤给页头留了 1px 上偏移后 header.top 不再是 0，高就比
+      // 底边少 1px。量层（#chat-layer）更不对，拿到的是容器上沿，永远不等于页头底。
+      assert.equal(mobileHeader.conv, mobileHeader.hb, JSON.stringify(mobileHeader));
       // 320 上「⋯」拿走的 34px 在 macOS 字体度量下会把状态挤回第二行，但
       // docker 的 noto-cjk 更窄，一行可能仍然放得下 —— 那是更好的渲染，不是
       // 回归。这条守的真正不变量是「放不下时宁可换行也不裁标题」，标题不裁
@@ -931,8 +935,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
           // 收在 .air-tool-name 里）。名字从哪条竖线开始，用 Range 量文字自己的左边：
           // 「统一」这件事只有量得出左边才说得清。
           const textLeft=n=>{const box=document.createRange();box.selectNodeContents(n);return Math.round(box.getBoundingClientRect().left)};
+          // 名字是按钮里「图标之外那一段」。老骨架里详情/更多是裸文本节点，i18n 之后
+          // 包成了 <span data-i18n>（故意不带 .air-tool-name —— 那会被桌面档 display:none
+          // 藏掉，而这两件在桌面上正是只靠这段文字）。所以认「非图标、有文字」的子节点，
+          // 裸文本、.air-tool-name、i18n span 三种写法都收。
+          const isIcon=n=>n.nodeType===1&&(n.classList.contains('air-tool-icon')||n.classList.contains('air-tool-icon-panel'));
           const cells=rows.map(b=>{const icon=b.querySelector('.air-tool-icon,.air-tool-icon-panel');
-            const name=[...b.childNodes].find(n=>n.nodeType===3?!!n.textContent.trim():n.classList&&n.classList.contains('air-tool-name'));
+            const name=[...b.childNodes].find(n=>n.nodeType===3?!!n.textContent.trim():(n.nodeType===1&&!isIcon(n)&&!!n.textContent.trim()));
             return {icon:icon?icon.textContent:'', name:name?name.textContent.trim():'',
               iconLeft:icon?Math.round(icon.getBoundingClientRect().left):null, nameLeft:name?textLeft(name):null}});
           return {h:g('task-header').getBoundingClientRect().height, expanded:g('task-options').getAttribute('aria-expanded'),
@@ -1008,8 +1017,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.deepEqual(attributed.run.filter(d => d === 'none'), [], JSON.stringify(attributed));
       assert.equal(attributed.full, '本轮 执行中 · 任务 进行中 · 归属待核验', JSON.stringify(attributed));
       assert.equal(attributed.joined, attributed.full, JSON.stringify(attributed));
-      // 让位之前这一条在 390 上会落到第二行（页头 60 出头），让位之后回到一行。
-      assert.ok(attributed.h <= (width > 340 ? 52 : 64), JSON.stringify(attributed));
+      // 让位（手机上藏掉「归属待核验」）之前这一条在 390 上会落到第二行（页头 60 出
+      // 头），让位之后 390 回到一行。但对话浮层给右上角那两颗悬浮操作留了 80px 右内边
+      // 距（air.css 手机档 `#task-header.is-chat-header` + `#chat-bar`），面包屑只剩
+      // ~190px：390 一行放得下标题+状态，360 放不下 —— 按 .breadcrumb 那条注释的设计，
+      // 宁可让状态换到第二行也不截断，所以 360 和 320 一样按两行（≤64）算。一行与否的
+      // 真不变量由下面 width===390 的 sameLine 断言单独守着，不靠这个宽度阈值。
+      assert.ok(attributed.h <= (width > 375 ? 52 : 64), JSON.stringify(attributed));
       screenshots.push(await page.screenshot('task-state-attributed-mobile-' + width));
       if (width === 390) {
         assert.equal(attributed.sameLine, true, '状态回到标题那一行：' + JSON.stringify(attributed));
