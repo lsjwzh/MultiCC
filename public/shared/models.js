@@ -158,6 +158,58 @@
     return qoderModelsPromise;
   }
 
+  // ── WorkBuddy (codebuddy) live model list ───────────────────────────────
+  // GET /api/codebuddy/models parses `codebuddy --help` (server-side cache 1
+  // hour) — the CLI auto-updates and its --model help line is the only local
+  // source tracking the vendor's rapid releases. Mirrored here for 1 hour
+  // too. Entries are {model, label}; see routes/codebuddy-models.js.
+  const CODEBUDDY_MODELS_TTL_MS = 60 * 60 * 1000; // 1 hour
+  const CODEBUDDY_MODELS_KEY = 'multicc.codebuddy.models.v1';
+  let codebuddyModelsPromise = null;
+
+  function readCodebuddyCache() {
+    try {
+      const raw = window.localStorage && window.localStorage.getItem(CODEBUDDY_MODELS_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object') return null;
+      const at = Number(obj.at) || 0;
+      const models = Array.isArray(obj.models) ? obj.models : [];
+      if (!at || (Date.now() - at) >= CODEBUDDY_MODELS_TTL_MS) return null;
+      if (!models.length) return null;
+      return { at, models };
+    } catch (_) { return null; }
+  }
+
+  function writeCodebuddyCache(models) {
+    try {
+      if (window.localStorage) {
+        window.localStorage.setItem(CODEBUDDY_MODELS_KEY, JSON.stringify({ at: Date.now(), models }));
+      }
+    } catch (_) { /* ignore quota / disabled storage */ }
+  }
+
+  function readCodebuddyModelsSync() {
+    const cached = readCodebuddyCache();
+    return cached ? cached.models : [];
+  }
+
+  async function loadCodebuddyModels() {
+    const cached = readCodebuddyCache();
+    if (cached) return cached.models;
+    if (codebuddyModelsPromise) return codebuddyModelsPromise;
+    codebuddyModelsPromise = (async () => {
+      try {
+        const data = await window.fetch('/api/codebuddy/models', { credentials: 'same-origin' })
+          .then(r => (r && r.ok ? r.json() : null));
+        const models = data && Array.isArray(data.models) ? data.models : [];
+        if (models.length && data.source !== 'fallback') writeCodebuddyCache(models);
+        return models;
+      } catch (_) { return []; } finally { codebuddyModelsPromise = null; }
+    })();
+    return codebuddyModelsPromise;
+  }
+
   // ── Codex account model list ───────────────────────────────────────────
   // GET /api/codex/models calls the supported Codex app-server `model/list`
   // method. Unlike a static table, it carries this account's rollout and
@@ -293,6 +345,8 @@
   window.loadOpenCodeModels = loadOpenCodeModels;
   window.loadQoderModels = loadQoderModels;
   window.readQoderModelsSync = readQoderModelsSync;
+  window.loadCodebuddyModels = loadCodebuddyModels;
+  window.readCodebuddyModelsSync = readCodebuddyModelsSync;
   window.loadCodexModels = loadCodexModels;
   window.readCodexModelCatalogSync = readCodexModelCatalogSync;
   window.codexModelOptions = codexModelOptions;
