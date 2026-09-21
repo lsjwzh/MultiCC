@@ -20,6 +20,7 @@ const test = require('node:test');
 
 const ROOT = path.join(__dirname, '..');
 const INSTALLER = path.join(ROOT, 'install.sh');
+const FIXTURE_SERVER = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js');
 const bundleScript = require(path.join(ROOT, 'scripts', 'standalone-bundle.js'));
 const PLATFORM = process.platform;
 const ARCH = process.arch;
@@ -52,7 +53,7 @@ function buildFixtureBundle(version = '9.9.9') {
   const resources = path.join(root, resourcesRel());
   write(path.join(resources, 'runtime', 'bin', 'node'),
     `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, 0o755);
-  write(path.join(resources, 'app-server', 'server.js'), '// fixture\n');
+  write(path.join(resources, 'app-server', 'server.js'), `require(${JSON.stringify(FIXTURE_SERVER)});\n`);
   write(path.join(resources, 'app-server', 'package.json'), `${JSON.stringify({ name: 'multicc', version }, null, 2)}\n`);
   write(path.join(resources, 'bundle-manifest.json'),
     `${JSON.stringify({ version, platform: PLATFORM, arch: ARCH }, null, 2)}\n`);
@@ -87,20 +88,28 @@ function runInstaller(args, { cwd, env = {} } = {}) {
   });
 }
 
-test('install.sh unpacks a package, configures it, and replaces a previous install', () => {
+test('install.sh unpacks, configures, starts, and safely replaces a previous install', t => {
   const fixture = buildFixtureBundle();
   const archive = archiveFixture(fixture);
   const home = tmpdir('multicc-installer-home-');
   const targetParent = tmpdir('multicc-installer-target-');
   const installDir = path.join(targetParent, 'MultiCC');
   const env = { MULTICC_STANDALONE_HOME: home };
+  t.after(() => {
+    if (fs.existsSync(path.join(installDir, 'multicc'))) {
+      spawnSync(path.join(installDir, 'multicc'), ['stop'], {
+        encoding: 'utf8', env: { ...process.env, ...env },
+      });
+    }
+  });
 
   const first = runInstaller([
     '--from', archive, '--dir', installDir, '--token', 'installer-test-token',
-    '--port', '3111', '--no-service',
+    '--port', '3111', '--no-service', '--no-open',
   ], { env });
   assert.equal(first.status, 0, `installer failed:\n${first.stdout}\n${first.stderr}`);
   assert.match(first.stdout, /Installation Complete/);
+  assert.match(first.stdout, /MultiCC is ready/, 'a normal install must return with a ready server');
   assert.equal(fs.existsSync(path.join(installDir, 'multicc')), true, 'the multicc command must be installed');
   assert.equal(fs.existsSync(path.join(installDir, resourcesRel(), 'runtime', 'bin', 'node')), true,
     'the bundled runtime must be installed');
@@ -118,10 +127,15 @@ test('install.sh unpacks a package, configures it, and replaces a previous insta
 
   const token = spawnSync(path.join(installDir, 'multicc'), ['config', 'get', 'ACCESS_TOKEN'], { encoding: 'utf8', env: { ...process.env, ...env } });
   assert.equal(token.stdout.trim(), 'installer-test-token');
+  const firstStatus = spawnSync(path.join(installDir, 'multicc'), ['status', '--json'], {
+    encoding: 'utf8', env: { ...process.env, ...env },
+  });
+  assert.equal(firstStatus.status, 0, firstStatus.stderr);
+  assert.equal(JSON.parse(firstStatus.stdout).running, true, 'the installer must leave MultiCC running');
 
   // Reinstalling over a previous installation is an upgrade, not an error.
   const second = runInstaller([
-    '--from', archive, '--dir', installDir, '--port', '3111', '--no-service',
+    '--from', archive, '--dir', installDir, '--port', '3111', '--no-service', '--no-open',
   ], { env });
   assert.equal(second.status, 0, `reinstall failed:\n${second.stdout}\n${second.stderr}`);
   assert.equal(second.stdout.includes('Existing installation found'), true, 'an existing install must be reported');
@@ -129,6 +143,11 @@ test('install.sh unpacks a package, configures it, and replaces a previous insta
   const tokenAfter = spawnSync(path.join(installDir, 'multicc'), ['config', 'get', 'ACCESS_TOKEN'], { encoding: 'utf8', env: { ...process.env, ...env } });
   assert.equal(tokenAfter.stdout.trim(), 'installer-test-token',
     'reinstalling without --token must keep the configured token');
+  const secondStatus = spawnSync(path.join(installDir, 'multicc'), ['status', '--json'], {
+    encoding: 'utf8', env: { ...process.env, ...env },
+  });
+  assert.equal(JSON.parse(secondStatus.stdout).running, true,
+    'a replacement install must stop the old process and bring the new bundle back up');
   const leftovers = fs.readdirSync(targetParent).filter(name => name.includes('.old-'));
   assert.deepEqual(leftovers, [], 'the replaced installation must not be left behind');
 });
@@ -147,6 +166,26 @@ test('install.sh refuses to touch a directory that is not a MultiCC install', ()
   assert.notEqual(res.status, 0, 'installing over an unrelated directory must fail');
   assert.match(`${res.stdout}${res.stderr}`, /does not look like a MultiCC installation/);
   assert.equal(fs.readFileSync(precious, 'utf8'), 'do not delete me\n', 'nothing in that directory may be deleted');
+});
+
+test('install.sh never mistakes a source checkout for a replaceable standalone install', () => {
+  const fixture = buildFixtureBundle();
+  const archive = archiveFixture(fixture);
+  const targetParent = tmpdir('multicc-installer-source-checkout-');
+  const installDir = path.join(targetParent, 'MultiCC');
+  fs.mkdirSync(path.join(installDir, '.git'), { recursive: true });
+  const sourceCommand = path.join(installDir, 'multicc');
+  fs.writeFileSync(sourceCommand, '#!/bin/sh\necho source-checkout\n');
+  fs.chmodSync(sourceCommand, 0o755);
+  fs.writeFileSync(path.join(installDir, 'package.json'), '{"name":"multicc-source"}\n');
+
+  const res = runInstaller(['--from', archive, '--dir', installDir, '--no-start'], {
+    env: { MULTICC_STANDALONE_HOME: tmpdir('multicc-installer-home-') },
+  });
+  assert.notEqual(res.status, 0, 'a source checkout at ~/MultiCC must never be replaced');
+  assert.match(`${res.stdout}${res.stderr}`, /does not look like a MultiCC installation/);
+  assert.equal(fs.readFileSync(sourceCommand, 'utf8'), '#!/bin/sh\necho source-checkout\n');
+  assert.equal(fs.existsSync(path.join(installDir, '.git')), true);
 });
 
 test('install.sh refuses a package whose checksum does not match', () => {
@@ -193,4 +232,28 @@ test('install.sh keeps the old --branch command line working', () => {
   const source = fs.readFileSync(INSTALLER, 'utf8');
   assert.match(source, /--branch\)\s+need_val[^\n]*VERSION="\$2"/,
     'a previously published --branch <tag> command must still install that release');
+});
+
+test('install.sh defaults to a stable home install and exposes headless switches', () => {
+  const source = fs.readFileSync(INSTALLER, 'utf8');
+  assert.match(source, /INSTALL_DIR="\$\{INSTALL_DIR:-\$\{HOME:-\$PWD\}\/MultiCC\}"/,
+    'a curl-piped install must not depend on the terminal current directory');
+  const help = runInstaller(['--help']);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /--no-start/);
+  assert.match(help.stdout, /--no-open/);
+  assert.match(help.stdout, /starts MultiCC and opens the browser/);
+});
+
+test('install.sh really installs at HOME/MultiCC when --dir is omitted', () => {
+  const fixture = buildFixtureBundle();
+  const archive = archiveFixture(fixture);
+  const home = tmpdir('multicc-installer-default-home-');
+  const dataHome = tmpdir('multicc-installer-default-data-');
+  const res = runInstaller([
+    '--from', archive, '--token', 'installer-test-token', '--no-start',
+  ], { cwd: tmpdir('multicc-installer-unrelated-cwd-'), env: { HOME: home, MULTICC_STANDALONE_HOME: dataHome } });
+  assert.equal(res.status, 0, `installer failed:\n${res.stdout}\n${res.stderr}`);
+  assert.equal(fs.existsSync(path.join(home, 'MultiCC', 'multicc')), true,
+    'default install must be stable under HOME, not whichever directory invoked curl');
 });

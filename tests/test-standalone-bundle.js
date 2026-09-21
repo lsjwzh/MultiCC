@@ -29,6 +29,7 @@ const FIXTURE = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js'
 
 const bundleScript = require(path.join(ROOT, 'scripts', 'standalone-bundle.js'));
 const launcherScript = require(path.join(ROOT, 'scripts', 'standalone-launcher.js'));
+const cliScript = require(path.join(ROOT, 'scripts', 'standalone-cli.js'));
 const nativeArch = require(path.join(ROOT, 'scripts', 'native-arch.js'));
 
 function tmpdir(prefix) {
@@ -101,6 +102,16 @@ test('runtime pinning: SHASUMS parsing, dist names and the macOS floor', () => {
   assert.equal(bundleScript.macosFloorForNode('22.23.2'), '11.0');
   assert.equal(bundleScript.macosFloorForNode('24.9.0'), '13.5');
   assert.equal(bundleScript.MACOS_FLOOR, '11.0');
+});
+
+test('standalone updater compares SemVer and never mistakes an older release for an upgrade', () => {
+  assert.equal(cliScript.compareVersions('2.0.4', '2.0.3'), 1);
+  assert.equal(cliScript.compareVersions('v2.0.4', '2.0.4'), 0);
+  assert.equal(cliScript.compareVersions('2.0.3', '2.0.4'), -1);
+  assert.equal(cliScript.compareVersions('2.0.4-beta.2', '2.0.4-beta.1'), 1);
+  assert.equal(cliScript.compareVersions('2.0.4-beta.1', '2.0.4'), -1);
+  assert.equal(cliScript.compareVersions('2.0.4+build.7', '2.0.4+build.2'), 0);
+  assert.equal(cliScript.compareVersions('not-a-version', '2.0.4'), null);
 });
 
 test('macOS shell: app layout, plist floor and wrapper indirection', () => {

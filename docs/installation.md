@@ -11,16 +11,18 @@ curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | b
 The tag in the URL **is** the version. The script downloads that release's
 **standalone package** — the server plus a pinned Node runtime plus every
 production dependency, in one archive — verifies its SHA-256, unpacks it into
-`~/MultiCC`, writes `ACCESS_TOKEN` and `PORT`, and optionally asks about
-start-on-login (macOS `launchd` / Linux systemd user; Windows has no service
-mode). Nothing is compiled, no APK is built, and **the target machine needs no
-Node, npm, git, Homebrew or Xcode**.
+`~/MultiCC`, clears macOS download quarantine, writes `ACCESS_TOKEN` and `PORT`,
+optionally asks about start-on-login (macOS `launchd` / Linux systemd user;
+Windows has no service mode), starts MultiCC and opens the browser. Nothing is
+compiled, no APK is built, and **the target machine needs no Node, npm, git,
+Homebrew or Xcode**.
 
-Then:
+When the command returns MultiCC is already ready. The same command remains the
+day-to-day control surface:
 
 ```bash
 cd ~/MultiCC
-./multicc start              # start in the background and open the browser
+./multicc start              # idempotent: start/reuse it and open the browser
 ./multicc status             # version, state, URL, data directory
 ./multicc service install    # start automatically on login
 ```
@@ -40,6 +42,8 @@ the authority for anything below.
 | `--token <xxx>` | Pre-set `ACCESS_TOKEN` (default: auto-generated) |
 | `--port <port>` | Server port (default: `3000`) |
 | `--no-service` | Skip the start-on-login setup |
+| `--no-start` | Install/configure only; also skips start-on-login setup |
+| `--no-open` | Start the server but do not open a browser |
 
 Older published command lines still work through compatibility shims: `--branch
 <tag>` is an alias for `--version`, `--no-clone` means "install from the current

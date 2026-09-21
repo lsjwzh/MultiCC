@@ -177,6 +177,11 @@ async function cmdStart(layout, env, args) {
   const state = await currentState(layout, env);
   if (state.running) {
     process.stdout.write(`MultiCC is already running at ${state.origin} (pid ${state.pid})\n`);
+    // `start` is the one user-facing verb used by the installer and all wrapper
+    // scripts. Reusing a service-started instance must still honour its promise
+    // to open the UI; otherwise a successful one-click install appears to do
+    // nothing after launchd/systemd wins the startup race.
+    if (!args.noOpen) openBrowser(state.origin, { platform: layout.platform });
     return 0;
   }
   const launcherArgs = ['--start'];
@@ -430,6 +435,42 @@ function verifyChecksum(file, checksumText) {
   return actual;
 }
 
+// Compare release versions without pulling a semver dependency into the tiny
+// standalone launcher. Build metadata is ignored; prerelease identifiers follow
+// SemVer precedence (2.0.4-beta.2 < 2.0.4). null means either side is malformed,
+// which makes update fail closed instead of guessing and replacing a newer tree.
+function compareVersions(left, right) {
+  const parse = value => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(value || '').trim());
+    if (!match) return null;
+    return {
+      core: match.slice(1, 4).map(Number),
+      pre: match[4] ? match[4].split('.') : [],
+    };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a || !b) return null;
+  for (let i = 0; i < a.core.length; i += 1) {
+    if (a.core[i] !== b.core[i]) return a.core[i] > b.core[i] ? 1 : -1;
+  }
+  if (!a.pre.length && !b.pre.length) return 0;
+  if (!a.pre.length) return 1;
+  if (!b.pre.length) return -1;
+  const length = Math.max(a.pre.length, b.pre.length);
+  for (let i = 0; i < length; i += 1) {
+    if (a.pre[i] === undefined) return -1;
+    if (b.pre[i] === undefined) return 1;
+    if (a.pre[i] === b.pre[i]) continue;
+    const aNumeric = /^\d+$/.test(a.pre[i]);
+    const bNumeric = /^\d+$/.test(b.pre[i]);
+    if (aNumeric && bNumeric) return Number(a.pre[i]) > Number(b.pre[i]) ? 1 : -1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return a.pre[i] > b.pre[i] ? 1 : -1;
+  }
+  return 0;
+}
+
 // Where the read-only payload of a bundle root lives.
 function bundleResources(root, platform) {
   return platform === 'win32' || platform === 'linux'
@@ -548,12 +589,28 @@ async function cmdUpdate(layout, env, args) {
     process.stderr.write(`Could not check for updates. Download manually: ${RELEASES_URL}\n`);
     return 1;
   }
+  const comparison = compareVersions(release.tag, current);
   if (args.check) {
     process.stdout.write(`installed: ${current}\nlatest:    ${release.tag}\n`);
+    if (comparison === null) {
+      process.stderr.write('Could not compare these versions safely; no update will be attempted.\n');
+      return 1;
+    }
+    if (comparison < 0) process.stdout.write('status:    installed version is newer (no downgrade)\n');
+    else if (comparison === 0) process.stdout.write('status:    up to date\n');
+    else process.stdout.write('status:    update available\n');
     return 0;
   }
-  if (release.tag === current) {
+  if (comparison === null) {
+    process.stderr.write(`Could not compare installed version ${current} with release ${release.tag}; refusing to replace it.\n`);
+    return 1;
+  }
+  if (comparison === 0) {
     process.stdout.write(`MultiCC ${current} is already the latest release.\n`);
+    return 0;
+  }
+  if (comparison < 0) {
+    process.stdout.write(`MultiCC ${current} is newer than the latest published release (${release.tag}); no downgrade was performed.\n`);
     return 0;
   }
   const asset = archiveName(release.tag, layout.platform, layout.arch);
@@ -783,6 +840,7 @@ module.exports = {
   archiveName,
   assetUrl,
   bundleResources,
+  compareVersions,
   configGet,
   configSet,
   envFilePath,
