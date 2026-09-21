@@ -15,13 +15,40 @@ const releaseWorkflowPath = path.join(ROOT, '.github', 'workflows', 'release.yml
 const androidGradle = fs.readFileSync(path.join(ROOT, 'app', 'android', 'app', 'build.gradle.kts'), 'utf8');
 const signerPin = fs.readFileSync(path.join(ROOT, 'app', 'android', 'release-cert.sha256'), 'utf8').trim();
 
-const stableCommand = `curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${pkg.version}/install.sh | bash -s -- --branch v${pkg.version}`;
+// The stable install command is one line with no flags: the tag in the URL is
+// the version, and the script installs exactly that. Nothing about it may go
+// back to cloning a branch.
+const stableCommand = `curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${pkg.version}/install.sh | bash`;
 assert.equal(lock.version, pkg.version, 'package-lock root version must match package.json');
 assert.equal(lock.packages[''].version, pkg.version,
   'package-lock workspace version must match package.json');
-assert.ok(installer.includes(stableCommand), 'installer help must clone the release tag, not main');
-assert.ok(readme.includes(stableCommand), 'README stable command must clone the release tag, not main');
-assert.match(installer, /--branch v\$\{INSTALLER_VERSION\}/);
+assert.ok(installer.includes(stableCommand), 'installer help must publish the release-tag command, not main');
+assert.ok(readme.includes(stableCommand), 'README stable command must use the release tag, not main');
+// The prefix alone is not enough: `… | bash -s -- --branch v2.0.3` also contains
+// it, and that form is exactly what this release replaced. Pin the shape — the
+// advertised line ends at `| bash`, with any flags confined to the <details>
+// opt-in block that documents them (`--dir`, `--version`, `--from`, …).
+const advertisedInstallLines = [...readme.matchAll(/^curl -sSL https:\/\/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/[^\n]*$/gm)]
+  .map(match => match[0]);
+assert.ok(advertisedInstallLines.includes(stableCommand),
+  'README must advertise the flagless install line verbatim');
+for (const line of advertisedInstallLines) {
+  assert.doesNotMatch(line, /\|\s*bash\s+-s/, `README install line must not pass flags inline: ${line}`);
+  assert.doesNotMatch(line, /--branch|--no-clone|--no-apk/, `README install line must not use the retired flags: ${line}`);
+}
+assert.doesNotMatch(readme, /--branch\s+v?\d+\.\d+\.\d+/, 'README must not document --branch version pinning');
+assert.match(readme, /--version latest/, 'README must send "newest release" through --version latest');
+
+// The Chinese README advertises the same line and must not drift from it. Flag
+// examples below it are opt-in and abbreviated (`curl -sSL .../install.sh`), so
+// only the full-URL lines have to be the flagless one.
+const readmeZh = fs.readFileSync(path.join(ROOT, 'README.zh.md'), 'utf8');
+assert.ok(readmeZh.includes(stableCommand), 'README.zh.md must advertise the same flagless install line');
+for (const line of readmeZh.matchAll(/^curl -sSL https:\/\/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/[^\n]*$/gm)) {
+  assert.equal(line[0], stableCommand, 'README.zh.md install line must be flagless, like the English one');
+}
+assert.match(installer, /--version latest/,
+  'the "newest release" path must be an explicit opt-in, not the default');
 
 assert.equal(fs.existsSync(releaseWorkflowPath), true, 'release workflow must be version controlled');
 const releaseWorkflow = fs.readFileSync(releaseWorkflowPath, 'utf8');
@@ -81,7 +108,12 @@ assert.ok(stableAfter > stableBranch, 'stable updates must capture the new revis
 assert.ok(dependencyDiff > stableAfter, 'stable updates must install changed manifests before restart');
 assert.match(manager, /Runtime dependencies are incomplete or outdated — running npm install/);
 assert.match(manager, /scripts\/check-runtime-deps\.js/);
-assert.match(installer, /npm install \(full package\.json, including @homebridge\/ciao for LAN discovery\)/);
+// The installer no longer builds anything: dependencies and the runtime ship
+// inside the package it downloads, so it must not run npm, git or a host node.
+assert.doesNotMatch(installer, /npm install/, 'the installer must not install dependencies');
+assert.doesNotMatch(installer, /\bgit (clone|pull)\b/, 'the installer must not use git');
+assert.match(installer, /multicc-standalone-\$\{VERSION_NUMBER\}/,
+  'the installer must download the standalone package');
 assert.match(runtimeCheck, /requireFn\('@homebridge\/ciao'\)/);
 assert.match(manager, /Verifying runtime dependencies before service install/);
 assert.ok(manager.indexOf('Runtime dependencies are incomplete — running npm install') > manager.indexOf('do_install()'),

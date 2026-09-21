@@ -134,26 +134,42 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 ### 1. Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash -s -- --branch v2.0.3
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
 ```
 
-The script detects your OS, checks prerequisites, clones the repo, installs dependencies, generates an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd`). Installation never builds the Android APK.
+One line, no flags: the tag in the URL *is* the version. The script downloads that
+release's **standalone package** — the server plus a pinned Node runtime plus every
+production dependency, in one archive — verifies its SHA-256, unpacks it, generates
+an `ACCESS_TOKEN`, and optionally registers a background service (macOS `launchd` /
+Linux systemd user). Nothing is compiled, and **the target machine needs no Node,
+npm, git, Homebrew or Xcode**.
 
 <details>
-<summary>Manual install, or the daily <code>main</code> snapshot</summary>
+<summary>Install options, and building from source</summary>
 
 ```bash
-# Manual
+# Install somewhere else (default ~/MultiCC), or skip the auto-start question
+curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
+
+# Always the newest release, instead of the tag in the URL
+curl -sSL .../install.sh | bash -s -- --version latest
+
+# From a package you already downloaded
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.3-darwin-arm64.tar.gz
+```
+
+To hack on MultiCC itself, run it from a checkout — that path is for developers, and
+`./multicc update` there is a `git pull` + `npm install`:
+
+```bash
 git clone https://github.com/lsjwzh/MultiCC.git
 cd MultiCC && npm install && node server.js
-
-# Bleeding edge (may include untested changes)
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
 ```
 
 </details>
 
-**Prerequisites:** Node.js **>= 22.16**, `tmux` (terminal mode only), and at least one coding CLI on your `PATH`, already logged in.
+**Prerequisites:** `tmux` (terminal mode only) and at least one coding CLI on your
+`PATH`, already logged in. Node.js is **not** required — the package brings its own.
 
 <details>
 <summary><strong>Not a terminal person? Install the desktop app instead</strong> (macOS / Windows / Linux)</summary>
@@ -173,9 +189,10 @@ remember.
    a terminal, nothing in the repo. Updates arrive as new installers.
 
 On a Mac that cannot run it (the Electron shell needs macOS 13+, and Homebrew no
-longer builds Intel bottles), grab the **portable bundle** instead — the same
-backend and web UI with the Node runtime inside, installed by unzipping. It
-supports macOS 11+ including Intel Macs: `multicc-portable-<version>-darwin-x64.tar.gz`.
+longer builds Intel bottles), use the one-line install above instead — the desktop
+app and the installer ship **the same standalone tree**, just with a window around
+it. It supports macOS 11+ including Intel Macs:
+`multicc-standalone-<version>-darwin-x64.tar.gz`.
 
 Desktop installers appear on the Releases page from the first tag published after
 this feature landed; until such a release exists, build and run it from source
@@ -183,7 +200,7 @@ with `npm run desktop:dev`.
 
 **→ Install, first launch, startup failures, data/log locations, security model,
 signing status: [Desktop app](docs/desktop.md)** — or, for old/Intel Macs and
-machines without Node, the **[portable bundle](docs/portable.md)**.
+machines without a window manager, the **[standalone package](docs/standalone.md)**.
 
 </details>
 
@@ -194,14 +211,15 @@ Release. The **APK area in the web console** prefers a non-empty local
 for the server's exact package version. It never falls forward to `latest`.
 Installation and `./multicc update` never build an APK. Starting with v1.6.1,
 every stable release ships a signed APK asset, so the remote fallback is
-available immediately. The same Release also carries the desktop installers and
-their checksums (see the desktop section above).
+available immediately. The same Release carries the **standalone packages** that
+`install.sh` downloads, the desktop installers built on top of them, and their
+checksums (`SHA256SUMS.txt` covers everything).
 
 ### 2. Start it
 
 ```bash
-cd MultiCC
-./multicc start
+cd ~/MultiCC        # the installer's default directory (--dir changes it)
+./multicc start     # from a checkout, it is the same command
 ```
 
 Open **<http://localhost:3000>** — you land on the **Air console** (`/air`). Installer-created, password-protected instances also listen on the IPv4 LAN automatically; public access is never configured automatically and should use a tunnel (Tailscale Funnel, 花生壳, or SakuraFrp) — see [Configuration](docs/configuration.md).
@@ -226,13 +244,43 @@ Then open the same URL on your phone, or install the [Flutter app](docs/installa
 ### 4. Keep it up to date
 
 ```bash
-./multicc update           # pull latest, reinstall deps if they changed, restart
-./multicc update --force   # land on the remote's code whatever the tree looks like
+./multicc update           # install the newest release; your data is untouched
+./multicc update --check   # just compare versions
 ```
 
-A plain `update` already copes with an everyday dirty tree: on the dev channel it stashes your changes as `multicc-auto-update`, fast-forwards `main`, and pops them back. `--force` is for when that isn't enough — the pop conflicts with what was just pulled, the stable channel's `git checkout <tag>` refuses over a local edit, or your branch carries local commits and plain `update` just says *nothing to update*. It puts you on the remote's code regardless: everything in the tree, **including untracked files**, goes into a labelled `multicc-force-update-<timestamp>` stash first, then the checkout is forced (`git reset --hard origin/main` on dev, `git checkout -f <tag>` on stable). **Nothing is deleted, but the stash is not restored** — you land on a clean checkout and recover your work yourself with `git stash list` / `git stash pop`. One exception: on the stable channel `--force` still only acts when a newer release exists; at the newest tag it stops and prints the `git checkout -f` to run by hand.
+Installed from a package, that is the whole story: `update` downloads the new
+standalone archive for your platform, verifies its SHA-256, unpacks it next to your
+install, and swaps the directory in place — a detached helper waits for the running
+server to exit, renames the old tree aside, moves the new one in, and restarts. If
+any of that fails, the previous version is restored. Sessions, providers and chat
+history live in the per-user data directory, so an update never touches them (and the
+in-app update entry is disabled for packaged installs on purpose: for those, the
+package *is* the upgrade).
 
-Or do it from the browser: click the **version number at the bottom of the Air console sidebar** → a dialog shows current vs. latest and a *强制更新* checkbox → confirm, and MultiCC runs the same update in the background, streams the log into the dialog, restarts itself, and reloads the page once it's back. If the update fails, the dialog keeps the full output and offers a force retry.
+<details>
+<summary>Running from a source checkout (git semantics)</summary>
+
+In a checkout `./multicc update` is a `git pull` + `npm install` + restart, and it
+copes with an everyday dirty tree: on the dev channel it stashes your changes as
+`multicc-auto-update`, fast-forwards `main`, and pops them back. `--force` is for
+when that isn't enough — the pop conflicts with what was just pulled, the stable
+channel's `git checkout <tag>` refuses over a local edit, or your branch carries
+local commits and plain `update` just says *nothing to update*. It puts you on the
+remote's code regardless: everything in the tree, **including untracked files**, goes
+into a labelled `multicc-force-update-<timestamp>` stash first, then the checkout is
+forced (`git reset --hard origin/main` on dev, `git checkout -f <tag>` on stable).
+**Nothing is deleted, but the stash is not restored** — you land on a clean checkout
+and recover your work yourself with `git stash list` / `git stash pop`. One exception:
+on the stable channel `--force` still only acts when a newer release exists; at the
+newest tag it stops and prints the `git checkout -f` to run by hand.
+
+From the browser: click the **version number at the bottom of the Air console
+sidebar** → a dialog shows current vs. latest and a *强制更新* checkbox → confirm, and
+MultiCC runs the same update in the background, streams the log into the dialog,
+restarts itself, and reloads the page once it's back. If the update fails, the dialog
+keeps the full output and offers a force retry.
+
+</details>
 
 **→ Install flags, `./multicc` service manager, systemd unit, app builds: [Installation](docs/installation.md)**
 
@@ -312,7 +360,7 @@ Or do it from the browser: click the **version number at the bottom of the Air c
 | **[Multi-CLI switching](docs/cli-switching.md)** | The headline feature: checkpoint format, reuse semantics, API, one-click install |
 | [Installation & service management](docs/installation.md) | Install flags, updating, `./multicc` commands, systemd, Flutter builds |
 | [Desktop app](docs/desktop.md) | macOS / Windows / Linux desktop installers: first launch, failures, data & log locations, security model, signing |
-| [Portable bundle](docs/portable.md) | Self-contained build for machines that cannot install Node or the desktop app (macOS 11+/Intel, no compiler, no Homebrew): layout, `.app` wrapper, data locations, limits |
+| [Standalone package](docs/standalone.md) | The distribution form everything else wraps: layout, `multicc` commands, updates, data locations, and why it runs on macOS 11+/Intel with no compiler and no Homebrew |
 | [Configuration](docs/configuration.md) | Every environment variable, providers, voice, notifications |
 | [Features](docs/features.md) | The complete feature reference |
 | [Architecture](docs/architecture.md) | Repository layout, message flows, design decisions |
@@ -327,7 +375,10 @@ The full index — design contracts, voice, provider routing, governance reviews
 
 ## Configuration in 30 seconds
 
-Everything lives in `.env` at the repo root. The installer writes `ACCESS_TOKEN` and `PORT` for you.
+Everything lives in a single env file. Installed from a package, that file is
+`multicc.env` in the per-user data directory — `./multicc config path` prints it,
+`./multicc config set PORT 3000` edits it. Running from a checkout it is `.env` at
+the repo root. Either way the installer writes `ACCESS_TOKEN` and `PORT` for you.
 
 ```env
 PORT=3000

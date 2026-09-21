@@ -84,9 +84,9 @@
 
 新增源码文件先 `git add`，命令导出候选文件和 SHA-256 摘要，再构建仅含源码和系统前置依赖的镜像。每次创建无数据卷、无宿主挂载的新容器；开始时要求安装目录、运行数据、node_modules 和 npm 缓存不存在。
 
-容器内以候选源码建立临时 Git 镜像，让真实 `install.sh --branch v<版本> --dir <空目录> --no-service` 执行克隆、npm 安装、原生依赖检查及 .env 创建。安装源使用当前候选，避免测试到 GitHub 上的旧版本；不会验证 GitHub CDN 的可用性。系统前置依赖预装，真实模型 CLI 使用受控替身，不测试厂商登录或模型质量。
+容器内先用候选源码打出一个真实独立包（`scripts/standalone-bundle.js`，含内置 Node 运行时），再让真实 `install.sh --from <该包> --dir <空目录> --no-service` 执行「校验和 → 解压 → 写配置」；容器里没有 git、没有 node_modules，安装阶段也不联网取依赖（依赖已在该包构建时装好）。这正好验证安装路径不依赖 git / npm / 系统 Node。安装源使用当前候选，避免测试到 GitHub 上的旧版本；不验证 GitHub CDN 的可用性。系统前置依赖预装，真实模型 CLI 使用受控替身，不测试厂商登录或模型质量。
 
-随后验证安装生成的 .env、首次启动、Web 资源、建项目/会话、重启恢复，以及以下完整任务链路。失败返回非零，容器退出即删除。Android 与桌面发布工作流都依赖该门槛，成功后才进入构建/发布；CI 保存日志 14 天。
+随后只通过装好的 `multicc` 走完启动/停止/重启/状态，并验证生成的环境变量文件、首次启动、Web 资源、建项目/会话与重启恢复，以及以下完整任务链路。失败返回非零，容器退出即删除。Android 与桌面发布工作流都依赖该门槛，成功后才进入构建/发布；CI 保存日志 14 天。
 
 | 编号 | 操作序列 | 断言与自动用例 |
 | --- | --- | --- |
@@ -102,6 +102,13 @@
 | UI01 | 首次加载失败 → 恢复 → 点击 Fork → 发送 | 失败时不显示输入；显式 Fork 后才可输入；来源游标不变；390px 布局通过。`test-task-shell-cdp.js` |
 
 本节是当前发布门槛；上方历史验证记录仅对应当时的提交，不代表新候选自动通过。
+
+### 2026-09-21 独立版安装实测记录
+
+- 安装器统一改为「下载独立包」后重跑 `npm run test:release:clean-install`：退出码 0；Linux arm64 / Node v22.23.2 / Chromium，容器内无 git、无 node_modules。
+- 通过：独立包构建（含运行时架构校验与 `node:sqlite` 冒烟）→ `install.sh --from <包>` 校验和/解压/写令牌 → 装好的 `multicc` 首次启动、Web 资源、建目录/会话、真实 stop/start 后状态保持 → 全部容器内单元、HTTP、调度与浏览器回归用例。
+- 第一次运行时最后一个 CDP 套件（`tests/test-air-task-first-cdp.js`）随容器一起消失，日志尾部是 `error waiting for container: unexpected EOF` + `GATE_EXIT=125`。这是宿主 Docker Desktop 的 Linux VM 重启（`~/Library/Containers/com.docker.docker/Data/log/host/com.docker.virtualization.log` 里同一秒有 `VM has started`），不是用例失败；原样重跑即通过。遇到 125 先看该日志再怀疑代码。
+- 使用模拟 CLI，不包含真实厂商登录、模型质量或 App 原生设备验证。
 
 ### 2026-09-08 全新安装实测记录
 

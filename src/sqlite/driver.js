@@ -4,15 +4,15 @@
 //
 // This used to be `better-sqlite3` — a compiled addon, and therefore the one
 // dependency a "no Node, no compiler, no Homebrew" bundle cannot afford: its
-// prebuilt binary is ABI- and CPU-specific, so every desktop/portable build had
+// prebuilt binary is ABI- and CPU-specific, so every desktop/standalone build had
 // to fetch (or compile) a binary matching the runtime it ships, and
 // `install.sh` needed a `npm rebuild better-sqlite3` escape hatch for the
 // machines where no prebuild exists.
 //
 // Node >= 22.16 ships SQLite in core (`node:sqlite`), so the server, the
-// Electron desktop build and the portable bundle all need zero compiled
+// Electron desktop build and the standalone bundle all need zero compiled
 // dependencies for storage. The bundled runtime is verified by
-// scripts/portable-bundle.js, which boots `node:sqlite` out of the shipped
+// scripts/standalone-bundle.js, which boots `node:sqlite` out of the shipped
 // binary instead of loading an addon.
 //
 // The surface below mirrors the small slice of better-sqlite3 the call sites

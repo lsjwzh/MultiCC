@@ -10,11 +10,11 @@
   "license": "SEE LICENSE IN ../LICENSE",
   "scripts": {
     "start": "electron .",
-    "stage:server": "node ../scripts/desktop-bundle-server.js --out .staging/app-server --install",
-    "dist": "npm run stage:server && electron-builder --publish never",
-    "dist:mac": "npm run stage:server && electron-builder --publish never --mac",
-    "dist:win": "npm run stage:server && electron-builder --publish never --win",
-    "dist:linux": "npm run stage:server && electron-builder --publish never --linux"
+    "stage:resources": "node ../scripts/desktop-stage-standalone.js --out .staging/resources --install",
+    "dist": "npm run stage:resources && electron-builder --publish never",
+    "dist:mac": "npm run stage:resources && electron-builder --publish never --mac",
+    "dist:win": "npm run stage:resources && electron-builder --publish never --win",
+    "dist:linux": "npm run stage:resources && electron-builder --publish never --linux"
   },
   "devDependencies": {
     "electron": "44.1.1",
@@ -37,9 +37,23 @@
     ],
     "extraResources": [
       {
-        "from": ".staging/app-server",
+        "from": ".staging/resources/app-server",
         "to": "app-server",
         "filter": ["**/*"]
+      },
+      {
+        "from": ".staging/resources/runtime",
+        "to": "runtime",
+        "filter": ["**/*"]
+      },
+      {
+        "from": ".staging/resources/launcher",
+        "to": "launcher",
+        "filter": ["**/*"]
+      },
+      {
+        "from": ".staging/resources/bundle-manifest.json",
+        "to": "bundle-manifest.json"
       }
     ],
     "mac": {
