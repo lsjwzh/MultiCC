@@ -228,7 +228,7 @@ test('route validation preserves missing, system, terminal and unsupported respo
   harness = createHarness();
   res = await harness.invoke({ body: { cli: 'unknown' } });
   assert.equal(res.statusCode, 400);
-  assert.match(res.body.error, /claude, codex, codex-exp, opencode, zcode, qoder/);
+  assert.match(res.body.error, /claude, claude-exp, codex, codex-exp, opencode, zcode, qoder/);
 });
 
 test('same CLI is a no-op; unavailable targets reject and busy targets defer', async () => {
@@ -391,6 +391,7 @@ test('install-specs returns the static official command table', async () => {
   assert.equal(res.body.ok, true);
   assert.deepEqual(res.body.specs, {
     claude: { auto: true, command: 'npm install -g @anthropic-ai/claude-code', display: 'npm install -g @anthropic-ai/claude-code' },
+    'claude-exp': { auto: false, manual: 'Claude Exp 使用 MultiCC 内置的 Claude Agent SDK；请升级 MultiCC 来更新 SDK' },
     codex: { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
     'codex-exp': { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
     opencode: { auto: true, command: 'npm install -g opencode-ai', display: 'npm install -g opencode-ai' },
@@ -537,7 +538,8 @@ function fakeExecFile(versionByCmd, { failCmds = [] } = {}) {
 }
 
 const VERSION_CMDS = {
-  claude: '/bin/claude', codex: '/bin/codex', opencode: '/bin/opencode',
+  claude: '/bin/claude', 'claude-exp': process.execPath,
+  codex: '/bin/codex', opencode: '/bin/opencode',
   zcode: '/bin/zcode', qoder: '/bin/qoderclicn', kimi: 'kimi',
 };
 
@@ -553,7 +555,8 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
     cliCommands: VERSION_CMDS,
     execFileVersion: exec,
     availability: {
-      claude: { available: true }, codex: { available: true }, opencode: { available: true },
+      claude: { available: true }, 'claude-exp': { available: true },
+      codex: { available: true }, opencode: { available: true },
       zcode: { available: true }, qoder: { available: true }, kimi: { available: false },
     },
   });
@@ -565,10 +568,12 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
   assert.equal(res.body.versions.qoder.cmd, '/bin/qoderclicn');
   assert.equal(res.body.versions.qoder.available, true);
   assert.equal(res.body.versions.claude.version, '2.0.1');
+  assert.equal(res.body.versions['claude-exp'].version, '0.3.278');
   assert.equal(res.body.versions.codex.version, '0.20.0');
   assert.equal(res.body.versions.zcode.version, '1.2.3'); // 从 stderr 解析
   // 探测确实用的是 --version, 且解析出的正是注入的那个二进制路径
   assert.deepEqual(exec.calls.find(c => c.cmd === '/bin/qoderclicn').args, ['--version']);
+  assert.equal(exec.calls.some(c => c.cmd === process.execPath), false);
 });
 
 test('cli/versions skips unavailable clis without spawning them', async () => {

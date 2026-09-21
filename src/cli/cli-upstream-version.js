@@ -24,6 +24,7 @@ const https = require('node:https');
 
 const NPM_PACKAGES = Object.freeze({
   claude: '@anthropic-ai/claude-code',
+  'claude-exp': '@anthropic-ai/claude-agent-sdk',
   codex: '@openai/codex',
   'codex-exp': '@openai/codex',
   opencode: 'opencode-ai',

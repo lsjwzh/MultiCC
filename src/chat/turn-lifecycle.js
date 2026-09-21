@@ -49,7 +49,7 @@ function freezeUsageAttribution(input) {
     providerName: clean(source.providerName) || providerId,
     cli,
     protocol: clean(source.protocol).toLowerCase()
-      || (cli === 'codex' || cli === 'codex-exp' ? 'openai-responses' : cli === 'claude' ? 'anthropic-messages' : cli),
+      || (cli === 'codex' || cli === 'codex-exp' ? 'openai-responses' : cli === 'claude' || cli === 'claude-exp' ? 'anthropic-messages' : cli),
     model: clean(source.model),
     roleKind,
     routeName: clean(source.routeName).toLowerCase() || roleKind,

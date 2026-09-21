@@ -168,6 +168,7 @@ test('a redirecting registry is followed, but not forever', async () => {
 
 test('only CLIs that ship as an npm package have a comparable source', () => {
   assert.equal(upstream.npmPackageFor('claude'), '@anthropic-ai/claude-code');
+  assert.equal(upstream.npmPackageFor('claude-exp'), '@anthropic-ai/claude-agent-sdk');
   assert.equal(upstream.npmPackageFor('codex'), '@openai/codex');
   assert.equal(upstream.npmPackageFor('codex-exp'), '@openai/codex');
   assert.equal(upstream.npmPackageFor('codebuddy'), '@tencent-ai/codebuddy-code');

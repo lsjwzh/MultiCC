@@ -2,16 +2,16 @@
   'use strict';
 
   const CLI_LABELS = Object.freeze({
-    claude: 'Claude Code', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode',
+    claude: 'Claude Code', 'claude-exp': 'Claude Exp', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode',
     qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', kimi: 'Kimi Code',
   });
   const CLI_MARKS = Object.freeze({
-    claude: 'C', codex: 'X', 'codex-exp': 'E', opencode: 'O', zcode: 'Z', qoder: 'Q',
+    claude: 'C', 'claude-exp': 'A', codex: 'X', 'codex-exp': 'E', opencode: 'O', zcode: 'Z', qoder: 'Q',
     codebuddy: 'W', dsh: 'D', kimi: 'K',
   });
   const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
   const EFFORT_LABELS = Object.freeze({
-    claude: t('airTaskSettingsEffortClaude'), codex: t('airTaskSettingsEffortCodex'), 'codex-exp': t('airTaskSettingsEffortCodex'), opencode: t('airTaskSettingsEffortOpenCode'),
+    claude: t('airTaskSettingsEffortClaude'), 'claude-exp': t('airTaskSettingsEffortClaude'), codex: t('airTaskSettingsEffortCodex'), 'codex-exp': t('airTaskSettingsEffortCodex'), opencode: t('airTaskSettingsEffortOpenCode'),
     qoder: t('airTaskSettingsEffortLabel'), codebuddy: t('airTaskSettingsEffortLabel'),
   });
 

@@ -78,7 +78,7 @@
 
     var byCli = data.byCli || {};
     var cliDetails = Object.keys(byCli).map(function (k) {
-      var cls = k === 'claude' ? 'claude' : (k === 'codex' || k === 'codex-exp') ? 'codex-exp' : 'other';
+      var cls = k === 'claude' || k === 'claude-exp' ? 'claude' : (k === 'codex' || k === 'codex-exp') ? 'codex-exp' : 'other';
       return '<span><span class="cli-dot ' + cls + '"></span>' + esc(k) + ': ' + byCli[k] + '</span>';
     }).join('');
 
@@ -155,7 +155,7 @@
       tr.appendChild(td(esc(s.label || s.id || '-'), '标签'));
 
       // CLI
-      var cliCls = s.cli === 'claude' ? 'claude' : (s.cli === 'codex' || s.cli === 'codex-exp') ? 'codex-exp' : 'other';
+      var cliCls = s.cli === 'claude' || s.cli === 'claude-exp' ? 'claude' : (s.cli === 'codex' || s.cli === 'codex-exp') ? 'codex-exp' : 'other';
       tr.appendChild(td('<span class="cli-badge"><span class="cli-dot ' + cliCls + '"></span>' + esc(s.cli || '-') + '</span>', 'CLI'));
 
       // Kind

@@ -155,7 +155,8 @@ class PendingUserInput {
     final rawOptions = json['options'];
     // 名称校验与 web 卡片/服务端一致；不合法时退化为普通回答卡，绝不崩溃。
     final secretName = (json['secretName'] ?? '').toString().trim();
-    final isSecret = json['inputType'] == 'secret' &&
+    final isSecret =
+        json['inputType'] == 'secret' &&
         RegExp(r'^[A-Za-z0-9_.-]{1,64}$').hasMatch(secretName);
     return PendingUserInput(
       requestId: requestId,
@@ -265,7 +266,7 @@ class UsageWindowLimit {
     if (provider == 'glm' || provider == 'codex') {
       return cli == 'codex' || cli == 'codex-exp' || cli == 'opencode';
     }
-    return cli == 'claude' || cli == 'opencode';
+    return cli == 'claude' || cli == 'claude-exp' || cli == 'opencode';
   }
 
   Map<String, dynamic> toJson() => {

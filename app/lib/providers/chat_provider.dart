@@ -523,7 +523,7 @@ class ChatProvider extends ChangeNotifier {
   /// routed window bar shows instead. Always non-null when gated in, so the
   /// bar stays a visible tap target (mirrors the web fixed-display fallback).
   VendorQuotaView? get claudeLimitView {
-    if (_cli != SessionCli.claude) return null;
+    if (!_cli.isClaudeFamily) return null;
     if (!isClaudeProviderBaseUrl(_providerBaseUrl)) return null;
     final usage = _claudeUsage;
     if (usage != null) {
@@ -572,7 +572,7 @@ class ChatProvider extends ChangeNotifier {
       return null;
     }
     if (limit.provider == 'claude' &&
-        _cli == SessionCli.claude &&
+        _cli.isClaudeFamily &&
         isClaudeProviderBaseUrl(_providerBaseUrl)) {
       return null;
     }
@@ -1659,10 +1659,10 @@ class ChatProvider extends ChangeNotifier {
           // 也还没有记录；快照的 active 带着发送方的 clientMsgId/原文，重载或
           // 断线重连后靠它把用户气泡补回来（started 后由历史接管）。
           final active = p['active'];
-          if (active is Map<String, dynamic> &&
-              active['startedAt'] == null) {
-            final activeClientMsgId =
-                (active['clientMsgId'] ?? '').toString().trim();
+          if (active is Map<String, dynamic> && active['startedAt'] == null) {
+            final activeClientMsgId = (active['clientMsgId'] ?? '')
+                .toString()
+                .trim();
             final activeText = (active['text'] ?? '').toString();
             if (activeClientMsgId.isNotEmpty &&
                 activeText.isNotEmpty &&
@@ -2244,7 +2244,7 @@ class ChatProvider extends ChangeNotifier {
   /// staleness) unless [force]. Callers: connect / cli-switch hooks and the
   /// bar's tap handler.
   Future<void> refreshClaudeUsage({bool force = false}) async {
-    if (_cli != SessionCli.claude) return;
+    if (!_cli.isClaudeFamily) return;
     if (_claudeUsageFetching) return;
     if (!force) {
       final fetchedAt = (_claudeUsage?['fetchedAt'] as num?)?.toInt();

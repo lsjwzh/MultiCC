@@ -143,7 +143,7 @@ function createProviderRoutes(rawDeps) {
   function validProviderId(cli, id) {
     const appType = deps.providers.appTypeForCli(cli);
     if (typeof deps.providers.normalizeOfficialProviderId === 'function') {
-      id = deps.providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli, id);
+      id = deps.providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli, id);
     }
     if (id == null || id === '') return { ok: true, value: null };
     // Qoder CN remains vendor-managed. OpenCode and ZCode both support the two

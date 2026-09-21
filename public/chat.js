@@ -400,6 +400,7 @@ let currentCli = 'claude';
 const cliBtn = document.getElementById('cli-btn');
 const CLI_META = {
   claude: { label: 'Claude', color: '#f78166' },
+  'claude-exp': { label: 'Claude Exp', color: '#ff9a76' },
   codex: { label: 'Codex', color: '#2ea043' },
   'codex-exp': { label: 'Codex Exp', color: '#20a66a' },
   opencode: { label: 'OpenCode', color: '#388bfd' },
@@ -432,7 +433,7 @@ function applyCliUi(cli) {
   // so the AI-config picker shows the CLI's real catalog by the next open. No
   // rebuild hook: each CLI's static tiers/fallback stay usable until the fetch
   // lands, and the picker re-reads the cache on every open.
-  const modelRefresh = { opencode: 'refreshOpenCodeModels', qoder: 'refreshQoderModels', claude: 'refreshClaudeModels', codebuddy: 'refreshCodebuddyModels' }[next];
+  const modelRefresh = { opencode: 'refreshOpenCodeModels', qoder: 'refreshQoderModels', claude: 'refreshClaudeModels', 'claude-exp': 'refreshClaudeModels', codebuddy: 'refreshCodebuddyModels' }[next];
   if (modelRefresh && window.MultiCCChatAiConfig && typeof window.MultiCCChatAiConfig[modelRefresh] === 'function') {
     window.MultiCCChatAiConfig[modelRefresh]();
   }
@@ -1704,8 +1705,8 @@ modelBtn?.addEventListener('click', async () => {
       providerSelection: picked.providerSelection,
       model: picked.model,
       effort: picked.effort,
-      ...((configCli === 'claude' || configCli === 'opencode' || configCli === 'qoder' || configCli === 'codebuddy') ? { agent: picked.agent } : {}),
-      ...((configCli === 'claude' || configCli === 'codex' || configCli === 'codex-exp') ? { subagent: picked.subagent } : {}),
+      ...((configCli === 'claude' || configCli === 'claude-exp' || configCli === 'opencode' || configCli === 'qoder' || configCli === 'codebuddy') ? { agent: picked.agent } : {}),
+      ...((configCli === 'claude' || configCli === 'claude-exp' || configCli === 'codex' || configCli === 'codex-exp') ? { subagent: picked.subagent } : {}),
     });
     if (data.deferred) {
       await loadSessionModel();

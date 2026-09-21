@@ -2,7 +2,7 @@
 
 function appTypeForCli(cli) {
   if (cli === 'codex' || cli === 'codex-exp') return 'codex';
-  if (cli === 'claude' || cli === 'opencode') return 'claude';
+  if (cli === 'claude' || cli === 'claude-exp' || cli === 'opencode') return 'claude';
   return null;
 }
 
