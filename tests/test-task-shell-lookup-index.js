@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
+const { databaseConstructor } = require('../src/sqlite/driver');
 const { fixture } = require('./helpers/task-shell');
 const { mountAirRoutes } = require('../src/workspace/air-routes');
 const { airResponse } = require('./helpers/air-response');
@@ -149,8 +150,12 @@ test('receipt-shell 索引：老库首次读取扫一次补桶并落标记，缺
   const store = createTaskShellStore(file);
   t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   // 直接写库：模拟索引机制上线前就存在的收据行（store.set 会顺手建索引，绕开它）。
-  const Database = require('better-sqlite3');
-  const raw = new Database(file);
+  // 「另一个写入方」必须用与 store 同款的 node:sqlite 驱动开第二条连接：同进程里两条
+  // node:sqlite 连接共享同一套 WAL -shm，能正确看到彼此的增删。换成 better-sqlite3 就
+  // 是两套不同 SQLite 构建共用一个 -shm，store 会读到陈旧快照甚至报 disk image malformed
+  // —— 那是在测「同进程混用两个 SQLite 库」这个线上不存在的场景，而非测 store 的自愈。
+  const Database = databaseConstructor();
+  const raw = new Database(file, { timeout: 5000 });
   for (let i = 0; i < 6; i++) {
     raw.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?)').run('receipt', `sr_${i}`,
       JSON.stringify({ id: `sr_${i}`, shellId: i < 4 ? 'sh_a' : null, status: 'accepted', payload: { clientMsgId: `c${i}`, intent: 'work' } }));
@@ -163,7 +168,7 @@ test('receipt-shell 索引：老库首次读取扫一次补桶并落标记，缺
   store.set('receipt', 'sr_new', { id: 'sr_new', shellId: 'sh_a', status: 'accepted', payload: { clientMsgId: 'new' } });
   assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_0', 'sr_1', 'sr_2', 'sr_3', 'sr_new']);
   // 索引行不是权威数据：库里的行被别的写法删掉后，读出来仍然是现存的那几条。
-  const raw2 = new Database(file);
+  const raw2 = new Database(file, { timeout: 5000 });
   raw2.prepare("DELETE FROM shell_records WHERE kind = 'receipt' AND id = ?").run('sr_2');
   raw2.close();
   assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_0', 'sr_1', 'sr_3', 'sr_new']);
@@ -201,7 +206,8 @@ test('receipt-shell 索引：绕过本进程写入的收据（重启交接窗口
   store.set('receipt', 'sr_1', { id: 'sr_1', shellId: 'sh_a', status: 'accepted', payload: { clientMsgId: 'c1' } });
   assert.deepEqual(store.receiptsForShell('sh_a').map(r => r.id), ['sr_1']);
   // 老代码进程不维护这个索引：交接窗口里它写的收据必须在下次读取时被看见。
-  const raw = new (require('better-sqlite3'))(file);
+  // 同上，用 node:sqlite 第二条连接当「另一个写入方」，不与 store 混用两套 SQLite 构建。
+  const raw = new (databaseConstructor())(file, { timeout: 5000 });
   raw.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?)').run('receipt', 'sr_2',
     JSON.stringify({ id: 'sr_2', shellId: 'sh_a', status: 'accepted', payload: { clientMsgId: 'c2' } }));
   raw.close();
