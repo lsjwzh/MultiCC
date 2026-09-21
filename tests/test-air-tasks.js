@@ -39,6 +39,8 @@ test('Air chat-open endpoint returns only authorized session metadata and skips 
   assert.equal(entry.session.id, 'bound');
   assert.equal(entry.session.autoCommit, false);
   assert.equal(entry.session.cwd, '/repo');
+  assert.equal(entry.configuration.cli, 'codex');
+  assert.equal(entry.configuration.provider, null);
   assert.ok(!JSON.stringify(entry).includes('PRIVATE'));
   assert.ok(!Object.hasOwn(entry, 'messages'));
   assert.ok(Buffer.byteLength(JSON.stringify(entry)) < 1024);
