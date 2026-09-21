@@ -36,7 +36,7 @@ function loadModule() {
       get visibilityState() { return 'visible'; },
       createElement: () => ({
         className: '', textContent: '', hidden: false,
-        classList: { add() {}, remove() {} },
+        classList: { add() {}, remove() {}, toggle() {} },
         setAttribute() {}, append() {}, appendChild() {},
       }),
       body: { appendChild() {} },
@@ -113,12 +113,39 @@ test('onSnapshot persists "unseen" across controller instances and markOpened cl
   assert.equal(reloadAgain.isUnseen('t6'), false, 'opened state also survives reload');
 });
 
-test('error and cancelled are not "completed" reminders', () => {
+test('error fires an unseen mark of kind error; cancelled still does not', () => {
   const { win, api } = loadModule();
   const ctrl = createController(win, api);
   ctrl.onSnapshot([{ id: 't8', status: 'running' }], '');
-  assert.equal(ctrl.onSnapshot([{ id: 't8', status: 'error' }, { id: 't9', status: 'queued' }], ''), false);
+  assert.equal(ctrl.onSnapshot([{ id: 't8', status: 'error' }, { id: 't9', status: 'queued' }], ''), true);
+  assert.equal(ctrl.isUnseen('t8'), true);
+  assert.equal(ctrl.unseenKind('t8'), 'error');
   ctrl.onSnapshot([{ id: 't10', status: 'running' }], '');
   assert.equal(ctrl.onSnapshot([{ id: 't10', status: 'cancelled' }], ''), false);
   assert.equal(ctrl.isUnseen('t10'), false);
+});
+
+test('error unseen mark survives reload (kind persisted) and markOpened clears it', () => {
+  const { win, api } = loadModule();
+  const first = createController(win, api);
+  first.onSnapshot([{ id: 't11', status: 'running' }], '');
+  first.onSnapshot([{ id: 't11', status: 'error' }], '');
+  const reload = createController(win, api);
+  assert.equal(reload.unseenKind('t11'), 'error', 'error kind survives reload');
+  reload.markOpened('t11');
+  assert.equal(reload.isUnseen('t11'), false);
+});
+
+test('statusOf fold decides attention, so lifecycle done + runState error reads as error', () => {
+  const { win, api } = loadModule();
+  const ctrl = api.create({
+    getCurrentTaskId: () => null,
+    openTask: () => {},
+    window: win, document: win.document,
+    setTimeout: win.setTimeout, clearTimeout: win.clearTimeout,
+    statusOf: task => (task.status === 'done' && task.runState === 'error' ? 'error' : task.status),
+  });
+  ctrl.onSnapshot([{ id: 't12', status: 'active', runState: 'running' }], '');
+  assert.equal(ctrl.onSnapshot([{ id: 't12', status: 'done', runState: 'error' }], ''), true);
+  assert.equal(ctrl.unseenKind('t12'), 'error');
 });

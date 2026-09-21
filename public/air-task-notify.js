@@ -23,10 +23,18 @@
 (function installAirTaskNotify(root) {
   'use strict';
 
-  // Completion = a human/lifecycle "done" or a successful turn outcome. Errors,
-  // cancellations and archives are deliberately NOT "completed" reminders — the
-  // floating copy would read "任务已完成" for tasks that stopped or were put away.
+  // Completion = a human/lifecycle "done" or a successful turn outcome. Errors
+  // get their own attention tone (red) instead of being silently skipped — a
+  // failed run the user hasn't looked at is at least as much "come see this"
+  // as a success. Cancellations and archives are deliberately excluded.
   const COMPLETED = new Set(['done', 'succeeded']);
+  const ERROR = new Set(['error']);
+  function attentionKind(status) {
+    const key = String(status || '');
+    if (COMPLETED.has(key)) return 'completed';
+    if (ERROR.has(key)) return 'error';
+    return null;
+  }
 
   const LS_UNSEEN = 'air:notify-unseen';
   const LS_PREV = 'air:notify-prev';
@@ -37,7 +45,9 @@
 
   const STRINGS = {
     completed: { zh: '{title} 已完成', en: '{title} done' },
+    errored: { zh: '{title} 出错了', en: '{title} failed' },
     floatTitle: { zh: '任务已完成', en: 'Task complete' },
+    floatTitleError: { zh: '任务出错', en: 'Task failed' },
     floatOpen: { zh: '打开', en: 'Open' },
     floatClose: { zh: '✕', en: '✕' },
     floatMore: { zh: '另 {n} 个任务已完成', en: '{n} more done' },
@@ -58,6 +68,17 @@
     try { s.setItem(key, JSON.stringify(value)); } catch (_) { /* quota → drop silently */ }
   }
   function isCompleted(status) { return COMPLETED.has(String(status || '')); }
+
+  // The persisted unseen list used to be a bare array of ids; entries written
+  // before the error tone existed read as plain "completed" marks.
+  function readUnseen() {
+    const raw = readJson(LS_UNSEEN, []);
+    if (Array.isArray(raw)) return new Map(raw.map(id => [String(id), 'completed']));
+    if (raw && typeof raw === 'object') {
+      return new Map(Object.entries(raw).filter(([, kind]) => kind === 'completed' || kind === 'error'));
+    }
+    return new Map();
+  }
 
   // Voice was flagged on by default, but a user can silence it without losing
   // the sidebar mark or floating prompt (they are "notification", not "voice").
@@ -94,18 +115,26 @@
     const schedule = typeof opts.setTimeout === 'function' ? opts.setTimeout : win.setTimeout.bind(win);
     const cancelSchedule = typeof opts.clearTimeout === 'function' ? opts.clearTimeout : win.clearTimeout.bind(win);
     const visibility = () => (typeof doc.visibilityState === 'string' ? doc.visibilityState : 'visible');
+    // Folded status resolver: task.status only carries the lifecycle
+    // (active/done/archived); whether a run ended in success or error lives in
+    // runState. The page hands over the same status-presentation fold the
+    // sidebar badge uses, so the reminder and the badge can never disagree.
+    const statusOf = typeof opts.statusOf === 'function'
+      ? opts.statusOf : (task => task?.status);
 
-    // Persisted "completed but not opened" rows + the last status we saw per task.
-    const unseen = new Set(readJson(LS_UNSEEN, []));
+    // Persisted "terminal but not opened" rows (id → attention kind) + the
+    // last status we saw per task.
+    const unseen = readUnseen();
     const prevStatus = new Map(Object.entries(readJson(LS_PREV, {})));
 
     let panel = null;
     let panelTask = null;
+    let panelTitle = null;
     let panelBody = null;
     let lastVoiceAt = 0;
     let voiceTimer = null;
 
-    function persistUnseen() { writeJson(LS_UNSEEN, [...unseen].slice(-PREV_CAP)); }
+    function persistUnseen() { writeJson(LS_UNSEEN, Object.fromEntries([...unseen].slice(-PREV_CAP))); }
     function persistPrev() {
       const pruned = [...prevStatus.entries()].slice(-PREV_CAP);
       writeJson(LS_PREV, Object.fromEntries(pruned));
@@ -121,7 +150,6 @@
       text.className = 'task-complete-float-text';
       const title = doc.createElement('div');
       title.className = 'task-complete-float-title';
-      title.textContent = translate('floatTitle') + ' ·';
       const body = doc.createElement('div');
       body.className = 'task-complete-float-body';
       const actions = doc.createElement('div');
@@ -139,6 +167,7 @@
       actions.append(open, close);
       panel.append(text, actions);
       panelBody = body;
+      panelTitle = title;
       open.onclick = () => {
         const task = panelTask;
         dismissPanel();
@@ -149,14 +178,20 @@
       return panel;
     }
 
-    function showPanel(task) {
+    function showPanel(task, kind = 'completed') {
       panelTask = task || null;
       buildPanel();
+      if (panelTitle) {
+        panelTitle.textContent = translate(kind === 'error' ? 'floatTitleError' : 'floatTitle') + ' ·';
+      }
       const title = task?.title || task?.id || '';
-      if (panelBody) panelBody.textContent = translate('completed', { title });
-      const more = [...unseen].filter(id => id !== task?.id).length;
+      if (panelBody) {
+        panelBody.textContent = translate(kind === 'error' ? 'errored' : 'completed', { title });
+      }
+      const more = [...unseen.keys()].filter(id => id !== task?.id).length;
       if (more > 0 && panelBody) panelBody.textContent += ` · ${translate('floatMore', { n: more })}`;
       panel.hidden = false;
+      panel.classList.toggle('is-error', kind === 'error');
       panel.classList.remove('is-hiding');
       // Re-hide whenever animation timers are abandoned.
       if (win.__multiccNotifyHide) cancelSchedule(win.__multiccNotifyHide);
@@ -165,6 +200,7 @@
     function dismissPanel() {
       if (!panel) return;
       panel.hidden = true;
+      panel.classList.remove('is-error');
       panelTask = null;
       if (panelBody) panelBody.textContent = '';
     }
@@ -208,7 +244,7 @@
       if (voiceTimer) { cancelSchedule(voiceTimer); voiceTimer = null; }
     }
 
-    function voiceNudge(task) {
+    function voiceNudge(task, kind = 'completed') {
       if (!voiceEnabled()) return;
       // 前台盯着页面时只刷侧边栏亮点/浮动条即可，不吵人；页面退到后台（切走/隐藏）
       // 时才用语音补一句提醒。浏览器对隐藏标签页的语音有节流，能做就做、做不了静默降级。
@@ -218,17 +254,18 @@
       lastVoiceAt = now;
       playDing();
       const title = String(task?.title || '').slice(0, 40);
-      const text = title ? `任务「${title}」已完成` : '任务已完成';
+      const outcome = kind === 'error' ? '出错了' : '已完成';
+      const text = title ? `任务「${title}」${outcome}` : `任务${outcome}`;
       if (voiceTimer) cancelSchedule(voiceTimer);
       voiceTimer = schedule(() => speak(text), SPEAK_DELAY_MS);
     }
 
     // ── ① ② ③ —— one trigger, three consumers ────────────────────────────
-    function fireCompleted(task) {
-      unseen.add(String(task.id));
+    function fireAttention(task, kind) {
+      unseen.set(String(task.id), kind);
       persistUnseen();
-      voiceNudge(task);     // ② voice
-      showPanel(task);      // ③ floating (① is live via isUnseen → CSS class)
+      voiceNudge(task, kind);  // ② voice
+      showPanel(task, kind);   // ③ floating (① is live via isUnseen → CSS class)
     }
 
     function markOpened(taskId) {
@@ -243,27 +280,27 @@
     }
 
     // Diff the latest snapshot against the watermark; anything that crossed into
-    // "completed" while not the task currently on screen is a reminder candidate.
-    // Only fires when the transition is OBSERVED (prev in non-completed state), so
-    // a task that was already done before the feature/page ever saw it does not
-    // spam the page on first load.
+    // a terminal "completed"/"error" state while not the task currently on screen
+    // is a reminder candidate. Only fires when the transition is OBSERVED (prev
+    // in a non-terminal state), so a task that was already done before the
+    // feature/page ever saw it does not spam the page on first load.
     function onSnapshot(tasks, currentTaskId) {
       const list = Array.isArray(tasks) ? tasks : [];
       const fires = [];
       for (const task of list) {
         const id = String(task?.id || '').trim();
         if (!id) continue;
-        const status = String(task?.status || '');
+        const status = String(statusOf(task) || '');
+        const kind = attentionKind(status);
         const prev = prevStatus.get(id);
-        const nowDone = isCompleted(status);
-        const wasDone = prev != null && isCompleted(prev);
+        const wasAttention = prev != null && attentionKind(prev);
         const isOpen = id === String(currentTaskId || '');
         if (isOpen) {                     // on screen → not "unseen"
           unseen.delete(id);
-        } else if (nowDone && !wasDone && prev != null) {
-          // observed success transition, not currently open
-          fires.push(task);
-          unseen.add(id);
+        } else if (kind && !wasAttention && prev != null) {
+          // observed terminal transition, not currently open
+          fires.push([task, kind]);
+          unseen.set(id, kind);
         }
         prevStatus.set(id, status);
       }
@@ -275,7 +312,7 @@
       }
       persistPrev();
       persistUnseen();
-      for (const task of fires) fireCompleted(task);
+      for (const [task, kind] of fires) fireAttention(task, kind);
       return fires.length > 0;
     }
 
@@ -294,6 +331,7 @@
       panelHidden: () => !panel || panel.hidden,
       toggleVoice,
       unseenCount: () => unseen.size,
+      unseenKind: id => unseen.get(String(id || '')) || null,
       voiceEnabled,
     });
   }
@@ -301,6 +339,7 @@
   root.MultiCCTaskNotify = Object.freeze({
     create: createNotifyController,
     isCompleted,
+    attentionKind,
     __resetForTest(storage) {
       if (storage) { try { storage.removeItem(LS_UNSEEN); storage.removeItem(LS_PREV); } catch (_) {} }
     },

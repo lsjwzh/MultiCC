@@ -519,6 +519,9 @@ function createSessionWorkHost(deps = {}) {
       supersededByEntryId: event.supersededByEntryId || null,
       queued: event.queued == null ? null : event.queued,
       items: Array.isArray(event.queuedItems) ? event.queuedItems : [],
+      // Claimed-but-not-started input rides here so reloads/reconnects can
+      // re-render the user bubble the sender's optimistic copy lost.
+      active: event.schedule?.active || null,
       freezeReason: event.freezeReason || null,
       at: event.at,
     });

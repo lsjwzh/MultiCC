@@ -60,11 +60,14 @@
   const resourceEtag = new Map();
   let pollFailures = 0;
   const POLL_MS = 4000;
-  // 任务完成未读提醒：统一事件源，三处消费（侧边栏未读高亮、语音、浮动完成条）。
+  // 任务完成/出错未读提醒：统一事件源，三处消费（侧边栏未读高亮、语音、浮动条）。
   // 唯一全局实例；openTask 走 navigate（同一路径也负责把未读标记清掉）。
+  // statusOf 把 status+runState 折算成与徽标同一份的状态，出错的任务因此也能
+  // 进入未读（红色调），而不是只有「已完成」才提醒。
   const taskNotify = window.MultiCCTaskNotify?.create({
     getCurrentTaskId: () => taskId,
     openTask: task => navigate(task?.dirId, task?.id),
+    statusOf: task => taskStatus(task),
   });
   const POLL_HIDDEN_MS = 15000;
   const POLL_MAX_MS = 30000;
@@ -1325,7 +1328,8 @@
     $('task-count').textContent = tasks.length;
     list.replaceChildren(...tasks.map(task => {
       const elsewhere = task.dirId !== directoryId;
-      const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : '', taskNotify?.isUnseen(task.id) ? 'unseen' : ''].filter(Boolean).join(' '));
+      const unseenKind = taskNotify?.unseenKind?.(task.id) || null;
+      const button = node('button', null, [task.id === taskId ? 'selected' : '', elsewhere ? 'elsewhere' : '', unseenKind === 'error' ? 'unseen unseen-error' : unseenKind ? 'unseen' : ''].filter(Boolean).join(' '));
       button.dataset.task = task.id;
       applyRing(button, isRunningTask(task), task.id);
       // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
