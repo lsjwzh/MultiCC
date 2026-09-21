@@ -935,8 +935,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
           // 收在 .air-tool-name 里）。名字从哪条竖线开始，用 Range 量文字自己的左边：
           // 「统一」这件事只有量得出左边才说得清。
           const textLeft=n=>{const box=document.createRange();box.selectNodeContents(n);return Math.round(box.getBoundingClientRect().left)};
+          // 名字是按钮里「图标之外那一段」。老骨架里详情/更多是裸文本节点，i18n 之后
+          // 包成了 <span data-i18n>（故意不带 .air-tool-name —— 那会被桌面档 display:none
+          // 藏掉，而这两件在桌面上正是只靠这段文字）。所以认「非图标、有文字」的子节点，
+          // 裸文本、.air-tool-name、i18n span 三种写法都收。
+          const isIcon=n=>n.nodeType===1&&(n.classList.contains('air-tool-icon')||n.classList.contains('air-tool-icon-panel'));
           const cells=rows.map(b=>{const icon=b.querySelector('.air-tool-icon,.air-tool-icon-panel');
-            const name=[...b.childNodes].find(n=>n.nodeType===3?!!n.textContent.trim():n.classList&&n.classList.contains('air-tool-name'));
+            const name=[...b.childNodes].find(n=>n.nodeType===3?!!n.textContent.trim():(n.nodeType===1&&!isIcon(n)&&!!n.textContent.trim()));
             return {icon:icon?icon.textContent:'', name:name?name.textContent.trim():'',
               iconLeft:icon?Math.round(icon.getBoundingClientRect().left):null, nameLeft:name?textLeft(name):null}});
           return {h:g('task-header').getBoundingClientRect().height, expanded:g('task-options').getAttribute('aria-expanded'),
