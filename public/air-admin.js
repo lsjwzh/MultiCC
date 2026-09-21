@@ -625,14 +625,16 @@
 
   async function loadAuxView(announce = false) {
     try {
-      const [status, config, history] = await Promise.all([
+      const [status, config, history, installSpecs] = await Promise.all([
         currentContext.api('/api/aux/status'),
         currentContext.api('/api/aux/config'),
         currentContext.api('/api/aux/history?limit=100'),
+        currentContext.api('/api/cli/install-specs').catch(() => null),
       ]);
       auxView.status = status;
       auxView.config = config;
       auxView.history = Array.isArray(history) ? history : [];
+      auxView.installSpecs = installSpecs && installSpecs.ok ? installSpecs : null;
       paintAuxStatus();
       paintAuxForm();
       paintAuxRecords();
@@ -688,6 +690,51 @@
       config.protocol === 'openai' ? 'openai' : 'anthropic');
     const provider = make('select');
     const model = make('select');
+    const cli = config.cliAvailability || null;
+    const noCliAtAll = !!cli && cli.claude === false && cli.codex === false;
+    const installCmd = (cliId) => {
+      const spec = auxView.installSpecs?.specs?.[cliId];
+      return (spec && (spec.display || spec.command))
+        || (cliId === 'codex' ? 'npm install -g @openai/codex' : 'npm install -g @anthropic-ai/claude-code');
+    };
+    const cliBanner = make('div', '', 'air-aux-warn');
+    cliBanner.hidden = !noCliAtAll;
+    if (noCliAtAll) {
+      cliBanner.append(make('div', t('airAdminAuxCliMissingNone')));
+      cliBanner.append(make('code', `${installCmd('claude')}  |  ${installCmd('codex')}`));
+    }
+    const modelHint = make('div', '', 'air-aux-warn');
+    const syncBtn = action(t('airAdminAuxSyncModels'), async () => {
+      syncBtn.disabled = true;
+      try {
+        const result = protocol.value === 'openai'
+          ? await currentContext.api('/api/codex/models?refresh=1')
+          : await currentContext.api('/api/claude/models');
+        const count = Array.isArray(result && result.models) ? result.models.length : 0;
+        if (count) currentContext.notice(t('airAdminAuxSyncedCount', { n: count }));
+        else if (result && result.diagnostic && result.diagnostic.message) currentContext.notice(result.diagnostic.message);
+        await loadAuxView();
+      } catch (error) {
+        currentContext.notice(t('airAdminAuxSyncFailed', { message: error.message }));
+      } finally {
+        syncBtn.disabled = false;
+      }
+    });
+    function paintModelHint() {
+      modelHint.replaceChildren();
+      const list = config.providersByProtocol?.[protocol.value] || [];
+      const prov = list.find(p => p.id === provider.value);
+      const models = prov && Array.isArray(prov.modelOptions) ? prov.modelOptions : [];
+      if (!prov || models.length || noCliAtAll) { modelHint.hidden = true; return; }
+      modelHint.hidden = false;
+      if (protocol.value === 'openai' && cli && cli.codex === false) {
+        modelHint.append(make('div', t('airAdminAuxCliMissingCodex')));
+        modelHint.append(make('code', installCmd('codex')));
+      } else {
+        modelHint.append(make('div', t('airAdminAuxCatalogEmpty')));
+      }
+      modelHint.append(syncBtn);
+    }
     function fillProviders() {
       const list = config.providersByProtocol?.[protocol.value] || [];
       provider.replaceChildren(...list.map(p => {
@@ -710,6 +757,7 @@
       }));
       const saved = config.providerId === provider.value ? (config.model || '') : '';
       model.value = models.includes(saved) ? saved : (models[0] || '');
+      paintModelHint();
     }
     protocol.onchange = fillProviders;
     provider.onchange = fillModels;
@@ -732,7 +780,7 @@
     }, 'primary');
     const saveRow = make('div', null, 'air-aux-save');
     saveRow.append(save, saveStatus);
-    form.replaceChildren(auxField(t('airAdminProtocol'), protocol), auxField('Provider', provider), auxField(t('airAdminModel'), model), saveRow);
+    form.replaceChildren(cliBanner, auxField(t('airAdminProtocol'), protocol), auxField('Provider', provider), auxField(t('airAdminModel'), model), modelHint, saveRow);
     fillProviders();
   }
 

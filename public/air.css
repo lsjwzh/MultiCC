@@ -1656,6 +1656,10 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   color: var(--text); font-size: 13px; line-height: 1.55; }
 .setup-copy li strong { color: var(--text); }
 .setup-copy em { font-style: normal; font-weight: 650; }
+.setup-warn { padding: 9px 11px; border: 1px solid #ecd9c2; border-radius: 10px;
+  background: #fdf6ec; color: var(--warning); font-size: 11.5px; line-height: 1.55; }
+.setup-warn[hidden] { display: none; }
+.setup-warn code { display: block; margin-top: 6px; color: var(--text); font-size: 11px; word-break: break-all; }
 .setup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .setup-actions button { padding: 7px 12px; border: 1px solid #dbe6f1; border-radius: 9px;
   background: #fff; color: var(--text); font-size: 13px; cursor: pointer; }

@@ -166,6 +166,8 @@ function mountAuxGoalRoutes(app, dependencies) {
     onHealthChange,
     providerLimitCache,
     limitCacheStaleMs,
+    getCliAvailability,
+    codexModelsRuntime,
     now = Date.now,
     env = process.env,
     logger = console,
@@ -599,10 +601,23 @@ function mountAuxGoalRoutes(app, dependencies) {
           }
         } catch (_) { /* cache must never break the catalog */ }
       }
+      let modelOptions = target.modelOptions || provider.modelOptions || [];
+      // The Codex official disk catalog (~/.codex/models_cache.json) only exists
+      // after the CLI logged in once, so a fresh host shows an empty aux picker
+      // even when the account catalog was already verified elsewhere (chat
+      // picker refresh). Sync that catalog in; never spawn the CLI here.
+      if (!modelOptions.length && provider.appType === 'codex' && provider.isOfficial
+        && codexModelsRuntime && typeof codexModelsRuntime.peek === 'function') {
+        const cached = codexModelsRuntime.peek();
+        const cachedModels = cached && Array.isArray(cached.models)
+          ? cached.models.map(m => m && m.model).filter(Boolean)
+          : [];
+        if (cachedModels.length) modelOptions = cachedModels;
+      }
       return {
         id: provider.id,
         name: provider.name,
-        modelOptions: target.modelOptions || provider.modelOptions || [],
+        modelOptions,
         wireApi: target.wireApi || provider.wireApi || null,
         available: !!target.available,
         unavailableReason: target.available ? null : target.reason,
@@ -662,10 +677,15 @@ function mountAuxGoalRoutes(app, dependencies) {
   });
 
   app.get('/api/aux/config', (req, res) => {
+    const availability = typeof getCliAvailability === 'function' ? getCliAvailability() : null;
     res.json({
       protocol: auxConfig.protocol,
       providerId: auxConfig.providerId,
       model: auxConfig.model,
+      cliAvailability: availability ? {
+        claude: !!(availability.claude && availability.claude.available),
+        codex: !!(availability.codex && availability.codex.available),
+      } : null,
       protocols: [
         { id: 'anthropic', name: 'Anthropic Messages' },
         { id: 'openai', name: 'OpenAI Responses / Chat Completions' },
