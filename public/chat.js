@@ -1027,6 +1027,7 @@ function resetHistoryPagination() {
 
 /* ── Apply initial/reconnect history without duplicating persisted DOM ── */
 function applyHistoryPlan(plan) {
+  rememberAutoCommitChoice(_lastUserBubble);
   const viewPlan = chatHistoryView.applyPlan(plan, {
     currentElement: currentMsgEl,
     lastUserElement: _lastUserBubble,
@@ -1404,6 +1405,7 @@ async function autoCommitIfNeeded(bubbleEl) {
         : `✓ 自动提交：${data.message || '没有新提交需要合并'}`);
       // Mark the checkbox as done
       row.classList.add('done');
+      rememberAutoCommitChoice(bubbleEl);
       applyMergeStatus({ mergeReady: false, dirty: false, ahead: 0 });
       refreshMergeStatus();
     } else if (res.status === 409) {
@@ -1670,11 +1672,7 @@ async function loadSessionModel() {
   // History reload attaches the per-turn checkbox before session info lands.
   // Catch it up to the authoritative session default unless the user already
   // toggled that bubble's checkbox by hand.
-  if (_lastUserBubble) {
-    const row = _lastUserBubble.querySelector('.msg-auto-commit');
-    const cb = row && row.querySelector('input[type="checkbox"]');
-    if (cb && !row.dataset.userTouched) cb.checked = _sessionAutoCommit;
-  }
+  syncAutoCommitChoice();
   void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
     cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
     onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
@@ -2209,6 +2207,11 @@ function applyMemoryEvent(memory) { _sessionMemory = memoryToText(memory); updat
 const autoCommitBtn = document.getElementById('auto-commit-btn');
 let _sessionAutoCommit = false;
 
+const autoCommitChoices = window.MultiCCAutoCommitChoice.create({ document, storage: () => window.sessionStorage,
+  sessionId: () => _sessionName, lastBubble: () => _lastUserBubble, defaultChecked: () => _sessionAutoCommit, translate: tt });
+function rememberAutoCommitChoice(bubble) { autoCommitChoices.remember(bubble); }
+function syncAutoCommitChoice(force = false) { autoCommitChoices.sync(force); }
+
 function updateAutoCommitBtn() {
   if (!autoCommitBtn) return;
   autoCommitBtn.style.display = '';
@@ -2230,6 +2233,7 @@ autoCommitBtn?.addEventListener('click', async () => {
     if (!res.ok) { addSystemMsg('保存失败：' + chatApi.errorText(chatApi.errorFromPayload(data, { response: res }))); return; }
     _sessionAutoCommit = !!data.autoCommit;
     updateAutoCommitBtn();
+    syncAutoCommitChoice(true);
     addSystemMsg(_sessionAutoCommit ? '✓ 已开启「本轮执行成功后自动提交合并」，每轮执行成功后将自动 commit 并合并回基分支' : '✓ 已关闭「本轮执行成功后自动提交合并」');
   } catch (e) {
     addSystemMsg('保存失败：' + chatApi.errorText(e));
@@ -2237,39 +2241,9 @@ autoCommitBtn?.addEventListener('click', async () => {
 });
 
 /* ── Per-message auto-commit checkbox ── */
-// Add a small checkbox under an assistant message bubble.
+// Add a small checkbox under a user message bubble.
 // Returns the checkbox element so caller can read .checked state later.
-function attachAutoCommitCheck(bubbleEl, checked) {
-  if (!bubbleEl) return null;
-  // User bubbles hold their text directly (no .msg-content wrapper); attach to
-  // the bubble itself in that case so the checkbox sits under "我" message.
-  const ce = bubbleEl.querySelector('.msg-content') || bubbleEl;
-  // Remove any existing auto-commit line
-  const old = ce.querySelector('.msg-auto-commit');
-  if (old) old.remove();
-  const row = document.createElement('div');
-  row.className = 'msg-auto-commit';
-  row.title = tt('autoCommitTitle');
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.checked = !!checked;
-  row.appendChild(cb);
-  row.appendChild(document.createTextNode(' ' + tt('autoCommitPerMsg')));
-  // Toggle when clicking the label area
-  row.addEventListener('click', (e) => {
-    if (e.target === cb) return; // native checkbox handles itself
-    cb.checked = !cb.checked;
-    row.dataset.userTouched = '1';
-  });
-  cb.addEventListener('click', () => { row.dataset.userTouched = '1'; });
-  // Attribution is the physical bottom tail. A history-rendered user bubble
-  // may already have it when this per-turn control is restored, so keep the
-  // checkbox immediately above the tail instead of pushing ownership upward.
-  const taskTail = ce === bubbleEl ? bubbleEl.querySelector('.msg-task-tail') : null;
-  if (taskTail) ce.insertBefore(row, taskTail);
-  else ce.appendChild(row);
-  return cb;
-}
+function attachAutoCommitCheck(bubble, checked) { return autoCommitChoices.attach(bubble, checked); }
 
 /* ── Session sharing (external web links) ── */
 const shareBtn = document.getElementById('share-btn');
