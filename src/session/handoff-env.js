@@ -77,7 +77,10 @@ function createHandoffEnvService(rawDeps) {
 
   // Flat-file reader for a memory scope directory. Oversized files are
   // reported, never truncated silently — a teammate should know the export
-  // dropped something.
+  // dropped something. Dotfiles are skipped: memory content is markdown, and a
+  // dotfile in a memory folder is machine bookkeeping (`.DS_Store`, and the
+  // `.handoff-provider.json` older releases wrote next to the memory files).
+  // Carrying one would hand the target a file it cannot see in any memory UI.
   function readScopeFiles(dir) {
     const out = { files: {}, skipped: [] };
     let entries = [];
@@ -85,6 +88,7 @@ function createHandoffEnvService(rawDeps) {
     catch (_) { return out; }
     for (const entry of entries) {
       if (!entry.isFile()) continue;
+      if (entry.name.startsWith('.')) continue;
       const abs = path.join(dir, entry.name);
       let stat = null;
       try { stat = fs.statSync(abs); } catch (_) { continue; }
@@ -478,10 +482,12 @@ function createHandoffEnvService(rawDeps) {
     if (gitNote) lines.push(`- git 恢复说明：${gitNote}`);
     lines.push('');
     lines.push('## 模型 / Provider');
-    lines.push(`- 源 Provider：${ctx.providerName || meta.providerId || '默认登录'}（本机凭据不随包传播，见 .handoff-provider.json）`);
-    if (Array.isArray(ctx.envKeys) && ctx.envKeys.length) {
-      lines.push(`- 依赖的环境变量（仅名称）：${ctx.envKeys.join(', ')}`);
-    }
+    lines.push(`- 源模型：${meta.model || '（默认）'}——随包携带，导入时写进新会话。`);
+    lines.push('- Provider 不随包传播：源机器的 provider 选择、环境变量与凭据一律不携带，'
+      + '目标机器用自己的 provider 承接这次 handoff。导入时可用 targetProviderId 指向本机已配置的 provider；'
+      + '不指定则用本机该 CLI 的默认 provider。');
+    lines.push('- 若源模型在本机 provider 上不存在（源机可能用的是另一家线路），'
+      + '请在会话设置里改成本机可用的模型，别拿跨 provider 的模型名去请求。');
     lines.push('');
     lines.push('## 项目指令文件');
     const docs = ctx.projectDocs || {};
@@ -521,7 +527,8 @@ function createHandoffEnvService(rawDeps) {
     lines.push('1. 先读本文件所在文件夹里的记忆文件（含 task-/cli-/machine- 前缀的移植文件）。');
     lines.push('2. 用 `git log <基分支>..HEAD` 了解本会话已完成的增量；未合入的成果在本会话的 worktree 分支上。');
     lines.push('3. 缺失的项目指令文件（上方列表）可向源机器索取或从 bundle 的 contextDeps.projectDocs 恢复。');
-    lines.push('4. 涉及 Provider 凭据时参考 .handoff-provider.json 的来源信息，手动接到本机已配置的 provider。');
+    lines.push('4. Provider 由本机决定：bundle 不带源机 provider 配置与凭据，导入副本已接到本机 provider；'
+      + '需要指定时用 targetProviderId 指向本机已配置的 provider。');
     return lines.join('\n') + '\n';
   }
 

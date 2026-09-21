@@ -12,11 +12,11 @@
 - **zip 容器（v3，推荐）**：`GET /api/sessions/:id/bundle.zip` 导出一个
   真正的 zip 文件，`POST /api/sessions/import-zip` 导入。技能文件夹、
   对话引用的图片/附件、git bundle 以**真实文件**放在 zip 里（deflate 压缩，
-  没有	base64 膨胀），聊天历史 / provider 状态 / 记忆 / 上下文依赖仍在
+  没有	base64 膨胀），聊天历史 / 记忆 / 上下文依赖仍在
   zip 内 `manifest.json` 条目里做 AES-256-GCM 加密。用任意 zip 工具就能
   打开看图片和技能。
 
-v1 携带聊天历史、私有记忆、provider 状态和 worktree 分支的 git bundle；
+v1 携带聊天历史、私有记忆和 worktree 分支的 git bundle；
 v2 在此之上补齐「执行环境」；v3 只是换了更顺手的传输容器：
 
 | 载荷 | v1 | v2/v3 |
@@ -26,8 +26,9 @@ v2 在此之上补齐「执行环境」；v3 只是换了更顺手的传输容�
 | 记忆瀑布其余 scope（shared / task / cli / machine） | ❌ | ✅ `memoryScopes` |
 | 被引用的技能（整个技能文件夹） | ❌ | ✅ `skills` |
 | 对话引用的本地文件（上传的图片/附件、本地图片引用） | ❌ | ✅ `assets`（导入时重写历史路径） |
-| 上下文依赖清单（仓库远端、分支、CLAUDE.md/AGENTS.md、provider env 键名） | ❌ | ✅ `contextDeps` |
-| provider 状态 / git bundle | ✅ | ✅（zip 里是真实 `git.bundle` 文件） |
+| 上下文依赖清单（仓库远端、分支、CLAUDE.md/AGENTS.md） | ❌ | ✅ `contextDeps` |
+| git bundle | ✅ | ✅（zip 里是真实 `git.bundle` 文件） |
+| provider 状态（源机 provider / env 值 / codex 凭据文件） | ⚠️ 旧包里有 | ❌ **已移除，见下** |
 | 导入后落 `HANDOFF.md` 移植说明 | ❌ | ✅ |
 
 ## 导出
@@ -41,7 +42,7 @@ curl -s "$MULTICC_BASE_URL/api/sessions/<id>/bundle.zip?passphrase=<≥6位口�
 
 得到一个标准 zip（任何解压工具可打开）：`skills/`、`assets/`、`git.bundle`
 是真实文件；`meta.json` 是明文摘要（只有计数，无标签/路径）；`manifest.json`
-是加密的敏感载荷（聊天历史、provider env、记忆、上下文依赖）。
+是加密的敏感载荷（聊天历史、记忆、上下文依赖）。
 
 ### JSON 容器（v1/v2 兼容）
 
@@ -108,11 +109,31 @@ EOF
   `<name>-imported`，绝不覆盖本机已有技能；不安全名称 / 路径穿越 / 缺
   SKILL.md → 拒绝。
 - **git**：源分支独有的提交 replay 到新 worktree（cherry-pick 或保留拓扑）。
-- **HANDOFF.md**：写入新会话私有记忆，记录来源仓库与远端、分支、provider
-  线索（凭据不随包传播，见 `.handoff-provider.json`）、各 scope 记忆恢复
-  明细、技能安装结果、以及重建上下文的建议步骤。
+- **HANDOFF.md**：写入新会话私有记忆，记录来源仓库与远端、分支、模型、
+  各 scope 记忆恢复明细、技能安装结果、以及重建上下文的建议步骤。
+  provider 一律不随包，目标机用自己的 provider 承接（见
+  「Provider 不随包传播」）。
 
 返回的 `restored` 字段给出每一项的落地明细（written/skipped、gitNote 等）。
+
+### Provider 不随包传播
+
+bundle 不带任何 provider 信息：源会话挂在哪个 provider、该 provider 注入的
+环境变量（键名与值都不带）、codex 的 `auth.json` / `config.toml` 一律不出源机。
+**目标机器用自己的 provider 承接这次 handoff**：导入时 `targetProviderId`
+指向本机已配置的 provider；不指定则走 `createSessionRecord` 的常规默认
+（该 CLI 的本机默认 provider / 默认登录）。
+包里的 `sessionMeta.model` 仍会随包并写进新会话——若源模型在本机 provider
+上不存在（源机可能用的是另一家线路），导入后请在会话设置里改成本机可用的
+模型，否则会拿跨 provider 的模型名去请求。
+
+被移除的旧行为：v1 起 payload 里带 `providerState`（`providerId` /
+`providerName` / 逐字的 spawn env / codex 凭据文件），导入时又把它明文写成
+新会话记忆目录里的 `.handoff-provider.json`。那份文件没有任何代码读回，
+却把**凭据值**落在了目标机磁盘上（claude 线路的 `ANTHROPIC_AUTH_TOKEN`、
+codex 的 `OPENAI_API_KEY` 与整份 codex home 副本），而生成的 HANDOFF.md 还
+声称「凭据不随包传播」——文案与事实相反。旧 bundle 里残留的 `providerState`
+字段导入时被直接忽略，不会再落任何文件。
 
 ### 导入副本是任务无关的（task-agnostic）
 
@@ -132,13 +153,14 @@ EOF
 
 ## 安全模型
 
-- 敏感载荷（聊天历史、provider env、记忆、上下文依赖）无论哪种容器都用
+- 敏感载荷（聊天历史、记忆、上下文依赖文件）无论哪种容器都用
   口令派生密钥（PBKDF2 200k 轮）+ AES-256-GCM 加密，可走邮件/网盘/syncthing。
 - zip 容器中技能文件夹、图片附件、git bundle 是明文真实文件——它们本来
-  就是要分发给队友的内容；口令保护的是对话与凭据线索。
-- provider 凭据不会自动注入目标机器的 provider 池；codex 的 auth/config 只
-  存进会话记忆里的 `.handoff-provider.json` 供手动接线。
-- `contextDeps.envKeys` 只带环境变量**名称**，不带值。
+  就是要分发给队友的内容；口令保护的是对话与记忆。
+- provider 选择、环境变量与凭据都不在包里（见上「Provider 不随包传播」），
+  目标机用本机 provider 承接。
+- 记忆 scope 采集只收普通文件、跳过点文件（`.handoff-provider.json` 这类
+  历史残留不会被再带走一轮）。
 - 导入的文件名/路径经过白名单校验，拒绝 `..`、绝对路径、反斜杠与控制字符；
   zip 读取层额外校验每个条目的 CRC32、条目数与总解压体积上限（防压缩炸弹），
   拒绝 zip64。
