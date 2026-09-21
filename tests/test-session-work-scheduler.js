@@ -216,6 +216,29 @@ test('idle starts one item and running work keeps later messages in strict FIFO 
   assert.equal(thirdClaim.id, third.entry.id);
 });
 
+test('a claimed but not started typed message stays renderable on the active snapshot', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1',
+    text: 'please continue',
+    options: { clientMsgId: 'cmid-1' },
+    idempotencyKey: 'k1',
+  });
+  const item = await claimOne(h);
+  // Claimed (left `queued`) but not yet started: the snapshot's `active` must
+  // carry the sender's correlation id and text so a reload can re-render the
+  // user bubble that the optimistic send copy lost.
+  const claimed = await h.scheduler.status('s1');
+  assert.equal(claimed.active.clientMsgId, 'cmid-1');
+  assert.equal(claimed.active.text, 'please continue');
+  assert.deepEqual(claimed.queued.map(entry => entry.clientMsgId), []);
+  await startClaim(h, item);
+  // Once the turn owns the message, history is the source: stop shipping text.
+  const started = await h.scheduler.status('s1');
+  assert.equal(started.active.clientMsgId, undefined);
+  assert.equal(started.active.text, undefined);
+});
+
 test('claim release publishes the same bounded FIFO summary used by snapshots', async t => {
   const h = fixture(t);
   await h.scheduler.admit({

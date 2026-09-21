@@ -622,6 +622,19 @@
         }
         case 'session_queue': {
           const items = Array.isArray(message.items) ? message.items : [];
+          // A claimed message has left `items` and its transcript record only
+          // appears when the turn starts. Until then the snapshot's `active`
+          // carries the sender's text, so any reload/reconnect can re-render
+          // the user bubble the optimistic send copy lost.
+          const activeInput = message.active && !message.active.startedAt
+            && typeof message.active.clientMsgId === 'string'
+            && message.active.clientMsgId.trim()
+            && typeof message.active.text === 'string'
+            && message.active.text
+            ? message.active : null;
+          if (activeInput && !historyView.findByClientMsgId?.(activeInput.clientMsgId)) {
+            host.addUserMessage?.(activeInput.text, activeInput.clientMsgId);
+          }
           const visibleItems = message.event === 'queued' && message.queued === false
             ? items.filter(item => item?.entryId !== message.entryId)
             : items;

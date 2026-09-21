@@ -1655,6 +1655,35 @@ class ChatProvider extends ChangeNotifier {
           );
           // 裁决暂存消息：立即执行则显示气泡，进队列则继续暂存，取消则丢弃。
           _stagedTracker.reconcile(event, p);
+          // 已被 claim 但 turn 尚未 started 的输入，此时不在 items 里、历史里
+          // 也还没有记录；快照的 active 带着发送方的 clientMsgId/原文，重载或
+          // 断线重连后靠它把用户气泡补回来（started 后由历史接管）。
+          final active = p['active'];
+          if (active is Map<String, dynamic> &&
+              active['startedAt'] == null) {
+            final activeClientMsgId =
+                (active['clientMsgId'] ?? '').toString().trim();
+            final activeText = (active['text'] ?? '').toString();
+            if (activeClientMsgId.isNotEmpty &&
+                activeText.isNotEmpty &&
+                !_messages.any(
+                  (message) => message.clientMsgId == activeClientMsgId,
+                )) {
+              final committed = _stagedTracker.commitByClientMsgId(
+                activeClientMsgId,
+              );
+              if (!committed) {
+                _messages.insert(
+                  userBubbleInsertIndex(_messages, _folder.currentMsg),
+                  ChatMessage(
+                    role: MessageRole.user,
+                    content: activeText,
+                    clientMsgId: activeClientMsgId,
+                  ),
+                );
+              }
+            }
+          }
           final clientMsgId = p['clientMsgId']?.toString();
           final ownsAdmission =
               clientMsgId != null &&
