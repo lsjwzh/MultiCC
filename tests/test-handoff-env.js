@@ -231,7 +231,7 @@ test('restoreMessageAssets rewrites paths so imported conversations render', () 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('renderHandoffDoc mentions repo, provider, memory and skills sections', () => {
+test('renderHandoffDoc mentions repo, model/provider policy, memory and skills sections', () => {
   const root = tempRoot();
   const service = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills') });
   const doc = service.renderHandoffDoc({
@@ -239,7 +239,7 @@ test('renderHandoffDoc mentions repo, provider, memory and skills sections', () 
       v: 2, exportedAt: '2026-09-19T00:00:00Z',
       sessionMeta: { id: 's1', label: '源会话', cli: 'claude', model: 'glm-5.3', branch: 'multicc/s1' },
       contextDeps: { dirName: 'proj', repoRemote: 'git@example:proj.git', baseBranch: 'main',
-                     envKeys: ['ANTHROPIC_BASE_URL'], projectDocs: { 'CLAUDE.md': 'x' } },
+                     projectDocs: { 'CLAUDE.md': 'x' } },
     },
     memoryReport: { shared: { written: ['team-facts.md'], skipped: [] } },
     skillResults: [{ name: 'team-skill', status: 'installed' }],
@@ -247,7 +247,12 @@ test('renderHandoffDoc mentions repo, provider, memory and skills sections', () 
   });
   assert.match(doc, /git@example:proj\.git/);
   assert.match(doc, /multicc\/s1/);
-  assert.match(doc, /ANTHROPIC_BASE_URL/);
+  // The source model is carried, the provider is not: the doc must say so and
+  // must never point at a provider-credential file that no longer exists.
+  assert.match(doc, /源模型：glm-5\.3/);
+  assert.match(doc, /Provider 不随包传播/);
+  assert.doesNotMatch(doc, /handoff-provider|ANTHROPIC_|OPENAI_API_KEY/,
+    'no provider env key name or credential file may appear in the manifest');
   assert.match(doc, /team-facts\.md/);
   assert.match(doc, /team-skill：installed/);
   assert.match(doc, /HANDOFF/);
