@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
 import 'settings_service.dart';
+import 'session_service.dart';
 
 /// 状态词表，逐条对齐 Web Air（`public/air.js` 的 `stateNames`）。两套界面
 /// 说同一件事就得用同一个词，否则「等待目录容量」和「排队中」会被当成两回事。
@@ -590,6 +591,42 @@ class AirService {
   /// 同一个端点，但读的是详情而不是会话：`attribution` / `execution` 只在这一份
   /// 响应里，任务行上那份 `/api/air` 快照没有它们。
   Future<Map<String, dynamic>> taskDetails(String taskId) => openTask(taskId);
+
+  /// Opening a chat must not download taskDetails' unbounded transcript.
+  /// The server resolves access and returns the small session projection too.
+  Future<Session> openTaskSession(
+    String taskId, {
+    Session? Function(String)? cachedSession,
+  }) async {
+    final response = await _request(
+      'GET', '/api/air/tasks/${Uri.encodeComponent(taskId)}/open',
+    );
+    if (response.statusCode == 404 || response.statusCode == 405) {
+      // Compatibility with a host not yet upgraded; still runs inside the
+      // loading page, never before navigation.
+      final entry = await openTask(taskId);
+      final id = entry[entry['readOnly'] == true ? 'sourceSessionId' : 'sessionId'];
+      if (id is String && id.isNotEmpty) {
+        final session = cachedSession?.call(id) ??
+            await SessionService(settings: settings, httpClient: _http)
+                .fetchTaskBoundSession(id);
+        if (session != null) return session;
+      }
+    } else {
+      final data = _decode(response);
+      if (response.statusCode >= 400 || data['ok'] == false) {
+        throw Exception(
+          data['message'] ?? data['code'] ?? 'HTTP ${response.statusCode}',
+        );
+      }
+      final session = data['session'];
+      if (session is Map && session['id'] is String &&
+          (session['id'] as String).isNotEmpty && session['kind'] == 'chat') {
+        return Session.fromJson(Map<String, dynamic>.from(session));
+      }
+    }
+    throw StateError('无法打开任务会话，请刷新后重试。');
+  }
 
   /// 重新核验本轮代码的合并记录。它只刷新「交付到哪儿了」这条记录，归属本身仍
   /// 以完整交付条件为准（同 Web `reconcileDelivery`）。

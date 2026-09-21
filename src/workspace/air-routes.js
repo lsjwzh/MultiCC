@@ -172,6 +172,23 @@ function mountAirRoutes(app, deps) {
       attribution };
   }
   app.get('/api/air/tasks/:id', route(async (req, res) => conditionalBody(req, res, await taskDetail(req.params.id))));
+  // Navigation needs identity and access, not the complete transcript or Git
+  // delivery inspection. History remains paged by the chat transport.
+  app.get('/api/air/tasks/:id/open', route(async req => {
+    const entry = await deps.shell.taskEntry(req.params.id, { includeMessages: false });
+    const targetId = entry.readOnly ? entry.sourceSessionId : entry.sessionId;
+    const record = deps.records.get(targetId);
+    const allowed = record?.kind === 'chat' && !record.taskExecutionSlot
+      && !['aux', 'gateway'].includes(record.type);
+    return { ok: true, taskId: req.params.id, readOnly: entry.readOnly,
+      sessionId: entry.sessionId, sourceSessionId: entry.sourceSessionId,
+      session: allowed ? {
+        id: record.id, kind: 'chat', dirId: record.dirId, label: record.label,
+        cli: record.cli, cwd: record.worktreePath || deps.directories.get(record.dirId)?.path || '',
+        createdAt: record.createdAt, taskBoundTaskId: record.taskBoundTaskId || null,
+        autoCommit: record.autoCommit !== false,
+      } : null };
+  }));
   app.post('/api/air/tasks/:id/delivery/reconcile', route(async req => {
     const entry = await deps.shell.taskEntry(req.params.id);
     return { ok: true, publications: await deps.admission.recoverEvidence(entry.sessionId) };
