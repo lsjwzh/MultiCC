@@ -15,6 +15,14 @@
 //
 // 对话帧（#conversation）在 Air 文档之外，扫不到也不该扫：它是个独立文档，本测试
 // 把它换成一个空壳，免得它自己那堆请求混进来。
+//
+// 这份断言管的是**Air 自己的文档**。同一个 Air 窗口里还有两类 iframe 属于别的文档，
+// 它们的中文不在这里的判据内 —— 但得说清楚，免得把「本文件全绿」读成「屏幕上没有中文」：
+//   ① 对话帧（chat.html / task-shell.html）：它自己的文案走同一份词典，本轮修的是
+//      它嵌在 Air 时露出来的那几条（上下文 / 详情 / 入 / 出 之类）；
+//   ② 侧栏几格里「暂用兼容实现」的旧管理台（air-admin.js 的 .air-legacy-frame →
+//      /manage.html?view=…&embed=air，如消息桥接）。那些页面的文案是 manage.html
+//      自己的存量，不在本次「Air 壳」的范围内，英文模式下仍会露出中文。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -205,6 +213,8 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     // 侧栏那几格是同一个壳里换面板，内容全由 air-*.js 现画 —— 首屏扫描看不到它们。
     // 「整个产品 UI 能在中文/English 之间切换」包括这些格子里的一字一句，所以逐格点开，
     // 每开一格扫一次（失败了直接说是哪一格，不用在一整页里找）。
+    // bridges / provider 这类格子的正文是嵌进来的旧管理台 iframe（.air-legacy-frame），
+    // 那份中文属于 manage.html，扫不到 —— 见文件头那条边界说明。
     for (const view of ['docs', 'memory', 'settings', 'provider', 'tunnel', 'bridges']) {
       await page.evaluate(`document.querySelector('[data-air-view="${view}"]').click()`);
       assert.ok(await page.waitFor(`(() => {
@@ -222,6 +232,8 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     // 一起覆盖了：漏翻的节点不管藏得多深都会在这里现形。Auto 候选池刚挂上去，也在里面。
     const dirty = await page.evaluate(SCAN);
     assert.deepEqual(dirty, [], `Chinese left in the English Air shell:\n  ${dirty.join('\n  ')}`);
+    // 出这一张是在扫过六个面板之后 —— 壳上的英文是重点，下半屏那两格嵌进来的
+    // 旧管理台（iframe）说明的是上面那条边界，不是这次没过关。
     t.diagnostic('en: ' + await page.screenshot('air-i18n-en'));
 
     // 任务 AI 配置抽屉里的标签不是静态 DOM，是共享模块（chat-ai-config.js）现算的，
