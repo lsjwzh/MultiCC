@@ -50,14 +50,23 @@
     Object.freeze({ value: 'xhigh', label: 'Extra high' }),
     Object.freeze({ value: 'max', label: 'Max' }),
   ]);
-  // WorkBuddy (codebuddy) exposes tier aliases plus concrete vendor model ids.
-  // The catalog is static: the CLI has no --list-models, and entitlements vary
-  // per account, so unknown ids simply fall back to the CLI's own default.
-  const CODEBUDDY_MODEL_OPTIONS = Object.freeze([
-    '', 'default-model', 'fast-model', 'balanced-model', 'primary-model', 'deep-model',
-    'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex',
-    'gemini-3.5-flash', 'glm-5.3', 'glm-5.2', 'kimi-k3', 'kimi-k2.6', 'minimax-m3',
+  // WorkBuddy (codebuddy): tier aliases stay valid --model values (verified
+  // against 2.156.0) and are always pinned. The concrete catalog is dynamic —
+  // /api/codebuddy/models parses `codebuddy --help` (1-hour cache) because the
+  // CLI auto-updates faster than any static table; a stale id hard-400s the
+  // turn ("model [x] service info not found"). Snapshot below is the offline
+  // fallback only (codebuddy 2.156.0).
+  const CODEBUDDY_TIER_OPTIONS = Object.freeze([
+    'default-model', 'fast-model', 'balanced-model', 'primary-model', 'deep-model',
   ]);
+  const CODEBUDDY_FALLBACK_MODELS = Object.freeze([
+    'hy4-preview-f', 'hy3', 'hy3-x', 'deepseek-v4.1-flash',
+    'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
+    'minimax-m3', 'minimax-m2.7',
+    'kimi-k3-1', 'kimi-k2.8-preview', 'kimi-k2.7', 'kimi-k2.6',
+    'deepseek-v4-pro',
+  ]);
+  const CODEBUDDY_MODEL_OPTIONS = Object.freeze(['', ...CODEBUDDY_TIER_OPTIONS, ...CODEBUDDY_FALLBACK_MODELS]);
   const DSH_MODEL_OPTIONS = Object.freeze(['', 'deepseek-v4-flash', 'deepseek-v4-pro']);
   // Provider-less ZCode follows its native config/Coding Plan. Do not hardcode
   // a vendor/model pair here: the native provider may be Z.ai, BigModel, Start
@@ -229,7 +238,15 @@
       if (cached.length) return ['', ...cached.map(m => m.model), '__custom__'];
       return [...QODER_MODEL_OPTIONS, '__custom__'];
     }
-    if (state && state.cli === 'codebuddy') return [...CODEBUDDY_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'codebuddy') {
+      // Same live-catalog contract as qoder: sync-read the 1-hour cache filled
+      // by loadCodebuddyModels(); refreshCodebuddyModels() warms it on init /
+      // CLI switch. Tier aliases stay pinned ahead of the concrete ids.
+      const cached = readCodebuddyModelsSync();
+      const concrete = cached.length ? cached.map(m => m.model) : [...CODEBUDDY_FALLBACK_MODELS];
+      return ['', ...CODEBUDDY_TIER_OPTIONS,
+        ...concrete.filter(model => !CODEBUDDY_TIER_OPTIONS.includes(model)), '__custom__'];
+    }
     if (state && state.cli === 'dsh') return [...DSH_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'opencode') {
@@ -248,7 +265,7 @@
   // Synchronous read of a CLI model cache populated by shared/models.js
   // (loadOpenCodeModels / loadQoderModels). Returns [] when the cache is
   // missing/stale so callers can render a placeholder option without blocking.
-  function readModelCacheSync(key) {
+  function readModelCacheSync(key, ttlMs) {
     try {
       const ls = root && root.localStorage;
       if (!ls) return [];
@@ -258,7 +275,7 @@
       if (!obj || typeof obj !== 'object') return [];
       const at = Number(obj.at) || 0;
       const models = Array.isArray(obj.models) ? obj.models : [];
-      const TTL = 24 * 60 * 60 * 1000;
+      const TTL = ttlMs || 24 * 60 * 60 * 1000;
       if (!at || (Date.now() - at) >= TTL) return [];
       return models;
     } catch (_) { return []; }
@@ -274,6 +291,10 @@
 
   function readClaudeModelsSync() {
     return readModelCacheSync('multicc.claude.models.v1');
+  }
+
+  function readCodebuddyModelsSync() {
+    return readModelCacheSync('multicc.codebuddy.models.v1', 60 * 60 * 1000);
   }
 
   // Background-refresh the OpenCode model list (1-day cache, shared with
@@ -317,6 +338,20 @@
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
     } catch (_) { /* swallow — picker keeps the static table */ }
+  }
+
+  // Same contract as refreshQoderModels, for the WorkBuddy catalog. The chat
+  // page calls this on init / CLI switch when `cli === 'codebuddy'` so the
+  // picker upgrades from the fallback snapshot to the installed CLI's ids.
+  async function refreshCodebuddyModels(rebuildCallback) {
+    try {
+      if (typeof loadCodebuddyModels !== 'function') return;
+      const prev = readCodebuddyModelsSync();
+      await loadCodebuddyModels();
+      if (typeof rebuildCallback === 'function' && prev.length === 0) {
+        try { rebuildCallback(); } catch (_) { /* noop */ }
+      }
+    } catch (_) { /* swallow — picker keeps the fallback snapshot */ }
   }
 
   function stripModelSuffix(model) {
@@ -990,6 +1025,7 @@
     saveSession,
     refreshOpenCodeModels,
     refreshQoderModels,
+    refreshCodebuddyModels,
     refreshClaudeModels,
   };
 });

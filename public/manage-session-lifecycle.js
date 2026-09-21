@@ -20,27 +20,26 @@
   const ZCODE_MODEL_OPTIONS = Object.freeze([
     { value: '', label: '默认（跟随 ZCode 设置）' },
   ]);
-  // WorkBuddy (codebuddy) offers tier aliases plus concrete vendor ids; the
-  // CLI has no --list-models, so this static catalog is all we can offer.
-  const CODEBUDDY_MODEL_OPTIONS = Object.freeze([
+  // WorkBuddy (codebuddy): tier aliases remain valid --model values and are
+  // always pinned. Concrete ids come live from /api/codebuddy/models (parsed
+  // from `codebuddy --help`, 1-hour cache, shared with chat.html through
+  // shared/models.js) — the CLI auto-updates too fast for a static table.
+  // The static list below is only the offline fallback (codebuddy 2.156.0).
+  const CODEBUDDY_TIER_OPTIONS = Object.freeze([
     { value: '', label: '默认（跟随 WorkBuddy 设置）' },
     { value: 'default-model', label: 'default（默认档）' },
     { value: 'fast-model', label: 'fast（快速档）' },
     { value: 'balanced-model', label: 'balanced（均衡档）' },
     { value: 'primary-model', label: 'primary（主力档）' },
     { value: 'deep-model', label: 'deep（深度档）' },
-    { value: 'gpt-5.6-sol', label: 'gpt-5.6-sol' },
-    { value: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
-    { value: 'gpt-5.6-luna', label: 'gpt-5.6-luna' },
-    { value: 'gpt-5.5', label: 'gpt-5.5' },
-    { value: 'gpt-5.4', label: 'gpt-5.4' },
-    { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
-    { value: 'gemini-3.5-flash', label: 'gemini-3.5-flash' },
-    { value: 'glm-5.3', label: 'glm-5.3' },
-    { value: 'glm-5.2', label: 'glm-5.2' },
-    { value: 'kimi-k3', label: 'kimi-k3' },
-    { value: 'kimi-k2.6', label: 'kimi-k2.6' },
-    { value: 'minimax-m3', label: 'minimax-m3' },
+  ]);
+  const CODEBUDDY_MODEL_OPTIONS = Object.freeze([
+    ...CODEBUDDY_TIER_OPTIONS,
+    ...['hy4-preview-f', 'hy3', 'hy3-x', 'deepseek-v4.1-flash',
+      'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo',
+      'minimax-m3', 'minimax-m2.7',
+      'kimi-k3-1', 'kimi-k2.8-preview', 'kimi-k2.7', 'kimi-k2.6',
+      'deepseek-v4-pro'].map(id => ({ value: id, label: id })),
   ]);
   const DSH_MODEL_OPTIONS = Object.freeze([
     { value: '', label: '默认（跟随 DSH 配置）' },
@@ -77,10 +76,25 @@
     return [CLAUDE_MODEL_OPTIONS[0], ...source];
   }
 
+  // WorkBuddy's concrete ids come from the installed CLI's --help via
+  // /api/codebuddy/models (1-hour cache, shared with chat.html through
+  // shared/models.js). Tiers stay pinned; fall back to the static snapshot on
+  // a cache miss — the dialog builds its <select> synchronously.
+  function codebuddyModelOptions() {
+    const live = typeof root.readCodebuddyModelsSync === 'function' ? root.readCodebuddyModelsSync() : [];
+    if (!live.length) return CODEBUDDY_MODEL_OPTIONS;
+    const tierValues = new Set(CODEBUDDY_TIER_OPTIONS.map(o => o.value));
+    return [
+      ...CODEBUDDY_TIER_OPTIONS,
+      ...live.filter(entry => !tierValues.has(entry.model))
+        .map(entry => ({ value: entry.model, label: entry.label || entry.model })),
+    ];
+  }
+
   function vendorModelOptions(cli) {
     if (cli === 'qoder') return qoderModelOptions();
     if (cli === 'claude') return claudeModelOptions();
-    if (cli === 'codebuddy') return CODEBUDDY_MODEL_OPTIONS;
+    if (cli === 'codebuddy') return codebuddyModelOptions();
     if (cli === 'dsh') return DSH_MODEL_OPTIONS;
     return null;
   }
@@ -937,6 +951,12 @@
   // table until the fetch lands).
   if (typeof root.loadClaudeModels === 'function') {
     try { root.loadClaudeModels(); } catch (_) { /* picker keeps the static table */ }
+  }
+
+  // Same warm-up for the WorkBuddy catalog (picker keeps the fallback snapshot
+  // until the fetch lands).
+  if (typeof root.loadCodebuddyModels === 'function') {
+    try { root.loadCodebuddyModels(); } catch (_) { /* picker keeps the snapshot */ }
   }
 
   Object.assign(root, {
