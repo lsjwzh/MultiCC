@@ -575,6 +575,9 @@
     for (const element of [$('quick-task-input'), $('quick-task-submit'),
       $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
     renderDirectoryGit();
+    // 目录首页那道 Chat / Terminal 切换（air-directory-mode.js）：模块自己管状态与
+    // DOM，这里只把这一份快照递进去（同 air-admin 的 render(ctx) 契约）。
+    window.MultiCCAirDirectoryMode?.render({ data, directoryId, taskId, api, notice, defaultCli: quickCli });
   }
 
   // ── 目录 Git 状态：主检出的「未推送提交」与「不在 worktree 的脏文件」 ──

@@ -77,8 +77,6 @@ void main() {
             onOpenTaskBoard: () {},
             onCreateTask: () {},
             onOpenTask: (_) {},
-            terminalSessions: const [],
-            onOpenTerminal: (_) {},
             onOpenDocs: () {},
             onOpenMemory: () {},
             onOpenTaskGraph: () {},

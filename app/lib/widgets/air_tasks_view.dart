@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n.dart';
+import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../screens/docs_registry_screen.dart';
 import '../screens/aux_screen.dart';
@@ -78,6 +79,12 @@ class AirTasksView extends StatefulWidget {
 
 enum _AirMode { tasks, library }
 
+/// 目录首页顶部那道切换（Web `public/air.html` 的 `#directory-mode`）。
+///
+/// [chat] = 任务与对话（默认），[terminal] = **本目录**的终端会话。两类东西一次
+/// 只显示一种 —— 终端不混进任务清单，任务行也不混进终端列表。
+enum _DirectoryMode { chat, terminal }
+
 enum _DirectoryTaskStatus { open, all, archived }
 
 class _AirTasksViewState extends State<AirTasksView>
@@ -114,11 +121,16 @@ class _AirTasksViewState extends State<AirTasksView>
       _submitting = false,
       _foreground = true;
   bool _openingTerminal = false;
+  bool _creatingTerminal = false;
   bool _showAll = false;
   final _taskSearch = TextEditingController();
   String _taskQuery = '';
   _DirectoryTaskStatus _taskStatus = _DirectoryTaskStatus.open;
   _AirMode _mode = _AirMode.tasks;
+
+  /// 当前目录首页显示哪一类东西。默认 Chat（任务/对话），和 Web 一致；换一个
+  /// 目录也回到 Chat —— 「默认还是 chat 模式」不该被上一次切到 Terminal 记住。
+  _DirectoryMode _dirMode = _DirectoryMode.chat;
   Timer? _timer;
 
   @override
@@ -231,6 +243,8 @@ class _AirTasksViewState extends State<AirTasksView>
     setState(() {
       _directoryId = dirId;
       _mode = _AirMode.tasks;
+      // 每个目录都从 Chat 起步：切过去先看这个目录的活，终端是下一跳的事。
+      _dirMode = _DirectoryMode.chat;
       _showAll = false;
       _taskQuery = '';
       _taskStatus = _DirectoryTaskStatus.open;
@@ -344,7 +358,7 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
-  /// 侧栏 TERMINAL 一组点开一行：先换出会话对象，再开终端页。
+  /// Terminal 模式点开一行：先换出会话对象，再开终端页。
   ///
   /// 三级兜底，因为终端记录不在 `/api/sessions` 的常规可见列表里：先看已经加载
   /// 的会话表（最完整，带 cwd），再按 id 拉一次，最后用快照里那四个字段自己拼
@@ -1211,9 +1225,6 @@ class _AirTasksViewState extends State<AirTasksView>
           _closeDrawer();
           unawaited(_open(task));
         },
-        terminalSessions:
-            data?.terminalSessionsOf(_directoryId) ?? const <AirSession>[],
-        onOpenTerminal: (session) => unawaited(_openTerminal(session)),
         onOpenDocs: () => _openDestination(WorkspaceDestination.docs),
         onOpenMemory: () {
           _closeDrawer();
@@ -1425,12 +1436,209 @@ class _AirTasksViewState extends State<AirTasksView>
                     // 目录」按钮，同一件事）。
                     addButtonKey: _tourLibraryKey,
                   )
-                : _buildTasks(data, directory, tasks),
+                : _buildDirectory(data, directory, tasks),
           ),
         ],
       ),
     );
   }
+
+  /// 目录首页 = 顶部那道 Chat / Terminal 切换 + 下面那一种内容。
+  ///
+  /// 切换摆在整个页面最前面（「Terminal 放到各个目录里面、在前面」），所以两类
+  /// 东西都不必先去侧栏里找一遍；一次只显示一种，互不混排。默认 Chat。
+  Widget _buildDirectory(
+    AirSnapshot? data,
+    AirDirectory? directory,
+    List<AirTask> tasks,
+  ) {
+    if (data == null && _error.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _DirectoryModeSwitch(
+          mode: _dirMode,
+          onChanged: (mode) => setState(() => _dirMode = mode),
+        ),
+        Expanded(
+          child: _dirMode == _DirectoryMode.terminal
+              ? _buildTerminals(data, directory)
+              : _buildTasks(data, directory, tasks),
+        ),
+      ],
+    );
+  }
+
+  /// Terminal 模式：**本目录**的终端会话（`/api/air` 的 `sessions`，服务端已经按
+  /// `dirId` 滤过一遍）。它跟的是目录，不是某一条任务 —— 所以列表跟着 [_selectDirectory]
+  /// 走，和任务清单读的是同一份快照。
+  Widget _buildTerminals(AirSnapshot? data, AirDirectory? directory) {
+    final dirId = _directoryId;
+    final sessions = data?.terminalSessionsOf(dirId) ?? const <AirSession>[];
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        children: [
+          if (directory != null)
+            Text(
+              directory.path,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppColors.faint, fontSize: 11.5),
+            ),
+          const SizedBox(height: 10),
+          FilledButton.icon(
+            key: const ValueKey('air-new-terminal-button'),
+            onPressed: dirId == null || _creatingTerminal
+                ? null
+                : () => unawaited(_createTerminal(dirId)),
+            icon: const Icon(Icons.add_rounded, size: 17),
+            label: Text(_creatingTerminal ? '正在新建…' : '新建终端'),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.accent.withValues(alpha: 0.16),
+              foregroundColor: AppColors.accent,
+              minimumSize: const Size.fromHeight(44),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(9),
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '当前目录',
+                      style: TextStyle(color: AppColors.faint, fontSize: 11.5),
+                    ),
+                    const SizedBox(height: 2),
+                    const Text(
+                      '终端',
+                      key: ValueKey('air-terminals-heading'),
+                      style: TextStyle(
+                        color: AppColors.text,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                '${sessions.length} 个终端',
+                key: const ValueKey('air-terminals-count'),
+                style: const TextStyle(color: AppColors.faint, fontSize: 11.5),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // 空态说清楚空的是「这个目录还没开过终端」，不是这一页坏了 —— 同一个
+          // 目录下的任务列表跟它无关（任务在另一侧，切回 Chat 就在）。
+          if (sessions.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+              decoration: BoxDecoration(
+                color: AppColors.bg.withValues(alpha: 0.65),
+                border: Border.all(color: AppColors.line),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                '本目录暂无终端会话',
+                key: ValueKey('air-terminals-empty'),
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppColors.faint, fontSize: 12),
+              ),
+            )
+          else
+            for (final session in sessions)
+              _DirectoryTerminalRow(
+                session: session,
+                onTap: () => unawaited(_openTerminal(session)),
+              ),
+        ],
+      ),
+    );
+  }
+
+  /// 「新建终端」：一个目录下的终端就走这条路（`POST /api/directories/:id/sessions`
+  /// 的 `kind=terminal`）。用哪个 CLI 由快照里服务端认得的清单给（只有一个就不问），
+  /// 建好直接开终端页；下一次 4s 轮询里它就出现在这份列表上。
+  Future<void> _createTerminal(String dirId) async {
+    final clis = _data?.clis ?? const <String>[];
+    final cli = clis.length == 1 ? clis.first : await _pickTerminalCli(clis);
+    if (cli == null || cli.isEmpty || !mounted) return;
+    setState(() => _creatingTerminal = true);
+    try {
+      final mgr = context.read<SessionManager>();
+      final session = await mgr.createSessionInDir(
+        dirId: dirId,
+        cli: parseCli(cli),
+        kind: SessionKind.terminal,
+        label: '$cli 终端',
+      );
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) =>
+              TerminalScreen(settings: widget.settings, session: session),
+        ),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _creatingTerminal = false);
+    }
+  }
+
+  /// 多个 CLI 时装哪个：一问一答，不替用户猜。返回 null = 没选。
+  Future<String?> _pickTerminalCli(List<String> clis) => showModalBottomSheet<String>(
+    context: context,
+    backgroundColor: AppColors.panel,
+    showDragHandle: true,
+    builder: (sheetContext) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
+            child: Text(
+              '用哪个 CLI 开这个终端？',
+              style: TextStyle(
+                color: AppColors.text,
+                fontSize: 14.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          for (final cli in clis)
+            ListTile(
+              key: ValueKey('air-terminal-cli-$cli'),
+              dense: true,
+              leading: const Icon(
+                Icons.terminal_rounded,
+                size: 18,
+                color: AppColors.muted,
+              ),
+              title: Text(
+                cli,
+                style: const TextStyle(color: AppColors.text, fontSize: 14),
+              ),
+              onTap: () => Navigator.of(sheetContext).pop(cli),
+            ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    ),
+  );
 
   Widget _buildTasks(
     AirSnapshot? data,
@@ -1729,6 +1937,158 @@ class _AirToolButton extends StatelessWidget {
       // `aria-label` 在 Web 上就是这颗按钮的可读名字（浮层里图标要站第一列，
       // 名字平时不显示），App 这边由 tooltip 一起承担。
       icon: Icon(icon, color: AppColors.muted),
+    );
+  }
+}
+
+/// 目录首页顶部那道 Chat / Terminal 切换（Web `public/air.html` 的 `#directory-mode`）。
+///
+/// 排在整个目录页的最前面 —— 切哪一类都不用先去侧栏里找一遍。默认 Chat：模式由
+/// 宿主持有，换目录 / 重进首页都回到 Chat（见 `_AirTasksViewState._dirMode`）。
+class _DirectoryModeSwitch extends StatelessWidget {
+  const _DirectoryModeSwitch({required this.mode, required this.onChanged});
+
+  final _DirectoryMode mode;
+  final ValueChanged<_DirectoryMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey('air-directory-mode'),
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+      child: Container(
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: AppColors.bg,
+          border: Border.all(color: AppColors.line),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          children: [
+            _DirectoryModeButton(
+              keyName: 'air-directory-mode-chat',
+              icon: Icons.chat_bubble_outline_rounded,
+              label: 'Chat',
+              selected: mode == _DirectoryMode.chat,
+              onTap: () => onChanged(_DirectoryMode.chat),
+            ),
+            const SizedBox(width: 3),
+            _DirectoryModeButton(
+              keyName: 'air-directory-mode-terminal',
+              icon: Icons.terminal_rounded,
+              label: 'Terminal',
+              selected: mode == _DirectoryMode.terminal,
+              onTap: () => onChanged(_DirectoryMode.terminal),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DirectoryModeButton extends StatelessWidget {
+  const _DirectoryModeButton({
+    required this.keyName,
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String keyName;
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = selected ? AppColors.accent : AppColors.muted;
+    return Expanded(
+      child: InkWell(
+        key: ValueKey(keyName),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.panel : null,
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 6,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Terminal 模式下的一行终端会话（Web 侧栏那组 `›_ label` 链接的同款）。
+class _DirectoryTerminalRow extends StatelessWidget {
+  const _DirectoryTerminalRow({required this.session, required this.onTap});
+
+  final AirSession session;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: ListTile(
+        key: ValueKey('air-terminal-${session.id}'),
+        dense: true,
+        onTap: onTap,
+        leading: const Icon(
+          Icons.terminal_rounded,
+          size: 18,
+          color: AppColors.muted,
+        ),
+        title: Text(
+          session.label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: AppColors.text, fontSize: 13.5),
+        ),
+        subtitle: session.cli.isEmpty
+            ? null
+            : Text(
+                session.cli,
+                style: const TextStyle(color: AppColors.faint, fontSize: 11),
+              ),
+        trailing: const Icon(
+          Icons.chevron_right_rounded,
+          size: 18,
+          color: AppColors.faint,
+        ),
+      ),
     );
   }
 }

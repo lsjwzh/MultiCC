@@ -219,6 +219,27 @@
     <section id="task-layout">
       <div id="task-content">
         <div id="empty">
+          <!-- 目录视图切换：Chat（任务与对话，默认）／ Terminal（**本目录**的终端会话）。
+               终端属于每个目录，不属于侧栏：它原来是「更多与系统」里和设置、主机运维
+               混着排的一组（#legacy-sessions），820670c0 撤掉之后 Web 上就没有终端入口
+               了。现在放回目录里、摆在最前面，两类东西一次只显示一种
+               （`#empty.is-terminal-mode`，见 air.css），默认 chat。
+               状态由 air-directory-mode.js 持有：换目录或重新打开都回到 chat。 -->
+          <div id="directory-mode" class="directory-mode" role="tablist" aria-label="目录视图" data-i18n-aria-label="airDirectoryViewSwitch">
+            <button id="directory-mode-chat" type="button" role="tab" aria-selected="true" data-i18n="airModeChat">Chat</button>
+            <button id="directory-mode-terminal" type="button" role="tab" aria-selected="false" data-i18n="airModeTerminal">Terminal</button>
+          </div>
+          <section id="directory-terminals" aria-label="本目录终端" data-i18n-aria-label="airDirectoryTerminals">
+            <div class="section-heading">
+              <div><span class="caption" data-i18n="airCurrentDirectory">当前目录</span><strong data-i18n="airTerminalsHeading">终端</strong></div>
+              <span id="directory-terminal-count"></span>
+            </div>
+            <!-- 本目录新建终端走 POST /api/directories/:id/sessions（kind=terminal），
+                 CLI 沿用「最近用过的那套」—— 和新任务输入框同一个默认，不再多问一层
+                 （App 那边 CLI 多于一个时会问，因为手机上没法像这里一样在终端页里换）。 -->
+            <button id="directory-terminal-new" class="directory-terminal-new" type="button" title="在本目录新建终端（沿用最近使用的 CLI）" data-i18n-title="airNewTerminalHint"><span aria-hidden="true">＋</span> <span data-i18n="airNewTerminal">新终端</span></button>
+            <nav id="directory-terminal-list" aria-label="本目录终端列表" data-i18n-aria-label="airTerminalsList"></nav>
+          </section>
           <!-- 首启配置卡：/api/aux/config 还没有 providerId 时由 air.js 亮出来。
                新用户落地就是 /air（/ 与 /manage 都重定向过来），旧版引导（tour.js）
                只挂在已退役的 manage/chat 页上，等于主入口一直没有任何引导。这张卡
@@ -518,6 +539,10 @@
   <script src="chat-shell-entry.js"></script>
   <script src="air-task-motion.js"></script>
   <script src="air-task-notify.js"></script>
+  <!-- 目录首页顶部那道 Chat / Terminal 切换：模块自己管 DOM 与状态，air.js 每次
+       渲染把快照递进去（同 air-admin.js 的 render(ctx) 契约）。要先于 air.js 注册，
+       它的第一次 render 就会调到这里。 -->
+  <script src="air-directory-mode.js"></script>
   <script src="air.js"></script>
   <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->
   <script src="air-quick-fold.js"></script>

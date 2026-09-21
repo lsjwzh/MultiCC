@@ -307,7 +307,7 @@ class AirSnapshot {
   final List<AirTask> tasks;
   final List<String> clis;
 
-  /// 终端会话（Air 侧栏的 TERMINAL 一组）。只有移动端要用的字段。
+  /// 终端会话（目录首页 Terminal 模式那一份）。只有移动端要用的字段。
   final List<AirSession> sessions;
 
   /// Pin 住的任务 id，顺序就是用户钉的顺序（Web 页头从左到右 / 侧栏从上到下）。
@@ -363,8 +363,9 @@ class AirSnapshot {
     return null;
   }
 
-  /// 落在某个目录里的终端会话（Web 侧栏 `#legacy-sessions` 的 `dirId === directoryId`
-  /// 那一步筛选）。服务端已经把 aux / gateway 摘掉了，这里只按目录分。
+  /// 落在某个目录里的终端会话（Web `air-directory-mode.js` 里
+  /// `session.dirId === directoryId` 那一步筛选，两边同一条判据）。服务端已经把
+  /// aux / gateway 摘掉了，这里只按目录分。
   List<AirSession> terminalSessionsOf(String? dirId) =>
       sessions.where((s) => s.dirId == dirId).toList();
 
@@ -384,7 +385,7 @@ class AirSnapshot {
   }
 }
 
-/// Air 侧栏 TERMINAL 一组里的一个终端会话。
+/// 目录首页 Terminal 模式里的一个终端会话。
 ///
 /// `/api/air` 的 `sessions` 只给移动端要用的四个字段（服务端已经滤掉
 /// aux / gateway），打开时拿 id 去会话表里换一个完整的 [Session]；换不到
