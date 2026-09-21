@@ -484,7 +484,11 @@ function createSessionBundleRoutes(rawDeps) {
         const { payload, meta } = await collectExportPayload(s, parseExportOptions(req));
         const entries = [];
         // Plaintext summary only — no label, session id or repo remote in the
-        // clear. The full picture lives in the encrypted manifest.
+        // clear. The full picture lives in the encrypted manifest. What the
+        // clear part DOES say, for anyone auditing the container: format and
+        // version, the export time, the CLI (the receiver has to know which CLI
+        // must be installed) and the git note (a branch name, or the reason the
+        // bundle carries no git payload).
         entries.push({ name: 'meta.json', data: JSON.stringify({
           format: 'multicc-session-handoff', v: 3,
           createdAt: payload.exportedAt, cli: payload.sessionMeta.cli,
@@ -532,7 +536,14 @@ function createSessionBundleRoutes(rawDeps) {
         const zip = createZip(entries, { maxEntries: ZIP_MAX_ENTRIES, maxTotalBytes: ZIP_MAX_TOTAL_BYTES });
         appendEvent(s.dirId, 'session_bundled', `${s.label || s.id} → export (zip)`, s.id);
         res.set('Content-Type', 'application/zip');
-        res.set('Content-Disposition', `attachment; filename="multicc-handoff-${s.id}.zip"`);
+        // The download name carries the export time, never the session id: a
+        // filename rides in the clear (browser download history, proxy logs,
+        // mail attachments) and the container above promises no session id in
+        // the clear. `exportedAt` is an ISO stamp already in the payload, so no
+        // extra clock read is needed here.
+        const stamp = String(payload.exportedAt || '')
+          .replace(/[-:]/g, '').replace(/\.\d+Z?$/, '').replace('T', '-') || 'export';
+        res.set('Content-Disposition', `attachment; filename="multicc-handoff-${stamp}.zip"`);
         res.set('Content-Length', String(zip.length));
         res.send(zip);
       } catch (e) {
