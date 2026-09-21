@@ -2160,6 +2160,7 @@
   "airTaskSettingsCliNote": "先选择负责执行任务的命令行工具",
   "airTaskSettingsCloseAria": "关闭 AI 配置",
   "airTaskSettingsComponentsMissing": "AI 配置组件未加载，请刷新页面后重试。",
+  "airTaskSettingsCreateIfMissing": "路径不存在时自动创建",
   "airTaskSettingsCurrentTask": "当前任务",
   "airTaskSettingsCustomModelAria": "自定义模型 ID",
   "airTaskSettingsCustomModelOption": "自定义模型…",
