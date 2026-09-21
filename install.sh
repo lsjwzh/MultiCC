@@ -568,7 +568,7 @@ if [ "$NO_SERVICE" = false ]; then
   fi
   if [ "$SERVICE_REPLY" = "yes" ]; then
     case "$PLATFORM" in
-      darwin|linux)
+      darwin|linux|win32)
         if "${MULTICC_CMD[@]}" service install; then
           ok "Auto-start installed"
         else

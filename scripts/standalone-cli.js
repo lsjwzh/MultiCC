@@ -95,7 +95,7 @@ function requireBundle(layout) {
   if (missing.length) {
     process.stderr.write(`[multicc] this bundle is incomplete — missing ${missing.join(', ')}\n`);
     process.stderr.write(`[multicc] looked in ${layout.resources}\n`);
-    process.stderr.write('[multicc] reinstall with install.sh, or re-extract the release archive.\n');
+    process.stderr.write('[multicc] reinstall with install.sh/install.ps1, or re-extract the release archive.\n');
     process.exit(1);
   }
   // Every command says it once: run from Gatekeeper's throwaway copy, and the
@@ -646,16 +646,39 @@ async function cmdUpdate(layout, env, args) {
 // Optional, and deliberately the only platform-specific part of the CLI: the
 // bundle itself is uniform, but "start this on login" has no portable answer.
 
-function serviceUnitPath(platform, home = os.homedir()) {
+function serviceUnitPath(platform, home = os.homedir(), env = process.env) {
   if (platform === 'darwin') return path.join(home, 'Library', 'LaunchAgents', 'com.multicc.server.plist');
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user', 'multicc.service');
+  if (platform === 'win32') {
+    const appData = env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    return path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'MultiCC.vbs');
+  }
+  return path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user', 'multicc.service');
+}
+
+function windowsStartupScript(runtimeNode, launcherPath) {
+  // A Startup-folder .vbs keeps the login launch invisible. The real process
+  // remains the same shared standalone launcher used on macOS/Linux; this is
+  // only the OS-specific way to ask Windows to run it at sign-in.
+  const command = `"${runtimeNode}" "${launcherPath}" --start --no-open`;
+  const quoted = command.replace(/"/g, '""');
+  return [
+    'Set shell = CreateObject("WScript.Shell")',
+    'shell.Environment("Process")("MULTICC_SERVICE") = "1"',
+    `shell.Run "${quoted}", 0, False`,
+    '',
+  ].join('\r\n');
+}
+
+function writeUtf16LeBom(file, text) {
+  const bom = Buffer.from([0xff, 0xfe]);
+  fs.writeFileSync(file, Buffer.concat([bom, Buffer.from(text, 'utf16le')]));
 }
 
 function cmdService(layout, env, args) {
   const [action] = args.rest;
-  const platform = process.platform;
+  const platform = layout.platform || process.platform;
   const home = os.homedir();
-  const unit = serviceUnitPath(platform, home);
+  const unit = serviceUnitPath(platform, home, env);
   if (!action || action === 'status') {
     if (!fs.existsSync(unit)) { process.stdout.write('Auto-start is not installed.\n'); return 1; }
     if (platform === 'darwin') {
@@ -664,6 +687,10 @@ function cmdService(layout, env, args) {
       process.stdout.write(`Auto-start installed at ${unit} (${loaded ? 'loaded' : 'not loaded'})\n`);
       return loaded ? 0 : 1;
     }
+    if (platform === 'win32') {
+      process.stdout.write(`Auto-start installed at ${unit} (starts at user login)\n`);
+      return 0;
+    }
     const res = spawnSync('systemctl', ['--user', 'is-enabled', 'multicc'], { encoding: 'utf8' });
     process.stdout.write(`Auto-start installed at ${unit} (${String(res.stdout || '').trim() || 'unknown'})\n`);
     return res.status === 0 ? 0 : 1;
@@ -671,7 +698,7 @@ function cmdService(layout, env, args) {
   if (action === 'uninstall') {
     if (platform === 'darwin') {
       spawnSync('launchctl', ['unload', unit], { stdio: 'ignore' });
-    } else {
+    } else if (platform === 'linux') {
       spawnSync('systemctl', ['--user', 'disable', '--now', 'multicc'], { stdio: 'ignore' });
     }
     try { fs.unlinkSync(unit); } catch (_) {}
@@ -686,6 +713,11 @@ function cmdService(layout, env, args) {
   // launchd/systemd keep the launcher alive, so it runs in the foreground and
   // never opens a browser on boot (--no-open); `multicc open` is the way in.
   const argv = [layout.runtimeNode, layout.launcherPath, '--start', '--no-open'];
+  if (platform === 'win32') {
+    writeUtf16LeBom(unit, windowsStartupScript(layout.runtimeNode, layout.launcherPath));
+    process.stdout.write('Auto-start installed: MultiCC starts silently at user login.\n');
+    return 0;
+  }
   if (platform === 'darwin') {
     fs.writeFileSync(unit, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -851,5 +883,6 @@ module.exports = {
   resolveLayout,
   runtimeNodeIn,
   serviceUnitPath,
+  windowsStartupScript,
   verifyChecksum,
 };

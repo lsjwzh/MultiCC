@@ -196,6 +196,27 @@ test('launcher paths and env: platform data dirs, bundled runtime, loopback chil
   assert.equal(launcherScript.browserCommand('http://127.0.0.1:3000', 'linux').command, 'xdg-open');
 });
 
+test('auto-start has one CLI contract across launchd, systemd and Windows Startup', () => {
+  assert.equal(cliScript.serviceUnitPath('darwin', '/Users/x', {}),
+    path.join('/Users/x', 'Library', 'LaunchAgents', 'com.multicc.server.plist'));
+  assert.equal(cliScript.serviceUnitPath('linux', '/home/x', { XDG_CONFIG_HOME: '/cfg' }),
+    path.join('/cfg', 'systemd', 'user', 'multicc.service'));
+  assert.equal(cliScript.serviceUnitPath('win32', 'C:\\Users\\x', { APPDATA: 'C:\\Roaming' }),
+    path.join('C:\\Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'MultiCC.vbs'));
+
+  const startup = cliScript.windowsStartupScript(
+    'C:\\Program Files\\MultiCC\\Resources\\runtime\\node.exe',
+    'C:\\Program Files\\MultiCC\\Resources\\launcher\\standalone-launcher.js',
+  );
+  assert.match(startup, /WScript\.Shell/);
+  assert.match(startup, /MULTICC_SERVICE/);
+  assert.match(startup, /--start --no-open/);
+  assert.match(startup, /shell\.Run .*?, 0, False/,
+    'the Startup entry must run invisibly and must not block Windows login');
+  assert.match(startup, /Program Files/,
+    'paths containing spaces must remain quoted inside the generated VBS');
+});
+
 test('native arch: Mach-O, ELF, PE and universal headers are read, mismatches are fatal', () => {
   const macho = Buffer.alloc(32);
   macho.writeUInt32LE(0xfeedfacf, 0);

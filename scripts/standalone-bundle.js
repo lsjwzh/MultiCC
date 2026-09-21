@@ -431,7 +431,7 @@ function bundleReadme({ version, platform, nodeVersion, macosFloor }) {
     `${cmd} config list       看配置`,
     `${cmd} config set PORT 8123     改端口（下次 start 生效）`,
     `${cmd} update            升级到最新版（自动下载、校验、替换，数据不动）`,
-    `${cmd} service install   装成开机自启（macOS launchd / Linux systemd 用户服务）`,
+    `${cmd} service install   装成登录自启（macOS launchd / Linux systemd / Windows Startup）`,
     `${cmd} version           看版本`,
     '```',
     '',

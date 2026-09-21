@@ -1,7 +1,8 @@
 'use strict';
 
-// install.sh is now the only supported way to install MultiCC, and it does
-// something the old git-clone installer never did: it downloads a package and
+// install.sh and install.ps1 are the two OS-native bootstraps into one shared
+// standalone contract. They do something the old git-clone installer never did:
+// download a package and
 // replaces whatever is at the target path. Both of those can destroy a working
 // installation or a user's directory if they misbehave, so they are tested
 // against a real archive here rather than by reading the script.
@@ -20,6 +21,7 @@ const test = require('node:test');
 
 const ROOT = path.join(__dirname, '..');
 const INSTALLER = path.join(ROOT, 'install.sh');
+const WINDOWS_INSTALLER = path.join(ROOT, 'install.ps1');
 const FIXTURE_SERVER = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js');
 const bundleScript = require(path.join(ROOT, 'scripts', 'standalone-bundle.js'));
 const PLATFORM = process.platform;
@@ -226,6 +228,26 @@ test('install.sh is dependency-free: no git, npm or node on the target machine',
   assert.match(source, /multicc-standalone-\$\{VERSION_NUMBER\}-\$\{PLATFORM\}-\$\{ARCH\}/,
     'the installer must download the standalone package for this platform');
   assert.match(source, /sha256/);
+});
+
+test('install.ps1 is the native Windows path over the same standalone contract', () => {
+  const source = fs.readFileSync(WINDOWS_INSTALLER, 'utf8');
+  assert.match(source, /multicc-standalone-\$ResolvedVersion-win32-x64\.zip/,
+    'Windows must consume the same versioned standalone asset family');
+  assert.match(source, /Get-FileHash[^\n]+SHA256/,
+    'the PowerShell bootstrap must verify the release sidecar before extraction');
+  assert.match(source, /Expand-Archive/);
+  assert.match(source, /Resources\\runtime\\node\.exe/);
+  assert.match(source, /bundle-manifest\.json/);
+  assert.match(source, /manifest\.platform[^\n]+win32/);
+  assert.match(source, /manifest\.arch[^\n]+x64/);
+  assert.match(source, /Join-Path \$env:USERPROFILE 'MultiCC'/,
+    'Windows and POSIX installers must both use a stable per-user MultiCC directory');
+  assert.match(source, /Invoke-MultiCC @\('config', 'set', 'PORT'/);
+  assert.match(source, /Invoke-MultiCC \$startArgs/,
+    'a normal Windows install must return only after starting the shared CLI');
+  assert.doesNotMatch(source, /\bnpm (?:install|ci)\b|\bgit clone\b/,
+    'the Windows target must not need a toolchain either');
 });
 
 test('install.sh keeps the old --branch command line working', () => {

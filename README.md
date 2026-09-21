@@ -26,7 +26,7 @@
   <img src="https://img.shields.io/github/v/release/lsjwzh/MultiCC?label=latest%20release" alt="Latest Release" />
   <img src="https://img.shields.io/badge/node-%3E%3D22.16-brightgreen" alt="Node.js >=22.16" />
   <img src="https://img.shields.io/badge/CLIs-claude%20%7C%20codex%20%7C%20opencode%20%7C%20zcode%20%7C%20kimi%20%7C%20qoder%20%7C%20workbuddy%20%7C%20dsh-8A2BE2" alt="Supported CLIs" />
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/flutter-Android%20%7C%20iOS-02569B" alt="Flutter app" />
   <img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-47848F" alt="Desktop app (Electron)" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
@@ -134,15 +134,21 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 ### 1. Install
 
 ```bash
+# macOS / Linux
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.ps1 | iex
 ```
 
 One line, no flags: the tag in the URL *is* the version. The script downloads that
 release's **standalone package** — the server plus a pinned Node runtime plus every
 production dependency, in one archive — verifies its SHA-256, installs it at the
-stable `~/MultiCC` path, clears macOS download quarantine, generates an
+stable `~/MultiCC` path (`%USERPROFILE%\MultiCC` on Windows), clears macOS download quarantine, generates an
 `ACCESS_TOKEN`, starts the service and opens the browser, and optionally registers
-a background service (macOS `launchd` / Linux systemd user). The UI is ready when
+a login service (macOS `launchd` / Linux systemd user / Windows Startup). The UI is ready when
 the command returns. Nothing is compiled, and **the target machine needs no Node,
 npm, git, Homebrew or Xcode**.
 
@@ -163,6 +169,11 @@ curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-a
 curl -sSL .../install.sh | bash -s -- --no-start
 curl -sSL .../install.sh | bash -s -- --no-open
 ```
+
+Windows exposes the same choices as PowerShell parameters (`-InstallDir`,
+`-Version`, `-From`, `-AccessToken`, `-Port`, `-NoService`, `-NoStart`,
+`-NoOpen`). Download `install.ps1` first when passing options; the flagless
+`irm ... | iex` command above remains the normal path.
 
 To hack on MultiCC itself, run it from a checkout — that path is for developers, and
 `./multicc update` there is a `git pull` + `npm install`:
@@ -417,7 +428,7 @@ Projects that **harness** the official CLIs — spawning and managing the real `
 - **Per-session provider and subagent routing** for cost control
 - **Native desktop and mobile apps**, PWA, terminal, and web chat against one backend, with signed APKs shipped on every stable release
 
-**Where it is weaker:** no hosted/cloud option, no built-in code editor, CLI/server installs are macOS/Linux only (the desktop app covers Windows), and single-user by design — there is no team RBAC.
+**Where it is weaker:** no hosted/cloud option, no built-in code editor, and single-user by design — there is no team RBAC.
 
 Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, cc-connect, CloudCLI, Superset, Orca, cockpit-tools — eleven peers, plus MultiCC itself, make up the 12-project landscape.
 
