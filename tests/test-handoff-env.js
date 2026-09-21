@@ -26,9 +26,11 @@ function writeTree(dir, entries) {
   }
 }
 
-test('collectMemoryScopes reads each scope dir and reports oversized files', () => {
+test('collectMemoryScopes reads each scope dir, reports oversized files, skips dotfiles', () => {
   const root = tempRoot();
-  writeTree(path.join(root, 'own'), { 'CLAUDE.md': 'private notes', 'big.md': 'x'.repeat(2048) });
+  writeTree(path.join(root, 'own'), { 'CLAUDE.md': 'private notes', 'big.md': 'x'.repeat(2048),
+    '.handoff-provider.json': '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-should-not-travel"}}',
+    '.DS_Store': 'junk' });
   writeTree(path.join(root, 'shared'), { 'MEMORY.md': 'shared facts' });
   const folderMemory = {
     sessionDir: () => path.join(root, 'own'),
@@ -42,6 +44,14 @@ test('collectMemoryScopes reads each scope dir and reports oversized files', () 
   assert.equal(scopes.session.files['CLAUDE.md'], 'private notes');
   assert.ok(scopes.session.skipped.some(s => s.name === 'big.md'));
   assert.equal(scopes.shared.files['MEMORY.md'], 'shared facts');
+  // A dotfile in a memory folder is machine bookkeeping, not memory: an older
+  // release wrote a plaintext provider file next to the memory files, and the
+  // export must never pick it up (nor represent it as a dropped memory).
+  assert.ok(!Object.keys(scopes.session.files).some(name => name.startsWith('.')),
+    'dotfiles in a memory folder must not be collected');
+  assert.ok(!scopes.session.skipped.some(s => s.name.startsWith('.')),
+    'dotfiles are not candidates at all, so they must not appear as skipped memories');
+  assert.ok(!JSON.stringify(scopes).includes('sk-should-not-travel'));
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -161,7 +171,8 @@ test('restoreMemoryScopes writes shared without overwriting and prefixes narrow 
   writeTree(sharedDir, { 'MEMORY.md': 'local wins' });
   const report = service.restoreMemoryScopes({
     session: { files: { 'notes.md': 'private' } },
-    shared: { files: { 'MEMORY.md': 'incoming', 'team-facts.md': 'facts' } },
+    shared: { files: { 'MEMORY.md': 'incoming', 'team-facts.md': 'facts',
+      '.handoff-provider.json': '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-legacy-scope-token"}}' } },
     task: { files: { 'MEMORY.md': 'task memory' } },
   }, { sessionDir, sharedDir });
   // The session scope is the v1 memoryFiles payload's job — not written here.
@@ -172,6 +183,13 @@ test('restoreMemoryScopes writes shared without overwriting and prefixes narrow 
   assert.equal(fs.readFileSync(path.join(sharedDir, 'team-facts.md'), 'utf8'), 'facts');
   assert.ok(report.shared.skipped.some(s => s.name === 'MEMORY.md'));
   assert.ok(report.shared.written.includes('team-facts.md'));
+  // A bundle exported by an older release can still carry the plaintext
+  // provider file inside a memory scope. `shared` is the worst case: its
+  // prefix is empty, so the dotfile would land bare in the project-level
+  // shared folder. It must be refused by name — on disk and in the report.
+  assert.ok(!fs.existsSync(path.join(sharedDir, '.handoff-provider.json')));
+  assert.ok(report.shared.skipped.some(s => s.name === '.handoff-provider.json'
+    && s.reason === 'unsafe file name'), JSON.stringify(report.shared));
   fs.rmSync(root, { recursive: true, force: true });
 });
 
