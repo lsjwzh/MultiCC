@@ -1,10 +1,13 @@
 FROM node:22-bookworm-slim AS tools
 
+# curl + tar + unzip are the only tools install.sh is allowed to need: it
+# downloads the standalone package and unpacks it, nothing else.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git python3 make g++ chromium fonts-noto-cjk tini tmux openssl \
+    ca-certificates git curl unzip python3 make g++ chromium fonts-noto-cjk tini tmux openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# No node_modules or npm cache: the real installer runs in a fresh container.
+# No node_modules or npm cache: the real installer runs in a fresh container,
+# and the standalone package it installs carries its own runtime.
 FROM tools AS clean-install
 WORKDIR /candidate
 COPY . .

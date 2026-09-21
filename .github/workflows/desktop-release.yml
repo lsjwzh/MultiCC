@@ -63,7 +63,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           # Node 22 is the floor MultiCC declares (package.json engines) and the
-          # same major the portable bundle pins. Nothing here is compiled: the
+          # same major the standalone package pins. Nothing here is compiled: the
           # server's storage is the SQLite inside Node itself, and the only
           # native payload left is an optional prebuilt ASR package.
           node-version: 22
@@ -127,26 +127,42 @@ jobs:
           fi
           echo "DESKTOP_SIGNING_STATUS=$signing_status" >> "$GITHUB_ENV"
 
+          case "${RUNNER_ARCH}" in
+            ARM64) host_arch=arm64 ;;
+            X64) host_arch=x64 ;;
+            *) host_arch=unknown ;;
+          esac
+
           for arch in ${{ matrix.archs }}; do
-            echo "::group::staging app-server for $arch"
+            # The app is a shell around the standalone tree: this stages exactly
+            # what a multicc-standalone-* package carries (server + production
+            # deps + the pinned Node runtime + launcher). Cross-arch targets skip
+            # only the "boot the staged runtime" half — this runner cannot
+            # execute the target binary, and CI builds every arch natively too.
+            verify_flags=""
+            if [ "$host_arch" != "$arch" ]; then
+              verify_flags="--no-verify"
+            fi
+            echo "::group::staging standalone resources for $arch"
             rm -rf .staging
-            node ../scripts/desktop-bundle-server.js \
-              --out .staging/app-server \
+            node ../scripts/desktop-stage-standalone.js \
+              --out .staging/resources \
               --install \
-              --arch "$arch" --platform "${{ matrix.native_platform }}"
+              --arch "$arch" --platform "${{ matrix.native_platform }}" \
+              $verify_flags
             echo "::endgroup::"
 
             echo "::group::arch gate ($arch)"
-            # There is no ABI rebuild step any more: SQLite comes from Electron's
-            # own Node (verified against Electron 44.1.1 / Node 24.19, where
-            # node:sqlite opens and writes), and the ASR package is N-API plus
+            # There is no ABI rebuild step: storage is the node:sqlite inside the
+            # runtime the staging step just verified (its arch and its OS are
+            # read out of the binary's header), and the ASR package is N-API plus
             # prebuilt. What still needs proving is that whatever prebuilt binary
             # did land belongs to this arch — a build-host binary installs fine
             # and only fails at the first require() on the target machine.
             # --allow-none: that binary is optional, so a platform without it is
             # a valid tree, not a silently empty one.
             node ../scripts/native-arch.js \
-              --root .staging/app-server \
+              --root .staging/resources/app-server \
               --expect-arch "$arch" \
               --expect-platform "${{ matrix.native_platform }}" \
               --allow-none
@@ -167,6 +183,28 @@ jobs:
             # ${arr[@]+"${arr[@]}"} keeps an empty array from tripping `set -u`
             # on the bash 3.2 that macOS runners may still use.
             npx electron-builder --publish never "${target_args[@]}" ${identity_args[@]+"${identity_args[@]}"}
+            echo "::endgroup::"
+
+            echo "::group::packaged app carries the standalone tree ($arch)"
+            # extraResources is a declarative mapping, and a typo in it produces
+            # an installer that builds, signs, ships and then shows the user an
+            # error page: no server, or no runtime to run it with. Check the
+            # packaged bundle, not the staging directory it came from.
+            case "${{ matrix.platform }}" in
+              macos)
+                if [ "$arch" = "arm64" ]; then app_resources="dist/mac-arm64/MultiCC.app/Contents/Resources"
+                else app_resources="dist/mac/MultiCC.app/Contents/Resources"; fi
+                app_runtime="runtime/bin/node" ;;
+              windows) app_resources="dist/win-unpacked/resources"; app_runtime="runtime/node.exe" ;;
+              linux) app_resources="dist/linux-unpacked/resources"; app_runtime="runtime/bin/node" ;;
+            esac
+            for rel in app-server/server.js launcher/standalone-cli.js bundle-manifest.json "$app_runtime"; do
+              if [ ! -f "$app_resources/$rel" ]; then
+                echo "::error::$app_resources/$rel is missing from the packaged app — the shell would have no server or runtime to run"
+                exit 1
+              fi
+            done
+            echo "$app_resources carries the standalone tree"
             echo "::endgroup::"
           done
 
@@ -199,14 +237,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Self-contained bundles (scripts/portable-bundle.js): the server + its
-  # production deps + a pinned official Node runtime, for machines that cannot
-  # install Node or the Electron desktop app (macOS 11/12, Intel Macs, no
-  # compiler, no Homebrew). "build" produces the installers; this produces the
-  # unzip-and-run artifacts, and the release job below attaches both.
-  portable:
+  # The standalone packages (scripts/standalone-bundle.js): the server + its
+  # production deps + a pinned official Node runtime. This is the primary
+  # distribution form — install.sh downloads exactly these — and it is also what
+  # the Electron desktop app is a shell around, so a failed build here has to
+  # stop the release rather than publish a Release whose assets are incomplete.
+  standalone:
     needs: clean-install
-    name: portable bundle (${{ matrix.platform }}-${{ matrix.arch }})
+    name: standalone package (${{ matrix.platform }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -236,7 +274,7 @@ jobs:
           # separately (--node-version, Node 22 for the macOS 11 floor).
           node-version: 22
 
-      - name: Build portable bundle
+      - name: Build standalone package
         shell: bash
         run: |
           set -euo pipefail
@@ -255,10 +293,10 @@ jobs:
             # runner cannot execute the target binary.
             extra_flags="--no-verify"
           fi
-          node scripts/portable-bundle.js \
+          node scripts/standalone-bundle.js \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
-            --out dist-portable $extra_flags
+            --out dist-standalone $extra_flags
 
 
       # The bundle is only "built" until someone boots it. This runs the real
@@ -280,29 +318,30 @@ jobs:
             exit 0
           fi
           version=$(node -p "require('./package.json').version")
-          node scripts/portable-smoke.js \
-            --bundle "dist-portable/multicc-portable-$version-${{ matrix.platform }}-${{ matrix.arch }}"
+          node scripts/standalone-smoke.js \
+            --bundle "dist-standalone/multicc-standalone-$version-${{ matrix.platform }}-${{ matrix.arch }}"
 
-      - name: Upload portable artifacts
+      - name: Upload standalone artifacts
         uses: actions/upload-artifact@v4
         with:
           # win32 archives itself as a .zip (scripts/zip-archive.js) because a
           # tarball is not a thing Windows users can double-click; macOS/Linux
           # ship .tar.gz. Both land here with their .sha256 sidecar.
-          name: portable-${{ matrix.platform }}-${{ matrix.arch }}
+          name: standalone-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            dist-portable/*.tar.gz
-            dist-portable/*.tar.gz.sha256
-            dist-portable/*.zip
-            dist-portable/*.zip.sha256
+            dist-standalone/*.tar.gz
+            dist-standalone/*.tar.gz.sha256
+            dist-standalone/*.zip
+            dist-standalone/*.zip.sha256
           if-no-files-found: error
           retention-days: 14
 
   release:
     name: attach desktop assets to release
-    # Both producers, not just the installers: a failed portable build must stop
-    # the release instead of publishing a Release whose assets are incomplete.
-    needs: [build, portable]
+    # Both producers, not just the installers: a failed standalone build must
+    # stop the release instead of publishing a Release whose assets are
+    # incomplete.
+    needs: [build, standalone]
     # Only real tag pushes publish; workflow_dispatch validates builds only.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -318,7 +357,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: desktop-out
-          pattern: portable-*
+          pattern: standalone-*
           merge-multiple: true
 
       - name: Wait for the APK release to exist (release.yml owns creation)
@@ -349,7 +388,7 @@ jobs:
           # One consolidated manifest covering every artifact.
           cat desktop-out/SHA256SUMS-*.txt | sort -u > desktop-out/SHA256SUMS.txt
           rm desktop-out/SHA256SUMS-*.txt
-          # Portable bundles ship their own sidecar hashes; fold them in so
+          # Standalone packages ship their own sidecar hashes; fold them in so
           # SHA256SUMS.txt covers them too.
           for sidecar in desktop-out/*.tar.gz.sha256 desktop-out/*.zip.sha256; do
             [ -f "$sidecar" ] && cat "$sidecar" >> desktop-out/SHA256SUMS.txt
@@ -381,19 +420,19 @@ jobs:
             `multicc-desktop-${VERSION}-linux-x64.AppImage`,
             `multicc-desktop-${VERSION}-linux-x64.deb`,
           ];
-          const portables = [
-            `multicc-portable-${VERSION}-darwin-arm64.tar.gz`,
-            `multicc-portable-${VERSION}-darwin-x64.tar.gz`,
-            `multicc-portable-${VERSION}-linux-arm64.tar.gz`,
-            `multicc-portable-${VERSION}-linux-x64.tar.gz`,
-            `multicc-portable-${VERSION}-win32-x64.zip`,
+          const standalone = [
+            `multicc-standalone-${VERSION}-darwin-arm64.tar.gz`,
+            `multicc-standalone-${VERSION}-darwin-x64.tar.gz`,
+            `multicc-standalone-${VERSION}-linux-arm64.tar.gz`,
+            `multicc-standalone-${VERSION}-linux-x64.tar.gz`,
+            `multicc-standalone-${VERSION}-win32-x64.zip`,
           ];
-          for (const name of [...installers, ...portables, 'SHA256SUMS.txt',
+          for (const name of [...installers, ...standalone, 'SHA256SUMS.txt',
             'SIGNING-STATUS-macos.txt', 'SIGNING-STATUS-windows.txt', 'SIGNING-STATUS-linux.txt']) {
             if (!names.has(name)) throw new Error(`missing release asset: ${name}`);
           }
           for (const name of names) {
-            if (/^(multicc-desktop-.*\.(dmg|exe|AppImage|deb)|multicc-portable-.*\.(tar\.gz|zip))$/.test(name)) {
+            if (/^(multicc-desktop-.*\.(dmg|exe|AppImage|deb)|multicc-standalone-.*\.(tar\.gz|zip))$/.test(name)) {
               assert.ok(names.has(`${name}.sha256`), `missing sidecar for ${name}`);
             }
           }

@@ -15,10 +15,29 @@
 | Linux | `multicc-desktop-<版本>-linux-x64.AppImage` / `.deb` | AppImage 加执行权限后直接运行；deb 用系统包管理器安装 |
 
 > 老机器装不了这里列出的包时（Electron 44 需要 **macOS 13+**，Homebrew 也不再给 Intel 供 bottle），
-> 用 **[便携版](portable.md)**：内置 Node 22 运行时与全部依赖，支持 **macOS 11+**（含 Mac Pro 2013
-> 这类 Intel 老机器），解压双击 `MultiCC.app` 即可，不用装任何东西。
+> 用 **[独立版](standalone.md)**：一行命令安装或解压即用，内置 Node 22 运行时与全部依赖，
+> 支持 **macOS 11+**（含 Mac Pro 2013 这类 Intel 老机器），不用装任何东西。
+> 桌面版就是这棵树外面加了一层 Electron 壳，跑的是同一份服务端、同一个运行时。
 
 版本号与 MultiCC 服务端一致（如 `2.0.0`）。安装包**不包含**手机 APK——Android 客户端请从同一 Release 页获取 `multicc.apk`。
+
+### 桌面版就是独立版加一层壳
+
+桌面版不是另做一套打包：`scripts/desktop-stage-standalone.js` 调用独立包用的同一个
+`stageResources()`，把 `app-server/`、`runtime/`（固定版本 Node 22）、`launcher/` 和
+`bundle-manifest.json` 投放到 `desktop/.staging/resources`，再作为 Electron 的
+`extraResources` 打进安装包。所以 `.dmg` / `.exe` / AppImage 与
+`multicc-standalone-<版本>-<平台>-<架构>.tar.gz` 跑的是**同一份代码、同一个固定 Node**：
+壳里的服务端进程执行的是 `Resources/runtime/bin/node`（Windows 是 `runtime\node.exe`），
+不是 Electron 自带的 Node——唯一的例外是开发模式，那时直接用 Electron 的 Node 跑 checkout
+里的源码。
+
+这条约束让两边不会各自漂移：端口挑选、`/readyz` 就绪门控、崩溃退避、优雅排空协议
+（`/api/desktop-shutdown`，Windows 上也走这条）与数据布局都只有一份实现
+（`desktop/lib` 与包内 `launcher/lib` 同源，打包时复制过去）。资源缺失时主进程会直接显示
+错误页（`missing-runtime`），不会起一个半死的后端；CI 在打完包后也会检查安装目录里确实带着
+`app-server/server.js`、`launcher/standalone-cli.js`、`bundle-manifest.json` 与运行时，
+避免做出一个「打开就是错误页」的安装包。
 
 ### 首次启动会发生什么
 
@@ -83,9 +102,16 @@ desktop/
     release-artifacts.js   产物命名校验 + sha256 sidecar/清单
   assets/              splash.html / error.html（打包进 asar）
   build/icon.png       应用图标（≥512）
+脚本目录（桌面壳与独立包共用）：
+
+```
 scripts/
-  desktop-bundle-server.js   把 server.js/src/public/plugins 打包进 desktop/.staging/app-server
-  desktop-release-assets.js  CI 里生成 .sha256 / SHA256SUMS / 签名状态文件
+  desktop-stage-standalone.js  调用独立包的 stageResources()，投放 desktop/.staging/resources
+  desktop-bundle-server.js     其中 stageServer()：把 server.js/src/public/plugins 打成 app-server
+  standalone-bundle.js         独立包构建：同一棵 Resources 树 + .app/包装脚本 + 归档
+  standalone-cli.js            包根 `multicc` 命令的实现
+  standalone-launcher.js       包内监管进程（桌面版不用它，用 desktop/main.js）
+  desktop-release-assets.js    CI 里生成 .sha256 / SHA256SUMS / 签名状态文件
 .github/workflows/desktop-release.yml   三平台构建 + 上传到同一 Release
 ```
 
@@ -103,7 +129,7 @@ npm run test:desktop    # 桌面壳全部单元/静态测试（node:test）
 
 ### CI 与发布
 
-推 `v*.*.*` tag 后 `desktop-release.yml` 在 macOS/Windows/Ubuntu 原生 runner 上各构建本平台产物，全部上传到**同一个** GitHub Release（该 Release 由既有的 android `release.yml` 创建；desktop 侧只等待并 `gh release upload`，不自行创建）。也支持 `workflow_dispatch` 手动触发做未发布验证（产物留为 workflow artifact，不上传 Release）。每个 Release 固定包含：三个平台的 5 个安装包 + 各自 `.sha256` + `SHA256SUMS.txt` + 每平台 `SIGNING-STATUS-<platform>.txt`。
+推 `v*.*.*` tag 后 `desktop-release.yml` 在 macOS/Windows/Ubuntu 原生 runner 上各构建本平台产物，全部上传到**同一个** GitHub Release（该 Release 由既有的 android `release.yml` 创建；desktop 侧只等待并 `gh release upload`，不自行创建）。也支持 `workflow_dispatch` 手动触发做未发布验证（产物留为 workflow artifact，不上传 Release）。每个 Release 固定包含：三个平台的 5 个安装包 + 各自 `.sha256` + `SHA256SUMS.txt` + 每平台 `SIGNING-STATUS-<platform>.txt`，以及各平台两个架构的 `multicc-standalone-<版本>-<平台>-<架构>.tar.gz`（Windows 为 `.zip`）——同一套 staging 代码，一次构建两种形态。
 
 ### 签名密钥配置
 
@@ -114,3 +140,6 @@ npm run test:desktop    # 桌面壳全部单元/静态测试（node:test）
 | `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` | 公证（notarize）三件套，需与证书同时配置 | 不公证 |
 
 三件齐备时 CI 自动切到 `Developer ID Application` 签名并公证。签名状态永远如实写进 `SIGNING-STATUS-<platform>.txt`（`signed+notarized` / `signed` / `unsigned`），不伪装已签名；产物与日志中不落任何密钥内容。Windows/Linux 目前均为 unsigned，状态文件同样明示。
+
+> 包内嵌套的 `Resources/runtime/bin/node` 是一个独立的可执行文件，也在签名范围内：公证会拒绝任何未签名或签名不完整的嵌套二进制。首次配置 `MAC_*` 出包时请用
+> `codesign -dv --verbose=4 <app>/Contents/Resources/runtime/bin/node` 核对它确实被签上（electron-builder 的签名步骤会遍历整个 bundle，但这条依赖值得实测一次）。

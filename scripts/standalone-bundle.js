@@ -13,18 +13,24 @@
 // untouched — provided nothing in it has to be compiled. Storage no longer
 // does: src/sqlite/driver.js uses the SQLite built into that runtime.
 //
-//   node scripts/portable-bundle.js --platform darwin --arch x64
+//   node scripts/standalone-bundle.js --platform darwin --arch x64
 //
 // Result:
-//   <out>/multicc-portable-<version>-<platform>-<arch>/     bundle directory
-//   <out>/multicc-portable-<version>-<platform>-<arch>.tar.gz(+ .sha256)
-//   <out>/multicc-portable-<version>-<platform>-<arch>.zip   (win32: nobody
+//   <out>/multicc-standalone-<version>-<platform>-<arch>/     bundle directory
+//   <out>/multicc-standalone-<version>-<platform>-<arch>.tar.gz(+ .sha256)
+//   <out>/multicc-standalone-<version>-<platform>-<arch>.zip   (win32: nobody
 //     un-tars a tarball on Windows, and Explorer opens a zip natively)
 //
 // Layout (macOS; Linux/Windows use the same Resources/ tree without the .app):
 //   MultiCC.app/Contents/Resources/app-server/   server.js + src/ + public/ + node_modules
 //   MultiCC.app/Contents/Resources/runtime/      the pinned Node runtime
-//   MultiCC.app/Contents/Resources/launcher/     portable-launcher.js + lib/ (desktop/lib)
+//   MultiCC.app/Contents/Resources/launcher/     standalone-launcher.js + lib/ (desktop/lib)
+//
+// The desktop app is a shell around that same Resources tree, not a second
+// build of the server: scripts/desktop-stage-standalone.js stages it with
+// stageResources() below and Electron spawns the bundled runtime inside it, so
+// `multicc-standalone-*.tar.gz` and `MultiCC.dmg` run identical code on the
+// identical pinned Node.
 //
 // The runtime's internal layout is the official one, not ours: the unix
 // tarballs put the binary at runtime/bin/node, while the Windows zip keeps
@@ -39,7 +45,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const { stageServer } = require('./desktop-bundle-server');
-const { verifyNativeArch } = require('./native-arch');
+const { nativeBinaryArch, nativeBinaryPlatform, verifyNativeArch } = require('./native-arch');
 const { createZipArchive } = require('./zip-archive');
 
 // Pinned on purpose. Node 24/26 official macOS binaries are built with
@@ -53,6 +59,10 @@ const SUPPORTED_PLATFORMS = new Set(['darwin', 'linux', 'win32']);
 const SUPPORTED_ARCHES = new Set(['x64', 'arm64']);
 const NODE_PLATFORM = { darwin: 'darwin', linux: 'linux', win32: 'win' };
 const LAUNCHER_LIB_FILES = ['port-chooser.js', 'health-probe.js', 'backend-supervisor.js', 'orphan-reclaim.js', 'desktop-env.js'];
+// Both entry points travel together: the launcher owns the lifecycle, the CLI
+// is the command a user actually types. Shipping only one would leave the
+// bundle either unusable from a shell or unable to start a server.
+const LAUNCHER_FILES = ['standalone-launcher.js', 'standalone-cli.js'];
 const NODE_DIST_BASE = 'https://nodejs.org/dist';
 const BUNDLE_README = '使用说明.txt';
 // The server's durable state is SQLite. It ships inside Node itself
@@ -75,7 +85,7 @@ function parseArgs(argv) {
     verify: true,
     archive: true,
     runtimeTarball: null,
-    cacheDir: path.join(os.tmpdir(), 'multicc-portable-cache'),
+    cacheDir: path.join(os.tmpdir(), 'multicc-standalone-cache'),
     help: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -110,7 +120,7 @@ function parseArgs(argv) {
 }
 
 function bundleName(version, platform, arch) {
-  return `multicc-portable-${version}-${platform}-${arch}`;
+  return `multicc-standalone-${version}-${platform}-${arch}`;
 }
 
 function nodeDistFileName(nodeVersion, platform, arch) {
@@ -169,7 +179,7 @@ function macosFloorForNode(nodeVersion) {
 async function downloadFile(url, dest, logger = console, { attempts = 3 } = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    logger.log(`[portable-bundle] downloading ${url}${attempt > 1 ? ` (attempt ${attempt}/${attempts})` : ''}`);
+    logger.log(`[standalone-bundle] downloading ${url}${attempt > 1 ? ` (attempt ${attempt}/${attempts})` : ''}`);
     try {
       const res = await fetch(url, { redirect: 'follow' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -180,7 +190,7 @@ async function downloadFile(url, dest, logger = console, { attempts = 3 } = {}) 
       return dest;
     } catch (error) {
       lastError = error;
-      logger.log(`[portable-bundle] download failed (${error.message})`);
+      logger.log(`[standalone-bundle] download failed (${error.message})`);
       if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 2_000 * attempt));
     }
   }
@@ -191,7 +201,7 @@ async function fetchNodeRuntime({ nodeVersion, platform, arch, cacheDir, runtime
   const fileName = nodeDistFileName(nodeVersion, platform, arch);
   if (runtimeTarball) {
     if (!fs.existsSync(runtimeTarball)) throw new Error(`--runtime-tarball not found: ${runtimeTarball}`);
-    logger.log(`[portable-bundle] using local runtime archive ${runtimeTarball} (sha256 not verified)`);
+    logger.log(`[standalone-bundle] using local runtime archive ${runtimeTarball} (sha256 not verified)`);
     return { archive: runtimeTarball, sha256: sha256File(runtimeTarball), verified: false, fileName };
   }
   const archive = path.join(cacheDir, fileName);
@@ -206,7 +216,7 @@ async function fetchNodeRuntime({ nodeVersion, platform, arch, cacheDir, runtime
   if (actual !== expected) {
     throw new Error(`runtime checksum mismatch for ${fileName}: expected ${expected}, got ${actual}`);
   }
-  logger.log(`[portable-bundle] runtime checksum verified (${fileName})`);
+  logger.log(`[standalone-bundle] runtime checksum verified (${fileName})`);
   return { archive, sha256: actual, verified: true, fileName };
 }
 
@@ -239,7 +249,7 @@ function extractRuntime({ archive, platform, dest, logger = console }) {
   const nodeBin = runtimeNodePath(path.dirname(dest), platform);
   if (!fs.existsSync(nodeBin)) throw new Error(`runtime archive has no ${path.relative(dest, nodeBin)}`);
   if (platform !== 'win32') fs.chmodSync(nodeBin, 0o755);
-  logger.log(`[portable-bundle] runtime ready (${path.relative(path.dirname(dest), nodeBin)})`);
+  logger.log(`[standalone-bundle] runtime ready (${path.relative(path.dirname(dest), nodeBin)})`);
   return dest;
 }
 
@@ -247,12 +257,14 @@ function copyLauncher({ repoRoot, resourcesDir, logger = console }) {
   const launcherDir = path.join(resourcesDir, 'launcher');
   const libDir = path.join(launcherDir, 'lib');
   fs.mkdirSync(libDir, { recursive: true });
-  fs.copyFileSync(path.join(repoRoot, 'scripts', 'portable-launcher.js'),
-    path.join(launcherDir, 'portable-launcher.js'));
+  for (const file of LAUNCHER_FILES) {
+    fs.copyFileSync(path.join(repoRoot, 'scripts', file), path.join(launcherDir, file));
+  }
   for (const file of LAUNCHER_LIB_FILES) {
     fs.copyFileSync(path.join(repoRoot, 'desktop', 'lib', file), path.join(libDir, file));
   }
-  logger.log(`[portable-bundle] launcher staged (${LAUNCHER_LIB_FILES.length} shared lib module(s))`);
+  logger.log(`[standalone-bundle] launcher staged (${LAUNCHER_FILES.length} entry point(s), `
+    + `${LAUNCHER_LIB_FILES.length} shared lib module(s))`);
   return launcherDir;
 }
 
@@ -266,7 +278,7 @@ function macosInfoPlist({ version, resourcesName }) {
   <key>CFBundleDisplayName</key>
   <string>MultiCC</string>
   <key>CFBundleIdentifier</key>
-  <string>io.github.lsjwzh.multicc.portable</string>
+  <string>io.github.lsjwzh.multicc.standalone</string>
   <key>CFBundleExecutable</key>
   <string>MultiCC</string>
   <key>CFBundlePackageType</key>
@@ -292,81 +304,137 @@ function macosInfoPlist({ version, resourcesName }) {
 
 function macosLauncherScript() {
   return `#!/bin/sh
-# MultiCC portable entry point. LaunchServices runs this file directly (no
+# MultiCC standalone entry point. LaunchServices runs this file directly (no
 # Terminal window appears); it hands over to the bundled Node runtime.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RESOURCES="$(cd "$HERE/../Resources" && pwd)"
-exec "$RESOURCES/runtime/bin/node" "$RESOURCES/launcher/portable-launcher.js" --start "$@"
+exec "$RESOURCES/runtime/bin/node" "$RESOURCES/launcher/standalone-launcher.js" --start "$@"
 `;
 }
 
-function macosCommandScript({ action, extraFlags = '' }) {
+// The `multicc` command every wrapper below funnels into. Keeping the path
+// resolution here (and only here) means the .command/.cmd/double-click entries
+// cannot drift from what the CLI itself expects.
+function macosCommandScript({ subcommand }) {
   return `#!/bin/sh
-# Double-click wrapper: ${action}. Keep this file next to MultiCC.app.
+# Double-click wrapper: multicc ${subcommand}. Keep this file next to MultiCC.app.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-NODE="$HERE/MultiCC.app/Contents/Resources/runtime/bin/node"
-LAUNCHER="$HERE/MultiCC.app/Contents/Resources/launcher/portable-launcher.js"
-if [ ! -x "$NODE" ]; then
-  echo "找不到内置运行时：$NODE" >&2
-  echo "请确认 MultiCC.app 与本文件在同一目录，且已完整解压（不要只拷 .command）。" >&2
-  exit 1
-fi
-exec "$NODE" "$LAUNCHER" ${action}${extraFlags ? ` ${extraFlags}` : ''} "$@"
+exec "$HERE/multicc" ${subcommand} "$@"
 `;
 }
 
-function posixScript({ platform, action, extraFlags = '' }) {
+function posixScript({ subcommand }) {
   return `#!/bin/sh
-# MultiCC portable launcher (${action}). Keep this file next to Resources/.
+# MultiCC standalone: multicc ${subcommand}. Keep this file next to Resources/.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-exec "$HERE/Resources/runtime/bin/node" "$HERE/Resources/launcher/portable-launcher.js" ${action}${extraFlags ? ` ${extraFlags}` : ''} "$@"
+exec "$HERE/multicc" ${subcommand} "$@"
 `;
 }
 
-function windowsCommandScript({ action, extraFlags = '' }) {
+function windowsCommandScript({ subcommand }) {
   return `@echo off
-rem MultiCC portable launcher (${action}). Keep this file next to Resources\\.
+rem MultiCC standalone: multicc ${subcommand}. Keep this file next to Resources\\.
 setlocal
 set "HERE=%~dp0"
-"%HERE%Resources\\runtime\\node.exe" "%HERE%Resources\\launcher\\portable-launcher.js" ${action}${extraFlags ? ` ${extraFlags}` : ''} %*
+call "%HERE%multicc.cmd" ${subcommand} %*
+`;
+}
+
+// The user-facing command of the bundle. On macOS it has to reach through
+// MultiCC.app/Contents/Resources; elsewhere Resources/ is a sibling.
+function multiccWrapper({ platform }) {
+  if (platform === 'darwin') {
+    return `#!/bin/sh
+# MultiCC standalone — the command you type. See "multicc help".
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES="$HERE/MultiCC.app/Contents/Resources"
+if [ ! -x "$RESOURCES/runtime/bin/node" ]; then
+  echo "找不到内置运行时：$RESOURCES/runtime/bin/node" >&2
+  echo "请确认 MultiCC.app 与本文件在同一目录，且已完整解压（不要只拷部分文件）。" >&2
+  exit 1
+fi
+exec "$RESOURCES/runtime/bin/node" "$RESOURCES/launcher/standalone-cli.js" "$@"
+`;
+  }
+  return `#!/bin/sh
+# MultiCC standalone — the command you type. See "multicc help".
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES="$HERE/Resources"
+if [ ! -x "$RESOURCES/runtime/bin/node" ]; then
+  echo "bundled runtime not found at $RESOURCES/runtime/bin/node" >&2
+  echo "keep multicc next to Resources/ and unpack the archive fully." >&2
+  exit 1
+fi
+exec "$RESOURCES/runtime/bin/node" "$RESOURCES/launcher/standalone-cli.js" "$@"
+`;
+}
+
+function multiccWrapperWindows() {
+  return `@echo off
+rem MultiCC standalone — the command you type. See "multicc help".
+setlocal
+set "HERE=%~dp0"
+set "RESOURCES=%HERE%Resources"
+if not exist "%RESOURCES%\\runtime\\node.exe" (
+  echo bundled runtime not found at "%RESOURCES%\\runtime\\node.exe" 1>&2
+  echo keep multicc.cmd next to Resources\\ and unpack the archive fully. 1>&2
+  exit /b 1
+)
+"%RESOURCES%\\runtime\\node.exe" "%RESOURCES%\\launcher\\standalone-cli.js" %*
 `;
 }
 
 function bundleReadme({ version, platform, nodeVersion, macosFloor }) {
   const mac = platform === 'darwin';
+  const cmd = mac ? './multicc' : platform === 'win32' ? 'multicc.cmd' : './multicc';
   const lines = [
-    `MultiCC 便携版 ${version}（${platform}，内置 Node ${nodeVersion}）`,
+    `MultiCC 单文件版（standalone）${version}`,
+    `${platform} / 内置 Node ${nodeVersion} —— 不需要你机器上装 Node、Homebrew、Xcode 或 Git。`,
     '',
-    '这个包不依赖你机器上安装的 Node、Homebrew 或 Xcode：运行时和服务器依赖都在包内。',
+    '## 最快的用法',
     '',
-    mac ? '## 启动' : '## 启动',
     mac
-      ? '1. 双击 `MultiCC.app`（首次打开若提示「无法验证开发者」：右键点图标 → 打开 → 再点「打开」）。\n'
-        + '   等价方式：双击 `启动 MultiCC.command`（后台启动，不占用终端窗口）。'
-      : '1. 运行 `start-multicc.sh`（Linux）或 `Start-MultiCC.cmd`（Windows）。',
-    mac
-      ? '2. 浏览器会自动打开 MultiCC 界面（默认 http://127.0.0.1:3000，端口被占用时自动往后找）。'
-      : '2. 浏览器会自动打开 MultiCC 界面（默认 http://127.0.0.1:3000，端口被占用时自动往后找）。',
+      ? '双击 `MultiCC.app`。就这样 —— 浏览器会自动打开界面（默认 http://127.0.0.1:3000，端口被占用时会自动往后找）。\n'
+        + '首次打开若提示「无法验证开发者」：右键点图标 → 打开 → 再点「打开」。'
+      : platform === 'win32'
+        ? '双击 `Start-MultiCC.cmd`。就这样 —— 浏览器会自动打开界面。'
+        : '运行 `./start-multicc.sh`（或者先 `chmod +x multicc` 再 `./multicc start`）。',
     '',
-    '## 停止 / 查看状态',
-    mac
-      ? '- 停止：双击 `停止 MultiCC.command`（它会请监管进程优雅排空后再退出，不要直接强杀）。\n'
-        + '- 状态：双击 `查看状态 MultiCC.command`。\n'
-        + '- 三个 `.command` 都会把额外参数透传给启动器，例如 `启动 MultiCC.command --port 8123`。'
-      : '- 停止：`stop-multicc.sh`（Linux）/ `Stop-MultiCC.cmd`（Windows）。\n'
-        + '- 状态：`status-multicc.sh`（Linux）/ `Status-MultiCC.cmd`（Windows）。\n'
-        + '- Windows 的 `Start-MultiCC.cmd` 默认占用当前控制台窗口（日志直接可见，关掉窗口即停止服务）；\n'
-        + '  想让它退到后台，用 `Start-MultiCC.cmd --detach`，之后靠 `Stop-MultiCC.cmd` 停止。',
+    `想用命令行，就认准一个命令：${cmd}`,
     '',
-    '## 数据位置',
+    '## 命令一览',
+    '',
+    '```',
+    `${cmd} start             启动（后台运行 + 自动开浏览器）`,
+    `${cmd} start -f          前台启动（日志直接打在终端，Ctrl-C 停止）`,
+    `${cmd} stop              优雅停止`,
+    `${cmd} restart           重启`,
+    `${cmd} status            看运行状态和访问地址`,
+    `${cmd} url               只打印访问地址`,
+    `${cmd} open              打开界面`,
+    `${cmd} log -f            跟踪日志`,
+    `${cmd} config list       看配置`,
+    `${cmd} config set PORT 8123     改端口（下次 start 生效）`,
+    `${cmd} update            升级到最新版（自动下载、校验、替换，数据不动）`,
+    `${cmd} service install   装成开机自启（macOS launchd / Linux systemd 用户服务）`,
+    `${cmd} version           看版本`,
+    '```',
+    '',
+    '不等价的说法：`start` 已经把服务跑成后台进程，所以你不需要额外开终端窗口挂着。',
+    '',
+    '## 数据在哪',
+    '',
     mac
-      ? '- 会话、provider、聊天记录、记忆：`~/Library/Application Support/MultiCCPortable/`'
-      : '- 会话、provider、聊天记录、记忆：用户配置目录下的 `MultiCCPortable/`',
-    '- 日志：上述目录的 `logs/`（`server-*.log`、`portable.log`）',
-    '- 升级包时只替换 `' + (mac ? 'MultiCC.app' : 'Resources') + '`，数据目录不要动。',
+      ? '- 会话、provider、聊天记录、记忆：`~/Library/Application Support/MultiCCStandalone/`'
+      : '- 会话、provider、聊天记录、记忆：用户配置目录下的 `MultiCCStandalone/`',
+    '- 日志：上面这个目录里的 `logs/`（`server-*.log`、`standalone.log`）',
+    `- 升级时只替换程序本体（${mac ? '`MultiCC.app`' : '`Resources/`'}），数据目录不要动；\n`
+    + `  \`${cmd} update\` 会自动做到这一点。`,
     '',
     '## 系统要求',
     mac
@@ -393,6 +461,14 @@ function writeFileMode(file, content, mode) {
 
 function writePlatformShell({ bundleDir, resourcesDir, version, platform, nodeVersion, logger = console }) {
   const macosFloor = macosFloorForNode(nodeVersion);
+  // The `multicc` command sits at the bundle root on every platform: it is the
+  // documented surface (installer scripts, README, desktop shell all point here),
+  // so its location must not depend on the OS.
+  if (platform === 'win32') {
+    writeFileMode(path.join(bundleDir, 'multicc.cmd'), multiccWrapperWindows());
+  } else {
+    writeFileMode(path.join(bundleDir, 'multicc'), multiccWrapper({ platform }), 0o755);
+  }
   if (platform === 'darwin') {
     const appDir = path.join(bundleDir, 'MultiCC.app');
     const contents = path.join(appDir, 'Contents');
@@ -405,29 +481,29 @@ function writePlatformShell({ bundleDir, resourcesDir, version, platform, nodeVe
     writeFileMode(path.join(contents, 'PkgInfo'), 'APPL????');
     writeFileMode(path.join(macosDir, 'MultiCC'), macosLauncherScript(), 0o755);
     writeFileMode(path.join(bundleDir, '启动 MultiCC.command'),
-      macosCommandScript({ action: '--start', extraFlags: '--detach' }), 0o755);
+      macosCommandScript({ subcommand: 'start' }), 0o755);
     writeFileMode(path.join(bundleDir, '停止 MultiCC.command'),
-      macosCommandScript({ action: '--stop' }), 0o755);
+      macosCommandScript({ subcommand: 'stop' }), 0o755);
     writeFileMode(path.join(bundleDir, '查看状态 MultiCC.command'),
-      macosCommandScript({ action: '--status' }), 0o755);
+      macosCommandScript({ subcommand: 'status' }), 0o755);
   } else if (platform === 'linux') {
     writeFileMode(path.join(bundleDir, 'start-multicc.sh'),
-      posixScript({ platform, action: '--start' }), 0o755);
+      posixScript({ subcommand: 'start' }), 0o755);
     writeFileMode(path.join(bundleDir, 'stop-multicc.sh'),
-      posixScript({ platform, action: '--stop' }), 0o755);
+      posixScript({ subcommand: 'stop' }), 0o755);
     writeFileMode(path.join(bundleDir, 'status-multicc.sh'),
-      posixScript({ platform, action: '--status' }), 0o755);
+      posixScript({ subcommand: 'status' }), 0o755);
   } else {
     writeFileMode(path.join(bundleDir, 'Start-MultiCC.cmd'),
-      windowsCommandScript({ action: '--start' }));
+      windowsCommandScript({ subcommand: 'start' }));
     writeFileMode(path.join(bundleDir, 'Stop-MultiCC.cmd'),
-      windowsCommandScript({ action: '--stop' }));
+      windowsCommandScript({ subcommand: 'stop' }));
     writeFileMode(path.join(bundleDir, 'Status-MultiCC.cmd'),
-      windowsCommandScript({ action: '--status' }));
+      windowsCommandScript({ subcommand: 'status' }));
   }
   writeFileMode(path.join(bundleDir, platform === 'darwin' ? BUNDLE_README : 'README.txt'),
     bundleReadme({ version, platform, nodeVersion, macosFloor }));
-  logger.log(`[portable-bundle] ${platform} wrappers written`);
+  logger.log(`[standalone-bundle] ${platform} wrappers written`);
 }
 
 function sanityGate({ bundleDir, resourcesDir, platform, arch, install, runtime, appServerDir, logger = console }) {
@@ -435,7 +511,9 @@ function sanityGate({ bundleDir, resourcesDir, platform, arch, install, runtime,
     path.join(appServerDir, 'server.js'),
     path.join(appServerDir, 'public', 'manage.html'),
     path.join(appServerDir, 'plugins', 'bridges', 'wechat-ilink.js'),
-    path.join(resourcesDir, 'launcher', 'portable-launcher.js'),
+    path.join(resourcesDir, 'launcher', 'standalone-launcher.js'),
+    path.join(resourcesDir, 'launcher', 'standalone-cli.js'),
+    path.join(bundleDir, platform === 'win32' ? 'multicc.cmd' : 'multicc'),
     ...LAUNCHER_LIB_FILES.map(file => path.join(resourcesDir, 'launcher', 'lib', file)),
     ...(install ? [path.join(appServerDir, 'node_modules', 'express')] : []),
     ...(runtime ? [runtimeNodePath(resourcesDir, platform)] : []),
@@ -459,7 +537,7 @@ function sanityGate({ bundleDir, resourcesDir, platform, arch, install, runtime,
     if (lint.error && lint.error.code !== 'ENOENT') throw new Error(`plutil failed: ${lint.error.message}`);
     if (!lint.error && lint.status !== 0) throw new Error(`Info.plist is not valid: ${lint.stdout}${lint.stderr}`);
   }
-  logger.log('[portable-bundle] sanity gate passed');
+  logger.log('[standalone-bundle] sanity gate passed');
 }
 
 // The one check that proves the bundle will actually boot: make the runtime that
@@ -474,7 +552,7 @@ function verifyRuntimeSqlite({
   timeoutMs = 60_000,
 } = {}) {
   if (!runtimeNode || !fs.existsSync(runtimeNode)) {
-    logger.log('[portable-bundle] runtime smoke skipped: no bundled runtime to test with');
+    logger.log('[standalone-bundle] runtime smoke skipped: no bundled runtime to test with');
     return { ok: false, skipped: true, reason: 'runtime-missing' };
   }
   const res = spawnSync(runtimeNode, ['--disable-warning=ExperimentalWarning', '-e', RUNTIME_SMOKE_SCRIPT],
@@ -482,7 +560,7 @@ function verifyRuntimeSqlite({
   if (res.error) {
     const code = res.error.code;
     if (code === 'ENOEXEC' || code === 'EPERM' || code === 'EACCES') {
-      logger.log(`[portable-bundle] runtime smoke skipped: this host cannot execute the target runtime (${code})`);
+      logger.log(`[standalone-bundle] runtime smoke skipped: this host cannot execute the target runtime (${code})`);
       return { ok: false, skipped: true, reason: code };
     }
     throw new Error(`runtime smoke could not run: ${res.error.message}`);
@@ -491,13 +569,111 @@ function verifyRuntimeSqlite({
     const output = `${res.stdout || ''}${res.stderr || ''}`.trim().split('\n').slice(-6).join(' | ');
     throw new Error(`the bundled runtime cannot open a SQLite database: ${output}`);
   }
-  logger.log('[portable-bundle] runtime smoke passed (node:sqlite works under the bundled runtime)');
+  logger.log('[standalone-bundle] runtime smoke passed (node:sqlite works under the bundled runtime)');
   return { ok: true, skipped: false };
+}
+
+// The runtime is the one binary every install executes first, and it carries no
+// extension for verifyNativeArch to notice: a bundled runtime for the wrong
+// arch or the wrong OS is invisible to a file listing, installs fine, and dies
+// at exec time on the user's machine (the first Windows build shipped a
+// bin/node layout that never existed). Read the header of what actually landed.
+function verifyRuntimeArch({ runtimeNode, arch, platform, logger = console }) {
+  if (!runtimeNode || !fs.existsSync(runtimeNode)) {
+    throw new Error(`no runtime to verify at ${runtimeNode || '(undefined)'}`);
+  }
+  const found = nativeBinaryArch(runtimeNode);
+  if (found !== arch) {
+    throw new Error(`the staged runtime is ${found}, expected ${arch} (${runtimeNode})`);
+  }
+  const format = nativeBinaryPlatform(runtimeNode);
+  if (format !== platform) {
+    throw new Error(`the staged runtime is a ${format || 'unrecognised'} binary, expected ${platform} (${runtimeNode})`);
+  }
+  logger.log(`[standalone-bundle] runtime arch verified (${platform}/${arch})`);
+  return { arch: found, platform: format };
+}
+
+// The Resources tree a MultiCC install is made of — server + production deps, a
+// pinned Node runtime, the launcher, and (in the caller) the manifest. Two
+// shipped forms wrap the very same tree: the standalone package adds a bundle
+// root (wrappers + archive, see writePlatformShell/archiveBundle) and the
+// Electron desktop app adds a shell. Staging lives here, once, so the two can
+// never drift into "the dmg runs a different server than the tarball".
+async function stageResources({
+  repoRoot,
+  resourcesDir,
+  platform,
+  arch,
+  nodeVersion = DEFAULT_NODE_VERSION,
+  install = true,
+  runtime: withRuntime = true,
+  verify = true,
+  cacheDir = path.join(os.tmpdir(), 'multicc-standalone-cache'),
+  runtimeTarball = null,
+  logger = console,
+}) {
+  assertNodeVersionSupported(nodeVersion);
+  fs.rmSync(resourcesDir, { recursive: true, force: true });
+  fs.mkdirSync(resourcesDir, { recursive: true });
+
+  // Cross-arch builds: the staged production deps (and every prebuilt native
+  // addon left in them) must match the TARGET, not the build host.
+  // prebuild-install reads npm_config_arch/npm_config_target when picking a
+  // binary, so these stay pinned even though SQLite itself is now the runtime's
+  // built-in `node:sqlite` — the optional sherpa-onnx ASR payload still needs
+  // the right arch and the right runtime ABI.
+  const npmEnv = {
+    // Target the BUNDLED runtime, not the build host: without this a staged
+    // addon is built for whatever Node runs the build (ABI 147 on a Node 26
+    // host) and the bundle dies at the first require() with ERR_DLOPEN_FAILED.
+    npm_config_target: nodeVersion,
+    npm_config_runtime: 'node',
+    npm_config_arch: arch,
+    npm_config_platform: platform,
+    npm_config_os: platform,
+    npm_config_cpu: arch,
+  };
+  const staged = stageServer({
+    repoRoot,
+    out: path.join(resourcesDir, 'app-server'),
+    install,
+    npmEnv,
+    logger,
+  });
+
+  let runtime = null;
+  if (withRuntime) {
+    const fetched = await fetchNodeRuntime({
+      nodeVersion,
+      platform,
+      arch,
+      cacheDir,
+      runtimeTarball,
+      logger,
+    });
+    extractRuntime({
+      archive: fetched.archive,
+      platform,
+      dest: path.join(resourcesDir, 'runtime'),
+      logger,
+    });
+    runtime = fetched;
+    verifyRuntimeArch({ runtimeNode: runtimeNodePath(resourcesDir, platform), arch, platform, logger });
+    if (verify) {
+      verifyRuntimeSqlite({ runtimeNode: runtimeNodePath(resourcesDir, platform), logger });
+    }
+  } else {
+    logger.log('[standalone-bundle] staging without a Node runtime');
+  }
+
+  copyLauncher({ repoRoot, resourcesDir, logger });
+  return { staged, runtime, resourcesDir };
 }
 
 function writeManifest({ resourcesDir, version, platform, arch, nodeVersion, nodeRuntime, install }) {
   const manifest = {
-    name: 'multicc-portable',
+    name: 'multicc-standalone',
     version,
     platform,
     arch,
@@ -532,13 +708,13 @@ function archiveBundle({ bundleDir, outDir, name, platform = process.platform, l
   const digest = sha256File(archive);
   fs.writeFileSync(`${archive}.sha256`, `${digest}  ${path.basename(archive)}\n`);
   const bytes = fs.statSync(archive).size;
-  logger.log(`[portable-bundle] archive ${path.basename(archive)} (${(bytes / 1048576).toFixed(1)} MB)`);
+  logger.log(`[standalone-bundle] archive ${path.basename(archive)} (${(bytes / 1048576).toFixed(1)} MB)`);
   return { archive, sha256: digest, bytes };
 }
 
-async function buildPortableBundle(args, { logger = console } = {}) {
+async function buildStandaloneBundle(args, { logger = console } = {}) {
   const repoRoot = path.resolve(args.repoRoot || path.join(__dirname, '..'));
-  const outDir = path.resolve(args.out || path.join(repoRoot, 'dist-portable'));
+  const outDir = path.resolve(args.out || path.join(repoRoot, 'dist-standalone'));
   const rootPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   const version = rootPkg.version;
   const name = bundleName(version, args.platform, args.arch);
@@ -548,68 +724,28 @@ async function buildPortableBundle(args, { logger = console } = {}) {
     : path.join(bundleDir, 'Resources');
   assertNodeVersionSupported(args.nodeVersion);
   if (args.platform === 'darwin' && Number(String(args.nodeVersion).split('.')[0]) >= 24) {
-    logger.error(`[portable-bundle] WARNING: Node ${args.nodeVersion} requires macOS 13.5+ — `
+    logger.error(`[standalone-bundle] WARNING: Node ${args.nodeVersion} requires macOS 13.5+ — `
       + 'this bundle will no longer start on macOS 11/12.');
   }
 
-  logger.log(`[portable-bundle] building ${name} (node ${args.nodeVersion}) -> ${bundleDir}`);
+  logger.log(`[standalone-bundle] building ${name} (node ${args.nodeVersion}) -> ${bundleDir}`);
   fs.rmSync(bundleDir, { recursive: true, force: true });
   fs.mkdirSync(resourcesDir, { recursive: true });
 
-  // Cross-arch builds: the staged production deps (and every prebuilt native
-  // addon left in them) must match the TARGET, not the build host.
-  // prebuild-install reads npm_config_arch/npm_config_target when picking a
-  // binary, so these stay pinned even though SQLite itself is now the runtime's
-  // built-in `node:sqlite` — the optional sherpa-onnx ASR payload still needs
-  // the right arch and the right runtime ABI.
-  const npmEnv = {
-    // Target the BUNDLED runtime, not the build host: without this a staged
-    // addon is built for whatever Node runs the build (ABI 147 on a Node 26
-    // host) and the bundle dies at the first require() with ERR_DLOPEN_FAILED.
-    npm_config_target: args.nodeVersion,
-    npm_config_runtime: 'node',
-    npm_config_arch: args.arch,
-    npm_config_platform: args.platform,
-    npm_config_os: args.platform,
-    npm_config_cpu: args.arch,
-  };
-  const staged = stageServer({
+  const { staged, runtime } = await stageResources({
     repoRoot,
-    out: path.join(resourcesDir, 'app-server'),
+    resourcesDir,
+    platform: args.platform,
+    arch: args.arch,
+    nodeVersion: args.nodeVersion,
     install: args.install,
-    npmEnv,
+    runtime: args.runtime,
+    verify: args.verify,
+    cacheDir: args.cacheDir,
+    runtimeTarball: args.runtimeTarball,
     logger,
   });
 
-  let runtime = null;
-  if (args.runtime) {
-    const fetched = await fetchNodeRuntime({
-      nodeVersion: args.nodeVersion,
-      platform: args.platform,
-      arch: args.arch,
-      cacheDir: args.cacheDir,
-      runtimeTarball: args.runtimeTarball,
-      logger,
-    });
-    extractRuntime({
-      archive: fetched.archive,
-      platform: args.platform,
-      dest: path.join(resourcesDir, 'runtime'),
-      logger,
-    });
-    runtime = fetched;
-  } else {
-    logger.log('[portable-bundle] --no-runtime: skipping the Node runtime');
-  }
-
-  if (args.verify && args.runtime) {
-    verifyRuntimeSqlite({
-      runtimeNode: runtimeNodePath(resourcesDir, args.platform),
-      logger,
-    });
-  }
-
-  copyLauncher({ repoRoot, resourcesDir, logger });
   writePlatformShell({
     bundleDir, resourcesDir, version, platform: args.platform, nodeVersion: args.nodeVersion, logger,
   });
@@ -637,12 +773,12 @@ async function buildPortableBundle(args, { logger = console } = {}) {
   if (args.archive) {
     archive = archiveBundle({ bundleDir, outDir, name, platform: args.platform, logger });
   }
-  logger.log(`[portable-bundle] done: ${bundleDir}`);
+  logger.log(`[standalone-bundle] done: ${bundleDir}`);
   return { bundleDir, outDir, name, version, manifest, archive, staged };
 }
 
 function usage() {
-  console.log(`usage: portable-bundle.js [--platform darwin|linux|win32] [--arch x64|arm64]
+  console.log(`usage: standalone-bundle.js [--platform darwin|linux|win32] [--arch x64|arm64]
                             [--node-version ${DEFAULT_NODE_VERSION}] [--out <dir>] [--runtime-tarball <path>]
                             [--no-install] [--no-runtime] [--no-verify] [--no-archive] [--repo-root <dir>]`);
 }
@@ -650,13 +786,13 @@ function usage() {
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   if (args.help) { usage(); return 0; }
-  await buildPortableBundle(args);
+  await buildStandaloneBundle(args);
   return 0;
 }
 
 if (require.main === module) {
   main().then(code => { if (code) process.exit(code); }).catch(error => {
-    console.error(`[portable-bundle] ${error && error.message}`);
+    console.error(`[standalone-bundle] ${error && error.message}`);
     process.exit(1);
   });
 }
@@ -670,22 +806,30 @@ module.exports = {
   SUPPORTED_PLATFORMS,
   archiveBundle,
   assertNodeVersionSupported,
-  buildPortableBundle,
+  buildStandaloneBundle,
   bundleName,
   bundleReadme,
   copyLauncher,
   extractRuntime,
   fetchNodeRuntime,
   macosFloorForNode,
+  macosCommandScript,
   macosInfoPlist,
   macosLauncherScript,
+  multiccWrapper,
+  multiccWrapperWindows,
   nodeDistFileName,
   nodeDistUrl,
   parseArgs,
   parseShasums,
+  posixScript,
   runtimeNodePath,
   sanityGate,
   sha256File,
+  stageResources,
+  verifyRuntimeArch,
   verifyRuntimeSqlite,
+  windowsCommandScript,
+  writeManifest,
   writePlatformShell,
 };

@@ -1,6 +1,6 @@
 'use strict';
 
-// Minimal streaming ZIP writer, used to ship the Windows portable bundle.
+// Minimal streaming ZIP writer, used to ship the Windows standalone bundle.
 //
 // Why not `tar -a` / `Compress-Archive` / a dependency:
 //   - GNU tar cannot write zip at all, and the tar that answers to `tar` differs

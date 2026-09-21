@@ -44,7 +44,13 @@ function killProcessTree(pid, { spawn, platform = process.platform, signal = 'SI
   if (platform === 'win32') {
     if (typeof spawn !== 'function') return false;
     try {
-      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      const child = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      // A taskkill that cannot be launched (not on PATH, no execute permission)
+      // reports that asynchronously as an 'error' event, and an unhandled one is
+      // an uncaught exception: `multicc stop` would die mid-shutdown instead of
+      // finishing. The caller re-checks whether the process is still alive, so
+      // swallowing it here loses nothing but the noise.
+      if (child && typeof child.on === 'function') child.on('error', () => {});
       return true;
     } catch (_) { return false; }
   }

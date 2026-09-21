@@ -12,10 +12,13 @@ function read(relative) {
   return fs.readFileSync(path.join(root, relative), 'utf8');
 }
 
+// The installer is served from the release tag it installs, so the tag in the
+// documented URL is the version a user gets: no flags, nothing to keep in sync
+// by hand on the command line.
 function installVersions(relative) {
   const source = read(relative);
-  return [...source.matchAll(/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/v(\d+\.\d+\.\d+)\/install\.sh[^\n]*--branch v(\d+\.\d+\.\d+)/g)]
-    .map(match => ({ url: match[1], branch: match[2] }));
+  return [...source.matchAll(/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/v(\d+\.\d+\.\d+)\/install\.sh/g)]
+    .map(match => ({ url: match[1] }));
 }
 
 test('public stable install commands use package.json as their version source', () => {
@@ -23,8 +26,7 @@ test('public stable install commands use package.json as their version source', 
     const commands = installVersions(relative);
     assert.ok(commands.length > 0, `${relative} must publish a stable install command`);
     for (const command of commands) {
-      assert.equal(command.url, pkg.version, `${relative} download tag drifted`);
-      assert.equal(command.branch, pkg.version, `${relative} branch tag drifted`);
+      assert.equal(command.url, pkg.version, `${relative} install tag drifted`);
     }
   }
 

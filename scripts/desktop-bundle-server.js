@@ -95,8 +95,8 @@ function transformPackageJson(pkg) {
 }
 
 // Stage the server tree. Reused by the desktop build (extraResources) and by
-// the portable bundle (scripts/portable-bundle.js), so the list of files that
-// must travel with the server exists exactly once.
+// the standalone package (scripts/standalone-bundle.js, via stageResources()),
+// so the list of files that must travel with the server exists exactly once.
 //
 //   out     — destination directory (wiped first)
 //   install — run `npm install --omit=dev` in the staged tree
@@ -135,7 +135,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
     // Cross-arch staging: npm's --os/--cpu drive optional-dependency
     // resolution, which is the part npm still understands (npm_config_arch /
     // npm_config_platform stay in the env for prebuild-install, see
-    // portable-bundle.js).
+    // standalone-bundle.js).
     const npmArgs = ['install', '--omit=dev', '--no-audit', '--no-fund'];
     if (npmEnv.npm_config_os) npmArgs.push(`--os=${npmEnv.npm_config_os}`);
     if (npmEnv.npm_config_cpu) npmArgs.push(`--cpu=${npmEnv.npm_config_cpu}`);
