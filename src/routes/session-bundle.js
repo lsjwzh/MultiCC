@@ -345,11 +345,18 @@ function createSessionBundleRoutes(rawDeps) {
         catch (e) { /* dead paths are cosmetic; import must not fail on them */ }
       }
       if (Array.isArray(payload.messages)) {
-        const restored = assetMapping.length
-          ? payload.messages.map(m => (m && typeof m.content === 'string')
-            ? { ...m, content: handoffEnv.rewriteAssetPaths(m.content, assetMapping) }
-            : m)
-          : payload.messages;
+        // Source taskId stamps name tasks that do not exist on this machine —
+        // or, on a same-instance re-import, pin live tasks the copy never
+        // belonged to, which history retention then refuses to cascade-delete
+        // (TASK_HISTORY_REFERENCED). The imported copy is task-agnostic.
+        const restored = payload.messages.map(m => {
+          if (!m || typeof m !== 'object') return m;
+          const { taskId, ...rest } = m;
+          if (assetMapping.length && typeof rest.content === 'string') {
+            rest.content = handoffEnv.rewriteAssetPaths(rest.content, assetMapping);
+          }
+          return rest;
+        });
         getChatHistoryService().replace(newSid, restored, { reason: 'bundle-import' });
       }
 
