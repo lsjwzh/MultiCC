@@ -59,9 +59,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 两个文件（各约 150KB，各自都能落在默认 3000 行以内），那是独立的一次改动。
   // （上一轮把它记成 5172，比生成器实际写出的少 2 行——countLines 数的是 split('\n')
   // 的元素个数，行尾那个换行也算一格，所以对齐数字要用测试自己的量法，别用 wc -l。）
+  // 目录首页的 Chat / Terminal 切换补 10 条键（airModeChat/Terminal、
+  // airTerminals* 、airNewTerminal*），双语各 10 行 = +20 行；数字按测试自己的
+  // countLines 量法对齐。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 5208,
-    maxBytes: 316736,
+    maxLines: 5228,
+    maxBytes: 317714,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

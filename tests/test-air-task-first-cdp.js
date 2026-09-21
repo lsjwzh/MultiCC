@@ -629,6 +629,46 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       '推完就不再是可点状态');
     // 旧任务列表的跳转已删：侧栏不再渲染 TERMINAL 折叠组。
     assert.equal(await page.evaluate(`document.getElementById('legacy-sessions')===null`), true);
+    // ── 目录视图切换：Chat（默认）／ Terminal ────────────────────────────────
+    // 终端属于每个目录（不是侧栏里和设置混排的一组），摆在目录页最前面；两类
+    // 互相让位，一次只显示一种，默认 chat（air-directory-mode.js）。
+    assert.equal(await page.evaluate(`document.getElementById('directory-mode-chat').getAttribute('aria-selected')`), 'true', '默认停在 chat');
+    assert.equal(await page.evaluate(`document.getElementById('directory-mode-terminal').getAttribute('aria-selected')`), 'false');
+    assert.equal(await page.evaluate(`document.getElementById('empty').classList.contains('is-terminal-mode')`), false);
+    assert.equal(await page.evaluate(`document.getElementById('directory-terminals').offsetParent===null`), true, 'chat 模式下终端那一块不显示');
+    assert.ok(await page.evaluate(`document.getElementById('directory-stats').offsetParent!==null`), 'chat 模式的统计卡在');
+    await page.evaluate(`document.getElementById('directory-mode-terminal').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('empty').classList.contains('is-terminal-mode')`));
+    assert.equal(await page.evaluate(`document.getElementById('directory-mode-terminal').getAttribute('aria-selected')`), 'true');
+    // 混排的判据：Chat 那一整块让位（不是排在终端下面），新任务输入框也算 Chat 的。
+    for (const id of ['directory-stats', 'directory-git', 'quick-task-form']) {
+      assert.equal(await page.evaluate(`document.getElementById('${id}').offsetParent===null`), true, `${id} 在终端模式下该让位`);
+    }
+    // 只列当前目录（d1）的终端：别的目录的、以及 chat-kind 的会话都不进来。
+    const termRows = await page.evaluate(`[...document.querySelectorAll('#directory-terminal-list .directory-terminal-row')].map(a=>[a.textContent, a.getAttribute('href')])`);
+    assert.equal(termRows.length, 1, 'd1 只有一条终端会话：' + JSON.stringify(termRows));
+    assert.equal(termRows[0][1], '/?id=term', '终端行指向终端页：' + JSON.stringify(termRows));
+    assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '1 个终端');
+    assert.equal(await page.evaluate(`document.getElementById('directory-terminal-list').textContent.includes('FIXED_ROLE_MUST_NOT_SHOW')`), false, 'chat-kind 的角色会话不属于终端');
+    screenshots.push(await page.screenshot('directory-terminal-mode-desktop'));
+    // 切回 chat：任务那一块回来、终端让位 —— 两边是同一份快照的两种摆法。
+    await page.evaluate(`document.getElementById('directory-mode-chat').click()`);
+    assert.ok(await page.waitFor(`!document.getElementById('empty').classList.contains('is-terminal-mode')`));
+    assert.ok(await page.evaluate(`document.getElementById('directory-stats').offsetParent!==null && document.getElementById('quick-task-form').offsetParent!==null`));
+    // 换目录（＝重新落地这一页）也回到 chat：默认模式不该被上一次的选择记住；
+    // d2 一条终端都没有，顺手覆盖空态那句说明。
+    await page.navigate('/air?dir=d2');
+    // 等这一份快照真的落在这个目录上再断言/点击：刚 navigate 完时 air.js 还没
+    // render 过，切换按钮点了也没有上下文可画（模块只认 air.js 递进来的 ctx）。
+    assert.ok(await page.waitFor(`document.getElementById('directory-path').textContent.includes('design-lab')`));
+    assert.equal(await page.evaluate(`document.getElementById('empty').classList.contains('is-terminal-mode')`), false, '换目录后还是 chat');
+    assert.equal(await page.evaluate(`document.getElementById('directory-mode-chat').getAttribute('aria-selected')`), 'true');
+    await page.evaluate(`document.getElementById('directory-mode-terminal').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#directory-terminal-list .directory-terminal-empty')!==null`));
+    assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '0 个终端');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list .directory-terminal-row').length`), 0);
+    await page.navigate('/air?dir=d1');
+    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-stat').length===4`));
     // The new-task composer reuses the chat's two composers instead of growing
     // its own CLI/Provider selects: the AI 配置 pill opens the same dialog (with
     // 模型, which the old panel dropped) and hands the runtime back as a draft,

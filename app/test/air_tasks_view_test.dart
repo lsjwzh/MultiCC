@@ -946,11 +946,12 @@ void main() {
     await tester.pumpAndSettle();
     await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
 
+    // TERMINAL 那一组已经不在这里了：终端属于每个目录，走目录页顶部的
+    // Chat / Terminal 切换（`air_directory_mode_test.dart` 盯那一边）。
     for (final group in const [
       'air-group-frequent',
       'air-group-global',
       'air-group-entries',
-      'air-group-terminal',
       'air-group-host',
     ]) {
       expect(find.byKey(ValueKey(group)), findsOneWidget, reason: group);
@@ -982,12 +983,11 @@ void main() {
     );
     expect(frequent.left, lessThan(provider.left));
     expect(frequent.right, greaterThan(provider.right));
-    // 五个框互不重叠地一路排下去（同一条竖线上，一个接一个）。
+    // 四个框互不重叠地一路排下去（同一条竖线上，一个接一个）。
     final boxes = [
       'air-group-frequent',
       'air-group-global',
       'air-group-entries',
-      'air-group-terminal',
       'air-group-host',
     ].map((k) => tester.getRect(find.byKey(ValueKey(k)))).toList();
     for (var i = 1; i < boxes.length; i++) {

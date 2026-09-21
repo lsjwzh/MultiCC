@@ -593,6 +593,29 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #task-layout { min-height: 0; flex: 1; display: flex; }
 #task-content { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; overflow: hidden; background: linear-gradient(145deg, #fff, #f7faff); }
 #empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 34px; color: var(--muted); }
+/* ── 目录视图切换：Chat（默认）／ Terminal ─────────────────────────────────────
+   终端属于每个目录，摆在目录页最前面。两类东西**互相让位**，不是排成一列：
+   终端模式下 Chat 那一整块（统计卡 / 最近任务 / Git / 新任务输入框）整块收起，
+   终端那块上场。默认 chat —— 状态在 air-directory-mode.js，换目录即回到 chat。 */
+.directory-mode { display: flex; gap: 3px; width: fit-content; margin: 0 0 16px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); }
+.directory-mode button { min-height: 30px; padding: 0 16px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.directory-mode button[aria-selected="true"] { background: var(--panel); color: var(--accent-strong); box-shadow: 0 1px 4px #35577d14; }
+#directory-terminals { display: none; }
+#empty.is-terminal-mode #directory-terminals { display: block; }
+#empty.is-terminal-mode > #setup-card,
+#empty.is-terminal-mode > #directory-stats,
+#empty.is-terminal-mode > .directory-task-panel,
+#empty.is-terminal-mode > #directory-git,
+#empty.is-terminal-mode > #quick-task-form { display: none; }
+.directory-terminal-new { min-height: 36px; margin: 0 0 16px; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 10px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.directory-terminal-new:disabled { opacity: .55; cursor: default; }
+#directory-terminal-list { display: grid; gap: 8px; }
+.directory-terminal-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, .86); color: var(--text); text-decoration: none; }
+.directory-terminal-row:hover { border-color: #9cc4ea; }
+.directory-terminal-mark { color: var(--faint); font-family: ui-monospace, monospace; font-size: 12px; }
+.directory-terminal-row strong { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
+.directory-terminal-row small { color: var(--muted); font-size: 11px; }
+.directory-terminal-empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
 #directory-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 /* 四张统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
    再往下就是任务列表。所以它们按「一行字」而不是「一张卡片」来做 —— 填充、
