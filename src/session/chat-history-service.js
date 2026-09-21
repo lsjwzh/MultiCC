@@ -158,7 +158,14 @@ function createChatHistoryService({
           normalized.pop();
         }
         const prevInNormalized = findPrevAssistant(normalized, normalized.length - 1);
-        if (prevInNormalized && assistantContains(prevInNormalized, message)
+        // Retry dedup may collapse a prefix-contained assistant pair. A
+        // task-referenced message is protected by the retention predicate; a
+        // handoff-imported transcript has no local task to point at, so its
+        // entries carry `_handoffArchive` instead — the source already chose
+        // what to keep, and this guard must stay true across restarts (the
+        // read path re-runs normalize on every boot).
+        if (prevInNormalized && !prevInNormalized._handoffArchive
+            && assistantContains(prevInNormalized, message)
             && !isMessageProtected(String(sessionId), prevInNormalized)) {
           normalized.splice(normalized.indexOf(prevInNormalized), 1);
         }

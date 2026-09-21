@@ -114,6 +114,22 @@ EOF
 
 返回的 `restored` 字段给出每一项的落地明细（written/skipped、gitNote 等）。
 
+### 导入副本是任务无关的（task-agnostic）
+
+消息上的任务归属字段是**机器本地**的：`taskId`、`taskName`、`taskShortCode`、
+`taskStart`、`taskSource`、`taskText`、`auxRunId` 描述的是源机器上发生的活儿。
+导入时这一族会被整体剥掉，理由是它们在目标机器上指向不存在的任务，而在
+**同实例重导入**时更糟——它们指向本机真实存在的任务，于是历史保留策略
+（`TASK_HISTORY_REFERENCED`）拒绝释放这个从未属于那些任务的会话，看板/会话
+删除级联都做不完。`force` 永远不绕保留策略，所以只能在导入侧去掉。
+
+去掉 `taskId` 会同时关掉 `isMessageProtected` 的保护，而重试去重
+（`normalize()` 的前缀包含折叠）只保护被 taskId 保护的消息——本地留着的一对
+前缀包含 assistant 消息（比如一次重试的前后两版）会在导入后静默丢掉一条。
+因此导入的 assistant 条目额外打上 `_handoffArchive` 标记，去重判定认这个标记。
+它是落盘字段，重启后读路径重跑 `normalize()` 仍然生效（源机器已经决定留下
+什么，导入只负责原样搬过来）。
+
 ## 安全模型
 
 - 敏感载荷（聊天历史、provider env、记忆、上下文依赖）无论哪种容器都用
@@ -137,6 +153,10 @@ EOF
 - v1/v2 旧 bundle 仍可导入（按原行为恢复）。
 - zip 容器由内置的最小 zip 实现（`src/session/handoff-zip.js`）读写，支持
   store/deflate；已验证与系统 unzip 互操作。
+- 已在两个**真实在线实例**之间跑过双向实测（Docker 任务壳实验环境 ↔ 本机主
+  实例，各自 ~1.1 MB 包）：记忆/技能/HANDOFF.md/worktree/图片附件全部落地，
+  消息内容逐条比对一致（唯一差异是源会话当时正在进行中的那条流式消息）。
+  任务归属剥离是在这次实测里发现并补上的——见上文「导入副本是任务无关的」。
 
 相关实现：`src/routes/session-bundle.js`（路由）、
 `src/session/handoff-env.js`（采集/恢复层）、
