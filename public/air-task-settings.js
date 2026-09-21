@@ -11,8 +11,8 @@
   });
   const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
   const EFFORT_LABELS = Object.freeze({
-    claude: '思考强度', codex: '推理等级', opencode: '模型 Variant',
-    qoder: '推理强度', codebuddy: '推理强度',
+    claude: t('airTaskSettingsEffortClaude'), codex: t('airTaskSettingsEffortCodex'), opencode: t('airTaskSettingsEffortOpenCode'),
+    qoder: t('airTaskSettingsEffortLabel'), codebuddy: t('airTaskSettingsEffortLabel'),
   });
 
   const node = (tag, text, className) => {
@@ -25,7 +25,7 @@
   function dialog(title, build) {
     const d = node('dialog'), form = node('form'), error = node('p');
     error.setAttribute('role', 'alert');
-    const cancel = node('button', '取消'), submit = node('button', '保存');
+    const cancel = node('button', t('airTaskSettingsCancel')), submit = node('button', t('airTaskSettingsSave'));
     cancel.type = 'button'; submit.className = 'primary';
     cancel.onclick = () => d.close(); form.append(node('h2', title));
     const save = build(form); form.append(error, cancel, submit);
@@ -53,9 +53,9 @@
     const raw = await response.text();
     let result = {};
     try { result = raw ? JSON.parse(raw) : {}; }
-    catch (_) { throw new Error(`服务返回了无法识别的内容（HTTP ${response.status}）`); }
+    catch (_) { throw new Error(t('airTaskSettingsBadResponse', { status: response.status })); }
     if (!response.ok || result.ok === false) {
-      throw new Error(result.message || result.error || result.code || `请求失败（HTTP ${response.status}）`);
+      throw new Error(result.message || result.error || result.code || t('airTaskSettingsRequestFailed', { status: response.status }));
     }
     return result;
   }
@@ -69,11 +69,11 @@
   }
 
   function nativeProviderCopy(cli) {
-    if (cli === 'zcode') return ['ZCode 原生 / Coding Plan', '使用 ZCode 自己维护的登录与连接配置'];
-    if (cli === 'opencode') return ['OpenCode 原生配置', '使用本机 OpenCode Go 或原生 provider/model'];
-    if (cli === 'kimi') return ['Kimi Code 原生连接', '使用 Kimi Code 自己维护的凭证'];
-    if (PROVIDERLESS_CLIS.has(cli)) return ['CLI 原生账号', '此 CLI 不通过 MultiCC Provider 路由'];
-    return ['默认登录 / 官方账号', '使用该 CLI 当前的本机订阅或 OAuth'];
+    if (cli === 'zcode') return [t('airTaskSettingsNativeZcodeTitle'), t('airTaskSettingsNativeZcodeNote')];
+    if (cli === 'opencode') return [t('airTaskSettingsNativeOpenCodeTitle'), t('airTaskSettingsNativeOpenCodeNote')];
+    if (cli === 'kimi') return [t('airTaskSettingsNativeKimiTitle'), t('airTaskSettingsNativeKimiNote')];
+    if (PROVIDERLESS_CLIS.has(cli)) return [t('airTaskSettingsNativeCliTitle'), t('airTaskSettingsNativeCliNote')];
+    return [t('airTaskSettingsNativeDefaultTitle'), t('airTaskSettingsNativeDefaultNote')];
   }
 
   function configuration(entry, clis, onSaved) {
@@ -81,7 +81,7 @@
     const autoApi = window.MultiCCAutoProviderEditor;
     const aiApi = window.MultiCCChatAiConfig;
     if (!catalogApi || !autoApi || !aiApi) {
-      throw new Error('AI 配置组件未加载，请刷新页面后重试。');
+      throw new Error(t('airTaskSettingsComponentsMissing'));
     }
 
     // Draft mode: no session yet (the directory's new-task composer). The same
@@ -101,20 +101,20 @@
     const form = node('form', null, 'air-config-form');
     const header = node('header', null, 'air-config-head');
     const heading = node('div');
-    heading.append(node('span', 'TASK ROUTING', 'eyebrow'), node('h2', '任务 AI 配置'));
+    heading.append(node('span', 'TASK ROUTING', 'eyebrow'), node('h2', t('airTaskSettingsHeading')));
     const close = node('button', '×', 'air-config-close');
-    close.type = 'button'; close.setAttribute('aria-label', '关闭 AI 配置'); close.onclick = () => d.close();
+    close.type = 'button'; close.setAttribute('aria-label', t('airTaskSettingsCloseAria')); close.onclick = () => d.close();
     header.append(heading, close);
     form.append(header, node('p', draft
-      ? `为新任务选择执行工具与请求线路。创建任务时写入，第一条消息即按此执行。`
-      : `为「${entry.task?.title || '当前任务'}」选择执行工具与请求线路。更改从下一轮开始生效。`, 'air-config-intro'));
+      ? t('airTaskSettingsIntroDraft')
+      : t('airTaskSettingsIntroTask', { title: entry.task?.title || t('airTaskSettingsCurrentTask') }), 'air-config-intro'));
 
-    const cliSection = section('1 · CLI', '先选择负责执行任务的命令行工具');
+    const cliSection = section('1 · CLI', t('airTaskSettingsCliNote'));
     const cliGrid = node('div', null, 'air-cli-grid');
     cliGrid.setAttribute('role', 'radiogroup'); cliGrid.setAttribute('aria-label', 'CLI');
     cliSection.append(cliGrid); form.append(cliSection);
 
-    const providerSection = section('2 · Provider', '选择这个任务使用的账号或 API 路由');
+    const providerSection = section('2 · Provider', t('airTaskSettingsProviderNote'));
     const providerStatus = node('p', '', 'air-config-status');
     providerStatus.setAttribute('role', 'status');
     const providerField = node('label', null, 'air-config-field');
@@ -124,17 +124,17 @@
     const autoHost = node('div', null, 'air-auto-host');
     providerSection.append(providerStatus, providerField, autoHost); form.append(providerSection);
 
-    const runtimeSection = section('3 · 模型与推理', '模型会随 Provider 联动；推理强度按 CLI 能力显示');
+    const runtimeSection = section(t('airTaskSettingsRuntimeSection'), t('airTaskSettingsRuntimeNote'));
     const runtimeGrid = node('div', null, 'air-runtime-grid');
     const modelField = node('label', null, 'air-config-field');
-    modelField.append(node('span', '模型'));
-    const modelSelect = node('select'); modelSelect.setAttribute('aria-label', '模型');
-    const customModel = node('input'); customModel.maxLength = 100; customModel.placeholder = '输入模型 ID';
-    customModel.setAttribute('aria-label', '自定义模型 ID'); customModel.hidden = true;
+    modelField.append(node('span', t('airTaskSettingsModelLabel')));
+    const modelSelect = node('select'); modelSelect.setAttribute('aria-label', t('airTaskSettingsModelLabel'));
+    const customModel = node('input'); customModel.maxLength = 100; customModel.placeholder = t('airTaskSettingsModelPlaceholder');
+    customModel.setAttribute('aria-label', t('airTaskSettingsCustomModelAria')); customModel.hidden = true;
     modelField.append(modelSelect, customModel);
     const effortField = node('label', null, 'air-config-field');
-    const effortLabel = node('span', '推理强度');
-    const effortSelect = node('select'); effortSelect.setAttribute('aria-label', '推理强度');
+    const effortLabel = node('span', t('airTaskSettingsEffortLabel'));
+    const effortSelect = node('select'); effortSelect.setAttribute('aria-label', t('airTaskSettingsEffortLabel'));
     effortField.append(effortLabel, effortSelect);
     runtimeGrid.append(modelField, effortField);
     // 子任务：Provider 配置后面的一行尾巴（线路 + 模型）。它和 chat 的 AI 配置面板
@@ -143,25 +143,25 @@
     const subRow = node('div', null, 'air-sub');
     const subGrid = node('div', null, 'air-sub-grid');
     const subProviderField = node('label', null, 'air-config-field');
-    subProviderField.append(node('span', '子任务线路'));
-    const subProviderSelect = node('select'); subProviderSelect.setAttribute('aria-label', '子任务线路');
+    subProviderField.append(node('span', t('airTaskSettingsSubProviderLabel')));
+    const subProviderSelect = node('select'); subProviderSelect.setAttribute('aria-label', t('airTaskSettingsSubProviderLabel'));
     subProviderField.append(subProviderSelect);
     const subModelField = node('label', null, 'air-config-field');
-    subModelField.append(node('span', '子任务模型'));
-    const subModelSelect = node('select'); subModelSelect.setAttribute('aria-label', '子任务模型');
-    const subCustomModel = node('input'); subCustomModel.maxLength = 100; subCustomModel.placeholder = '输入模型 ID';
-    subCustomModel.setAttribute('aria-label', '子任务自定义模型 ID'); subCustomModel.hidden = true;
+    subModelField.append(node('span', t('airTaskSettingsSubModelLabel')));
+    const subModelSelect = node('select'); subModelSelect.setAttribute('aria-label', t('airTaskSettingsSubModelLabel'));
+    const subCustomModel = node('input'); subCustomModel.maxLength = 100; subCustomModel.placeholder = t('airTaskSettingsModelPlaceholder');
+    subCustomModel.setAttribute('aria-label', t('airTaskSettingsSubCustomModelAria')); subCustomModel.hidden = true;
     subModelField.append(subModelSelect, subCustomModel);
     subGrid.append(subProviderField, subModelField);
-    subRow.append(subGrid, node('p', '子 agent 走的 provider + model（经本地协议代理路由，与主进程隔离）。只挑线路不挑模型 = 没设，随主。', 'air-sub-hint'));
+    subRow.append(subGrid, node('p', t('airTaskSettingsSubHint'), 'air-sub-hint'));
     runtimeSection.append(runtimeGrid, subRow); form.append(runtimeSection);
 
     const error = node('p', '', 'air-config-error'); error.setAttribute('role', 'alert');
     const foot = node('footer', null, 'air-config-footer');
-    const footCopy = node('p', draft ? '这一选择只在创建这个任务时使用。' : '任务历史、角色与工作区保持不变。');
+    const footCopy = node('p', draft ? t('airTaskSettingsFootDraft') : t('airTaskSettingsFootTask'));
     const actions = node('div');
-    const cancel = node('button', '取消'); cancel.type = 'button'; cancel.onclick = () => d.close();
-    const submit = node('button', draft ? '使用此配置' : '保存配置', 'primary'); submit.type = 'submit';
+    const cancel = node('button', t('airTaskSettingsCancel')); cancel.type = 'button'; cancel.onclick = () => d.close();
+    const submit = node('button', draft ? t('airTaskSettingsUseConfig') : t('airTaskSettingsSaveConfig'), 'primary'); submit.type = 'submit';
     actions.append(cancel, submit); foot.append(footCopy, actions);
     form.append(error, foot); d.append(form); document.body.append(d); d.showModal();
 
@@ -185,7 +185,7 @@
 
     function modelState() {
       return { cli: currentCli, providers, defaults: currentCatalog?.defaults || {},
-        translate: key => ({ default: '默认模型', custom: '自定义模型…' })[key] || key };
+        translate: key => ({ default: t('airTaskSettingsDefaultModel'), custom: t('airTaskSettingsCustomModelOption') })[key] || key };
     }
 
     function setBusy(value) {
@@ -213,7 +213,7 @@
     function renderEffort(preferred) {
       const options = aiApi.effortOptions(currentCli);
       effortField.hidden = !options.length;
-      effortLabel.textContent = EFFORT_LABELS[currentCli] || aiApi.effortLabel(currentCli) || '推理强度';
+      effortLabel.textContent = EFFORT_LABELS[currentCli] || aiApi.effortLabel(currentCli) || t('airTaskSettingsEffortLabel');
       effortSelect.replaceChildren(...options.map(choice => {
         const option = node('option', choice.desc ? `${choice.label} — ${choice.desc}` : choice.label);
         option.value = choice.value; return option;
@@ -231,7 +231,7 @@
       if (!Array.isArray(choices) || !choices.length) choices = ['', '__custom__'];
       choices = [...new Set(choices)];
       modelSelect.replaceChildren(...choices.map(value => {
-        const option = node('option', value === '__custom__' ? '自定义模型…' : aiApi.modelChoiceLabel(value, providerValue, state));
+        const option = node('option', value === '__custom__' ? t('airTaskSettingsCustomModelOption') : aiApi.modelChoiceLabel(value, providerValue, state));
         option.value = value; return option;
       }));
       let selected = aiApi.normalizeModel(providerValue, preferred || '', state);
@@ -246,12 +246,13 @@
     // 线路下拉永远是「随主」在前，后面是本 CLI 可用的 Provider（Codex 排掉官方
     // 账号：它没有可调用的 HTTP 端点，服务端也会拒）。
     function renderSubProviders() {
-      const head = node('option', '随主'); head.value = '';
+      const head = node('option', t('airTaskSettingsFollowPrimary')); head.value = '';
       const items = [head];
       if (!PROVIDERLESS_CLIS.has(currentCli)) {
         for (const provider of providers) {
           if (currentCli === 'codex' && provider.isOfficial) continue;
-          const option = node('option', aiApi.providerLabel(provider, false) + aiApi.providerLimitLabel(provider));
+          // tr 要传进去：缓存里那条「更新于 / 查询失败 / 过期」的尾巴不传就永远是中文。
+          const option = node('option', aiApi.providerLabel(provider, false) + aiApi.providerLimitLabel(provider, t));
           option.value = provider.id; items.push(option);
         }
       }
@@ -268,8 +269,8 @@
       const choices = [...new Set(aiApi.buildModelChoices(providerId, state))]
         .filter(value => value && value !== '__custom__');
       const selected = aiApi.normalizeModel(providerId, (preferred || current || '').toString().trim(), state);
-      const none = node('option', '不设置'); none.value = '';
-      const custom = node('option', '自定义模型…'); custom.value = '__custom__';
+      const none = node('option', t('airTaskSettingsNotSet')); none.value = '';
+      const custom = node('option', t('airTaskSettingsCustomModelOption')); custom.value = '__custom__';
       subModelSelect.replaceChildren(none, ...choices.map(value => {
         const option = node('option', aiApi.modelChoiceLabel(value, providerId, state));
         option.value = value; return option;
@@ -350,11 +351,11 @@
         for (const auto of autoApi.availableProtocols(providers)) {
           if (!autoApi.defaultSelection(providers, auto.protocol)
               && config.providerSelection?.protocol !== auto.protocol) continue;
-          const option = node('option', `⚡ Auto · ${auto.label}（${auto.count} 个同协议 Provider，可按优先级自动切换）`);
+          const option = node('option', t('airTaskSettingsAutoOption', { label: auto.label, count: auto.count }));
           option.value = autoApi.optionValue(auto.protocol); options.push(option);
         }
         for (const provider of providers) {
-          const option = node('option', aiApi.providerLabel(provider, true) + aiApi.providerLimitLabel(provider));
+          const option = node('option', aiApi.providerLabel(provider, true) + aiApi.providerLimitLabel(provider, t));
           option.value = provider.id; options.push(option);
         }
       }
@@ -366,9 +367,9 @@
       const desiredProvider = providers.find(provider => provider.id === desired);
       chooseProvider(desired, initial ? config.model || '' : desiredProvider?.model || '');
       providerStatus.textContent = PROVIDERLESS_CLIS.has(currentCli)
-        ? `${CLI_LABELS[currentCli] || currentCli} 使用原生账号配置，无需选择 MultiCC Provider。`
-        : providers.length ? `已读取 ${providers.length} 个与 ${CLI_LABELS[currentCli] || currentCli} 兼容的 Provider。`
-          : '没有兼容的自管 Provider；当前任务将使用 CLI 原生登录。';
+        ? t('airTaskSettingsStatusNative', { cli: CLI_LABELS[currentCli] || currentCli })
+        : providers.length ? t('airTaskSettingsProvidersLoaded', { n: providers.length, cli: CLI_LABELS[currentCli] || currentCli })
+          : t('airTaskSettingsNoProviders');
     }
 
     async function loadCatalog(cli) {
@@ -380,7 +381,7 @@
 
     async function selectCli(cli, initial) {
       const epoch = ++loadEpoch; currentCli = cli; renderCliButtons(); setBusy(true);
-      providerStatus.textContent = '正在读取 Provider 配置…'; providerSelect.replaceChildren();
+      providerStatus.textContent = t('airTaskSettingsLoadingProviders'); providerSelect.replaceChildren();
       if (autoEditor) { autoEditor.destroy(); autoEditor = null; }
       autoHost.hidden = true; error.textContent = '';
       try {
@@ -392,10 +393,10 @@
       } catch (cause) {
         if (epoch !== loadEpoch) return;
         currentCatalog = null; providers = [];
-        const retry = node('button', '重新读取'); retry.type = 'button'; retry.onclick = () => selectCli(cli, initial);
-        providerStatus.replaceChildren(`Provider 读取失败：${cause.message} `, retry);
+        const retry = node('button', t('airTaskSettingsRetry')); retry.type = 'button'; retry.onclick = () => selectCli(cli, initial);
+        providerStatus.replaceChildren(t('airTaskSettingsLoadFailed', { message: cause.message }), retry);
         providerSelect.replaceChildren();
-        error.textContent = 'Provider 配置未加载，暂不能保存，避免覆盖当前线路。';
+        error.textContent = t('airTaskSettingsProviderNotLoaded');
       } finally {
         if (epoch === loadEpoch) setBusy(currentCatalog == null);
       }
@@ -423,7 +424,7 @@
         let model = modelSelect.value === '__custom__' ? customModel.value.trim() : modelSelect.value;
         if (autoProtocol) {
           const selection = autoEditor?.read();
-          if (!selection?.ok) throw new Error(selection?.error || 'Auto Provider 配置无效。');
+          if (!selection?.ok) throw new Error(selection?.error || t('airTaskSettingsAutoInvalid'));
           providerSelection = selection.value;
           const primary = providerSelection.candidates[0];
           provider = primary.providerId; model = primary.model || null;
@@ -462,10 +463,10 @@
 
   window.MultiCCAirSettings = {
     directory(onSaved) {
-      dialog('添加工作目录', form => {
-        const name = field(form, '名称'), path = field(form, '本机绝对路径'); name.required = path.required = true;
+      dialog(t('airTaskSettingsAddDirectory'), form => {
+        const name = field(form, t('airTaskSettingsName')), path = field(form, t('airTaskSettingsAbsolutePath')); name.required = path.required = true;
         name.maxLength = 100; path.placeholder = '/Users/you/projects/example';
-        form.append(node('p', '添加目录后，可在其中创建任务并按需附加角色。'));
+        form.append(node('p', t('airTaskSettingsAddDirectoryNote')));
         return async () => { const result = await request('/api/directories', { name: name.value, path: path.value, create: false }); await onSaved(result); };
       });
     },

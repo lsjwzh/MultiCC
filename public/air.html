@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#f4f8fd">
-  <title>MultiCC Air · 工作目录与任务</title>
+  <title data-i18n="airDocTitle">MultiCC Air · 工作目录与任务</title>
   <link rel="icon" href="/icon.svg">
   <link rel="stylesheet" href="composer.css">
   <!-- 状态徽标的唯一色/形来源：注册表说「这是什么状态」，这张表说「那个状态长什么样」。
@@ -12,28 +12,32 @@
   <link rel="stylesheet" href="status-badge.css">
   <link rel="stylesheet" href="air.css">
   <script src="auth-client.js"></script>
+  <!-- i18n 必须早于所有 Air 模块：air.js / air-*.js 在初始化阶段就会调用 t()，
+       而 t() 只从 window.MULTICC_I18N_CATALOG 现取（见 i18n.js）。 -->
+  <script src="i18n-catalog.js"></script>
+  <script src="i18n.js"></script>
 </head>
 <body>
-  <aside id="sidebar" aria-label="工作目录与任务导航">
-    <a class="brand" href="/air" aria-label="MultiCC Air 首页"><span class="brand-mark">M</span><span>MultiCC <b>Air</b></span></a>
+  <aside id="sidebar" aria-label="工作目录与任务导航" data-i18n-aria-label="airSidebarNav">
+    <a class="brand" href="/air" aria-label="MultiCC Air 首页" data-i18n-aria-label="airHome"><span class="brand-mark">M</span><span>MultiCC <b>Air</b></span></a>
 
     <div class="space-card">
       <button id="library" class="space-main" type="button">
         <span class="space-icon">▣</span>
-        <span class="space-copy"><strong id="directory-name">正在读取…</strong><small id="directory-path"></small></span>
+        <span class="space-copy"><strong id="directory-name" data-i18n="airHeaderLoadingDirectory">正在读取…</strong><small id="directory-path"></small></span>
         <span class="space-chevron">›</span>
       </button>
       <div class="space-shortcuts">
-        <span>工作目录</span><kbd>⌘ K 切换</kbd>
+        <span data-i18n="airWorkspace">工作目录</span><kbd data-i18n="airSwitchHint">⌘ K 切换</kbd>
       </div>
     </div>
 
     <!-- 控制台不是「页面」：点它从左侧展开面板，地址不变、当前任务不卸载。
          徽标接管了原来「跨目录活动」那条常驻信号——不展开也知道有别处的事在等。 -->
     <button id="overview" class="nav-row" type="button" aria-expanded="false" aria-controls="console-panel">
-      <span>◫</span><span>控制台</span><span id="console-badge" class="console-badge" hidden></span>
+      <span>◫</span><span data-i18n="airConsole">控制台</span><span id="console-badge" class="console-badge" hidden></span>
     </button>
-    <button id="schedules" class="nav-row" type="button"><span>◴</span><span>定时任务</span></button>
+    <button id="schedules" class="nav-row" type="button"><span>◴</span><span data-i18n="airScheduledTasks">定时任务</span></button>
 
     <!-- 这里原本是一组「收藏目录」（.favorite-caption 标题 + #favorites 列表），连同
          目录卡上那颗 ☆ 一起撤掉了：工作目录本来就不会很多，一组随时可能空的快捷
@@ -45,31 +49,38 @@
     <!-- 侧栏的任务区只放「手上的任务」：最近打开过的在前，当前目录的跟在后面。
          找任务的完整入口在控制台（全部目录 + 搜索 + 筛选），所以这里不挂搜索框 ——
          一列八行的手边清单不需要搜索，需要搜索的那个列表在面板里。 -->
-    <section id="task-sidebar" aria-label="最近任务">
+    <section id="task-sidebar" aria-label="最近任务" data-i18n-aria-label="airRecentTasks">
       <div class="section-heading task-heading">
-        <div><span class="caption">任务</span><strong id="task-list-title">最近任务</strong></div>
+        <div><span class="caption" data-i18n="airTaskCaption">任务</span><strong id="task-list-title" data-i18n="airRecentTasks">最近任务</strong></div>
         <span id="task-count"></span>
       </div>
       <!-- 开的不是另一张表单，是把 #quick-task-form 搬进 #quick-task-dialog：
            同一套输入框、同样的 AI 配置与角色胶囊，写完就直接创建并执行。 -->
-      <button id="create" class="sidebar-create" type="button">＋ 新任务</button>
-      <nav id="tasks" aria-label="最近任务列表"></nav>
+      <!-- 加号是图标不是文案，单独一个 aria-hidden 的 span：data-i18n 会用
+           textContent 整个覆盖节点，挂在 button 上会把这个加号一起抹掉。 -->
+      <button id="create" class="sidebar-create" type="button"><span aria-hidden="true">＋</span> <span data-i18n="airNewTask">新任务</span></button>
+      <nav id="tasks" aria-label="最近任务列表" data-i18n-aria-label="airRecentTasksList"></nav>
     </section>
 
     <!-- 频次收敛：每天点的（当前目录、控制台、定时任务、最近任务、新建）留在外面，
          偶尔点的（常用设置、全局工具、任务看板、TERMINAL、主机运维）折进「更多」。
          版本行留在外面：它是更新提示的落点，藏起来就没人知道有新版本。 -->
     <div class="side-bottom">
-      <div id="air-ver-row" class="ops-version" role="button" tabindex="0" title="点击检查并安装更新">
+      <div id="air-ver-row" class="ops-version" role="button" tabindex="0" title="点击检查并安装更新" data-i18n-title="airCheckUpdate">
         <span id="air-ver-icon" class="ops-icon" aria-hidden="true">📦</span>
         <span class="ops-version-text">
           <span id="air-ver-current">v—</span>
-          <span id="air-ver-hint">检查中…</span>
+          <span id="air-ver-hint" data-i18n="airOpsChecking">检查中…</span>
         </span>
         <span id="air-ver-badge" class="ops-badge" hidden>NEW</span>
       </div>
+      <!-- 语言切换就落在版本行下面：和它同属「偶尔点一次」的那条底栏，不占
+           任务清单的位置。文案由 i18n.js 统一接管（.lang-toggle → t('language')），
+           点一下走 setLang()，和其它页面是同一套（写 localStorage + reload）。 -->
+      <button id="air-lang-btn" class="lang-toggle side-lang" type="button" onclick="toggleLang()"
+              title="切换语言：中文 / English" data-i18n-title="languageToggle">中/EN</button>
       <details id="side-more" class="side-more">
-        <summary>更多与系统</summary>
+        <summary data-i18n="airMoreSystem">更多与系统</summary>
         <div class="side-more-body">
           <!-- 常用设置原本是侧栏顶部的一栏（控制台 / 定时任务下面）。三行常驻把
                任务清单往下推了一整段，而它们其实是「偶尔改一次」的东西 —— 收进
@@ -83,54 +94,57 @@
                按钮。框住之后每一组自己成立，视线不再被下一组的行带走。
                两列排布：四个入口正好 2×2，比一列短一半。 -->
           <details id="frequent-settings-group" class="side-group" open>
-            <summary class="side-group-title">常用设置</summary>
-            <nav id="frequent-settings" class="frequent-settings" aria-label="常用设置">
+            <summary class="side-group-title" data-i18n="airFrequentSettings">常用设置</summary>
+            <nav id="frequent-settings" class="frequent-settings" aria-label="常用设置" data-i18n-aria-label="airFrequentSettings">
               <!-- Provider 配置是这一栏里最常点的（换线路、换模型都从它进），所以
                    字重和颜色都比另外几行重一点，不是四个等价的入口。 -->
-              <button type="button" class="sidebar-setting-row is-primary" data-air-view="provider"><span>◈</span><span>Provider 配置</span></button>
-              <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span>外网穿透</span></button>
-              <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span>消息桥接</span></button>
+              <button type="button" class="sidebar-setting-row is-primary" data-air-view="provider"><span>◈</span><span data-i18n="airProviderConfig">Provider 配置</span></button>
+              <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span data-i18n="airTunnel">外网穿透</span></button>
+              <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span data-i18n="airBridges">消息桥接</span></button>
               <!-- 关盖运行是设置中心 › 全局配置里那个开关的快捷版：点一下直接切，
                    不用先跳进设置。只在 macOS 且接口答得出状态时才出现（air.js
                    的 loadLidSleepRow），其它平台/环境整行隐藏，不留一个点不动的坑。 -->
               <button type="button" class="sidebar-setting-row" id="air-lid-sleep" hidden
-                      title="关盖时保持运行，不进入睡眠（点击切换）"><span>☾</span><span>关盖运行</span><span class="row-switch" aria-hidden="true"></span></button>
+                      title="关盖时保持运行，不进入睡眠（点击切换）" data-i18n-title="airLidSleepOffTitle"><span>☾</span><span data-i18n="airLidSleep">关盖运行</span><span class="row-switch" aria-hidden="true"></span></button>
             </nav>
           </details>
           <nav class="global-links side-group">
-            <button type="button" data-air-view="docs">服务与文档</button>
-            <button type="button" data-air-view="memory">记忆图谱</button>
-            <button type="button" data-air-view="taskgraph">任务图谱</button>
-            <button type="button" data-air-view="settings">设置中心</button>
+            <button type="button" data-air-view="docs" data-i18n="airDocs">服务与文档</button>
+            <button type="button" data-air-view="memory" data-i18n="airMemoryGraph">记忆图谱</button>
+            <button type="button" data-air-view="taskgraph" data-i18n="airTaskGraph">任务图谱</button>
+            <button type="button" data-air-view="settings" data-i18n="airSettingsCenter">设置中心</button>
           </nav>
           <!-- Deliberately outside the version row above: that row is a click target
                for the update check, and reading a timestamp should not fire a call. -->
           <div class="ops-boot side-group">
-            <div class="ops-boot-row"><span class="ops-boot-label">最近启动</span><span id="air-boot-time">—</span></div>
+            <div class="ops-boot-row"><span class="ops-boot-label" data-i18n="airLastBoot">最近启动</span><span id="air-boot-time">—</span></div>
             <div id="air-boot-uptime" class="ops-boot-uptime"></div>
           </div>
-          <nav class="ops-actions side-group" aria-label="主机操作">
-            <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包">安装包</button>
-            <button type="button" id="air-qr-btn" title="扫码在手机上打开">二维码</button>
-            <button type="button" id="push-toggle" title="开启浏览器推送通知">推送通知</button>
-            <button type="button" id="air-restart-btn" title="重启 multicc 服务">🔄 重启</button>
-            <a href="/logout" title="退出登录">退出登录</a>
+          <nav class="ops-actions side-group" aria-label="主机操作" data-i18n-aria-label="airHostActions">
+            <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包" data-i18n-title="airInstallTitle" data-i18n="airInstallPackage">安装包</button>
+            <button type="button" id="air-qr-btn" title="扫码在手机上打开" data-i18n-title="airQrTitle" data-i18n="airQr">二维码</button>
+            <!-- 标签与 title 运行时都由 air-ops.js 重画（pwa.js 只认自己的英文兜底）。
+                 data-i18n 只负责首屏那一次：air-ops 的 paintPush 要等 multicc-push-state
+                 事件，中间那一小段在英文界面里会露出源码里的中文。 -->
+            <button type="button" id="push-toggle" title="开启浏览器推送通知" data-i18n-title="airOpsPushSubscribe" data-i18n="airOpsPushNotify">推送通知</button>
+            <button type="button" id="air-restart-btn" title="重启 multicc 服务" data-i18n-title="airRestartTitle" data-i18n="airRestartService">🔄 重启</button>
+            <a href="/logout" title="退出登录" data-i18n-title="airLogout" data-i18n="airLogout">退出登录</a>
           </nav>
         </div>
       </details>
       <!-- 留在折叠区外：运维动作的回执要看得见，折起来会连回执一起藏掉。 -->
       <p id="air-ops-status" class="ops-status" role="status"></p>
-      <small>让每一次对话，都有清晰的目标。</small>
+      <small data-i18n="airTagline">让每一次对话，都有清晰的目标。</small>
     </div>
   </aside>
-  <button id="nav-scrim" type="button" aria-label="关闭导航" hidden></button>
+  <button id="nav-scrim" type="button" aria-label="关闭导航" data-i18n-aria-label="airCloseNav" hidden></button>
 
   <main>
     <header id="task-header">
-      <button id="mobile-nav" type="button" aria-label="打开导航" aria-expanded="false">☰</button>
+      <button id="mobile-nav" type="button" aria-label="打开导航" data-i18n-aria-label="airOpenNav" aria-expanded="false">☰</button>
       <div class="breadcrumb">
         <span id="task-breadcrumb" class="caption">MultiCC Air</span>
-        <h1 id="task-title">工作目录</h1>
+        <h1 id="task-title" data-i18n="airWorkspace">工作目录</h1>
         <button id="task-state" type="button" aria-controls="task-details" aria-expanded="false" disabled></button>
       </div>
       <!-- Pin 住的任务：页头最上面居中横排的那一条「收藏栏」（像浏览器的收藏快捷
@@ -138,12 +152,12 @@
            上面才展开成完整的一张（标题 + 目录 + 阶段）。只在桌面出现 —— 手机上页头
            一行都嫌贵，那边这些任务直接置顶在侧栏「最近任务」的最上面（air.js 的
            sidebarTasks）。最多 5 个，清单在服务端，Web 和 App 读的是同一份。 -->
-      <nav id="task-pins" aria-label="Pin 住的任务" hidden></nav>
+      <nav id="task-pins" aria-label="Pin 住的任务" data-i18n-aria-label="airPinnedTasks" hidden></nav>
       <!-- 手机上工具收进这一层浮层（air.css 的 760px 块），标题那一行就只剩
            ☰ / 标题 / 状态 / ⋯，页头整条少一行 —— 手机上一行消息值 23px，这一行
            是整屏里最贵的几行之一。桌面上它不出现，工具本来就摆得下。 -->
-      <button id="task-options" type="button" aria-label="更多操作" aria-expanded="false" aria-controls="task-tools">⋯</button>
-      <div class="task-tools" id="task-tools" role="group" aria-label="任务操作">
+      <button id="task-options" type="button" aria-label="更多操作" data-i18n-aria-label="airMoreActions" aria-expanded="false" aria-controls="task-tools">⋯</button>
+      <div class="task-tools" id="task-tools" role="group" aria-label="任务操作" data-i18n-aria-label="airTaskActions">
         <!-- Each view's own actions sit next to the title they belong to, so the
              page paints exactly one heading band and the body carries content
              only. air.js toggles these by mode; the admin module fills
@@ -152,8 +166,8 @@
              浮层里的每一行摆成「图标 + 名字」两列）。桌面上这几个按钮本来就带符号，
              图标沿用原来那一个（.air-tool-icon）；原来只有文字的按钮，图标平时不
              显示（.air-tool-icon-panel），只有浮层里需要它站到第一列。 -->
-        <button id="add-directory" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> 添加工作目录</button>
-        <button id="schedule-create" class="primary" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> 新建定时任务</button>
+        <button id="add-directory" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> <span data-i18n="airAddDirectory">添加工作目录</span></button>
+        <button id="schedule-create" class="primary" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> <span data-i18n="airNewScheduledTask">新建定时任务</span></button>
         <div id="admin-actions" hidden></div>
         <!-- Two of the frame's most-used More-menu actions stay one click away
              (the menu keeps the full list). Each shortcut clicks the chat
@@ -161,24 +175,24 @@
              dialog all stay in one place; air.js mirrors their state back. -->
         <!-- 这四件平时只有图标（桌面上悬停有 title），名字平时收在 .air-tool-name
              里，浮层里才跟图标并排 —— aria-label 留着，桌面上的图标按钮就靠它。 -->
-        <button id="quick-merge" type="button" hidden title="合并回基分支" aria-label="合并回基分支"><span class="air-tool-icon" aria-hidden="true">⎇</span><span class="air-tool-name">合并回基分支</span></button>
+        <button id="quick-merge" type="button" hidden title="合并回基分支" data-i18n-title="airMergeToBase" aria-label="合并回基分支" data-i18n-aria-label="airMergeToBase"><span class="air-tool-icon" aria-hidden="true">⎇</span><span class="air-tool-name" data-i18n="airMergeToBase">合并回基分支</span></button>
         <button id="quick-auto-commit" type="button" hidden aria-pressed="false"
-                title="自动提交：每轮执行成功后自动提交并合并回基分支" aria-label="自动提交"><span class="air-tool-icon" aria-hidden="true">⇡</span><span class="air-tool-name">自动提交</span></button>
-        <button id="quick-share" type="button" hidden title="把此任务分享到外部" aria-label="分享此任务"><span class="air-tool-icon" aria-hidden="true">↗</span><span class="air-tool-name">分享此任务</span></button>
+                title="自动提交：每轮执行成功后自动提交并合并回基分支" data-i18n-title="airAutoCommitTitle" aria-label="自动提交" data-i18n-aria-label="airAutoCommit"><span class="air-tool-icon" aria-hidden="true">⇡</span><span class="air-tool-name" data-i18n="airAutoCommit">自动提交</span></button>
+        <button id="quick-share" type="button" hidden title="把此任务分享到外部" data-i18n-title="airShareTaskTitle" aria-label="分享此任务" data-i18n-aria-label="airShareTask"><span class="air-tool-icon" aria-hidden="true">↗</span><span class="air-tool-name" data-i18n="airShareTask">分享此任务</span></button>
         <!-- Pin 是「这件事我要一直看着」的唯一开关：桌面上页头那排 tab 是它的落点，
              手机上（没有 page 头那排 tab）是侧栏最近任务置顶的开关。 -->
-        <button id="pin-task" type="button" hidden aria-pressed="false" title="Pin 到页顶" aria-label="Pin 到页顶"><span class="air-tool-icon" aria-hidden="true">📌</span><span class="air-tool-name">Pin 到页顶</span></button>
-        <button id="details-toggle" type="button" aria-expanded="false" aria-controls="task-details" hidden><span class="air-tool-icon-panel" aria-hidden="true">ⓘ</span>详情</button>
-        <button id="chat-more" type="button" aria-haspopup="menu" aria-expanded="false" hidden><span class="air-tool-icon-panel" aria-hidden="true">⋯</span>更多</button>
+        <button id="pin-task" type="button" hidden aria-pressed="false" title="Pin 到页顶" data-i18n-title="airPinToTop" aria-label="Pin 到页顶" data-i18n-aria-label="airPinToTop"><span class="air-tool-icon" aria-hidden="true">📌</span><span class="air-tool-name" data-i18n="airPinToTop">Pin 到页顶</span></button>
+        <button id="details-toggle" type="button" aria-expanded="false" aria-controls="task-details" hidden><span class="air-tool-icon-panel" aria-hidden="true">ⓘ</span><span data-i18n="airDetails">详情</span></button>
+        <button id="chat-more" type="button" aria-haspopup="menu" aria-expanded="false" hidden><span class="air-tool-icon-panel" aria-hidden="true">⋯</span><span data-i18n="airMore">更多</span></button>
         <!-- 这个按钮一直挂着（不随视图藏），所以它没有 hidden。 -->
-        <button id="refresh" type="button" aria-label="刷新"><span class="air-tool-icon" aria-hidden="true">↻</span><span class="air-tool-name">刷新</span></button>
+        <button id="refresh" type="button" aria-label="刷新" data-i18n-aria-label="airRefresh" title="刷新" data-i18n-title="airRefresh"><span class="air-tool-icon" aria-hidden="true">↻</span><span class="air-tool-name" data-i18n="airRefresh">刷新</span></button>
       </div>
     </header>
 
     <p id="notice" role="status" aria-live="polite"></p>
 
     <section id="directory-library" hidden>
-      <input id="directory-search" type="search" placeholder="搜索名称或路径" aria-label="搜索工作目录">
+      <input id="directory-search" type="search" placeholder="搜索名称或路径" data-i18n-placeholder="airSearchNameOrPath" aria-label="搜索工作目录" data-i18n-aria-label="airSearchWorkspace">
       <div id="directory-grid"></div>
     </section>
 
@@ -200,30 +214,30 @@
                就是 2.0 的引导：先有模型（导入线路或用 CLI 自带），再配 AI Assistant
                ——它是任务分类与归属的核心，必须配置，但轻量 flash 模型就够。配置
                完成后它永远消失；「暂时跳过」只记在本机。 -->
-          <section id="setup-card" class="setup-card" hidden aria-label="首次配置引导">
+          <section id="setup-card" class="setup-card" hidden aria-label="首次配置引导" data-i18n-aria-label="airSetupGuide">
             <div class="setup-copy">
               <span class="eyebrow">GETTING STARTED</span>
-              <h2>开始之前，先完成两项配置</h2>
+              <h2 data-i18n="airSetupTitle">开始之前，先完成两项配置</h2>
               <ol>
-                <li><strong>准备模型</strong>：在「CLI 与 Provider」里导入你已有的 API 线路，或直接使用 CLI 自带的登录。没有可用模型，任务无法执行。</li>
-                <li><strong>配置 AI Assistant</strong>：它是 MultiCC 的核心——消息分类、任务归属、自动推进都依赖它，<em>必须配置</em>。选一个便宜的 flash / 轻量模型即可，不必占用主力模型。</li>
+                <li><strong data-i18n="airSetupModel">准备模型</strong><span data-i18n="airSetupModelText">：在「CLI 与 Provider」里导入你已有的 API 线路，或直接使用 CLI 自带的登录。没有可用模型，任务无法执行。</span></li>
+                <li><strong data-i18n="airSetupAux">配置 AI Assistant</strong><span data-i18n="airSetupAuxText">：它是 MultiCC 的核心——消息分类、任务归属、自动推进都依赖它，</span><em data-i18n="airSetupAuxMust">必须配置</em><span data-i18n="airSetupAuxText2">。选一个便宜的 flash / 轻量模型即可，不必占用主力模型。</span></li>
               </ol>
             </div>
             <div class="setup-actions">
-              <button id="setup-provider" type="button">导入模型 / 线路</button>
-              <button id="setup-aux" type="button" class="primary">配置 AI Assistant</button>
-              <button id="setup-dismiss" type="button" aria-label="暂时跳过配置引导">暂时跳过</button>
+              <button id="setup-provider" type="button" data-i18n="airSetupImport">导入模型 / 线路</button>
+              <button id="setup-aux" type="button" class="primary" data-i18n="airSetupConfigureAux">配置 AI Assistant</button>
+              <button id="setup-dismiss" type="button" aria-label="暂时跳过配置引导" data-i18n-aria-label="airSetupSkipLabel" data-i18n="airSetupSkip">暂时跳过</button>
             </div>
           </section>
-          <div id="directory-stats" aria-label="当前目录任务统计"></div>
+          <div id="directory-stats" aria-label="当前目录任务统计" data-i18n-aria-label="airDirectoryStats"></div>
           <section class="directory-task-panel">
-            <div class="section-heading"><div><span class="caption">当前目录</span><strong id="directory-task-heading">最近任务</strong></div><span id="directory-overview-count"></span></div>
+            <div class="section-heading"><div><span class="caption" data-i18n="airCurrentDirectory">当前目录</span><strong id="directory-task-heading" data-i18n="airRecentTasks">最近任务</strong></div><span id="directory-overview-count"></span></div>
             <div id="directory-task-controls" class="admin-task-controls directory-task-controls" hidden>
-              <input id="directory-task-search" type="search" placeholder="搜索任务标题" aria-label="搜索当前目录任务">
-              <select id="directory-task-status" aria-label="按状态筛选当前目录任务">
-                <option value="open">进行中与待处理</option>
-                <option value="all">全部记录</option>
-                <option value="archived">已归档</option>
+              <input id="directory-task-search" type="search" placeholder="搜索任务标题" data-i18n-placeholder="airSearchTaskTitle" aria-label="搜索当前目录任务" data-i18n-aria-label="airSearchDirectoryTask">
+              <select id="directory-task-status" aria-label="按状态筛选当前目录任务" data-i18n-aria-label="airFilterDirectoryTaskStatus">
+                <option value="open" data-i18n="airStatusOpenAndPending">进行中与待处理</option>
+                <option value="all" data-i18n="airStatusAllRecords">全部记录</option>
+                <option value="archived" data-i18n="airStatusArchived">已归档</option>
               </select>
             </div>
             <div id="directory-task-list"></div>
@@ -235,9 +249,9 @@
                的任务页头（合并按钮）看；这里看的是它们共同的主人 —— 主检出。
                提交列表与 diff 复用旧控制台那两条接口（/api/git/log、
                /api/git/commit-diff），air.js 懒加载，首屏只取一份状态。 -->
-          <section id="directory-git" class="directory-git-panel" hidden aria-label="目录 Git 状态">
+          <section id="directory-git" class="directory-git-panel" hidden aria-label="目录 Git 状态" data-i18n-aria-label="airDirectoryGitStatus">
             <div class="section-heading">
-              <div><span class="caption">GIT</span><strong id="directory-git-title">代码状态</strong></div>
+              <div><span class="caption">GIT</span><strong id="directory-git-title" data-i18n="airCodeStatus">代码状态</strong></div>
               <span id="directory-git-note" class="admin-panel-note"></span>
             </div>
             <div id="directory-git-brief"></div>
@@ -255,24 +269,25 @@
                  created — the form never grows a second copy of the controls. -->
             <div class="mc-composer__aux">
               <button id="quick-ai-pill" class="mc-composer__pill mc-composer__pill--ai" type="button"></button>
-              <button id="quick-role-pill" class="mc-composer__pill mc-composer__pill--role" type="button">＋ 角色</button>
+              <button id="quick-role-pill" class="mc-composer__pill mc-composer__pill--role" type="button" data-i18n="airQuickAddRole">＋ 角色</button>
             </div>
             <div id="quick-task-files"></div>
             <textarea id="quick-task-input" class="mc-composer__input" rows="4" maxlength="32000" required
-                      placeholder="描述要完成的任务；创建后会把这段内容作为第一条消息执行。Enter 创建，Shift + Enter 换行"></textarea>
+                      placeholder="描述要完成的任务；创建后会把这段内容作为第一条消息执行。Enter 创建，Shift + Enter 换行"
+                      data-i18n-placeholder="airQuickTaskPlaceholder"></textarea>
             <!-- The bottom band carries what the chat composer carries: attach by
                  button, paste or drop; dictation; and Goal mode with its limits. -->
             <div id="quick-task-goal-limits" class="quick-task-goal-limits" hidden>
-              <span>🎯 Goal 模式</span>
-              <label>轮次上限 <input id="quick-task-goal-rounds" type="number" value="200" min="0" max="200"></label>
-              <label>token 预算 <input id="quick-task-goal-budget" type="number" min="0" step="1000" placeholder="不限"></label>
+              <span data-i18n="airGoalMode">🎯 Goal 模式</span>
+              <label><span data-i18n="airGoalRounds">轮次上限</span> <input id="quick-task-goal-rounds" type="number" value="200" min="0" max="200"></label>
+              <label><span data-i18n="airGoalBudget">token 预算</span> <input id="quick-task-goal-budget" type="number" min="0" step="1000" placeholder="不限" data-i18n-placeholder="airGoalBudgetPlaceholder"></label>
             </div>
             <div class="quick-task-actions mc-composer__actions">
-              <button id="quick-task-mic" type="button" aria-label="语音输入" title="语音输入（点一下开始，再点一下结束）">🎙</button>
-              <button id="quick-task-attach" type="button" aria-label="上传图片或文件" title="上传图片或文件（也可以直接粘贴或拖入）">📎</button><input id="quick-task-file-input" type="file" multiple hidden>
-              <label title="以 Goal 模式发送：先预检目标与完成标准">🎯 <input id="quick-task-goal" type="checkbox"> Goal</label>
+              <button id="quick-task-mic" type="button" aria-label="语音输入" data-i18n-aria-label="airVoiceInput" title="语音输入（点一下开始，再点一下结束）" data-i18n-title="airVoiceInputTitle">🎙</button>
+              <button id="quick-task-attach" type="button" aria-label="上传图片或文件" data-i18n-aria-label="airUploadFile" title="上传图片或文件（也可以直接粘贴或拖入）" data-i18n-title="airUploadFileTitle">📎</button><input id="quick-task-file-input" type="file" multiple hidden>
+              <label title="以 Goal 模式发送：先预检目标与完成标准" data-i18n-title="airGoalSendTitle">🎯 <input id="quick-task-goal" type="checkbox"> Goal</label>
               <span id="quick-task-status" role="status" aria-live="polite"></span>
-              <button id="quick-task-submit" class="primary" type="submit">创建并执行 ↑</button>
+              <button id="quick-task-submit" class="primary" type="submit" data-i18n="airCreateAndRun">创建并执行 ↑</button>
             </div>
           </form>
         </div>
@@ -290,34 +305,34 @@
 
              帧由 air.js 的 mountFrame 挂进这一层（帧池契约：永远住在 #task-content
              里、已经挂好的帧不能挪 —— 挪一下整个 iframe 重载，池子攒的热乎气全没）。 -->
-        <div id="chat-layer" role="region" aria-label="任务对话">
+        <div id="chat-layer" role="region" aria-label="任务对话" data-i18n-aria-label="airTaskConversation">
           <!-- 控件挂在浮层内页头的右上角，不占一整行：两个按钮只显示图标。手机仍
                保留中间的拖柄（往下拖 = 关掉），透明命中层不参与 iframe 的排版。 -->
           <header id="chat-bar">
             <span id="chat-bar-handle" aria-hidden="true"></span>
-            <button id="chat-expand" type="button" aria-pressed="false" title="展开浮层" aria-label="展开浮层">
-              <span class="chat-bar-glyph" aria-hidden="true">⤢</span><span class="chat-bar-label">展开</span>
+            <button id="chat-expand" type="button" aria-pressed="false" title="展开浮层" data-i18n-title="airExpandLayer" aria-label="展开浮层" data-i18n-aria-label="airExpandLayer">
+              <span class="chat-bar-glyph" aria-hidden="true">⤢</span><span class="chat-bar-label" data-i18n="airExpand">展开</span>
             </button>
-            <button id="chat-close" type="button" title="关闭对话，回到目录详情" aria-label="关闭对话">
+            <button id="chat-close" type="button" title="关闭对话，回到目录详情" data-i18n-title="airCloseConversation" aria-label="关闭对话" data-i18n-aria-label="airCloseConversationAria">
               <span class="chat-bar-glyph" aria-hidden="true">×</span>
             </button>
           </header>
-          <iframe id="conversation" title="任务对话" hidden></iframe>
+          <iframe id="conversation" title="任务对话" data-i18n-title="airTaskConversation" hidden></iframe>
         </div>
 
-        <aside id="task-details" aria-label="任务详情" hidden>
-          <div class="details-head"><div><span class="eyebrow">TASK DETAILS</span><h2>任务详情</h2></div><button id="details-close" type="button" aria-label="关闭任务详情">×</button></div>
+        <aside id="task-details" aria-label="任务详情" data-i18n-aria-label="airTaskDetails" hidden>
+          <div class="details-head"><div><span class="eyebrow">TASK DETAILS</span><h2 data-i18n="airTaskDetails">任务详情</h2></div><button id="details-close" type="button" aria-label="关闭任务详情" data-i18n-aria-label="airCloseTaskDetails">×</button></div>
           <section id="delivery-card" aria-live="polite" hidden>
             <div class="delivery-copy">
-              <span id="delivery-eyebrow" class="eyebrow">MULTICC · 本轮状态</span>
+              <span id="delivery-eyebrow" class="eyebrow" data-i18n="airAttrEyebrowTurnState">MULTICC · 本轮状态</span>
               <h2 id="delivery-title"></h2>
               <p id="delivery-text"></p>
             </div>
-            <div id="delivery-steps" aria-label="本轮交付进度">
-              <span data-step="run">本轮成功</span>
-              <span data-step="delivery">代码交付</span>
-              <span data-step="barrier">源现场稳定</span>
-              <span data-step="attribution">任务归属</span>
+            <div id="delivery-steps" aria-label="本轮交付进度" data-i18n-aria-label="airDeliveryProgress">
+              <span data-step="run" data-i18n="airStepTurnSucceeded">本轮成功</span>
+              <span data-step="delivery" data-i18n="airStepCodeDelivered">代码交付</span>
+              <span data-step="barrier" data-i18n="airStepSourceStable">源现场稳定</span>
+              <span data-step="attribution" data-i18n="airStepAttribution">任务归属</span>
             </div>
             <div class="delivery-footer">
               <div id="delivery-actions"></div>
@@ -332,30 +347,30 @@
 
   <!-- 控制台面板：从左侧展开的一层，不是新页面 —— 地址不变、当前任务不卸载，
        关掉就回到原处。内容是控制台自己的概览（air-admin.js 渲染到这里）。 -->
-  <button id="console-scrim" type="button" aria-label="关闭控制台" hidden></button>
-  <section id="console-panel" aria-label="控制台" aria-hidden="true">
+  <button id="console-scrim" type="button" aria-label="关闭控制台" data-i18n-aria-label="airCloseConsole" hidden></button>
+  <section id="console-panel" aria-label="控制台" data-i18n-aria-label="airConsole" aria-hidden="true">
     <header id="console-head">
       <div class="console-title">
         <span class="eyebrow">CONSOLE</span>
-        <h2>控制台 <span id="console-here"></span></h2>
+        <h2><span data-i18n="airConsole">控制台</span> <span id="console-here"></span></h2>
       </div>
       <div id="console-actions"></div>
-      <button id="console-close" type="button">返回任务</button>
+      <button id="console-close" type="button" data-i18n="airBackToTask">返回任务</button>
     </header>
     <div id="console-body"><div id="console-content" aria-live="polite"></div></div>
   </section>
 
   <!-- ⌘K：目录和任务一起搜。找任务不必先想它在哪个目录。 -->
-  <button id="palette-scrim" type="button" aria-label="关闭搜索" hidden></button>
-  <div id="palette" role="dialog" aria-modal="true" aria-label="切换工作目录或任务" hidden>
-    <input id="palette-input" type="search" autocomplete="off" aria-label="搜索工作目录或任务"
-           placeholder="搜索工作目录或任务，例如 storefront、登录页">
+  <button id="palette-scrim" type="button" aria-label="关闭搜索" data-i18n-aria-label="airCloseSearch" hidden></button>
+  <div id="palette" role="dialog" aria-modal="true" aria-label="切换工作目录或任务" data-i18n-aria-label="airSwitchTarget" hidden>
+    <input id="palette-input" type="search" autocomplete="off" aria-label="搜索工作目录或任务" data-i18n-aria-label="airSearchWorkspaceOrTask"
+           placeholder="搜索工作目录或任务，例如 storefront、登录页" data-i18n-placeholder="airPalettePlaceholder">
     <div id="palette-results"></div>
     <footer>
-      <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
-      <span><kbd>Enter</kbd> 进入</span>
-      <span><kbd>Esc</kbd> 关闭</span>
-      <span id="palette-note">目录与任务一起搜</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> <span data-i18n="airPaletteSelect">选择</span></span>
+      <span><kbd>Enter</kbd> <span data-i18n="airPaletteEnter">进入</span></span>
+      <span><kbd>Esc</kbd> <span data-i18n="airPaletteClose">关闭</span></span>
+      <span id="palette-note" data-i18n="airPaletteSearchHint">目录与任务一起搜</span>
     </footer>
   </div>
 
@@ -367,15 +382,15 @@
        所以这个弹窗不带表单，它是个**空的槽位**：air.js 打开时把 #quick-task-form
        那个唯一的节点搬进来，关掉再搬回去。同一份 DOM、同一套胶囊和状态，全站只有
        一个输入框模块，也就没有什么「统一」可言了 —— 它本来就是那一个。 -->
-  <dialog id="quick-task-dialog" class="quick-task-dialog" aria-label="新任务">
+  <dialog id="quick-task-dialog" class="quick-task-dialog" aria-label="新任务" data-i18n-aria-label="airNewTask">
     <div class="quick-task-dialog-body">
       <div class="section-heading">
-        <div><span class="eyebrow">NEW TASK</span><h2>新任务</h2></div>
-        <button type="button" id="quick-task-dialog-close" aria-label="关闭">×</button>
+        <div><span class="eyebrow">NEW TASK</span><h2 data-i18n="airNewTask">新任务</h2></div>
+        <button type="button" id="quick-task-dialog-close" aria-label="关闭" data-i18n-aria-label="airDlgClose">×</button>
       </div>
       <label class="quick-task-dialog-directory">
-        <span>工作目录</span>
-        <select id="quick-task-dialog-directory" aria-label="选择新任务所在目录"></select>
+        <span data-i18n="airWorkspace">工作目录</span>
+        <select id="quick-task-dialog-directory" aria-label="选择新任务所在目录" data-i18n-aria-label="airPickTaskDirectory"></select>
       </label>
       <div id="quick-task-slot"></div>
     </div>
@@ -384,30 +399,30 @@
   <dialog id="schedule-dialog" class="schedule-dialog">
     <form id="schedule-form">
       <div class="section-heading">
-        <div><span class="eyebrow">SCHEDULED AIR TASK</span><h2 id="schedule-dialog-title">新建定时任务</h2></div>
-        <button type="button" id="schedule-close" aria-label="关闭">×</button>
+        <div><span class="eyebrow">SCHEDULED AIR TASK</span><h2 id="schedule-dialog-title" data-i18n="airNewScheduledTask">新建定时任务</h2></div>
+        <button type="button" id="schedule-close" aria-label="关闭" data-i18n-aria-label="airDlgClose">×</button>
       </div>
-      <p>创建后会生成一个固定 Air 任务。Provider、模型、推理强度和角色都在该任务中继续配置。</p>
+      <p data-i18n="airScheduleIntro">创建后会生成一个固定 Air 任务。Provider、模型、推理强度和角色都在该任务中继续配置。</p>
       <input name="id" type="hidden">
-      <label>任务名称<input name="name" required maxlength="80" placeholder="例如：每日投放数据"></label>
+      <label><span data-i18n="airScheduleName">任务名称</span><input name="name" required maxlength="80" placeholder="例如：每日投放数据" data-i18n-placeholder="airScheduleNamePlaceholder"></label>
       <div class="form-row">
-        <label>工作目录<select name="dirId" required></select></label>
-        <label>初始 CLI<select name="cli" required></select></label>
+        <label><span data-i18n="airWorkspace">工作目录</span><select name="dirId" required></select></label>
+        <label><span data-i18n="airScheduleCli">初始 CLI</span><select name="cli" required></select></label>
       </div>
-      <p id="schedule-fixed-note" class="schedule-fixed-note" hidden>工作目录和执行配置已经归属于固定任务。如需调整 CLI / Provider，请打开固定任务后修改 AI 配置。</p>
-      <label>Cron 表达式<input name="cron" required maxlength="80" value="0 9 * * *" placeholder="分 时 日 月 周"></label>
-      <div id="schedule-presets" class="schedule-presets" aria-label="常用时间">
-        <button type="button" data-cron="0 9 * * *">每天 09:00</button>
-        <button type="button" data-cron="0 * * * *">每小时</button>
-        <button type="button" data-cron="*/30 * * * *">每 30 分钟</button>
-        <button type="button" data-cron="0 9 * * 1">每周一 09:00</button>
+      <p id="schedule-fixed-note" class="schedule-fixed-note" hidden data-i18n="airScheduleFixedNote">工作目录和执行配置已经归属于固定任务。如需调整 CLI / Provider，请打开固定任务后修改 AI 配置。</p>
+      <label><span data-i18n="airScheduleCron">Cron 表达式</span><input name="cron" required maxlength="80" value="0 9 * * *" placeholder="分 时 日 月 周" data-i18n-placeholder="airScheduleCronPlaceholder"></label>
+      <div id="schedule-presets" class="schedule-presets" aria-label="常用时间" data-i18n-aria-label="airSchedulePresets">
+        <button type="button" data-cron="0 9 * * *" data-i18n="airCronDaily9">每天 09:00</button>
+        <button type="button" data-cron="0 * * * *" data-i18n="airCronHourly">每小时</button>
+        <button type="button" data-cron="*/30 * * * *" data-i18n="airCronEvery30">每 30 分钟</button>
+        <button type="button" data-cron="0 9 * * 1" data-i18n="airCronWeeklyMon9">每周一 09:00</button>
       </div>
-      <label>执行指令<textarea name="prompt" required rows="6" maxlength="32000" placeholder="每次触发时发送到固定任务的完整指令"></textarea></label>
-      <label class="schedule-enabled"><input name="enabled" type="checkbox" checked> 创建后立即启用</label>
+      <label><span data-i18n="airSchedulePrompt">执行指令</span><textarea name="prompt" required rows="6" maxlength="32000" placeholder="每次触发时发送到固定任务的完整指令" data-i18n-placeholder="airSchedulePromptPlaceholder"></textarea></label>
+      <label class="schedule-enabled"><input name="enabled" type="checkbox" checked> <span data-i18n="airScheduleEnableNow">创建后立即启用</span></label>
       <p id="schedule-error" role="alert"></p>
       <div class="schedule-form-actions">
-        <button type="button" id="schedule-cancel">取消</button>
-        <button type="submit" id="schedule-save" class="primary">创建并绑定任务</button>
+        <button type="button" id="schedule-cancel" data-i18n="cancel">取消</button>
+        <button type="submit" id="schedule-save" class="primary" data-i18n="airScheduleCreateAndBind">创建并绑定任务</button>
       </div>
     </form>
   </dialog>
@@ -415,18 +430,18 @@
   <dialog id="service-dialog" class="service-dialog">
     <form id="service-form">
       <div class="section-heading">
-        <div><span class="eyebrow">AIR SERVICE</span><h2>登记本地服务</h2></div>
-        <button type="button" id="service-close" aria-label="关闭">×</button>
+        <div><span class="eyebrow">AIR SERVICE</span><h2 data-i18n="airServiceRegisterTitle">登记本地服务</h2></div>
+        <button type="button" id="service-close" aria-label="关闭" data-i18n-aria-label="airDlgClose">×</button>
       </div>
-      <p>登记一个本地网页或服务入口；启动命令和工作目录均为可选。</p>
-      <label>名称<input name="title" required maxlength="120" placeholder="例如：营销数据看板"></label>
-      <label>访问地址<input name="url" required maxlength="2000" placeholder="http://127.0.0.1:8080"></label>
-      <label>启动命令（可选）<input name="startCmd" maxlength="4000" placeholder="npm run dev"></label>
-      <label>工作目录（可选）<input name="cwd" maxlength="2000" placeholder="/Users/you/project"></label>
+      <p data-i18n="airServiceIntro">登记一个本地网页或服务入口；启动命令和工作目录均为可选。</p>
+      <label><span data-i18n="airServiceName">名称</span><input name="title" required maxlength="120" placeholder="例如：营销数据看板" data-i18n-placeholder="airServiceNamePlaceholder"></label>
+      <label><span data-i18n="airServiceUrl">访问地址</span><input name="url" required maxlength="2000" placeholder="http://127.0.0.1:8080"></label>
+      <label><span data-i18n="airServiceStartCmd">启动命令（可选）</span><input name="startCmd" maxlength="4000" placeholder="npm run dev"></label>
+      <label><span data-i18n="airServiceCwd">工作目录（可选）</span><input name="cwd" maxlength="2000" placeholder="/Users/you/project"></label>
       <p id="service-error" role="alert"></p>
       <div class="schedule-form-actions">
-        <button type="button" id="service-cancel">取消</button>
-        <button type="submit" id="service-save" class="primary">登记服务</button>
+        <button type="button" id="service-cancel" data-i18n="cancel">取消</button>
+        <button type="submit" id="service-save" class="primary" data-i18n="airServiceSave">登记服务</button>
       </div>
     </form>
   </dialog>
@@ -435,8 +450,8 @@
        packages all render here. Driven by air-ops.js. -->
   <dialog id="ops-dialog" class="ops-dialog">
     <div class="section-heading">
-      <div><span class="eyebrow">HOST</span><h2 id="ops-title">更新 MultiCC</h2></div>
-      <button type="button" id="ops-close" aria-label="关闭">×</button>
+      <div><span class="eyebrow">HOST</span><h2 id="ops-title" data-i18n="airOpsUpdateMultiCC">更新 MultiCC</h2></div>
+      <button type="button" id="ops-close" aria-label="关闭" data-i18n-aria-label="airDlgClose">×</button>
     </div>
     <p id="ops-body"></p>
     <div id="ops-extra" hidden></div>

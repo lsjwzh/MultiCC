@@ -11,28 +11,30 @@
     return value;
   };
   const legacyPanels = {
-    docs: ['服务与文档', '本地服务、网页和文件', 'DOCS'],
-    memory: ['记忆图谱', '项目记忆、会话记忆与文件编辑', 'MEMORY'],
-    taskgraph: ['任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接', 'TASKGRAPH'],
+    docs: [t('airAdminPanelDocs'), t('airAdminPanelDocsDesc'), 'DOCS'],
+    memory: [t('airAdminPanelMemory'), t('airAdminPanelMemoryDesc'), 'MEMORY'],
+    taskgraph: [t('airAdminPanelTaskgraph'), t('airAdminPanelTaskgraphDesc'), 'TASKGRAPH'],
     // aux 不是 legacy iframe 页(manage 那边配置在弹窗里,没有 view 可嵌)——
     // 这条只为设置中心的卡片和 modes 集合提供元数据,渲染走下面的 renderAux。
-    aux: ['AI Assistant', '意图分类与摘要服务的模型与运行记录', 'AUX'],
-    voice: ['语音设置', '识别、转写与实时语音能力', 'VOICE'],
-    goal: ['Goal 预检', '任务目标与自动分类规则', 'GOAL'],
-    provider: ['Provider 配置', '全局供应商、账号与线路管理', 'PROVIDERS'],
-    global: ['全局配置', '语言、执行与通用偏好', 'SETTINGS'],
-    push: ['推送通知', 'Web Push 与备用提醒通道', 'NOTIFICATIONS'],
-    tunnel: ['外网穿透', '国内 SakuraFrp / 海外 Tailscale 一站式接入', 'NETWORK'],
-    bridges: ['消息桥接', '微信、飞书及其他消息入口', 'BRIDGES'],
-    resources: ['Agent 资源', 'Skills 与历史资源管理', 'RESOURCES'],
-    skillsync: ['技能同步', '跨 CLI 的 Skills 同步状态', 'SKILLS'],
-    storage: ['临时上传', '上传缓存、空间占用与清理', 'STORAGE'],
+    aux: ['AI Assistant', t('airAdminPanelAuxDesc'), 'AUX'],
+    voice: [t('airAdminPanelVoice'), t('airAdminPanelVoiceDesc'), 'VOICE'],
+    goal: [t('airAdminPanelGoal'), t('airAdminPanelGoalDesc'), 'GOAL'],
+    provider: [t('airAdminPanelProvider'), t('airAdminPanelProviderDesc'), 'PROVIDERS'],
+    global: [t('airAdminPanelGlobal'), t('airAdminPanelGlobalDesc'), 'SETTINGS'],
+    push: [t('airAdminPanelPush'), t('airAdminPanelPushDesc'), 'NOTIFICATIONS'],
+    tunnel: [t('airAdminPanelTunnel'), t('airAdminPanelTunnelDesc'), 'NETWORK'],
+    bridges: [t('airAdminPanelBridges'), t('airAdminPanelBridgesDesc'), 'BRIDGES'],
+    resources: [t('airAdminPanelResources'), t('airAdminPanelResourcesDesc'), 'RESOURCES'],
+    skillsync: [t('airAdminPanelSkillsync'), t('airAdminPanelSkillsyncDesc'), 'SKILLS'],
+    storage: [t('airAdminPanelStorage'), t('airAdminPanelStorageDesc'), 'STORAGE'],
   };
+  // 分组标题原来既当显示文案、又当 renderSettings 里拼 className 的比较值（'重要功能'）。
+  // 现在这里存 i18n key：显示文案由 t() 查，className 判定也改比这个 key。
   const settingGroups = [
-    ['重要功能', ['docs', 'memory', 'taskgraph']],
-    ['AI 与执行', ['provider', 'aux', 'goal', 'voice', 'global']],
-    ['连接与通知', ['push', 'tunnel', 'bridges']],
-    ['资源与存储', ['resources', 'skillsync', 'storage']],
+    ['airAdminGroupFeatured', ['docs', 'memory', 'taskgraph']],
+    ['airAdminGroupAi', ['provider', 'aux', 'goal', 'voice', 'global']],
+    ['airAdminGroupConnect', ['push', 'tunnel', 'bridges']],
+    ['airAdminGroupStorage', ['resources', 'skillsync', 'storage']],
   ];
   let activeMode = null;
   let currentContext = null;
@@ -89,9 +91,9 @@
   // Air 不带 i18n 词典（air.html 里没有 t()），注册表的 labelKey 在这儿查不到文案，
   // 所以显式给一份中文。词表跟 air.js 的 stateNames 是同源的，只是这里只需要状态名。
   const STATUS_COPY = Object.freeze({
-    idle: '空闲', queued: '排队中', running: '执行中', waiting: '等待回答', blocked: '等待配置',
-    error: '执行异常', succeeded: '执行成功', done: '已完成', cancelled: '已取消',
-    archived: '已归档', offline: '已离线', unknown: '状态未知',
+    idle: t('airAdminStatusIdle'), queued: t('airAdminStatusQueued'), running: t('airAdminStatusRunning'), waiting: t('airAdminStatusWaiting'), blocked: t('airAdminStatusBlocked'),
+    error: t('airAdminStatusError'), succeeded: t('airAdminStatusSucceeded'), done: t('airAdminStatusDone'), cancelled: t('airAdminStatusCancelled'),
+    archived: t('airAdminStatusArchived'), offline: t('airAdminStatusOffline'), unknown: t('airAdminStatusUnknown'),
   });
   const registry = () => root.MultiCCStatusPresentation;
 
@@ -166,7 +168,7 @@
   function taskDetail(task, context) {
     const bits = [];
     const stage = task.recordType === 'planned' ? context.label(task.workflowStage || task.status) : '';
-    if (stage) bits.push(`计划 · ${stage}`);
+    if (stage) bits.push(t('airAdminPlannedStage', { stage }));
     const resource = task.resource || {};
     const held = resource.capacityReason ? context.label(resource.capacityReason)
       : resource.lease && resource.lease !== 'idle' ? context.label(resource.lease)
@@ -222,16 +224,16 @@
     const where = options.dir === false ? '' : context.directoryName(task.dirId);
     const note = [where, taskDetail(task, context)].filter(Boolean).join(' · ');
     if (note) meta.append(make('em', note, 'task-note'));
-    copy.append(make('strong', task.title || '未命名任务'), meta);
-    body.append(copy, make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
+    copy.append(make('strong', task.title || t('airAdminUntitledTask')), meta);
+    body.append(copy, make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString(getLocale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
     row.append(body);
     if (options.deletable && context.deleteTask) {
-      const remove = action('删除', async event => {
+      const remove = action(t('airAdminDelete'), async event => {
         event.stopPropagation();
         await context.deleteTask(task);
       }, 'task-delete danger');
       remove.dataset.action = 'delete';
-      remove.setAttribute('aria-label', `删除任务 ${task.title || '未命名任务'}`);
+      remove.setAttribute('aria-label', t('airAdminDeleteTaskLabel', { name: task.title || t('airAdminUntitledTask') }));
       row.append(remove);
     }
     return row;
@@ -285,17 +287,17 @@
     // for any host that renders it as a page.
     const panel = el('console-content');
     setActions([
-      action('浏览工作目录', () => setMode('library'), '', panelIcon('▦')),
-      action('新建任务', () => { setMode('tasks'); setTimeout(() => el('create')?.click(), 0); }, 'primary', keepsGlyph('＋')),
+      action(t('airAdminBrowseDirectories'), () => setMode('library'), '', panelIcon('▦')),
+      action(t('airAdminNewTask'), () => { setMode('tasks'); setTimeout(() => el('create')?.click(), 0); }, 'primary', keepsGlyph('＋')),
     ], panel ? 'console-actions' : 'admin-actions');
 
     const content = panel || el('admin-content');
     const stats = make('div', null, 'admin-stats');
     stats.append(
-      statCard('工作目录', directories.length, running.size ? `${running.size} 个目录正在跑` : '统一目录库', 'blue', () => setMode('library')),
-      statCard('进行中任务', active.length, `${executing.length} 个正在执行`, 'green', () => setMode('tasks')),
-      statCard('等待处理', waiting.length, waiting.length ? '等待回答、资源或重试' : '当前没有要处理的事', waiting.length ? 'amber' : ''),
-      statCard('定时任务', enabledSchedules.length, `共 ${(scheduleTasks || []).length} 条规则`, 'purple', () => setMode('schedules')),
+      statCard(t('airAdminWorkDirectories'), directories.length, running.size ? t('airAdminDirectoriesRunning', { n: running.size }) : t('airAdminUnifiedLibrary'), 'blue', () => setMode('library')),
+      statCard(t('airAdminActiveTasks'), active.length, t('airAdminTasksExecuting', { n: executing.length }), 'green', () => setMode('tasks')),
+      statCard(t('airAdminNeedsAttention'), waiting.length, waiting.length ? t('airAdminWaitingDetail') : t('airAdminNothingPending'), waiting.length ? 'amber' : ''),
+      statCard(t('airAdminScheduledTasks'), enabledSchedules.length, t('airAdminScheduleRules', { n: (scheduleTasks || []).length }), 'purple', () => setMode('schedules')),
     );
 
     const assistant = action('', () => setMode('aux'), 'admin-assistant-card');
@@ -303,34 +305,34 @@
     assistant.append(
       make('span', '✦', 'admin-assistant-mark'),
       make('span', null, 'admin-assistant-copy'),
-      make('span', '打开配置 ›', 'admin-assistant-action'),
+      make('span', t('airAdminOpenConfig'), 'admin-assistant-action'),
     );
     assistant.querySelector('.admin-assistant-copy').append(
       make('span', 'AI ASSISTANT', 'eyebrow'),
-      make('strong', '分类、摘要与意图判断'),
-      make('small', '配置协议、Provider 与模型，查看健康状态和运行记录'),
+      make('strong', t('airAdminAssistantTagline')),
+      make('small', t('airAdminAssistantDesc')),
     );
 
     const attention = make('section', null, 'admin-panel console-attention');
     const attentionHead = make('div', null, 'admin-panel-head');
     attentionHead.append(make('div'));
-    attentionHead.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', '谁在等我'));
+    attentionHead.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', t('airAdminWhoNeedsMe')));
     // 清单本来就按最近更新排过，所以「只显示前几条」砍掉的是最久没动过的那些，
     // 留下的仍是眼下最近有动静的人。总数照报，别让封顶看起来像「就这么几条」。
     const urgent = urgentTasks(data);
     const overflowed = urgent.length > ATTENTION_LIMIT;
     const attentionMeta = make('div', null, 'admin-panel-meta');
     attentionMeta.append(make('span', overflowed
-      ? `${urgent.length} 条 · 显示最近更新的 ${ATTENTION_LIMIT} 条`
-      : '按最近更新排序，点击直达', 'admin-panel-note'));
+      ? t('airAdminAttentionOverflow', { total: urgent.length, limit: ATTENTION_LIMIT })
+      : t('airAdminSortedByRecent'), 'admin-panel-note'));
     // 没超过就没有第二页可去，出口不出现 —— 按钮跟着「有地方可去」出现，而不是
     // 常驻一个点了没反应的「全部」。
-    if (overflowed) attentionMeta.append(action(`查看全部 ${urgent.length} 条 ›`, () => setMode('attention')));
+    if (overflowed) attentionMeta.append(action(t('airAdminViewAllCount', { n: urgent.length }), () => setMode('attention')));
     attentionHead.append(attentionMeta);
     const attentionList = make('div', null, 'admin-recent-list');
     // 从面板里点走一条任务时，面板自己让开（onOpen），否则它盖住的正是刚落上去的那一页。
     for (const task of urgent.slice(0, ATTENTION_LIMIT)) attentionList.append(taskRow(task, context, { onOpen: () => context.closeConsole?.() }));
-    if (!attentionList.children.length) attentionList.append(make('p', '没有正在等我的任务。', 'admin-empty'));
+    if (!attentionList.children.length) attentionList.append(make('p', t('airAdminNoAttentionTasks'), 'admin-empty'));
     attention.append(attentionHead, attentionList);
 
     const split = make('div', null, 'admin-overview-grid');
@@ -339,7 +341,7 @@
     const allPanel = make('section', null, 'admin-panel');
     const allHead = make('div', null, 'admin-panel-head');
     allHead.append(make('div', null));
-    allHead.firstChild.append(make('span', 'ALL TASKS · 全部目录', 'eyebrow'), make('h3', '全部任务'));
+    allHead.firstChild.append(make('span', t('airAdminAllTasksEyebrow'), 'eyebrow'), make('h3', t('airAdminAllTasks')));
     const allNote = make('span', '', 'admin-panel-note');
     allNote.id = 'console-task-note';
     allHead.append(allNote);
@@ -347,13 +349,13 @@
     const search = make('input');
     search.type = 'search';
     search.id = 'console-task-search';
-    search.placeholder = '搜索标题或目录';
-    search.setAttribute('aria-label', '搜索任务');
+    search.placeholder = t('airAdminSearchPlaceholder');
+    search.setAttribute('aria-label', t('airAdminSearchTasksLabel'));
     search.value = consoleFilter.query;
     const statusPick = make('select');
     statusPick.id = 'console-task-status';
-    statusPick.setAttribute('aria-label', '按状态筛选');
-    for (const [value, text] of [['open', '进行中与待处理'], ['all', '全部记录'], ['archived', '已归档']]) {
+    statusPick.setAttribute('aria-label', t('airAdminFilterByStatus'));
+    for (const [value, text] of [['open', t('airAdminFilterOpen')], ['all', t('airAdminFilterAll')], ['archived', t('airAdminStatusArchived')]]) {
       const option = make('option', text);
       option.value = value;
       statusPick.append(option);
@@ -361,8 +363,8 @@
     statusPick.value = consoleFilter.status;
     const dirPick = make('select');
     dirPick.id = 'console-task-dir';
-    dirPick.setAttribute('aria-label', '按目录筛选');
-    const allDirs = make('option', '全部目录');
+    dirPick.setAttribute('aria-label', t('airAdminFilterByDirectory'));
+    const allDirs = make('option', t('airAdminAllDirectories'));
     allDirs.value = 'all';
     dirPick.append(allDirs);
     for (const directory of directories) {
@@ -382,10 +384,10 @@
       allList.replaceChildren(...shown.map(task => taskRow(task, context, {
         onOpen: () => context.closeConsole?.(), deletable: true,
       })));
-      if (!rows.length) allList.append(make('p', '没有符合条件的任务。换个关键词或放宽筛选。', 'admin-empty'));
+      if (!rows.length) allList.append(make('p', t('airAdminNoMatchingTasks'), 'admin-empty'));
       allNote.textContent = rows.length > shown.length
-        ? `${rows.length} 条 · 显示最近 ${shown.length} 条`
-        : `${rows.length} 条`;
+        ? t('airAdminTaskCountLimited', { total: rows.length, shown: shown.length })
+        : t('airAdminNItems', { n: rows.length });
     }
     search.oninput = () => { consoleFilter.query = search.value; paintTaskList(); };
     statusPick.onchange = () => { consoleFilter.status = statusPick.value; paintTaskList(); };
@@ -397,8 +399,8 @@
     const workspacePanel = make('section', null, 'admin-panel admin-directory-panel');
     const workspaceHead = make('div', null, 'admin-panel-head');
     workspaceHead.append(make('div'));
-    workspaceHead.firstChild.append(make('span', 'WORK DIRECTORIES', 'eyebrow'), make('h3', '工作目录'));
-    workspaceHead.append(action('目录库与搜索', () => setMode('library')));
+    workspaceHead.firstChild.append(make('span', 'WORK DIRECTORIES', 'eyebrow'), make('h3', t('airAdminWorkDirectories')));
+    workspaceHead.append(action(t('airAdminDirectoryLibrary'), () => setMode('library')));
     const workspaceList = make('div', null, 'admin-directory-list');
     for (const directory of directories) {
       const directoryTasks = tasks.filter(task => task.dirId === directory.id);
@@ -410,24 +412,24 @@
       const copy = make('span');
       copy.append(make('strong', directory.name || directory.id), make('small', directory.path || ''));
       const counts = make('span', null, 'admin-directory-counts');
-      counts.append(make('b', `${unfinished.length} 进行中`), make('small', executingCount ? `${executingCount} 执行中` : `${directoryTasks.length} 个任务`));
+      counts.append(make('b', t('airAdminNInProgress', { n: unfinished.length })), make('small', executingCount ? t('airAdminNExecuting', { n: executingCount }) : t('airAdminNTaskCount', { n: directoryTasks.length })));
       row.append(make('span', '▣', 'admin-directory-mark'), copy, counts, make('span', '›', 'admin-directory-arrow'));
       workspaceList.append(row);
     }
-    if (!directories.length) workspaceList.append(make('p', '还没有工作目录。', 'admin-empty'));
+    if (!directories.length) workspaceList.append(make('p', t('airAdminNoDirectories'), 'admin-empty'));
     workspacePanel.append(workspaceHead, workspaceList);
 
     const tools = make('section', null, 'admin-panel');
     const toolHead = make('div', null, 'admin-panel-head');
     toolHead.append(make('div'));
-    toolHead.firstChild.append(make('span', 'SYSTEM TOOLS', 'eyebrow'), make('h3', '服务与设置'));
+    toolHead.firstChild.append(make('span', 'SYSTEM TOOLS', 'eyebrow'), make('h3', t('airAdminServicesAndSettings')));
     const toolGrid = make('div', null, 'admin-tool-grid');
     const shortcuts = [
-      ['docs', '▤', '服务与文档', '本地服务、网页和文件'],
-      ['memory', '◇', '记忆图谱', '项目与会话记忆'],
-      ['taskgraph', '⛓', '任务图谱', '父子 / 分组 / 合并关联'],
-      ['settings', '⚙', '设置中心', 'Provider、通知与连接'],
-      ['schedules', '◴', '自动运行', '固定任务定时规则'],
+      ['docs', '▤', t('airAdminPanelDocs'), t('airAdminPanelDocsDesc')],
+      ['memory', '◇', t('airAdminPanelMemory'), t('airAdminMemoryShortDesc')],
+      ['taskgraph', '⛓', t('airAdminPanelTaskgraph'), t('airAdminTaskgraphShortDesc')],
+      ['settings', '⚙', t('airAdminSettingsCenter'), t('airAdminSettingsShortDesc')],
+      ['schedules', '◴', t('airAdminAutoRun'), t('airAdminAutoRunDesc')],
     ];
     for (const [mode, icon, title, detail] of shortcuts) {
       const button = action('', () => setMode(mode), 'admin-tool-card');
@@ -447,23 +449,23 @@
   // 「谁在前面」排成两个样子。
   function renderAttention(context) {
     setActions([
-      action('返回控制台', () => context.setMode('overview'), '', panelIcon('←')),
+      action(t('airAdminBackToConsole'), () => context.setMode('overview'), '', panelIcon('←')),
       // 数据在外壳那份 /api/air 快照里，所以这一页没有自己的接口可打，刷新只能
       // 请外壳去取。取完外壳会自己重画当前模式，但走的是「模式没变就跳过」那条
       // 早退路径 —— 这里再强制重画一次，否则按钮按下去什么都不动。
-      action('刷新', async () => { await context.refresh?.(); render('attention', context, true); }, '', keepsGlyph('↻')),
+      action(t('airAdminRefresh'), async () => { await context.refresh?.(); render('attention', context, true); }, '', keepsGlyph('↻')),
     ]);
     const urgent = urgentTasks(context.data);
     const panel = make('section', null, 'admin-panel console-attention-page');
     const head = make('div', null, 'admin-panel-head');
     head.append(make('div'));
-    head.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', '谁在等我'));
-    head.append(make('span', urgent.length ? `${urgent.length} 条 · 按最近更新排序，点击直达` : '当前没有要处理的事', 'admin-panel-note'));
+    head.firstChild.append(make('span', 'ACROSS ALL WORKSPACES', 'eyebrow'), make('h3', t('airAdminWhoNeedsMe')));
+    head.append(make('span', urgent.length ? t('airAdminAttentionPageNote', { n: urgent.length }) : t('airAdminNothingPending'), 'admin-panel-note'));
     const list = make('div', null, 'admin-recent-list');
     // 这一页本身就是完整清单，点走一条不用收掉任何浮层 —— 直接把 navigate 交给
     // taskRow 的默认行为，不套控制台那层 onOpen。
     for (const task of urgent) list.append(taskRow(task, context));
-    if (!urgent.length) list.append(make('p', '没有正在等我的任务。', 'admin-empty'));
+    if (!urgent.length) list.append(make('p', t('airAdminNoAttentionTasks'), 'admin-empty'));
     panel.append(head, list);
     el('admin-content').replaceChildren(panel);
   }
@@ -485,7 +487,7 @@
   async function serviceAction(entry, actionName) {
     try {
       await currentContext.api(`/api/docs-registry/${encodeURIComponent(entry.id)}/${actionName}`, {}, 'POST');
-      currentContext.notice(actionName === 'start' ? '服务启动指令已发送。' : '服务停止指令已发送。');
+      currentContext.notice(actionName === 'start' ? t('airAdminServiceStartSent') : t('airAdminServiceStopSent'));
       await loadDocs();
     } catch (error) { currentContext.notice(error.message); }
   }
@@ -498,10 +500,10 @@
   }
 
   async function removeEntry(entry) {
-    if (!confirm(`删除“${entry.title}”的登记记录？`)) return;
+    if (!confirm(t('airAdminConfirmDeleteEntry', { name: entry.title }))) return;
     try {
       await currentContext.api(`/api/docs-registry/${encodeURIComponent(entry.id)}`, undefined, 'DELETE');
-      currentContext.notice('登记记录已删除。');
+      currentContext.notice(t('airAdminEntryDeleted'));
       await loadDocs();
     } catch (error) { currentContext.notice(error.message); }
   }
@@ -511,29 +513,29 @@
     const icon = make('span', entry.kind === 'service' ? '◎' : entry.kind === 'file' ? '⌑' : '▤', 'air-doc-icon');
     const copy = make('div', null, 'air-doc-copy');
     const titleRow = make('div', null, 'air-doc-title');
-    const link = make('a', entry.title || entry.url || '未命名');
+    const link = make('a', entry.title || entry.url || t('airAdminUntitled'));
     link.href = serviceUrl(entry.url);
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
     titleRow.append(link);
-    if (entry.pinned) titleRow.append(make('span', '置顶', 'air-doc-tag pin'));
-    if (entry.expired) titleRow.append(make('span', '已过期', 'air-doc-tag expired'));
-    const status = entry.kind === 'service' ? `${entry.status === 'up' ? '运行中' : entry.status === 'starting' ? '启动中' : entry.status === 'down' ? '已停止' : '状态未知'} · ` : '';
-    copy.append(titleRow, make('small', `${status}${entry.url || ''}`), make('small', [entry.source, entry.sessionId, entry.createdAt ? new Date(entry.createdAt).toLocaleString('zh-CN') : ''].filter(Boolean).join(' · ')));
+    if (entry.pinned) titleRow.append(make('span', t('airAdminPinned'), 'air-doc-tag pin'));
+    if (entry.expired) titleRow.append(make('span', t('airAdminExpired'), 'air-doc-tag expired'));
+    const status = entry.kind === 'service' ? `${entry.status === 'up' ? t('airAdminStatusUp') : entry.status === 'starting' ? t('airAdminStatusStarting') : entry.status === 'down' ? t('airAdminStatusDown') : t('airAdminStatusUnknown')} · ` : '';
+    copy.append(titleRow, make('small', `${status}${entry.url || ''}`), make('small', [entry.source, entry.sessionId, entry.createdAt ? new Date(entry.createdAt).toLocaleString(getLocale()) : ''].filter(Boolean).join(' · ')));
     const actions = make('div', null, 'air-doc-actions');
     if (entry.kind === 'service') {
-      const log = make('a', '日志');
+      const log = make('a', t('airAdminLog'));
       log.href = `/api/docs-registry/${encodeURIComponent(entry.id)}/log`;
       log.target = '_blank'; log.rel = 'noopener noreferrer';
       actions.append(log);
-      if (entry.status === 'up' || entry.status === 'starting') actions.append(action('停止', () => serviceAction(entry, 'stop'), 'danger'));
+      if (entry.status === 'up' || entry.status === 'starting') actions.append(action(t('airAdminStop'), () => serviceAction(entry, 'stop'), 'danger'));
       else {
-        const start = action(entry.startCmd ? '启动' : '无启动命令', () => serviceAction(entry, 'start'), 'subtle');
+        const start = action(entry.startCmd ? t('airAdminStart') : t('airAdminNoStartCommand'), () => serviceAction(entry, 'start'), 'subtle');
         start.disabled = !entry.startCmd;
         actions.append(start);
       }
     }
-    actions.append(action(entry.pinned ? '取消置顶' : '置顶', () => togglePin(entry), 'subtle'), action('删除', () => removeEntry(entry), 'danger'));
+    actions.append(action(entry.pinned ? t('airAdminUnpin') : t('airAdminPinned'), () => togglePin(entry), 'subtle'), action(t('airAdminDelete'), () => removeEntry(entry), 'danger'));
     card.append(icon, copy, actions);
     return card;
   }
@@ -541,29 +543,29 @@
   async function loadDocs() {
     const list = el('air-doc-list');
     if (!list) return;
-    list.replaceChildren(make('p', '正在读取服务与文档…', 'admin-empty'));
+    list.replaceChildren(make('p', t('airAdminLoadingDocs'), 'admin-empty'));
     try {
       const entries = await currentContext.api('/api/docs-registry');
       const summary = el('air-doc-summary');
       if (summary) {
         const services = entries.filter(entry => entry.kind === 'service');
-        summary.textContent = `${entries.length} 条登记 · ${services.filter(entry => entry.status === 'up').length}/${services.length} 个服务运行中`;
+        summary.textContent = t('airAdminDocsSummary', { total: entries.length, up: services.filter(entry => entry.status === 'up').length, services: services.length });
       }
       list.replaceChildren(...entries.map(renderDocEntry));
-      if (!entries.length) list.append(make('p', '还没有登记服务或文档。', 'admin-empty'));
+      if (!entries.length) list.append(make('p', t('airAdminNoDocs'), 'admin-empty'));
     } catch (error) {
-      list.replaceChildren(make('p', `读取失败：${error.message}`, 'admin-empty error'));
+      list.replaceChildren(make('p', t('airAdminLoadFailed', { message: error.message }), 'admin-empty error'));
     }
   }
 
   function renderDocs(context) {
     setActions([
-      action('刷新', () => loadDocs(), '', keepsGlyph('↻')),
-      action('登记服务', () => el('service-dialog').showModal(), 'primary', keepsGlyph('＋')),
+      action(t('airAdminRefresh'), () => loadDocs(), '', keepsGlyph('↻')),
+      action(t('airAdminRegisterService'), () => el('service-dialog').showModal(), 'primary', keepsGlyph('＋')),
     ]);
     const wrap = make('div', null, 'air-docs');
     const top = make('div', null, 'air-docs-meta');
-    top.append(make('span', '服务状态按登记信息实时读取；临时产物到期后会明确标记。'), make('strong', '正在读取…'));
+    top.append(make('span', t('airAdminDocsNote')), make('strong', t('airAdminLoading')));
     top.lastChild.id = 'air-doc-summary';
     const list = make('div', null, 'air-doc-list');
     list.id = 'air-doc-list';
@@ -586,13 +588,13 @@
 
   function renderAux(context) {
     setActions([
-      action('返回设置中心', () => context.setMode('settings'), '', panelIcon('←')),
-      action('刷新', () => loadAuxView(true), '', keepsGlyph('↻')),
+      action(t('airAdminBackToSettings'), () => context.setMode('settings'), '', panelIcon('←')),
+      action(t('airAdminRefresh'), () => loadAuxView(true), '', keepsGlyph('↻')),
     ]);
     const statusPanel = make('section', null, 'admin-panel');
     const statusHead = make('div', null, 'admin-panel-head');
     statusHead.append(make('div'));
-    statusHead.firstChild.append(make('span', 'AUX QUEUE', 'eyebrow'), make('h3', '运行状态'));
+    statusHead.firstChild.append(make('span', 'AUX QUEUE', 'eyebrow'), make('h3', t('airAdminRunStatus')));
     const statusBody = make('div', null, 'air-aux-status');
     statusBody.id = 'air-aux-status';
     statusPanel.append(statusHead, statusBody);
@@ -600,8 +602,8 @@
     const formPanel = make('section', null, 'admin-panel');
     const formHead = make('div', null, 'admin-panel-head');
     formHead.append(make('div'));
-    formHead.firstChild.append(make('span', 'MODEL', 'eyebrow'), make('h3', '模型设置'));
-    formHead.append(make('span', '意图分类、摘要与 Goal 预检共用的辅助模型', 'admin-panel-note'));
+    formHead.firstChild.append(make('span', 'MODEL', 'eyebrow'), make('h3', t('airAdminModelSettings')));
+    formHead.append(make('span', t('airAdminModelNote'), 'admin-panel-note'));
     const form = make('div', null, 'air-aux-form');
     form.id = 'air-aux-form';
     formPanel.append(formHead, form);
@@ -609,7 +611,7 @@
     const recPanel = make('section', null, 'admin-panel');
     const recHead = make('div', null, 'admin-panel-head');
     recHead.append(make('div'));
-    recHead.firstChild.append(make('span', 'HISTORY', 'eyebrow'), make('h3', '运行记录'));
+    recHead.firstChild.append(make('span', 'HISTORY', 'eyebrow'), make('h3', t('airAdminRunHistory')));
     const recNote = make('span', '', 'admin-panel-note');
     recNote.id = 'air-aux-records-note';
     recHead.append(recNote);
@@ -634,9 +636,9 @@
       paintAuxStatus();
       paintAuxForm();
       paintAuxRecords();
-      if (announce) currentContext.notice('AI Assistant 状态已刷新。');
+      if (announce) currentContext.notice(t('airAdminAssistantRefreshed'));
     } catch (error) {
-      currentContext.notice(`读取 AI Assistant 失败:${error.message}`);
+      currentContext.notice(t('airAdminAssistantLoadFailed', { message: error.message }));
     }
   }
 
@@ -645,11 +647,11 @@
     if (!body) return;
     const s = auxView.status || {};
     const health = s.health || {};
-    const state = s.processing ? '处理中' : (s.queueDepth > 0 ? `${s.queueDepth} 个排队` : '空闲');
+    const state = s.processing ? t('airAdminProcessing') : (s.queueDepth > 0 ? t('airAdminQueuedCount', { n: s.queueDepth }) : t('airAdminStatusIdle'));
     const rows = [
-      ['状态', state + (s.currentTask ? ` · 正在执行 ${s.currentTask.type || ''}` : '')],
-      ['累计处理', `${s.totalProcessed || 0} 条`],
-      ['最近执行', s.lastTaskTime ? new Date(s.lastTaskTime).toLocaleString('zh-CN') : '—'],
+      [t('airAdminLabelStatus'), s.currentTask ? t('airAdminStatusExecuting', { state, type: s.currentTask.type || '' }) : state],
+      [t('airAdminTotalProcessed'), t('airAdminNItems', { n: s.totalProcessed || 0 })],
+      [t('airAdminLastRun'), s.lastTaskTime ? new Date(s.lastTaskTime).toLocaleString(getLocale()) : '—'],
     ];
     body.replaceChildren(...rows.map(([name, value]) => {
       const row = make('div', null, 'air-aux-row');
@@ -659,7 +661,7 @@
     if (health.unhealthy) {
       // 服务端给出的 lastFailMsg 已过 safeAuxErrorMessage;这里仍走 textContent,不进 HTML。
       body.append(make('div',
-        `摘要服务异常(连续失败 ${health.consecutiveFails || 0} 次):${health.lastFailMsg || '未知错误'} — 状态判定暂停,修复后自动恢复`,
+        t('airAdminAuxUnhealthy', { fails: health.consecutiveFails || 0, message: health.lastFailMsg || t('airAdminUnknownError') }),
         'air-aux-warn'));
     }
   }
@@ -669,7 +671,7 @@
     if (!form) return;
     const config = auxView.config;
     if (!config) {
-      form.replaceChildren(make('p', '配置读取失败,点右上角「刷新」重试。', 'admin-empty error'));
+      form.replaceChildren(make('p', t('airAdminConfigLoadFailed'), 'admin-empty error'));
       return;
     }
     const pick = (options, value) => {
@@ -712,25 +714,25 @@
     protocol.onchange = fillProviders;
     provider.onchange = fillModels;
     const saveStatus = make('span');
-    const save = action('保存', async () => {
+    const save = action(t('airAdminSave'), async () => {
       save.disabled = true;
-      saveStatus.textContent = '保存中…';
+      saveStatus.textContent = t('airAdminSaving');
       try {
         const result = await currentContext.api('/api/aux/config', {
           protocol: protocol.value, providerId: provider.value, model: model.value,
         });
-        if (!result.ok) { saveStatus.textContent = result.error || '保存失败'; return; }
-        currentContext.notice(`AI Assistant 模型已更新:${result.model || model.value}`);
+        if (!result.ok) { saveStatus.textContent = result.error || t('airAdminSaveFailed'); return; }
+        currentContext.notice(t('airAdminAssistantModelUpdated', { model: result.model || model.value }));
         await loadAuxView();
       } catch (error) {
-        saveStatus.textContent = `保存失败:${error.message}`;
+        saveStatus.textContent = t('airAdminSaveFailedWithMessage', { message: error.message });
       } finally {
         save.disabled = false;
       }
     }, 'primary');
     const saveRow = make('div', null, 'air-aux-save');
     saveRow.append(save, saveStatus);
-    form.replaceChildren(auxField('协议', protocol), auxField('Provider', provider), auxField('模型', model), saveRow);
+    form.replaceChildren(auxField(t('airAdminProtocol'), protocol), auxField('Provider', provider), auxField(t('airAdminModel'), model), saveRow);
     fillProviders();
   }
 
@@ -767,9 +769,9 @@
     if (!list) return;
     const pairs = auxRecordPairs();
     const note = el('air-aux-records-note');
-    if (note) note.textContent = pairs.length ? `${pairs.length} 条 · 点击展开输入与输出` : '';
+    if (note) note.textContent = pairs.length ? t('airAdminRecordsNote', { n: pairs.length }) : '';
     if (!pairs.length) {
-      list.replaceChildren(make('p', '暂无任务记录。', 'admin-empty'));
+      list.replaceChildren(make('p', t('airAdminNoRecords'), 'admin-empty'));
       return;
     }
     const clock = ms => {
@@ -794,12 +796,18 @@
       const sec = ms => (ms == null) ? '-' : (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`);
       const timeline = make('div', null, 'air-aux-timeline');
       timeline.append(make('span',
-        `入队 ${o.enqueuedAt || pair.input.ts ? clock(o.enqueuedAt || pair.input.ts) : '-'} · 开始 ${o.startedAt ? clock(o.startedAt) : '-'} · 完毕 ${o.ts ? clock(o.ts) : '-'} · 排队 ${sec(o.queueMs)} · 执行 ${sec(o.durationMs)}`));
-      const inputTitle = make('h4', '输入');
+        t('airAdminTimeline', {
+          enqueued: o.enqueuedAt || pair.input.ts ? clock(o.enqueuedAt || pair.input.ts) : '-',
+          started: o.startedAt ? clock(o.startedAt) : '-',
+          finished: o.ts ? clock(o.ts) : '-',
+          queued: sec(o.queueMs),
+          duration: sec(o.durationMs),
+        })));
+      const inputTitle = make('h4', t('airAdminInput'));
       const inputBody = make('div', pair.input.content || '', 'air-aux-io');
       detail.append(timeline, inputTitle, inputBody);
       if (pair.output) {
-        detail.append(make('h4', '输出'), make('div', pair.output.content || '(无输出)', 'air-aux-io'));
+        detail.append(make('h4', t('airAdminOutput')), make('div', pair.output.content || t('airAdminNoOutput'), 'air-aux-io'));
       }
       row.onclick = () => { detail.hidden = !detail.hidden; };
       item.append(row, detail);
@@ -812,13 +820,13 @@
     const content = el('admin-content');
     const groups = make('div', null, 'air-settings-groups');
     for (const [title, modes] of settingGroups) {
-      const section = make('section', null, `admin-panel air-settings-group${title === '重要功能' ? ' air-settings-feature-group' : ''}`);
-      section.append(make('h3', title));
+      const section = make('section', null, `admin-panel air-settings-group${title === 'airAdminGroupFeatured' ? ' air-settings-feature-group' : ''}`);
+      section.append(make('h3', t(title)));
       const grid = make('div', null, 'air-settings-grid');
       for (const mode of modes) {
         const [name, description, eyebrow] = legacyPanels[mode];
         const card = action('', () => context.setMode(mode), 'air-setting-card');
-        card.append(make('span', eyebrow, 'eyebrow'), make('strong', name), make('small', description), make('em', '进入设置  ›'));
+        card.append(make('span', eyebrow, 'eyebrow'), make('strong', name), make('small', description), make('em', t('airAdminEnterSettings')));
         grid.append(card);
       }
       section.append(grid);
@@ -832,11 +840,11 @@
     const legacyView = mode;
     const homeMode = ['memory', 'taskgraph'].includes(mode) ? 'overview' : 'settings';
     setActions([
-      action(homeMode === 'overview' ? '返回控制台' : '返回设置中心', () => context.setMode(homeMode), '', panelIcon('←')),
-      action('在独立页打开', () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener'), '', panelIcon('↗')),
+      action(homeMode === 'overview' ? t('airAdminBackToConsole') : t('airAdminBackToSettings'), () => context.setMode(homeMode), '', panelIcon('←')),
+      action(t('airAdminOpenInNewPage'), () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener'), '', panelIcon('↗')),
     ]);
     const note = make('div', null, 'air-migration-note');
-    note.append(make('strong', 'Air 迁移中'), make('span', '当前功能已经纳入 Air 外壳；内部表单暂用兼容实现，数据与操作能力保持不变。'));
+    note.append(make('strong', t('airAdminMigrating')), make('span', t('airAdminMigrationNote')));
     const frame = make('iframe', null, 'air-legacy-frame');
     frame.title = title;
     frame.src = `/manage.html?view=${encodeURIComponent(legacyView)}&embed=air`;
@@ -848,23 +856,23 @@
     const provider = root.MultiCCAirProvider;
     if (!provider) return renderLegacy('provider', context);
     setActions([
-      action('返回设置中心', () => context.setMode('settings'), '', panelIcon('←')),
-      action('高级账号与借道', () => provider.toggleAdvanced(), '', panelIcon('⇄')),
-      action('刷新', () => provider.refresh(), '', keepsGlyph('↻')),
-      action('新增 Provider', () => provider.openEditor(), 'primary', keepsGlyph('＋')),
+      action(t('airAdminBackToSettings'), () => context.setMode('settings'), '', panelIcon('←')),
+      action(t('airAdminAdvancedAccounts'), () => provider.toggleAdvanced(), '', panelIcon('⇄')),
+      action(t('airAdminRefresh'), () => provider.refresh(), '', keepsGlyph('↻')),
+      action(t('airAdminAddProvider'), () => provider.openEditor(), 'primary', keepsGlyph('＋')),
     ]);
     provider.render(context);
   }
 
   function renderTunnel(context) {
     setActions([
-      action('返回设置中心', () => context.setMode('settings'), '', panelIcon('←')),
-      action('刷新状态', () => root.MultiCCAirTunnel?.refresh(), '', keepsGlyph('↻')),
+      action(t('airAdminBackToSettings'), () => context.setMode('settings'), '', panelIcon('←')),
+      action(t('airAdminRefreshStatus'), () => root.MultiCCAirTunnel?.refresh(), '', keepsGlyph('↻')),
     ]);
     const tunnel = root.MultiCCAirTunnel;
     if (tunnel) return tunnel.render(el('admin-content'), context);
     const panel = make('section', null, 'admin-panel');
-    panel.append(make('h3', '外网穿透模块未加载'), make('p', '请刷新 Air 页面后重试。'));
+    panel.append(make('h3', t('airAdminTunnelNotLoaded')), make('p', t('airAdminRefreshPageRetry')));
     el('admin-content').replaceChildren(panel);
   }
 
@@ -904,7 +912,7 @@
         await context.api('/api/docs-registry', body, 'POST');
         form.reset();
         el('service-dialog').close();
-        context.notice('服务已登记。');
+        context.notice(t('airAdminServiceRegistered'));
         await loadDocs();
       } catch (error) { el('service-error').textContent = error.message; }
       finally { el('service-save').disabled = false; }
