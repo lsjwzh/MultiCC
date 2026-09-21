@@ -361,4 +361,8 @@ test('chat worktree guidance treats sync API as manual and permits safe Agent se
   assert.ok(source.includes('behind 必须为 0；`0 0` 才是完全一致'));
   assert.doesNotMatch(source, /先由派活方直接调用目标会话的 sync 接口/);
   assert.doesNotMatch(source, /只有未同步时才调用自己的 sync/);
+  const { multiccImgHint } = require('../src/chat/host-prompts').createHostPrompts({});
+  assert.match(multiccImgHint, /提交和合并由 MultiCC 在本轮成功后统一执行/);
+  assert.match(multiccImgHint, /只有用户在任务中明确要求提交\/合并时/);
+  assert.doesNotMatch(multiccImgHint, /目标完成后仍须 commit|都只在自己当前 worktree 里改并 commit/);
 });
