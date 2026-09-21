@@ -13,7 +13,7 @@
 ## 安装（一行命令，无需任何参数）
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
 ```
 
 URL 里的 tag 就是安装的版本；脚本只做四件事：下载该版本的独立包 → 校验 `.sha256` → 解压到安装目录 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）。整个过程不需要目标机器上有 Node、npm 或 git。
@@ -29,7 +29,7 @@ curl -sSL .../install.sh | bash -s -- --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用本地的包离线安装（跳过下载，仍然校验 .sha256）
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.3-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-arm64.tar.gz
 ```
 
 | 参数 | 默认 | 说明 |

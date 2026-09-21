@@ -5,7 +5,7 @@
 ## Install (one line, no flags)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
 ```
 
 The tag in the URL **is** the version. The script downloads that release's

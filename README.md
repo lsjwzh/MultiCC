@@ -134,7 +134,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 ### 1. Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
 ```
 
 One line, no flags: the tag in the URL *is* the version. The script downloads that
@@ -155,7 +155,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # From a package you already downloaded
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.3-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-arm64.tar.gz
 ```
 
 To hack on MultiCC itself, run it from a checkout — that path is for developers, and
