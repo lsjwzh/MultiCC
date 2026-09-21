@@ -12,6 +12,14 @@ import '../services/workspace_service.dart';
 import '../utils/session_status_helpers.dart';
 import 'chat_provider.dart';
 
+class PendingChatOpen {
+  PendingChatOpen({required this.title, required this.load, this.focusMessageId});
+  final String title;
+  final Future<Session> Function() load;
+  final String? focusMessageId;
+  String? error;
+}
+
 class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   final SettingsService settings;
   late final SessionService _sessionService;
@@ -32,6 +40,59 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   String? get activeSessionId => _activeSessionId;
   ChatProvider? get activeProvider =>
       _activeSessionId != null ? _providers[_activeSessionId] : null;
+
+  PendingChatOpen? _pendingChatOpen;
+  PendingChatOpen? get pendingChatOpen => _pendingChatOpen;
+
+  /// Paint the destination immediately. Network latency belongs in that page;
+  /// a cancelled or superseded request must never reopen a chat when it finishes.
+  Future<bool> openChatAfterLoad({
+    required String title,
+    required Future<Session> Function() load,
+    String? focusMessageId,
+  }) async {
+    final request = PendingChatOpen(
+      title: title,
+      load: load,
+      focusMessageId: focusMessageId,
+    );
+    _pendingChatOpen = request;
+    notifyListeners();
+    try {
+      final session = await load();
+      if (!identical(_pendingChatOpen, request)) return false;
+      openSessionWithFocus(
+        session,
+        focusMessageId: focusMessageId,
+        historyArchive: true,
+      );
+      if (identical(_pendingChatOpen, request)) {
+        _pendingChatOpen = null;
+        notifyListeners();
+      }
+      return true;
+    } catch (error) {
+      if (!identical(_pendingChatOpen, request)) return false;
+      request.error = error.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  void cancelPendingChatOpen() {
+    _pendingChatOpen = null;
+    notifyListeners();
+  }
+
+  void retryPendingChatOpen() {
+    final request = _pendingChatOpen;
+    if (request == null) return;
+    unawaited(openChatAfterLoad(
+      title: request.title,
+      load: request.load,
+      focusMessageId: request.focusMessageId,
+    ));
+  }
 
   /// Currently open fleet (directory) detail panel, or null when none is open.
   /// The fleet panel lives in the main_shell Stack UNDER the chat sheet, so
@@ -551,6 +612,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Switch the visible chat session.
   void switchToSession(String id) {
+    _pendingChatOpen = null;
     if (_activeSessionId != null && _providers.containsKey(_activeSessionId!)) {
       _providers[_activeSessionId!]!.isActive = false;
     }
@@ -596,6 +658,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Go back to session list (no active session).
   void goToSessionList() {
+    _pendingChatOpen = null;
     if (_activeSessionId != null && _providers.containsKey(_activeSessionId!)) {
       _providers[_activeSessionId!]!.isActive = false;
     }
@@ -813,6 +876,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _pendingChatOpen = null;
     WidgetsBinding.instance.removeObserver(this);
     _refreshTimer?.cancel();
     for (final p in _providers.values) {

@@ -2608,5 +2608,8 @@
   "voiceStatusListening": "Listening",
   "taskNotifyTitleDisabled": "Task alerts (off)",
   "taskNotifyTitleOff": "Task alerts (click to enable system notifications)",
-  "taskNotifyTitleOn": "Task alerts (system notifications on)"
+  "taskNotifyTitleOn": "Task alerts (system notifications on)",
+  "chatOpeningTask": "Opening task conversation…",
+  "chatLoadingHistory": "Connecting and loading messages…",
+  "chatOpenFailed": "Could not load conversation"
 }
