@@ -220,6 +220,129 @@ test('Official relay swaps host OAuth credentials and streams Responses SSE', as
   }]);
 });
 
+test('Official relay forwards end-to-end headers by default but never caller credentials', async () => {
+  const calls = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'host-token', accountId: 'host-account' }),
+    fetch: async (_url, init) => {
+      calls.push(init.headers);
+      return new Response('data: {"type":"response.completed","response":{}}\n\n', {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+  const req = request({ model: 'gpt-6-astra', input: [], stream: true, prompt_cache_key: 'thread-native' });
+  req.headers = {
+    authorization: 'Bearer caller-secret',
+    cookie: 'session=caller-secret',
+    'chatgpt-account-id': 'caller-account',
+    host: 'attacker.invalid',
+    'proxy-authorization': 'Basic caller-secret',
+    'x-forwarded-for': '203.0.113.10',
+    originator: 'codex_exec',
+    'user-agent': 'codex_exec/0.154.0 (test)',
+    'session-id': 'native-session',
+    'thread-id': 'native-thread',
+    'x-client-request-id': 'native-request',
+    'x-codex-beta-features': 'remote_compaction_v2',
+    'x-codex-window-id': 'native-thread:0',
+    'x-codex-turn-metadata': '{"session_id":"native-session","window_number":0}',
+    'x-openai-internal-codex-responses-lite': 'true',
+    'x-openai-subagent': 'worker',
+    'x-codex-future-feature': 'future-codex-value',
+    'x-openai-future-routing': 'future-openai-value',
+    traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+    'idempotency-key': 'request-once',
+    accept: 'application/json',
+  };
+  await handler(req, response(), () => assert.fail('Official must not fall through'));
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    Authorization: 'Bearer host-token',
+    'ChatGPT-Account-Id': 'host-account',
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    'session-id': 'native-session',
+    'thread-id': 'native-thread',
+    'x-client-request-id': 'native-request',
+    'x-codex-beta-features': 'remote_compaction_v2',
+    'x-codex-turn-metadata': '{"session_id":"native-session","window_number":0}',
+    'x-codex-window-id': 'native-thread:0',
+    'x-openai-internal-codex-responses-lite': 'true',
+    'x-openai-subagent': 'worker',
+    'x-codex-future-feature': 'future-codex-value',
+    'x-openai-future-routing': 'future-openai-value',
+    traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+    'idempotency-key': 'request-once',
+    originator: 'codex_exec',
+    'User-Agent': 'codex_exec/0.154.0 (test)',
+  });
+  assert.doesNotMatch(JSON.stringify(calls[0]), /caller-secret|caller-account|attacker|203\.0\.113\.10/);
+});
+
+test('Official relay strips boundary and dynamically nominated hop headers', async () => {
+  let headers;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'host-token', accountId: 'host-account' }),
+    fetch: async (_url, init) => {
+      headers = init.headers;
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const req = request({ stream: false });
+  req.headers = {
+    connection: 'keep-alive, x-hop-secret',
+    'x-hop-secret': 'must-not-forward',
+    'x-multicc-router-capability': 'local-capability',
+    'x-forwarded-for': '203.0.113.20',
+    forwarded: 'for=203.0.113.20',
+    via: 'internal-proxy',
+    'x-real-ip': '203.0.113.20',
+    'x-api-key': 'caller-api-key',
+    'x-access-token': 'caller-access-token',
+    'openai-project': 'caller-project',
+    'content-type': 'text/plain',
+    'content-encoding': 'gzip',
+    'content-length': '1',
+    'content-digest': 'sha-256=:caller-digest:',
+    'x-openai-preserved': 'still-here',
+  };
+  await handler(req, response(), () => assert.fail('Official must not fall through'));
+
+  assert.equal(headers['x-openai-preserved'], 'still-here');
+  assert.equal(headers['Content-Type'], 'application/json');
+  assert.doesNotMatch(JSON.stringify(headers), /must-not-forward|local-capability|203\.0\.113\.20|internal-proxy|caller-/);
+});
+
+test('Official relay rejects malformed or oversized forwarded metadata', async () => {
+  let headers;
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'host-token', accountId: 'host-account' }),
+    fetch: async (_url, init) => {
+      headers = init.headers;
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const req = request({ stream: false });
+  req.headers = {
+    originator: 'bad\noriginator',
+    'user-agent': 'x'.repeat(1025),
+    'session-id': 'ok-session',
+    'x-openai-array': ['one', 'two'],
+    'x-codex-turn-metadata': 'x'.repeat(16 * 1024 + 1),
+  };
+  await handler(req, response(), () => assert.fail('Official must not fall through'));
+  assert.equal(headers.originator, 'codex_cli_rs');
+  assert.equal(headers['User-Agent'], 'codex_cli_rs/multicc-relay');
+  assert.equal(headers['session-id'], 'ok-session');
+  assert.equal(headers['x-openai-array'], 'one, two');
+  assert.equal(Object.hasOwn(headers, 'x-codex-turn-metadata'), false);
+});
+
 test('Official relay attributes a controlled Codex agent role as a sub route', async () => {
   const activity = [];
   const usage = [];

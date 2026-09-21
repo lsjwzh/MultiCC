@@ -478,11 +478,17 @@ test('storage has no compiled dependency: SQLite comes from Node, not an addon',
   // install.sh and the ./multicc manager used to carry a "rebuild the native
   // binding" hatch. Nothing is compiled any more, so that repair path would
   // have been a lie told to whoever hit it.
-  for (const file of ['install.sh', 'multicc']) {
-    const text = fs.readFileSync(path.join(root, file), 'utf8');
-    assert.doesNotMatch(text, /npm rebuild better-sqlite3/, `${file} must not advertise a rebuild that cannot help`);
-    assert.match(text, /SQLite/, `${file} must still explain what the runtime check failed on`);
+  const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
+  const manager = fs.readFileSync(path.join(root, 'multicc'), 'utf8');
+  for (const [file, text] of [['install.sh', installer], ['multicc', manager]]) {
+    assert.doesNotMatch(text, /npm rebuild better-sqlite3/,
+      `${file} must not advertise a rebuild that cannot help`);
   }
+  // The standalone installer only downloads a package containing its own Node
+  // runtime. The installed manager is the component that actually executes the
+  // SQLite capability probe, so it owns the actionable runtime diagnostic.
+  assert.match(installer, /package carries its own Node runtime/);
+  assert.match(manager, /SQLite/, 'the manager must explain what its runtime check failed on');
   const sqliteCheck = fs.readFileSync(path.join(root, 'scripts/check-sqlite-runtime.js'), 'utf8');
   assert.match(sqliteCheck, /new Database\(':memory:'\)/);
 });
