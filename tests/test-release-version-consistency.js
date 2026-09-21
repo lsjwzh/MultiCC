@@ -35,3 +35,20 @@ test('public stable install commands use package.json as their version source', 
   assert.ok(declared, 'install.sh must declare INSTALLER_VERSION');
   assert.equal(declared[1], pkg.version, 'installer version drifted from package.json');
 });
+
+test('tag releases cannot bypass the relay-transparency regression gate', () => {
+  const relayGate = pkg.scripts && pkg.scripts['test:relay-transparency'];
+  const releaseGate = pkg.scripts && pkg.scripts['test:release'];
+  assert.match(String(relayGate || ''), /tests\/test-codex-official-relay\.js/);
+  assert.match(String(relayGate || ''), /tests\/test-claude-passthrough-hop\.js/);
+  assert.match(String(releaseGate || ''), /npm run test:relay-transparency/);
+  assert.match(String(releaseGate || ''), /npm test/);
+
+  const providerGate = pkg.scripts && pkg.scripts['test:provider-router'];
+  assert.match(String(providerGate || ''), /tests\/test-codex-official-relay\.js/);
+  assert.match(String(providerGate || ''), /tests\/test-claude-passthrough-hop\.js/);
+
+  const workflow = read('.github/workflows/release.yml');
+  assert.match(workflow, /npm run test:release/,
+    'tag workflow must call the canonical release gate, not a weaker test command');
+});

@@ -79,7 +79,13 @@ async function startUpstream() {
 }
 
 // Mount the hop the way the host does, and answer one request through it.
-async function requestThroughHop({ providerId, sessionId = 'probe', getProvider }) {
+async function requestThroughHop({
+  providerId,
+  sessionId = 'probe',
+  getProvider,
+  requestHeaders = {},
+  requestBody = null,
+}) {
   const upstream = await startUpstream();
   const realRequest = https.request;
   const dialed = [];
@@ -103,13 +109,19 @@ async function requestThroughHop({ providerId, sessionId = 'probe', getProvider 
   const server = http.createServer((req, res) => { void handler(req, res); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
-  const body = JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] });
+  const body = typeof requestBody === 'string' ? requestBody : JSON.stringify(requestBody || {
+    model: 'claude-sonnet-4-5', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }],
+  });
   const response = await new Promise((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1', port,
       path: `/claude-proxy/${encodeURIComponent(providerId)}/${encodeURIComponent(sessionId)}/v1/messages`,
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) },
+      headers: {
+        ...requestHeaders,
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(body)),
+      },
     }, res => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
@@ -125,7 +137,7 @@ async function requestThroughHop({ providerId, sessionId = 'probe', getProvider 
     });
     await upstream.close();
   });
-  return { ...response, dialed, upstreamRequests: upstream.requests };
+  return { ...response, dialed, upstreamRequests: upstream.requests, requestBody: body };
 }
 
 test('a base-less entry with its own token is served by the hop, on that token', async () => {
@@ -145,6 +157,53 @@ test('a base-less entry with its own token is served by the hop, on that token',
     'the record’s own credential — never the host subscription login');
   assert.equal(forwarded.headers['x-api-key'], undefined);
   assert.match(forwarded.body, /"model":"claude-sonnet-4-5"/);
+});
+
+test('the Claude hop preserves future headers and cache-affecting body bytes', async () => {
+  const provider = providers.createProvider({
+    appType: 'claude', name: 'Transparent fixture', authToken: 'provider-fixture-token',
+  });
+  const store = createProviderStoreAdapter(providers);
+  const requestBody = JSON.stringify({
+    model: 'claude-sonnet-4-5',
+    max_tokens: 16,
+    stream: true,
+    system: [{
+      type: 'text', text: 'stable system prefix', cache_control: { type: 'ephemeral' },
+    }],
+    messages: [{
+      role: 'user',
+      content: [{ type: 'text', text: 'stable user prefix', cache_control: { type: 'ephemeral' } }],
+    }],
+    metadata: { user_id: 'cache-isolation-fixture' },
+  });
+  const result = await requestThroughHop({
+    providerId: provider.id,
+    getProvider: store.getProvider,
+    requestBody,
+    requestHeaders: {
+      authorization: 'Bearer caller-secret',
+      'x-api-key': 'caller-secret',
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31',
+      'user-agent': 'claude-cli/future',
+      'x-app': 'cli',
+      'x-future-claude-affinity': 'future-value',
+    },
+  });
+
+  assert.equal(result.status, 200, result.body);
+  assert.equal(result.dialed.length, 1, 'exactly one upstream dial');
+  const forwarded = result.upstreamRequests[0];
+  assert.equal(forwarded.body, requestBody, 'cache-relevant body bytes must stay identical');
+  assert.equal(forwarded.headers.authorization, 'Bearer provider-fixture-token');
+  assert.equal(forwarded.headers['x-api-key'], undefined);
+  assert.equal(forwarded.headers['anthropic-version'], '2023-06-01');
+  assert.equal(forwarded.headers['anthropic-beta'], 'prompt-caching-2024-07-31');
+  assert.equal(forwarded.headers['user-agent'], 'claude-cli/future');
+  assert.equal(forwarded.headers['x-app'], 'cli');
+  assert.equal(forwarded.headers['x-future-claude-affinity'], 'future-value');
+  assert.doesNotMatch(JSON.stringify(forwarded.headers), /caller-secret/);
 });
 
 test('without the routing view the same entry would be refused at the hop', async () => {

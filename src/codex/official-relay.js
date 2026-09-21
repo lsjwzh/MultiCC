@@ -29,6 +29,51 @@ const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
 const DEFAULT_UPSTREAM_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const OFFICIAL_AUTH_MODE = 'chatgpt';
 const BUILTIN_AGENT_ROLES = new Set(['default', 'worker', 'explorer']);
+// The Official hop is a transparent semantic relay, not an HTTP tunnel. Forward
+// every end-to-end request header by default so new Codex/OpenAI routing fields
+// do not require a MultiCC release. Only fields owned by this credential/body
+// boundary, hop-by-hop transport fields, proxy provenance, and MultiCC-private
+// capabilities are removed. A Connection header can nominate additional
+// hop-by-hop fields at runtime; forwardedRequestHeaders handles those too.
+const CODEX_RELAY_HEADER_DENYLIST = new Set([
+  'authorization',
+  'chatgpt-account-id',
+  'cookie',
+  'cookie2',
+  'set-cookie',
+  'api-key',
+  'x-api-key',
+  'x-access-token',
+  'x-auth-token',
+  'openai-organization',
+  'openai-project',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'host',
+  'content-length',
+  'content-type',
+  'content-encoding',
+  'content-md5',
+  'content-digest',
+  'repr-digest',
+  'digest',
+  'connection',
+  'keep-alive',
+  'proxy-connection',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'expect',
+  'http2-settings',
+  'forwarded',
+  'via',
+  'x-real-ip',
+  'true-client-ip',
+]);
+const CODEX_RELAY_HEADER_DENY_PREFIXES = Object.freeze(['x-forwarded-', 'x-multicc-']);
+const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-z-]+$/;
+const MAX_FORWARD_HEADER_BYTES = 16 * 1024;
 const mountedApps = new WeakSet();
 
 function parseObject(value) {
@@ -123,15 +168,56 @@ function normalizeCodexRole(value) {
   return { valid: false, roleKind: 'sub', agentRole: 'custom', routeName: '' };
 }
 
-function upstreamHeaders(credential) {
-  return {
+function safeHeaderValue(value, maxBytes = MAX_FORWARD_HEADER_BYTES) {
+  if (Array.isArray(value)) {
+    if (!value.length || value.some(item => typeof item !== 'string')) return '';
+    value = value.join(', ');
+  }
+  if (typeof value !== 'string' || !value || /[\r\n]/.test(value)) return '';
+  return Buffer.byteLength(value) <= maxBytes ? value : '';
+}
+
+function forwardedRequestHeaders(req) {
+  const incoming = req && req.headers && typeof req.headers === 'object' ? req.headers : {};
+  const connectionHeaders = new Set();
+  const connection = safeHeaderValue(incoming.connection);
+  for (const token of connection.split(',')) {
+    const name = token.trim().toLowerCase();
+    if (HTTP_HEADER_NAME.test(name)) connectionHeaders.add(name);
+  }
+
+  const forwarded = {};
+  for (const [rawName, rawValue] of Object.entries(incoming)) {
+    const name = String(rawName).toLowerCase();
+    if (!HTTP_HEADER_NAME.test(name)
+        || CODEX_RELAY_HEADER_DENYLIST.has(name)
+        || connectionHeaders.has(name)
+        || CODEX_RELAY_HEADER_DENY_PREFIXES.some(prefix => name.startsWith(prefix))) continue;
+    const maxBytes = name === 'originator' ? 256
+      : name === 'user-agent' ? 1024 : MAX_FORWARD_HEADER_BYTES;
+    const value = safeHeaderValue(rawValue, maxBytes);
+    if (value) forwarded[name] = value;
+  }
+  return forwarded;
+}
+
+function upstreamHeaders(credential, req) {
+  const headers = forwardedRequestHeaders(req);
+  const accept = headers.accept;
+  const originator = headers.originator;
+  const userAgent = headers['user-agent'];
+  delete headers.accept;
+  delete headers.originator;
+  delete headers['user-agent'];
+  Object.assign(headers, {
     Authorization: `Bearer ${credential.accessToken}`,
     'ChatGPT-Account-Id': credential.accountId,
-    originator: 'codex_cli_rs',
     'Content-Type': 'application/json',
-    Accept: 'text/event-stream',
-    'User-Agent': 'codex_cli_rs/multicc-relay',
-  };
+    Accept: accept || 'text/event-stream',
+    originator: originator || 'codex_cli_rs',
+    'User-Agent': userAgent || 'codex_cli_rs/multicc-relay',
+  });
+  return headers;
 }
 
 function setResponseHeaders(res, upstream, streaming) {
@@ -456,7 +542,7 @@ function createCodexOfficialRelayHandler(options = {}) {
         if (clientClosed) return undefined;
         upstream = await fetchImpl(upstreamUrl, {
           method: 'POST',
-          headers: upstreamHeaders(credential),
+          headers: upstreamHeaders(credential, req),
           body: JSON.stringify(body),
           signal: controller.signal,
         });

@@ -157,7 +157,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci
-          npm test
+          npm run test:release
           cd app
           flutter pub get --enforce-lockfile
           flutter test
