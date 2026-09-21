@@ -515,7 +515,7 @@ function debugLogClaudeInvoke(session, args) {
   } catch (_) {}
 }
 
-const { vendorLoginTerminalCmd } = require('./src/cli-adapters/vendor-login'); const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
+const { vendorLoginTerminalCmd, cliForLoginFlow } = require('./src/cli-adapters/vendor-login'); const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
   isWindows,
   claudeArgs: CLAUDE_ARGS,
   claudeChatDisallowedTools: CLAUDE_CHAT_DISALLOWED_TOOLS,
@@ -1536,7 +1536,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 function createSessionRecord(input) {
   return require('./src/session/create-record').createSessionRecordFactory({
     sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
-    SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent
+    SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow
   })(input);
 }
 

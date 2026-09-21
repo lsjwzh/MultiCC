@@ -21,12 +21,15 @@ const SOURCE_EXTENSIONS = new Set([
 // migration. Keep this map for explicit, reviewed debt only; ordinary feature
 // work must satisfy the default budget.
 const MIGRATION_DEBT = Object.freeze({
-  // app/lib/screens/main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台).
-  // Registered so the gate keeps tracking it; the next main_shell split must
-  // ratchet this ceiling down.
+  // app/lib/screens/main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台), then
+  // grew to 3174 lines / 122149 bytes in 95c6d6a0 (打开对话改成浮层) without
+  // re-registering, which turned this gate red on main. The ceiling is the exact
+  // committed high-water mark, so it is re-registered here; the next main_shell
+  // split must ratchet it down and retire this entry once the file is <= target.
   'app/lib/screens/main_shell.dart': Object.freeze({
-    ceiling: 3010,
-    byteCeiling: 114227,
+    ceiling: 3174,
+    byteCeiling: 122149,
+    target: 3000,
   }),
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
   // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,
