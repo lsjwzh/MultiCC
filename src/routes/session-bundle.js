@@ -48,23 +48,26 @@ function stripSourceTaskStamps(message) {
 //
 //   GET  /api/sessions/:id/bundle      → single AES-256-GCM encrypted JSON (v1/v2)
 //   GET  /api/sessions/:id/bundle.zip  → real zip (v3): skills/assets/git ride as
-//                                        real deflated files; chat history, provider
-//                                        state and memories stay inside the
-//                                        encrypted manifest.json entry
+//                                        real deflated files; chat history and
+//                                        memories stay inside the encrypted
+//                                        manifest.json entry
 //   POST /api/sessions/import          → accepts the JSON bundle body
 //   POST /api/sessions/import-zip      → accepts the zip bytes (raw body)
 //
 // The payload carries session metadata, chat history, the memory waterfall
 // scopes (?scopes=), the skills the session relied on (?skillsMode=
 // auto|explicit|none, ?skills=a,b), the context dependencies a teammate needs
-// (repo remote, branches, project instruction files, provider env key names),
-// the provider state, and a `git bundle` of the session's worktree branch
-// (?git=0 skips it for scenarios where the target has no repo). POST import
-// rebuilds the session — restoring shared memory into the target project,
-// folding narrower scopes into the new session's private memory, installing
-// carried skills into ~/.agents/skills, and writing a HANDOFF.md manifest.
-// The sensitive half (chat, provider env, memories) is always passphrase-
+// (repo remote, branches, project instruction files) and a `git bundle` of the
+// session's worktree branch (?git=0 skips it for scenarios where the target has
+// no repo). POST import rebuilds the session — restoring shared memory into the
+// target project, folding narrower scopes into the new session's private
+// memory, installing carried skills into ~/.agents/skills, and writing a
+// HANDOFF.md manifest.
+// The sensitive half (chat, memories, project docs) is always passphrase-
 // encrypted (PBKDF2 + AES-256-GCM) whichever container is used.
+//
+// Provider state deliberately does NOT travel (see the removal note below the
+// import route for the reasoning); the target machine picks its own provider.
 //
 // Mutable host state (chatHistoryService, folderMemory, skillSyncRuntime) is
 // read through getters so a runtime that is composed after this module mounts
@@ -82,8 +85,6 @@ function createSessionBundleRoutes(rawDeps) {
   const {
     persistedSessions,
     directories,
-    providers,
-    providerRouterRuntime,
     asyncHandler,
     appendEvent,
     createSessionRecord,
@@ -99,12 +100,6 @@ function createSessionBundleRoutes(rawDeps) {
   }
   if (!directories || typeof directories.get !== 'function') {
     throw new TypeError('[session-bundle] directories map is required');
-  }
-  if (!providers || typeof providers.CODEX_HOMES_DIR !== 'string') {
-    throw new TypeError('[session-bundle] providers.CODEX_HOMES_DIR is required');
-  }
-  if (!providerRouterRuntime || typeof providerRouterRuntime.resolveSpawnEnv !== 'function') {
-    throw new TypeError('[session-bundle] providerRouterRuntime.resolveSpawnEnv is required');
   }
   for (const [fn, name] of [
     [asyncHandler, 'asyncHandler'], [appendEvent, 'appendEvent'],
@@ -187,27 +182,21 @@ function createSessionBundleRoutes(rawDeps) {
     }
     const carriedSkills = skills.filter(skill => skill && !skill.missing);
 
-    // 2) Provider state: env (claude ANTHROPIC_*, codex CODEX_HOME pointer)
-    //    plus, for codex, the auth.json/config.toml file contents so the
-    //    target machine can reconstruct the codex home.
-    const provEnv = providerRouterRuntime.resolveSpawnEnv(s);
-    const providerState = {
-      providerId: s.provider, providerName: provEnv.providerName,
-      env: provEnv.env || {}, codexFiles: {},
-    };
-    if (s.cli === 'codex' && s.provider) {
-      try {
-        const home = path.join(providers.CODEX_HOMES_DIR, s.provider);
-        if (fs.existsSync(home)) {
-          for (const fn of ['auth.json', 'config.toml']) {
-            const fp = path.join(home, fn);
-            if (fs.existsSync(fp)) {
-              providerState.codexFiles[fn] = fs.readFileSync(fp, 'utf8');
-            }
-          }
-        }
-      } catch (e) { /* best-effort */ }
-    }
+    // 2) Provider state is deliberately NOT collected. v1 carried
+    //    `providerState` (providerId/providerName + the verbatim spawn env, plus
+    //    codex auth.json/config.toml); importing wrote it into the new
+    //    session's private memory folder as a plaintext `.handoff-provider.json`
+    //    that no code ever read back. The values were credential VALUES, not
+    //    configuration: a claude session on a relay provider exported its
+    //    ANTHROPIC_AUTH_TOKEN, a codex session its OPENAI_API_KEY and a copy of
+    //    the machine's codex home. A teammate receiving a handoff needs the
+    //    work, not the sender's keys — and the sender's keys are also the
+    //    sender's billing. The target machine attaches the imported session to
+    //    a provider IT already has: `targetProviderId` (query/body) names an
+    //    existing local provider, and when it is omitted the ordinary
+    //    createSessionRecord default for that CLI applies (see
+    //    src/session/create-record.js). Older bundles that still carry
+    //    `providerState` import fine — the field is simply ignored.
 
     // 3) git bundle of the session's worktree branch — but ONLY the commits
     //    unique to this session (baseBranch..branch). Bundling the full branch
@@ -250,14 +239,13 @@ function createSessionBundleRoutes(rawDeps) {
       }
     }
 
-    // 4) Context dependencies: everything a teammate needs to rebuild the
-    //    working context on their machine. Values stay non-secret — env is
-    //    reduced to key names; provider creds only travel via providerState
-    //    inside the encrypted payload, as in v1.
+    // 3) Context dependencies: everything a teammate needs to rebuild the
+    //    working context on their machine. Repo/branch/doc facts only — no
+    //    provider env key names either, since the target wires its own provider.
     const dir = directories.get(s.dirId);
     const contextDeps = { dirName: dir?.name || null, dirPath: dir?.path || null,
                           baseBranch: dir?.baseBranch || null, repoRemote: null,
-                          projectDocs: {}, envKeys: Object.keys(providerState.env || {}) };
+                          projectDocs: {} };
     if (dir && dir.path) {
       try {
         const remote = await execFileAsync('git', ['remote', 'get-url', 'origin'],
@@ -286,7 +274,7 @@ function createSessionBundleRoutes(rawDeps) {
         branch: s.branch, worktreePath: s.worktreePath, dirId: s.dirId,
         // dirId/branch/worktreePath are hints; target rebuilds its own paths.
       },
-      messages, memoryFiles, providerState, gitBundleB64, gitBundleNote,
+      messages, memoryFiles, gitBundleB64, gitBundleNote,
       memoryScopes, skills: carriedSkills, contextDeps, assets,
     };
     const scopeCounts = Object.fromEntries(Object.entries(memoryScopes)
@@ -337,10 +325,12 @@ function createSessionBundleRoutes(rawDeps) {
   // Shared restore: takes a decrypted v1/v2-shaped payload, rebuilds the
   // session on THIS machine and returns the HTTP response body. The target
   // directory (dirId) must exist (a git repo when the bundle carries a git
-  // payload — we recreate the worktree from it). Provider credentials are NOT
-  // auto-injected: targetProviderId attaches the new session to an already-
-  // configured provider; otherwise the source env/codex files land in the
-  // session's memory folder as `.handoff-provider.json` for manual setup.
+  // payload — we recreate the worktree from it). The target machine's own
+  // provider wins: `targetProviderId` attaches the new session to an already-
+  // configured local provider, and without it the ordinary createSessionRecord
+  // default for that CLI applies. Bundles exported before provider state was
+  // dropped still carry a `providerState` field; it is ignored, and nothing is
+  // ever written into the imported session's memory from it.
   async function restoreImportedPayload(payload, { dir, targetProviderId, labelOverride }) {
     const meta = payload.sessionMeta;
 
@@ -387,18 +377,13 @@ function createSessionBundleRoutes(rawDeps) {
         for (const [rel, content] of Object.entries(payload.memoryFiles)) {
           const safe = String(rel).replace(/[^A-Za-z0-9._-]/g, '_');
           if (!safe || safe === '.' || safe === '..') continue;
+          // Dotfiles are machine bookkeeping, never memory content — and a
+          // bundle exported by an older release can still carry the plaintext
+          // provider file that release wrote. Drop it here too, so a legacy
+          // bundle cannot re-plant credentials on this machine.
+          if (safe.startsWith('.')) continue;
           fs.writeFileSync(path.join(memDir, safe), content, 'utf8');
         }
-        // Stash the source provider state for reference (creds the user must wire
-        // up on this machine — never auto-injected into the provider pool).
-        try {
-          fs.writeFileSync(path.join(memDir, '.handoff-provider.json'),
-            JSON.stringify({ sourceProviderId: meta.providerId || null,
-                             sourceProviderName: payload.providerState?.providerName || null,
-                             env: payload.providerState?.env || {},
-                             codexFiles: payload.providerState?.codexFiles || {} }, null, 2),
-            'utf8');
-        } catch (_) {}
       }
       let memoryScopeReport = null;
       if (payload.memoryScopes && typeof payload.memoryScopes === 'object') {
@@ -488,8 +473,8 @@ function createSessionBundleRoutes(rawDeps) {
 
     // v3 zip transport: the same payload, but the bulky binaries ride as real
     // deflated files a teammate can open with any zip tool, and the sensitive
-    // text (chat history, provider env, memories, context docs) stays inside
-    // the AES-256-GCM encrypted manifest.json entry. No base64 inflation, so a
+    // text (chat history, memories, context docs) stays inside the
+    // AES-256-GCM encrypted manifest.json entry. No base64 inflation, so a
     // 20MB asset stays ~20MB instead of ~27MB of JSON.
     app.get('/api/sessions/:id/bundle.zip', asyncHandler(async (req, res) => {
       const guard = requireSessionForExport(req, res);
