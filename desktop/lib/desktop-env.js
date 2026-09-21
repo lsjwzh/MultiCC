@@ -7,6 +7,8 @@
 //
 // Layout (packaged):
 //   <resourcesPath>/app-server/   staged copy of the MultiCC server (read-only)
+//   <resourcesPath>/runtime/      the pinned Node runtime the server runs on
+//   <resourcesPath>/launcher/     standalone launcher + CLI (same as a package)
 //   <userData>/data/              MULTICC_DATA_DIR — all server state
 //   <userData>/data/memories      MULTICC_MEMORY_ROOT
 //   <userData>/multicc.env        MULTICC_ENV_FILE — writable .env copy
@@ -22,6 +24,15 @@ const DEV_DATA_DIRNAME = '.desktop-dev-data';
 // loopback server. Pinning HOST (loopback) keeps the packaged app from ever
 // widening the network surface, whatever a copied-in .env says.
 const DESKTOP_LOOPBACK_HOST = '127.0.0.1';
+
+// Where a staged standalone tree keeps its runtime — the same layout
+// scripts/standalone-bundle.js writes and the launcher resolves, including
+// Windows' missing bin/ level.
+function runtimeNodeIn(resourcesPath, platform = process.platform) {
+  return platform === 'win32'
+    ? path.join(resourcesPath, 'runtime', 'node.exe')
+    : path.join(resourcesPath, 'runtime', 'bin', 'node');
+}
 
 function resolveDesktopEnv({
   isPackaged,
@@ -40,6 +51,12 @@ function resolveDesktopEnv({
       mode: 'packaged',
       serverDir,
       serverEntry: path.join(serverDir, 'server.js'),
+      // The shell is a shell around the standalone tree: the server runs on the
+      // runtime staged next to it (pinned Node, the one the release smoke-tested
+      // through install.sh), never on Electron's own Node.
+      runtimeNode: runtimeNodeIn(resourcesPath),
+      electronRuntime: false,
+      launcherDir: path.join(resourcesPath, 'launcher'),
       dataRoot,
       memoryRoot: path.join(dataRoot, 'memories'),
       envFile: path.join(userData, 'multicc.env'),
@@ -55,6 +72,11 @@ function resolveDesktopEnv({
     mode: 'development',
     serverDir: repoRoot,
     serverEntry: path.join(repoRoot, 'server.js'),
+    // No staged runtime in a checkout, so dev runs the Electron binary as plain
+    // Node (buildChildEnv sets ELECTRON_RUN_AS_NODE for exactly this case).
+    runtimeNode: process.execPath,
+    electronRuntime: true,
+    launcherDir: null,
     dataRoot,
     memoryRoot: path.join(dataRoot, 'memories'),
     envFile: path.join(dataRoot, 'multicc.env'),
@@ -89,8 +111,10 @@ function readEnvValues(envFile) {
 // The desktop knobs are applied last and unconditionally: a stale .env must
 // never redirect state out of the per-user data dir or un-pin the loopback
 // bind. ELECTRON_RUN_AS_NODE=1 turns the Electron binary into a plain Node
-// runtime for the child (bundled Node satisfies the server's engines floor).
-function buildChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {} }) {
+// runtime, and is set only when the child really is that binary (dev mode):
+// packaged builds run the staged Node runtime, where the variable is at best
+// meaningless and at worst confusing in a stack trace.
+function buildChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, runtimeNode }) {
   if (!Number.isInteger(port) || port <= 0) throw new TypeError('[desktop-env] port is required');
   if (!desktopEnv || !desktopEnv.dataRoot) throw new TypeError('[desktop-env] desktopEnv is required');
   const env = { ...baseEnv };
@@ -103,7 +127,27 @@ function buildChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {} }) {
   env.MULTICC_MEMORY_ROOT = desktopEnv.memoryRoot;
   env.MULTICC_ENV_FILE = desktopEnv.envFile;
   env.MULTICC_DESKTOP = '1';
-  env.ELECTRON_RUN_AS_NODE = '1';
+  if (desktopEnv.electronRuntime) env.ELECTRON_RUN_AS_NODE = '1';
+  else delete env.ELECTRON_RUN_AS_NODE;
+  // Put the runtime the child will actually run on first on PATH:
+  // `claude`/`codex`/every other Node-based CLI the server spawns for a session
+  // would otherwise fall back to whatever (too old) Node the host happens to
+  // have. The standalone launcher passes its own resolved path here, and the
+  // desktop shell's layout supplies it through desktopEnv — one rule, both
+  // callers.
+  const serverRuntime = runtimeNode || (desktopEnv.electronRuntime ? null : desktopEnv.runtimeNode);
+  if (serverRuntime) prependPathEntry(env, path.dirname(serverRuntime));
+  return env;
+}
+
+// Put a directory first on the child's PATH. Windows spells the variable
+// `Path`, and a child that ends up with both spellings gets whichever the OS
+// picks, so find the existing key instead of adding a second one.
+function prependPathEntry(env, dir) {
+  const key = Object.keys(env).find(name => name.toLowerCase() === 'path') || 'PATH';
+  const parts = String(env[key] || '').split(path.delimiter).filter(Boolean);
+  if (parts[0] !== dir) parts.unshift(dir);
+  env[key] = parts.join(path.delimiter);
   return env;
 }
 
@@ -122,4 +166,6 @@ module.exports = {
   readEnvValues,
   buildChildEnv,
   ensureWritableDirs,
+  prependPathEntry,
+  runtimeNodeIn,
 };

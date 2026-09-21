@@ -1,79 +1,93 @@
 # Installation & service management
 
-> Full install reference, migrated out of the README: install-script flags, updating, recovery from a force-push, prerequisites, the `./multicc` service manager, a systemd unit, and Flutter app builds.
+> How MultiCC is installed and kept running: the one-line standalone install and its flags, updating (installed package vs. source checkout), prerequisites, the `./multicc` service manager, a systemd unit, and Flutter app builds.
 
-## Stable Release (recommended)
-
-```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash -s -- --branch v2.0.3
-```
-
-This installs the latest **stable release**. The script auto-detects your OS,
-checks prerequisites, clones the repo, installs dependencies, configures an
-access token, and optionally installs as a background service (macOS `launchd`).
-It does not build the Android APK.
-
-The installer and `./multicc install` install missing `tmux` dependencies for
-terminal sessions and CLI login, using Homebrew on macOS or the system package
-manager on Linux. Linux may request sudo privileges. To repair an existing
-installation on demand, run `./multicc install-terminal`, then refresh the
-terminal page. Already installed tmux is left unchanged.
-
-Running `./multicc update` later checks for new releases and upgrades you
-when one becomes available.
-
-## Development Snapshot (daily `main`)
-
-> ⚠️ This pulls the current `main` branch — it may include untested changes.
-> Prefer the stable release above unless you explicitly want the bleeding edge.
+## Install (one line, no flags)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
 ```
 
-Detects your OS, checks prerequisites, clones the repo, installs dependencies, configures an access token, and optionally installs as a background service (macOS `launchd`). It never builds an APK; official APKs are release assets produced only when a version tag is published.
+The tag in the URL **is** the version. The script downloads that release's
+**standalone package** — the server plus a pinned Node runtime plus every
+production dependency, in one archive — verifies its SHA-256, unpacks it into
+`~/MultiCC`, writes `ACCESS_TOKEN` and `PORT`, and optionally asks about
+start-on-login (macOS `launchd` / Linux systemd user; Windows has no service
+mode). Nothing is compiled, no APK is built, and **the target machine needs no
+Node, npm, git, Homebrew or Xcode**.
 
-**Install with options:**
+Then:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- \
-  --port 8080 --token mysecrettoken --no-service
+cd ~/MultiCC
+./multicc start              # start in the background and open the browser
+./multicc status             # version, state, URL, data directory
+./multicc service install    # start automatically on login
 ```
+
+Package layout, the boot wrappers, data/log locations and the download-and-verify
+assets are documented in **[Standalone package](standalone.md)** — that document is
+the authority for anything below.
+
+**Install with options** (the flag table in full is in
+[standalone.md](standalone.md)):
 
 | Flag | Description |
 |------|-------------|
-| `--dir <path>` | Install directory (default: `./MultiCC`) |
+| `--dir <path>` | Install directory (default: `~/MultiCC`) |
+| `--version <v\|latest>` | Release to install; default is the tag in the URL |
+| `--from <path\|url>` | Install from a local archive/directory or a URL instead of downloading |
 | `--token <xxx>` | Pre-set `ACCESS_TOKEN` (default: auto-generated) |
 | `--port <port>` | Server port (default: `3000`) |
-| `--no-service` | Skip background service install |
-| `--no-clone` | Use current directory; skip git clone |
-| `--branch <name>` | Git branch to clone (default: `main`) |
+| `--no-service` | Skip the start-on-login setup |
 
-Older automation may still pass `--no-apk`. It is accepted as a deprecated
-compatibility no-op, but is no longer an install option because installation
-never builds an APK.
+Older published command lines still work through compatibility shims: `--branch
+<tag>` is an alias for `--version`, `--no-clone` means "install from the current
+directory" (equivalent to `--from .`), and `--no-apk` is a warning-only no-op —
+installation never builds an APK. Re-running the installer on the same directory
+is an in-place replacement with a rollback point — see
+[standalone.md](standalone.md).
 
-**After install:**
-
-```bash
-cd MultiCC && ./multicc start     # start the server
-cd MultiCC && ./multicc install   # install as macOS launchd background service
-```
-
-**Update anytime:**
+**Update anytime (installed package):**
 
 ```bash
-./multicc update           # pull latest code, reinstall deps if the manifests changed, restart
-./multicc update --force   # land on the remote's code whatever the local tree/history is
-./multicc update --help    # usage
+./multicc update           # download, verify and swap in the newest release
+./multicc update --check   # only compare versions
 ```
 
-Updates never build or rebuild the APK. The dashboard uses a local APK when one
-is present, otherwise it resolves the asset attached to the exact installed
-release tag.
+Your sessions, providers and chat history live in the per-user data directory, so
+updating never touches them, and an interrupted swap rolls back to the previous
+version rather than leaving nothing. Updating from inside the web UI is
+deliberately disabled for packaged installs (`/api/update` returns 409) — for
+them the package *is* the upgrade. The full mechanism is in
+[standalone.md](standalone.md); the source-checkout semantics are below.
 
-On the stable channel (`.multicc_channel` = `stable`, written by the installer when you
-pass `--branch <tag>`) `update` checks out the newest release tag. On the dev channel it
+## Run from a source checkout (developers)
+
+This is the path for hacking on MultiCC itself. It is the only path that needs a
+toolchain:
+
+```bash
+git clone https://github.com/lsjwzh/MultiCC.git
+cd MultiCC
+npm install
+node server.js
+```
+
+Here `./multicc` is a **source-checkout manager** (`start` / `stop` / `restart` /
+`status` / `log` / `update` / `install` / `uninstall`), not the packaged command,
+and `./multicc update` is `git pull` + `npm install` + restart. The
+[standalone package](standalone.md) is what end users install.
+
+`install.sh` is not used on this path, so create `.env` yourself (the server also
+accepts the same variables from the environment):
+
+```env
+ACCESS_TOKEN=<a-long-random-string>
+```
+
+On the stable channel (`.multicc_channel` = `stable`, written by the packaged
+installer) `update` checks out the newest release tag. On the dev channel it
 fast-forwards `main`.
 
 The v1 updater also verifies the independently packaged `cli-provider-router`
@@ -142,25 +156,21 @@ Under the hood: `POST /api/update` with `{"force": true|false}` starts it, `GET
 
 ## Prerequisites
 
-- **Node.js** >= 22.16 (the server uses the built-in `node:sqlite` module; both `server.js` and the `./multicc` manager refuse to start below this floor)
-- **macOS 11+**: Node 22 covers it, but Homebrew stopped building Intel bottles, so old Intel Macs should use the [portable bundle](portable.md) (macOS 11+, no Node, no compiler) instead of this installer
-- **tmux** (for terminal mode; chat mode works without it)
-- **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)).
+Installed from the standalone package, the requirements are only these:
 
-## Manual Install
+- **tmux** (terminal mode only; chat mode works without it). The package does not ship or install `tmux` — install it yourself with Homebrew / your system package manager if you want the terminal page.
+- **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)). The package's runtime is prepended to `PATH`, so these Node-based CLIs run on the bundled Node and you never install Node yourself.
 
-```bash
-git clone https://github.com/lsjwzh/MultiCC.git
-cd MultiCC
-npm install
-node server.js
-```
+Running from a source checkout adds one more:
 
-Open `http://localhost:3000/chat` to begin.
+- **Node.js** >= 22.16 (the server uses the built-in `node:sqlite` module; both `server.js` and the source-checkout `./multicc` manager refuse to start below this floor). This applies to the checkout path only — the standalone package carries its own pinned Node 22, which is also why it supports **macOS 11+** including Intel Macs that Homebrew and the Electron shell no longer cover.
 
-`install.sh` generates an `ACCESS_TOKEN`. If neither `HOST` nor
-`MULTICC_ALLOW_REMOTE` is configured, that password-protected installation
-automatically binds `0.0.0.0`, so other devices on the same IPv4 LAN can open:
+## Network binding and LAN access
+
+The packaged installer (and the checkout, if you set a token) generates an
+`ACCESS_TOKEN`. If neither `HOST` nor `MULTICC_ALLOW_REMOTE` is configured, that
+password-protected installation automatically binds `0.0.0.0`, so other devices on
+the same IPv4 LAN can open:
 
 ```env
 ACCESS_TOKEN=<a-long-random-string>
@@ -183,6 +193,27 @@ next to the LAN URL instead of silently changing either control.
 
 ## CLI Service Manager
 
+**Installed package** (`./multicc` in the install directory):
+
+```bash
+./multicc start             # start server (background + opens the browser)
+./multicc stop              # graceful stop
+./multicc restart           # restart
+./multicc status            # version, state, URL, data directory
+./multicc log -f            # tail live logs
+./multicc config list       # read/write the env file (tokens are masked)
+./multicc update            # verified download + in-place swap
+./multicc service install   # auto-start on login (launchd / systemd user)
+./multicc service uninstall # remove it
+./multicc service status    # is it registered?
+```
+
+Windows has no service mode; every other command works there through
+`multicc.cmd`. See [standalone.md](standalone.md) for the wrappers and the
+stop-marker semantics.
+
+**Source checkout** (`./multicc` in the repo root):
+
 ```bash
 ./multicc start       # start server
 ./multicc stop        # stop server
@@ -195,7 +226,9 @@ next to the LAN URL instead of silently changing either control.
 ./multicc uninstall   # remove launchd agent
 ```
 
-**Linux systemd user service:**
+**Linux systemd user service** — the installed package writes and manages this
+for you (`./multicc service install`). This is the equivalent unit by hand, for a
+source checkout (`./multicc install` covers launchd on macOS only):
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -214,6 +247,10 @@ UNIT
 systemctl --user daemon-reload
 systemctl --user enable --now multicc
 ```
+
+In a package install the unit points at the bundle's own launcher instead, so the
+service starts the same supervised process `./multicc start` would — logs land in
+`logs/service.log` in the data directory.
 
 ## Android APK distribution and iOS builds
 

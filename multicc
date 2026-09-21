@@ -1,6 +1,18 @@
 #!/bin/bash
-# MultiCC service manager — start/stop/restart/log
+# MultiCC service manager for a SOURCE CHECKOUT — start/stop/restart/log
 # Usage: ./multicc start|stop|restart|status|log|update [--force]|install|uninstall
+#
+# This script manages a git checkout of MultiCC (it runs `node server.js` from
+# this directory, and `update` is `git pull` + `npm install`). It is a
+# development tool.
+#
+# Users install MultiCC from the standalone package, which ships its own Node
+# runtime and its own `multicc` command — no Node, npm or git required:
+#
+#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
+#
+# That command lives at <install dir>/multicc and is unrelated to this file
+# apart from the name. See docs/standalone.md.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LABEL="com.multicc.server"
@@ -269,7 +281,8 @@ do_update() {
 
   if [ ! -d .git ]; then
     echo "Not a git checkout ($SCRIPT_DIR) — cannot self-update."
-    echo "Re-run the install script to update."
+    echo "This manager only updates a source checkout; an installed MultiCC updates"
+    echo "with its own command (cd <install dir> && ./multicc update)."
     return 1
   fi
 

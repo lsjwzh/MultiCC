@@ -7,7 +7,9 @@ permissions:
 jobs:
   clean-install:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # The gate now builds the standalone package (pinned runtime download +
+    # production npm install) before installing it, then runs the app suites.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

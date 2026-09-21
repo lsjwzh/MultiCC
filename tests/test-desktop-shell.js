@@ -137,14 +137,31 @@ test('desktop-env resolves packaged and dev layouts', () => {
   assert.equal(packaged.memoryRoot, path.join(packaged.dataRoot, 'memories'));
   assert.equal(packaged.envFile, '/Users/u/Library/Application Support/MultiCC/multicc.env');
   assert.equal(packaged.logsDir, '/Users/u/Library/Application Support/MultiCC/logs');
+  // The shell wraps a standalone tree: the server runs on the runtime staged
+  // next to it, never on Electron's own Node (desktop/main.js spawns this path).
+  assert.equal(packaged.runtimeNode, '/Applications/Resources/runtime/bin/node');
+  assert.equal(packaged.electronRuntime, false);
+  assert.equal(packaged.launcherDir, '/Applications/Resources/launcher');
 
   const dev = desktopEnv.resolveDesktopEnv({ isPackaged: false, userData: '/ignored', repoRoot: '/repo' });
   assert.equal(dev.serverEntry, '/repo/server.js');
   assert.equal(dev.dataRoot, '/repo/.desktop-dev-data');
   assert.equal(dev.envFile, '/repo/.desktop-dev-data/multicc.env');
+  // A checkout has no staged runtime, so dev keeps using the Electron binary.
+  assert.equal(dev.runtimeNode, process.execPath);
+  assert.equal(dev.electronRuntime, true);
+  assert.equal(dev.launcherDir, null);
 });
 
-test('buildChildEnv: dotenv fills gaps, desktop knobs always win, child runs as Node', () => {
+test('desktop-env resolves the runtime path the bundle actually writes', () => {
+  const bundleScript = require(path.join(ROOT, 'scripts', 'standalone-bundle.js'));
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    assert.equal(desktopEnv.runtimeNodeIn('/r', platform), bundleScript.runtimeNodePath('/r', platform),
+      `${platform}: the shell and the bundle builder must agree on where node lives`);
+  }
+});
+
+test('buildChildEnv: dotenv fills gaps, desktop knobs always win, bundled runtime first on PATH', () => {
   const layout = desktopEnv.resolveDesktopEnv({ isPackaged: true, resourcesPath: '/r', userData: '/u' });
   const env = desktopEnv.buildChildEnv({
     port: 3457,
@@ -159,11 +176,29 @@ test('buildChildEnv: dotenv fills gaps, desktop knobs always win, child runs as 
   assert.equal(env.MULTICC_MEMORY_ROOT, layout.memoryRoot);
   assert.equal(env.MULTICC_ENV_FILE, layout.envFile);
   assert.equal(env.MULTICC_DESKTOP, '1');
-  assert.equal(env.ELECTRON_RUN_AS_NODE, '1');
+  // The child is the staged Node runtime, not the Electron binary: the flag
+  // that turns Electron into Node must not leak into a real Node process.
+  assert.equal(env.ELECTRON_RUN_AS_NODE, undefined, 'packaged children run the bundled runtime');
+  // ...and that runtime leads PATH, so session CLIs use the same Node.
+  assert.equal(env.PATH, `${path.dirname(layout.runtimeNode)}${path.delimiter}/bin`);
   // existing env wins over .env; empty slots get filled
   assert.equal(env.SOME_KEY, 'from-env');
   assert.equal(env.EMPTY_KEY, 'filled');
   assert.equal(env.ACCESS_TOKEN, 'abc');
+
+  // Dev mode has no staged runtime: the child IS the Electron binary, so it
+  // needs the flag — and there is no bin/ dir to put on PATH.
+  const dev = desktopEnv.resolveDesktopEnv({ isPackaged: false, userData: '/u', repoRoot: '/repo' });
+  const devEnv = desktopEnv.buildChildEnv({ port: 1, desktopEnv: dev, baseEnv: { PATH: '/bin' }, dotenv: {} });
+  assert.equal(devEnv.ELECTRON_RUN_AS_NODE, '1');
+  assert.equal(devEnv.PATH, '/bin');
+
+  // Windows spells it Path, and a second PATH key would be a coin flip.
+  const winEnv = desktopEnv.prependPathEntry({ Path: 'C:\\bin' }, 'C:\\runtime');
+  assert.deepEqual(winEnv, { Path: ['C:\\runtime', 'C:\\bin'].join(path.delimiter) },
+    'the existing spelling of PATH must be the one that gets written');
+  assert.deepEqual(desktopEnv.prependPathEntry({ PATH: '/rt:/bin' }, '/rt'), { PATH: '/rt:/bin' },
+    'an already-leading entry must not be duplicated');
 
   assert.deepEqual(desktopEnv.parseEnvFile('# c\nA=1\n\n  B = spaced \n'), { A: '1', B: 'spaced' });
 });
@@ -614,6 +649,29 @@ test('host-env honors MULTICC_ENV_FILE for read and write', withEnv({ MULTICC_EN
 
 // ── static: security posture, purity, packaging, workflow, icon ─────────────
 
+test('desktop-stage-standalone stages the same Resources tree a package ships', { timeout: 180_000 }, () => {
+  const out = tmpdir('desktop-stage-res-');
+  const res = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'desktop-stage-standalone.js'),
+    '--out', out, '--no-install', '--no-runtime'], { encoding: 'utf8' });
+  assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
+  for (const must of ['app-server/server.js', 'app-server/public/manage.html',
+    'launcher/standalone-launcher.js', 'launcher/standalone-cli.js',
+    'launcher/lib/backend-supervisor.js', 'launcher/lib/desktop-env.js',
+    'bundle-manifest.json']) {
+    assert.ok(fs.existsSync(path.join(out, must)), `staged resources missing ${must}`);
+  }
+  assert.equal(fs.existsSync(path.join(out, 'runtime')), false, '--no-runtime stages no runtime');
+  const manifest = JSON.parse(fs.readFileSync(path.join(out, 'bundle-manifest.json'), 'utf8'));
+  assert.equal(manifest.name, 'multicc-standalone');
+  assert.equal(manifest.version, require(path.join(ROOT, 'package.json')).version);
+  assert.equal(manifest.nodeRuntime, 'none');
+  // The bundle root is a package thing: inside an .app those paths do not
+  // exist, so the desktop tree must not carry a half-valid copy of them.
+  for (const bundleOnly of ['multicc', 'multicc.cmd', 'MultiCC.app']) {
+    assert.equal(fs.existsSync(path.join(out, bundleOnly)), false, `${bundleOnly} belongs to a package, not the shell`);
+  }
+});
+
 test('main.js: hardened window, single instance, local-only navigation', () => {
   const src = fs.readFileSync(path.join(DESKTOP, 'main.js'), 'utf8');
   assert.match(src, /requestSingleInstanceLock/);
@@ -627,6 +685,14 @@ test('main.js: hardened window, single instance, local-only navigation', () => {
   assert.match(src, /shell\.openExternal/);
   assert.match(src, /before-quit/, 'teardown hook exists');
   assert.doesNotMatch(src, /loadURL\(\s*['"]https?:\/\/(?!127\.0\.0\.1)/, 'no remote page loads');
+  // The shell runs the staged standalone tree: its backend child is the
+  // bundled runtime, and a packaged app without one is a broken build rather
+  // than a reason to silently fall back to Electron's Node.
+  assert.match(src, /execPath: desktopEnv\.runtimeNode/,
+    'the backend must run on the runtime staged inside the app');
+  assert.doesNotMatch(src, /execPath: process\.execPath/,
+    'Electron\'s own Node is not the server runtime in a packaged app');
+  assert.match(src, /missing-runtime/, 'a packaged app with no bundled runtime must say so');
 });
 
 test('preload.js: minimal bridge, no privileged requires', () => {
@@ -658,7 +724,18 @@ test('desktop packaging config: pinned versions, stable names, user-scope instal
   assert.equal(b.asar, true);
   assert.equal(pkg.main, 'main.js');
   assert.deepEqual(b.files.sort(), ['assets/**/*', 'lib/**/*', 'main.js', 'package.json', 'preload.js'].sort());
-  assert.equal(b.extraResources[0].to, 'app-server');
+  // The app ships a whole standalone Resources tree, staged by the same builder
+  // that produces multicc-standalone-*.tar.gz. A missing entry here is an
+  // installer with no server (or no runtime to run it on).
+  assert.deepEqual(b.extraResources.map(r => r.to).sort(),
+    ['app-server', 'bundle-manifest.json', 'launcher', 'runtime']);
+  for (const resource of b.extraResources) {
+    assert.match(resource.from, /^\.staging\/resources\//, `${resource.to} must come from the standalone staging tree`);
+  }
+  assert.match(pkg.scripts['stage:resources'], /desktop-stage-standalone\.js/,
+    'the staging step must be the standalone tree, not a bare app-server copy');
+  assert.doesNotMatch(pkg.scripts.dist, /stage:server/,
+    'the desktop build must not keep a second, drifting server staging path');
   assert.match(b.mac.artifactName, /multicc-desktop-\$\{version\}-macos-\$\{arch\}/);
   assert.match(b.win.artifactName, /multicc-desktop-\$\{version\}-windows-\$\{arch\}/);
   // Linux expands ${arch} to the distro spelling (deb -> amd64, AppImage ->
@@ -726,6 +803,18 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   assert.match(wf, /--arch "\$arch" --platform "\$\{\{ matrix\.native_platform \}\}"/);
   assert.match(wf, /scripts\/native-arch\.js/);
   assert.match(wf, /--expect-arch "\$arch"/);
+  // The desktop app stages the standalone Resources tree (server + pinned
+  // runtime + launcher), so the dmg and the tarball ship the same product.
+  assert.match(wf, /scripts\/desktop-stage-standalone\.js/);
+  assert.match(wf, /--out \.staging\/resources/);
+  assert.match(wf, /--root \.staging\/resources\/app-server/);
+  assert.match(wf, /--no-verify/,
+    'a cross-arch target cannot boot its runtime, and only that half may be skipped');
+  // And the packaged bundle has to be checked, not just the staging dir: a bad
+  // extraResources mapping builds an installer whose window shows an error page.
+  assert.match(wf, /packaged app carries the standalone tree/);
+  assert.doesNotMatch(wf, /desktop-bundle-server\.js/,
+    'the desktop build must not stage a bare app-server without its runtime');
   // `--mac --x64` does NOT pin the arch: desktop/package.json declares `arch`
   // per target, and an explicit config arch list wins over the CLI flag
   // (electron-builder 26.15.3: `--mac --x64` still yields arm64+x64, which
@@ -733,12 +822,13 @@ test('desktop-release workflow: three native runners, attaches (never creates) t
   // form builds exactly one arch per pass.
   assert.match(wf, /--mac "dmg:\$arch"/);
   assert.doesNotMatch(wf, /electron-builder .*"--\$arch"/);
-  // Portable bundles are built by the same workflow and must land on the same
-  // release; a failed portable build blocks publishing instead of shipping a
-  // half-populated Release.
-  assert.match(wf, /scripts\/portable-bundle\.js/);
-  assert.match(wf, /needs: \[build, portable\]/);
-  assert.match(wf, /multicc-portable-\$\{VERSION\}-darwin-x64\.tar\.gz/);
+  // Standalone packages are the primary distribution form (install.sh
+  // downloads exactly these) and are built by the same workflow, so they must
+  // land on the same release; a failed build blocks publishing instead of
+  // shipping a half-populated Release.
+  assert.match(wf, /scripts\/standalone-bundle\.js/);
+  assert.match(wf, /needs: \[build, standalone\]/);
+  assert.match(wf, /multicc-standalone-\$\{VERSION\}-darwin-x64\.tar\.gz/);
 });
 
 test('desktop icon is a square PNG of at least 512px', () => {

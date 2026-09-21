@@ -5,8 +5,8 @@
 ```
 multicc/
 ├── server.js                     # HTTP + WebSocket host: wires routes, tmux, CLI spawner, bridges
-├── install.sh                    # One-command installer with OS detection
-├── multicc                       # CLI service manager (start/stop/restart/status/log/update/install)
+├── install.sh                    # One-line installer: downloads the standalone package for this tag
+├── multicc                       # Source-checkout manager (start/stop/restart/status/log/update/install)
 ├── ecosystem.config.js           # PM2 config (alternative process manager)
 │
 ├── src/                          # Server-side modules
@@ -102,7 +102,9 @@ multicc/
 │
 ├── skills/                       # 76 Claude/Codex skill definitions
 ├── tests/                        # Deterministic unit + contract + governance suites
-├── scripts/                      # Governance checks, i18n generation, router MCP shim
+├── scripts/                      # Governance checks, i18n generation, router MCP shim,
+│                                 #   standalone-bundle.js (the release artifact) + desktop-stage-standalone.js
+├── desktop/                      # Electron shell around the same Resources tree
 │
 ├── docs/                         # This documentation set + design & contract docs
 │

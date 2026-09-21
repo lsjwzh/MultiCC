@@ -2,12 +2,15 @@
 
 // MultiCC desktop shell — Electron main process.
 //
-// The shell is deliberately thin: everything OS-specific lives in lib/ modules
-// that never import electron, and the entire UI is the existing MultiCC web
-// app served by a locally-supervised backend child (this very binary running
-// as plain Node via ELECTRON_RUN_AS_NODE). The window only ever loads two
-// local origins: our backend (http://127.0.0.1:<port>) and our own splash /
-// error pages (file://). No remote content is executed.
+// This is a shell around the standalone release, not a second build of the
+// product: Contents/Resources carries the same tree a `multicc-standalone-*`
+// package does (app-server + the pinned Node runtime + launcher, staged by
+// scripts/desktop-stage-standalone.js), and the supervised backend child runs
+// on that bundled runtime — the identical code and Node that install.sh puts on
+// a server. Everything OS-specific lives in lib/ modules that never import
+// electron; the entire UI is the existing MultiCC web app. The window only ever
+// loads two local origins: our backend (http://127.0.0.1:<port>) and our own
+// splash / error pages (file://). No remote content is executed.
 
 const { app, BrowserWindow, Menu, shell } = require('electron');
 const fs = require('fs');
@@ -51,8 +54,10 @@ function logLine(...args) {
 
 function sanitizedBaseEnv() {
   const env = { ...process.env };
-  // The child must not inherit anything that changes how the Electron binary
-  // boots — we set ELECTRON_RUN_AS_NODE deliberately in desktop-env instead.
+  // Electron sets ELECTRON_RUN_AS_NODE=1 for itself when it is relaunched as
+  // Node; the backend child decides that for itself in desktop-env, so it must
+  // never be inherited. (Launching our GUI from a terminal that had it set
+  // would otherwise turn the whole app into a headless process.)
   delete env.ELECTRON_RUN_AS_NODE;
   return env;
 }
@@ -158,17 +163,29 @@ async function startBackend() {
     });
     if (reclaim.reclaimed) logLine(`reclaimed previous backend (${reclaim.method})`);
 
+    // The server must run on the runtime staged inside this app, not on
+    // Electron's own Node: that is what makes the dmg and the tarball the same
+    // product, and it is the Node the release smoke-tested end to end. A
+    // packaged app with no runtime is a broken build, not something to paper
+    // over by falling back to Electron's Node.
+    if (app.isPackaged && !fs.existsSync(desktopEnv.runtimeNode)) {
+      logLine(`bundled runtime missing at ${desktopEnv.runtimeNode}`);
+      showError({ reason: 'missing-runtime', message: desktopEnv.runtimeNode }, null);
+      return;
+    }
+
     const port = await findFreePort();
-    logLine(`starting backend on 127.0.0.1:${port} (server: ${desktopEnv.serverEntry})`);
+    logLine(`starting backend on 127.0.0.1:${port} (server: ${desktopEnv.serverEntry}, runtime: ${desktopEnv.runtimeNode})`);
     supervisor = createBackendSupervisor({
       spawn: childProcess.spawn,
-      execPath: process.execPath,
+      execPath: desktopEnv.runtimeNode,
       serverEntry: desktopEnv.serverEntry,
       buildEnv: ({ port: childPort }) => buildChildEnv({
         port: childPort,
         desktopEnv,
         baseEnv: sanitizedBaseEnv(),
         dotenv: readEnvValues(desktopEnv.envFile),
+        runtimeNode: desktopEnv.runtimeNode,
       }),
       logsDir: desktopEnv.logsDir,
       runtimeInfoFile: desktopEnv.runtimeInfoFile,

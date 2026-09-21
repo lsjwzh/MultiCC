@@ -1,31 +1,37 @@
 #!/bin/bash
 # ============================================================================
-# MultiCC — One-Click Install Script
+# MultiCC — One-Click Installer (standalone package)
 # ============================================================================
 # MultiCC version  2.0.3
 # Release channel  stable — see https://github.com/lsjwzh/MultiCC/releases
 # ============================================================================
-# Usage:
-#   Stable release:
-#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash -s -- --branch v2.0.3
-#   Latest (main branch, may be ahead of the latest stable release):
-#     curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
+# Usage — stable release, no flags needed:
+#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.3/install.sh | bash
 #
-# Or download and run locally:
+# Usage — newest release instead of this pinned one:
+#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- --version latest
+#
+# Or download and run it locally:
 #   chmod +x install.sh && ./install.sh
 #
+# You do NOT need Node, npm, git, Homebrew or Xcode. This script only downloads
+# the standalone package for your platform, verifies its checksum and unpacks
+# it; the package carries its own Node runtime and its own dependencies. The
+# only tools it needs are curl (or wget), tar and a SHA-256 utility.
+#
 # Options:
-#   --dir <path>       Install into this directory (default: ./MultiCC)
-#   --token <xxx>      Pre-set ACCESS_TOKEN (default: auto-generate)
-#   --port <port>      Server port (default: 3000)
-#   --no-service       Skip launchd/systemd service installation
-#   --no-clone         Use current directory; don't git clone
-#   --branch <name>    Git branch to clone (default: main)
-#   --help             Show this help
+#   --dir <path>        Install into this directory (default: ./MultiCC)
+#   --version <v>       Release to install: v2.0.3 (default) or "latest"
+#   --token <xxx>       Pre-set ACCESS_TOKEN (default: auto-generate)
+#   --port <port>       Server port (default: 3000)
+#   --from <path|url>   Install from a local archive/directory or URL instead
+#                       of GitHub Releases (offline / air-gapped installs)
+#   --no-service        Skip the start-on-login setup
+#   --help              Show this help
 #
 # After install:
-#   cd MultiCC && ./multicc start     # start server
-#   cd MultiCC && ./multicc install   # install as background service (macOS)
+#   cd MultiCC && ./multicc start     # start in the background, opens the browser
+#   cd MultiCC && ./multicc service install   # start automatically on login
 # ============================================================================
 
 set -euo pipefail
@@ -50,28 +56,6 @@ warn()    { echo "${C_YELLOW}[!]${C_RESET} $*"; }
 err()     { echo "${C_RED}[ERROR]${C_RESET} $*"; }
 step()    { echo ""; echo "${C_BOLD}${C_CYAN}>> $*${C_RESET}"; }
 
-check_runtime_dependencies() {
-  local check_rc=0
-  node scripts/check-runtime-deps.js || check_rc=$?
-  if [ "$check_rc" -eq 0 ]; then
-    return 0
-  fi
-
-  # Exit 10 means the Node runtime cannot open a SQLite database. That is the
-  # version floor, not a broken install: SQLite ships inside Node as
-  # node:sqlite since 22.5, so there is nothing to rebuild.
-  if [ "$check_rc" -eq 10 ]; then
-    err "This Node runtime cannot open SQLite databases."
-    echo ""
-    echo "  MultiCC stores its durable state in SQLite and needs Node 22.16 or newer"
-    echo "  (\`node:sqlite\` is built into Node since 22.5). Current runtime:"
-    node -v
-    echo ""
-    echo "  Install a newer Node, or use the portable bundle, which ships its own runtime."
-  fi
-  return "$check_rc"
-}
-
 # Generate a random 20-char alphanumeric token. Must be SIGPIPE-safe: under
 # `set -euo pipefail`, a `... | head -c 20` pipeline makes the upstream command
 # exit 141 (SIGPIPE) once head closes the pipe, which would otherwise abort the
@@ -87,45 +71,6 @@ gen_token() {
   printf '%s' "$t"
 }
 
-# Safely upsert a KEY=VALUE line into .env without using sed. The value may
-# contain characters that are special to sed's replacement (/, &, \) — e.g. a
-# user-supplied --token — so a `sed "s/.../$VALUE/"` rewrite would corrupt the
-# command or abort the script under `set -e`. We instead drop any existing line
-# for KEY and append the literal new line. KEY is always a fixed literal here.
-set_env_var() {
-  local key="$1" val="$2" file="$3" tmp
-  tmp="$(mktemp "${file}.XXXXXX")" || { err "Could not create temp file next to $file"; exit 1; }
-  if [ -f "$file" ]; then
-    grep -v "^${key}=" "$file" > "$tmp" 2>/dev/null || true
-  fi
-  printf '%s=%s\n' "$key" "$val" >> "$tmp"
-  mv "$tmp" "$file"
-}
-
-banner() {
-  local channel_label
-  if [ "$BRANCH" = "main" ]; then
-    channel_label="dev channel"
-  else
-    channel_label="v${INSTALLER_VERSION}"
-  fi
-  echo ""
-  echo "${C_BOLD}${C_MAGENTA}╔══════════════════════════════════════════════════════╗${C_RESET}"
-  echo "${C_BOLD}${C_MAGENTA}║${C_RESET}  MultiCC — One-Click Installer  v${INSTALLER_VERSION}  ${channel_label}"
-  echo "${C_BOLD}${C_MAGENTA}║${C_RESET}  Multi-Client Claude Code — drive one Claude Code CLI"
-  echo "${C_BOLD}${C_MAGENTA}║${C_RESET}  from browser, phone, or WeChat, all at once."
-  echo "${C_BOLD}${C_MAGENTA}╚══════════════════════════════════════════════════════╝${C_RESET}"
-  echo ""
-
-  if [ "$CHANNEL" = "dev" ] || { [ -z "$CHANNEL" ] && [ "$BRANCH" = "main" ]; }; then
-    warn "You are on the development channel (main)."
-    echo "       This may contain unfinished changes."
-    echo "       For the latest stable release, run:"
-    echo "       curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${INSTALLER_VERSION}/install.sh | bash -s -- --branch v${INSTALLER_VERSION}"
-    echo ""
-  fi
-}
-
 # MultiCC version — keep in sync with package.json when cutting a release
 INSTALLER_VERSION="2.0.3"
 
@@ -134,8 +79,8 @@ INSTALL_DIR=""
 ACCESS_TOKEN=""
 PORT="3000"
 NO_SERVICE=false
-NO_CLONE=false
-BRANCH="main"
+VERSION=""
+FROM=""
 
 # Guard value-taking flags: under `set -u`, referencing $2 when a flag is the
 # last argument aborts with an unhelpful "$2: unbound variable". Fail cleanly.
@@ -146,35 +91,43 @@ while [ $# -gt 0 ]; do
     --dir)       need_val "$1" "$#"; INSTALL_DIR="$2"; shift 2 ;;
     --token)     need_val "$1" "$#"; ACCESS_TOKEN="$2"; shift 2 ;;
     --port)      need_val "$1" "$#"; PORT="$2"; shift 2 ;;
+    --version|-V) need_val "$1" "$#"; VERSION="$2"; shift 2 ;;
+    --from)      need_val "$1" "$#"; FROM="$2"; shift 2 ;;
     --no-service) NO_SERVICE=true; shift ;;
     --no-apk)     warn "--no-apk is no longer needed; APK builds are always on demand"; shift ;;
-    --no-clone)  NO_CLONE=true; shift ;;
-    --branch)    need_val "$1" "$#"; BRANCH="$2"; shift 2 ;;
+    # `--branch` and `--no-clone` belonged to the old git-clone installer. They
+    # are kept as compatibility shims so an older published command line still
+    # installs the same release instead of failing with "unknown option".
+    --branch)    need_val "$1" "$#"; VERSION="$2"; shift 2 ;;
+    --no-clone)  FROM="$PWD"; shift ;;
     --help|-h)
       cat << HELP
-MultiCC — One-Click Install Script  v${INSTALLER_VERSION}
+MultiCC — One-Click Installer  v${INSTALLER_VERSION} (standalone package)
 
-Usage — stable release:
-  curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${INSTALLER_VERSION}/install.sh | bash -s -- --branch v${INSTALLER_VERSION}
+Usage — stable release, no flags needed:
+  curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v${INSTALLER_VERSION}/install.sh | bash
 
-Usage — latest (main branch, may be ahead of stable):
-  curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash
+Usage — newest release instead of this pinned one:
+  curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- --version latest
 
-Or download and run locally:
+Or download and run it locally:
   chmod +x install.sh && ./install.sh
 
+No Node, npm, git, Homebrew or Xcode required: the standalone package ships
+its own runtime.
+
 Options:
-  --dir <path>       Install into this directory (default: ./MultiCC)
-  --token <xxx>      Pre-set ACCESS_TOKEN (default: auto-generate)
-  --port <port>      Server port (default: 3000)
-  --no-service       Skip launchd/systemd service installation
-  --no-clone         Use current directory; don't git clone
-  --branch <name>    Git branch to clone (default: main)
-  --help             Show this help
+  --dir <path>        Install into this directory (default: ./MultiCC)
+  --version <v>       Release to install: v${INSTALLER_VERSION} (default) or "latest"
+  --token <xxx>       Pre-set ACCESS_TOKEN (default: auto-generate)
+  --port <port>       Server port (default: 3000)
+  --from <path|url>   Install from a local archive/directory or URL instead of GitHub
+  --no-service        Skip the start-on-login setup
+  --help              Show this help
 
 After install:
-  cd MultiCC && ./multicc start     # start server
-  cd MultiCC && ./multicc install   # install as background service (macOS)
+  cd MultiCC && ./multicc start             # start (background + opens the browser)
+  cd MultiCC && ./multicc service install   # start automatically on login
 HELP
       exit 0
       ;;
@@ -182,381 +135,440 @@ HELP
   esac
 done
 
+RELEASES_URL="https://github.com/lsjwzh/MultiCC/releases"
+API_LATEST="https://api.github.com/repos/lsjwzh/MultiCC/releases/latest"
 
-REPO_URL="https://github.com/lsjwzh/MultiCC.git"
-
-# Validate --port early so we never write a non-numeric PORT into .env.
+# Validate --port early so we never write a non-numeric PORT into the config.
 case "$PORT" in
   ''|*[!0-9]*) err "Invalid --port: '$PORT' (must be a number, e.g. 3000)"; exit 1 ;;
 esac
 
-# Decide whether this is a stable (tag) or dev (branch) install.
-# We record the decision in .multicc_channel so ./multicc update knows which
-# stream to follow later.  This must be set BEFORE banner() so the banner can
-# display a dev-channel warning when appropriate.
-CHANNEL=""
-if [ "$BRANCH" != "main" ] && echo "$BRANCH" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-  CHANNEL="stable"
-elif [ "$BRANCH" != "main" ]; then
-  CHANNEL="dev"
-else
-  CHANNEL="dev"
+banner() {
+  local channel_label
+  case "$VERSION" in
+    ""|"${INSTALLER_VERSION}"|"v${INSTALLER_VERSION}") channel_label="stable v${INSTALLER_VERSION}" ;;
+    latest) channel_label="newest release" ;;
+    *) channel_label="release v${VERSION#v}" ;;
+  esac
+  echo ""
+  echo "${C_BOLD}${C_MAGENTA}╔══════════════════════════════════════════════════════╗${C_RESET}"
+  echo "${C_BOLD}${C_MAGENTA}║${C_RESET}  MultiCC — One-Click Installer  (${channel_label})"
+  echo "${C_BOLD}${C_MAGENTA}║${C_RESET}  Multi-Client Claude Code — drive one Claude Code CLI"
+  echo "${C_BOLD}${C_MAGENTA}║${C_RESET}  from browser, phone, or WeChat, all at once."
+  echo "${C_BOLD}${C_MAGENTA}╚══════════════════════════════════════════════════════╝${C_RESET}"
+  echo ""
+}
+
+# ── Tooling ───────────────────────────────────────────────────────────────
+# The whole point of the standalone package is that the target machine needs
+# nothing installed. These are the last few tools that come with the OS.
+require_tool() {
+  local cmd="$1" hint="$2"
+  command -v "$cmd" >/dev/null 2>&1 || { err "$cmd is required. $hint"; exit 1; }
+}
+
+DOWNLOADER=""
+if command -v curl >/dev/null 2>&1; then
+  DOWNLOADER="curl"
+elif command -v wget >/dev/null 2>&1; then
+  DOWNLOADER="wget"
 fi
+
+# Same download with either tool; -f/--fail turns an HTTP 404 into a failure
+# instead of a saved HTML error page that would later fail extraction.
+download() {
+  local url="$1" dest="$2"
+  if [ "$DOWNLOADER" = "curl" ]; then
+    curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$dest" "$url"
+  elif [ "$DOWNLOADER" = "wget" ]; then
+    wget -O "$dest" "$url"
+  else
+    err "curl or wget is required to download MultiCC."
+    echo "       Install curl (macOS/Linux ship it), or download the package by hand:"
+    echo "       ${RELEASES_URL}"
+    exit 1
+  fi
+}
+
+# Prints the SHA-256 of a file, or nothing when no utility is available.
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  else
+    printf ''
+  fi
+}
 
 banner
 
-# ── Check OS ──────────────────────────────────────────────────────────────
+# ── Detect platform and architecture ──────────────────────────────────────
 step "Checking environment"
 OS="$(uname -s)"
-if [ "$OS" = "Darwin" ]; then
-  ok "macOS detected"
-  IS_MACOS=true
-  IS_LINUX=false
-elif [ "$OS" = "Linux" ]; then
-  ok "Linux detected"
-  IS_MACOS=false
-  IS_LINUX=true
-  if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
-    info "WSL detected — Linux install path is used; browser/audio/service behavior may differ from native Linux"
-  fi
-else
-  warn "Unsupported OS: $OS — may still work but is untested"
-  IS_MACOS=false
-  IS_LINUX=false
-fi
-
-# ── Detect Node.js ────────────────────────────────────────────────────────
-# server.js uses the built-in `node:sqlite` module, which stabilized in Node
-# 22.16. Both server.js and the ./multicc manager hard-exit below that floor,
-# so we gate here on the exact minimum (≥22.16.0) instead of letting users
-# discover it only at `start`.
-NODE_MIN_MAJOR=22
-NODE_MIN_MINOR=16
-
-# 0 (true) if major.minor is older than the required floor.
-node_too_old() {
-  [ "$1" -lt "$NODE_MIN_MAJOR" ] && return 0
-  [ "$1" -gt "$NODE_MIN_MAJOR" ] && return 1
-  [ "$2" -lt "$NODE_MIN_MINOR" ]
-}
-
-print_node_install_hint() {
-  echo ""
-  if [ "$IS_MACOS" = true ]; then
-    echo "  Install: brew install node       # Apple Silicon, or Intel on macOS 13+"
-    echo "  Old Intel Mac (macOS 12 or older): Homebrew no longer builds Intel bottles."
-    echo "  Grab the macOS x64 LTS tarball from https://nodejs.org/en/download, unpack it"
-    echo "  and put its bin/ on PATH (no compiler needed) — or use nvm."
-    echo "  Or skip Node entirely: the portable bundle ships its own runtime (docs/portable.md)"
-  else
-    echo "  Install:"
-    echo "    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -   # recommended (>= 22.16)"
-    echo "    sudo apt-get install -y nodejs"
-  fi
-  echo "  Or visit: https://nodejs.org/en/download   (pick an LTS >= 22.16)"
-}
-
-if command -v node >/dev/null 2>&1; then
-  NODE_VERSION="$(node --version | sed 's/^v//')"
-  NODE_MAJOR="$(echo "$NODE_VERSION" | cut -d. -f1)"
-  NODE_MINOR="$(echo "$NODE_VERSION" | cut -d. -f2)"
-  if node_too_old "$NODE_MAJOR" "$NODE_MINOR"; then
-    err "Node.js v${NODE_VERSION} found, but v${NODE_MIN_MAJOR}.${NODE_MIN_MINOR}.0+ is required."
-    echo "  (the server uses the built-in node:sqlite module, which requires Node 22.16+)"
-    print_node_install_hint
-    exit 1
-  fi
-  ok "Node.js v${NODE_VERSION}"
-else
-  err "Node.js is not installed (v${NODE_MIN_MAJOR}.${NODE_MIN_MINOR}.0+ is required)."
-  print_node_install_hint
-  exit 1
-fi
-
-# ── Detect npm ────────────────────────────────────────────────────────────
-if command -v npm >/dev/null 2>&1; then
-  ok "npm $(npm --version)"
-else
-  err "npm not found — should come with Node.js. Please reinstall."
-  exit 1
-fi
-
-# ── Detect git ────────────────────────────────────────────────────────────
-if command -v git >/dev/null 2>&1; then
-  ok "git $(git --version | awk '{print $3}')"
-else
-  err "git is not installed."
-  if [ "$IS_MACOS" = true ]; then
-    echo "  Run: xcode-select --install"
-  else
-    echo "  Run: sudo apt-get install -y git"
-  fi
-  exit 1
-fi
-
-# ── Detect tmux (installed below after the checkout is available) ────────
-if command -v tmux >/dev/null 2>&1; then
-  ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}')"
-else
-  info "tmux is missing — the installer will install it for terminal sessions and CLI login"
-fi
-
-# ── Detect OpenSSL (recommended, not required at install time) ─────────────
-if command -v openssl >/dev/null 2>&1; then
-  ok "$(openssl version 2>/dev/null | head -1)"
-else
-  warn "openssl not found — HTTPS certificate generation may fail when the server starts"
-  if [ "$IS_MACOS" = true ]; then
-    echo "       Install: brew install openssl"
-  elif [ "$IS_LINUX" = true ]; then
-    echo "       Install: sudo apt-get install -y openssl"
-  else
-    echo "       Install OpenSSL using your OS package manager."
-  fi
-fi
-
-# ── Detect AI coding CLIs (recommended, not required for install) ──────────
-detect_cli() {
-  local cmd="$1"
-  local label="$2"
-  local login_hint="$3"
-  local found version
-
-  if found="$(command -v "$cmd" 2>/dev/null)"; then
-    version="$("$cmd" --version 2>/dev/null | head -1 || true)"
-    if [ -n "$version" ]; then
-      ok "$label CLI found: $found ($version)"
-    else
-      ok "$label CLI found: $found"
+case "$OS" in
+  Darwin) PLATFORM="darwin"; ok "macOS detected" ;;
+  Linux)
+    PLATFORM="linux"
+    ok "Linux detected"
+    if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+      info "WSL detected — the Linux package is installed; browser/audio/service behavior may differ"
     fi
-  else
-    warn "$label CLI not found — sessions using $cmd will fail until it is installed and logged in"
-    echo "       $login_hint"
+    ;;
+  MINGW*|MSYS*|CYGWIN*) PLATFORM="win32"; ok "Windows (Git Bash / MSYS) detected" ;;
+  *) err "Unsupported OS: $OS"; echo "       Download a package by hand: ${RELEASES_URL}"; exit 1 ;;
+esac
+
+MACHINE="$(uname -m)"
+case "$MACHINE" in
+  x86_64|amd64) ARCH="x64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *) err "Unsupported CPU architecture: $MACHINE"; echo "       Download a package by hand: ${RELEASES_URL}"; exit 1 ;;
+esac
+ok "Architecture: ${ARCH}"
+
+# ── Resolve which release to install ──────────────────────────────────────
+step "Resolving release"
+
+# The GitHub API is only needed for `--version latest`; the common path is a
+# plain URL whose tag we already know.
+if [ "$VERSION" = "latest" ]; then
+  if [ "$DOWNLOADER" = "" ]; then
+    err "--version latest needs curl or wget."
+    exit 1
   fi
+  TMP_JSON="$(mktemp "${TMPDIR:-/tmp}/multicc-release.XXXXXX")"
+  if download "$API_LATEST" "$TMP_JSON" 2>/dev/null; then
+    VERSION="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP_JSON" | head -1)"
+  fi
+  rm -f "$TMP_JSON"
+  [ -n "$VERSION" ] || { err "Could not determine the newest release (GitHub API unreachable or rate-limited)."; echo "       Install a specific version instead: --version v${INSTALLER_VERSION}"; exit 1; }
+  info "Newest release: $VERSION"
+elif [ -z "$VERSION" ]; then
+  VERSION="v${INSTALLER_VERSION}"
+elif [ "${VERSION#v}" = "$VERSION" ]; then
+  VERSION="v${VERSION}"
+fi
+
+# Everything below (asset names, config defaults) uses the bare version number.
+VERSION_NUMBER="${VERSION#v}"
+case "$VERSION_NUMBER" in
+  ''|*[!0-9.]*) err "Invalid --version: '$VERSION' (expected e.g. v${INSTALLER_VERSION} or latest)"; exit 1 ;;
+esac
+
+if [ "$PLATFORM" = "win32" ]; then
+  ARCHIVE_NAME="multicc-standalone-${VERSION_NUMBER}-${PLATFORM}-${ARCH}.zip"
+else
+  ARCHIVE_NAME="multicc-standalone-${VERSION_NUMBER}-${PLATFORM}-${ARCH}.tar.gz"
+fi
+ok "MultiCC ${VERSION_NUMBER} (${PLATFORM}-${ARCH})"
+
+# ── Install directory ─────────────────────────────────────────────────────
+INSTALL_DIR="${INSTALL_DIR:-$PWD/MultiCC}"
+PARENT_DIR="$(dirname "$INSTALL_DIR")"
+mkdir -p "$PARENT_DIR"
+INSTALL_DIR="$(cd "$PARENT_DIR" && pwd)/$(basename "$INSTALL_DIR")"
+PARENT_DIR="$(dirname "$INSTALL_DIR")"
+
+# The bundle's own command, plus the two spellings we show the user. `multicc`
+# is a shell script; on Windows (Git Bash / MSYS) the wrapper is a .cmd, so the
+# bundled runtime and CLI are invoked directly instead. Both routes reach the
+# same code and the same config file.
+MULTICC_BIN="$INSTALL_DIR/multicc"
+if [ "$PLATFORM" = "win32" ]; then
+  MULTICC_CMD=("$INSTALL_DIR/Resources/runtime/node.exe" "$INSTALL_DIR/Resources/launcher/standalone-cli.js")
+  CMD_NAME="multicc.cmd"
+else
+  MULTICC_CMD=("$MULTICC_BIN")
+  CMD_NAME="./multicc"
+fi
+START_CMD="$CMD_NAME start"
+
+# Anything we create on the way out: the staging area and, during a replace,
+# the previous installation. Never the install directory itself.
+STAGE_DIR=""
+OLD_DIR=""
+cleanup() {
+  [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ] && rm -rf "$STAGE_DIR" 2>/dev/null
+  return 0
+}
+trap cleanup EXIT
+
+is_multicc_install() {
+  [ -f "$1/multicc" ] || [ -f "$1/multicc.cmd" ] || [ -d "$1/MultiCC.app" ]
 }
 
-detect_cli "claude" "Claude Code" "Install/login first, then verify with: claude --version"
-detect_cli "codex" "Codex" "Optional unless you create Codex sessions; verify with: codex --version"
-
-# ── Determine install directory ───────────────────────────────────────────
-
-if [ "$NO_CLONE" = true ]; then
-  INSTALL_DIR="${INSTALL_DIR:-$PWD}"
-  step "Using current directory (--no-clone)"
-  if [ ! -f "$INSTALL_DIR/package.json" ]; then
-    err "No package.json found in $INSTALL_DIR. Are you in the MultiCC repo?"
+if [ -e "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]; then
+  err "$INSTALL_DIR exists and is not a directory."
+  exit 1
+fi
+if [ -d "$INSTALL_DIR" ] && ! is_multicc_install "$INSTALL_DIR"; then
+  if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+    err "$INSTALL_DIR already exists and does not look like a MultiCC installation."
+    echo "       Nothing was deleted. Pick another location with --dir, or move that directory away."
     exit 1
   fi
-  ok "Directory: $INSTALL_DIR"
-else
-  INSTALL_DIR="${INSTALL_DIR:-$PWD/MultiCC}"
-  step "Preparing install directory"
+fi
 
-  if [ -d "$INSTALL_DIR/.git" ]; then
-    ok "Directory $INSTALL_DIR already exists (git repo)"
-    echo "     Updating from branch $BRANCH..."
-    git -C "$INSTALL_DIR" fetch origin "$BRANCH" 2>/dev/null || warn "Could not fetch — using existing checkout"
-    git -C "$INSTALL_DIR" checkout "$BRANCH" 2>/dev/null || true
-    git -C "$INSTALL_DIR" pull origin "$BRANCH" 2>/dev/null || warn "Could not pull — using existing checkout"
-  elif [ -d "$INSTALL_DIR" ]; then
-    warn "Directory $INSTALL_DIR exists but is not a git repo"
-    echo "     Remove it or use --dir to pick another path."
+# The staging area must share a filesystem with the install directory: it is
+# what makes the final step a rename instead of a 100 MB copy.
+STAGE_DIR="$PARENT_DIR/.multicc-installing-$$"
+rm -rf "$STAGE_DIR"
+mkdir -p "$STAGE_DIR"
+
+# ── Obtain the package ────────────────────────────────────────────────────
+step "Downloading the standalone package"
+
+ARCHIVE="$STAGE_DIR/$ARCHIVE_NAME"
+CHECKSUM_FILE=""
+VERIFY=true
+
+if [ -n "$FROM" ]; then
+  case "$FROM" in
+    *.tar.gz|*.tgz|*.zip)
+      if [ -f "$FROM" ]; then
+        info "Using local package: $FROM"
+        cp "$FROM" "$ARCHIVE"
+        ARCHIVE_NAME="$(basename "$FROM")"
+        # A local file has no published sidecar to check against.
+        [ -f "$FROM.sha256" ] && CHECKSUM_FILE="$FROM.sha256"
+        [ -n "$CHECKSUM_FILE" ] || VERIFY=false
+      elif echo "$FROM" | grep -qE '^https?://'; then
+        info "Downloading package: $FROM"
+        download "$FROM" "$ARCHIVE"
+        VERIFY=false
+      else
+        err "--from: no such file: $FROM"
+        exit 1
+      fi
+      ;;
+    *)
+      if [ -d "$FROM" ]; then
+        info "Using local package directory: $FROM"
+        ARCHIVE=""
+        VERIFY=false
+      else
+        err "--from must be an existing .tar.gz/.zip file, a directory, or an http(s) URL"
+        exit 1
+      fi
+      ;;
+  esac
+else
+  URL="${RELEASES_URL}/download/${VERSION}/${ARCHIVE_NAME}"
+  info "From: ${URL}"
+  if ! download "$URL" "$ARCHIVE"; then
+    err "Download failed."
+    echo ""
+    echo "  Things to check:"
+    echo "    - Is this release published with assets for ${PLATFORM}-${ARCH}?"
+    echo "      ${RELEASES_URL}/tag/${VERSION}"
+    echo "    - Network/proxy access to github.com."
+    echo "    - Or install a package you downloaded by hand: ./install.sh --from <file>"
+    exit 1
+  fi
+  ok "Downloaded $ARCHIVE_NAME ($(du -h "$ARCHIVE" 2>/dev/null | awk '{print $1}'))"
+  # The published sidecar is the whole reason a download is trustworthy; a
+  # release without it is a broken release, not a soft warning.
+  if download "${URL}.sha256" "$STAGE_DIR/${ARCHIVE_NAME}.sha256" 2>/dev/null; then
+    CHECKSUM_FILE="$STAGE_DIR/${ARCHIVE_NAME}.sha256"
+  else
+    err "The release has no ${ARCHIVE_NAME}.sha256 sidecar — refusing to install an unverifiable package."
+    echo "       Report it at ${RELEASES_URL}, or install a local package with --from."
+    exit 1
+  fi
+fi
+
+# ── Verify and unpack ─────────────────────────────────────────────────────
+if [ "$VERIFY" = true ] && [ -n "$CHECKSUM_FILE" ]; then
+  step "Verifying the download"
+  EXPECTED="$(awk 'NR==1{print $1}' "$CHECKSUM_FILE")"
+  ACTUAL="$(sha256_of "$ARCHIVE")"
+  if [ -z "$ACTUAL" ]; then
+    warn "No shasum/sha256sum/openssl found — skipping checksum verification"
+  elif [ "$ACTUAL" != "$EXPECTED" ]; then
+    err "Checksum mismatch — the download is corrupt or tampered with."
+    echo "       expected: $EXPECTED"
+    echo "       actual:   $ACTUAL"
     exit 1
   else
-    info "Cloning $REPO_URL (branch: $BRANCH)..."
-    if git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR" 2>&1; then
-      ok "Clone complete"
-    else
-      err "Clone failed. Check your internet connection and the repo URL."
-      exit 1
-    fi
+    ok "Checksum verified ($ACTUAL)"
   fi
 fi
 
-# Persist the channel decision for ./multicc update.
-if [ -n "$CHANNEL" ] && [ -d "$INSTALL_DIR/.git" ]; then
-  cat > "$INSTALL_DIR/.multicc_channel" << CHANNEL_EOF
-# MultiCC release channel — managed by install.sh
-# channel: $CHANNEL
-# installed: $INSTALLER_VERSION
-CHANNEL_EOF
-  info "Release channel: $CHANNEL (v${INSTALLER_VERSION})"
-fi
-
-cd "$INSTALL_DIR"
-
-step "Installing terminal dependencies"
-if ! bash scripts/install-terminal-deps.sh; then
-  err "Terminal dependency installation failed. Resolve the error above and retry."
-  exit 1
-fi
-
-# ── Install dependencies ──────────────────────────────────────────────────
-step "Installing npm dependencies"
-info "Running npm install (full package.json, including @homebridge/ciao for LAN discovery)"
-if npm install 2>&1; then
-  ok "Dependencies installed"
+step "Unpacking"
+UNPACK_DIR="$STAGE_DIR/unpacked"
+mkdir -p "$UNPACK_DIR"
+if [ -n "$ARCHIVE" ]; then
+  case "$ARCHIVE_NAME" in
+    *.zip)
+      if command -v unzip >/dev/null 2>&1; then
+        unzip -q -o "$ARCHIVE" -d "$UNPACK_DIR"
+      elif command -v powershell >/dev/null 2>&1; then
+        powershell -NoProfile -NonInteractive -Command \
+          "Expand-Archive -LiteralPath '$(cygpath -w "$ARCHIVE" 2>/dev/null || echo "$ARCHIVE")' -DestinationPath '$(cygpath -w "$UNPACK_DIR" 2>/dev/null || echo "$UNPACK_DIR")' -Force"
+      else
+        err "unzip is required to unpack $ARCHIVE_NAME"
+        exit 1
+      fi
+      # The archive carries the bundle's own top-level directory; shed it so the
+      # install directory is the bundle root and not a bundle inside a bundle.
+      if [ "$(ls -A "$UNPACK_DIR" | wc -l | tr -d ' ')" = "1" ]; then
+        INNER="$UNPACK_DIR/$(ls -A "$UNPACK_DIR" | head -1)"
+        if [ -d "$INNER" ]; then
+          for entry in "$INNER"/* "$INNER"/.[!.]*; do
+            [ -e "$entry" ] || continue
+            mv "$entry" "$UNPACK_DIR/"
+          done
+          rmdir "$INNER" 2>/dev/null || true
+        fi
+      fi
+      ;;
+    *)
+      require_tool tar "It ships with macOS and Linux."
+      tar -xzf "$ARCHIVE" -C "$UNPACK_DIR" --strip-components=1
+      ;;
+  esac
 else
-  err "npm install failed."
-  echo ""
-  echo "  Common causes:"
-  echo "    - Network or npm registry connectivity issues"
-  echo "    - Disk space or permission problems"
-  echo "    - native build tools missing for an optional package (see the npm log above)"
-  echo ""
-  if [ "$IS_MACOS" = true ]; then
-    echo "  If it's a native compilation error, install build tools:"
-    echo "    xcode-select --install"
-  elif [ "$IS_LINUX" = true ]; then
-    echo "  If it's a native compilation error, install build tools:"
-    echo "    sudo apt-get update && sudo apt-get install -y build-essential python3 make g++"
+  # --from <directory>: copy it, following no links out of it.
+  (cd "$FROM" && tar -cf - .) | (cd "$UNPACK_DIR" && tar -xf -)
+fi
+
+# Refuse to install something that is not a complete MultiCC bundle — a
+# truncated download would otherwise only fail later, at `multicc start`.
+case "$PLATFORM" in
+  darwin) RUNTIME_REL="MultiCC.app/Contents/Resources/runtime/bin/node" ;;
+  win32)  RUNTIME_REL="Resources/runtime/node.exe" ;;
+  *)      RUNTIME_REL="Resources/runtime/bin/node" ;;
+esac
+if [ ! -f "$UNPACK_DIR/$RUNTIME_REL" ] || { [ ! -f "$UNPACK_DIR/multicc" ] && [ ! -f "$UNPACK_DIR/multicc.cmd" ]; }; then
+  err "The package is incomplete (missing multicc or $RUNTIME_REL)."
+  echo "       Delete $STAGE_DIR and retry; if it persists, report it at ${RELEASES_URL}."
+  exit 1
+fi
+ok "Package unpacked"
+
+# ── Install (replace any previous version) ────────────────────────────────
+step "Installing to $INSTALL_DIR"
+if [ -d "$INSTALL_DIR" ] && is_multicc_install "$INSTALL_DIR"; then
+  info "Existing installation found — replacing it (your data is kept)"
+  # A running server would keep serving from the directory we are about to
+  # replace, so ask it to stop first. Failure to stop is not fatal: the new
+  # files still land, the old process just has to be restarted by hand.
+  if [ -x "$MULTICC_BIN" ] || [ "$PLATFORM" = "win32" ]; then
+    "${MULTICC_CMD[@]}" stop >/dev/null 2>&1 && ok "Stopped the running instance" || true
+  fi
+  OLD_DIR="$INSTALL_DIR.old-$$"
+  rm -rf "$OLD_DIR"
+  mv "$INSTALL_DIR" "$OLD_DIR"
+elif [ -d "$INSTALL_DIR" ]; then
+  # An existing empty directory: `mv src dst` would nest the package inside it.
+  rmdir "$INSTALL_DIR" 2>/dev/null || {
+    err "$INSTALL_DIR is not empty and does not look like a MultiCC installation."
+    exit 1
+  }
+fi
+
+if ! mv "$UNPACK_DIR" "$INSTALL_DIR"; then
+  err "Could not move the package into place."
+  if [ -n "$OLD_DIR" ] && [ -d "$OLD_DIR" ]; then
+    mv "$OLD_DIR" "$INSTALL_DIR" 2>/dev/null && warn "The previous installation was restored."
   fi
   exit 1
 fi
+[ -n "$OLD_DIR" ] && rm -rf "$OLD_DIR"
+chmod +x "$INSTALL_DIR/multicc" 2>/dev/null || true
+ok "Installed MultiCC ${VERSION_NUMBER}"
 
-step "Verifying runtime dependencies (including LAN discovery)"
-if check_runtime_dependencies; then
-  ok "Runtime dependencies verified"
-else
-  err "Runtime dependency verification failed. Run npm install, then retry."
-  if [ "$IS_MACOS" = true ]; then
-    echo "  Build tools: xcode-select --install"
-  elif [ "$IS_LINUX" = true ]; then
-    echo "  Build tools: sudo apt-get install -y build-essential python3 make g++"
-  fi
+# ── Configure ─────────────────────────────────────────────────────────────
+# The command is the bundle's own CLI, so the config lands wherever the CLI
+# (and therefore the launcher and the server) reads it: the per-user data
+# directory, never inside the package. That is what makes replacing the
+# package safe.
+step "Configuring"
+if [ ! -x "$MULTICC_BIN" ] && [ "$PLATFORM" != "win32" ]; then
+  err "The bundled multicc command is missing at $MULTICC_BIN"
   exit 1
 fi
-
-# ── Setup .env ────────────────────────────────────────────────────────────
-step "Configuring access token"
 
 if [ -n "$ACCESS_TOKEN" ]; then
-  # Token provided via --token
-  true
-elif [ -f .env ] && grep -q '^ACCESS_TOKEN=' .env 2>/dev/null; then
-  ACCESS_TOKEN="$(grep '^ACCESS_TOKEN=' .env | head -1 | cut -d= -f2-)"
-  if [ -z "$ACCESS_TOKEN" ]; then
-    ACCESS_TOKEN="$(gen_token)"
-  else
-    info "Reusing existing ACCESS_TOKEN from .env"
-  fi
+  "${MULTICC_CMD[@]}" config set ACCESS_TOKEN "$ACCESS_TOKEN" >/dev/null && ok "ACCESS_TOKEN saved"
+elif EXISTING_TOKEN="$("${MULTICC_CMD[@]}" config get ACCESS_TOKEN 2>/dev/null)" && [ -n "$EXISTING_TOKEN" ]; then
+  ACCESS_TOKEN="$EXISTING_TOKEN"
+  info "Keeping the existing ACCESS_TOKEN"
 else
   ACCESS_TOKEN="$(gen_token)"
+  [ -n "$ACCESS_TOKEN" ] || ACCESS_TOKEN="multicc-$(date +%s)"
+  "${MULTICC_CMD[@]}" config set ACCESS_TOKEN "$ACCESS_TOKEN" >/dev/null && ok "ACCESS_TOKEN generated"
 fi
+"${MULTICC_CMD[@]}" config set PORT "$PORT" >/dev/null && ok "PORT set to $PORT"
 
-if [ -z "$ACCESS_TOKEN" ]; then
-  ACCESS_TOKEN="multicc-$(date +%s)"
-  warn "Could not generate random token; using fallback"
-fi
-
-if [ -f .env ]; then
-  set_env_var "ACCESS_TOKEN" "$ACCESS_TOKEN" .env
-  set_env_var "PORT" "$PORT" .env
-else
-  cat > .env << EOF
-# MultiCC configuration
-ACCESS_TOKEN=$ACCESS_TOKEN
-# Server port
-PORT=$PORT
-EOF
-fi
-# .env holds the access token (a secret); keep it owner-only.
-chmod 600 .env 2>/dev/null || warn "Could not chmod 600 .env — review its permissions manually"
-ok "ACCESS_TOKEN configured"
-ok "PORT set to $PORT"
-
-# ── Make manager script executable ────────────────────────────────────────
-chmod +x multicc 2>/dev/null || true
-
-# ── Install as background service ─────────────────────────────────────────
+# ── Start on login (optional) ─────────────────────────────────────────────
 if [ "$NO_SERVICE" = false ]; then
-  step "Background service"
-
-  if [ "$IS_MACOS" = true ]; then
-    echo ""
-    echo "  ${C_BOLD}Install as a launchd service?${C_RESET}"
-    echo "  This auto-starts MultiCC on login and restarts on crash."
-    echo ""
-    read -r -p "  ${C_YELLOW}>>${C_RESET} Install? [Y/n] " REPLY </dev/tty || REPLY="y"
-    if [ "${REPLY:-y}" = "y" ] || [ "${REPLY:-y}" = "Y" ] || [ -z "${REPLY:-}" ]; then
-      ./multicc install
-      ok "Service installed — MultiCC will start automatically on login"
-    else
-      info "Skipped. Run './multicc install' later to set up auto-start."
-    fi
+  step "Start automatically on login"
+  if [ -r /dev/tty ]; then
+    echo "  MultiCC can start in the background at login and restart if it crashes."
+    read -r -p "  ${C_YELLOW}>>${C_RESET} Set that up now? [Y/n] " REPLY </dev/tty || REPLY="n"
+    case "${REPLY:-y}" in
+      y|Y|"") SERVICE_REPLY=yes ;;
+      *) SERVICE_REPLY=no ;;
+    esac
   else
-    info "Linux detected — set up a systemd user service manually:"
-    echo ""
-    echo "  mkdir -p ~/.config/systemd/user"
-    echo "  cat > ~/.config/systemd/user/multicc.service <<'UNIT'"
-    echo "  [Unit]"
-    echo "  Description=MultiCC Server"
-    echo "  After=network.target"
-    echo "  [Service]"
-    echo "  ExecStart=$(which node) $PWD/server.js"
-    echo "  WorkingDirectory=$PWD"
-    echo "  Restart=always"
-    echo "  RestartSec=5"
-    echo "  [Install]"
-    echo "  WantedBy=default.target"
-    echo "  UNIT"
-    echo "  systemctl --user daemon-reload"
-    echo "  systemctl --user enable --now multicc"
-    echo ""
+    SERVICE_REPLY=no
+    info "Not a terminal — skipping. Run '${START_CMD} service install' later to add it."
   fi
-else
-  info "Skipping service install (--no-service)"
+  if [ "$SERVICE_REPLY" = "yes" ]; then
+    case "$PLATFORM" in
+      darwin|linux)
+        if "${MULTICC_CMD[@]}" service install; then
+          ok "Auto-start installed"
+        else
+          warn "Auto-start setup failed — start MultiCC with: ${START_CMD}"
+        fi
+        ;;
+      *)
+        info "Auto-start is not supported here — start MultiCC with: ${START_CMD}"
+        ;;
+    esac
+  fi
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────
-# Use the running server's policy and ranked adapter selection. Picking the
-# first non-loopback address is unreliable on hosts with Tailscale, Docker or
-# a VPN: those virtual adapters often precede Wi-Fi/Ethernet.
-LAN_INFO="$(node -e 'const fs=require("node:fs"),os=require("node:os"),p=require("node:path"),root=process.argv[1];try{fs.readFileSync(p.join(root,".env"),"utf8").split("\n").forEach(line=>{const m=line.match(/^\s*([^#=]+?)\s*=\s*(.*?)\s*$/);if(m&&!process.env[m[1]])process.env[m[1]]=m[2]})}catch{}const policy=require(p.join(root,"src/network-policy")).resolveNetworkPolicy(process.env),system=require(p.join(root,"src/routes/system")),addresses=system.reachableLanAddresses(os.networkInterfaces(),policy.host);process.stdout.write(policy.host+"\t"+(addresses[0]||""))' "$INSTALL_DIR" 2>/dev/null || true)"
-IFS=$'\t' read -r LAN_BIND_HOST LAN_IP <<< "$LAN_INFO"
-
 echo ""
 echo "${C_BOLD}${C_GREEN}╔══════════════════════════════════════════════════════╗${C_RESET}"
 echo "${C_BOLD}${C_GREEN}║${C_RESET}  ${C_BOLD}Installation Complete!${C_RESET}"
 echo "${C_BOLD}${C_GREEN}╚══════════════════════════════════════════════════════╝${C_RESET}"
 echo ""
-echo "  ${C_BOLD}Start the server:${C_RESET}"
-echo "    cd $INSTALL_DIR && node server.js"
+echo "  ${C_BOLD}Start MultiCC:${C_RESET}"
+echo "    cd $INSTALL_DIR && $START_CMD"
 echo ""
-echo "  ${C_BOLD}Or use the service manager:${C_RESET}"
-echo "    cd $INSTALL_DIR && ./multicc start"
-echo ""
-echo "  ${C_BOLD}Access URLs:${C_RESET}"
+echo "  ${C_BOLD}Then open:${C_RESET}"
 echo "    Local:      ${C_CYAN}http://localhost:${PORT}${C_RESET}"
-if [ -n "$LAN_IP" ]; then
-  echo "    LAN:        ${C_CYAN}http://${LAN_IP}:${PORT}${C_RESET}"
-elif [ "$LAN_BIND_HOST" = "127.0.0.1" ] || [ "$LAN_BIND_HOST" = "localhost" ] || [ "$LAN_BIND_HOST" = "::1" ]; then
-  echo "    LAN:        ${C_YELLOW}disabled by HOST / MULTICC_ALLOW_REMOTE policy${C_RESET}"
-else
-  echo "    LAN:        ${C_YELLOW}no physical IPv4 LAN adapter detected${C_RESET}"
-fi
 echo "    Chat:       ${C_CYAN}http://localhost:${PORT}/chat${C_RESET}"
 echo "    Dashboard:  ${C_CYAN}http://localhost:${PORT}/manage${C_RESET}"
-echo ""
-echo "  ${C_BOLD}Access Token:${C_RESET}  ${C_YELLOW}${ACCESS_TOKEN}${C_RESET}"
-echo "  (Other LAN devices append ?token=${ACCESS_TOKEN} to the URL)"
-echo "  Public access is not opened automatically; configure Tailscale Funnel in /manage."
-echo "  If LAN access still fails, allow Node.js through the host firewall and disable Wi-Fi client isolation."
-echo ""
-
-if [ "$NO_SERVICE" = true ]; then
-  echo "  ${C_YELLOW}Run later to install as background service:${C_RESET}"
-  echo "    cd $INSTALL_DIR && ./multicc install"
-  echo ""
+if [ "$PORT" != "3000" ]; then
+  echo "    (port is taken? it moves forward automatically; 'multicc url' prints the real one)"
 fi
-
-echo "  ${C_BOLD}More commands:${C_RESET}"
-echo "    ./multicc status          # check if running"
-echo "    ./multicc log             # tail live logs"
-echo "    ./multicc restart         # restart server"
-echo "    ./multicc update          # pull latest, reinstall deps, restart"
-echo "    ./multicc update --force  # ...forcibly, stashing local changes away first"
-echo "    ./multicc uninstall       # remove auto-start"
+echo ""
+if [ -n "$ACCESS_TOKEN" ]; then
+  echo "  ${C_BOLD}Access Token:${C_RESET}  ${C_YELLOW}${ACCESS_TOKEN}${C_RESET}"
+  echo "  (Other devices on your LAN append ?token=${ACCESS_TOKEN} to the URL)"
+else
+  echo "  ${C_BOLD}Access Token:${C_RESET}  ${C_YELLOW}stored in the data directory${C_RESET} — see 'multicc config list'"
+fi
+echo "  LAN access and Tailscale Funnel are configured in /manage; nothing is exposed by default."
+echo ""
+echo "  ${C_BOLD}Everyday commands${C_RESET} (run them from $INSTALL_DIR):"
+echo "    $CMD_NAME start      # start in the background and open the browser"
+echo "    $CMD_NAME status     # is it running, and where"
+echo "    $CMD_NAME log -f     # watch the logs"
+echo "    $CMD_NAME stop       # stop gracefully"
+echo "    $CMD_NAME update     # install the newest release (your data is untouched)"
+echo "    $CMD_NAME help       # everything else"
+echo ""
+echo "  Sessions, providers and chat history live outside this directory,"
+echo "  so replacing or updating the package never touches them."
 echo ""
 ok "Happy building!"
 echo ""

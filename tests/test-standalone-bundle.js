@@ -1,6 +1,6 @@
 'use strict';
 
-// Portable bundle suite (scripts/portable-bundle.js, scripts/portable-launcher.js,
+// Standalone bundle suite (scripts/standalone-bundle.js, scripts/standalone-launcher.js,
 // scripts/native-arch.js).
 //
 //   unit        runtime pinning + SHASUMS parsing, .app/plist generation,
@@ -24,11 +24,11 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const LAUNCHER = path.join(ROOT, 'scripts', 'portable-launcher.js');
+const LAUNCHER = path.join(ROOT, 'scripts', 'standalone-launcher.js');
 const FIXTURE = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js');
 
-const bundleScript = require(path.join(ROOT, 'scripts', 'portable-bundle.js'));
-const launcherScript = require(path.join(ROOT, 'scripts', 'portable-launcher.js'));
+const bundleScript = require(path.join(ROOT, 'scripts', 'standalone-bundle.js'));
+const launcherScript = require(path.join(ROOT, 'scripts', 'standalone-launcher.js'));
 const nativeArch = require(path.join(ROOT, 'scripts', 'native-arch.js'));
 
 function tmpdir(prefix) {
@@ -106,22 +106,31 @@ test('runtime pinning: SHASUMS parsing, dist names and the macOS floor', () => {
 test('macOS shell: app layout, plist floor and wrapper indirection', () => {
   const plist = bundleScript.macosInfoPlist({ version: '2.0.2', resourcesName: 'Resources' });
   assert.match(plist, /<key>CFBundleExecutable<\/key>\s*<string>MultiCC<\/string>/);
-  assert.match(plist, /<key>CFBundleIdentifier<\/key>\s*<string>io\.github\.lsjwzh\.multicc\.portable<\/string>/);
+  assert.match(plist, /<key>CFBundleIdentifier<\/key>\s*<string>io\.github\.lsjwzh\.multicc\.standalone<\/string>/);
   assert.match(plist, /<key>LSMinimumSystemVersion<\/key>\s*<string>11\.0<\/string>/,
     'the .app must declare the Node 22 floor, not whatever the build host runs');
   assert.match(plist, /<string>2\.0\.2<\/string>/);
 
   const entry = bundleScript.macosLauncherScript();
-  assert.match(entry, /exec "\$RESOURCES\/runtime\/bin\/node" "\$RESOURCES\/launcher\/portable-launcher\.js" --start/,
+  assert.match(entry, /exec "\$RESOURCES\/runtime\/bin\/node" "\$RESOURCES\/launcher\/standalone-launcher\.js" --start/,
     'the .app must always run the BUNDLED runtime');
   assert.doesNotMatch(entry, /\bnode\b(?!.*RESOURCES)/s, 'never fall back to a host node');
 
-  const startWrapper = fs.readFileSync(path.join(ROOT, 'scripts', 'portable-bundle.js'), 'utf8');
-  assert.match(startWrapper, /action: '--start', extraFlags: '--detach'/,
-    'double-clicking 启动 must background itself so the Terminal window can close');
+  // Every double-click wrapper is a thin shell over the one documented command,
+  // so a wrapper can never drift from what `multicc` itself does.
+  assert.match(bundleScript.macosCommandScript({ subcommand: 'start' }), /"\$HERE\/multicc" start/,
+    'the double-click wrapper must go through the multicc command');
+  assert.doesNotMatch(bundleScript.posixScript({ subcommand: 'stop' }), /standalone-launcher\.js/,
+    'wrappers must not call the launcher behind the CLI\'s back');
+
+  const cliWrapper = bundleScript.multiccWrapper({ platform: 'darwin' });
+  assert.match(cliWrapper, /exec "\$RESOURCES\/runtime\/bin\/node" "\$RESOURCES\/launcher\/standalone-cli\.js" "\$@"/,
+    'the multicc command must run the BUNDLED runtime and the CLI, not a host node');
+  assert.match(cliWrapper, /MultiCC\.app\/Contents\/Resources/,
+    'on macOS the command has to reach through the .app');
 
   if (process.platform === 'darwin') {
-    const dir = tmpdir('multicc-portable-plist-');
+    const dir = tmpdir('multicc-standalone-plist-');
     const plistPath = path.join(dir, 'Info.plist');
     fs.writeFileSync(plistPath, plist);
     const lint = spawnSync('plutil', ['-lint', plistPath], { encoding: 'utf8' });
@@ -130,28 +139,28 @@ test('macOS shell: app layout, plist floor and wrapper indirection', () => {
 });
 
 test('launcher paths and env: platform data dirs, bundled runtime, loopback child env', () => {
-  assert.equal(launcherScript.portableDataDir({ platform: 'darwin', env: {}, homedir: '/Users/x' }),
-    '/Users/x/Library/Application Support/MultiCCPortable');
-  assert.equal(launcherScript.portableDataDir({ platform: 'linux', env: {}, homedir: '/home/x' }),
-    '/home/x/.config/MultiCCPortable');
-  assert.equal(launcherScript.portableDataDir({ platform: 'win32', env: { APPDATA: 'C:\\Roaming' }, homedir: 'C:\\Users\\x' }),
-    path.join('C:\\Roaming', 'MultiCCPortable'));
-  assert.equal(launcherScript.portableDataDir({ platform: 'darwin', env: { MULTICC_PORTABLE_HOME: '/tmp/x' }, homedir: '/Users/x' }),
-    '/tmp/x', 'MULTICC_PORTABLE_HOME wins everywhere (tests, USB installs)');
+  assert.equal(launcherScript.standaloneDataDir({ platform: 'darwin', env: {}, homedir: '/Users/x' }),
+    '/Users/x/Library/Application Support/MultiCCStandalone');
+  assert.equal(launcherScript.standaloneDataDir({ platform: 'linux', env: {}, homedir: '/home/x' }),
+    '/home/x/.config/MultiCCStandalone');
+  assert.equal(launcherScript.standaloneDataDir({ platform: 'win32', env: { APPDATA: 'C:\\Roaming' }, homedir: 'C:\\Users\\x' }),
+    path.join('C:\\Roaming', 'MultiCCStandalone'));
+  assert.equal(launcherScript.standaloneDataDir({ platform: 'darwin', env: { MULTICC_STANDALONE_HOME: '/tmp/x' }, homedir: '/Users/x' }),
+    '/tmp/x', 'MULTICC_STANDALONE_HOME wins everywhere (tests, USB installs)');
 
   const resources = '/bundle/MultiCC.app/Contents/Resources';
-  const paths = launcherScript.resolvePortablePaths({
-    resources, platform: 'darwin', env: { MULTICC_PORTABLE_HOME: '/tmp/data' }, homedir: '/Users/x',
+  const paths = launcherScript.resolveStandalonePaths({
+    resources, platform: 'darwin', env: { MULTICC_STANDALONE_HOME: '/tmp/data' }, homedir: '/Users/x',
   });
   assert.equal(paths.runtimeNode, path.join(resources, 'runtime', 'bin', 'node'));
-  assert.equal(paths.launcherPath, path.join(resources, 'launcher', 'portable-launcher.js'));
+  assert.equal(paths.launcherPath, path.join(resources, 'launcher', 'standalone-launcher.js'));
   assert.equal(paths.desktopEnv.serverEntry, path.join(resources, 'app-server', 'server.js'));
   assert.equal(paths.desktopEnv.dataRoot, path.join('/tmp/data', 'data'));
   assert.equal(paths.desktopEnv.logsDir, path.join('/tmp/data', 'logs'));
   assert.equal(paths.desktopEnv.runtimeInfoFile, path.join('/tmp/data', 'desktop-runtime.json'));
 
   const desktopEnv = paths.desktopEnv;
-  const env = launcherScript.buildPortableChildEnv({
+  const env = launcherScript.buildStandaloneChildEnv({
     port: 4123,
     desktopEnv,
     baseEnv: { PATH: '/usr/bin:/bin', PORT: '9999', HOST: '0.0.0.0' },
@@ -244,7 +253,7 @@ test('native arch: Mach-O, ELF, PE and universal headers are read, mismatches ar
 });
 
 test('launcher supervises the server end to end and --stop leaves nothing behind', { timeout: 180_000 }, async () => {
-  const scratch = tmpdir('multicc-portable-e2e-');
+  const scratch = tmpdir('multicc-standalone-e2e-');
   const resources = path.join(scratch, 'Resources');
   const dataDir = path.join(scratch, 'userdata');
   stageFakeServer(resources);
@@ -271,7 +280,7 @@ test('launcher supervises the server end to end and --stop leaves nothing behind
     assert.equal(info.origin, `http://127.0.0.1:${port}`);
     assert.ok(readPidAlive(info.pid), 'the server pid from runtime info must be alive');
 
-    const pidFile = path.join(dataDir, 'portable-launcher.pid');
+    const pidFile = path.join(dataDir, 'standalone-launcher.pid');
     assert.equal(Number(fs.readFileSync(pidFile, 'utf8').trim()), child.pid,
       'the supervising launcher must record itself so --stop can drain instead of yanking the child');
 
@@ -297,7 +306,7 @@ test('launcher supervises the server end to end and --stop leaves nothing behind
 });
 
 test('--detach hands off to a background launcher that --stop can still drain', { timeout: 180_000 }, async () => {
-  const scratch = tmpdir('multicc-portable-detach-');
+  const scratch = tmpdir('multicc-standalone-detach-');
   const resources = path.join(scratch, 'Resources');
   const dataDir = path.join(scratch, 'userdata');
   stageFakeServer(resources);
@@ -311,7 +320,7 @@ test('--detach hands off to a background launcher that --stop can still drain', 
   const parent = spawnSync(process.execPath, [LAUNCHER, '--start', '--detach', ...launcherArgs], { encoding: 'utf8' });
   assert.match(`${parent.stdout}${parent.stderr}`, /starting in the background/);
 
-  const pidFile = path.join(dataDir, 'portable-launcher.pid');
+  const pidFile = path.join(dataDir, 'standalone-launcher.pid');
   let owner = null;
   let serverPid = null;
   // A failing assertion must not leave a detached supervisor and its server
@@ -355,7 +364,7 @@ test('--detach hands off to a background launcher that --stop can still drain', 
 // platform forced to win32, on a real detached supervisor, because it cannot be
 // reached by running the CLI on macOS.
 test('--stop on Windows asks the supervisor through the stop marker, not a signal', { timeout: 180_000 }, async () => {
-  const scratch = tmpdir('multicc-portable-win-stop-');
+  const scratch = tmpdir('multicc-standalone-win-stop-');
   const resources = path.join(scratch, 'Resources');
   const dataDir = path.join(scratch, 'userdata');
   stageFakeServer(resources);
@@ -373,11 +382,11 @@ test('--stop on Windows asks the supervisor through the stop marker, not a signa
     assert.match(`${parent.stdout}${parent.stderr}`, /starting in the background/);
     await waitFor(async () => (await httpStatus(`http://127.0.0.1:${port}/readyz`)) === 200,
       { timeoutMs: 60_000, what: 'the detached supervisor to bring the server up' });
-    owner = Number(fs.readFileSync(path.join(dataDir, 'portable-launcher.pid'), 'utf8').trim());
+    owner = Number(fs.readFileSync(path.join(dataDir, 'standalone-launcher.pid'), 'utf8').trim());
     serverPid = await waitFor(serverPidFromDisk, { timeoutMs: 10_000, what: 'the server pid' });
 
-    const paths = launcherScript.resolvePortablePaths({
-      resources, env: { ...process.env, MULTICC_PORTABLE_HOME: dataDir },
+    const paths = launcherScript.resolveStandalonePaths({
+      resources, env: { ...process.env, MULTICC_STANDALONE_HOME: dataDir },
     });
     const { createLauncher } = launcherScript;
     const windowsLauncher = createLauncher({
@@ -389,7 +398,7 @@ test('--stop on Windows asks the supervisor through the stop marker, not a signa
     const result = await windowsLauncher.stop();
 
     assert.equal(result.ownerSignalled, true, 'the supervisor must be asked to stop, not killed');
-    const markerFile = path.join(dataDir, 'portable-launcher.stop');
+    const markerFile = path.join(dataDir, 'standalone-launcher.stop');
     assert.equal(fs.existsSync(markerFile), false, 'the consumed stop request must not be left behind');
     await waitFor(() => !readPidAlive(serverPid) && !readPidAlive(owner),
       { timeoutMs: 30_000, what: 'both the supervisor and its server to exit' });
@@ -412,18 +421,23 @@ test('the runtime binary sits where each platform\'s official archive puts it', 
   const launcherSource = fs.readFileSync(LAUNCHER, 'utf8');
   assert.match(launcherSource, /platform === 'win32'\s*\n\s*\? path\.join\(resources, 'runtime', 'node\.exe'\)/,
     'the launcher must resolve the same path the builder writes');
-  const cmd = fs.readFileSync(path.join(ROOT, 'scripts', 'portable-bundle.js'), 'utf8');
-  assert.match(cmd, /Resources\\\\runtime\\\\node\.exe/, 'the .cmd wrapper must call the bundled node.exe');
-  assert.doesNotMatch(cmd, /Resources\\\\runtime\\\\bin\\\\node\.exe/, 'no bin/ level exists on Windows');
+  assert.match(bundleScript.multiccWrapperWindows(), /%RESOURCES%\\runtime\\node\.exe/,
+    'the Windows multicc.cmd must call the bundled node.exe');
+  assert.match(bundleScript.multiccWrapperWindows(), /launcher\\standalone-cli\.js/,
+    'the Windows multicc.cmd must run the CLI, not only the launcher');
+  assert.doesNotMatch(bundleScript.multiccWrapperWindows(), /Resources\\runtime\\bin\\node\.exe/,
+    'no bin/ level exists on Windows');
+  assert.doesNotMatch(bundleScript.multiccWrapper({ platform: 'linux' }), /node\.exe/,
+    'the POSIX wrapper must not look for a Windows binary');
 });
 
 test('the Windows bundle is zipped by us, not by a platform-specific tool', async () => {
   const { createZipArchive, collectEntries } = require(path.join(ROOT, 'scripts', 'zip-archive.js'));
   const { readZip } = require(path.join(ROOT, 'src', 'session', 'handoff-zip.js'));
   const scratch = tmpdir('multicc-zip-archive-');
-  const root = path.join(scratch, 'multicc-portable-1.0.0-win32-x64');
+  const root = path.join(scratch, 'multicc-standalone-1.0.0-win32-x64');
   fs.mkdirSync(path.join(root, 'Resources', 'empty'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'Resources', '使用说明.txt'), 'portable\n');
+  fs.writeFileSync(path.join(root, 'Resources', '使用说明.txt'), 'standalone\n');
   fs.mkdirSync(path.join(root, 'Resources', 'runtime'), { recursive: true });
   fs.writeFileSync(path.join(root, 'Resources', 'runtime', 'node.exe'), 'MZ');
   fs.writeFileSync(path.join(root, 'Resources', 'big.bin'), Buffer.alloc(4096, 7));
@@ -441,14 +455,14 @@ test('the Windows bundle is zipped by us, not by a platform-specific tool', asyn
   // same writer feeds users, so a corrupt archive would be a shipped artifact.
   const read = readZip(fs.readFileSync(out));
   const byName = new Map(read.map(entry => [entry.name, entry.data]));
-  assert.equal(byName.get('multicc-portable-1.0.0-win32-x64/Resources/使用说明.txt').toString('utf8'), 'portable\n');
-  assert.equal(byName.get('multicc-portable-1.0.0-win32-x64/Resources/runtime/node.exe').toString('utf8'), 'MZ');
-  assert.equal(byName.get('multicc-portable-1.0.0-win32-x64/Resources/big.bin').length, 4096);
-  assert.equal(byName.has('multicc-portable-1.0.0-win32-x64/Resources/empty/'), false,
+  assert.equal(byName.get('multicc-standalone-1.0.0-win32-x64/Resources/使用说明.txt').toString('utf8'), 'standalone\n');
+  assert.equal(byName.get('multicc-standalone-1.0.0-win32-x64/Resources/runtime/node.exe').toString('utf8'), 'MZ');
+  assert.equal(byName.get('multicc-standalone-1.0.0-win32-x64/Resources/big.bin').length, 4096);
+  assert.equal(byName.has('multicc-standalone-1.0.0-win32-x64/Resources/empty/'), false,
     'directory entries carry no data and the reader drops them');
 });
 
-test('portable build wiring: lifecycle lib is shared with the desktop shell, not forked', () => {
+test('standalone build wiring: lifecycle lib is shared with the desktop shell, not forked', () => {
   assert.deepEqual(bundleScript.LAUNCHER_LIB_FILES, [
     'port-chooser.js', 'health-probe.js', 'backend-supervisor.js', 'orphan-reclaim.js', 'desktop-env.js',
   ]);
@@ -463,9 +477,9 @@ test('portable build wiring: lifecycle lib is shared with the desktop shell, not
 
   // The build must pin the runtime target, or a prebuilt binary is fetched for
   // the BUILD HOST (ABI 147 on a Node 26 box) instead of the bundled Node 22's.
-  const build = fs.readFileSync(path.join(ROOT, 'scripts', 'portable-bundle.js'), 'utf8');
-  assert.match(build, /npm_config_target: args\.nodeVersion/);
-  assert.match(build, /npm_config_arch: args\.arch/);
+  const build = fs.readFileSync(path.join(ROOT, 'scripts', 'standalone-bundle.js'), 'utf8');
+  assert.match(build, /npm_config_target: nodeVersion/);
+  assert.match(build, /npm_config_arch: arch/);
   // Storage must be proved against the bundled runtime itself: this is the
   // check that would catch a pinned runtime without a working node:sqlite.
   assert.match(build, /verifyRuntimeSqlite\(\{/);
