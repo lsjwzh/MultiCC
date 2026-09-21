@@ -1238,7 +1238,7 @@ test('Flutter forwards and reconciles non-Claude assistant snapshots too', () =>
   assert.match(provider, /case 'assistant':[\s\S]{0,160}_folder\.assistantSnapshot/);
   assert.match(provider, /case 'part_delta':[\s\S]{0,160}_folder\.partDelta/);
   assert.match(folder, /message\['textSnapshot'\] == true[\s\S]{0,100}currentMsg!\.content = text/);
-  assert.match(folder, /void partDelta[\s\S]{0,180}SessionCli\.claude/);
+  assert.match(folder, /void partDelta[\s\S]{0,180}isClaudeFamily/);
 });
 
 test('recoverable reconnect errors stay quiet while real errors finish the owned turn', () => {

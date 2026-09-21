@@ -562,7 +562,9 @@ function cliCommandAvailable(command) {
 function cliAvailabilitySummary() {
   const out = {};
   for (const cli of SUPPORTED_CHAT_CLIS) {
-    out[cli] = { available: cliCommandAvailable(cliCommands[cli]) };
+    let available = cliCommandAvailable(cliCommands[cli]);
+    if (cli === 'claude-exp') try { require.resolve('@anthropic-ai/claude-agent-sdk'); } catch (_) { available = false; }
+    out[cli] = { available };
   }
   return out;
 }
@@ -2057,7 +2059,7 @@ const taskGraphContextOf = require('./src/task-shell/task-graph-context').create
   },
 });
 const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
-  defaultTaskRuntime: () => ({ cli: SUPPORTED_CHAT_CLIS.find(cli => cliAvailabilitySummary()[cli]?.available) || 'claude' }), taskShortCode,
+  defaultTaskRuntime: () => ({ cli: SUPPORTED_CHAT_CLIS.find(cli => !cli.endsWith('-exp') && cliAvailabilitySummary()[cli]?.available) || 'claude' }), taskShortCode,
   taskGraphContext: taskGraphContextOf,
   onStateTargetChanged: id => workspaceRuntime.publishSessionView(id), onSeparationChanged: id => chatBroadcast(id, { type: 'task_separation_updated' }),
   onAttributionChanged: (id, detail) => chatBroadcast(id, {

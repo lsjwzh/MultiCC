@@ -263,7 +263,7 @@ function createSessionPolicy(options) {
   function normalizeCliAgent(cli, value) {
     const agent = value == null ? '' : String(value).trim();
     if (!agent) return null;
-    if (!['claude', 'opencode', 'qoder', 'codebuddy'].includes(cli) || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
+    if (!['claude', 'claude-exp', 'opencode', 'qoder', 'codebuddy'].includes(cli) || !/^[A-Za-z0-9._-]{1,80}$/.test(agent)) return undefined;
     return agent;
   }
 
@@ -360,7 +360,7 @@ function createReportedModelRuntime(options) {
     }
     let updated = 0;
     for (const record of records.values()) {
-      if (record.reportedModel || (record.cli && record.cli !== 'claude') || !record.cliSessionId) continue;
+      if (record.reportedModel || (record.cli && !['claude', 'claude-exp'].includes(record.cli)) || !record.cliSessionId) continue;
       if (effectiveSessionModel(record)) continue;
       for (const directory of directories) {
         const transcript = path.join(projects, directory.name, `${record.cliSessionId}.jsonl`);

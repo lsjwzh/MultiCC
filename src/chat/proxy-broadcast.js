@@ -85,10 +85,11 @@ function createProxyBroadcasters(chatBroadcast, {
         auditDrop(ctx, observed && observed.code ? observed.code : 'proxy_attempt_unbound');
         return;
       }
-      // codex-exp receives authoritative assistant deltas from app-server.
-      // Keep observing the proxy callback so attempt ownership remains
-      // verified, but do not publish the lossy Responses sidecar copy too.
-      if (cliOf(observed.sessionId) === 'codex-exp') {
+      // Experimental native protocols receive authoritative assistant deltas
+      // from app-server / Agent SDK. Keep observing the proxy callback so
+      // attempt ownership remains verified, but do not publish a duplicate
+      // lossy protocol-sidecar copy too.
+      if (['claude-exp', 'codex-exp'].includes(cliOf(observed.sessionId))) {
         auditDrop(ctx, 'native_delta_authoritative');
         return;
       }

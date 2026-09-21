@@ -91,14 +91,25 @@ void main() {
       expect(SessionCli.codex.supportsAgent, isFalse);
       expect(SessionCli.codex.supportsSubagent, isTrue);
       expect(SessionCli.codex.effortFieldLabel, 'Reasoning Level');
-      expect(
-        SessionCli.codex.effortOptions,
-        ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-      );
+      expect(SessionCli.codex.effortOptions, [
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+        'ultra',
+      ]);
       expect(tryParseCli('codex-exp'), SessionCli.codexExp);
       expect(SessionCli.codexExp.isCodexFamily, isTrue);
       expect(SessionCli.codexExp.supportsSubagent, isTrue);
       expect(SessionCli.codexExp.poolKey, 'codex');
+
+      expect(tryParseCli('claude-exp'), SessionCli.claudeExp);
+      expect(SessionCli.claudeExp.isClaudeFamily, isTrue);
+      expect(SessionCli.claudeExp.supportsAgent, isTrue);
+      expect(SessionCli.claudeExp.supportsSubagent, isTrue);
+      expect(SessionCli.claudeExp.poolKey, 'claude');
+      expect(SessionCli.claudeExp.defaultEffort, 'medium');
 
       expect(SessionCli.opencode.supportsAgent, isTrue);
       expect(SessionCli.opencode.supportsSubagent, isFalse);
@@ -255,7 +266,9 @@ void main() {
       expect(_dropdownValue(tester, const Key('subagent-model')), 'model-b');
       expect(_dropdownValue(tester, const Key('subagent-provider')), '');
       // 尾巴挨着 Model，排在 Effort 前面。
-      final tailY = tester.getTopLeft(find.byKey(const Key('subagent-model'))).dy;
+      final tailY = tester
+          .getTopLeft(find.byKey(const Key('subagent-model')))
+          .dy;
       final modelY = tester.getTopLeft(find.text('Model')).dy;
       final effortY = tester.getTopLeft(find.text('Effort')).dy;
       expect(tailY, greaterThan(modelY));
@@ -303,7 +316,9 @@ void main() {
       availability[SessionCli.zcode] = false;
       final config = SessionCliConfig(
         cli: SessionCli.claude,
-        cliStates: const {SessionCli.codex: SessionCliState(hasNativeSession: true)},
+        cliStates: const {
+          SessionCli.codex: SessionCliState(hasNativeSession: true),
+        },
         cliAvailability: availability,
       );
       await tester.pumpWidget(_host(CliSwitchSheet(config: config)));

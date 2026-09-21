@@ -23,6 +23,7 @@ String withTaskCode(String? code, String text) {
 /// Brand color for a session's CLI.
 Color cliBrandColor(SessionCli cli) => switch (cli) {
   SessionCli.claude => AppColors.claude,
+  SessionCli.claudeExp => AppColors.claude,
   SessionCli.codex => AppColors.codex,
   SessionCli.codexExp => AppColors.codex,
   SessionCli.opencode => AppColors.opencode,
@@ -188,10 +189,7 @@ bool chatLivenessDeservesLine(String? state) =>
 ({bool canMarkDone, bool canCancelTask}) classifyBarActions(String? state) {
   final s = (state ?? '').trim().toUpperCase();
   final normalized = s.isEmpty ? 'P' : s;
-  return (
-    canMarkDone: normalized == 'W',
-    canCancelTask: normalized == 'P',
-  );
+  return (canMarkDone: normalized == 'W', canCancelTask: normalized == 'P');
 }
 
 /// A small liveness pill for the chat header. `verdict` is the parsed liveness

@@ -112,7 +112,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   bool _customSubModel = false;
   late final TextEditingController _subCustomCtrl;
 
-  bool get _isClaude => widget.cli == SessionCli.claude;
+  bool get _isClaude => widget.cli.isClaudeFamily;
   bool get _isCodex => widget.cli.isCodexFamily;
   bool get _isQoder => widget.cli == SessionCli.qoder;
   String get _defaultEffort => widget.cli.defaultEffort;
@@ -750,9 +750,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         : (modelChoices.contains(_model) ? _model : '');
     // Sub-task (subagent) tail: 线路 + 模型 的候选都跟着生效线路走 —— 线路留空
     // 就是「随主」，此时模型候选与主 Model 完全同源。
-    final subModelChoices = _modelChoices(_subEffectiveProvider)
-        .where((m) => m.isNotEmpty)
-        .toList();
+    final subModelChoices = _modelChoices(
+      _subEffectiveProvider,
+    ).where((m) => m.isNotEmpty).toList();
     final subModelValue = _customSubModel
         ? '__custom__'
         : (subModelChoices.contains(_subModel) ? _subModel : '');
@@ -790,9 +790,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                 decoration: _sheetInputDecoration(),
                 style: const TextStyle(color: AppColors.text, fontSize: 13),
                 items: [
-                  if (!widget.providers.any((p) =>
-                      p['builtinOfficial'] == true &&
-                      p['id'] == '${widget.cli.poolKey}-official'))
+                  if (!widget.providers.any(
+                    (p) =>
+                        p['builtinOfficial'] == true &&
+                        p['id'] == '${widget.cli.poolKey}-official',
+                  ))
                     const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
                   ...autoGroups.map(
                     (group) => DropdownMenuItem(
@@ -956,10 +958,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                         fontSize: 13,
                       ),
                       items: [
-                        const DropdownMenuItem(
-                          value: '',
-                          child: Text('不设置'),
-                        ),
+                        const DropdownMenuItem(value: '', child: Text('不设置')),
                         ...subModelChoices.map(
                           (m) => DropdownMenuItem(
                             value: m,
@@ -1094,7 +1093,7 @@ Future<List<Map<String, dynamic>>> prepareAIConfigInputs(
     try {
       await QoderModelsService(settings: settings).load();
     } catch (_) {}
-  } else if (cli == SessionCli.claude) {
+  } else if (cli.isClaudeFamily) {
     try {
       await ClaudeModelsService(settings: settings).load();
     } catch (_) {}
@@ -1133,8 +1132,9 @@ Future<void> openAIConfigSheet(
     runtime = await mgr.fetchSessionCliConfig(sessionId);
   } catch (_) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(t('sessionNotLoaded'))));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(t('sessionNotLoaded'))));
     }
     return;
   }

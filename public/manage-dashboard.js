@@ -913,6 +913,7 @@ function showNewSessionMenu(ev, dirId) {
   showPopoverMenu(ev.currentTarget, [
     { label: '+ Claude Chat', onclick: () => newSessionInDir(dirId, 'claude', 'chat') },
     { label: '+ Claude Terminal', onclick: () => newSessionInDir(dirId, 'claude', 'terminal') },
+    { label: '+ Claude Exp Chat', onclick: () => newSessionInDir(dirId, 'claude-exp', 'chat') },
     { sep: true },
     { label: '+ Codex Chat', onclick: () => newSessionInDir(dirId, 'codex', 'chat') },
     { label: '+ Codex Terminal', onclick: () => newSessionInDir(dirId, 'codex', 'terminal') },
@@ -1688,7 +1689,7 @@ function renderSessionRow(s) {
   // CLI marker: groups are now kind-only (chat/terminal), so each card shows its
   // own CLI chip. Unknown CLIs fall back to a neutral 'other' style.
   const cli = (s.cli || 'claude').toLowerCase();
-  const cliClass = ['claude', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'codebuddy', 'dsh'].includes(cli) ? cli : 'other';
+  const cliClass = ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'codebuddy', 'dsh'].includes(cli) ? cli : 'other';
   // Live workspace status (from /ws/workspace) takes precedence when available.
   const wb = _workspaceStatus.get(s.id);
   // One canonical verdict for the card, folded by the shared registry. It also

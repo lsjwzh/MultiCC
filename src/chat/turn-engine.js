@@ -73,6 +73,7 @@ const { createOpencodeContextGuard } = require('./opencode-context-guard');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { createDeliveryProbeRegistry, shouldReexecutePersistedDelivery } = require('./delivery-probe');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
+const { processSpawnArgs } = require('./process-spawn-args');
 
 function admissionRootCause(value) {
   const raw = value instanceof Error
@@ -1462,7 +1463,7 @@ function createChatTurnEngine(deps) {
     // Deliberately NOT routed through forward()/streamReplay — reconnecting
     // clients learn streaming state from the init is_streaming flag instead.
     chatBroadcast(sessionName, { type: 'stream_start', turnId });
-    if (persisted.cli === 'claude') pruneTranscript(sessionName, persisted);
+    if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') pruneTranscript(sessionName, persisted);
     cs._adapterError = null;
     cs._sawApiError = false;
     cs._activeTurn = turn;
@@ -1596,7 +1597,7 @@ function createChatTurnEngine(deps) {
     // replaying composeMessage's note-delivery side effects.
     const spawnChat = (prepared, isRetry, apiRetryAttempt = 0) => {
       const { invocation: physicalInvocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
-      const spawnArgs = [...physicalInvocation.args, physicalInvocation.payload];
+      const spawnArgs = processSpawnArgs(physicalInvocation);
       let childEnv;
       try {
         ({ env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
@@ -1614,7 +1615,7 @@ function createChatTurnEngine(deps) {
         throw error;
       }
       try {
-        if (persisted.cli === 'claude') providers.applyClaudeProxyEnv(childEnv, {
+        if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') providers.applyClaudeProxyEnv(childEnv, {
           providerId: binding.providerId, sessionId: proxySessionId,
           subagent: persisted.subagent, port: getPort(),
           officialOAuth: getClaudeOfficialViaProxy(),
@@ -1645,10 +1646,10 @@ function createChatTurnEngine(deps) {
       // file (higher precedence) so the session provider stays authoritative
       // (see src/providers/claude-settings-override.js).
       let finalSpawnArgs = spawnArgs;
-      if (persisted.cli === 'claude') {
+      if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') {
         const settingsFile = providers.settingsOverrideFor(sessionName, childEnv, physicalInvocation.settings);
         if (settingsFile) {
-          finalSpawnArgs = [...physicalInvocation.args, '--settings', settingsFile, physicalInvocation.payload];
+          finalSpawnArgs = processSpawnArgs(physicalInvocation, settingsFile);
         }
       }
       const runner = createRunnerOwnership(turn, {
@@ -2013,7 +2014,7 @@ function createChatTurnEngine(deps) {
             stderr: sanitizeApiErrorMessage(stderrTail),
           });
           // Reset session id so the retry starts a brand-new conversation
-          if (cs.cli === 'claude') persisted.cliSessionId = crypto.randomUUID();
+          if (cs.cli === 'claude' || cs.cli === 'claude-exp') persisted.cliSessionId = crypto.randomUUID();
           else persisted.cliSessionId = null;  // codex will allocate on first turn
           rememberActiveCliState(persisted);
           savePersistedSessionsBestEffort('runtime.chat-session-retry-reset');
@@ -2694,7 +2695,7 @@ function createChatTurnEngine(deps) {
     if (!cs) {
       // For claude: pre-allocate the session UUID (needed for --session-id on first turn).
       // For codex: leave null; captured from `thread.started` event on first turn.
-      if (cli === 'claude' && !persisted.cliSessionId) {
+      if ((cli === 'claude' || cli === 'claude-exp') && !persisted.cliSessionId) {
         persisted.cliSessionId = crypto.randomUUID();
         savePersistedSessionsBestEffort('websocket.chat-session-id-allocate');
       }
