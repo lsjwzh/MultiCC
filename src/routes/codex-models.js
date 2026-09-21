@@ -279,6 +279,10 @@ function createCodexModelsRuntime(options = {}) {
 
   return Object.freeze({
     list,
+    // Last verified account catalog without triggering a discovery. Callers
+    // that must stay synchronous (catalog projections) use this; interactive
+    // refreshes use list().
+    peek() { return cache ? cache.result : null; },
     _resetForTest() { cache = null; inFlight = null; },
   });
 }
@@ -297,6 +301,7 @@ function mountCodexModelRoutes(app, runtime = defaultRuntime) {
 module.exports = {
   mountCodexModelRoutes,
   createCodexModelsRuntime,
+  defaultRuntime,
   discoverCodexModels,
   readCodexDiskCatalog,
   normalizeModels,
