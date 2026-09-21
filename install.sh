@@ -449,6 +449,19 @@ if [ ! -f "$UNPACK_DIR/$RUNTIME_REL" ] || { [ ! -f "$UNPACK_DIR/multicc" ] && [ 
 fi
 ok "Package unpacked"
 
+# macOS: an archive that arrived over the network hands its "downloaded" flag to
+# everything inside it, and Gatekeeper then runs the bundle from a random
+# read-only AppTranslocation path. Permissions granted to a process running from
+# there are recorded against a path that changes on the next launch, so they can
+# never stick (the visible symptom is git failing with "Operation not permitted"
+# inside Desktop/Documents/Downloads no matter what the user authorizes). The
+# user already chose to install this checksum-verified package, so clear the flag
+# now instead of letting them debug AppTranslocation later.
+if [ "$PLATFORM" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine "$UNPACK_DIR" 2>/dev/null || true
+  info "Removed the macOS download flag — without this, permissions you grant are forgotten on every launch"
+fi
+
 # ── Install (replace any previous version) ────────────────────────────────
 step "Installing to $INSTALL_DIR"
 if [ -d "$INSTALL_DIR" ] && is_multicc_install "$INSTALL_DIR"; then

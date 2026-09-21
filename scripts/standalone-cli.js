@@ -41,6 +41,7 @@ const {
   createLogger, openBrowser, probeReady, standaloneDataDir,
 } = require(path.join(__dirname, 'standalone-launcher'));
 const { pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim'));
+const { dequarantine, translocationGuidance } = require(path.join(LIB_DIR, 'desktop-env'));
 
 const REPO = 'lsjwzh/MultiCC';
 const RELEASES_URL = `https://github.com/${REPO}/releases`;
@@ -97,6 +98,11 @@ function requireBundle(layout) {
     process.stderr.write('[multicc] reinstall with install.sh, or re-extract the release archive.\n');
     process.exit(1);
   }
+  // Every command says it once: run from Gatekeeper's throwaway copy, and the
+  // next confusing failure is guaranteed to be this, not whatever the user is
+  // about to debug.
+  const gatekeeperWarning = translocationGuidance(layout.resources);
+  if (gatekeeperWarning) process.stderr.write(gatekeeperWarning + '\n');
 }
 
 // ── Config (the bundle's .env) ──────────────────────────────────────────────
@@ -457,6 +463,14 @@ function extractArchive({ archive, dest, platform, logger: log }) {
     const res = spawnSync('tar', ['-xzf', archive, '-C', dest, '--strip-components=1'], { stdio: 'inherit' });
     if (res.status !== 0) throw new Error(`tar failed (status ${res.status})`);
   }
+  // macOS: a freshly downloaded archive hands its "came from the internet" flag
+  // down to everything it contains, and Gatekeeper answers by running the bundle
+  // from a random read-only copy — where granted permissions never stick. The
+  // user asked for this package by running a checksum-verified installer, so
+  // clear the flag here rather than making them discover AppTranslocation later.
+  if (platform === 'darwin' && dequarantine(dest, { platform, logger: log })) {
+    log.log('cleared the macOS download flag (xattr com.apple.quarantine)');
+  }
   log.log(`extracted into ${dest}`);
   return dest;
 }
@@ -628,7 +642,7 @@ function cmdService(layout, env, args) {
   <key>StandardOutPath</key><string>${path.join(standaloneDataDir({ env }), 'logs', 'service.log')}</string>
   <key>StandardErrorPath</key><string>${path.join(standaloneDataDir({ env }), 'logs', 'service-error.log')}</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>${path.dirname(layout.runtimeNode)}:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <dict><key>PATH</key><string>${path.dirname(layout.runtimeNode)}:/usr/local/bin:/usr/bin:/bin</string><key>MULTICC_SERVICE</key><string>1</string></dict>
 </dict>
 </plist>
 `);
@@ -649,6 +663,7 @@ After=network.target
 
 [Service]
 ExecStart=${argv.join(' ')}
+Environment=MULTICC_SERVICE=1
 Restart=always
 RestartSec=5
 

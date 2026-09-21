@@ -64,7 +64,14 @@
       ],
       "artifactName": "multicc-desktop-${version}-macos-${arch}.${ext}",
       "identity": null,
-      "hardenedRuntime": true
+      "hardenedRuntime": true,
+      "extendInfo": {
+        "NSDesktopFolderUsageDescription": "MultiCC 需要访问「桌面」才能把工作目录设在这里。",
+        "NSDocumentsFolderUsageDescription": "MultiCC 需要访问「文档」才能把工作目录设在这里。",
+        "NSDownloadsFolderUsageDescription": "MultiCC 需要访问「下载」才能把工作目录设在这里。",
+        "NSRemovableVolumesUsageDescription": "MultiCC 需要访问外接磁盘才能把工作目录设在这里。",
+        "NSNetworkVolumesUsageDescription": "MultiCC 需要访问网络磁盘才能把工作目录设在这里。"
+      }
     },
     "win": {
       "icon": "build/icon.png",
