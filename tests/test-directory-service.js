@@ -241,6 +241,17 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
       'push: event appended with push summary');
   }
 
+  // ── friendlyDirReason (real impl) ──
+  {
+    const { friendlyDirReason } = require('../src/directories');
+    const perm = friendlyDirReason('git-error: Command failed: git init fatal: unable to get current working directory: Operation not permitted');
+    ok(perm.includes('完全磁盘访问权限') && perm.includes('Operation not permitted'),
+      'friendlyDirReason: TCC/EPERM git failure → actionable macOS guidance');
+    ok(friendlyDirReason('git-error: boom') === '无法将目录初始化为 git 仓库: git-error: boom',
+      'friendlyDirReason: other git failures keep the plain prefix');
+    ok(friendlyDirReason('path-missing') === '目录不存在', 'friendlyDirReason: path-missing unchanged');
+  }
+
   console.log(`\n== directory service unit: ${pass} passed, ${fail} failed ==`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });
