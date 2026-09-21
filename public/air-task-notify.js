@@ -285,7 +285,10 @@
     // in a non-terminal state), so a task that was already done before the
     // feature/page ever saw it does not spam the page on first load.
     function onSnapshot(tasks, currentTaskId) {
-      const list = Array.isArray(tasks) ? tasks : [];
+      // Board insertion order can put a recently rerun old task before hundreds
+      // of dormant records. Keep the watermark by activity, not insertion order.
+      const list = Array.isArray(tasks) ? [...tasks].sort((a, b) =>
+        Number(a.updatedAt || 0) - Number(b.updatedAt || 0)) : [];
       const fires = [];
       for (const task of list) {
         const id = String(task?.id || '').trim();
@@ -302,6 +305,7 @@
           fires.push([task, kind]);
           unseen.set(id, kind);
         }
+        prevStatus.delete(id);
         prevStatus.set(id, status);
       }
       if (prevStatus.size > PREV_CAP) {
@@ -336,7 +340,35 @@
     });
   }
 
+  function recentTasks({ tasks, directoryId, recentTaskIds, limit, isUnseen, statusOf }) {
+    const byId = new Map(tasks.map(task => [task.id, task]));
+    const pool = [];
+    const seen = new Set();
+    // Unread outcomes must remain reachable even outside the current directory
+    // or when all recent slots are already occupied by opened tasks.
+    for (const task of tasks.filter(t => isUnseen(t.id) && !['archived', 'cancelled'].includes(statusOf(t)))
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))) {
+      seen.add(task.id);
+      pool.push(task);
+    }
+    for (const id of recentTaskIds) {
+      const task = byId.get(id);
+      if (!task || seen.has(task.id)) continue;
+      seen.add(task.id);
+      pool.push(task);
+    }
+    const settled = task => (['done', 'archived'].includes(task.status) ? 1 : 0);
+    for (const task of tasks.filter(t => t.dirId === directoryId)
+      .sort((a, b) => settled(a) - settled(b) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))) {
+      if (seen.has(task.id)) continue;
+      seen.add(task.id);
+      pool.push(task);
+    }
+    return pool.slice(0, limit);
+  }
+
   root.MultiCCTaskNotify = Object.freeze({
+    recentTasks,
     create: createNotifyController,
     isCompleted,
     attentionKind,

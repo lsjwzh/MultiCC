@@ -68,6 +68,22 @@ test('baseline: tasks already "done" before the page ever saw them do not fire',
   assert.equal(ctrl.isUnseen('t1'), false);
 });
 
+test('a recently rerun old task retains its watermark beyond the 200-task cap', () => {
+  const { win, api } = loadModule();
+  const ctrl = createController(win, api);
+  const active = { id: 'old-stock-task', status: 'running', updatedAt: 1000 };
+  const tasks = [active, ...Array.from({ length: 240 }, (_, i) => ({ id: 'dormant-' + i, status: 'done', updatedAt: i }))];
+  ctrl.onSnapshot(tasks, '');
+  ctrl.onSnapshot(tasks, '');
+  // Reload between snapshots, so the bound applies to persistence as well.
+  const restored = createController(win, api);
+  active.status = 'succeeded'; active.updatedAt = 1100;
+  assert.equal(restored.onSnapshot(tasks, ''), true);
+  assert.equal(restored.isUnseen(active.id), true);
+  assert.equal(Object.keys(JSON.parse(win.localStorage.getItem('air:notify-prev'))).length, 200);
+  assert.equal(restored.onSnapshot(tasks, ''), false);
+});
+
 test('observed running->succeeded transition for an unopened task fires and marks it unseen', () => {
   const { win, api } = loadModule();
   const ctrl = createController(win, api);

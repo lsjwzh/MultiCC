@@ -188,24 +188,8 @@
   const RECENT_ROWS = 10;
   function recentRowLimit() { return matchMedia('(max-width: 760px)').matches ? 6 : RECENT_ROWS; }
   function recentPool() {
-    if (!data) return [];
-    const byId = new Map(data.tasks.map(task => [task.id, task]));
-    const pool = [];
-    const seen = new Set();
-    for (const id of recentTaskIds) {
-      const task = byId.get(id);
-      if (!task || seen.has(task.id)) continue;
-      seen.add(task.id);
-      pool.push(task);
-    }
-    const settled = task => (['done', 'archived'].includes(task.status) ? 1 : 0);
-    for (const task of data.tasks.filter(t => t.dirId === directoryId)
-      .sort((a, b) => settled(a) - settled(b) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))) {
-      if (seen.has(task.id)) continue;
-      seen.add(task.id);
-      pool.push(task);
-    }
-    return pool.slice(0, RECENT_LIMIT);
+    return window.MultiCCTaskNotify.recentTasks({ tasks: data?.tasks || [], directoryId, recentTaskIds,
+      limit: RECENT_LIMIT, isUnseen: id => taskNotify?.isUnseen(id), statusOf: taskStatus });
   }
   const urgentTasks = () => window.MultiCCAirAdmin?.urgentTasks?.(data) || [];
 
@@ -502,7 +486,14 @@
           ? t('airDirTaskCountActive', { total: taskCount, active: activeCount })
           : t('airDirTaskCount', { total: taskCount })));
       button.onclick = () => navigate(directory.id);
-      return button;
+      const card = node('article', null, 'directory-card');
+      const memo = node('a', t('memoTitle'), 'directory-memo');
+      memo.href = `/memo.html?dirId=${encodeURIComponent(directory.id)}`;
+      memo.target = '_blank';
+      memo.rel = 'noopener';
+      memo.setAttribute('aria-label', `${directory.name} · ${t('memoTitle')}`);
+      card.append(button, memo);
+      return card;
     }));
     if (!directories.length) $('directory-grid').append(node('p', query ? t('airDirNoMatch') : t('airDirNoneYet'), 'empty-list'));
   }
@@ -1596,6 +1587,7 @@
       $('task-state').textContent = dir?.path || t('airHeaderNoDirectoryHint');
     }
     applyTaskTitleEditing(selectedEntry?.task || null);
+    $('directory-memo').hidden = !dir || mode !== 'tasks' || !!taskId;
     for (const id of ['quick-merge', 'quick-auto-commit', 'quick-share', 'pin-task',
       'details-toggle', 'chat-more']) $(id).hidden = !taskId;
     paintPinButton();
@@ -2683,6 +2675,9 @@
     directoryTaskFilter.query = event.target.value;
     renderDirectoryOverview();
     $('directory-task-search').focus();
+  };
+  $('directory-memo').onclick = () => {
+    if (directoryId) window.open(`/memo.html?dirId=${encodeURIComponent(directoryId)}`, '_blank', 'noopener');
   };
   $('directory-task-status').onchange = event => {
     directoryTaskFilter.status = event.target.value;
