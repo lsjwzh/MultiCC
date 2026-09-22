@@ -19,9 +19,11 @@
 //   ② 对话帧：第二组断言反过来，把真的 chat.html 嵌进来，扫帧自己那份文档，连
 //      Air 通过 air.js 写进帧里的那几颗药丸（#air-ai-pill 上的线路名）一起管。
 // 还剩一类 iframe 属于别的文档、不在判据内 —— 说清楚，免得把「本文件全绿」读成
-// 「屏幕上没有中文」：侧栏几格里「暂用兼容实现」的旧管理台（air-admin.js 的
-// .air-legacy-frame → /manage.html?view=…&embed=air，如消息桥接）。那些页面的文案是
-// manage.html 自己的存量，不在本次「Air 壳」的范围内，英文模式下仍会露出中文。
+// 「屏幕上没有中文」：air-admin.js 的 .air-legacy-frame（/manage.html?view=…&embed=air）
+// 是面板模块没挂上时的退路，那份中文属于 manage.html 自己的存量，不在本次「Air 壳」
+// 的范围内。侧栏那十几格已经全部搬成原生 DOM，所以下面逐格扫描时不允许它出现
+// （见那一组的 .air-legacy-frame 断言）—— 这里留的只是「万一退了回去，也别把
+// manage.html 的存量当成 Air 漏翻」这条读法。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -68,6 +70,19 @@ function taskFrameRoutes(routes, list) {
     // 那条断言也就成了空跑 —— 所以下面断它「等于词典里那串」，而不是「不含汉字」。
     routes[`/api/air/tasks/${item.id}`] = () => json({
       ...entry(item), configuration: { pendingConfiguration: null, ...item.configuration },
+    });
+    // 用户实测看到的那条带子（composer 上那颗线路药丸）读的是「打开任务」这条轻量
+    // 路由：air.js 的 renderComposerControls 先认 entry，再认 air-task-entry.js 写下的
+    // window.__multiccAirTaskOpen（src/workspace/air-routes.js 的 /api/air/tasks/:id/open）。
+    // fixture 少了它，药丸就永远 hidden + 空文案 —— 帧里那条断言于是成了空跑，
+    // 就算带子被写坏也照绿。会话 id / 只读位 / 线路配置都按真路由的形状给。
+    routes[`/api/air/tasks/${item.id}/open`] = () => json({
+      ...entry(item), taskId: item.id,
+      sourceSessionId: null,
+      configuration: { pendingConfiguration: null, ...item.configuration },
+      session: { id: `session-${item.id}`, kind: 'chat', dirId: item.dirId, label: item.title,
+        cli: item.configuration?.cli || 'codex', cwd: '/projects/multicc', createdAt: 1,
+        taskBoundTaskId: item.id, autoCommit: true },
     });
     routes[`POST /api/task-board/tasks/${item.id}/chat-session`] = () => json({ ok: true, sessionId: `session-${item.id}` });
   }
@@ -302,18 +317,52 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     // 侧栏那几格是同一个壳里换面板，内容全由 air-*.js 现画 —— 首屏扫描看不到它们。
     // 「整个产品 UI 能在中文/English 之间切换」包括这些格子里的一字一句，所以逐格点开，
     // 每开一格扫一次（失败了直接说是哪一格，不用在一整页里找）。
-    // bridges / provider 这类格子的正文是嵌进来的旧管理台 iframe（.air-legacy-frame），
-    // 那份中文属于 manage.html，扫不到 —— 见文件头那条边界说明。
-    for (const view of ['docs', 'memory', 'settings', 'provider', 'tunnel', 'bridges']) {
-      await page.evaluate(`document.querySelector('[data-air-view="${view}"]').click()`);
+    //
+    // 旧管理台那十格搬成原生之后，这里不再有「嵌进来的旧 iframe 扫不到」这条豁免：
+    // 每一格除了扫中文，还要证明它画的是原生 DOM（没有 .air-legacy-frame）。少了这条，
+    // 面板模块一旦没挂上就会静默退回 iframe，而 iframe 里的中文恰好是扫不到的 ——
+    // 那样这道关会绿着放走一整格没搬完的页面。
+    const ADMIN_VIEWS = [
+      'docs', 'secrets', 'memory', 'taskgraph', 'voice', 'goal', 'provider', 'global',
+      'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
+    ];
+    // 先把「谁没挂上」说清楚：下面每格失败时报的是「还在嵌旧页面」，而根因往往是某个
+    // 模块的 <script> 没加载（或者加载时抛了错）—— 那一行直接把名字给出来。
+    t.diagnostic('missing panel modules: ' + await page.evaluate(`JSON.stringify([
+      'MultiCCAirMemory', 'MultiCCAirTaskgraph', 'MultiCCAirVoice', 'MultiCCAirGoal',
+      'MultiCCAirGlobal', 'MultiCCAirPush', 'MultiCCAirBridges', 'MultiCCAirResources',
+      'MultiCCAirSkillsync', 'MultiCCAirStorage', 'MultiCCAirProvider', 'MultiCCAirTunnel',
+    ].filter(name => !window[name]))`));
+    for (const view of [...ADMIN_VIEWS, 'settings']) {
+      // 除设置中心自己，每一格在设置中心都有一张卡片（legacyPanels 是卡片文案的来源），
+      // 点卡片进去和用户走的是同一条路。设置中心本身走侧栏按钮。
+      const via = await page.evaluate(`(() => {
+        document.querySelector('[data-air-view="settings"]').click();
+        const card = document.querySelector('[data-air-card="${view}"]');
+        if (card) { card.click(); return 'card'; }
+        const button = document.querySelector('[data-air-view="${view}"]');
+        button.click();
+        return 'sidebar';
+      })()`);
       assert.ok(await page.waitFor(`(() => {
         const panel = document.getElementById('admin-content');
         return !!panel && panel.textContent.trim().length > 0;
       })()`), `the "${view}" panel must render something to scan`);
+      // 判据是「这一格真的把旧管理台装进来了」，而不是「DOM 里有没有那个 iframe 元素」：
+      // Provider 页的「高级」折叠区里就留着一个 air-legacy-frame，但它是惰性的
+      // （只写 dataset.src，展开高级时才落到 src 上），没展开时它不加载任何文档 ——
+      // 那属于「已知还没搬的旧页面」，不该被这条断言算成整格没搬完。
+      assert.deepEqual(
+        await page.evaluate(`(() => [...document.querySelectorAll('#admin-content iframe')]
+          .map(frame => frame.getAttribute('src') || '')
+          .filter(src => src.includes('/manage.html')))()`),
+        [],
+        `the "${view}" panel (entered via ${via}) still loads the old manage page as its body`,
+      );
       const leaked = await page.evaluate(SCAN);
       assert.deepEqual(leaked, [], `Chinese left in the Air "${view}" panel:\n  ${leaked.join('\n  ')}`);
       // 记一下每格画出多少字：空面板扫出来当然干净，那不算数。
-      t.diagnostic(`${view} panel: ${await page.evaluate(`document.getElementById('admin-content').textContent.trim().length`)} chars`);
+      t.diagnostic(`${view} panel (${via}): ${await page.evaluate(`document.getElementById('admin-content').textContent.trim().length`)} chars`);
     }
 
     // ── 硬要求：整个 Air 文档里不再有中文 ─────────────────────────────────
@@ -321,8 +370,7 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     // 一起覆盖了：漏翻的节点不管藏得多深都会在这里现形。Auto 候选池刚挂上去，也在里面。
     const dirty = await page.evaluate(SCAN);
     assert.deepEqual(dirty, [], `Chinese left in the English Air shell:\n  ${dirty.join('\n  ')}`);
-    // 出这一张是在扫过六个面板之后 —— 壳上的英文是重点，下半屏那两格嵌进来的
-    // 旧管理台（iframe）说明的是上面那条边界，不是这次没过关。
+    // 出这一张是在把每一格都点过一遍之后：整页都不该再有中文了。
     t.diagnostic('en: ' + await page.screenshot('air-i18n-en'));
 
     // 任务 AI 配置抽屉里的标签不是静态 DOM，是共享模块（chat-ai-config.js）现算的，

@@ -8,6 +8,9 @@
   const model = root.MultiCCMemoryModel;
   const escapeHtml = model.escapeHtml;
   const formatSize = model.formatSize;
+  // 文案走全局 t()（i18n.js 在 manage.html 里晚于本文件加载、在 Air 里是懒重放，所以
+  // 一律在渲染/回执时取值，不在模块常量里冻结译文；取不到就退回 key）。
+  const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
   function el(id) { return document.getElementById(id); }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -60,14 +63,18 @@
   window.loadMemoryTree = async function (forceRefetch) {
     const box = el('mem-tree');
     if (!box) { window.__memTreeLoaded = false; return; }
+    // 树上的点击是事件委托，原来只在 IIFE 期与 DOMContentLoaded 各绑一次 —— Air
+    // 的面板是懒渲染的，那两次跑的时候 #mem-tree 还没被创建。bindTree() 自带
+    // box.__bound 幂等标记，所以每次加载都补一次（谁先见到节点谁绑）。
+    bindTree();
     if (_treeData && !forceRefetch) {
       renderTree(_treeData);
       window.__memTreeLoaded = true;
       return;
     }
     const seq = ++_treeSeq;
-    box.innerHTML = '<div class="mt-empty">加载中…</div>';
-    const statsEl = el('mem-tree-stats'); if (statsEl) statsEl.textContent = '加载中…';
+    box.innerHTML = '<div class="mt-empty">' + t('loading') + '</div>';
+    const statsEl = el('mem-tree-stats'); if (statsEl) statsEl.textContent = t('loading');
     try {
       const data = await model.loadTree();
       if (seq !== _treeSeq) return; // 竞态：更晚的请求已发出
@@ -77,7 +84,7 @@
     } catch (e) {
       if (seq !== _treeSeq) return;
       window.__memTreeLoaded = false;
-      box.innerHTML = '<div class="mt-empty">加载失败：' + escapeHtml(model.errorMessage(e)) + '</div>';
+      box.innerHTML = '<div class="mt-empty">' + t('memoryTreeLoadFailed', { error: escapeHtml(model.errorMessage(e)) }) + '</div>';
       if (statsEl) statsEl.textContent = '';
     }
   };
@@ -87,14 +94,16 @@
     const m = data.meta || {};
     const statsEl = el('mem-tree-stats');
     if (statsEl) {
-      statsEl.textContent = `${m.projectCount || 0} 项目 · ${m.sessionCount || 0} 会话 · `
-        + `${m.fileCount || 0} 文件 · 估算 ~${(m.tokenTotal || 0).toLocaleString()} tokens`
-        + (m.truncated ? ` · 已截断至 ${m.maxFiles}` : '')
+      statsEl.textContent = t('memoryTreeStats', {
+        projects: m.projectCount || 0, sessions: m.sessionCount || 0, files: m.fileCount || 0,
+        tokens: (m.tokenTotal || 0).toLocaleString(),
+      })
+        + (m.truncated ? t('memoryTreeStatsTruncated', { n: m.maxFiles }) : '')
         + (m.durationMs != null ? ` · ${m.durationMs}ms` : '');
     }
     const projects = data.projects || [];
     const globalHtml = renderGlobalTiers(data);
-    if (!projects.length && !globalHtml) { box.innerHTML = '<div class="mt-empty">暂无任何记忆文件。当会话把知识写进 memories/ 下的 .md 后，这里会出现层级。</div>'; return; }
+    if (!projects.length && !globalHtml) { box.innerHTML = '<div class="mt-empty">' + t('memoryTreeEmpty') + '</div>'; return; }
     box.innerHTML = globalHtml + projects.map(renderProject).join('');
   }
 
@@ -102,10 +111,10 @@
   function renderGlobalTiers(data) {
     const machine = data.machine;
     const machineHtml = (machine && machine.files && machine.files.length)
-      ? renderGroup(machine, '🛡 机器全局记忆 (_machine)', 'machine', false) : '';
+      ? renderGroup(machine, t('memoryGroupMachine'), 'machine', false) : '';
     const cliHtml = (data.clis || [])
       .filter(c => c.files && c.files.length)
-      .map(c => renderGroup(c, `⌨ CLI 记忆 · ${c.cli} (_cli/${c.cli})`, 'cli', false)).join('');
+      .map(c => renderGroup(c, t('memoryGroupCli', { cli: c.cli }), 'cli', false)).join('');
     return machineHtml + cliHtml;
   }
 
@@ -113,11 +122,11 @@
 
   function renderProject(p) {
     const shared = (p.shared && p.shared.files && p.shared.files.length)
-      ? renderGroup(p.shared, '公共记忆 (_shared)', 'shared', false) : '';
+      ? renderGroup(p.shared, t('memoryGroupShared'), 'shared', false) : '';
     const skills = (p.skills || [])
-      .map(s => renderGroup(s, `🧩 技能 · ${s.skill}`, 'skill', true)).join('');
+      .map(s => renderGroup(s, t('memoryGroupSkill', { skill: s.skill }), 'skill', true)).join('');
     const tasks = (p.tasks || [])
-      .map(t => renderGroup(t, `🎯 任务 · ${t.taskId}`, 'task', true)).join('');
+      .map(task => renderGroup(task, t('memoryGroupTask', { taskId: task.taskId }), 'task', true)).join('');
     const sessions = (p.sessions || [])
       .filter(s => s.files && s.files.length)
       .map(s => renderGroup(s, sessLabel(s), 'session', true)).join('');
@@ -125,16 +134,16 @@
       <div class="mt-row mt-proj-hdr" data-toggle>
         <span class="mt-caret">▶</span>
         <strong>${escapeHtml(p.name)}</strong>
-        <span class="mt-count">${p.fileCount || 0} 文件 · ${(p.sessions || []).length} 会话</span>
+        <span class="mt-count">${t('memoryProjectCounts', { files: p.fileCount || 0, sessions: (p.sessions || []).length })}</span>
         ${tok(p.tokens)}
       </div>
-      <div class="mt-body">${shared}${skills}${tasks}${sessions || '<div class="mt-empty" style="padding:10px">该项目暂无会话记忆</div>'}</div>
+      <div class="mt-body">${shared}${skills}${tasks}${sessions || '<div class="mt-empty" style="padding:10px">' + t('memoryProjectNoSessions') + '</div>'}</div>
     </div>`;
   }
 
   function sessLabel(s) {
     const base = s.label && s.label !== s.sessionId ? `${s.label} · ${s.sessionId}` : s.sessionId;
-    return (s.cli ? `[${s.cli}] ` : '') + base + (s.live ? '' : ' （离线）');
+    return (s.cli ? `[${s.cli}] ` : '') + base + (s.live ? '' : t('memorySessionOffline'));
   }
 
   function renderGroup(g, label, kind, collapsed) {
@@ -143,7 +152,7 @@
       <div class="mt-row mt-grp-hdr" data-toggle>
         <span class="mt-caret">${collapsed ? '▶' : '▼'}</span>
         <span class="mt-grp-label">${escapeHtml(label)}</span>
-        <span class="mt-count">${(g.files || []).length} 文件</span>
+        <span class="mt-count">${t('memoryGroupFileCount', { n: (g.files || []).length })}</span>
         ${tok(g.tokens)}
       </div>
       <div class="mt-body${collapsed ? '' : ' open'}">${files}</div>
@@ -152,14 +161,14 @@
 
   function renderFileRow(f) {
     return `<div class="mt-filewrap">
-      <div class="mt-file" data-rel="${escapeHtml(f.rel)}" title="点击打开编辑">
+      <div class="mt-file" data-rel="${escapeHtml(f.rel)}" title="${t('memoryFileOpenHint')}">
         <span>📄</span>
         <span class="mt-fname">${escapeHtml(f.name)}</span>
         <span class="mt-ftitle">${escapeHtml(f.title || '')}</span>
         <span class="mt-tok"><span class="tokn">~${(f.tokens || 0).toLocaleString()}</span> tok · ${escapeHtml(formatSize(f.size))}</span>
-        <button class="mt-edit" data-edit="${escapeHtml(f.rel)}">编辑</button>
+        <button class="mt-edit" data-edit="${escapeHtml(f.rel)}">${t('memoryFileEdit')}</button>
       </div>
-      <code class="mt-fpath" data-copy="${escapeHtml(f.path)}" title="点击复制路径">${escapeHtml(f.path)}</code>
+      <code class="mt-fpath" data-copy="${escapeHtml(f.path)}" title="${t('memoryFilePathCopyHint')}">${escapeHtml(f.path)}</code>
     </div>`;
   }
 
@@ -178,7 +187,7 @@
       const editBtn = target.closest('[data-edit]');
       if (editBtn) { ev.stopPropagation(); openMemFileEditor(editBtn.dataset.edit); return; }
       const copyEl = target.closest('[data-copy]');
-      if (copyEl) { ev.stopPropagation(); copyText(copyEl.dataset.copy); flashMsg(copyEl, '已复制'); return; }
+      if (copyEl) { ev.stopPropagation(); copyText(copyEl.dataset.copy); flashMsg(copyEl, t('msgCopied')); return; }
       const file = target.closest('.mt-file');
       if (file && file.dataset.rel) { openMemFileEditor(file.dataset.rel); return; }
       const hdr = target.closest('[data-toggle]');
@@ -212,8 +221,7 @@
   }
   function oversizedFileMessage(originalLength) {
     const limit = model.MAX_FILE_CONTENT || 200000;
-    return `⚠ 文件共有 ${originalLength} 字符，超过可安全编辑上限 ${limit}；`
-      + `当前仅显示前 ${limit} 字符并已禁用保存，避免覆盖完整文件。`;
+    return t('memoryFileOversized', { length: originalLength, limit });
   }
   window.openMemFileEditor = async function (rel) {
     if (!rel) return;
@@ -230,9 +238,9 @@
     _editRel = rel;
     _editOrig = '';                       // 清掉上一个文件的基线，避免误判“有未保存改动”
     _editOriginalLength = 0;
-    setEditorReadOnly(true, '文件仍在加载，暂不能保存。'); // 加载完成前禁止覆盖未知内容
+    setEditorReadOnly(true, t('memoryFileLoadingReadOnly')); // 加载完成前禁止覆盖未知内容
     title.textContent = rel.split('/').pop();
-    pathEl.textContent = '加载中… · ' + rel;
+    pathEl.textContent = t('loading') + ' · ' + rel;
     ta.value = '';
     tokEl.textContent = '';
     msgEl.textContent = '';
@@ -255,19 +263,19 @@
     } catch (e) {
       if (seq !== _fileReqSeq || _editRel !== rel) return;
       if (Number(e && e.status) === 404) {
-        pathEl.textContent = '（文件不存在，保存后创建）· ' + rel;
+        pathEl.textContent = t('memoryFileMissingSoCreate') + ' · ' + rel;
         setEditorReadOnly(false);
         updateEditorTok();
         return;
       }
-      msgEl.textContent = '读取失败：' + model.errorMessage(e);
-      setEditorReadOnly(true, '文件读取失败，已禁用保存以避免覆盖未知内容。');
+      msgEl.textContent = t('memoryFileReadFailed', { error: model.errorMessage(e) });
+      setEditorReadOnly(true, t('memoryFileReadOnlyOnReadError'));
     }
   };
   window.memFileEditorClose = function () {
     const ta = el('mem-file-ta');
     if (ta && _editRel && ta.value !== _editOrig) {
-      if (!confirm('有未保存的改动，确定关闭？')) return;
+      if (!confirm(t('memoryFileCloseConfirm'))) return;
     }
     const m = el('mem-file-modal'); if (m) m.classList.remove('open');
     _fileReqSeq++;
@@ -276,8 +284,8 @@
     setEditorReadOnly(false);
   };
   function updateEditorTok() {
-    const ta = el('mem-file-ta'); const t = el('mem-file-tok');
-    if (ta && t) t.textContent = '估算 ~' + estTokens(ta.value).toLocaleString() + ' tokens';
+    const ta = el('mem-file-ta'); const tokEl = el('mem-file-tok');
+    if (ta && tokEl) tokEl.textContent = t('memoryFileTokenEstimate', { n: estTokens(ta.value).toLocaleString() });
   }
   // 记忆增删后：图谱 + 树缓存全部失效，并立即刷新当前可见的那一面板（另一面板下次进入再拉）
   function afterMemChange() {
@@ -293,26 +301,26 @@
     const ta = el('mem-file-ta'), msg = el('mem-file-msg');
     if (!ta || !msg) return;
     if (_editReadOnly) {
-      msg.textContent = _editReadOnlyMessage || '当前文件处于只读状态，不能保存。';
+      msg.textContent = _editReadOnlyMessage || t('memoryFileReadOnlyCannotSave');
       return;
     }
     const content = ta.value;
     const seq = ++_mutationSeq;
-    msg.textContent = '保存中…';
+    msg.textContent = t('saving');
     try {
       const d = await model.saveFile(rel, content);
       if (seq !== _mutationSeq || _editRel !== rel) return;
       _editOrig = content;
-      msg.textContent = '✓ 已保存 · ~' + (d.tokens || 0) + ' tokens';
+      msg.textContent = t('memoryFileSaved', { n: d.tokens || 0 });
       afterMemChange();
     } catch (e) {
-      if (seq === _mutationSeq && _editRel === rel) msg.textContent = '保存失败：' + model.errorMessage(e);
+      if (seq === _mutationSeq && _editRel === rel) msg.textContent = t('saveFailed', { error: model.errorMessage(e) });
     }
   }
   async function deleteMemFile() {
     if (!_editRel) return;
     const rel = _editRel;
-    if (!confirm('删除记忆文件「' + rel.split('/').pop() + '」？不可恢复。')) return;
+    if (!confirm(t('memoryFileDeleteConfirm', { name: rel.split('/').pop() }))) return;
     const seq = ++_mutationSeq;
     try {
       await model.deleteFile(rel);
@@ -324,7 +332,7 @@
       afterMemChange();
     } catch (e) {
       const msg = el('mem-file-msg');
-      if (msg && seq === _mutationSeq && _editRel === rel) msg.textContent = '删除失败：' + model.errorMessage(e);
+      if (msg && seq === _mutationSeq && _editRel === rel) msg.textContent = t('memoryFileDeleteFailed', { error: model.errorMessage(e) });
     }
   }
   document.addEventListener('DOMContentLoaded', wireEditor);
