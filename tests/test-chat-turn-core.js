@@ -258,6 +258,22 @@ test('turn request normalizes identity/origin/history without native ids or secr
   assert.equal(serialized.includes('secret'), false);
 });
 
+test('Claude Exp resumes native history even before the first successful reply', () => {
+  for (const turnCount of [0, 1, 34]) {
+    for (const hasNativeSession of [true, false]) {
+      const turn = request({ cli: 'claude-exp', turnCount, hasNativeSession });
+      assert.deepEqual(turn.execution, {
+        transport: 'cli-process',
+        historyIntent: hasNativeSession ? 'resume' : 'first',
+        isFirstTurn: !hasNativeSession,
+      });
+    }
+  }
+  for (const cli of ['claude', 'codex', 'codex-exp', 'opencode']) {
+    assert.equal(request({ cli, turnCount: 0, hasNativeSession: true }).execution.isFirstTurn, true);
+  }
+});
+
 test('history intent is derived from live state and dispatch metadata fails closed', () => {
   // A resume is a conclusion, not a request: it appears only when this session
   // has already taken a turn AND still holds a native session. Callers pass

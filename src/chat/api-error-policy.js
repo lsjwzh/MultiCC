@@ -417,6 +417,7 @@ function textFallbackCategory(message) {
   if (/cancelled by user|canceled by user|server (?:is )?shutting down|sigterm|sigint/.test(text)) return 'cancel_shutdown';
   if (/invalid session id\. must be a valid uuid\b/.test(text)) return 'adapter_configuration';
   if (/no conversation found with session id\b/.test(text)) return 'adapter_configuration';
+  if (/\bsession id\s+\S+\s+is already in use\b/.test(text)) return 'adapter_configuration';
   if (/provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed|\b(?:eacces|enoent|enoexec)\b|\bexit(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*-13\b/.test(text)) return 'adapter_configuration';
   if (/etimedout|timed? out|timeout|deadline exceeded|response stalled|stream idle/.test(text)) return 'timeout';
   if (/enotfound|dns|tls|certificate|econnreset|connection reset|connection closed|connection ?refused|unable to connect|socket hang|network error|fetch failed|stream disconnected/.test(text)) return 'network';
