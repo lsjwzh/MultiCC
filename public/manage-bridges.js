@@ -1,6 +1,10 @@
 (function initManageBridges(global) {
   'use strict';
 
+  // 文案一律走全局 t()（public/i18n.js，manage.html 和 Air 都先于本文件加载）；
+  // 取不到就退回 key，不让文案层缺失把这一格打崩。
+  const t = (key, params) => (typeof global.t === 'function' ? global.t(key, params) : key);
+
   /* ── WeChat Bridge (iLink) ── */
   let _wxEvtSource = null;
   let _wxRunning = false;
@@ -17,7 +21,7 @@
       btnQR.style.display = 'none';
       btnLogout.style.display = '';
       qrImg.style.display = 'none';
-      statusEl.textContent = '已登录微信';
+      statusEl.textContent = t('manageBridgesWechatLoggedIn');
       statusEl.style.color = '#3fb950';
     } else {
       btnQR.style.display = '';
@@ -38,7 +42,7 @@
 
   async function wechatGetQR() {
     const statusEl = document.getElementById('wx-login-status');
-    statusEl.textContent = '获取二维码中...';
+    statusEl.textContent = t('manageBridgesQrFetching');
     statusEl.style.color = '#d29922';
     try {
       const res = await fetch('/api/wechat/qrcode' + tokenQS('?'));
@@ -65,11 +69,11 @@
         renderQrUrlToImg(qrImg, wechatLoginUrl(data.qrcode));
         qrImg.style.display = 'block';
       }
-      statusEl.textContent = '请用微信扫描二维码';
+      statusEl.textContent = t('manageBridgesQrScanWechat');
       if (_wxLoginPollTimer) clearInterval(_wxLoginPollTimer);
       _wxLoginPollTimer = setInterval(wechatPollLogin, 2000);
     } catch (e) {
-      statusEl.textContent = `获取失败: ${e.message}`;
+      statusEl.textContent = t('manageBridgesQrFailed', { message: e.message });
       statusEl.style.color = '#f85149';
     }
   }
@@ -114,11 +118,11 @@
       if (data.status === 'confirmed') {
         if (_wxLoginPollTimer) { clearInterval(_wxLoginPollTimer); _wxLoginPollTimer = null; }
         wechatSetLoginUI(true);
-        showToast('微信登录成功');
+        showToast(t('manageBridgesWechatLoginOk'));
       } else if (data.status === 'expired' || data.status === 'error') {
         if (_wxLoginPollTimer) { clearInterval(_wxLoginPollTimer); _wxLoginPollTimer = null; }
         const statusEl = document.getElementById('wx-login-status');
-        statusEl.textContent = data.error || '二维码已过期';
+        statusEl.textContent = data.error || t('manageBridgesQrExpired');
         statusEl.style.color = '#f85149';
         document.getElementById('wx-qr-img').style.display = 'none';
       }
@@ -131,9 +135,9 @@
       wechatSetLoginUI(false);
       wechatSetRunning(false);
       wechatDisconnectSSE();
-      showToast('已退出微信登录');
+      showToast(t('manageBridgesWechatLoggedOut'));
     } catch (e) {
-      showToast(`退出失败: ${e.message}`, true);
+      showToast(t('manageBridgesLogoutFailed', { message: e.message }), true);
     }
   }
 
@@ -151,9 +155,9 @@
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       wechatSetRunning(true);
       wechatConnectSSE();
-      showToast('微信桥接已启动');
+      showToast(t('manageBridgesWechatStarted'));
     } catch (e) {
-      showToast(`启动失败: ${e.message}`, true);
+      showToast(t('manageBridgesStartFailed', { message: e.message }), true);
     }
   }
 
@@ -162,9 +166,9 @@
       await fetch('/api/wechat/stop' + tokenQS('?'), { method: 'POST' });
       wechatSetRunning(false);
       wechatDisconnectSSE();
-      showToast('微信桥接已停止');
+      showToast(t('manageBridgesWechatStopped'));
     } catch (e) {
-      showToast(`停止失败: ${e.message}`, true);
+      showToast(t('manageBridgesStopFailed', { message: e.message }), true);
     }
   }
 
@@ -179,9 +183,9 @@
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showToast('微信配置已保存');
+      showToast(t('manageBridgesWechatConfigSaved'));
     } catch (e) {
-      showToast(`保存失败: ${e.message}`, true);
+      showToast(t('manageBridgesSaveFailed', { message: e.message }), true);
     }
   }
 
@@ -269,7 +273,7 @@
       const radio = document.querySelector(`input[name="wx-gw-cli"][value="${gw.cli}"]`);
       if (radio) radio.checked = true;
     } else {
-      stateEl.textContent = '未创建';
+      stateEl.textContent = t('airBridgesStateUncreated');
       stateEl.style.background = '#21262d';
       stateEl.style.color = '#8b949e';
       createBtn.style.display = '';
@@ -298,8 +302,8 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       wechatRenderGateway(data);
-      showToast(`Gateway 已创建 (${cli})`);
-    } catch (e) { showToast(`创建失败: ${e.message}`, true); }
+      showToast(t('manageBridgesGatewayCreated', { cli }));
+    } catch (e) { showToast(t('manageBridgesCreateFailed', { message: e.message }), true); }
   }
 
   async function wechatGatewaySwitchCli() {
@@ -312,9 +316,9 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       wechatRenderGateway(data);
-      showToast(`已切换到 ${cli}`);
+      showToast(t('manageBridgesSwitchedTo', { cli }));
     } catch (e) {
-      showToast(`切换失败: ${e.message}`, true);
+      showToast(t('manageBridgesSwitchFailed', { message: e.message }), true);
       wechatGatewayRefresh();  // revert radio
     }
   }
@@ -325,22 +329,22 @@
   }
 
   async function wechatGatewayReset() {
-    if (!(await showConfirm('清空 Gateway 对话历史？', { danger: true, okText: '清空' }))) return;
+    if (!(await showConfirm(t('manageBridgesClearConfirm'), { danger: true, okText: t('clearBtn') }))) return;
     try {
       const res = await fetch('/api/wechat/gateway/reset' + tokenQS('?'), { method: 'POST' });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-      showToast('已清空对话历史');
-    } catch (e) { showToast(`重置失败: ${e.message}`, true); }
+      showToast(t('manageBridgesHistoryCleared'));
+    } catch (e) { showToast(t('manageBridgesResetFailed', { message: e.message }), true); }
   }
 
   async function wechatGatewayDestroy() {
-    if (!(await showConfirm('销毁 Gateway 会话？历史会保留在 chat_history。', { danger: true, okText: '销毁' }))) return;
+    if (!(await showConfirm(t('manageBridgesDestroyConfirm'), { danger: true, okText: t('airBridgesBtnDestroy') }))) return;
     try {
       const res = await fetch('/api/wechat/gateway' + tokenQS('?'), { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
       wechatRenderGateway(null);
-      showToast('Gateway 已销毁');
-    } catch (e) { showToast(`销毁失败: ${e.message}`, true); }
+      showToast(t('manageBridgesGatewayDestroyed'));
+    } catch (e) { showToast(t('manageBridgesDestroyFailed', { message: e.message }), true); }
   }
 
   async function wechatLoadConfig() {
@@ -374,7 +378,7 @@
   document.addEventListener('change', (e) => {
     if (e.target && e.target.name === 'wx-gw-cli') {
       const stateEl = document.getElementById('wx-gw-state');
-      if (stateEl && stateEl.textContent !== '未创建') wechatGatewaySwitchCli();
+      if (stateEl && stateEl.textContent !== t('airBridgesStateUncreated')) wechatGatewaySwitchCli();
     }
   });
 
@@ -387,7 +391,7 @@
   function feishuSetConfigured(configured) {
     const el = document.getElementById('fs-cfg-state');
     if (!el) return;
-    el.textContent = configured ? '已配置' : '未配置';
+    el.textContent = configured ? t('airBridgesStateConfigured') : t('airBridgesStateUnconfigured');
     el.style.background = configured ? '#23863640' : '#21262d';
     el.style.color = configured ? '#3fb950' : '#8b949e';
   }
@@ -419,12 +423,12 @@
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       document.getElementById('fs-appsecret').value = '';
-      if (statusEl) statusEl.textContent = '已保存';
-      showToast('飞书凭证已保存');
+      if (statusEl) statusEl.textContent = t('saved');
+      showToast(t('manageBridgesFeishuCredentialsSaved'));
       feishuLoadConfig();
     } catch (e) {
-      if (statusEl) statusEl.textContent = `保存失败: ${e.message}`;
-      showToast(`保存失败: ${e.message}`, true);
+      if (statusEl) statusEl.textContent = t('manageBridgesSaveFailed', { message: e.message });
+      showToast(t('manageBridgesSaveFailed', { message: e.message }), true);
     }
   }
 
@@ -435,9 +439,9 @@
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       feishuSetRunning(true);
       feishuConnectSSE();
-      showToast('飞书桥接已启动');
+      showToast(t('manageBridgesFeishuStarted'));
     } catch (e) {
-      showToast(`启动失败: ${e.message}`, true);
+      showToast(t('manageBridgesStartFailed', { message: e.message }), true);
     }
   }
 
@@ -446,9 +450,9 @@
       await fetch('/api/feishu/stop' + tokenQS('?'), { method: 'POST' });
       feishuSetRunning(false);
       feishuDisconnectSSE();
-      showToast('飞书桥接已停止');
+      showToast(t('manageBridgesFeishuStopped'));
     } catch (e) {
-      showToast(`停止失败: ${e.message}`, true);
+      showToast(t('manageBridgesStopFailed', { message: e.message }), true);
     }
   }
 
@@ -478,7 +482,7 @@
     if (_fsEvtSource) { _fsEvtSource.close(); _fsEvtSource = null; }
   }
 
-  const _fsPrefixes = { in: '← 飞书', out: '→ Claude', system: 'SYS', error: 'ERR' };
+  const _fsPrefixes = { in: t('manageBridgesLogInFeishu'), out: '→ Claude', system: 'SYS', error: 'ERR' };
   const _fsColors = { in: '#58a6ff', out: '#3fb950', system: '#d29922', error: '#f85149' };
 
   function feishuAppendLog(entry) {
@@ -510,7 +514,7 @@
       const radio = document.querySelector(`input[name="fs-gw-cli"][value="${gw.cli}"]`);
       if (radio) radio.checked = true;
     } else {
-      stateEl.textContent = '未创建';
+      stateEl.textContent = t('airBridgesStateUncreated');
       stateEl.style.background = '#21262d';
       stateEl.style.color = '#8b949e';
       createBtn.style.display = '';
@@ -539,8 +543,8 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       feishuRenderGateway(data);
-      showToast(`飞书 Gateway 已创建 (${cli})`);
-    } catch (e) { showToast(`创建失败: ${e.message}`, true); }
+      showToast(t('manageBridgesFeishuGatewayCreated', { cli }));
+    } catch (e) { showToast(t('manageBridgesCreateFailed', { message: e.message }), true); }
   }
 
   async function feishuGatewaySwitchCli() {
@@ -553,9 +557,9 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       feishuRenderGateway(data);
-      showToast(`已切换到 ${cli}`);
+      showToast(t('manageBridgesSwitchedTo', { cli }));
     } catch (e) {
-      showToast(`切换失败: ${e.message}`, true);
+      showToast(t('manageBridgesSwitchFailed', { message: e.message }), true);
       feishuGatewayRefresh();
     }
   }
@@ -566,22 +570,22 @@
   }
 
   async function feishuGatewayReset() {
-    if (!(await showConfirm('清空飞书 Gateway 对话历史？', { danger: true, okText: '清空' }))) return;
+    if (!(await showConfirm(t('manageBridgesFeishuClearConfirm'), { danger: true, okText: t('clearBtn') }))) return;
     try {
       const res = await fetch('/api/feishu/gateway/reset' + tokenQS('?'), { method: 'POST' });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-      showToast('已清空对话历史');
-    } catch (e) { showToast(`重置失败: ${e.message}`, true); }
+      showToast(t('manageBridgesHistoryCleared'));
+    } catch (e) { showToast(t('manageBridgesResetFailed', { message: e.message }), true); }
   }
 
   async function feishuGatewayDestroy() {
-    if (!(await showConfirm('销毁飞书 Gateway 会话？历史会保留在 chat_history。', { danger: true, okText: '销毁' }))) return;
+    if (!(await showConfirm(t('manageBridgesFeishuDestroyConfirm'), { danger: true, okText: t('airBridgesBtnDestroy') }))) return;
     try {
       const res = await fetch('/api/feishu/gateway' + tokenQS('?'), { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
       feishuRenderGateway(null);
-      showToast('飞书 Gateway 已销毁');
-    } catch (e) { showToast(`销毁失败: ${e.message}`, true); }
+      showToast(t('manageBridgesFeishuGatewayDestroyed'));
+    } catch (e) { showToast(t('manageBridgesDestroyFailed', { message: e.message }), true); }
   }
 
   async function feishuLoadConfig() {
@@ -616,7 +620,7 @@
   document.addEventListener('change', (e) => {
     if (e.target && e.target.name === 'fs-gw-cli') {
       const stateEl = document.getElementById('fs-gw-state');
-      if (stateEl && stateEl.textContent !== '未创建') feishuGatewaySwitchCli();
+      if (stateEl && stateEl.textContent !== t('airBridgesStateUncreated')) feishuGatewaySwitchCli();
     }
   });
 
@@ -638,7 +642,7 @@
   function bridgeSetConfigured(p, configured) {
     const el = _bid(p, 'cfg-state');
     if (!el) return;
-    el.textContent = configured ? '已配置' : '未配置';
+    el.textContent = configured ? t('airBridgesStateConfigured') : t('airBridgesStateUnconfigured');
     el.style.background = configured ? '#23863640' : '';
     el.style.color = configured ? '#3fb950' : '';
   }
@@ -661,12 +665,12 @@
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       for (const f of def.fields) { const el = _bid(p, f); if (el) el.value = ''; }
-      if (statusEl) statusEl.textContent = '已保存';
-      showToast(`${def.name} 凭证已保存`);
+      if (statusEl) statusEl.textContent = t('saved');
+      showToast(t('manageBridgesCredentialsSaved', { name: def.name }));
       bridgeLoadConfig(p);
     } catch (err) {
-      if (statusEl) statusEl.textContent = `保存失败: ${err.message}`;
-      showToast(`保存失败: ${err.message}`, true);
+      if (statusEl) statusEl.textContent = t('manageBridgesSaveFailed', { message: err.message });
+      showToast(t('manageBridgesSaveFailed', { message: err.message }), true);
     }
   }
   async function bridgeStart(p) {
@@ -677,8 +681,8 @@
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       bridgeSetRunning(p, true);
       bridgeConnectSSE(p);
-      showToast(`${def.name} 桥接已启动`);
-    } catch (err) { showToast(`启动失败: ${err.message}`, true); }
+      showToast(t('manageBridgesBridgeStarted', { name: def.name }));
+    } catch (err) { showToast(t('manageBridgesStartFailed', { message: err.message }), true); }
   }
   async function bridgeStop(p) {
     const def = TOKEN_BRIDGES[p];
@@ -686,8 +690,8 @@
       await fetch(def.api + '/stop' + tokenQS('?'), { method: 'POST' });
       bridgeSetRunning(p, false);
       bridgeDisconnectSSE(p);
-      showToast(`${def.name} 桥接已停止`);
-    } catch (err) { showToast(`停止失败: ${err.message}`, true); }
+      showToast(t('manageBridgesBridgeStopped', { name: def.name }));
+    } catch (err) { showToast(t('manageBridgesStopFailed', { message: err.message }), true); }
   }
   function bridgeConnectSSE(p) {
     const def = TOKEN_BRIDGES[p];
@@ -740,7 +744,7 @@
       const radio = document.querySelector(`input[name="${TOKEN_BRIDGES[p].idp}-gw-cli"][value="${gw.cli}"]`);
       if (radio) radio.checked = true;
     } else {
-      stateEl.textContent = '未创建';
+      stateEl.textContent = t('airBridgesStateUncreated');
       stateEl.style.background = ''; stateEl.style.color = '';
       createBtn.style.display = ''; openBtn.style.display = 'none'; resetBtn.style.display = 'none'; destroyBtn.style.display = 'none';
     }
@@ -756,8 +760,8 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       bridgeRenderGateway(p, data);
-      showToast(`${def.name} Gateway 已创建 (${cli})`);
-    } catch (err) { showToast(`创建失败: ${err.message}`, true); }
+      showToast(t('manageBridgesTokenGatewayCreated', { name: def.name, cli }));
+    } catch (err) { showToast(t('manageBridgesCreateFailed', { message: err.message }), true); }
   }
   async function bridgeGatewaySwitchCli(p) {
     const def = TOKEN_BRIDGES[p], cli = _bridgeSelectedCli(p);
@@ -766,30 +770,30 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       bridgeRenderGateway(p, data);
-      showToast(`已切换到 ${cli}`);
-    } catch (err) { showToast(`切换失败: ${err.message}`, true); bridgeGatewayRefresh(p); }
+      showToast(t('manageBridgesSwitchedTo', { cli }));
+    } catch (err) { showToast(t('manageBridgesSwitchFailed', { message: err.message }), true); bridgeGatewayRefresh(p); }
   }
   function bridgeGatewayOpen(p) {
     window.open('/chat?session=' + encodeURIComponent(TOKEN_BRIDGES[p].session) + tokenQS('&'), '_blank');
   }
   async function bridgeGatewayReset(p) {
     const def = TOKEN_BRIDGES[p];
-    if (!(await showConfirm(`清空 ${def.name} Gateway 对话历史？`, { danger: true, okText: '清空' }))) return;
+    if (!(await showConfirm(t('manageBridgesTokenClearConfirm', { name: def.name }), { danger: true, okText: t('clearBtn') }))) return;
     try {
       const res = await fetch(def.api + '/gateway/reset' + tokenQS('?'), { method: 'POST' });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-      showToast('已清空对话历史');
-    } catch (err) { showToast(`重置失败: ${err.message}`, true); }
+      showToast(t('manageBridgesHistoryCleared'));
+    } catch (err) { showToast(t('manageBridgesResetFailed', { message: err.message }), true); }
   }
   async function bridgeGatewayDestroy(p) {
     const def = TOKEN_BRIDGES[p];
-    if (!(await showConfirm(`销毁 ${def.name} Gateway 会话？历史会保留在 chat_history。`, { danger: true, okText: '销毁' }))) return;
+    if (!(await showConfirm(t('manageBridgesTokenDestroyConfirm', { name: def.name }), { danger: true, okText: t('airBridgesBtnDestroy') }))) return;
     try {
       const res = await fetch(def.api + '/gateway' + tokenQS('?'), { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
       bridgeRenderGateway(p, null);
-      showToast(`${def.name} Gateway 已销毁`);
-    } catch (err) { showToast(`销毁失败: ${err.message}`, true); }
+      showToast(t('manageBridgesTokenGatewayDestroyed', { name: def.name }));
+    } catch (err) { showToast(t('manageBridgesDestroyFailed', { message: err.message }), true); }
   }
   async function bridgeLoadConfig(p) {
     try { const res = await fetch(TOKEN_BRIDGES[p].api + '/config' + tokenQS('?')); const cfg = await res.json(); bridgeSetConfigured(p, !!cfg.configured); } catch (_) {}
@@ -814,7 +818,7 @@
     for (const p of Object.keys(TOKEN_BRIDGES)) {
       if (e.target.name === TOKEN_BRIDGES[p].idp + '-gw-cli') {
         const stateEl = _bid(p, 'gw-state');
-        if (stateEl && stateEl.textContent !== '未创建') bridgeGatewaySwitchCli(p);
+        if (stateEl && stateEl.textContent !== t('airBridgesStateUncreated')) bridgeGatewaySwitchCli(p);
       }
     }
   });

@@ -7,17 +7,21 @@
   const model = root.MultiCCMemoryModel;
   const escapeHtml = model.escapeHtml;
   const formatSize = model.formatSize;
+  // 文案走全局 t()（i18n.js 在 manage.html 里晚于本文件加载、在 Air 里是懒重放，所以
+  // 一律在渲染期取值，不在模块常量里冻结译文；取不到就退回 key）。
+  const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
   const SVGNS = 'http://www.w3.org/2000/svg';
   // 节点按 type(kind) 上色。scope 通过描边区分（shared 有描边，missing 虚线）。
+  // label 存的是词典 key，渲染时才 t()（见 renderLegend / memNodeModalOpen）。
   const KIND = {
-    project:   { c: '#3ad6c5', label: '项目' },
-    feedback:  { c: '#e3b341', label: '反馈' },
-    user:      { c: '#57ab5a', label: '用户' },
-    reference: { c: '#6cb6ff', label: '引用' },
-    index:     { c: '#8b949e', label: '索引/入口' },
-    auto:      { c: '#bc8cff', label: '自动提炼' },
-    note:      { c: '#79c0ff', label: '笔记' },
-    missing:   { c: '#484f58', label: '未创建(悬空引用)' },
+    project:   { c: '#3ad6c5', label: 'memoryKindProject' },
+    feedback:  { c: '#e3b341', label: 'memoryKindFeedback' },
+    user:      { c: '#57ab5a', label: 'memoryKindUser' },
+    reference: { c: '#6cb6ff', label: 'memoryKindReference' },
+    index:     { c: '#8b949e', label: 'memoryKindIndex' },
+    auto:      { c: '#bc8cff', label: 'memoryKindAuto' },
+    note:      { c: '#79c0ff', label: 'memoryKindNote' },
+    missing:   { c: '#484f58', label: 'memoryKindMissing' },
   };
   const kindOf = (t) => KIND[t] || KIND.note;
   // scope 描边色：层级身份一眼可辨（机器全局金边 / CLI 紫边 / 任务橙边 / 技能青边 /
@@ -55,6 +59,10 @@
   window.loadMemoryGraph = async function (dirId, forceRefetch) {
     canvas = el('mem-graph-canvas'); svg = el('mem-graph-svg');
     if (!canvas || !svg) { root.__memGraphLoaded = false; return; }
+    // 拖拽/缩放的指针事件原本只在 DOMContentLoaded 那次 bindGraphLifecycle 里绑，
+    // 但 Air 的面板是懒渲染的：首次绑定跑的时候画布还不存在，等到用户点开这一页才
+    // 被创建。bindCanvasOnce 自带 __memBound 幂等标记，所以每次加载都补一次。
+    bindCanvasOnce();
     const sel = el('mem-graph-project');
     const metaEl = el('mem-graph-meta');
     let srvMs = (_memRaw && _memRaw.meta && _memRaw.meta.durationMs) || 0;
@@ -62,7 +70,7 @@
 
     if (!_memRaw || forceRefetch) {
       const seq = ++_reqSeq;
-      if (metaEl) metaEl.textContent = '加载中…';
+      if (metaEl) metaEl.textContent = t('loading');
       stopSim();
       const t0 = performance.now();
       try {
@@ -72,7 +80,7 @@
       } catch (e) {
         if (seq !== _reqSeq) return;
         root.__memGraphLoaded = false;
-        showEmpty('加载失败：' + model.errorMessage(e));
+        showEmpty(t('memoryGraphLoadFailed', { error: model.errorMessage(e) }));
         if (metaEl) metaEl.textContent = '';
         return;
       }
@@ -90,7 +98,7 @@
     // 选择器（重建 + 保持当前选择）
     if (sel) {
       const total = projects.reduce((a, p) => a + (p.count || 0), 0);
-      let html = `<option value="all">全部项目 (${total})</option>`;
+      let html = `<option value="all">${t('memoryGraphAllProjects', { n: total })}</option>`;
       for (const p of projects) html += `<option value="${escapeHtml(p.dirId)}">${escapeHtml(p.name)} (${p.count})</option>`;
       sel.innerHTML = html;
       sel.value = target;
@@ -104,16 +112,16 @@
 
     const nc = sub.nodes.length, ec = sub.edges.length;
     const pill = el('mem-graph-count-pill');
-    if (pill) pill.textContent = nc ? `· ${nc} 节点 / ${ec} 关联` : '';
+    if (pill) pill.textContent = nc ? t('memoryGraphCountPill', { n: nc, m: ec }) : '';
     const badge = el('nav-memory-count'); if (badge) badge.textContent = (_memRaw.nodes || []).length;
     if (metaEl) {
-      metaEl.textContent = `${nc} 节点 · ${ec} 边 · 服务端 ${srvMs}ms`
-        + (clientMs ? ` · 拉取 ${clientMs}ms` : '')
-        + (_memRaw.meta && _memRaw.meta.truncated ? ` · 已截断至 ${_memRaw.meta.maxNodes}` : '');
+      metaEl.textContent = t('memoryGraphMeta', { nodes: nc, edges: ec, ms: srvMs })
+        + (clientMs ? t('memoryGraphMetaClient', { ms: clientMs }) : '')
+        + (_memRaw.meta && _memRaw.meta.truncated ? t('memoryGraphMetaTruncated', { n: _memRaw.meta.maxNodes }) : '');
     }
     renderLegend();
 
-    if (!nc) { stopSim(); showEmpty(target === 'all' ? '暂无任何记忆节点。' : '该项目暂无记忆节点。当会话把知识写进 memories/ 下的 .md 文件后，这里会出现节点与关联。'); return; }
+    if (!nc) { stopSim(); showEmpty(target === 'all' ? t('memoryGraphEmptyAll') : t('memoryGraphEmptyProject')); return; }
     hideEmpty();
 
     stopSim(); // 切项目/刷新时先停旧动画帧，避免与新图重建竞态
@@ -396,24 +404,24 @@
     const scopes = new Set(G ? G.nodes.map(n => n.scope) : []);
     const order = ['project', 'feedback', 'user', 'reference', 'index', 'auto', 'note', 'missing'];
     const SCOPE_LEGEND = {
-      machine: ['机器全局', '#e3b341'],
-      cli: ['CLI 特有', '#bc8cff'],
-      task: ['任务级', '#f0883e'],
-      skill: ['技能级', '#39c5cf'],
-      shared: ['公共记忆', '#fff'],
+      machine: ['memoryScopeMachine', '#e3b341'],
+      cli: ['memoryScopeCli', '#bc8cff'],
+      task: ['memoryScopeTask', '#f0883e'],
+      skill: ['memoryScopeSkill', '#39c5cf'],
+      shared: ['memoryScopeShared', '#fff'],
     };
     const scopeHtml = Object.entries(SCOPE_LEGEND)
       .filter(([k]) => scopes.has(k))
       .map(([k, [label, c]]) =>
-        `<span class="lg" style="opacity:.85"><span class="sw" style="background:transparent;border:1.6px solid ${c}"></span>${label}</span>`)
+        `<span class="lg" style="opacity:.85"><span class="sw" style="background:transparent;border:1.6px solid ${c}"></span>${escapeHtml(t(label))}</span>`)
       .join('');
     box.innerHTML = order.filter(k => kinds.has(k)).map(k =>
-      `<span class="lg"><span class="sw" style="background:${kindOf(k).c}"></span>${escapeHtml(kindOf(k).label)}</span>`
+      `<span class="lg"><span class="sw" style="background:${kindOf(k).c}"></span>${escapeHtml(t(kindOf(k).label))}</span>`
     ).join('') + scopeHtml;
   }
   function showEmpty(msg) {
     const e = el('mem-graph-empty'); if (!e) return;
-    e.textContent = msg || '暂无数据'; e.style.display = 'flex';
+    e.textContent = msg || t('memoryGraphNoData'); e.style.display = 'flex';
     if (svg) while (svg.firstChild) svg.removeChild(svg.firstChild);
   }
   function hideEmpty() { const e = el('mem-graph-empty'); if (e) e.style.display = 'none'; }
@@ -428,23 +436,24 @@
     if (!titleEl || !slugEl || !tags || !summaryEl || !linksBox || !modal) return;
     titleEl.textContent = nd.title || nd.slug;
     const SCOPE_NAMES = {
-      machine: '机器全局', cli: 'CLI 特有 · ' + (nd.sub || ''), task: '任务级 · ' + (nd.sub || ''),
-      skill: '技能级 · ' + (nd.sub || ''), shared: '公共记忆',
+      machine: t('memoryScopeMachine'), cli: t('memoryScopeCli') + ' · ' + (nd.sub || ''),
+      task: t('memoryScopeTask') + ' · ' + (nd.sub || ''),
+      skill: t('memoryScopeSkill') + ' · ' + (nd.sub || ''), shared: t('memoryScopeShared'),
     };
     const scopeTxt = nd.scope === 'session'
-      ? ('会话私有 · ' + (nd.sessionId || ''))
+      ? (t('memoryScopeSession') + ' · ' + (nd.sessionId || ''))
       : (SCOPE_NAMES[nd.scope] || nd.scope);
     slugEl.textContent = nd.file + '   ·   ' + scopeTxt;
     tags.innerHTML = '';
-    const addTag = (t) => { const s = document.createElement('span'); s.className = 'mn-tag'; s.textContent = t; tags.appendChild(s); };
-    addTag('类型: ' + kindOf(nd.type).label);
-    addTag('作用域: ' + (nd.scope || '—'));
-    addTag('关联度: ' + (nd.degree || 0));
-    if (nd.missing) addTag('⚠ 悬空引用');
+    const addTag = (text) => { const s = document.createElement('span'); s.className = 'mn-tag'; s.textContent = text; tags.appendChild(s); };
+    addTag(t('memoryNodeTypeTag', { value: t(kindOf(nd.type).label) }));
+    addTag(t('memoryNodeScopeTag', { value: nd.scope || '—' }));
+    addTag(t('memoryNodeDegreeTag', { value: nd.degree || 0 }));
+    if (nd.missing) addTag(t('memoryNodeDangling'));
 
     // 存放位置 + token 估算 + 打开编辑
     const pathEl = el('mem-node-path'), copyBtn = el('mem-node-copy'), editBtn = el('mem-node-edit');
-    if (pathEl) pathEl.textContent = nd.path || (nd.missing ? '（文件尚未创建）' : (nd.rel || '—'));
+    if (pathEl) pathEl.textContent = nd.path || (nd.missing ? t('memoryNodeFileMissing') : (nd.rel || '—'));
     if (el('mem-node-tokens')) el('mem-node-tokens').textContent = nd.missing ? '–' : ('~' + (nd.tokens || 0));
     if (el('mem-node-size')) el('mem-node-size').textContent = nd.missing ? '–' : formatSize(nd.size);
     if (copyBtn) copyBtn.onclick = () => { if (nd.path && root.copyText) root.copyText(nd.path); };
@@ -453,7 +462,7 @@
       else editBtn.style.display = 'none';
     }
 
-    summaryEl.textContent = nd.summary || '（无摘要）';
+    summaryEl.textContent = nd.summary || t('memoryNodeNoSummary');
 
     // 邻居（出/入边）
     linksBox.innerHTML = '';
@@ -473,11 +482,11 @@
         linksBox.appendChild(b);
       }
     };
-    section('引用了', out, '→');
-    section('被引用', inc, '←');
+    section(t('memoryNodeOutLinks'), out, '→');
+    section(t('memoryNodeInLinks'), inc, '←');
     if (!out.length && !inc.length) {
       const p = document.createElement('div'); p.style.cssText = 'color:var(--faint);font-size:12px';
-      p.textContent = '（暂无关联，孤立节点）'; linksBox.appendChild(p);
+      p.textContent = t('memoryNodeIsolated'); linksBox.appendChild(p);
     }
     modal.classList.add('open');
   };

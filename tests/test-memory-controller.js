@@ -11,6 +11,11 @@ const ROOT = path.join(__dirname, '..');
 const MODEL_SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'memory-model.js'), 'utf8');
 const GRAPH_SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'memory-graph.js'), 'utf8');
 const CONTROLLER_SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'memory-controller.js'), 'utf8');
+// 这三个模块里的文案现在都走全局 t()。真页面里 i18n-catalog.js + i18n.js 先于它们加载，
+// 所以这里也照同一顺序跑一遍 —— 断言就变成「中文模式下渲染结果与改造前逐字一致」，
+// 而不是靠 t() 退回 key 之后去比 key 本身。
+const I18N_CATALOG_SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'i18n-catalog.js'), 'utf8');
+const I18N_SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'i18n.js'), 'utf8');
 
 function deferred() {
   let resolve;
@@ -75,6 +80,8 @@ function createDocument(elements = {}) {
   return {
     readyState: 'loading',
     hidden: false,
+    // i18n.js 的 applyI18n 会写 document.documentElement.lang
+    documentElement: {},
     body: element(),
     getElementById(id) { return elements[id] || null; },
     querySelectorAll() { return []; },
@@ -117,6 +124,9 @@ function createHarness(jsonImpl, elements = {}) {
     window,
     document,
     navigator: {},
+    // i18n.js 只从 localStorage 读语言；返回 'zh' 就是「中文界面上渲染成什么样」。
+    localStorage: { getItem() { return 'zh'; }, setItem() {}, removeItem() {} },
+    location: { reload() {} },
     performance: window.performance,
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
@@ -125,6 +135,8 @@ function createHarness(jsonImpl, elements = {}) {
     confirm: () => { window.__confirmCalls++; return true; },
     console: createSandboxConsole(),
   };
+  vm.runInNewContext(I18N_CATALOG_SOURCE, context, { filename: 'i18n-catalog.js' });
+  vm.runInNewContext(I18N_SOURCE, context, { filename: 'i18n.js' });
   vm.runInNewContext(MODEL_SOURCE, context, { filename: 'memory-model.js' });
   return {
     window,

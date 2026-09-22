@@ -36,6 +36,11 @@ task-short-codes.json.bak-*
 shares.json
 fleet-shares.json
 provider-relay-shares.json
+# secrets.json 是敏感信息保险箱的落盘处（src/paths.js secretsFile，0600）：明文
+# 只在这里，注入子进程当环境变量用。运行时会先在旁边写 secrets.json.tmp.<pid>.<n>
+# 再 rename，进程死在中间就会留下一个装着全部明文的临时文件，所以两个名字都要挡。
+secrets.json
+secrets.json.tmp.*
 external-fleets.json
 aux-config.json
 aux_runs/
@@ -46,6 +51,10 @@ events/
 logs/
 artifacts/
 detached/
+# 跨文件事务日志目录（src/paths.js journalDir）：事务中途会留下状态文件的片段
+.journal/
+# 桥接（IM 通道）运行时数据目录
+bridges/
 .multicc.pid
 # Pre-update version marker written by ./multicc update, read once by the new
 # process to run one-time data migrations, plus that migration's applied marker.

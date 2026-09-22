@@ -85,9 +85,19 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // +8 行）：secretsVaultEntry / secretsVaultShortHint（侧栏卡片副行与 Air 设置卡
   // 说明共用一句）/ secretsVaultCountHint / airAdminPanelSecrets。按测试自己的
   // countLines 量法（split(/\n/).length）对齐到当前高水位。
+  // 原生保险箱面板再补 2 条键 × 中英 = +4 行（secretsSaved / secretsDeleted：保存
+  // 与删除各要一句带条目名的回执，否则只能复用没有 {name} 的通用文案）。
+  // 「旧 manage 页剩下十格全搬成 Air 原生面板」这一轮又补 296 条键 × 中英 = +592 行
+  // （记忆/任务图谱、语音、Goal、全局、推送、桥接、Agent 资源、技能同步、临时上传
+  // 各一格的正文文案；桥接那格的二维码/登录流程与图谱两个画布的图例先前是旧模块里
+  // 的中文字面量，也一并进了词典）。按测试自己的 countLines 量法对齐到当前高水位。
+  // 面板搬成原生之后，被复用的旧模块（manage-bridges / task-graph / memory-* ）原先
+  // 藏在 iframe 里的中文一下子进了 Air 的扫描面：Air 的 i18n 关卡只认 DOM 文本，旧页
+  // 里的字面量以前扫不到、现在扫得到，于是这四个模块也一并入典（键名前缀沿用它们各自
+  // 的面板名）。中文值逐字保留，中文渲染与既有断言不受影响。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 5260,
-    maxBytes: 319375,
+    maxLines: 6222,
+    maxBytes: 380667,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

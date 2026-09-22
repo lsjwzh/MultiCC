@@ -15,6 +15,10 @@
     // 会改变子进程 spawn 环境的一份配置（条目按同名环境变量注入），所以它既在设置
     // 中心的第一组、也在控制台工具格的第一格 —— 手机上一眼就能找到。（App 侧的设置
     // 页同一条规矩。）
+    // 同 aux：这条只给设置中心的卡片和 modes 集合提供元数据，渲染走下面的
+    // renderSecrets（Air 原生面板，不嵌旧 manage 页）。
+    // 表里绝大多数条目现在都只有元数据的作用了（渲染走 nativePanels 表），
+    // 留着是因为设置中心的卡片文案和 modes 集合都从这儿读。
     // 新加一栏 legacy 面板要同时去 air.js 的 adminHeadings 补同名页头，否则页头会把
     // mode 原样显示出来（显示成 secrets，而不是「敏感信息」）。
     secrets: [t('airAdminPanelSecrets'), t('secretsVaultShortHint'), 'SECRETS'],
@@ -43,6 +47,24 @@
     ['airAdminGroupConnect', ['push', 'tunnel', 'bridges']],
     ['airAdminGroupStorage', ['resources', 'skillsync', 'storage']],
   ];
+  // 原生面板注册表：mode → 模块名 + 返回目标。这批原来都是嵌旧 manage 页的 iframe，
+  // 一格一个文件搬成原生 DOM（同 provider / tunnel / secrets）。
+  // 表格而不是十个各自成篇的 renderX：它们的差别只有「回哪去」，工具条形状一样
+  // （返回 + 刷新），内容全在各自的模块里 —— 十份复制粘贴只会让下一格漏改一处。
+  // 模块没挂上（旧页面、缓存半套静态资源）时的兜底见 renderModuleMissing：不再退回
+  // 那个 iframe，理由写在那儿。
+  const nativePanels = {
+    memory: { module: 'MultiCCAirMemory', back: 'overview' },
+    taskgraph: { module: 'MultiCCAirTaskgraph', back: 'overview' },
+    voice: { module: 'MultiCCAirVoice', back: 'settings' },
+    goal: { module: 'MultiCCAirGoal', back: 'settings' },
+    global: { module: 'MultiCCAirGlobal', back: 'settings' },
+    push: { module: 'MultiCCAirPush', back: 'settings' },
+    bridges: { module: 'MultiCCAirBridges', back: 'settings' },
+    resources: { module: 'MultiCCAirResources', back: 'settings' },
+    skillsync: { module: 'MultiCCAirSkillsync', back: 'settings' },
+    storage: { module: 'MultiCCAirStorage', back: 'settings' },
+  };
   let activeMode = null;
   let currentContext = null;
   // 控制台里那份「全部任务」的筛选，存在模块上而不是 DOM 上：面板每次重开都会
@@ -431,8 +453,9 @@
     toolHead.append(make('div'));
     toolHead.firstChild.append(make('span', 'SYSTEM TOOLS', 'eyebrow'), make('h3', t('airAdminServicesAndSettings')));
     const toolGrid = make('div', null, 'admin-tool-grid');
+    // 保险箱不在这张格子里：它在控制台的顶栏上（air.html 的 #console-secrets），
+    // 跟「返回任务」并列常驻，不用滚到工具格才找得到。
     const shortcuts = [
-      ['secrets', '🔐', t('airAdminPanelSecrets'), t('secretsVaultShortHint')],
       ['docs', '▤', t('airAdminPanelDocs'), t('airAdminPanelDocsDesc')],
       ['memory', '◇', t('airAdminPanelMemory'), t('airAdminMemoryShortDesc')],
       ['taskgraph', '⛓', t('airAdminPanelTaskgraph'), t('airAdminTaskgraphShortDesc')],
@@ -882,6 +905,10 @@
       for (const mode of modes) {
         const [name, description, eyebrow] = legacyPanels[mode];
         const card = action('', () => context.setMode(mode), 'air-setting-card');
+        // 卡片是设置中心里唯一说得清「这张卡进哪一格」的东西：文案会随语言变、eyebrow
+        // 又会重复，只有 mode 是稳定的。给一个 data-air-card 让测试（和任何想在页面上
+        // 认一认的代码）能按格名点到它，不必去猜卡片上的字。
+        card.dataset.airCard = mode;
         card.append(make('span', eyebrow, 'eyebrow'), make('strong', name), make('small', description), make('em', t('airAdminEnterSettings')));
         grid.append(card);
       }
@@ -891,6 +918,10 @@
     content.replaceChildren(groups);
   }
 
+  // 还没搬成原生页的格子才走这里（把旧 manage 页整页嵌进来）。侧栏那十几格现在
+  // 全在 nativePanels 里，所以这条只剩 render() 末尾那道「认不出的 mode」的兜底 ——
+  // 留着是为了下一格还没搬的面板仍能直接开，而不是为了模块没挂上时顶替
+  // （那种情况见 renderModuleMissing）。
   function renderLegacy(mode, context) {
     const [title] = legacyPanels[mode] || [mode];
     const legacyView = mode;
@@ -908,16 +939,55 @@
     el('admin-content').replaceChildren(note, frame);
   }
 
+  // 面板模块没挂上时的兜底（旧页面、缓存了半套静态资源）：说一句「刷新页面重试」，
+  // 不再把旧管理台的 iframe 塞回来。旧页已经不再维护，英文模式下它还会露出一屏中文，
+  // 而且塞回来的是另一份文档 —— 用户看到的是「一个长得不一样的旧界面」，比一句
+  // 「刷新重试」更难判断出了什么事。保险箱 / 隧道那两格本来就是这条规矩，这里对齐。
+  function renderModuleMissing() {
+    const panel = make('section', null, 'admin-panel');
+    panel.append(make('p', t('airAdminRefreshPageRetry'), 'admin-empty error'));
+    el('admin-content').replaceChildren(panel);
+  }
+
+  // 从 nativePanels 表里取模块渲染（见上面的表）。工具条只有「返回 + 刷新」：
+  // 面板自己的按钮（保存 / 删除 / 逐条操作）都画在正文里，跟保险箱那页同一条规矩，
+  // 工具条只放「离开这一页」和「重读一次」。
+  function renderNative(mode, context) {
+    const spec = nativePanels[mode];
+    const panel = root[spec.module];
+    if (!panel) return renderModuleMissing();
+    setActions([
+      action(spec.back === 'overview' ? t('airAdminBackToConsole') : t('airAdminBackToSettings'),
+        () => context.setMode(spec.back), '', panelIcon('←')),
+      action(t('airAdminRefresh'), () => panel.refresh?.(), '', keepsGlyph('↻')),
+    ]);
+    panel.render(el('admin-content'), context);
+  }
+
   function renderProvider(context) {
     const provider = root.MultiCCAirProvider;
-    if (!provider) return renderLegacy('provider', context);
     setActions([
       action(t('airAdminBackToSettings'), () => context.setMode('settings'), '', panelIcon('←')),
-      action(t('airAdminAdvancedAccounts'), () => provider.toggleAdvanced(), '', panelIcon('⇄')),
-      action(t('airAdminRefresh'), () => provider.refresh(), '', keepsGlyph('↻')),
-      action(t('airAdminAddProvider'), () => provider.openEditor(), 'primary', keepsGlyph('＋')),
+      action(t('airAdminAdvancedAccounts'), () => provider?.toggleAdvanced(), '', panelIcon('⇄')),
+      action(t('airAdminRefresh'), () => provider?.refresh(), '', keepsGlyph('↻')),
+      action(t('airAdminAddProvider'), () => provider?.openEditor(), 'primary', keepsGlyph('＋')),
     ]);
+    if (!provider) return renderModuleMissing();
     provider.render(context);
+  }
+
+  // ── 敏感信息(secrets)：Air 原生面板 ─────────────────────────────────
+  // 保险箱不是「某一组功能里的开关」：条目按同名环境变量注入子进程，所以它跟
+  // Provider / Tunnel 一样是原生页，不嵌旧 manage 页。面板本体在 air-secrets.js。
+  function renderSecrets(context) {
+    setActions([
+      action(t('airAdminBackToSettings'), () => context.setMode('settings'), '', panelIcon('←')),
+      action(t('airAdminRefresh'), () => root.MultiCCAirSecrets?.refresh(), '', keepsGlyph('↻')),
+    ]);
+    const panel = root.MultiCCAirSecrets;
+    if (panel) return panel.render(el('admin-content'), context);
+    // 只有「air-secrets.js 没加载上」会走到这里（旧页面、缓存半套静态资源）。
+    renderModuleMissing();
   }
 
   function renderTunnel(context) {
@@ -947,6 +1017,8 @@
     if (mode === 'provider') return renderProvider(context);
     if (mode === 'tunnel') return renderTunnel(context);
     if (mode === 'aux') return renderAux(context);
+    if (mode === 'secrets') return renderSecrets(context);
+    if (nativePanels[mode]) return renderNative(mode, context);
     renderLegacy(mode, context);
   }
 
