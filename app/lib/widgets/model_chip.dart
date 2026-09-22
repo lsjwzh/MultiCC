@@ -1,8 +1,9 @@
 // 聊天头部与 AI 配置面板共用的模型/effort chip。自 chat_screen.dart 抽出。
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../providers/chat_provider.dart';
@@ -23,11 +24,22 @@ String providerDisplayLabel(
   required List<Map<String, dynamic>> providers,
   String? resolved,
 }) {
-  if (id == null || id.isEmpty) return '默认登录';
+  if (id == null || id.isEmpty) {
+    for (final provider in providers) {
+      final providerId = provider['id']?.toString() ?? '';
+      if (provider['builtinOfficial'] == true ||
+          providerId == 'claude-official' ||
+          providerId == 'codex-official') {
+        return provider['name']?.toString() ?? '官方 Provider';
+      }
+    }
+    return '官方 Provider';
+  }
   for (final provider in providers) {
     if (provider['id'] == id) return (provider['name'] as String?) ?? id;
   }
-  if (resolved != null && resolved.isNotEmpty && resolved != id) return resolved;
+  if (resolved != null && resolved.isNotEmpty && resolved != id)
+    return resolved;
   return id.length > 8 ? id.substring(0, 8) : id;
 }
 
@@ -66,27 +78,28 @@ class ModelChipState extends State<ModelChip> {
   @override
   void didUpdateWidget(covariant ModelChip oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.cli != widget.cli || oldWidget.sessionId != widget.sessionId) {
+    if (oldWidget.cli != widget.cli ||
+        oldWidget.sessionId != widget.sessionId) {
       _runtime = null;
       _providers = [];
       _load();
     }
   }
 
-  Future<void> _load({SessionCli? cli, bool refreshCodex = false}) async {
+  Future<void> _load({SessionCli? cli}) async {
     final epoch = ++_loadEpoch;
     final selectedCli = cli ?? widget.cli;
     final appType = selectedCli.appType;
     try {
-      final runtime = await SessionService(settings: widget.settings).fetchSessionCliConfig(widget.sessionId);
+      final runtime = await SessionService(
+        settings: widget.settings,
+      ).fetchSessionCliConfig(widget.sessionId);
       if (!mounted || epoch != _loadEpoch) return;
       setState(() => _runtime = runtime);
     } catch (_) {}
     try {
       if (selectedCli.isCodexFamily) {
-        await CodexModelsService(
-          settings: widget.settings,
-        ).load(forceRefresh: refreshCodex);
+        await CodexModelsService(settings: widget.settings).load();
       }
       final d = await ManageService(
         settings: widget.settings,
@@ -160,10 +173,19 @@ class ModelChipState extends State<ModelChip> {
         break;
       }
     }
-    final runtime = _runtime ?? (s == null ? null : SessionCliConfig(
-      cli: s.cli, provider: s.provider, providerSelection: s.providerSelection,
-      model: s.model, effectiveModel: s.effectiveModel,
-      effort: s.effort, effectiveEffort: s.effectiveEffort));
+    final runtime =
+        _runtime ??
+        (s == null
+            ? null
+            : SessionCliConfig(
+                cli: s.cli,
+                provider: s.provider,
+                providerSelection: s.providerSelection,
+                model: s.model,
+                effectiveModel: s.effectiveModel,
+                effort: s.effort,
+                effectiveEffort: s.effectiveEffort,
+              ));
     final selection = live.providerSelection ?? runtime?.providerSelection;
     final parts = <String>[];
     if (selection != null) {
@@ -228,22 +250,36 @@ class ModelChipState extends State<ModelChip> {
     );
   }
 
-  Future<void> _switchAIConfig(
-    BuildContext context,
-    SessionManager mgr,
-  ) async {
+  Future<void> _switchAIConfig(BuildContext context, SessionManager mgr) async {
     final target = widget.sessionId;
-    late SessionCliConfig runtime;
-    try {
-      runtime = await mgr.fetchSessionCliConfig(target);
-    } catch (_) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(t('sessionNotLoaded'))));
+    SessionCliConfig? runtime = _runtime;
+    if (runtime == null) {
+      for (final session in mgr.sessions) {
+        if (session.id != target) continue;
+        runtime = SessionCliConfig(
+          cli: session.cli,
+          provider: session.provider,
+          providerSelection: session.providerSelection,
+          model: session.model,
+          effectiveModel: session.effectiveModel,
+          effort: session.effort,
+          effectiveEffort: session.effectiveEffort,
+        );
+        break;
       }
+    }
+    // Header data is already enough to paint the sheet. Refresh catalogs in
+    // the background; opening the control must never wait for a 20s model-list
+    // request. The next open (and the chip itself) receives the refreshed data.
+    if (runtime == null) {
+      await openAIConfigSheet(
+        context,
+        settings: widget.settings,
+        sessionId: target,
+      );
       return;
     }
-    await _load(cli: runtime.cli, refreshCodex: true);
+    unawaited(_load(cli: runtime.cli));
     if (!context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final picked = await showModalBottomSheet<AIConfigResult>(
@@ -254,12 +290,15 @@ class ModelChipState extends State<ModelChip> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (_) => AIConfigSheet(
-        cli: runtime.cli,
+        cli: runtime!.cli,
         providers: _providers,
         provider: runtime.provider ?? '',
         providerSelection: runtime.providerSelection,
         model: runtime.model ?? '',
-        effort: runtime.effectiveEffort ?? runtime.effort ?? runtime.cli.defaultEffort,
+        effort:
+            runtime.effectiveEffort ??
+            runtime.effort ??
+            runtime.cli.defaultEffort,
         subProviderId: runtime.subagent?.providerId,
         subModel: runtime.subagent?.model,
         agent: runtime.agent,

@@ -53,7 +53,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
   routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'claude'], migration: { errors: [] },
-    tasks: airTasks, taskPins,
+    // The list snapshot and task-entry endpoint read the same runtime in production.
+    // Keep the fixture in lockstep when later assertions move the run through
+    // running/error/idle; otherwise the stale list row overwrites fresh entry state.
+    tasks: airTasks.map(task => task.id === entry.task.id
+      ? { ...task, status: entry.task.status, runState: entry.execution?.status }
+      : task), taskPins,
     sessions: [{ id: 'old-role', dirId: 'd1', kind: 'chat', label: 'FIXED_ROLE_MUST_NOT_SHOW' }, { id: 'term', dirId: 'd1', kind: 'terminal', label: '终端' }] });
   // Pin：页头顶上那排「齐刘海」。清单住在服务端（air-pins.json），Web 和 App 读
   // 的是同一份 —— 这里就按服务端那两条路由的行为来桩：单点 toggle、整份替换。
@@ -74,7 +79,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     { id: 'page-a', kind: 'page', title: 'Air 改造说明', url: '/docs/air.html', source: 'artifact' },
   ]);
   routes['/api/air/tasks/tsk_a'] = routes['/api/task-shell-tasks/tsk_a'] = () => json(entry);
+  routes['/api/air/tasks/tsk_a/open'] = () => json({ ...entry, taskId: 'tsk_a' });
   routes['/api/air/tasks/tsk_new'] = routes['/api/task-shell-tasks/tsk_new'] = () => json(newEntry);
+  routes['/api/air/tasks/tsk_new/open'] = () => json({ ...newEntry, taskId: 'tsk_new' });
   // AI Assistant(aux)控制台页的三个数据源:状态、配置、运行记录。
   const auxPosts = [];
   routes['/api/aux/status'] = () => json({ processing: false, queueDepth: 1, totalProcessed: 137, lastTaskTime: Date.now() - 64000, currentTask: null, health: { unhealthy: false } });
@@ -179,7 +186,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.deepEqual(pinPosts, ['tsk_a'], '单点 toggle 打的是服务端那条路由');
     assert.equal(await page.evaluate(`document.getElementById('pin-task').getAttribute('aria-pressed')`), 'true');
     // 再 pin 一条别的目录里的任务：两个 pin 必须并排在同一行（这一条就是竖排那个
-    // bug 的守卫），整排仍然居中，整排浮在页头最上面，而且不占行。
+    // bug 的守卫），短内容仍然居中，整排浮在页头最上面，而且不占行。容器内部
+    // 必须从左向右排：标签溢出后才能从第一枚开始完整横向滚动。
     taskPins = ['tsk_a', 'tsk_far'];
     await page.evaluate(`document.getElementById('refresh').click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#task-pins .pin-tab').length===2`));
@@ -193,7 +201,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         headerCenter:Math.round(header.left+header.width/2), headerTop:Math.round(header.top),
         headerHeight:Math.round(header.height), pinBottom:Math.round(tabs[0].bottom), titleTop:Math.round(title.top) };})()`);
     assert.equal(pinPair.dir, 'row', '这一排是横排的（nav 的 flex-direction:column 不许漏进来）');
-    assert.equal(pinPair.justify, 'center', '整排居中');
+    assert.equal(pinPair.justify, 'flex-start', '溢出时从第一枚开始横向滚动');
     assert.equal(pinPair.tops[0], pinPair.tops[1], '两个 pin 并排在同一行：' + JSON.stringify(pinPair.tops));
     assert.ok(Math.abs(pinPair.rowCenter - pinPair.headerCenter) <= 1,
       `这排的中心就是页头的中心（${pinPair.rowCenter} vs ${pinPair.headerCenter}）`);
@@ -484,10 +492,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')?.value==='codex-lab'`));
     assert.equal(await page.evaluate(`document.querySelector('.air-cli-option.selected strong').textContent`), 'Codex');
     // Provider 是下拉（和 chat 的 AI 配置、App 的配置面板同一版），一行装完，
-    // 不再是一墙卡片：默认线路 + Auto 池 + 三条 Provider。
-    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]').options.length`), 5);
-    assert.equal(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]');const o=s.options[1];return o.value.startsWith('__auto__')&&o.textContent.includes('Auto')})()`), true);
-    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]').options[0].textContent`), '默认登录 / 官方账号');
+    // 不再是一墙卡片：Auto 池 + 三条 Provider。内置 Official 就是
+    // 默认，不再另造一条空值的「默认登录」。
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]').options.length`), 4);
+    assert.equal(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]');const o=s.options[0];return o.value.startsWith('__auto__')&&o.textContent.includes('Auto')})()`), true);
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"] option[value=""]') === null`), true);
     // 子任务尾巴就挂在 Provider 配置后面：线路 + 模型两个下拉，Codex 排掉官方账号
     // （它没有可调用的 HTTP 端点，服务端也会拒）。
     assert.deepEqual(await page.evaluate(`(()=>{const s=document.querySelector('.air-config-dialog[open] select[aria-label="子任务线路"]');return [s.options.length, s.options[0].textContent, [...s.options].some(o=>o.value==='codex-official')]})()`), [3, '随主', false]);
@@ -901,6 +910,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.navigate('/air?task=tsk_a&dir=d1');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='完善任务协作体验'`));
     assert.ok(await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`));
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')} && !${composerPill('air-ai-pill')}.hidden`),
+      '任务详情完成后才测配置药丸，避免只等到更早就绪的标题与聊天帧');
     // 对话浮层是从下面滑上来的（transform 260ms）：量几何之前先等它到位，否则量到
     // 的是动画中间那一帧（236 这种带小数点的数就是它）。滑到位时 transform 归 none。
     assert.ok(await page.waitFor(`getComputedStyle(document.getElementById('chat-layer')).transform==='none'`), '对话浮层滑到位才量几何');

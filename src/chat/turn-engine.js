@@ -2436,6 +2436,11 @@ function createChatTurnEngine(deps) {
         content: context.cs.currentAssistantText,
         tools: context.cs.currentToolCalls.length ? context.cs.currentToolCalls : undefined,
         cost: context.cs.currentCost,
+        // Interrupted/error turns still consumed tokens. Keep the same measured
+        // usage on their durable partial bubble instead of showing statistics
+        // only for successful final answers.
+        ...(context.runner.pendingUsage && Object.keys(context.runner.pendingUsage).length
+          ? { usage: context.runner.pendingUsage } : {}),
         ts: Date.now(),
         turnTimings: turnTimingsField(context.sessionName, context.turn.turnId),
         ...(append.partial ? { partial: true } : {}),

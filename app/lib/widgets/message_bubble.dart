@@ -65,8 +65,10 @@ Future<void> _showMessageActions(
   // Delete/fork are session-history operations bound to ChatProvider + the
   // session REST surface; transcript-only hosts (task detail) get copy only.
   final provider = context.read<ChatProvider?>();
-  final canDelete = serverActions && (provider?.historyArchive != true)
-      && (message.id ?? '').isNotEmpty;
+  final canDelete =
+      serverActions &&
+      (provider?.historyArchive != true) &&
+      (message.id ?? '').isNotEmpty;
   // 引用要落进输入框，所以能不能引用问的是「本宿主有没有输入框」，不是
   // 「能不能动服务端历史」—— 引用不改任何东西，只是把已有的话搬进输入框。
   // 没有输入框就别摆这个入口：摆了也点不出结果。
@@ -86,29 +88,40 @@ Future<void> _showMessageActions(
         children: [
           ListTile(
             leading: const Icon(Icons.copy_outlined, color: Color(0xFF6f8096)),
-            title: Text(I18n.of('msgCopyAction'),
-                style: const TextStyle(color: Color(0xFF233249))),
+            title: Text(
+              I18n.of('msgCopyAction'),
+              style: const TextStyle(color: Color(0xFF233249)),
+            ),
             onTap: () => Navigator.pop(ctx, 'copy'),
           ),
           if (canQuote)
             ListTile(
               leading: const Icon(Icons.format_quote, color: Color(0xFF0965cf)),
-              title: Text(I18n.of('msgQuoteAction'),
-                  style: const TextStyle(color: Color(0xFF233249))),
+              title: Text(
+                I18n.of('msgQuoteAction'),
+                style: const TextStyle(color: Color(0xFF233249)),
+              ),
               onTap: () => Navigator.pop(ctx, 'quote'),
             ),
           if (canDelete)
             ListTile(
-              leading: const Icon(Icons.delete_outline, color: Color(0xFFb64e43)),
-              title: Text(I18n.of('msgDeleteAction'),
-                  style: const TextStyle(color: Color(0xFFb64e43))),
+              leading: const Icon(
+                Icons.delete_outline,
+                color: Color(0xFFb64e43),
+              ),
+              title: Text(
+                I18n.of('msgDeleteAction'),
+                style: const TextStyle(color: Color(0xFFb64e43)),
+              ),
               onTap: () => Navigator.pop(ctx, 'delete'),
             ),
           if (canDelete)
             ListTile(
               leading: const Icon(Icons.call_split, color: Color(0xFF137780)),
-              title: Text(I18n.of('msgForkAction'),
-                  style: const TextStyle(color: Color(0xFF137780))),
+              title: Text(
+                I18n.of('msgForkAction'),
+                style: const TextStyle(color: Color(0xFF137780)),
+              ),
               onTap: () => Navigator.pop(ctx, 'fork'),
             ),
         ],
@@ -151,7 +164,10 @@ void _quoteMessage(BuildContext context, ChatMessage message, String quote) {
 /// Display-history only — the CLI's own conversation context is untouched.
 /// Local removal is driven by the chat_msg_deleted WS broadcast (idempotent),
 /// with a direct provider fallback in case the socket is momentarily down.
-Future<void> _confirmDeleteMessage(BuildContext context, ChatMessage message) async {
+Future<void> _confirmDeleteMessage(
+  BuildContext context,
+  ChatMessage message,
+) async {
   final msgId = message.id;
   if (msgId == null || msgId.isEmpty) return;
   final ok = await showDialog<bool>(
@@ -166,8 +182,10 @@ Future<void> _confirmDeleteMessage(BuildContext context, ChatMessage message) as
         ),
         TextButton(
           onPressed: () => Navigator.pop(ctx, true),
-          child: Text(I18n.of('msgDeleteAction'),
-              style: const TextStyle(color: Color(0xFFb64e43))),
+          child: Text(
+            I18n.of('msgDeleteAction'),
+            style: const TextStyle(color: Color(0xFFb64e43)),
+          ),
         ),
       ],
     ),
@@ -178,21 +196,26 @@ Future<void> _confirmDeleteMessage(BuildContext context, ChatMessage message) as
   final settings = SettingsService.current;
   if (settings == null) return;
   try {
-    await SessionService(settings: settings)
-        .deleteMessage(shellMessageOwner(provider.executionSessionName, msgId).sessionId,
-            shellMessageOwner(provider.executionSessionName, msgId).messageId);
+    await SessionService(settings: settings).deleteMessage(
+      shellMessageOwner(provider.executionSessionName, msgId).sessionId,
+      shellMessageOwner(provider.executionSessionName, msgId).messageId,
+    );
     provider.removeMessageById(msgId);
-    messenger.showSnackBar(SnackBar(
-      content: Text(I18n.of('msgDeleted')),
-      duration: const Duration(milliseconds: 1200),
-      behavior: SnackBarBehavior.floating,
-    ));
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(I18n.of('msgDeleted')),
+        duration: const Duration(milliseconds: 1200),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   } catch (e) {
-    messenger.showSnackBar(SnackBar(
-      content: Text(I18n.of('msgDeleteFailed', {'error': '$e'})),
-      duration: const Duration(milliseconds: 2200),
-      behavior: SnackBarBehavior.floating,
-    ));
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(I18n.of('msgDeleteFailed', {'error': '$e'})),
+        duration: const Duration(milliseconds: 2200),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 }
 
@@ -230,8 +253,10 @@ Future<void> _forkFromMessage(BuildContext context, ChatMessage message) async {
         ),
         TextButton(
           onPressed: () => Navigator.pop(ctx, true),
-          child: Text(I18n.of('msgForkAction'),
-              style: const TextStyle(color: Color(0xFF137780))),
+          child: Text(
+            I18n.of('msgForkAction'),
+            style: const TextStyle(color: Color(0xFF137780)),
+          ),
         ),
       ],
     ),
@@ -242,20 +267,28 @@ Future<void> _forkFromMessage(BuildContext context, ChatMessage message) async {
   final settings = SettingsService.current;
   if (settings == null) return;
   try {
-    final newId = await SessionService(settings: settings)
-        .forkSession(shellMessageOwner(provider.executionSessionName, msgId).sessionId,
-            atMessageId: shellMessageOwner(provider.executionSessionName, msgId).messageId);
-    messenger.showSnackBar(SnackBar(
-      content: Text(I18n.of('msgForked', {'id': newId})),
-      duration: const Duration(milliseconds: 2400),
-      behavior: SnackBarBehavior.floating,
-    ));
+    final newId = await SessionService(settings: settings).forkSession(
+      shellMessageOwner(provider.executionSessionName, msgId).sessionId,
+      atMessageId: shellMessageOwner(
+        provider.executionSessionName,
+        msgId,
+      ).messageId,
+    );
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(I18n.of('msgForked', {'id': newId})),
+        duration: const Duration(milliseconds: 2400),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   } catch (e) {
-    messenger.showSnackBar(SnackBar(
-      content: Text(I18n.of('msgForkFailed', {'error': '$e'})),
-      duration: const Duration(milliseconds: 2200),
-      behavior: SnackBarBehavior.floating,
-    ));
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(I18n.of('msgForkFailed', {'error': '$e'})),
+        duration: const Duration(milliseconds: 2200),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 }
 
@@ -391,7 +424,11 @@ class _AutoCommitRow extends StatelessWidget {
   final bool checked;
   final bool done;
   final ValueChanged<bool>? onChanged;
-  const _AutoCommitRow({required this.checked, required this.done, this.onChanged});
+  const _AutoCommitRow({
+    required this.checked,
+    required this.done,
+    this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -418,9 +455,7 @@ class _AutoCommitRow extends StatelessWidget {
                     height: 20,
                     child: Checkbox(
                       value: checked,
-                      onChanged: locked
-                          ? null
-                          : (v) => onChanged!(v ?? false),
+                      onChanged: locked ? null : (v) => onChanged!(v ?? false),
                       activeColor: const Color(0xFF2ea043),
                       checkColor: Colors.white,
                       side: BorderSide(color: color.withValues(alpha: 0.7)),
@@ -509,9 +544,7 @@ class _AssistantBubble extends StatelessWidget {
                   if (!hasText && !hasTools && message.isStreaming)
                     const _StreamingDot(),
                   // Token usage line
-                  if (advancedMode &&
-                      message.usage != null &&
-                      !message.usage!.isEmpty)
+                  if (message.usage != null && !message.usage!.isEmpty)
                     _TokenUsageLine(usage: message.usage!),
                   // Timing line: reply timestamp + task duration
                   if (advancedMode && message.durationMs != null)
@@ -747,12 +780,28 @@ class _TokenUsageLine extends StatelessWidget {
         spacing: 6,
         runSpacing: 4,
         children: [
-          _UsageBadge(label: '↑入', value: _fmt(i), color: const Color(0xFF1267b5)),
-          _UsageBadge(label: '↓出', value: _fmt(o), color: const Color(0xFF2ba67a)),
+          _UsageBadge(
+            label: '↑入',
+            value: _fmt(i),
+            color: const Color(0xFF1267b5),
+          ),
+          _UsageBadge(
+            label: '↓出',
+            value: _fmt(o),
+            color: const Color(0xFF2ba67a),
+          ),
           if (cr > 0)
-            _UsageBadge(label: '⏱读', value: _fmt(cr), color: const Color(0xFFa85a25)),
+            _UsageBadge(
+              label: '⏱读',
+              value: _fmt(cr),
+              color: const Color(0xFFa85a25),
+            ),
           if (cw > 0)
-            _UsageBadge(label: '⏱写', value: _fmt(cw), color: const Color(0xFF6d4fd1)),
+            _UsageBadge(
+              label: '⏱写',
+              value: _fmt(cw),
+              color: const Color(0xFF6d4fd1),
+            ),
           if (saved != null && saved > 0)
             _UsageBadge(
               label: '省主≈',
@@ -877,7 +926,8 @@ class _RoleTokenSheetBody extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: _RoleBucketView(
-                  title: '${p.label}${p.model.isNotEmpty ? ' · ${p.model}' : ''}',
+                  title:
+                      '${p.label}${p.model.isNotEmpty ? ' · ${p.model}' : ''}',
                   accent: const Color(0xFF6d4fd1),
                   bucket: p.bucket,
                   compact: true,
@@ -914,9 +964,9 @@ class _RoleBucketView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     String group(int n) => n.toString().replaceAllMapped(
-          RegExp(r'\B(?=(\d{3})+(?!\d))'),
-          (m) => ',',
-        );
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (m) => ',',
+    );
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
@@ -956,7 +1006,11 @@ class _UsageBadge extends StatelessWidget {
   final String label;
   final String value;
   final Color color;
-  const _UsageBadge({required this.label, required this.value, required this.color});
+  const _UsageBadge({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -968,11 +1022,7 @@ class _UsageBadge extends StatelessWidget {
       ),
       child: Text(
         '$label $value',
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontFamily: 'monospace',
-        ),
+        style: TextStyle(color: color, fontSize: 11, fontFamily: 'monospace'),
       ),
     );
   }
@@ -1001,17 +1051,32 @@ class _TimingLine extends StatelessWidget {
       final hh = timestamp!.hour.toString().padLeft(2, '0');
       final mm = timestamp!.minute.toString().padLeft(2, '0');
       final ss = timestamp!.second.toString().padLeft(2, '0');
-      parts.add(Text(
-        '🕐 $hh:$mm:$ss',
-        style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-      ));
+      final now = DateTime.now();
+      final sameDay =
+          timestamp!.year == now.year &&
+          timestamp!.month == now.month &&
+          timestamp!.day == now.day;
+      final sameYear = timestamp!.year == now.year;
+      final month = timestamp!.month.toString().padLeft(2, '0');
+      final day = timestamp!.day.toString().padLeft(2, '0');
+      final date = sameDay
+          ? ''
+          : '${sameYear ? '' : '${timestamp!.year}-'}$month-$day ';
+      parts.add(
+        Text(
+          '🕐 $date$hh:$mm:$ss',
+          style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
+        ),
+      );
     }
 
     if (durationMs != null && durationMs! >= 0) {
-      parts.add(Text(
-        '⏱ ${_fmtDuration(durationMs!)}',
-        style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
-      ));
+      parts.add(
+        Text(
+          '⏱ ${_fmtDuration(durationMs!)}',
+          style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
+        ),
+      );
     }
 
     if (parts.isEmpty) return const SizedBox.shrink();
@@ -1077,7 +1142,11 @@ class _MarkdownContent extends StatelessWidget {
             );
           },
           styleSheet: MarkdownStyleSheet(
-            p: const TextStyle(color: Color(0xFF233249), fontSize: 14, height: 1.6),
+            p: const TextStyle(
+              color: Color(0xFF233249),
+              fontSize: 14,
+              height: 1.6,
+            ),
             code: const TextStyle(
               color: Color(0xFF233249),
               backgroundColor: Color(0xFFf8fbff),
@@ -1091,19 +1160,45 @@ class _MarkdownContent extends StatelessWidget {
             ),
             codeblockPadding: const EdgeInsets.all(12),
             blockquoteDecoration: const BoxDecoration(
-              border: Border(left: BorderSide(color: Color(0xFFdce6f1), width: 3)),
+              border: Border(
+                left: BorderSide(color: Color(0xFFdce6f1), width: 3),
+              ),
             ),
             blockquotePadding: const EdgeInsets.only(left: 10),
-            h1: const TextStyle(color: Color(0xFF20364d), fontSize: 18, fontWeight: FontWeight.bold),
-            h2: const TextStyle(color: Color(0xFF20364d), fontSize: 16, fontWeight: FontWeight.bold),
-            h3: const TextStyle(color: Color(0xFF20364d), fontSize: 15, fontWeight: FontWeight.bold),
-            strong: const TextStyle(color: Color(0xFF20364d), fontWeight: FontWeight.bold),
-            em: const TextStyle(color: Color(0xFF6f42c1), fontStyle: FontStyle.italic),
+            h1: const TextStyle(
+              color: Color(0xFF20364d),
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+            h2: const TextStyle(
+              color: Color(0xFF20364d),
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+            h3: const TextStyle(
+              color: Color(0xFF20364d),
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+            ),
+            strong: const TextStyle(
+              color: Color(0xFF20364d),
+              fontWeight: FontWeight.bold,
+            ),
+            em: const TextStyle(
+              color: Color(0xFF6f42c1),
+              fontStyle: FontStyle.italic,
+            ),
             a: const TextStyle(color: Color(0xFF1267b5)),
-            tableHead: const TextStyle(color: Color(0xFF20364d), fontWeight: FontWeight.bold),
+            tableHead: const TextStyle(
+              color: Color(0xFF20364d),
+              fontWeight: FontWeight.bold,
+            ),
             tableBody: const TextStyle(color: Color(0xFF233249)),
             tableBorder: TableBorder.all(color: const Color(0xFFdce6f1)),
-            tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            tableCellsPadding: const EdgeInsets.symmetric(
+              horizontal: 8,
+              vertical: 4,
+            ),
           ),
           selectable: true,
           onTapLink: (text, href, title) => _handleLinkTap(context, href),
@@ -1183,8 +1278,10 @@ class _StreamingDotState extends State<_StreamingDot>
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 800))
-      ..repeat(reverse: true);
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..repeat(reverse: true);
     _anim = Tween<double>(begin: 0.2, end: 1.0).animate(_ctrl);
   }
 
@@ -1260,11 +1357,8 @@ class _InlineImage extends StatelessWidget {
       child: GestureDetector(
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => _ImageZoomScreen(
-              url: url,
-              name: name,
-              headers: headers,
-            ),
+            builder: (_) =>
+                _ImageZoomScreen(url: url, name: name, headers: headers),
             fullscreenDialog: true,
           ),
         ),
@@ -1287,7 +1381,9 @@ class _InlineImage extends StatelessWidget {
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Color(0xFF1267b5)),
+                          strokeWidth: 2,
+                          color: Color(0xFF1267b5),
+                        ),
                       ),
                     ),
               errorBuilder: (ctx, err, _) =>
@@ -1310,8 +1406,7 @@ class _ImageErrorNote extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: EdgeInsets.symmetric(
-          horizontal: 8, vertical: compact ? 6 : 8),
+      padding: EdgeInsets.symmetric(horizontal: 8, vertical: compact ? 6 : 8),
       decoration: BoxDecoration(
         color: const Color(0xFFfff1ef),
         borderRadius: BorderRadius.circular(8),
@@ -1320,8 +1415,11 @@ class _ImageErrorNote extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.broken_image_outlined,
-              size: 14, color: Color(0xFFb64e43)),
+          const Icon(
+            Icons.broken_image_outlined,
+            size: 14,
+            color: Color(0xFFb64e43),
+          ),
           const SizedBox(width: 6),
           Flexible(
             child: Text(
@@ -1369,9 +1467,11 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
-        title: Text(widget.name,
-            style: const TextStyle(fontSize: 13),
-            overflow: TextOverflow.ellipsis),
+        title: Text(
+          widget.name,
+          style: const TextStyle(fontSize: 13),
+          overflow: TextOverflow.ellipsis,
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh, size: 20),
@@ -1396,18 +1496,27 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
                   ? child
                   : const Center(
                       child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white70),
+                        strokeWidth: 2,
+                        color: Colors.white70,
+                      ),
                     ),
               errorBuilder: (ctx, err, _) => Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.broken_image,
-                        size: 48, color: Color(0xFFb64e43)),
+                    const Icon(
+                      Icons.broken_image,
+                      size: 48,
+                      color: Color(0xFFb64e43),
+                    ),
                     const SizedBox(height: 12),
-                    Text('无法加载: ${widget.name}',
-                        style: const TextStyle(
-                            color: Color(0xFFb64e43), fontSize: 13)),
+                    Text(
+                      '无法加载: ${widget.name}',
+                      style: const TextStyle(
+                        color: Color(0xFFb64e43),
+                        fontSize: 13,
+                      ),
+                    ),
                   ],
                 ),
               ),

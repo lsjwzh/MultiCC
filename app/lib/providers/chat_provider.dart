@@ -1455,6 +1455,7 @@ class ChatProvider extends ChangeNotifier {
         final errorText = evt.payload.toString();
         if (_isRecoverableCodexReconnectErrorText(errorText)) break;
         _addSystemMsg('Error: $errorText');
+        _attachKnownUsageToInterruptedTail();
         _finishStreaming();
         _maybeNotify(t('notificationErrorTitle'), errorText);
         notifyListeners();
@@ -2447,6 +2448,7 @@ class ChatProvider extends ChangeNotifier {
     // One request's own prompt accounting: the only context figure that needs
     // no heuristic, so it supersedes whatever the last turn total implied.
     final usage = (evt?['message'] as Map?)?['usage'];
+    _requestUsage = null;
     if (usage is Map) {
       _requestUsage = MessageUsage.fromJson(Map<String, dynamic>.from(usage));
     }
@@ -2809,9 +2811,25 @@ class ChatProvider extends ChangeNotifier {
   /// never arrive if the socket died mid-stream.
   void cancel() {
     _service.cancel();
+    _attachKnownUsageToInterruptedTail();
     _finishStreaming();
     _addSystemMsg(t('cancelled'));
     notifyListeners();
+  }
+
+  /// Error/cancel paths do not always receive a provider `result` frame. The
+  /// request's message_start usage is still measured data for this exact turn,
+  /// so keep it on the interrupted bubble instead of making token stats vanish.
+  /// A later result frame may replace it with the fuller input/output usage.
+  void _attachKnownUsageToInterruptedTail() {
+    final target = _folder.currentMsg;
+    final usage = _requestUsage;
+    if (target != null &&
+        (target.usage == null || target.usage!.isEmpty) &&
+        usage != null &&
+        !usage.isEmpty) {
+      target.usage = usage;
+    }
   }
 
   void setHistoryArchive(bool value) {

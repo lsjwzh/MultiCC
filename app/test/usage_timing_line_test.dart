@@ -14,15 +14,18 @@ void main() {
     tester.view.physicalSize = Size(width, 2400);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
-    await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: ListView(children: [MessageBubble(message: message)]),
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(children: [MessageBubble(message: message)]),
+        ),
       ),
-    ));
+    );
   }
 
-  testWidgets('usage line and timing line both render when both exist',
-      (tester) async {
+  testWidgets('usage line and timing line both render when both exist', (
+    tester,
+  ) async {
     final message = ChatMessage(
       role: MessageRole.assistant,
       content: 'done',
@@ -40,13 +43,17 @@ void main() {
     expect(find.textContaining('↓出'), findsOneWidget);
     expect(find.textContaining('⏱读'), findsOneWidget);
     expect(find.textContaining('⏱写'), findsOneWidget);
-    expect(find.textContaining(RegExp(r'🕐 \d{2}:\d{2}:\d{2}')), findsOneWidget);
+    expect(
+      find.textContaining(RegExp(r'🕐 \d{2}:\d{2}:\d{2}')),
+      findsOneWidget,
+    );
     // The timing line's ⏱ duration and the cache badges' ⏱ glyph coexist.
     expect(find.textContaining(RegExp(r'⏱ \d')), findsOneWidget);
   });
 
-  testWidgets('usage alone renders; timing alone renders (no cross hiding)',
-      (tester) async {
+  testWidgets('usage alone renders; timing alone renders (no cross hiding)', (
+    tester,
+  ) async {
     await pumpBubble(
       tester,
       message: ChatMessage(
@@ -70,8 +77,9 @@ void main() {
     expect(find.textContaining('⏱'), findsOneWidget);
   });
 
-  testWidgets('long token counts on a narrow lane do not overflow the bubble',
-      (tester) async {
+  testWidgets('long token counts on a narrow lane do not overflow the bubble', (
+    tester,
+  ) async {
     final message = ChatMessage(
       role: MessageRole.assistant,
       content: 'narrow',
@@ -86,5 +94,30 @@ void main() {
     await pumpBubble(tester, message: message, width: 320);
 
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('跨天消息时间带日期，当天仍只显示时分秒', (tester) async {
+    final now = DateTime.now();
+    await pumpBubble(
+      tester,
+      message: ChatMessage(
+        role: MessageRole.assistant,
+        content: 'old',
+        timestamp: DateTime(now.year - 1, 2, 3, 4, 5, 6),
+        durationMs: 1,
+      ),
+    );
+    expect(find.text('🕐 ${now.year - 1}-02-03 04:05:06'), findsOneWidget);
+
+    await pumpBubble(
+      tester,
+      message: ChatMessage(
+        role: MessageRole.assistant,
+        content: 'today',
+        timestamp: DateTime(now.year, now.month, now.day, 7, 8, 9),
+        durationMs: 1,
+      ),
+    );
+    expect(find.text('🕐 07:08:09'), findsOneWidget);
   });
 }
