@@ -481,7 +481,7 @@ test('directory all-tasks expands in place with filters, fixed height and delete
   let tasks = [
     ...Array.from({ length: 12 }, (_, i) => ({
       id: `t${i + 1}`, dirId: 'd1', title: `目录任务 ${i + 1}`, status: 'active', runState: 'idle',
-      updatedAt: 1000 + i, resource: { residency: 'planned', lease: 'idle' },
+      updatedAt: 1000 + i, lastMessageAt: 3000 - i, resource: { residency: 'planned', lease: 'idle' },
     })),
     { id: 'archived', dirId: 'd1', title: '已经归档', status: 'archived', runState: null,
       updatedAt: 500, resource: { residency: 'retained', lease: 'idle' } },
@@ -499,6 +499,13 @@ test('directory all-tasks expands in place with filters, fixed height and delete
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===10`));
+    await page.evaluate(`localStorage.setItem('air:task-visited-at', JSON.stringify({t8:9000,t3:8000}))`);
+    await page.navigate('/air?dir=d1');
+    assert.equal(await page.evaluate(`document.querySelector('#directory-task-list strong').textContent`), '目录任务 1', '默认按最后消息，而不是 updatedAt');
+    assert.equal(await page.evaluate(`document.querySelector('#directory-task-sort [data-sort="message"]').getAttribute('aria-pressed')`), 'true');
+    await page.evaluate(`document.querySelector('#directory-task-sort [data-sort="visit"]').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('#directory-task-list strong').textContent`), '目录任务 8', '可切到本机最后访问时间');
+    assert.equal(await page.evaluate(`document.querySelector('#directory-task-sort [data-sort="visit"]').getAttribute('aria-pressed')`), 'true');
     await page.evaluate(`document.getElementById('directory-task-more').click()`);
     assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false, 'all tasks stays on the directory page');
     assert.equal(await page.evaluate(`document.getElementById('directory-task-heading').textContent`), '全部任务');

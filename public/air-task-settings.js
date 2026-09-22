@@ -344,9 +344,16 @@
     }
 
     function renderProviders(initial) {
-      const [nativeTitle] = nativeProviderCopy(currentCli);
-      const head = node('option', nativeTitle); head.value = '';
-      const options = [head];
+      const official = providers.find(provider => catalogApi.officialProviderKind(provider) === (currentCli.startsWith('codex') ? 'codex' : 'claude'));
+      const options = [];
+      // 支持 Provider 的 CLI 已经有一条真实的内置 Official Provider：空值
+      // 「Default login / official account」只是旧 UI 对同一件事的第二种说法，
+      // 会让人以为它是另一条线路。Providerless CLI 仍保留自身的原生项。
+      if (PROVIDERLESS_CLIS.has(currentCli) || !official) {
+        const [nativeTitle] = nativeProviderCopy(currentCli);
+        const head = node('option', nativeTitle); head.value = '';
+        options.push(head);
+      }
       if (!PROVIDERLESS_CLIS.has(currentCli)) {
         for (const auto of autoApi.availableProtocols(providers)) {
           if (!autoApi.defaultSelection(providers, auto.protocol)
@@ -363,7 +370,8 @@
       const initialAuto = initial && config.providerSelection?.mode === 'auto'
         ? autoApi.optionValue(config.providerSelection.protocol) : '';
       let desired = initialAuto || (initial ? config.provider || '' : currentCatalog?.defaults?.[currentCli] || '');
-      if (!options.some(option => option.value === desired)) desired = '';
+      if (!desired && official) desired = official.id;
+      if (!options.some(option => option.value === desired)) desired = official?.id || '';
       const desiredProvider = providers.find(provider => provider.id === desired);
       chooseProvider(desired, initial ? config.model || '' : desiredProvider?.model || '');
       providerStatus.textContent = PROVIDERLESS_CLIS.has(currentCli)

@@ -299,7 +299,16 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (_isQoder) return 'Qoder CN';
     if (widget.cli == SessionCli.codebuddy) return 'WorkBuddy';
     if (widget.cli == SessionCli.dsh) return 'DSH';
-    if (id.isEmpty) return '默认登录';
+    if (id.isEmpty) {
+      for (final p in widget.providers) {
+        final providerId = p['id']?.toString() ?? '';
+        if (p['builtinOfficial'] == true ||
+            providerId == '${widget.cli.poolKey}-official') {
+          return p['name']?.toString() ?? '官方 Provider';
+        }
+      }
+      return '官方 Provider';
+    }
     final p = _providerMap(id);
     return p?['name']?.toString() ?? id;
   }
@@ -795,7 +804,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                         p['builtinOfficial'] == true &&
                         p['id'] == '${widget.cli.poolKey}-official',
                   ))
-                    const DropdownMenuItem(value: '', child: Text('默认登录 / 订阅')),
+                    const DropdownMenuItem(
+                      value: '',
+                      child: Text('官方 Provider'),
+                    ),
                   ...autoGroups.map(
                     (group) => DropdownMenuItem(
                       value: '__auto__:${group.key}',
@@ -1099,7 +1111,9 @@ Future<List<Map<String, dynamic>>> prepareAIConfigInputs(
     } catch (_) {}
   } else if (cli.isCodexFamily) {
     try {
-      await CodexModelsService(settings: settings).load(forceRefresh: true);
+      // Cache-first. A forced network refresh on every tap made opening this
+      // sheet wait for the Codex model endpoint (up to 20 seconds).
+      await CodexModelsService(settings: settings).load();
     } catch (_) {}
   }
   try {
@@ -1116,6 +1130,81 @@ Future<List<Map<String, dynamic>>> prepareAIConfigInputs(
   return const [];
 }
 
+class _AIConfigInputBundle {
+  const _AIConfigInputBundle(this.runtime, this.providers);
+  final SessionCliConfig runtime;
+  final List<Map<String, dynamic>> providers;
+}
+
+Future<_AIConfigInputBundle> _loadAIConfigInputs(
+  SessionManager manager,
+  SettingsService settings,
+  String sessionId,
+) async {
+  final runtime = await manager.fetchSessionCliConfig(sessionId);
+  final providers = await prepareAIConfigInputs(settings, runtime.cli);
+  return _AIConfigInputBundle(runtime, providers);
+}
+
+class _AIConfigSheetLoader extends StatelessWidget {
+  const _AIConfigSheetLoader({required this.future});
+  final Future<_AIConfigInputBundle> future;
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<_AIConfigInputBundle>(
+    future: future,
+    builder: (context, snapshot) {
+      final bundle = snapshot.data;
+      if (bundle != null) {
+        final runtime = bundle.runtime;
+        return AIConfigSheet(
+          cli: runtime.cli,
+          providers: bundle.providers,
+          provider: runtime.provider ?? '',
+          providerSelection: runtime.providerSelection,
+          model: runtime.model ?? '',
+          effort:
+              runtime.effectiveEffort ??
+              runtime.effort ??
+              runtime.cli.defaultEffort,
+          subProviderId: runtime.subagent?.providerId,
+          subModel: runtime.subagent?.model,
+          agent: runtime.agent,
+        );
+      }
+      if (snapshot.hasError) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              key: const ValueKey('ai-config-load-error'),
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(t('sessionNotLoaded')),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('关闭'),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+      // The route is already visible while the session/catalog requests run.
+      // This makes a tap respond in the next frame even on a slow phone or a
+      // cold Codex model cache.
+      return const SafeArea(
+        child: SizedBox(
+          key: ValueKey('ai-config-loading'),
+          height: 180,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    },
+  );
+}
+
 /// Open the per-session AI-config sheet for [sessionId] (used by both the
 /// header ModelChip and the InputBar subagent pill). Fetches the provider list
 /// fresh, seeds the sheet from the current session (incl. subagent override),
@@ -1126,21 +1215,10 @@ Future<void> openAIConfigSheet(
   required String sessionId,
 }) async {
   final mgr = context.read<SessionManager>();
-  late SessionCliConfig runtime;
-  try {
-    // Shell executions are intentionally absent from the Fleet list.
-    runtime = await mgr.fetchSessionCliConfig(sessionId);
-  } catch (_) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(t('sessionNotLoaded'))));
-    }
-    return;
-  }
-  final providers = await prepareAIConfigInputs(settings, runtime.cli);
-  if (!context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
+  // Start I/O and present the route in the same frame. The old path awaited
+  // both requests (including a forced Codex refresh) before opening anything.
+  final inputFuture = _loadAIConfigInputs(mgr, settings, sessionId);
   final picked = await showModalBottomSheet<AIConfigResult>(
     context: context,
     isScrollControlled: true,
@@ -1148,20 +1226,7 @@ Future<void> openAIConfigSheet(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
     ),
-    builder: (_) => AIConfigSheet(
-      cli: runtime.cli,
-      providers: providers,
-      provider: runtime.provider ?? '',
-      providerSelection: runtime.providerSelection,
-      model: runtime.model ?? '',
-      effort:
-          runtime.effectiveEffort ??
-          runtime.effort ??
-          runtime.cli.defaultEffort,
-      subProviderId: runtime.subagent?.providerId,
-      subModel: runtime.subagent?.model,
-      agent: runtime.agent,
-    ),
+    builder: (_) => _AIConfigSheetLoader(future: inputFuture),
   );
   if (picked == null) return;
   try {

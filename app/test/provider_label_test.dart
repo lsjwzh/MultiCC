@@ -11,9 +11,18 @@ void main() {
     {'id': 'p-kimi', 'name': 'Kimi'},
   ];
 
-  test('没有线路时说默认登录，不是空字符串', () {
-    expect(providerDisplayLabel(null, providers: const []), '默认登录');
-    expect(providerDisplayLabel('', providers: const []), '默认登录');
+  test('没有显式线路时说官方 Provider，不再说默认登录', () {
+    expect(providerDisplayLabel(null, providers: const []), '官方 Provider');
+    expect(providerDisplayLabel('', providers: const []), '官方 Provider');
+    expect(
+      providerDisplayLabel(
+        '',
+        providers: const [
+          {'id': 'codex-official', 'name': 'Codex 官方', 'builtinOfficial': true},
+        ],
+      ),
+      'Codex 官方',
+    );
   });
 
   test('catalog 认识这条线路就用它的名字', () {

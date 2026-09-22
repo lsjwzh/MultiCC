@@ -991,6 +991,8 @@ test('production lifecycle uses append return, runner ownership and one guarded 
     'the shared finalize executor must use the real append return value');
   assert.match(source, /persistAssistant\(context, append\) \{[\s\S]{0,120}persistFinalAssistantResult\(/,
     'server composition must inject the authoritative assistant writer');
+  assert.match(source, /context\.runner\.pendingUsage[\s\S]{0,180}\{ usage: context\.runner\.pendingUsage \}/,
+    'interrupted/error assistant checkpoints must persist measured token usage');
   assert.match(source, /const resultDurable = persistFinalAssistantResult\(/);
   assert.match(source, /if \(resultDurable\) \{[\s\S]{0,500}cs\._resultSaved = true;/);
   assert.match(source, /runPostTurn\(context, entry\) \{[\s\S]{0,160}runDurablePostTurn\(/);
