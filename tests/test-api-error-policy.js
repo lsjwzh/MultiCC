@@ -140,6 +140,19 @@ test('401/403, billing, invalid request, context, tool/config errors fail fast',
   }
 });
 
+test('Claude invalid native UUID is a local configuration failure, not a retryable API outage', () => {
+  const message = 'Claude Code process exited with code 1. stderr: Error: Invalid session ID. Must be a valid UUID.';
+  for (const source of ['process_stderr', 'anthropic_event', 'claude-exp_event']) {
+    const result = decide({ source, provider: 'claude-exp', code: 'provider_error', message });
+    assert.equal(result.error.category, 'adapter_configuration');
+    assert.equal(result.error.retryable, false);
+    assert.equal(result.action, 'fail_fast');
+    assert.match(retryNotice(result), /CLI 或适配器配置错误，未自动重试/);
+    assert.doesNotMatch(retryNotice(result), /上游 API/);
+  }
+  assert.equal(normalizeApiError({ source: 'user_text', message }).category, 'unknown');
+});
+
 test('vendor CLI login-required text classifies as auth and never auto-retries', () => {
   // WorkBuddy (codebuddy) with no /login session answers every turn with a
   // stream-json result whose only detail lives in errors[] — the message field

@@ -80,8 +80,7 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // back under 3000) means shrinking this list in the same commit. The
   // manage.js entry was retired by the manage-aux-history.js split.
   // main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台); same rule.
-  // air.js 和 turn-engine.js 是 0f276ebc 越线后补登记的（前者 3000 -> 3044，
-  // 后者 2997 -> 3002），登记不等于豁免：拆到 3000 以内就要把这两条一起删掉。
+  // air.js crossed 3000 in 0f276ebc; turn-engine.js is now below 3000 again.
   assert.deepEqual(result.debts.map(entry => entry.file),
-    ['app/lib/screens/main_shell.dart', 'public/air.js', 'src/chat/turn-engine.js']);
+    ['app/lib/screens/main_shell.dart', 'public/air.js']);
 });
