@@ -69,6 +69,7 @@ const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
 const { captureNativeSessionId } = require('./native-session-state');
+const { hasNativeHistory } = require('../cli-adapters/claude-exp-history');
 const { createOpencodeContextGuard } = require('./opencode-context-guard');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { createDeliveryProbeRegistry, shouldReexecutePersistedDelivery } = require('./delivery-probe');
@@ -1129,7 +1130,7 @@ function createChatTurnEngine(deps) {
         text,
         cli: turnCli,
         turnCount,
-        hasNativeSession: !!persisted.cliSessionId || willAllocateClaudeNativeSession,
+        hasNativeSession: hasNativeHistory(persisted) || willAllocateClaudeNativeSession,
         requestId: opts.requestId,
         clientMsgId: opts.clientMsgId,
         deliveryId: opts.deliveryId,
@@ -2697,7 +2698,7 @@ function createChatTurnEngine(deps) {
     if (!cs) {
       // For claude: pre-allocate the session UUID (needed for --session-id on first turn).
       // For codex: leave null; captured from `thread.started` event on first turn.
-      if ((cli === 'claude' || cli === 'claude-exp') && !persisted.cliSessionId) {
+      if (cli === 'claude' && !persisted.cliSessionId) {
         persisted.cliSessionId = crypto.randomUUID();
         savePersistedSessionsBestEffort('websocket.chat-session-id-allocate');
       }
