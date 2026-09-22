@@ -9,7 +9,7 @@
 # Users install MultiCC from the standalone package, which ships its own Node
 # runtime and its own `multicc` command — no Node, npm or git required:
 #
-#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.5/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.6/install.sh | bash
 #
 # That command lives at <install dir>/multicc and is unrelated to this file
 # apart from the name. See docs/standalone.md.
