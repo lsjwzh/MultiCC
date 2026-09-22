@@ -92,7 +92,8 @@ String airResourceText(Map<String, dynamic>? resource) {
   final capacity = resource['capacityReason']?.toString();
   if (capacity != null && capacity.isNotEmpty) return airLabel(capacity);
   final lease = resource['lease']?.toString();
-  if (lease != null && lease.isNotEmpty && lease != 'idle') return airLabel(lease);
+  if (lease != null && lease.isNotEmpty && lease != 'idle')
+    return airLabel(lease);
   return airLabel(resource['residency']?.toString());
 }
 
@@ -110,6 +111,7 @@ class AirDirectory {
     this.external = false,
     this.externalFleetId,
     this.interactive = false,
+    this.worktreeCount = 0,
   });
 
   final String id;
@@ -125,6 +127,11 @@ class AirDirectory {
   /// 能不能在远端真的操作。由服务端手里那对授权决定，客户端只读。
   final bool interactive;
 
+  /// Number of unique MultiCC task/session worktrees retained under this
+  /// directory. It is inventory for manual linking/cleanup, never an automatic
+  /// deletion signal.
+  final int worktreeCount;
+
   static AirDirectory fromJson(Map<String, dynamic> json) => AirDirectory(
     id: '${json['id']}',
     name: '${json['name'] ?? ''}',
@@ -132,6 +139,7 @@ class AirDirectory {
     external: json['external'] == true,
     externalFleetId: json['externalFleetId'] as String?,
     interactive: json['interactive'] == true,
+    worktreeCount: (json['worktreeCount'] as num?)?.toInt() ?? 0,
   );
 
   /// 把一台外部舰队铺成目录记录。`path` 位放源站 —— 本机没有它的目录，
@@ -143,6 +151,7 @@ class AirDirectory {
     external: true,
     externalFleetId: fleet.id,
     interactive: fleet.interactive,
+    worktreeCount: 0,
   );
 }
 
@@ -246,6 +255,7 @@ class AirTask {
     required this.recordType,
     required this.updatedAt,
     required this.readOnly,
+    this.lastMessageAt = 0,
     this.workflowStage,
     this.sessionId,
     this.sourceSessionId,
@@ -262,6 +272,10 @@ class AirTask {
   final String status;
   final String recordType;
   final int updatedAt;
+
+  /// Latest conversation message. Unlike [updatedAt], metadata-only edits do
+  /// not move this clock.
+  final int lastMessageAt;
   final bool readOnly;
   final String? workflowStage;
   final String? sessionId;
@@ -279,6 +293,10 @@ class AirTask {
     status: '${json['status'] ?? ''}',
     recordType: '${json['recordType'] ?? ''}',
     updatedAt: (json['updatedAt'] as num?)?.toInt() ?? 0,
+    lastMessageAt:
+        (json['lastMessageAt'] as num?)?.toInt() ??
+        (json['updatedAt'] as num?)?.toInt() ??
+        0,
     readOnly: json['readOnly'] == true,
     workflowStage: json['workflowStage'] as String?,
     sessionId: json['sessionId'] as String?,
@@ -345,8 +363,7 @@ class AirSnapshot {
   );
 
   /// 这个任务被 pin 住了吗。
-  bool isPinned(String? taskId) =>
-      taskId != null && taskPins.contains(taskId);
+  bool isPinned(String? taskId) => taskId != null && taskPins.contains(taskId);
 
   AirDirectory? directoryOf(String? id) {
     for (final directory in directories) {
@@ -370,10 +387,10 @@ class AirSnapshot {
   List<AirSession> terminalSessionsOf(String? dirId) =>
       sessions.where((s) => s.dirId == dirId).toList();
 
-  /// 落在某个目录里的任务，最近更新的在前。
+  /// 落在某个目录里的任务，最后消息最近的在前。
   List<AirTask> tasksOf(String? dirId) {
     final rows = tasks.where((task) => task.dirId == dirId).toList()
-      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      ..sort((a, b) => b.lastMessageAt.compareTo(a.lastMessageAt));
     return rows;
   }
 
@@ -462,7 +479,9 @@ class AirRoleBindings {
     return AirRoleBindings(
       version: (json['version'] as num?)?.toInt() ?? 0,
       bindings: ((json['bindings'] as List?) ?? const [])
-          .map((e) => AirRoleBinding.fromJson((e as Map).cast<String, dynamic>()))
+          .map(
+            (e) => AirRoleBinding.fromJson((e as Map).cast<String, dynamic>()),
+          )
           .toList(),
     );
   }
@@ -599,17 +618,22 @@ class AirService {
     Session? Function(String)? cachedSession,
   }) async {
     final response = await _request(
-      'GET', '/api/air/tasks/${Uri.encodeComponent(taskId)}/open',
+      'GET',
+      '/api/air/tasks/${Uri.encodeComponent(taskId)}/open',
     );
     if (response.statusCode == 404 || response.statusCode == 405) {
       // Compatibility with a host not yet upgraded; still runs inside the
       // loading page, never before navigation.
       final entry = await openTask(taskId);
-      final id = entry[entry['readOnly'] == true ? 'sourceSessionId' : 'sessionId'];
+      final id =
+          entry[entry['readOnly'] == true ? 'sourceSessionId' : 'sessionId'];
       if (id is String && id.isNotEmpty) {
-        final session = cachedSession?.call(id) ??
-            await SessionService(settings: settings, httpClient: _http)
-                .fetchTaskBoundSession(id);
+        final session =
+            cachedSession?.call(id) ??
+            await SessionService(
+              settings: settings,
+              httpClient: _http,
+            ).fetchTaskBoundSession(id);
         if (session != null) return session;
       }
     } else {
@@ -620,8 +644,10 @@ class AirService {
         );
       }
       final session = data['session'];
-      if (session is Map && session['id'] is String &&
-          (session['id'] as String).isNotEmpty && session['kind'] == 'chat') {
+      if (session is Map &&
+          session['id'] is String &&
+          (session['id'] as String).isNotEmpty &&
+          session['kind'] == 'chat') {
         return Session.fromJson(Map<String, dynamic>.from(session));
       }
     }
@@ -785,15 +811,13 @@ class AirService {
     required int maxAccesses,
     String description = '',
   }) async {
-    final result = await _post(
-      '/api/fleets/${Uri.encodeComponent(fleetId)}/share',
-      {
-        'password': password,
-        'expiresInDays': expiresInDays,
-        'maxAccesses': maxAccesses,
-        'description': description,
-      },
-    );
+    final result =
+        await _post('/api/fleets/${Uri.encodeComponent(fleetId)}/share', {
+          'password': password,
+          'expiresInDays': expiresInDays,
+          'maxAccesses': maxAccesses,
+          'description': description,
+        });
     return FleetShare.fromJson(result);
   }
 
@@ -860,6 +884,8 @@ class AirLocalStore {
 
   static const _favoritesKey = 'air:favorites';
   static const _recentKey = 'air:recent-tasks';
+  static const _visitedKey = 'air:task-visited-at';
+  static const _taskSortKey = 'air:task-sort';
   static const _recentLimit = 24;
 
   final SharedPreferences _prefs;
@@ -870,6 +896,25 @@ class AirLocalStore {
   List<String> get favorites => _prefs.getStringList(_favoritesKey) ?? const [];
 
   List<String> get recentTasks => _prefs.getStringList(_recentKey) ?? const [];
+
+  String get taskSort =>
+      _prefs.getString(_taskSortKey) == 'visit' ? 'visit' : 'message';
+
+  Map<String, int> get taskVisitedAt {
+    try {
+      final raw = jsonDecode(_prefs.getString(_visitedKey) ?? '{}') as Map;
+      return raw.map(
+        (key, value) => MapEntry('$key', (value as num?)?.toInt() ?? 0),
+      );
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  int visitedAt(String taskId) => taskVisitedAt[taskId] ?? 0;
+
+  Future<void> setTaskSort(String value) =>
+      _prefs.setString(_taskSortKey, value == 'visit' ? 'visit' : 'message');
 
   /// 收藏最多 5 个；再多就不是「手边」而是另一个目录列表了（同 Web Air 的
   /// `favorites.length < 5`）。
@@ -891,7 +936,14 @@ class AirLocalStore {
   Future<void> rememberTask(String taskId) async {
     final next = recentTasks.toList()..remove(taskId);
     next.insert(0, taskId);
-    await _prefs.setStringList(_recentKey, next.take(_recentLimit).toList());
+    final kept = next.take(_recentLimit).toList();
+    final visited = taskVisitedAt
+      ..[taskId] = DateTime.now().millisecondsSinceEpoch;
+    visited.removeWhere((id, _) => !kept.contains(id));
+    await Future.wait([
+      _prefs.setStringList(_recentKey, kept),
+      _prefs.setString(_visitedKey, jsonEncode(visited)),
+    ]);
   }
 
   /// 收藏/最近里指向已经被删掉的目录或任务时，把它们从两份记录里清出去，免得
@@ -908,6 +960,9 @@ class AirLocalStore {
     if (keptRecent.length != recentTasks.length) {
       await _prefs.setStringList(_recentKey, keptRecent);
     }
+    final visited = taskVisitedAt
+      ..removeWhere((id, _) => !taskIds.contains(id));
+    await _prefs.setString(_visitedKey, jsonEncode(visited));
   }
 }
 
@@ -929,8 +984,9 @@ class AirCreateAttempt {
     String fingerprint,
     AirCreateAttempt? previous,
   ) {
-    if (previous != null && previous.fingerprint == fingerprint)
+    if (previous != null && previous.fingerprint == fingerprint) {
       return previous;
+    }
     return AirCreateAttempt(fingerprint, _nextId(), _nextId());
   }
 }

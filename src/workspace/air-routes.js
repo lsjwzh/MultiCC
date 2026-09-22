@@ -95,6 +95,22 @@ function mountAirRoutes(app, deps) {
       subagent: deps.serializeSubagent?.(lastUsed.record.subagent) || null,
     };
     const board = deps.getBoard();
+    // One directory can retain several task/session worktrees. Count unique
+    // paths from both authorities: session records cover ordinary chats;
+    // task metadata covers detached/task-bound worktrees whose session record
+    // may already be gone. This is inventory only — no cleanup is attempted.
+    const worktreesByDir = new Map();
+    const noteWorktree = (dirId, worktreePath) => {
+      if (!dirId || !worktreePath) return;
+      if (!worktreesByDir.has(dirId)) worktreesByDir.set(dirId, new Set());
+      worktreesByDir.get(dirId).add(worktreePath);
+    };
+    for (const record of deps.records.values()) noteWorktree(record.dirId, record.worktreePath);
+    for (const task of Object.values(board.tasks || {})) {
+      const sessionId = task.chatSessionId || task.sessionId || null;
+      const dirId = core.taskDirId(board, task) || deps.records.get(sessionId)?.dirId;
+      noteWorktree(dirId, task.worktreePath);
+    }
     // 与任务板同一条自愈规则（见 task-board/view.js 的 deadDispatchClaim）：派发时
     // 写下的乐观 runState，如果名下会话从来没有过 taskState，就证明这一轮从没被受理
     // 过 —— 不把这类卡片继续报成「执行中」（否则它会挂在控制台上直到天荒地老）。
@@ -107,8 +123,16 @@ function mountAirRoutes(app, deps) {
     const tasks = boardTasks().map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
       const access = deps.shell.taskAccess(t);
+      // `updatedAt` is task-metadata time: renaming, changing lifecycle/status,
+      // classification and new messages can all move it.  The Air task list
+      // needs a separate conversation clock so a housekeeping edit cannot jump
+      // an old task above a task that just received a message.
+      const lastMessageAt = (Array.isArray(t.refs) ? t.refs : [])
+        .reduce((latest, ref) => Math.max(latest, Number(ref?.ts) || 0), 0)
+        || Number(t.createdAt) || Number(t.updatedAt) || 0;
       return { id: t.id, dirId: core.taskDirId(board, t) || deps.records.get(sessionId)?.dirId, title: t.title, status: t.status,
-        recordType: t.recordType || null, workflowStage: t.workflowStage || null, updatedAt: t.updatedAt || t.createdAt,
+        recordType: t.recordType || null, workflowStage: t.workflowStage || null,
+        updatedAt: t.updatedAt || t.createdAt, lastMessageAt,
         sessionId, ...access,
         // 这一轮到底在不在跑，是队列事件折出来的事实（src/task-board/normalize.js
         // TASK_RUN_STATES），不是客户端能从 status 猜出来的：status 只有
@@ -119,7 +143,10 @@ function mountAirRoutes(app, deps) {
           ? 'idle' : (t.runState || null),
         resource: resource(sessionId, admission) };
     });
-    return { ok: true, directories: [...deps.directories.values()].map(d => ({ id: d.id, name: d.name, path: d.path })),
+    return { ok: true, directories: [...deps.directories.values()].map(d => ({
+      id: d.id, name: d.name, path: d.path,
+      worktreeCount: worktreesByDir.get(d.id)?.size || 0,
+    })),
       tasks, taskPins: pins().read(), budgets: admission.budgets, clis: deps.clis, migration, lastRuntime,
       sessions: [...deps.records.values()].filter(s => s.kind === 'terminal' && !['aux', 'gateway'].includes(s.type))
         .map(s => ({ id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli })) };

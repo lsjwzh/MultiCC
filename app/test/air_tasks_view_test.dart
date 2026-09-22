@@ -8,6 +8,7 @@ import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/onboarding_store.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air/air_sidebar.dart';
+import 'package:multicc_app/widgets/air/air_panels.dart';
 import 'package:multicc_app/widgets/air/air_task_actions.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
 import 'package:multicc_app/widgets/workspace_navigation_drawer.dart';
@@ -101,8 +102,8 @@ MockClient _client(
 });
 
 /// 一个目录八条任务。用来盯首页抬头上那句「N 个任务」和它下面那块**截过的**
-/// 「最近任务」—— Web 的 `recentRowLimit()` 在 760px 及以下取 6，`updatedAt`
-/// 倒序（`air.js` 的 `[...tasks].sort((a, b) => Number(b.updatedAt || 0) - ...)`），
+/// 「最近任务」—— Web 的 `recentRowLimit()` 在 760px 及以下取 6，最后消息时间
+/// 倒序；这里故意让 updatedAt 反着走，防止元数据更新时间重新混进排序。
 /// 所以屏上该是任务 8…3，「查看全部」说的是 8 而不是剩下的 2。
 MockClient _manyTasksClient() => MockClient((request) async {
   if (request.url.path.startsWith('/api/air/tasks/')) {
@@ -139,7 +140,8 @@ MockClient _manyTasksClient() => MockClient((request) async {
             'recordType': 'planned',
             'workflowStage': 'inbox',
             'runState': null,
-            'updatedAt': 1000 + i,
+            'updatedAt': 2000 - i,
+            'lastMessageAt': 1000 + i,
             'resource': const {'residency': 'planned', 'lease': 'idle'},
           },
       ],
@@ -232,7 +234,7 @@ MockClient _createFromSheetClient(
 
 /// Pin 住的任务：那份清单住在服务端（`air-pins.json`），Web 和 App 读同一份。
 /// 这个桩把两件事分开说清楚 —— 快照里的 `taskPins` 是「钉了哪些」，POST
-/// `/api/air/pins/toggle` 是唯一的写。第 6 个回 409，让界面把话原样说给用户。
+/// `/api/air/pins/toggle` 是唯一的写。
 MockClient _pinsClient(
   List<String> calls,
   List<Map<String, dynamic>> bodies, {
@@ -249,7 +251,11 @@ MockClient _pinsClient(
       bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
       if (toggleStatus >= 400) {
         return http.Response(
-          jsonEncode({'ok': false, 'code': 'pin_limit_reached', 'message': toggleMessage}),
+          jsonEncode({
+            'ok': false,
+            'code': 'pin_limit_reached',
+            'message': toggleMessage,
+          }),
           toggleStatus,
           headers: headers,
         );
@@ -291,13 +297,17 @@ MockClient _pinsClient(
   });
 }
 
-Future<SettingsService> _settings({bool onboarded = true}) async {
+Future<SettingsService> _settings({
+  bool onboarded = true,
+  Map<String, Object> prefs = const {},
+}) async {
   SharedPreferences.setMockInitialValues({
     'multicc_host': 'http://localhost:3000',
     // 新手引导自己有一份测试（tour_overlay_test.dart）。这里默认把它标成走完：
     // 头一回打开时第 1 步圈的是目录库里的「添加」，会把首页切到目录库模式，
     // 于是任务列表和任务头部工具条都不在树上 —— 那份活儿归引导的测试管。
     if (onboarded) OnboardingStore.doneKey: '1',
+    ...prefs,
   });
   return SettingsService.getInstance();
 }
@@ -402,7 +412,11 @@ void main() {
       greaterThan(tileWidth / 2),
       reason: '标题该拿到这一行一半以上的宽度（实测 $titleWidth / $tileWidth）',
     );
-    for (final prefix in ['air-task-pin', 'air-task-details', 'air-task-delete']) {
+    for (final prefix in [
+      'air-task-pin',
+      'air-task-details',
+      'air-task-delete',
+    ]) {
       final size = tester.getSize(find.byKey(ValueKey('$prefix-t8')));
       expect(
         size,
@@ -415,7 +429,9 @@ void main() {
     expect(badge, findsOneWidget);
     expect(
       tester.getTopLeft(badge).dy,
-      greaterThan(tester.getTopLeft(find.byKey(const ValueKey('air-task-title-t8'))).dy),
+      greaterThan(
+        tester.getTopLeft(find.byKey(const ValueKey('air-task-title-t8'))).dy,
+      ),
     );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
@@ -442,7 +458,7 @@ void main() {
     // 抬头上的数字说的是这个目录一共几条，不是这一屏摆得下几条。
     expect(find.text('最近任务'), findsOneWidget);
     expect(find.text('8 个任务'), findsOneWidget);
-    // 行序是 updatedAt 倒序，最新的一条排在最前（`AirSnapshot.tasksOf`）。
+    // 行序是 lastMessageAt 倒序，尽管 updatedAt 正好相反。
     expect(find.text('任务 8'), findsOneWidget);
     expect(find.text('任务 7'), findsOneWidget);
     // 窄屏截到六行（Web `recentRowLimit()` 的 760px 断点）：第 1、2 条不在树上。
@@ -485,6 +501,38 @@ void main() {
     expect(find.text('最近任务'), findsOneWidget);
     expect(find.text('任务 1'), findsNothing);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('任务排序可在最后消息与本机访问时间之间切换', (tester) async {
+    final settings = await _settings(
+      prefs: {
+        'air:task-visited-at': jsonEncode({'t2': 9000, 't7': 8000}),
+      },
+    );
+    final client = _manyTasksClient();
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 1600);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    List<String> visibleTitles() => tester
+        .widgetList<AirTaskTile>(find.byType(AirTaskTile))
+        .map((tile) => tile.task.title)
+        .toList();
+    expect(visibleTitles().first, '任务 8');
+
+    await tester.tap(find.byKey(const ValueKey('air-task-sort-visit')));
+    await tester.pumpAndSettle();
+    expect(visibleTitles().take(2), ['任务 2', '任务 7']);
+
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -576,12 +624,18 @@ void main() {
       reason: 'pin 住的那条排在最近任务的最上面',
     );
     expect(
-      find.descendant(of: pinnedRow, matching: find.byIcon(Icons.push_pin_rounded)),
+      find.descendant(
+        of: pinnedRow,
+        matching: find.byIcon(Icons.push_pin_rounded),
+      ),
       findsOneWidget,
     );
     // 没钉住的那条没有标记（标记说的是「它为什么排在这儿」）。
     expect(
-      find.descendant(of: newestRow, matching: find.byIcon(Icons.push_pin_rounded)),
+      find.descendant(
+        of: newestRow,
+        matching: find.byIcon(Icons.push_pin_rounded),
+      ),
       findsNothing,
     );
     expect(tester.takeException(), isNull);
@@ -635,16 +689,16 @@ void main() {
     client.close();
   });
 
-  testWidgets('第六个 pin 被服务端拒绝：那句话原样说给用户，按钮不装成已钉', (tester) async {
+  testWidgets('第六个 pin 可以正常钉上，不再有 5 个的界面限制', (tester) async {
     final settings = await _settings();
     final calls = <String>[];
     final bodies = <Map<String, dynamic>>[];
     final client = _pinsClient(
       calls,
       bodies,
-      // 五条已经钉满；t1 是没钉的那一条（也是首页第一行，一定在屏上）。
+      // 五条已经钉住；t1 是第六条。
       pins: const ['t2', 't3', 't4', 't5', 't6'],
-      toggleStatus: 409,
+      afterToggle: const ['t2', 't3', 't4', 't5', 't6', 't1'],
     );
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(390, 844);
@@ -658,14 +712,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-task-pin-t1')));
     await tester.pumpAndSettle();
-    expect(find.text('最多只能 Pin 5 个任务'), findsOneWidget);
+    expect(find.text('已 Pin 住「任务 1」'), findsOneWidget);
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('air-task-pin-t1')),
-        matching: find.byIcon(Icons.push_pin_outlined),
+        matching: find.byIcon(Icons.push_pin_rounded),
       ),
       findsOneWidget,
-      reason: '被拒绝的那条不该变成「已钉」',
+      reason: '第六条应该变成「已钉」',
     );
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
@@ -881,7 +935,9 @@ void main() {
     final provider = tester.getRect(
       find.byKey(const ValueKey('air-more-provider')),
     );
-    final tunnel = tester.getRect(find.byKey(const ValueKey('air-more-tunnel')));
+    final tunnel = tester.getRect(
+      find.byKey(const ValueKey('air-more-tunnel')),
+    );
     final bridges = tester.getRect(
       find.byKey(const ValueKey('air-more-bridges')),
     );
@@ -957,7 +1013,9 @@ void main() {
       expect(find.byKey(ValueKey(group)), findsOneWidget, reason: group);
     }
     // 「服务与文档 / 记忆图谱 / 任务图谱 / 设置中心」四行同框，别的一行都不在。
-    final global = tester.getRect(find.byKey(const ValueKey('air-group-global')));
+    final global = tester.getRect(
+      find.byKey(const ValueKey('air-group-global')),
+    );
     for (final row in const [
       'air-more-docs',
       'air-more-memory',
@@ -1054,7 +1112,10 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
     await tester.pumpAndSettle();
     await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
-    await tapInSidebar(tester, find.byKey(const ValueKey('air-more-lid-sleep')));
+    await tapInSidebar(
+      tester,
+      find.byKey(const ValueKey('air-more-lid-sleep')),
+    );
     expect(posts, ['{"enabled":true}']);
     expect(find.text('已开启关盖保持运行'), findsOneWidget);
     expect(tester.takeException(), isNull);

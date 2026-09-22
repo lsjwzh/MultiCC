@@ -341,13 +341,14 @@
   }
 
   function recentTasks({ tasks, directoryId, recentTaskIds, limit, isUnseen, statusOf }) {
+    const messageAt = task => Number(task?.lastMessageAt || task?.updatedAt || 0);
     const byId = new Map(tasks.map(task => [task.id, task]));
     const pool = [];
     const seen = new Set();
     // Unread outcomes must remain reachable even outside the current directory
     // or when all recent slots are already occupied by opened tasks.
     for (const task of tasks.filter(t => isUnseen(t.id) && !['archived', 'cancelled'].includes(statusOf(t)))
-      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))) {
+      .sort((a, b) => messageAt(b) - messageAt(a))) {
       seen.add(task.id);
       pool.push(task);
     }
@@ -359,7 +360,7 @@
     }
     const settled = task => (['done', 'archived'].includes(task.status) ? 1 : 0);
     for (const task of tasks.filter(t => t.dirId === directoryId)
-      .sort((a, b) => settled(a) - settled(b) || Number(b.updatedAt || 0) - Number(a.updatedAt || 0))) {
+      .sort((a, b) => settled(a) - settled(b) || messageAt(b) - messageAt(a))) {
       if (seen.has(task.id)) continue;
       seen.add(task.id);
       pool.push(task);

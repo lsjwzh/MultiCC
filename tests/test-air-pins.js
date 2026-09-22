@@ -2,7 +2,7 @@
 
 // Pin 住的任务（页头「齐刘海」/ 手机侧栏置顶）是用户的选择，不是缓存：换一台
 // 设备、换 App 打开得看到同一份。这些用例钉住让这句话成立的四件事 —— 形状归一、
-// 上限、存在性剪枝、以及 /api/air 快照里确实带着它。
+// 高容量安全线、存在性剪枝、以及 /api/air 快照里确实带着它。
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -45,7 +45,8 @@ function fixture({ taskIds = ['t1', 't2', 't3'], file = tempFile() } = {}) {
 test('normalizePins drops blanks and duplicates and stops at the limit', () => {
   assert.deepEqual(normalizePins(null), []);
   assert.deepEqual(normalizePins([' t1 ', '', 't1', 42, 't2']), ['t1', 't2']);
-  assert.equal(normalizePins(['a', 'b', 'c', 'd', 'e', 'f', 'g']).length, PIN_LIMIT);
+  const many = Array.from({ length: PIN_LIMIT + 5 }, (_, i) => `t${i}`);
+  assert.equal(normalizePins(many).length, PIN_LIMIT);
 });
 
 test('toggle 钉上再拔掉，顺序按钉的顺序，落盘后换一个进程实例仍在', () => {
@@ -58,19 +59,22 @@ test('toggle 钉上再拔掉，顺序按钉的顺序，落盘后换一个进程�
   assert.deepEqual(reopened.read(), ['t1']);
 });
 
-test('第 6 个 pin 被拒绝（不是悄悄挤掉最早的那个）', () => {
+test('页头可以 pin 超过 5 个，只在存储安全线拒绝', () => {
   const { runtime } = fixture({ taskIds: ['t1', 't2', 't3', 't4', 't5', 't6'] });
-  for (const id of ['t1', 't2', 't3', 't4', 't5']) runtime.toggle(id);
-  assert.equal(runtime.read().length, PIN_LIMIT);
-  assert.throws(() => runtime.toggle('t6'), { status: 409, code: 'pin_limit_reached' });
-  assert.deepEqual(runtime.read(), ['t1', 't2', 't3', 't4', 't5']);
+  for (const id of ['t1', 't2', 't3', 't4', 't5', 't6']) runtime.toggle(id);
+  assert.deepEqual(runtime.read(), ['t1', 't2', 't3', 't4', 't5', 't6']);
+
+  const ids = Array.from({ length: PIN_LIMIT + 1 }, (_, i) => `x${i}`);
+  const capped = fixture({ taskIds: ids }).runtime;
+  for (const id of ids.slice(0, PIN_LIMIT)) capped.toggle(id);
+  assert.throws(() => capped.toggle(ids.at(-1)), { status: 409, code: 'pin_limit_reached' });
 });
 
-test('已经拔掉的 id 可以再钉回来 —— 满的时候拔一个就有位置', () => {
+test('已经拔掉的 id 可以再钉回来', () => {
   const { runtime } = fixture({ taskIds: ['t1', 't2', 't3', 't4', 't5', 't6'] });
   for (const id of ['t1', 't2', 't3', 't4', 't5']) runtime.toggle(id);
   runtime.toggle('t3');
-  assert.equal(runtime.toggle('t6').length, PIN_LIMIT);
+  assert.equal(runtime.toggle('t6').length, 5);
   assert.deepEqual(runtime.read(), ['t1', 't2', 't4', 't5', 't6']);
 });
 
@@ -87,7 +91,7 @@ test('replace 整份归一：去重、去空、截到上限、剪掉不存在的
   const { runtime } = fixture({ taskIds: ['t1', 't2', 't3', 't4', 't5', 't6'] });
   assert.deepEqual(runtime.replace(['t2', 't2', '', 't2']), ['t2']);
   assert.deepEqual(runtime.replace(['t3', 't1', 't2']), ['t3', 't1', 't2']);
-  assert.equal(runtime.replace(['t1', 't2', 't3', 't4', 't5', 't6']).length, PIN_LIMIT);
+  assert.equal(runtime.replace(['t1', 't2', 't3', 't4', 't5', 't6']).length, 6);
 });
 
 test('HTTP：GET 读、POST 整份替换、toggle 单点，错误码带 status', () => {

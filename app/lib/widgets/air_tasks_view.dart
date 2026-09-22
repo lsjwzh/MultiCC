@@ -87,6 +87,8 @@ enum _DirectoryMode { chat, terminal }
 
 enum _DirectoryTaskStatus { open, all, archived }
 
+enum _DirectoryTaskSort { message, visit }
+
 class _AirTasksViewState extends State<AirTasksView>
     with WidgetsBindingObserver {
   late final AirService _service = AirService(
@@ -116,15 +118,14 @@ class _AirTasksViewState extends State<AirTasksView>
   bool _lastCreateHandedOff = false;
   String? _directoryId;
   String _error = '';
-  bool _loading = false,
-      _submitting = false,
-      _foreground = true;
+  bool _loading = false, _submitting = false, _foreground = true;
   bool _openingTerminal = false;
   bool _creatingTerminal = false;
   bool _showAll = false;
   final _taskSearch = TextEditingController();
   String _taskQuery = '';
   _DirectoryTaskStatus _taskStatus = _DirectoryTaskStatus.open;
+  _DirectoryTaskSort _taskSort = _DirectoryTaskSort.message;
   _AirMode _mode = _AirMode.tasks;
 
   /// 当前目录首页显示哪一类东西。默认 Chat（任务/对话），和 Web 一致；换一个
@@ -169,7 +170,12 @@ class _AirTasksViewState extends State<AirTasksView>
   Future<void> _loadStore() async {
     final store = await AirLocalStore.load();
     if (!mounted) return;
-    setState(() => _store = store);
+    setState(() {
+      _store = store;
+      _taskSort = store.taskSort == 'visit'
+          ? _DirectoryTaskSort.visit
+          : _DirectoryTaskSort.message;
+    });
   }
 
   Future<void> _refresh() async {
@@ -267,8 +273,8 @@ class _AirTasksViewState extends State<AirTasksView>
       title: task?.title ?? t('chatOpeningTask'),
       load: () => _service.openTaskSession(
         taskId,
-        cachedSession: (id) => mgr.sessions
-            .where((session) => session.id == id).firstOrNull,
+        cachedSession: (id) =>
+            mgr.sessions.where((session) => session.id == id).firstOrNull,
       ),
     );
     if (mounted && opened) {
@@ -1109,9 +1115,15 @@ class _AirTasksViewState extends State<AirTasksView>
   ///
   /// 截断而不是按状态过滤，也是照 Web 抄的：那边这份 `tasks` 只按 dirId 过滤，
   /// `!['done','archived'].includes(status)` 那道判断只用在抬头上面那四张统计卡
-  /// 里。行序同样是 `updatedAt` 倒序（[AirSnapshot.tasksOf] 已经排好了）。
+  /// 里。默认按最后消息倒序，也可以切到本机最后访问时间。
   List<AirTask> _visibleTasks(BuildContext context) {
-    final rows = _data?.tasksOf(_directoryId) ?? const <AirTask>[];
+    final rows = (_data?.tasksOf(_directoryId) ?? const <AirTask>[]).toList();
+    rows.sort((a, b) {
+      final primary = _taskSortAt(b).compareTo(_taskSortAt(a));
+      if (primary != 0) return primary;
+      final messages = b.lastMessageAt.compareTo(a.lastMessageAt);
+      return messages != 0 ? messages : a.id.compareTo(b.id);
+    });
     if (_showAll) {
       final needle = _taskQuery.trim().toLowerCase();
       return rows.where((task) {
@@ -1125,6 +1137,45 @@ class _AirTasksViewState extends State<AirTasksView>
       }).toList();
     }
     return rows.take(_recentRowLimit(context)).toList();
+  }
+
+  int _taskSortAt(AirTask task) => _taskSort == _DirectoryTaskSort.visit
+      ? (_store?.visitedAt(task.id) ?? 0)
+      : task.lastMessageAt;
+
+  Widget _taskSortButton(_DirectoryTaskSort value, String label) {
+    final selected = _taskSort == value;
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: InkWell(
+        key: ValueKey('air-task-sort-${value.name}'),
+        onTap: () {
+          if (selected) return;
+          setState(() => _taskSort = value);
+          unawaited(_store?.setTaskSort(value.name));
+        },
+        borderRadius: BorderRadius.circular(7),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.panel : Colors.transparent,
+            borderRadius: BorderRadius.circular(7),
+            boxShadow: selected
+                ? const [BoxShadow(color: Color(0x14274968), blurRadius: 4)]
+                : null,
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? AppColors.accent : AppColors.faint,
+              fontSize: 10.5,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// Web `air.js` 的 `recentRowLimit()`：760px 及以下六行，再宽十行。一行就是一条
@@ -1581,46 +1632,47 @@ class _AirTasksViewState extends State<AirTasksView>
   }
 
   /// 多个 CLI 时装哪个：一问一答，不替用户猜。返回 null = 没选。
-  Future<String?> _pickTerminalCli(List<String> clis) => showModalBottomSheet<String>(
-    context: context,
-    backgroundColor: AppColors.panel,
-    showDragHandle: true,
-    builder: (sheetContext) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
-            child: Text(
-              '用哪个 CLI 开这个终端？',
-              style: TextStyle(
-                color: AppColors.text,
-                fontSize: 14.5,
-                fontWeight: FontWeight.w600,
+  Future<String?> _pickTerminalCli(List<String> clis) =>
+      showModalBottomSheet<String>(
+        context: context,
+        backgroundColor: AppColors.panel,
+        showDragHandle: true,
+        builder: (sheetContext) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
+                child: Text(
+                  '用哪个 CLI 开这个终端？',
+                  style: TextStyle(
+                    color: AppColors.text,
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
-            ),
+              for (final cli in clis)
+                ListTile(
+                  key: ValueKey('air-terminal-cli-$cli'),
+                  dense: true,
+                  leading: const Icon(
+                    Icons.terminal_rounded,
+                    size: 18,
+                    color: AppColors.muted,
+                  ),
+                  title: Text(
+                    cli,
+                    style: const TextStyle(color: AppColors.text, fontSize: 14),
+                  ),
+                  onTap: () => Navigator.of(sheetContext).pop(cli),
+                ),
+              const SizedBox(height: 8),
+            ],
           ),
-          for (final cli in clis)
-            ListTile(
-              key: ValueKey('air-terminal-cli-$cli'),
-              dense: true,
-              leading: const Icon(
-                Icons.terminal_rounded,
-                size: 18,
-                color: AppColors.muted,
-              ),
-              title: Text(
-                cli,
-                style: const TextStyle(color: AppColors.text, fontSize: 14),
-              ),
-              onTap: () => Navigator.of(sheetContext).pop(cli),
-            ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    ),
-  );
+        ),
+      );
 
   Widget _buildTasks(
     AirSnapshot? data,
@@ -1638,7 +1690,10 @@ class _AirTasksViewState extends State<AirTasksView>
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
         children: [
-          AirDirectoryStats(tasks: all),
+          AirDirectoryStats(
+            tasks: all,
+            worktreeCount: directory?.worktreeCount ?? 0,
+          ),
           const SizedBox(height: 22),
           if (directory != null) ...[
             Row(
@@ -1698,12 +1753,36 @@ class _AirTasksViewState extends State<AirTasksView>
                   ],
                 ),
               ),
-              Text(
-                _showAll
-                    ? '${tasks.length} / ${all.length} 个任务'
-                    : '${all.length} 个任务',
-                key: const ValueKey('air-tasks-count'),
-                style: const TextStyle(color: AppColors.faint, fontSize: 11.5),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: AppColors.bgSoft,
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: AppColors.line),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _taskSortButton(_DirectoryTaskSort.message, '消息'),
+                        _taskSortButton(_DirectoryTaskSort.visit, '访问'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _showAll
+                        ? '${tasks.length} / ${all.length} 个任务'
+                        : '${all.length} 个任务',
+                    key: const ValueKey('air-tasks-count'),
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 11.5,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -1812,6 +1891,7 @@ class _AirTasksViewState extends State<AirTasksView>
       key: ValueKey('air-directory-task-${task.id}'),
       task: task,
       showTime: MediaQuery.sizeOf(context).width > 380,
+      timeAt: _taskSortAt(task),
       onTap: () => unawaited(_open(task)),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1832,7 +1912,10 @@ class _AirTasksViewState extends State<AirTasksView>
             key: ValueKey('air-task-details-${task.id}'),
             onPressed: () => unawaited(_openDetails(task)),
             tooltip: '任务详情',
-            icon: const Icon(Icons.info_outline_rounded, color: AppColors.faint),
+            icon: const Icon(
+              Icons.info_outline_rounded,
+              color: AppColors.faint,
+            ),
           ),
           AirTaskRowAction(
             key: ValueKey('air-task-delete-${task.id}'),
@@ -1851,8 +1934,8 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 钉住 / 取消钉住一个任务，清单落在服务端（`air-pins.json`）—— 和 Web 读的
   /// 是同一份，所以手机上钉住的任务在电脑的页头顶上也会出现。
   ///
-  /// 满了不是把按钮变灰：那颗灰按钮什么都不解释。点下去让服务端说话（第 6 个回
-  /// `pin_limit_reached`，文案是「最多只能 Pin 5 个任务」），用户知道该先拔一个。
+  /// 页头标签超出可见宽度时由 Web 的单行横向滚动承接；App 侧仍把同一批
+  /// Pin 放在任务列表最前面，不再设置「最多 5 个」的交互限制。
   Future<void> _togglePin(AirTask task) async {
     final wasPinned = _data?.isPinned(task.id) ?? false;
     try {

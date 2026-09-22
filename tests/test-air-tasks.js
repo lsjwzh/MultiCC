@@ -137,6 +137,49 @@ test('Air list resolves legacy reference directories and never includes provider
   assert.equal(response.tasks[0].workflowStage, 'inbox'); assert.equal(JSON.stringify(response).includes('private'), false);
 });
 
+test('Air exposes message time separately from task metadata update time', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat' }]]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ modules: {}, tasks: { t: { id: 't', chatSessionId: 's', title: 'Task',
+      createdAt: 100, updatedAt: 900, refs: [
+        { sessionId: 's', dirId: 'd1', ts: 300 },
+        { sessionId: 's', dirId: 'd1', ts: 500 },
+      ] } } }),
+    clis: ['codex'], shell: { taskAccess: () => ({ readOnly: false }) } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res);
+  const [task] = JSON.parse(res.body).tasks;
+  assert.equal(task.updatedAt, 900);
+  assert.equal(task.lastMessageAt, 500);
+});
+
+test('Air reports unique worktree counts per directory for manual task cleanup', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  const records = new Map([
+    ['s1', { id: 's1', dirId: 'd1', kind: 'chat', worktreePath: '/repo/.multicc-worktrees/a' }],
+    ['s2', { id: 's2', dirId: 'd1', kind: 'chat', worktreePath: '/repo/.multicc-worktrees/a' }],
+    ['s3', { id: 's3', dirId: 'd1', kind: 'chat', worktreePath: '/repo/.multicc-worktrees/b' }],
+  ]);
+  mountAirRoutes(app, {
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records,
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ modules: {}, tasks: {
+      t1: { id: 't1', chatSessionId: 's1', refs: [{ sessionId: 's1', dirId: 'd1' }] },
+      t2: { id: 't2', dirId: 'd1', worktreePath: '/repo/.multicc-worktrees/c', refs: [] },
+    } }),
+    clis: ['codex'],
+    shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
+  });
+  const res = airResponse();
+  await handlers.get('/api/air')({}, res);
+  assert.equal(JSON.parse(res.body).directories[0].worktreeCount, 3,
+    'duplicate record paths count once; detached task worktrees still count');
+});
+
 test('Air lists and pins hide unseparated tasks across decisions and restarts, then show the same identity after separation', async t => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const { createTaskShellRuntime } = require('../src/task-shell/runtime');

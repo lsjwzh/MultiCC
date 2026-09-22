@@ -6,7 +6,6 @@ import '../../services/air_service.dart';
 import '../../services/attachment_picker.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
-import '../../utils/status_presentation.dart';
 import '../marquee_text.dart';
 import '../voice_input_button.dart';
 import 'air_role_editor.dart';
@@ -256,7 +255,7 @@ class _DirectoryCard extends StatelessWidget {
                       directory.external
                           ? '共享工作区'
                                 '${directory.interactive ? '' : ' · 授权已失效'}'
-                          : '${tasks.length} 个任务 · $active 个未完成',
+                          : '${tasks.length} 个任务 · $active 个未完成 · ${directory.worktreeCount} 个 Worktree',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -328,6 +327,7 @@ class AirTaskTile extends StatelessWidget {
     required this.onTap,
     this.directoryName = '',
     this.showTime = false,
+    this.timeAt,
     this.trailing,
     this.selected = false,
   });
@@ -341,6 +341,10 @@ class AirTaskTile extends StatelessWidget {
 
   /// 行尾时间。控制台按更新时间排序，时间本身就是排序依据，要看得见。
   final bool showTime;
+
+  /// Optional clock selected by the containing list (message or local visit).
+  /// Other lists keep their existing task metadata time by leaving this null.
+  final int? timeAt;
   final Widget? trailing;
   final bool selected;
 
@@ -350,9 +354,11 @@ class AirTaskTile extends StatelessWidget {
     final subtitle = [
       if (directoryName.isNotEmpty) directoryName,
       if (detail.isNotEmpty) detail,
+      if ((task.resource['path']?.toString() ?? '').isNotEmpty)
+        'WT${(task.resource['branch']?.toString() ?? '').isNotEmpty ? ' · ${task.resource['branch']}' : ''}',
       if (task.readOnly) '只读记录',
     ].join(' · ');
-    final time = showTime ? airTaskTime(task.updatedAt) : '';
+    final time = showTime ? airTaskTime(timeAt ?? task.updatedAt) : '';
     return Material(
       color: AppColors.panel,
       borderRadius: BorderRadius.circular(AppColors.radiusCard),
@@ -490,9 +496,14 @@ class AirStatusBadge extends StatelessWidget {
 /// （任务/未完成/执行中/待回答），同一份快照在 Web 和 App 上会得出四个不同的
 /// 数字，看上去像两套后端。
 class AirDirectoryStats extends StatelessWidget {
-  const AirDirectoryStats({super.key, required this.tasks});
+  const AirDirectoryStats({
+    super.key,
+    required this.tasks,
+    this.worktreeCount = 0,
+  });
 
   final List<AirTask> tasks;
+  final int worktreeCount;
 
   @override
   Widget build(BuildContext context) {
@@ -512,11 +523,7 @@ class AirDirectoryStats extends StatelessWidget {
         detail: '${running.length} 个正在执行',
         tone: _StatTone.blue,
       ),
-      _StatTile(
-        label: '计划任务',
-        value: '${planned.length}',
-        detail: '待开始或继续规划',
-      ),
+      _StatTile(label: '计划任务', value: '${planned.length}', detail: '待开始或继续规划'),
       _StatTile(
         label: '已完成',
         value: '$done',
@@ -526,13 +533,14 @@ class AirDirectoryStats extends StatelessWidget {
       _StatTile(
         label: '全部记录',
         value: '${tasks.length}',
-        detail: '$archived 个已归档',
+        detail: '$archived 个已归档 · $worktreeCount 个 WT',
       ),
     ];
     // Web `air.css` 的 `@media (max-width: 1040px)` 把 `#directory-stats` 从四列
     // 改成两列 —— 手机上四张卡挤成一排，副标题会被截成「待开始或继…」，那行字
     // 正是这张卡要说的意思。断点跟着 Web 走，两端的列数就不会分岔。
-    if (MediaQuery.sizeOf(context).width > 1040) return Row(children: _spread(tiles));
+    if (MediaQuery.sizeOf(context).width > 1040)
+      return Row(children: _spread(tiles));
     return Column(
       children: [
         Row(children: _spread(tiles.sublist(0, 2))),
@@ -907,8 +915,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                           ? null
                           : () => setState(() => _attachments.remove(file)),
                     ),
-                  if (_uploading)
-                    const _FileChip(label: '上传中…', busy: true),
+                  if (_uploading) const _FileChip(label: '上传中…', busy: true),
                   if (_attachError.isNotEmpty)
                     _FileChip(label: _attachError, failed: true),
                 ],
@@ -1158,9 +1165,7 @@ class _Pill extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(AppColors.radiusPill),
-          border: Border.all(
-            color: active ? AppColors.accent : AppColors.line,
-          ),
+          border: Border.all(color: active ? AppColors.accent : AppColors.line),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1201,10 +1206,7 @@ class _LimitField extends StatelessWidget {
   Widget build(BuildContext context) => Row(
     mainAxisSize: MainAxisSize.min,
     children: [
-      Text(
-        label,
-        style: const TextStyle(color: AppColors.muted, fontSize: 12),
-      ),
+      Text(label, style: const TextStyle(color: AppColors.muted, fontSize: 12)),
       const SizedBox(width: 6),
       SizedBox(
         width: 72,

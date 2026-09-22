@@ -1281,6 +1281,7 @@ test('live UI renders token and timing nodes through textContent only', () => {
   assert.match(line.title, /非会话累计/);
   assert.match(line.title, /<img onerror=boom>/, 'tooltip remains inert text');
   const timing = fixture.liveUi.buildTimingLine({ ts: 1_700_000_000_000, durationMs: 1234 });
+  assert.match(timing.children[0].textContent, /🕰 2023-/, 'a prior-year reply includes its date');
   assert.equal(timing.children.at(-1).textContent, '⏱ 1.2s');
 });
 
