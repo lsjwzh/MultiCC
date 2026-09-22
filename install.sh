@@ -2,11 +2,11 @@
 # ============================================================================
 # MultiCC — One-Click Installer (standalone package)
 # ============================================================================
-# MultiCC version  2.0.4
+# MultiCC version  2.0.5
 # Release channel  stable — see https://github.com/lsjwzh/MultiCC/releases
 # ============================================================================
 # Usage — stable release, no flags needed:
-#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.5/install.sh | bash
 #
 # Usage — newest release instead of this pinned one:
 #   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- --version latest
@@ -21,7 +21,7 @@
 #
 # Options:
 #   --dir <path>        Install into this directory (default: ~/MultiCC)
-#   --version <v>       Release to install: v2.0.4 (default) or "latest"
+#   --version <v>       Release to install: v2.0.5 (default) or "latest"
 #   --token <xxx>       Pre-set ACCESS_TOKEN (default: auto-generate)
 #   --port <port>       Server port (default: 3000)
 #   --from <path|url>   Install from a local archive/directory or URL instead
@@ -75,7 +75,7 @@ gen_token() {
 }
 
 # MultiCC version — keep in sync with package.json when cutting a release
-INSTALLER_VERSION="2.0.4"
+INSTALLER_VERSION="2.0.5"
 
 # ── Parse flags ──────────────────────────────────────────────────────────
 INSTALL_DIR=""
