@@ -37,17 +37,13 @@
   let pinSignature = '';
   let directoryId = initialParams.get('dir');
   let taskId = initialParams.get('task');
-  window.addEventListener('multicc-air-task-open', event => {
-    const opened = event.detail;
-    // The lightweight /open response supplies configuration immediately. Ask
-    // the detail endpoint for the task and attribution summary as well, so
-    // reopening a task from an admin view updates the header and delivery card
-    // without pretending the lightweight response is a full task record.
-    if (opened?.taskId === taskId) {
-      void refreshEntry();
-    }
-    syncFrame();
-  });
+  // The lightweight /open response already carries identity and configuration
+  // (see air-task-entry.js), which is what the header and the AI/Role buttons
+  // need. Deliberately no refreshEntry() here: open() fires on every navigate(),
+  // and pulling the full detail — 3.5MB of transcript on a long task — would
+  // undo the conditional-get path. The detail endpoint is asked when the user
+  // expands the details panel, or when the header refresh button is pressed.
+  window.addEventListener('multicc-air-task-open', () => { syncFrame(); });
   let entry = null;
   let mode = modeFrom(initialParams);
   let scheduleTasks = [];
