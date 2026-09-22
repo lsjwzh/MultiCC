@@ -163,7 +163,16 @@ void main() {
       );
 
       await tester.tap(find.text(t('clearCtx')));
-      await tester.pumpAndSettle();
+      // 这里不能用 pumpAndSettle：头部的模型胶囊是跑马灯（model_chip.dart 的
+      // MarqueeText），而测试字体每个字形都是等宽的方块，`官方 Provider | 默认
+      // | medium` 必然超过它 220px 的上限 —— 溢出就 repeat(reverse: true)，ticker
+      // 永远不停，pumpAndSettle 只会等到超时。真实字体下这句话装得下，跑马灯不
+      // 跑，所以这只是测试字体的产物，不是头部在空转。
+      //
+      // 要断言的只是那两项菜单在不在，菜单项在 push 的第一帧就建好了：两帧
+      // （一帧建路由、一帧走完入场动画）足够。
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
       // 回归点：这两项此前要么缺失、要么被写成一整行转义注释（永远不渲染）。
       expect(find.text(t('rotateNativeContext')), findsOneWidget);
