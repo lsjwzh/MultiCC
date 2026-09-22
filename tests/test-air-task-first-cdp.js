@@ -1054,8 +1054,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     entry.attribution = successAttribution;
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?task=tsk_a&dir=d1');
-    assert.ok(await page.waitFor(`document.getElementById('task-state').textContent.includes('归属待核验')`));
     await page.waitFor(`${frame}?.URL.includes('session=task-a') && ${frame}.readyState==='complete'`);
+    // 上面这三段是任务自己的状态，导航时就知道；第三段是附注，来自交付核验，而
+    // 导航按契约只核验轻量绑定 —— 含审计历史的详情要么等用户展开详情面板，要么等
+    // 用户按页头的 ↻（那条路给 refresh() 传 entry:true）。这里按 ↻：这正是真实用户
+    // 看到这条附注要做的动作，而且不开详情面板，下面量到的页头几何和只导航时一致
+    // （第三段该让位就让位，正是这一段要守的东西）。
+    await page.evaluate(`document.getElementById('refresh').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('task-state').textContent.includes('归属待核验')`));
     assert.equal(await page.evaluate(`getComputedStyle(document.querySelector('#task-state .ts-attr')).display!=='none'`), true, '桌面上「归属待核验」留着');
     for (const width of [390, 360, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
