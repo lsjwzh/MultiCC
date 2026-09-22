@@ -30,15 +30,28 @@
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  // 侧栏那张固定卡片是常驻的，所以计数不能等用户点开面板才从 0 变成真值 —— 开页就
+  // 取一次元数据（只有名字/备注/时间，不含值）。面板本身仍然按需加载。
+  // 失败时不写 0：卡片上的「0」会被读成「保险箱是空的」，而它其实是「没问到」。
+  async function refreshSecretCount() {
+    const badge = document.getElementById('nav-secrets-count');
+    try {
+      const entries = await api.json('/api/secrets' + qs('?'));
+      if (badge) badge.textContent = String(entries.length);
+      return entries;
+    } catch (err) {
+      if (badge) badge.textContent = '—';
+      throw err;
+    }
+  }
+
   async function loadSecrets() {
     const list = document.getElementById('secrets-list');
     if (!list) return;
     try {
-      const entries = await api.json('/api/secrets' + qs('?'));
+      const entries = await refreshSecretCount();
       const cnt = document.getElementById('secrets-count');
       if (cnt) cnt.textContent = entries.length ? `(${entries.length})` : '';
-      const nav = document.getElementById('nav-secrets-count');
-      if (nav) nav.textContent = entries.length;
       if (!entries.length) {
         list.innerHTML = '<div style="color:var(--faint);font-size:13px;">保险箱是空的。用上方表单添加，或在聊天里让 agent 调用 request_secret_input 弹安全输入框。</div>';
         return;
@@ -147,4 +160,11 @@
 
   window.loadSecrets = loadSecrets;
   window.secretsSave = secretsSave;
+  window.refreshSecretCount = refreshSecretCount;
+
+  // 卡片一进页面就要有数，不能等用户先去点一次「敏感信息」。这里的失败只影响那
+  // 一个数字（面板打开时还能再报一次错），所以吞掉，别在开页时弹一个红色 toast。
+  const boot = () => { refreshSecretCount().catch(() => {}); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
 })();

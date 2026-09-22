@@ -118,6 +118,36 @@
     .nav-item .badge{margin-left:auto;font-family:var(--mono);font-size:10px;padding:1px 7px;border-radius:20px;background:rgba(255,255,255,.07);color:var(--muted)}
     .nav-item.active .badge{background:rgba(58,214,197,.22);color:var(--accent)}
 
+    /* ── Pinned vault entry ──
+       保险箱不是「某一组功能里的一个开关」，它是控制中心里唯一会改变子进程 spawn
+       环境的一份配置（条目按同名环境变量注入），所以它不排进任何分组列表，而是
+       固定钉在 .brand 与 #nav-scroll 之间：无论列表滚到哪、无论窗口多矮，进门第一
+       眼就是它。做成卡片而不是普通 nav-item，是因为列表里的每一项都长一样，靠位置
+       区分不出「这条和别的不是一类」。 */
+    .nav-pinned{
+      flex:0 0 auto;display:flex;align-items:center;gap:10px;
+      margin:0 0 6px;padding:8px 10px;
+      border:1px solid var(--accent-line);border-radius:11px;
+      background:
+        radial-gradient(220px 60px at 0 50%,rgba(58,214,197,.12),transparent 75%),
+        linear-gradient(100deg,rgba(106,163,255,.08),rgba(58,214,197,.04));
+      transition:border-color .15s,background .15s;
+    }
+    .nav-pinned:hover{border-color:var(--accent);color:var(--text);
+      background:
+        radial-gradient(220px 60px at 0 50%,rgba(58,214,197,.18),transparent 75%),
+        linear-gradient(100deg,rgba(106,163,255,.12),rgba(58,214,197,.07));}
+    .nav-pinned:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    /* 固定卡片没有列表的水平出血区，左边那条 accent 竖条会贴在卡片边框上 —— 关掉，
+       选中态交给卡片自己的边框和底色表达。 */
+    .nav-pinned.active::before{display:none}
+    .nav-pinned.active{border-color:var(--accent);background:var(--accent-dim);color:var(--text)}
+    .nav-pinned .ic{width:20px;font-size:15px;opacity:1}
+    .nav-pinned .np-copy{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+    .nav-pinned .np-title{font-size:13px;font-weight:680;line-height:1.25}
+    .nav-pinned .np-sub{font-size:10.5px;font-weight:400;color:var(--muted);line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .nav-pinned .badge{margin-left:0}
+
     /* margin-top:auto is gone: .nav-foot no longer has to fight the nav item
        list for free space — .nav-bottom is pinned by the flex column instead. */
     .nav-foot{padding-top:14px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:6px}
@@ -803,13 +833,23 @@
       </div>
     </a>
 
+    <!-- 保险箱入口：钉在列表之上、不参与滚动（见 .nav-pinned 的注释）。 -->
+    <button class="nav-item nav-pinned" data-view="secrets" onclick="setView('secrets')"
+            data-i18n-title="secretsVaultHint" title="存放 API key、token 等敏感信息；值只存本地保险箱，不经对话与 LLM，并以同名环境变量注入子进程。">
+      <span class="ic" aria-hidden="true">🔐</span>
+      <span class="np-copy">
+        <span class="np-title" data-i18n="secretsVaultTitle">敏感信息</span>
+        <span class="np-sub" data-i18n="secretsVaultShortHint">注入子进程环境变量</span>
+      </span>
+      <span class="badge" id="nav-secrets-count" data-i18n-title="secretsVaultCountHint" title="保险箱条目数">0</span>
+    </button>
+
     <!-- Middle region: the ONLY part that scrolls. Must carry min-height:0 so it
          can shrink below its content height inside the flex column, otherwise it
          pushes .nav-bottom (restart/logout) out of the viewport on phones. -->
     <div id="nav-scroll">
     <div class="nav-label" data-i18n="workspace">Workspace</div>
     <button class="nav-item active" data-view="overview" onclick="setView('overview')"><span class="ic">◧</span> <span>工作目录与任务</span> <span class="badge" id="nav-dir-count">0</span></button>
-    <button class="nav-item" data-view="secrets" onclick="setView('secrets')"><span class="ic">🔐</span> <span>敏感信息</span> <span class="badge" id="nav-secrets-count">0</span></button>
     <!-- Cron sits with Overview, not under Settings: it is scheduled work that
          spawns sessions, so it belongs with the live view of what is running
          rather than with the config panes. -->

@@ -37,9 +37,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 是因为当天的发版跑在更早的 Docker clean-install 就挂了，根本没走到 npm test。
   // air.js 在 e8741e73 撤掉「打开对话重复取一次详情」后回到 3040，仍然超。
   // 天花板同样是各自已提交的高水位，拆分哪个就压哪个，落到 <= target 时删掉这条。
+  // 保险箱页头（adminHeadings 加一条 secrets，页头才不会掉出原始 key）本该把这行加
+  // 回去，但闸只认字节不认「这条该不该有」：就地压掉同区几行注释的赘语把这笔抵掉了，
+  // 于是高水位继续往下走到 3039/163299。
   'public/air.js': Object.freeze({
-    ceiling: 3040,
-    byteCeiling: 163313,
+    ceiling: 3039,
+    byteCeiling: 163299,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -78,9 +81,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // = +18 行，正好越过上一轮压住的 5234/318056 高水位（0e3e10aa 时还严丝合缝地
   // 等于天花板）；同一个提交也是 public/air.js 与 src/chat/turn-engine.js 越线的
   // 那次，一并按当前高水位重新登记。
+  // 保险箱入口「属于环境变量，不埋在某一组功能里」这次补 4 条键（中英各 4 行 =
+  // +8 行）：secretsVaultEntry / secretsVaultShortHint（侧栏卡片副行与 Air 设置卡
+  // 说明共用一句）/ secretsVaultCountHint / airAdminPanelSecrets。按测试自己的
+  // countLines 量法（split(/\n/).length）对齐到当前高水位。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 5252,
-    maxBytes: 318905,
+    maxLines: 5260,
+    maxBytes: 319375,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

@@ -53,8 +53,9 @@ test('native Air registry and compatibility panels preserve every former manage 
   assert.match(admin, /service-dialog/);
   assert.match(admin, /embed=air/);
   // 分组标题现在存的是 key（显示文案查词典，className 判定也比这个 key），
-  // 但「四组、顺序、每组装哪些面板」这条结构不能变。
-  assert.match(admin, /const settingGroups = \[[\s\S]*?\['airAdminGroupFeatured', \['docs', 'memory', 'taskgraph'\]\]/);
+  // 但「四组、顺序、每组装哪些面板」这条结构不能变 —— 保险箱是有意插在第一组最前面
+  // 的那一条：它是子进程环境变量，不归任何一组功能。
+  assert.match(admin, /const settingGroups = \[[\s\S]*?\['airAdminGroupFeatured', \['secrets', 'docs', 'memory', 'taskgraph'\]\]/);
   assertLocalized(admin, 'public/air-admin.js', 'airAdminGroupFeatured', '重要功能', "make\\('h3', t\\(title\\)\\)");
   assert.match(admin, /air-settings-feature-group/);
   assert.match(read('public/manage.html'), /manage-air-embed\.css/);

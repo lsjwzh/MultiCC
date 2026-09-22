@@ -11,6 +11,13 @@
     return value;
   };
   const legacyPanels = {
+    // 保险箱在 Air 里排在最前：它不是「某一组功能里的一个开关」，而是控制中心里唯一
+    // 会改变子进程 spawn 环境的一份配置（条目按同名环境变量注入），所以它既在设置
+    // 中心的第一组、也在控制台工具格的第一格 —— 手机上一眼就能找到。（App 侧的设置
+    // 页同一条规矩。）
+    // 新加一栏 legacy 面板要同时去 air.js 的 adminHeadings 补同名页头，否则页头会把
+    // mode 原样显示出来（显示成 secrets，而不是「敏感信息」）。
+    secrets: [t('airAdminPanelSecrets'), t('secretsVaultShortHint'), 'SECRETS'],
     docs: [t('airAdminPanelDocs'), t('airAdminPanelDocsDesc'), 'DOCS'],
     memory: [t('airAdminPanelMemory'), t('airAdminPanelMemoryDesc'), 'MEMORY'],
     taskgraph: [t('airAdminPanelTaskgraph'), t('airAdminPanelTaskgraphDesc'), 'TASKGRAPH'],
@@ -31,7 +38,7 @@
   // 分组标题原来既当显示文案、又当 renderSettings 里拼 className 的比较值（'重要功能'）。
   // 现在这里存 i18n key：显示文案由 t() 查，className 判定也改比这个 key。
   const settingGroups = [
-    ['airAdminGroupFeatured', ['docs', 'memory', 'taskgraph']],
+    ['airAdminGroupFeatured', ['secrets', 'docs', 'memory', 'taskgraph']],
     ['airAdminGroupAi', ['provider', 'aux', 'goal', 'voice', 'global']],
     ['airAdminGroupConnect', ['push', 'tunnel', 'bridges']],
     ['airAdminGroupStorage', ['resources', 'skillsync', 'storage']],
@@ -425,6 +432,7 @@
     toolHead.firstChild.append(make('span', 'SYSTEM TOOLS', 'eyebrow'), make('h3', t('airAdminServicesAndSettings')));
     const toolGrid = make('div', null, 'admin-tool-grid');
     const shortcuts = [
+      ['secrets', '🔐', t('airAdminPanelSecrets'), t('secretsVaultShortHint')],
       ['docs', '▤', t('airAdminPanelDocs'), t('airAdminPanelDocsDesc')],
       ['memory', '◇', t('airAdminPanelMemory'), t('airAdminMemoryShortDesc')],
       ['taskgraph', '⛓', t('airAdminPanelTaskgraph'), t('airAdminTaskgraphShortDesc')],
