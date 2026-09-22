@@ -31,6 +31,22 @@ const MIGRATION_DEBT = Object.freeze({
     byteCeiling: 121973,
     target: 3000,
   }),
+  // public/air.js 和 src/chat/turn-engine.js 都在 0f276ebc（session
+  // multicc-claude-chat-06，2026-09-22T09:20）越过 3000：前者 3000 -> 3044，后者
+  // 2997 -> 3002，两个都没回来登记，于是这道闸在 main 上红了。之所以没人发现，
+  // 是因为当天的发版跑在更早的 Docker clean-install 就挂了，根本没走到 npm test。
+  // air.js 在 e8741e73 撤掉「打开对话重复取一次详情」后回到 3040，仍然超。
+  // 天花板同样是各自已提交的高水位，拆分哪个就压哪个，落到 <= target 时删掉这条。
+  'public/air.js': Object.freeze({
+    ceiling: 3040,
+    byteCeiling: 163313,
+    target: 3000,
+  }),
+  'src/chat/turn-engine.js': Object.freeze({
+    ceiling: 3002,
+    byteCeiling: 144512,
+    target: 3000,
+  }),
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
   // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,
   // plus handleAuxHealth and the synchronous auxConnect init) into
@@ -62,9 +78,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 目录首页的 Chat / Terminal 切换补 10 条键（airModeChat/Terminal、
   // airTerminals* 、airNewTerminal*），双语各 10 行 = +20 行；数字按测试自己的
   // countLines 量法对齐。App 页内加载补 3 条键（中英共 6 行）。
+  // 0f276ebc（session multicc-claude-chat-06，2026-09-22T09:20）又补 9 条键 × 中英
+  // = +18 行，正好越过上一轮压住的 5234/318056 高水位（0e3e10aa 时还严丝合缝地
+  // 等于天花板）；同一个提交也是 public/air.js 与 src/chat/turn-engine.js 越线的
+  // 那次，一并按当前高水位重新登记。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 5234,
-    maxBytes: 318056,
+    maxLines: 5252,
+    maxBytes: 318905,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
