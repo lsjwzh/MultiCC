@@ -1115,11 +1115,8 @@ function createChatTurnEngine(deps) {
         });
       }
     }
-    // Preserve the old host ordering without mutating a duplicate delivery: when
-    // no WS state exists, Claude allocates its UUID during accepted preparation,
-    // before deciding first-vs-resume. This future allocation is the only extra
-    // native-history proof admitted here; Codex and existing chat states continue
-    // to require an already persisted native session id.
+    // Preserve legacy Claude admission without mutating duplicate deliveries.
+    // Exp and existing chat states require persisted native-history proof.
     const willAllocateClaudeNativeSession = !existingCs && turnCli === 'claude' && !persisted.cliSessionId;
     const inheritedLineage = opts.originContinue === true
       && existingCs && existingCs._continuationLineage
@@ -1312,13 +1309,13 @@ function createChatTurnEngine(deps) {
     // A real (non-auto-continue) message means the user/trigger is driving again →
     // reset the D auto-continue guard so a future background-wait gets fresh budget.
     if (!originContinue || directUserInput) { waitInjector.resetAuto(sessionName); waitInjector.resetBg(sessionName); waitInjector.resetInterrupted(sessionName); waitInjector.resetBgResult(sessionName); }
-    // Ensure session-level state exists even when no WS client is connected.
+    // CLI switches retain WS state, so allocate native identity independently.
+    if ((turnRequest.cli === 'claude' || turnRequest.cli === 'claude-exp') && !persisted.cliSessionId) {
+      persisted.cliSessionId = crypto.randomUUID();
+      savePersistedSessionsBestEffort('runtime.chat-session-id-allocate');
+    }
     if (!cs) {
       const csCli = persisted.cli || 'claude';
-      if (csCli === 'claude' && !persisted.cliSessionId) {
-        persisted.cliSessionId = crypto.randomUUID();
-        savePersistedSessionsBestEffort('runtime.chat-session-id-allocate');
-      }
       const hist = initialHistory || loadChatHistory(sessionName);
       cs = {
         clients: new Set(),
