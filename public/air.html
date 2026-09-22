@@ -403,6 +403,11 @@
         <h2><span data-i18n="airConsole">控制台</span> <span id="console-here"></span></h2>
       </div>
       <div id="console-actions"></div>
+      <!-- 敏感信息固定在控制台的顶栏上，不折进下面的工具格：它管的不是某一组功能里
+           的开关，而是子进程的 spawn 环境（条目按同名环境变量注入），所以要跟「返回
+           任务」并列、随时一眼可见。data-air-view 由 air.js 统一接线（setMode 会顺手
+           收掉这层浮层，落到保险箱整页）。窄屏只留 🔐，名字回到 aria-label。 -->
+      <button id="console-secrets" type="button" data-air-view="secrets" aria-label="敏感信息" data-i18n-aria-label="airAdminPanelSecrets">🔐 <span data-i18n="airAdminPanelSecrets">敏感信息</span></button>
       <button id="console-close" type="button" data-i18n="airBackToTask">返回任务</button>
     </header>
     <div id="console-body"><div id="console-content" aria-live="polite"></div></div>
@@ -536,6 +541,44 @@
   <!-- 外网穿透是 Air 原生页：国内 SakuraFrp / 海外 Tailscale 分流与全部操作
        都在这里完成，不再嵌入旧 manage 页面。要先于 air-admin.js 注册。 -->
   <script src="air-tunnel.js"></script>
+  <!-- 敏感信息同理，也是 Air 原生页（原生 DOM，不嵌旧 manage 页）：列表只取元数据，
+       明文值只在点「显示」时单条读回。同样要先于 air-admin.js 注册。 -->
+  <script src="air-secrets.js"></script>
+  <!-- 语音那一格的「全局实时语音 Gateway」小卡复用旧页那个模块：它本来就是纯 id 驱动
+       （读 #qwen-audio-key 那几个输入框、往 #qwen-audio-global 里画），initialize()
+       只是设一下 notify 再 loadPanel()，重画面板时再调一次 loadPanel() 即可，不会
+       重复绑事件。它自己不自动跑，所以提前加载没有副作用。 -->
+  <script src="manage-qwen-audio.js"></script>
+  <!-- 消息桥接同理：五个平台（微信/飞书/Telegram/Discord/Slack）的网关生命周期、
+       SSE 日志流、扫码轮询共 800 多行都在 manage-bridges.js 里，而且它全是按 id 找
+       元素的（`_bid(p, suffix)`）。Air 这边把同一套 id 的骨架画出来再调
+       MultiCCManageBridges.initialize() 即可，不重写。它自己不自动跑。 -->
+  <script src="manage-bridges.js"></script>
+  <!-- 剩下这批是从旧 manage 页逐格搬过来的原生面板，一个 mode 一个文件。
+       air-admin.js 里那张 nativePanels 表按同一批名字取模块（读不到就退回 iframe），
+       所以这些脚本同样必须排在 air-admin.js 前面。 -->
+  <!-- 记忆图谱与任务图谱这两格不重写画布：力导向渲染、拖拽/缩放/平移、树状瀑布、
+       记忆文件编辑器都在各自模块里（model 提供取数，graph 画网络，controller 管树
+       与编辑）。Air 的面板负责把同一套 id 的骨架和样式画出来再调它们。model 必须先
+       于 graph/controller —— 后两个在 IIFE 期就要求 root.MultiCCMemoryModel 存在。
+       api-client.js 也必须在 model 之前：memory-model 在 IIFE 期就把 root.MultiCCApi
+       收进闭包，晚一步补全局是无效的（页面在此之前一直没有它，面板只能自己现补一个
+       与 api-client 契约对齐的桩 —— 与其维护两份，不如把真客户端引进来）。 -->
+  <script src="api-client.js"></script>
+  <script src="memory-model.js"></script>
+  <script src="memory-graph.js"></script>
+  <script src="memory-controller.js"></script>
+  <script src="task-graph.js"></script>
+  <script src="air-memory.js"></script>
+  <script src="air-taskgraph.js"></script>
+  <script src="air-voice.js"></script>
+  <script src="air-goal.js"></script>
+  <script src="air-global.js"></script>
+  <script src="air-push.js"></script>
+  <script src="air-bridges.js"></script>
+  <script src="air-resources.js"></script>
+  <script src="air-skillsync.js"></script>
+  <script src="air-storage.js"></script>
   <!-- 状态注册表要先于 air-admin.js：任务行的徽标和「在不在跑」的判定都由它出。 -->
   <script src="status-presentation.js"></script>
   <script src="air-admin.js"></script>
