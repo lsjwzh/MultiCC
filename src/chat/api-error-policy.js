@@ -24,6 +24,7 @@ const TRANSIENT = new Set(['rate_limit', 'provider_transient', 'network', 'timeo
 const TRUSTED_TEXT_SOURCES = new Set([
   'anthropic_event',
   'claude_result',
+  'claude-exp_event',
   'codex_event',
   'opencode_event',
   'qoder_result',
@@ -414,6 +415,7 @@ function textFallbackCategory(message) {
   if (/context (?:window|length)|too many tokens|maximum context|max(?:imum)? output tokens?|token limit/.test(text)) return 'context_token_limit';
   if (/invalid tool|tool (?:schema|arguments?|protocol)|mcp (?:error|failed)|function (?:arguments?|call) error/.test(text)) return 'tool_protocol';
   if (/cancelled by user|canceled by user|server (?:is )?shutting down|sigterm|sigint/.test(text)) return 'cancel_shutdown';
+  if (/invalid session id\. must be a valid uuid\b/.test(text)) return 'adapter_configuration';
   if (/provider (?:config|configuration).*(?:missing|invalid)|missing (?:provider|base url)|cli not installed|spawn failed|\b(?:eacces|enoent|enoexec)\b|\bexit(?:ed)?(?:\s+(?:code|status))?\s*[:=]?\s*-13\b/.test(text)) return 'adapter_configuration';
   if (/etimedout|timed? out|timeout|deadline exceeded|response stalled|stream idle/.test(text)) return 'timeout';
   if (/enotfound|dns|tls|certificate|econnreset|connection reset|connection closed|connection ?refused|unable to connect|socket hang|network error|fetch failed|stream disconnected/.test(text)) return 'network';
@@ -795,6 +797,9 @@ function retryNotice(decision) {
   const causeNotice = cause
     ? `根因：${cause}${parameter}${/[。.!?！？]$/.test(cause) && !parameter ? '' : '。'}`
     : '';
+  if (error.category === 'adapter_configuration') {
+    return `CLI 或适配器配置错误，未自动重试。${causeNotice}${error.userAction}`;
+  }
   if (decision.action === 'retry') {
     const seconds = Math.max(1, Math.ceil((decision.delayMs || 0) / 1000));
     return `上游 API 暂时不可用，将在 ${seconds} 秒后进行受控重试（${decision.attempt}/${error.maxAttempts}）。${causeNotice}`;
