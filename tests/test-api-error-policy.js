@@ -153,6 +153,22 @@ test('Claude invalid native UUID is a local configuration failure, not a retryab
   assert.equal(normalizeApiError({ source: 'user_text', message }).category, 'unknown');
 });
 
+test('Claude native session collisions are local failures and never retry as API outages', () => {
+  const message = 'Claude Code process exited with code 1. stderr: Error: Session ID 05de20f7-563a-4d09-af34-b748c7b189ca is already in use.';
+  for (const source of ['claude_result', 'claude-exp_event', 'process_stderr']) {
+    const result = decide({ source, provider: 'claude-exp', code: 'provider_error', message });
+    assert.equal(result.error.category, 'adapter_configuration');
+    assert.equal(result.error.retryable, false);
+    assert.equal(result.action, 'fail_fast');
+    assert.match(retryNotice(result), /CLI 或适配器配置错误，未自动重试/);
+    assert.doesNotMatch(retryNotice(result), /上游 API/);
+  }
+  for (const source of ['user_text', 'tool_result', 'assistant_text']) {
+    assert.equal(normalizeApiError({ source, message }).category, 'unknown');
+  }
+  assert.equal(normalizeApiError({ source: 'process_stderr', message: 'Address is already in use' }).category, 'unknown');
+});
+
 test('missing Claude native history never repeats a doomed resume as an API retry', () => {
   const message = 'No conversation found with session ID: [ID]';
   for (const source of ['claude_result', 'claude-exp_event', 'process_stderr']) {
