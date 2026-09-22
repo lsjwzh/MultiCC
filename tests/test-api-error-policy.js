@@ -153,6 +153,18 @@ test('Claude invalid native UUID is a local configuration failure, not a retryab
   assert.equal(normalizeApiError({ source: 'user_text', message }).category, 'unknown');
 });
 
+test('missing Claude native history never repeats a doomed resume as an API retry', () => {
+  const message = 'No conversation found with session ID: [ID]';
+  for (const source of ['claude_result', 'claude-exp_event', 'process_stderr']) {
+    const result = decide({ source, provider: 'claude-exp', code: 'error_during_execution', message });
+    assert.equal(result.error.category, 'adapter_configuration');
+    assert.equal(result.error.retryable, false);
+    assert.equal(result.action, 'fail_fast');
+    assert.doesNotMatch(retryNotice(result), /上游 API/);
+  }
+  assert.equal(normalizeApiError({ source: 'user_text', message }).category, 'unknown');
+});
+
 test('vendor CLI login-required text classifies as auth and never auto-retries', () => {
   // WorkBuddy (codebuddy) with no /login session answers every turn with a
   // stream-json result whose only detail lives in errors[] — the message field
