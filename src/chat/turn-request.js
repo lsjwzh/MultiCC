@@ -120,7 +120,10 @@ function normalizeTurnRequest(input) {
   // resume: resuming needs a live native session, and only the engine knows at
   // spawn time whether one still exists. Pinning it was how a dispatch whose
   // native session had been rotated away wedged in the FIFO forever.
-  const isFirstTurn = turnCount === 0 || !hasNativeSession;
+  // Exp can write native history before a cancelled/max-turns run produces any
+  // successful reply. Recreating that UUID would fail with "already in use".
+  const isFirstTurn = cli === 'claude-exp'
+    ? !hasNativeSession : turnCount === 0 || !hasNativeSession;
 
   const originDispatchId = cleanId(input.originDispatchId, 'originDispatchId');
   const originTrigger = input.originTrigger === true;

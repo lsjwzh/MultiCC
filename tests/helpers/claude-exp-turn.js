@@ -6,7 +6,7 @@ const { createClaudeExpAdapter } = require('../../src/cli-adapters/claude-exp');
 
 // Drive the real host through admission, context composition, and adapter argv.
 // Stop at buildInvocation, before any provider attempt or process can start.
-module.exports = function prepareTurn({ record, cwd, history = [], connected = false, text = 'hello' }) {
+module.exports = function prepareTurn({ record, cwd, history = [], connected = false, text = 'hello', goalLimits }) {
   const noop = () => {};
   const ok = () => ({ ok: true });
   let prepared;
@@ -42,7 +42,7 @@ module.exports = function prepareTurn({ record, cwd, history = [], connected = f
     resetRoleTokenUsage: noop, getTaskState: () => ({}), emitRunningNotify: noop,
     setSessionStatus: noop, folderMemory: { resolveRolePrompt: () => null },
     MULTICC_IMG_HINT: '', pendingNotesFor: () => [], normalizeEffort: () => null,
-    buildDispatchContextPrompt: () => '',
+    buildDispatchContextPrompt: () => '', buildGoalLimitNote: () => '',
     autoProviderRuntime: { beginTurn: () => ({ initial: () => ({}) }) },
     providerRouterRuntime: {
       createBinding: () => ({ cli: record.cli, sessionId: record.id, model: record.model }),
@@ -54,7 +54,7 @@ module.exports = function prepareTurn({ record, cwd, history = [], connected = f
       throw new Error('test stopped after real adapter invocation');
     } }),
   });
-  engine.runChatTurn(record.id, text, { taskId: 'sdk-task' });
+  engine.runChatTurn(record.id, text, { taskId: 'sdk-task', goalLimits });
   assert.ok(prepared, `host did not reach adapter invocation: ${errors.join('; ')}`);
   return prepared;
 };
