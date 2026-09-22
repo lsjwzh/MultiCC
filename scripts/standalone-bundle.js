@@ -344,6 +344,16 @@ exec "$HERE/multicc" ${subcommand} "$@"
 `;
 }
 
+// cmd.exe walks a batch file by byte offset, assuming CRLF line endings. In an
+// LF-only .cmd that offset drifts one byte per line until the parser resumes
+// mid-token: on v2.0.5 the Windows smoke test died with `'m' is not recognized
+// as an internal or external command`, which is line 2's `rem` split into
+// `re` + `m`. Every .cmd the builder writes goes through here, so the line
+// endings can never depend on the host that produced the bundle.
+function windowsScript(content) {
+  return content.replace(/\r?\n/g, '\r\n');
+}
+
 function windowsCommandScript({ subcommand }) {
   return `@echo off
 rem MultiCC standalone: multicc ${subcommand}. Keep this file next to Resources\\.
@@ -385,16 +395,16 @@ exec "$RESOURCES/runtime/bin/node" "$RESOURCES/launcher/standalone-cli.js" "$@"
 }
 
 function multiccWrapperWindows() {
+  // The guard stays on one physical line and the file keeps to no labels: this
+  // is the one script every Windows invocation runs through, so it only uses
+  // the constructs cmd.exe is least likely to trip over. ASCII only — cmd
+  // reads a .cmd in the OEM codepage, not UTF-8.
   return `@echo off
-rem MultiCC standalone — the command you type. See "multicc help".
+rem MultiCC standalone - the command you type. See "multicc help".
 setlocal
 set "HERE=%~dp0"
 set "RESOURCES=%HERE%Resources"
-if not exist "%RESOURCES%\\runtime\\node.exe" (
-  echo bundled runtime not found at "%RESOURCES%\\runtime\\node.exe" 1>&2
-  echo keep multicc.cmd next to Resources\\ and unpack the archive fully. 1>&2
-  exit /b 1
-)
+if not exist "%RESOURCES%\\runtime\\node.exe" (echo bundled runtime not found at "%RESOURCES%\\runtime\\node.exe" 1>&2 & echo keep multicc.cmd next to Resources\\ and unpack the archive fully. 1>&2 & exit /b 1)
 "%RESOURCES%\\runtime\\node.exe" "%RESOURCES%\\launcher\\standalone-cli.js" %*
 `;
 }
@@ -475,7 +485,7 @@ function writePlatformShell({ bundleDir, resourcesDir, version, platform, nodeVe
   // documented surface (installer scripts, README, desktop shell all point here),
   // so its location must not depend on the OS.
   if (platform === 'win32') {
-    writeFileMode(path.join(bundleDir, 'multicc.cmd'), multiccWrapperWindows());
+    writeFileMode(path.join(bundleDir, 'multicc.cmd'), windowsScript(multiccWrapperWindows()));
   } else {
     writeFileMode(path.join(bundleDir, 'multicc'), multiccWrapper({ platform }), 0o755);
   }
@@ -505,11 +515,11 @@ function writePlatformShell({ bundleDir, resourcesDir, version, platform, nodeVe
       posixScript({ subcommand: 'status' }), 0o755);
   } else {
     writeFileMode(path.join(bundleDir, 'Start-MultiCC.cmd'),
-      windowsCommandScript({ subcommand: 'start' }));
+      windowsScript(windowsCommandScript({ subcommand: 'start' })));
     writeFileMode(path.join(bundleDir, 'Stop-MultiCC.cmd'),
-      windowsCommandScript({ subcommand: 'stop' }));
+      windowsScript(windowsCommandScript({ subcommand: 'stop' })));
     writeFileMode(path.join(bundleDir, 'Status-MultiCC.cmd'),
-      windowsCommandScript({ subcommand: 'status' }));
+      windowsScript(windowsCommandScript({ subcommand: 'status' })));
   }
   writeFileMode(path.join(bundleDir, platform === 'darwin' ? BUNDLE_README : 'README.txt'),
     bundleReadme({ version, platform, nodeVersion, macosFloor }));
@@ -840,6 +850,7 @@ module.exports = {
   verifyRuntimeArch,
   verifyRuntimeSqlite,
   windowsCommandScript,
+  windowsScript,
   writeManifest,
   writePlatformShell,
 };

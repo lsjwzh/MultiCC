@@ -463,6 +463,39 @@ test('the runtime binary sits where each platform\'s official archive puts it', 
     'the POSIX wrapper must not look for a Windows binary');
 });
 
+test('every Windows script is written with CRLF line endings', () => {
+  // v2.0.5 shipped an LF-only multicc.cmd. cmd.exe advances through a batch
+  // file by byte offset assuming CRLF, so the offset drifted one byte per line
+  // until it resumed mid-token, and the Windows smoke test failed with
+  // `'m' is not recognized as an internal or external command` — line 2's
+  // `rem` split into `re` + `m`. The bundle is built on macOS and Linux, so
+  // nothing but this conversion can keep the endings right.
+  const win = bundleScript.windowsScript(bundleScript.multiccWrapperWindows());
+  assert.ok(!/(^|[^\r])\n/.test(win), 'no bare LF may survive in a .cmd');
+  assert.ok(win.includes('\r\n'), 'the .cmd must use CRLF');
+  assert.ok(!win.split('\r\n').some(line => line.includes('\n')), 'CRLF only');
+
+  // A .cmd written for win32 must be CRLF; the POSIX wrappers must not be.
+  const scratch = tmpdir('multicc-win-eol-');
+  const bundleDir = path.join(scratch, 'bundle');
+  const resourcesDir = path.join(bundleDir, 'Resources');
+  fs.mkdirSync(resourcesDir, { recursive: true });
+  bundleScript.writePlatformShell({
+    bundleDir, resourcesDir, version: '1.0.0', platform: 'win32', nodeVersion: '22.0.0',
+    logger: { log() {} },
+  });
+  for (const name of ['multicc.cmd', 'Start-MultiCC.cmd', 'Stop-MultiCC.cmd', 'Status-MultiCC.cmd']) {
+    const written = fs.readFileSync(path.join(bundleDir, name), 'utf8');
+    assert.ok(!/(^|[^\r])\n/.test(written), `${name} must be CRLF`);
+  }
+  // The guard is deliberately a single physical line: multi-line `if (` blocks
+  // are what cmd.exe's offset drift corrupts first.
+  assert.equal(bundleScript.multiccWrapperWindows().split('\n').filter(l => l.trim().startsWith('if not exist')).length, 1,
+    'the runtime guard must be one line');
+  assert.doesNotMatch(bundleScript.multiccWrapperWindows(), /\n\s*(echo|exit \/b)/,
+    'no multi-line construct in the Windows wrapper');
+});
+
 test('the Windows bundle is zipped by us, not by a platform-specific tool', async () => {
   const { createZipArchive, collectEntries } = require(path.join(ROOT, 'scripts', 'zip-archive.js'));
   const { readZip } = require(path.join(ROOT, 'src', 'session', 'handoff-zip.js'));
