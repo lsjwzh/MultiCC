@@ -25,12 +25,12 @@
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.5/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.5/install.ps1 | iex
 ```
 
 URL 里的 tag 就是安装的版本。两个脚本只负责各系统必须不同的下载、校验和解压；装好后全部进入同一个包内 `multicc` CLI。整条链路一次完成：下载对应平台的独立包 → 校验 `.sha256` → 解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）→ 在 macOS 清除下载隔离标记 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）→ 可选注册登录自启 → 启动并等待 `/readyz` → 打开浏览器。命令返回时界面已经能用；目标机器不需要 Node、npm、git、Homebrew、Visual Studio 或 Xcode。
@@ -48,7 +48,7 @@ curl -sSL .../install.sh | bash -s -- --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用本地的包离线安装（跳过下载，仍然校验 .sha256）
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.4-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.5-darwin-arm64.tar.gz
 
 # 自动化/服务器：只安装不启动，或启动但不打开浏览器
 curl -sSL .../install.sh | bash -s -- --no-start
