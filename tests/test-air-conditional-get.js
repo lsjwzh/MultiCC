@@ -105,7 +105,9 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
   assert.match(openEntry, /\/api\/air\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/open/);
   assert.match(source, /MultiCCAirTaskEntry\?\.open\(\{ taskId, api, notice \}\)/);
   assert.match(source, /window\.__multiccAirTaskOpen\?\.taskId === taskId/);
-  assert.match(source, /taskId && !\$\('task-details'\)\.hidden\s*\? await refreshEntry\(\) : false/);
+  // 后台轮询只在详情面板展开时才要完整详情；页头刷新按钮走另一条路 —— 交付与
+  // 归因不在面板里，所以按下去时即使面板是收起状态也要刷新选中的那条。
+  assert.match(source, /taskId && \(refreshSelectedEntry \|\| !\$\('task-details'\)\.hidden\)\s*\? await refreshEntry\(\) : false/);
   assert.doesNotMatch(source, /void refreshEntry\(\);/, '导航不能再先下载完整详情');
   assert.match(source, /if \(snapshot\.unchanged && !entryChanged\) return;/);
   // 后台标签页别再按 4 秒敲；失败要退避，别在服务端打嗝时持续加码。
