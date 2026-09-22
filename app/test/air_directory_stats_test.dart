@@ -20,10 +20,10 @@ AirTask _task({
   runState: runState,
 );
 
-Future<void> _pump(WidgetTester tester, List<AirTask> tasks) async {
+Future<void> _pump(WidgetTester tester, List<AirTask> tasks, {int worktreeCount = 0}) async {
   await tester.pumpWidget(
     MaterialApp(
-      home: Scaffold(body: AirDirectoryStats(tasks: tasks)),
+      home: Scaffold(body: AirDirectoryStats(tasks: tasks, worktreeCount: worktreeCount)),
     ),
   );
   await tester.pumpAndSettle();
@@ -44,7 +44,7 @@ void main() {
       _task(id: 'archived', status: 'archived'),
       _task(id: 'archived2', status: 'archived'),
       _task(id: 'archived3', status: 'archived'),
-    ]);
+    ], worktreeCount: 2);
 
     // Web 那四张卡：进行中 / 计划任务 / 已完成 / 全部记录。
     for (final label in const ['进行中', '计划任务', '已完成', '全部记录']) {
@@ -57,7 +57,7 @@ void main() {
     expect(find.text('2'), findsOneWidget); // 已完成
     expect(find.text('仍保留在本目录'), findsOneWidget);
     expect(find.text('8'), findsOneWidget); // 全部记录
-    expect(find.text('3 个已归档'), findsOneWidget);
+    expect(find.text('3 个已归档 · 2 个 WT'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -71,7 +71,7 @@ void main() {
     expect(find.text('1'), findsOneWidget); // 已完成
     expect(find.text('2'), findsOneWidget); // 全部记录
     expect(find.text('0 个正在执行'), findsOneWidget);
-    expect(find.text('1 个已归档'), findsOneWidget);
+    expect(find.text('1 个已归档 · 0 个 WT'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -88,7 +88,7 @@ void main() {
     ]);
 
     expect(find.text('全部记录'), findsOneWidget);
-    expect(find.text('1 个已归档'), findsOneWidget);
+    expect(find.text('1 个已归档 · 0 个 WT'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
