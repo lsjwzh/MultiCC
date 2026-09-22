@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
@@ -10,6 +12,8 @@ const { processSpawnArgs } = require('../src/chat/process-spawn-args');
 const { createSessionRecordFactory } = require('../src/session/create-record');
 const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
+const { hasNativeHistory } = require('../src/cli-adapters/claude-exp-history');
+const prepareTurn = require('./helpers/claude-exp-turn');
 
 const SESSION_UUID = '05de20f7-563a-4d09-af34-b748c7b189ca';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -184,4 +188,55 @@ test('existing native sessions survive preparation and rejected turns allocate n
     assert.equal(rejected.preparedId, undefined);
     assert.deepEqual(rejected.saved, []);
   }
+});
+
+test('source CLI display replies cannot make a new Claude Exp target resume', t => {
+  t.mock.method(console, 'error', () => {});
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-exp-history-unit-'));
+  const previousConfig = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  t.after(() => {
+    if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousConfig;
+    fs.rmSync(configDir, { recursive: true, force: true });
+  });
+  const history = Array.from({ length: 34 }, () => ({ role: 'assistant', content: 'old Claude reply' }));
+  for (const connected of [true, false]) {
+    for (const nativeId of [null, SESSION_UUID]) {
+      const record = { id: 'new-exp-target', kind: 'chat', cli: 'claude-exp', cliSessionId: nativeId,
+        pendingCliHandoff: { status: 'pending', toCli: 'claude-exp', reusedTarget: false } };
+      const { invocation, envelope: prepared } = prepareTurn({ record, cwd: '/tmp/exp-history-unit', history, connected });
+      assert.equal(prepared.historyHandle.isFirstTurn, true, `connected=${connected}, reserved=${!!nativeId}`);
+      assert.equal(invocation.args[1], '--session-id');
+      assert.match(invocation.args[2], UUID_RE);
+      assert.equal(invocation.args.includes('--resume'), false);
+      if (nativeId) assert.equal(record.cliSessionId, nativeId, 'repair keeps the reserved identity');
+    }
+  }
+  const reused = { id: 'old-exp-target', kind: 'chat', cli: 'claude-exp', cliSessionId: SESSION_UUID,
+    pendingCliHandoff: { status: 'pending', toCli: 'claude-exp', reusedTarget: true } };
+  const { invocation } = prepareTurn({ record: reused, cwd: configDir, history });
+  assert.equal(invocation.args[1], '--resume', 'missing established history must not silently restart');
+});
+
+test('a pending new target resumes after SDK history exists; unknown/reused history fails closed', () => {
+  const record = { cli: 'claude-exp', cliSessionId: SESSION_UUID,
+    pendingCliHandoff: { status: 'pending', toCli: 'claude-exp', reusedTarget: false } };
+  const absent = () => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); };
+  const dir = { name: 'SDK-custom-or-hashed-project', isDirectory: () => true };
+  const io = { readdirSync: () => [dir], statSync: absent };
+  assert.equal(hasNativeHistory(record, { fs: io }), false);
+  assert.equal(hasNativeHistory(record, { fs: { ...io, readdirSync: absent } }), false);
+  const checked = [];
+  assert.equal(hasNativeHistory(record, { fs: { ...io, statSync: file => checked.push(file) } }), true);
+  assert.ok(checked[0].endsWith(path.join(dir.name, SESSION_UUID + '.jsonl')));
+  const denied = () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+  assert.equal(hasNativeHistory(record, { fs: { ...io, statSync: denied } }), true);
+  assert.equal(hasNativeHistory(record, { fs: { ...io, readdirSync: denied } }), true);
+  for (const pendingCliHandoff of [undefined,
+    { ...record.pendingCliHandoff, reusedTarget: true },
+    { ...record.pendingCliHandoff, status: 'consumed' },
+  ]) assert.equal(hasNativeHistory({ ...record, pendingCliHandoff }, { fs: io }), true);
+  assert.equal(hasNativeHistory({ ...record, cli: 'claude' }, { fs: io }), true);
+  assert.equal(hasNativeHistory({ ...record, cli: 'codex' }, { fs: io }), true);
 });
