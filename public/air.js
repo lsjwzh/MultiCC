@@ -37,7 +37,17 @@
   let pinSignature = '';
   let directoryId = initialParams.get('dir');
   let taskId = initialParams.get('task');
-  window.addEventListener('multicc-air-task-open', () => { syncFrame(); });
+  window.addEventListener('multicc-air-task-open', event => {
+    const opened = event.detail;
+    // The lightweight /open response supplies configuration immediately. Ask
+    // the detail endpoint for the task and attribution summary as well, so
+    // reopening a task from an admin view updates the header and delivery card
+    // without pretending the lightweight response is a full task record.
+    if (opened?.taskId === taskId) {
+      void refreshEntry();
+    }
+    syncFrame();
+  });
   let entry = null;
   let mode = modeFrom(initialParams);
   let scheduleTasks = [];
@@ -119,6 +129,9 @@
   // 只是把常用的几个任务放在手边。
   let recentTaskIds = stored('air:recent-tasks', []);
   if (!Array.isArray(recentTaskIds)) recentTaskIds = [];
+  let taskVisitedAt = stored('air:task-visited-at', {});
+  if (!taskVisitedAt || Array.isArray(taskVisitedAt) || typeof taskVisitedAt !== 'object') taskVisitedAt = {};
+  let directoryTaskSort = stored('air:task-sort', 'message') === 'visit' ? 'visit' : 'message';
 
   // ── 首启配置卡：AI Assistant 配没配，由服务端那份配置说话 ──
   // null = 还没查到（页面刚起或查询失败），false = 未配置（亮卡），true = 已配置。
@@ -162,8 +175,19 @@
   function rememberTask(id) {
     if (!id) return;
     recentTaskIds = [id, ...recentTaskIds.filter(value => value !== id)].slice(0, 12);
-    try { localStorage.setItem('air:recent-tasks', JSON.stringify(recentTaskIds)); } catch (_) {}
+    taskVisitedAt[id] = Date.now();
+    taskVisitedAt = Object.fromEntries(recentTaskIds.map(taskId => [taskId, Number(taskVisitedAt[taskId]) || 0]));
+    try {
+      localStorage.setItem('air:recent-tasks', JSON.stringify(recentTaskIds));
+      localStorage.setItem('air:task-visited-at', JSON.stringify(taskVisitedAt));
+    } catch (_) {}
   }
+  const taskMessageAt = task => Number(task?.lastMessageAt || task?.updatedAt || 0);
+  const taskVisitAt = task => Number(taskVisitedAt[task?.id] || 0);
+  const taskSortAt = task => directoryTaskSort === 'visit' ? taskVisitAt(task) : taskMessageAt(task);
+  const compareDirectoryTasks = (a, b) => taskSortAt(b) - taskSortAt(a)
+    || taskMessageAt(b) - taskMessageAt(a)
+    || String(a?.id || '').localeCompare(String(b?.id || ''));
   // 侧栏的任务区只装「手上的任务」：打开过的排在前面，然后是当前目录里最新的几个。
   // 后一半是必要的 —— 第一次进来没有浏览记录，只有前一半的话列出来是空的，而一条
   // 空列表并不比一条能点的任务更有用。完整的那份列表在控制台（全部目录 + 搜索）。
@@ -480,7 +504,8 @@
       button.append(node('strong', '▣ ' + directory.name), node('small', directory.path),
         node('small', activeCount
           ? t('airDirTaskCountActive', { total: taskCount, active: activeCount })
-          : t('airDirTaskCount', { total: taskCount })));
+          : t('airDirTaskCount', { total: taskCount })),
+        node('small', t('airDirWorktreeCount', { n: directory.worktreeCount || 0 })));
       button.onclick = () => navigate(directory.id);
       const card = node('article', null, 'directory-card');
       const memo = node('a', t('memoTitle'), 'directory-memo');
@@ -509,17 +534,23 @@
       stat(t('airStateActive'), current.length, t('airDirRunningNow', { n: running.length }), 'blue'),
       stat(t('airDirStatPlanned'), planned.length, t('airDirStatPlannedHint')),
       stat(t('airStageDone'), tasks.filter(task => task.status === 'done').length, t('airDirStatDoneHint'), 'green'),
-      stat(t('airStatusAllRecords'), tasks.length, t('airDirArchivedCount', { n: tasks.filter(task => task.status === 'archived').length })),
+      stat(t('airStatusAllRecords'), tasks.length, t('airDirArchiveWorktrees', {
+        archived: tasks.filter(task => task.status === 'archived').length,
+        worktrees: dir?.worktreeCount || 0,
+      })),
     );
-    const filtered = window.MultiCCAirAdmin?.filterTasks?.(tasks, directoryTaskFilter, () => '')
-      || [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    const filtered = (window.MultiCCAirAdmin?.filterTasks?.(tasks, directoryTaskFilter, () => '') || [...tasks])
+      .sort(compareDirectoryTasks);
     const rows = directoryTasksExpanded
       ? filtered
-      : [...tasks].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)).slice(0, recentRowLimit());
+      : [...tasks].sort(compareDirectoryTasks).slice(0, recentRowLimit());
     $('directory-task-heading').textContent = directoryTasksExpanded ? t('airDirAllTasks') : t('airRecentTasks');
     $('directory-overview-count').textContent = directoryTasksExpanded
       ? t('airDirCountOfTotal', { shown: filtered.length, total: tasks.length })
       : t('airDirTaskCount', { total: tasks.length });
+    for (const button of $('directory-task-sort').querySelectorAll('button[data-sort]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.sort === directoryTaskSort));
+    }
     $('directory-task-controls').hidden = !directoryTasksExpanded;
     if ($('directory-task-search').value !== directoryTaskFilter.query) $('directory-task-search').value = directoryTaskFilter.query;
     $('directory-task-status').value = directoryTaskFilter.status;
@@ -538,11 +569,19 @@
       // 中」。同侧栏 `renderSidebarTasks`。
       const stage = task.recordType === 'planned' ? label(task.workflowStage || task.status) : '';
       const detail = holdText(task.resource);
-      const extra = [stage, detail].filter(part => part && !label(taskStatus(task)).includes(part)).join(' · ');
+      // A visible WT marker ties the directory-level count back to concrete
+      // tasks. The full path stays in the tooltip so manual cleanup can verify
+      // the target without turning every compact row into a path dump.
+      const worktree = task.resource?.path
+        ? `WT${task.resource.branch ? ` · ${task.resource.branch}` : ''}` : '';
+      const extra = [stage, detail, worktree].filter(part => part && !label(taskStatus(task)).includes(part)).join(' · ');
+      if (worktree) meta.title = task.resource.path;
       if (extra) meta.append(node('em', extra, 'task-note'));
       copy.append(node('strong', task.title || t('airUntitledTask')), meta);
-      button.append(node('span', task.recordType === 'planned' ? '◇' : '›', 'directory-task-mark'), copy,
-        node('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString(locale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
+      const shownAt = taskSortAt(task);
+      const time = node('time', shownAt ? new Date(shownAt).toLocaleString(locale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
+      time.title = t(directoryTaskSort === 'visit' ? 'airTaskLastVisit' : 'airTaskLastMessage');
+      button.append(node('span', task.recordType === 'planned' ? '◇' : '›', 'directory-task-mark'), copy, time);
       button.onclick = () => navigate(directoryId, task.id);
       const remove = node('button', t('delete'), 'task-delete danger');
       remove.type = 'button';
@@ -1392,8 +1431,6 @@
 
   // ── Pin 住的任务 ────────────────────────────────────────────────────────
   // 「这件活我要一直看着」—— 和「最近打开过」不是一回事：最近会掉出列表，pin 不会。
-  // 上限 5 个由服务端把着（第 6 个回 pin_limit_reached），界面只负责把它说清楚。
-  const PIN_LIMIT = 5;
   const phoneLayout = () => matchMedia('(max-width: 760px)').matches;
   /** 按 pin 的顺序取出任务本身；已经被删掉的那种自然就不在列表里了。 */
   const pinnedTasks = () => taskPins
@@ -1414,10 +1451,6 @@
   async function togglePin(taskId) {
     if (!taskId) return;
     const known = (data?.tasks || []).find(task => task.id === taskId);
-    if (!isPinned(taskId) && taskPins.length >= PIN_LIMIT) {
-      notice(t('airPinLimit', { n: PIN_LIMIT }));
-      return;
-    }
     try {
       const result = await api('/api/air/pins/toggle', { taskId });
       taskPins = Array.isArray(result.taskIds) ? result.taskIds.slice() : [];
@@ -2629,7 +2662,7 @@
     }
   }
 
-  async function refresh() {
+  async function refresh({ entry: refreshSelectedEntry = false } = {}) {
     if (loading) return;
     loading = true;
     let failed = false;
@@ -2654,7 +2687,11 @@
         render();
         if (taskId) void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
       }
-      const entryChanged = taskId && !$('task-details').hidden
+      // Background polling only asks for the large task entry while its detail
+      // card is open. A deliberate header refresh is different: delivery and
+      // attribution live outside that card too, so the button must refresh the
+      // selected entry even when the card is collapsed.
+      const entryChanged = taskId && (refreshSelectedEntry || !$('task-details').hidden)
         ? await refreshEntry() : false;
       if (entryChanged === null) failed = true;
       // 定时任务与控制台概览只在真的有新数据时重画，否则每 4 秒白建一遍 DOM。
@@ -2700,6 +2737,13 @@
   };
   $('directory-task-status').onchange = event => {
     directoryTaskFilter.status = event.target.value;
+    renderDirectoryOverview();
+  };
+  $('directory-task-sort').onclick = event => {
+    const button = event.target.closest('button[data-sort]');
+    if (!button || button.dataset.sort === directoryTaskSort) return;
+    directoryTaskSort = button.dataset.sort === 'visit' ? 'visit' : 'message';
+    try { localStorage.setItem('air:task-sort', JSON.stringify(directoryTaskSort)); } catch (_) {}
     renderDirectoryOverview();
   };
   $('console-close').onclick = () => setConsole(false);
@@ -2763,7 +2807,7 @@
     catch (error) { notice(t('airReloadConversationFailed', { msg: error.message })); }
   }
   $('refresh').onclick = async () => {
-    await refresh();
+    await refresh({ entry: true });
     if (adminModes.has(mode)) await window.MultiCCAirAdmin?.refresh(adminContext());
     reloadConversation();
   };

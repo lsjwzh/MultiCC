@@ -311,7 +311,14 @@
         const date = new Date(timestamp);
         const clock = [date.getHours(), date.getMinutes(), date.getSeconds()]
           .map(value => String(value).padStart(2, '0')).join(':');
-        metric(line, '', `🕰 ${clock}`, tt('usageTimingTooltipReply', '回复时间'));
+        const today = new Date();
+        const sameDay = date.getFullYear() === today.getFullYear()
+          && date.getMonth() === today.getMonth() && date.getDate() === today.getDate();
+        const sameYear = date.getFullYear() === today.getFullYear();
+        const day = [date.getMonth() + 1, date.getDate()]
+          .map(value => String(value).padStart(2, '0')).join('-');
+        const shown = sameDay ? clock : `${sameYear ? '' : `${date.getFullYear()}-`}${day} ${clock}`;
+        metric(line, '', `🕰 ${shown}`, tt('usageTimingTooltipReply', '回复时间'));
       }
       if (hasDuration) metric(line, '', `⏱ ${fmtDuration(duration)}`, tt('usageTimingTooltipDuration', '本次交互耗时'));
       return line;

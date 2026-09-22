@@ -8,12 +8,12 @@
 //
 //   文件：<data dir>/air-pins.json（默认），形状 { taskIds: [taskId, …] }
 //   接口：GET  /api/air/pins          → { ok, taskIds }
-//        POST /api/air/pins          { taskIds }  → 整份替换（最多 5 个）
+//        POST /api/air/pins          { taskIds }  → 整份替换
 //        POST /api/air/pins/toggle   { taskId }   → 钉上 / 拔掉
 //
-// 上限是产品语义不是技术限制：页头那块空白放得下五个，再多就把标题挤没了。
-// 满了之后 toggle 返回 409 pin_limit_reached，由界面说话 —— 悄悄挤掉最早的那个
-// 会让人以为自己的选择丢了。
+// 页头现在是单行横向滚动的书签栏，所以不再用「只放得下五个」当产品限制。
+// 仍保留一个很高的存储安全上限，防止损坏数据或脚本将无界数组写入状态文件；
+// 正常交互下用户不会碰到它。
 //
 // 存在性剪枝在读的时候做（任务被删掉，钉子自己掉下来）：写下来的 id 是用户的选择，
 // 别因为一次「没读到」就把它删了。
@@ -21,7 +21,7 @@
 const stateStore = require('../state/store');
 const { createPaths } = require('../paths');
 
-const PIN_LIMIT = 5;
+const PIN_LIMIT = 100;
 const SCHEMA_VERSION = 1;
 
 /** 只做形状归一：丢掉空值、去重、截断到上限。存在性由运行时按当下的任务表判。 */
@@ -89,7 +89,7 @@ function createAirPinRuntime(rawDeps) {
     return read();
   }
 
-  /** 一个按钮点下去：钉着就拔掉，没钉就钉上；满了报错，由界面说话。 */
+  /** 一个按钮点下去：钉着就拔掉，没钉就钉上。 */
   function toggle(taskId) {
     const id = typeof taskId === 'string' ? taskId.trim() : '';
     if (!id) throw Object.assign(new Error('taskId is required'), { status: 400, code: 'task_id_required' });

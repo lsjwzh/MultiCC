@@ -505,7 +505,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    默认缩略（状态图标 + 标题开头），鼠标停在上面、聚焦、或点一下，完整的那份
    （标题 + 状态 + 目录 + 阶段）挂在【下面】一张卡片里。
    浮着就得自己看住碰撞：它是绝对的居中，宽度上限两侧各留 160px（不压左边那行
-   面包屑），标签本身还能再收窄（min-width 46px）到装得下为止。
+   面包屑），放不下的标签留在同一行横向滚动，不再用 5 个的数量上限代替布局。
    展开为什么是「往下挂」而不是「往右长」：横向伸长会把旁边几个 pin 一起推着
    挪，排在自己左边的那条刚好看不清（用户说的「晃眼」）。卡片是绝对定位的，
    胶囊自己的矩形一个像素都不变，旁边几条纹丝不动。
@@ -515,17 +515,26 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    只在桌面出现（760px 以下整条藏掉，见那一块里的 #task-pins）：手机页头一行都
    嫌贵，那边的 pin 改成置顶在侧栏的最近任务里（air.js 的 sidebarTasks）。
    这一条不决定「谁被 pin 了」：那份清单在服务端（air-pins.json），Web 和 App
-   读的是同一份，上限也由服务端把着（超了会回 pin_limit_reached）。
+   读的是同一份。
 
    flex-direction 必须显式写 row：上面全局那条 `nav { flex-direction: column }`
    是按元素名命中的，而这一条是 <nav> —— 只写 display:flex 的话，id 选择器赢得过
    nav 的 display，却赢不过它没写的 flex-direction，几个 pin 会竖着摞起来。 */
 #task-pins { position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 2;
-  display: flex; flex-direction: row; justify-content: center; align-items: center;
-  width: max-content; max-width: calc(100% - 320px); gap: 8px; min-width: 0; }
+  display: flex; flex-direction: row; justify-content: flex-start; align-items: center;
+  width: max-content; max-width: calc(100% - 320px); gap: 8px; min-width: 0;
+  overflow-x: auto; overflow-y: visible; overscroll-behavior-inline: contain;
+  scrollbar-width: thin; scrollbar-color: #c5d6e7 transparent; }
+#task-pins::-webkit-scrollbar { height: 4px; }
+#task-pins::-webkit-scrollbar-thumb { border-radius: 4px; background: #c5d6e7; }
+/* overflow-x:auto 会同时把竖向 overflow 计算成 auto，详情卡会被标签栏裁掉。
+   悬停/点开某枚时临时放开裁剪；关闭后立即回到单行滚动。 */
+#task-pins:has(.pin-tab:hover), #task-pins:has(.pin-tab:focus-within), #task-pins:has(.pin-tab.is-open) {
+  overflow: visible;
+}
 /* hidden 属性是 UA 的 display:none，挡不住上面那条 display:flex。 */
 #task-pins[hidden] { display: none; }
-.pin-tab { position: relative; display: flex; align-items: center; flex: 0 1 auto; min-width: 46px; max-width: 118px;
+.pin-tab { position: relative; display: flex; align-items: center; flex: 0 0 118px; min-width: 46px; max-width: 118px;
   gap: 6px; height: 30px; padding: 0 4px 0 11px; border: 1px solid var(--line); border-top: 0;
   border-radius: 0 0 14px 14px;
   background: rgba(255, 255, 255, .9); box-shadow: 0 4px 12px #35577d0f;
@@ -620,7 +629,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-terminal-row small { color: var(--muted); font-size: 11px; }
 .directory-terminal-empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
 #directory-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
-/* 四张统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
+/* 统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
    再往下就是任务列表。所以它们按「一行字」而不是「一张卡片」来做 —— 填充、
    色条和数字都收了一档，说明文字也从继承来的 14px 落到 10.5px（原来它比标题
    还大，是这张卡显胖的主要原因）。 */
@@ -634,6 +643,10 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-stat small { color: #8a9aab; font-size: 10.5px; }
 .directory-task-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
 .directory-task-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
+.directory-task-heading-actions { display: flex; align-items: center; gap: 10px; }
+.task-sort-switch { display: inline-flex; padding: 2px; border: 1px solid #dce6ef; border-radius: 9px; background: #f3f7fb; }
+.task-sort-switch button { min-height: 0; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: #7a8c9e; font-size: 9.5px; line-height: 1.35; }
+.task-sort-switch button[aria-pressed="true"] { background: #fff; color: #2e73b8; box-shadow: 0 1px 4px #27496814; font-weight: 650; }
 #directory-task-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .directory-task-panel.expanded #directory-task-list { height: min(390px, 48dvh); overflow-y: auto; overscroll-behavior: contain; }
 .directory-task-row { min-width: 0; display: flex; align-items: stretch; padding: 0; border: 0; border-right: 1px solid #e8eef5; border-bottom: 1px solid #e8eef5; border-radius: 0; background: transparent; text-align: left; }
@@ -1414,6 +1427,9 @@ main { background: transparent; }
 }
 .directory-task-panel .section-heading { padding: 16px 20px 12px; border-bottom: 1px solid var(--hairline); }
 .directory-task-panel .section-heading strong { font-size: 15px; }
+.directory-task-heading-actions { gap: 12px; }
+.task-sort-switch { border-radius: 10px; }
+.task-sort-switch button { padding: 4px 9px; border-radius: 7px; font-size: 10px; }
 .directory-task-row { border-right-color: var(--hairline); border-bottom-color: var(--hairline); }
 .directory-task-row .task-row-open { padding: 15px 10px 15px 18px; gap: 12px; }
 .directory-task-row strong { font-size: 12.5px; color: #2f4d68; }
@@ -1521,7 +1537,9 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
      浮层在里面的 z-index 再大，也只管这一层内部，整条页头仍然排在 #task-layout
      前面。进详情的 15 之上、抽屉遮罩的 20 之下。 */
   #task-header { min-height: 0; align-items: center; flex-wrap: wrap; gap: 5px 6px; padding: 6px 10px; position: relative; z-index: 16; }
-  #task-header.is-chat-header { z-index: 2; min-height: 0; padding: 8px 80px 7px 10px; }
+  /* 右侧悬浮操作实际占 64px（26 + 30 + gap + 右边距），70px 已含安全空隙；原来
+     预留 80px 会白白吃掉 10px，恰好把 390px 下的运行状态挤到第二行。 */
+  #task-header.is-chat-header { z-index: 2; min-height: 0; padding: 8px 70px 7px 10px; }
   #task-header.is-chat-header #task-title { max-width: none; font-size: 18px; }
   /* 状态是「现在怎么样」，不是页头的第二行内容：让它跟在标题后面读，省掉一整行。
      挤不下时（窄屏，或标题本身比一整行还长）它自己换行回到第二行 —— 宁可多这一行，
@@ -1536,6 +1554,9 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
      的手机档只压回了 #task-header / #task-title）。12px 时状态约 69px，标题(139)+状态
      +间距就撑破 212px 的面包屑，状态被挤到第二行、页头翻倍高。手机上钉回 11px。 */
   #task-state { flex: 0 0 auto; min-height: 0; margin-top: 0; font-size: 11px; }
+  /* 桌面运行态为了不让 3px 描边贴字，左右各留 7px；手机页头同时还要放标题和
+     两颗操作按钮，14px 会让 390px 也提前换成两行。这里留 2px 呼吸位即可。 */
+  #task-state.ring-running { padding-inline: 2px; }
   /* 「任务 进行中」这一段在手机上让位：「本轮 执行中」说了在不在跑（圈也在），
      「归属待核验」说了要不要管；任务生命周期在任务看板和详情面板里都是完整的一行。 */
   #task-state .ts-life { display: none; }
