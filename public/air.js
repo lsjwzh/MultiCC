@@ -1481,10 +1481,9 @@
   function renderPins() {
     const container = $('task-pins');
     if (!container) return;
-    // 手机上这一排整个不出现（air.css 的 760px 块也是这么说的）：那边 pin 的任务
-    // 置顶在侧栏。两处都判一次是因为这里还决定要不要建 DOM。
+    // 手机上这一排整个不出现（air.css 的 760px 块同理）：pin 的任务在侧栏置顶。两处都判是因为这里还决定建不建 DOM。
     if (phoneLayout() || !taskPins.length) { container.replaceChildren(); container.hidden = true; pinSignature = ''; return; }
-    // 4 秒一次的轮询不许把悬停中的那张卡拆掉：内容没变就不重建（悬停本身不改内容）。
+    // 4 秒一次的轮询不许拆掉悬停中的卡：内容没变就不重建（悬停不改内容）。
     const tasks = pinnedTasks();
     const signature = tasks.map(task => [task.id, task.title, taskStatus(task), isRunningTask(task), directoryName(task.dirId), task.workflowStage || ''].join('\u0001')).join('\u0002');
     container.hidden = false;
@@ -1499,9 +1498,8 @@
       const stage = label(task.workflowStage || task.status);
       open.title = `${task.title || t('airUntitledTask')} · ${directoryName(task.dirId)}${stage ? ` · ${stage}` : ''}`;
       open.setAttribute('aria-label', t('airPinExpandAria', { title: task.title || t('airUntitledTask') }));
-      // 缩略态只有「状态图标 + 标题」；完整标题、目录、阶段、状态中文全在下面
-      // 那张卡片里。胶囊自己的宽度不动 —— 横向伸长会把旁边几个 pin 推着一起
-      // 挪（用户说的「晃眼」就是这个），卡片绝对定位，别人一步都不动。
+      // 缩略态只有「状态图标 + 标题」，完整标题、目录、阶段、状态全在下面那张卡片里。
+      // 胶囊宽度不动 —— 伸长会把旁边几个 pin 一起推着挪（用户说的「晃眼」），卡片绝对定位，别人一步不动。
       const panel = node('div', null, 'pin-panel');
       panel.id = `pin-panel-${task.id}`;
       const panelMeta = node('div', null, 'pin-panel-meta');
@@ -1575,8 +1573,9 @@
     } : selectedEntry;
     const selectedTask = headerEntry?.task || listedTask;
     const adminHeadings = {
-      // 「谁在等我」的整页。控制台那一格只放最近更新的几条，这里是完整清单。
+      // 「谁在等我」整页：控制台那一格只放最近几条，这里是完整清单。
       attention: [t('airCrumbConsole'), t('airAdminAttention'), t('airAdminAttentionHint')],
+      secrets: [t('airCrumbSettings'), t('airAdminPanelSecrets'), t('secretsVaultShortHint')],
       docs: [t('airCrumbTools'), t('airDocs'), t('airAdminDocsHint')],
       memory: [t('airCrumbTools'), t('airMemoryGraph'), t('airAdminMemoryHint')],
       taskgraph: [t('airCrumbTools'), t('airTaskGraph'), t('airAdminTaskGraphHint')],
