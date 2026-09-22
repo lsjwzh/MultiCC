@@ -42,11 +42,7 @@ const MIGRATION_DEBT = Object.freeze({
     byteCeiling: 163313,
     target: 3000,
   }),
-  'src/chat/turn-engine.js': Object.freeze({
-    ceiling: 3002,
-    byteCeiling: 144512,
-    target: 3000,
-  }),
+  // turn-engine.js returned below 3000 while fixing native UUID preparation.
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
   // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,
   // plus handleAuxHealth and the synchronous auxConnect init) into
