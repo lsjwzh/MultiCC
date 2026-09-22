@@ -488,6 +488,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
+          // 保险箱不是「服务器设置里的一个开关」：条目会按同名环境变量注入子进程，
+          // 它是 App 设置里唯一改变 agent 运行环境的一份配置。所以不埋在
+          // 「服务器设置」深处、也不受高级模式开关约束 —— 摆在第一屏，和 Web 控制
+          // 中心顶部那张固定卡片是同一条规矩（见 manage.html 的 .nav-pinned）。
+          _Section(
+            title: t('secretsVaultTitle'),
+            children: [
+              _NavTile(
+                icon: Icons.key_outlined,
+                title: t('secretsVaultEntry'),
+                subtitle: t('secretsVaultHint'),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => SecretsScreen(settings: widget.settings),
+                  ),
+                ),
+              ),
+            ],
+          ),
           _Section(
             title: t('serverConnection'),
             children: [
@@ -952,18 +972,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   MaterialPageRoute<void>(
                     builder: (_) =>
                         VoiceSettingsScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              _NavTile(
-                icon: Icons.lock_outline_rounded,
-                title: t('secretsVaultTitle'),
-                subtitle: t('secretsVaultHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => SecretsScreen(settings: widget.settings),
                   ),
                 ),
               ),
