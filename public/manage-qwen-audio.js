@@ -4,6 +4,11 @@
   let pollTimer = null;
   let notify = () => {};
 
+  // 这一格（Qwen 实时语音）同时活在旧管理台和 Air 的原生语音面板里，文案得跟着界面
+  // 语言走 —— 否则英文界面下这一块是中英混排。i18n.js 在两边都先于本文件加载，
+  // 取不到就原样退回 key（与其它共享模块同一条兜底）。
+  const t = (key, params) => (typeof global.t === 'function' ? global.t(key, params) : key);
+
   function authPath(path, prefix = '?') {
     const suffix = typeof global.tokenQS === 'function' ? global.tokenQS(prefix) : '';
     return path + suffix;
@@ -17,23 +22,26 @@
   }
 
   function runtimeLabel(runtime) {
-    const labels = {
-      not_installed: '未安装',
-      installing: '安装中',
-      ready: '已安装',
-      error: '安装失败',
-      stopped: '已停止',
-      starting: '启动中',
-      running: '运行中',
-      backoff: '等待重试',
-      failed: '异常暂停',
-      qwen_api_key_missing: '缺少 DashScope Key',
-      qwen_runtime_not_installed: '等待安装',
-      commander_not_found: '缺少 Commander',
-      commander_ambiguous: 'Commander 不唯一',
-      commander_binding_stale: 'Commander 绑定过期',
+    // 状态 → i18n key（不是状态 → 文案）：语言在渲染这一刻才定，表里存死文案
+    // 就等于把语言钉在脚本加载的那一刻。
+    const keys = {
+      not_installed: 'qwenAudioStateNotInstalled',
+      installing: 'qwenAudioStateInstalling',
+      ready: 'qwenAudioStateReady',
+      error: 'qwenAudioStateError',
+      stopped: 'qwenAudioStateStopped',
+      starting: 'qwenAudioStateStarting',
+      running: 'qwenAudioStateRunning',
+      backoff: 'qwenAudioStateBackoff',
+      failed: 'qwenAudioStateFailed',
+      qwen_api_key_missing: 'qwenAudioKeyMissing',
+      qwen_runtime_not_installed: 'qwenAudioStateRuntimeMissing',
+      commander_not_found: 'qwenAudioStateCommanderMissing',
+      commander_ambiguous: 'qwenAudioStateCommanderAmbiguous',
+      commander_binding_stale: 'qwenAudioStateCommanderStale',
     };
-    return labels[runtime?.state] || runtime?.state || '未知';
+    // 后端将来加了没登记过的状态时，原样显示状态码比显示「未知」更有用。
+    return keys[runtime?.state] ? t(keys[runtime.state]) : (runtime?.state || t('qwenAudioStateUnknown'));
   }
 
   function button(text, onClick, className = 'btn btn-sm') {
@@ -57,19 +65,19 @@
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap;';
     const title = document.createElement('span');
     title.style.cssText = 'font-size:13px;color:var(--text);font-weight:600;flex:1;min-width:180px;';
-    title.textContent = '全局实时语音 Gateway';
+    title.textContent = t('qwenAudioGlobalTitle');
     const badge = document.createElement('span');
     badge.className = 'status-text';
-    badge.textContent = gateway.enabled ? runtimeLabel(runtime) : '未启用';
+    badge.textContent = gateway.enabled ? runtimeLabel(runtime) : t('qwenAudioNotEnabled');
     badge.style.color = runtime.state === 'running' ? '#3fb950'
       : ['failed', 'error'].includes(runtime.state) ? '#f85149' : '#d29922';
     row.append(title, badge);
-    row.appendChild(button(gateway.enabled ? '停用' : '启用', () => setGlobalEnabled(!gateway.enabled)));
+    row.appendChild(button(gateway.enabled ? t('qwenAudioDisable') : t('qwenAudioEnable'), () => setGlobalEnabled(!gateway.enabled)));
     if (gateway.enabled) {
-      row.appendChild(button('重启进程', restartGlobal));
+      row.appendChild(button(t('qwenAudioRestart'), restartGlobal));
       // Opening always goes through launch, never through a raw runtime URL, so
       // the window carries a host-issued ticket instead of a bare address.
-      row.appendChild(button('打开语音界面', openGlobalVoice));
+      row.appendChild(button(t('qwenAudioOpenUi'), openGlobalVoice));
     }
     container.appendChild(row);
 
@@ -77,7 +85,7 @@
       const note = document.createElement('div');
       note.className = 'sec-desc';
       note.style.margin = '0';
-      note.textContent = `已迁移：${legacy.length} 条旧的按工作区配置只作兼容保留，不会再各自拉起进程。`;
+      note.textContent = t('qwenAudioLegacyNote', { n: legacy.length });
       container.appendChild(note);
     }
   }
@@ -96,7 +104,7 @@
       const key = document.getElementById('qwen-audio-key');
       if (key) {
         key.value = '';
-        key.placeholder = qwen.hasApiKey ? '已配置（留空不修改）' : 'DashScope API Key';
+        key.placeholder = qwen.hasApiKey ? t('airVoiceKeyConfiguredHint') : t('qwenAudioKeyPlaceholder');
       }
       const url = document.getElementById('qwen-audio-url');
       const model = document.getElementById('qwen-audio-model');
@@ -109,11 +117,11 @@
       if (install) {
         install.disabled = runtime.state === 'installing';
         install.textContent = runtime.installed
-          ? `运行时 ${runtime.package?.version || ''} 已安装`
-          : runtime.state === 'installing' ? '安装中…' : '安装运行时';
+          ? t('qwenAudioRuntimeInstalled', { version: runtime.package?.version || '' })
+          : runtime.state === 'installing' ? t('qwenAudioInstalling') : t('qwenAudioInstall');
       }
       if (status) {
-        const keyState = qwen.hasApiKey ? 'Key 已配置' : '缺少 DashScope Key';
+        const keyState = qwen.hasApiKey ? t('qwenAudioKeyReady') : t('qwenAudioKeyMissing');
         const progress = runtime.progress?.stage ? ` · ${runtime.progress.stage}` : '';
         status.textContent = `${runtimeLabel(runtime)} · ${keyState}${progress}`;
         status.className = `status-text ${runtime.state === 'error' ? 'err' : runtime.installed && qwen.hasApiKey ? 'ok' : ''}`;
@@ -130,7 +138,7 @@
       }
     } catch (error) {
       if (status) {
-        status.textContent = `加载失败：${error.message}`;
+        status.textContent = t('qwenAudioLoadFailed', { message: error.message });
         status.className = 'status-text err';
       }
     }
@@ -152,11 +160,11 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ qwenAudio }),
       });
-      if (!quiet) notify('Qwen Audio 配置已保存');
+      if (!quiet) notify(t('qwenAudioSaved'));
       return true;
     } catch (error) {
       if (status) {
-        status.textContent = `保存失败：${error.message}`;
+        status.textContent = t('qwenAudioSaveFailed', { message: error.message });
         status.className = 'status-text err';
       }
       return false;
@@ -173,21 +181,22 @@
     if (install) install.disabled = true;
     try {
       await fetchJson(authPath('/api/v1/voice-runtime/install'), { method: 'POST' });
-      if (status) status.textContent = '已开始安装固定版本运行时…';
+      if (status) status.textContent = t('qwenAudioInstallStarted');
       await loadPanel();
     } catch (error) {
       if (install) install.disabled = false;
       if (status) {
-        status.textContent = `安装失败：${error.message}`;
+        status.textContent = t('qwenAudioInstallFailed', { message: error.message });
         status.className = 'status-text err';
       }
     }
   }
 
-  function reportError(prefix, error) {
+  // prefix 收的是 i18n key（不是现成文案）：文案里都带 {message} 占位。
+  function reportError(prefixKey, error) {
     const status = document.getElementById('qwen-audio-status');
     if (!status) return;
-    status.textContent = `${prefix}：${error.message}`;
+    status.textContent = t(prefixKey, { message: error.message });
     status.className = 'status-text err';
   }
 
@@ -198,19 +207,19 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled, provider: 'qwen-audio-agent', autoInstall }),
       });
-      notify(enabled ? '全局实时语音已启用' : '全局实时语音已停用');
+      notify(enabled ? t('qwenAudioEnabled') : t('qwenAudioDisabled'));
       await loadPanel();
     } catch (error) {
-      reportError('语音网关操作失败', error);
+      reportError('qwenAudioGatewayFailed', error);
     }
   }
 
   async function enableGlobal() {
     const keyInput = document.getElementById('qwen-audio-key');
-    if (!keyInput?.value && keyInput?.placeholder !== '已配置（留空不修改）') {
+    if (!keyInput?.value && keyInput?.placeholder !== t('airVoiceKeyConfiguredHint')) {
       const status = document.getElementById('qwen-audio-status');
       if (status) {
-        status.textContent = '首次启用前需要填写 DashScope API Key';
+        status.textContent = t('qwenAudioNeedKey');
         status.className = 'status-text err';
       }
       keyInput?.focus();
@@ -223,10 +232,10 @@
   async function restartGlobal() {
     try {
       await fetchJson(authPath('/api/v1/voice-gateway/restart'), { method: 'POST' });
-      notify('实时语音进程已重启');
+      notify(t('qwenAudioRestarted'));
       await loadPanel();
     } catch (error) {
-      reportError('重启失败', error);
+      reportError('qwenAudioRestartFailed', error);
     }
   }
 
@@ -236,7 +245,7 @@
     const button = trigger?.currentTarget || trigger;
     const client = global.MultiCCVoiceLaunch;
     if (!client || typeof client.launch !== 'function') {
-      notify('语音模块未加载，请刷新页面后重试', true);
+      notify(t('qwenAudioModuleMissing'), true);
       return;
     }
     if (button && 'disabled' in button) button.disabled = true;
@@ -244,12 +253,12 @@
       const result = await client.launch({ withToken: path => authPath(path) });
       if (!result.ok) {
         const error = new Error(result.message || result.code);
-        reportError('打开语音界面失败', error);
-        notify(`打开语音界面失败：${error.message}`, true);
+        reportError('qwenAudioOpenFailed', error);
+        notify(t('qwenAudioOpenFailed', { message: error.message }), true);
       }
     } catch (error) {
-      reportError('打开语音界面失败', error);
-      notify(`打开语音界面失败：${error.message}`, true);
+      reportError('qwenAudioOpenFailed', error);
+      notify(t('qwenAudioOpenFailed', { message: error.message }), true);
     } finally {
       if (button && 'disabled' in button) button.disabled = false;
     }

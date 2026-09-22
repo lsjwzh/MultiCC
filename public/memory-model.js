@@ -6,6 +6,9 @@
   if (!root) return;
 
   const api = root.MultiCCApi;
+  // 文案走全局 t()（i18n.js 在 manage.html 与 Air 里都先于本文件可用；取不到就退回
+  // key，和仓库里其它共享模块一样）。调用点都在渲染期，所以这里不缓存 t 的结果。
+  const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
   const MAX_GRAPH_NODES = 600;
   const MAX_GRAPH_EDGES = 4000;
   const MAX_TREE_FILES = 2000;
@@ -210,8 +213,8 @@
     };
   }
   function apiMessage(error) {
-    if (!api || typeof api.errorDisplay !== 'function') return '请求失败';
-    return api.errorDisplay(error).message || '请求失败';
+    if (!api || typeof api.errorDisplay !== 'function') return t('memoryRequestFailed');
+    return api.errorDisplay(error).message || t('memoryRequestFailed');
   }
   function apiJson(url, options) {
     if (!api || typeof api.json !== 'function') {
@@ -243,7 +246,7 @@
   async function saveFile(rel, content) {
     const text = String(content == null ? '' : content);
     if (text.length > MAX_FILE_CONTENT) {
-      const error = new Error(`内容超过可安全编辑上限（${MAX_FILE_CONTENT} 字符）`);
+      const error = new Error(t('memoryFileTooLarge', { n: MAX_FILE_CONTENT }));
       error.code = 'MEMORY_CONTENT_TOO_LARGE';
       error.safeMessage = error.message;
       throw error;

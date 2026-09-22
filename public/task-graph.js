@@ -9,6 +9,10 @@
   if (!root || !root.document) return;
   const document = root.document;
   const SVGNS = 'http://www.w3.org/2000/svg';
+  // 界面文案走全局 t()（i18n.js 在 manage.html 与 Air 里都先于本文件加载）。取不到就
+  // 原样退回 key —— 与仓库里其它共享模块同样的兜底。包一层而不是直接抓 root.t：译文
+  // 在渲染时取，别把这个 IIFE 求值那一刻的语言钉死。
+  const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
 
   function escapeHtml(s) {
     return String(s == null ? '' : s)
@@ -17,24 +21,25 @@
   }
 
   // classify 状态配色（与 CLASSIFY_DISPLAY 的语义对齐，色值取面板惯用色）。
+  // labelKey 是图例上的名字（字母前缀 + 状态名做成一条，英文语序不用跟中文一样）。
   const CLASSIFY = {
-    P: { c: '#6cb6ff', label: 'P 进行中' },
-    D: { c: '#3fb950', label: 'D 执行成功' },
-    W: { c: '#d29922', label: 'W 等待用户' },
-    B: { c: '#bc8cff', label: 'B 后台等待' },
-    E: { c: '#f85149', label: 'E 异常' },
-    null: { c: '#8b949e', label: '无 classify' },
+    P: { c: '#6cb6ff', labelKey: 'airTaskGraphLegendP' },
+    D: { c: '#3fb950', labelKey: 'airTaskGraphLegendD' },
+    W: { c: '#d29922', labelKey: 'airTaskGraphLegendW' },
+    B: { c: '#bc8cff', labelKey: 'airTaskGraphLegendB' },
+    E: { c: '#f85149', labelKey: 'airTaskGraphLegendE' },
+    null: { c: '#8b949e', labelKey: 'airTaskGraphLegendNoClassify' },
   };
   const classifyOf = (s) => CLASSIFY[s] || CLASSIFY.null;
   // 边类型配色：parent 橙 / group 青 / merged 红虚线 / 来源边蓝虚线 / shell-link 灰。
   const EDGE = {
-    parent: { c: '#f0883e', dash: '', label: '父任务' },
-    group: { c: '#3ad6c5', dash: '', label: '同组' },
-    merged: { c: '#f85149', dash: '4 3', label: '合并' },
-    split_from: { c: '#58a6ff', dash: '5 3', label: '分离来源' },
-    fork_from: { c: '#a371f7', dash: '5 3', label: '复制来源' },
-    related: { c: '#d29922', dash: '3 3', label: '相关' },
-    'shell-link': { c: '#6e7681', dash: '2 2', label: '任务壳' },
+    parent: { c: '#f0883e', dash: '', labelKey: 'airTaskGraphEdgeParent' },
+    group: { c: '#3ad6c5', dash: '', labelKey: 'airTaskGraphEdgeGroup' },
+    merged: { c: '#f85149', dash: '4 3', labelKey: 'airTaskGraphEdgeMerged' },
+    split_from: { c: '#58a6ff', dash: '5 3', labelKey: 'airTaskGraphEdgeSplitFrom' },
+    fork_from: { c: '#a371f7', dash: '5 3', labelKey: 'airTaskGraphEdgeForkFrom' },
+    related: { c: '#d29922', dash: '3 3', labelKey: 'airTaskGraphEdgeRelated' },
+    'shell-link': { c: '#6e7681', dash: '2 2', labelKey: 'airTaskGraphEdgeShellLink' },
   };
   const edgeOf = (t) => EDGE[t] || EDGE['shell-link'];
 
@@ -61,6 +66,10 @@
   window.loadTaskGraph = async function (dirId, forceRefetch) {
     canvas = el('tg-graph-canvas'); svg = el('tg-graph-svg');
     if (!canvas || !svg) { root.__taskGraphLoaded = false; return; }
+    // 拖拽/缩放的指针事件原本只在 DOMContentLoaded 那次 bindGraphLifecycle 里绑，
+    // 但 Air 的面板是懒渲染的：首次绑定跑的时候画布还不存在，等到用户点开这一页才
+    // 被创建。bindCanvasOnce 自带 __tgBound 幂等标记，所以每次加载都补一次。
+    bindCanvasOnce();
     const sel = el('tg-graph-project');
     const metaEl = el('tg-graph-meta');
     let srvMs = (_taskRaw && _taskRaw.meta && _taskRaw.meta.durationMs) || 0;
@@ -68,7 +77,7 @@
 
     if (!_taskRaw || forceRefetch) {
       const seq = ++_reqSeq;
-      if (metaEl) metaEl.textContent = '加载中…';
+      if (metaEl) metaEl.textContent = t('loading');
       stopSim();
       const t0 = performance.now();
       try {
@@ -80,7 +89,7 @@
       } catch (e) {
         if (seq !== _reqSeq) return;
         root.__taskGraphLoaded = false;
-        showEmpty('加载失败：' + (e && e.message ? e.message : e));
+        showEmpty(t('airTaskGraphLoadFailed', { msg: (e && e.message ? e.message : e) }));
         if (metaEl) metaEl.textContent = '';
         return;
       }
@@ -95,7 +104,7 @@
     }
     if (sel) {
       const total = projects.reduce((a, p) => a + (p.count || 0), 0);
-      let html = `<option value="all">全部项目 (${total})</option>`;
+      let html = `<option value="all">${escapeHtml(t('airTaskGraphProjectAll', { n: total }))}</option>`;
       for (const p of projects) html += `<option value="${escapeHtml(p.dirId)}">${escapeHtml(p.name)} (${p.count})</option>`;
       sel.innerHTML = html;
       sel.value = target;
@@ -108,15 +117,15 @@
 
     const nc = sub.nodes.length, ec = sub.edges.length;
     const pill = el('tg-graph-count-pill');
-    if (pill) pill.textContent = nc ? `· ${nc} 节点 / ${ec} 关联` : '';
+    if (pill) pill.textContent = nc ? t('airTaskGraphMetaCount', { nc, ec }) : '';
     if (metaEl) {
-      metaEl.textContent = `${nc} 节点 · ${ec} 边 · 服务端 ${srvMs}ms`
-        + (clientMs ? ` · 拉取 ${clientMs}ms` : '')
-        + (_taskRaw.meta && _taskRaw.meta.truncated ? ` · 已截断至 ${_taskRaw.meta.maxNodes}` : '');
+      metaEl.textContent = t('airTaskGraphMetaServer', { nc, ec, ms: srvMs })
+        + (clientMs ? t('airTaskGraphMetaFetch', { ms: clientMs }) : '')
+        + (_taskRaw.meta && _taskRaw.meta.truncated ? t('airTaskGraphMetaTruncated', { n: _taskRaw.meta.maxNodes }) : '');
     }
     renderLegend();
 
-    if (!nc) { stopSim(); showEmpty('暂无任务节点。任务看板或任务壳里出现任务后，这里会画出父子 / 分组 / 合并 / 壳链接。'); return; }
+    if (!nc) { stopSim(); showEmpty(t('airTaskGraphEmpty')); return; }
     hideEmpty();
 
     stopSim();
@@ -406,34 +415,38 @@
     const types = new Set(G ? G.edges.map(e => e.type) : []);
     let html = Object.keys(CLASSIFY)
       .filter(k => states.has(k))
-      .map(k => `<span class="lg"><span class="sw" style="background:${CLASSIFY[k].c}"></span>${escapeHtml(CLASSIFY[k].label)}</span>`)
+      .map(k => `<span class="lg"><span class="sw" style="background:${CLASSIFY[k].c}"></span>${escapeHtml(t(CLASSIFY[k].labelKey))}</span>`)
       .join('');
     if (G && G.nodes.some(n => n.kind === 'shell')) {
-      html += '<span class="lg" style="opacity:.85"><span class="sw" style="background:#30363d;border:1px solid #8b949e;transform:rotate(45deg)"></span>任务壳</span>';
+      html += `<span class="lg" style="opacity:.85"><span class="sw" style="background:#30363d;border:1px solid #8b949e;transform:rotate(45deg)"></span>${escapeHtml(t('airTaskGraphShellNode'))}</span>`;
     }
     if (G && G.nodes.some(n => n.kind !== 'shell' && n.provisional)) {
-      html += '<span class="lg" style="opacity:.5"><span class="sw" style="background:#8b949e;opacity:.4"></span>provisional(身份未锁)</span>';
+      html += `<span class="lg" style="opacity:.5"><span class="sw" style="background:#8b949e;opacity:.4"></span>${escapeHtml(t('airTaskGraphLegendProvisional'))}</span>`;
     }
     html += Object.keys(EDGE)
       .filter(k => types.has(k))
-      .map(k => `<span class="lg" style="opacity:.85">—<span style="color:${EDGE[k].c}">${escapeHtml(EDGE[k].label)}</span></span>`)
+      .map(k => `<span class="lg" style="opacity:.85">—<span style="color:${EDGE[k].c}">${escapeHtml(t(EDGE[k].labelKey))}</span></span>`)
       .join('');
     // 用户手动建立的关系与推导出来的边分开标注：图上看起来都是「同组」，
     // 但只有前者是用户意图。
     if (G && G.edges.some(e => e.provenance === 'user')) {
-      html += '<span class="lg" style="opacity:.85">手动关系（虚线=相关，实线=同组）</span>';
+      html += `<span class="lg" style="opacity:.85">${escapeHtml(t('airTaskGraphLegendManualRelation'))}</span>`;
     }
     box.innerHTML = html;
   }
   function showEmpty(msg) {
     const e = el('tg-graph-empty'); if (!e) return;
-    e.textContent = msg || '暂无数据'; e.style.display = 'flex';
+    e.textContent = msg || t('airUsageNoData'); e.style.display = 'flex';
     if (svg) while (svg.firstChild) svg.removeChild(svg.firstChild);
   }
   function hideEmpty() { const e = el('tg-graph-empty'); if (e) e.style.display = 'none'; }
 
   // ── 节点详情弹窗 ─────────────────────────────────────────────────────
-  const CLASSIFY_NAMES = { P: '进行中', D: '执行成功', W: '等待用户', B: '后台等待', E: 'API 异常' };
+  // 状态名（不带字母前缀）走词典：图例那条把前缀一起写死了，这里只取名字那一半。
+  const CLASSIFY_NAMES = {
+    P: 'airTaskGraphClassNameP', D: 'airTaskGraphClassNameD', W: 'airTaskGraphClassNameW',
+    B: 'airTaskGraphClassNameB', E: 'airTaskGraphClassNameE',
+  };
   window.tgNodeModalOpen = function (id) {
     if (!G) return;
     const nd = G.byId.get(id); if (!nd) return;
@@ -446,35 +459,36 @@
     tags.innerHTML = '';
     const addTag = (t) => { const s = document.createElement('span'); s.className = 'mn-tag'; s.textContent = t; tags.appendChild(s); };
     if (nd.kind === 'shell') {
-      addTag('任务壳');
-      if (nd.archived) addTag('已归档');
-      if (nd.currentTaskId) addTag('当前任务 ' + truncate(nd.currentTaskId, 20));
+      addTag(t('airTaskGraphShellNode'));
+      if (nd.archived) addTag(t('statusArchived'));
+      if (nd.currentTaskId) addTag(t('airTaskGraphTagCurrentTask', { id: truncate(nd.currentTaskId, 20) }));
     } else {
-      addTag(nd.provisional ? 'provisional（身份未锁）' : 'canonical');
-      if (nd.classifyState) addTag(`classify ${nd.classifyState} · ${CLASSIFY_NAMES[nd.classifyState] || ''}`);
-      if (nd.status) addTag('状态: ' + nd.status);
-      if (nd.runState) addTag('运行: ' + nd.runState);
-      if (nd.workflowStage) addTag('阶段: ' + nd.workflowStage);
-      if (nd.origin) addTag('来源: ' + nd.origin);
-      if (nd.deleted) addTag('已删除');
-      addTag('关联度: ' + (nd.degree || 0));
+      addTag(nd.provisional ? t('airTaskGraphTagProvisional') : 'canonical');
+      if (nd.classifyState) addTag(t('airTaskGraphTagClassify', {
+        code: nd.classifyState, name: CLASSIFY_NAMES[nd.classifyState] ? t(CLASSIFY_NAMES[nd.classifyState]) : '' }));
+      if (nd.status) addTag(t('airTaskGraphTagStatus', { value: nd.status }));
+      if (nd.runState) addTag(t('airTaskGraphTagRunState', { value: nd.runState }));
+      if (nd.workflowStage) addTag(t('airTaskGraphTagStage', { value: nd.workflowStage }));
+      if (nd.origin) addTag(t('airTaskGraphTagOrigin', { value: nd.origin }));
+      if (nd.deleted) addTag(t('airTaskGraphTagDeleted'));
+      addTag(t('airTaskGraphTagDegree', { n: nd.degree || 0 }));
     }
 
     // 详情：goal 摘要 + 数据来源；任务节点附「在 Air 打开」。
     const lines = [];
-    if (nd.goal) lines.push(`目标：${nd.goal}`);
-    if (nd.phase) lines.push(`阶段：${nd.phase}`);
-    if (nd.parentTaskId) lines.push(`父任务：${nd.parentTaskId}`);
-    if (nd.groupId) lines.push(`任务组：${nd.groupId}`);
-    if (nd.mergedInto) lines.push(`已合并进：${nd.mergedInto}`);
-    if (nd.separatedFromTaskId) lines.push(`分离自：${nd.separatedFromTaskId}`);
-    if (nd.forkedFromTaskId) lines.push(`复制自：${nd.forkedFromTaskId}`);
-    if (nd.independentFromSessionId) lines.push(`独立继续来源：${nd.independentFromSessionId}`);
-    if (nd.chatSessionId || nd.sessionId) lines.push(`绑定会话：${nd.chatSessionId || nd.sessionId}`);
+    if (nd.goal) lines.push(t('airTaskGraphDetailGoal', { value: nd.goal }));
+    if (nd.phase) lines.push(t('airTaskGraphDetailPhase', { value: nd.phase }));
+    if (nd.parentTaskId) lines.push(t('airTaskGraphDetailParent', { value: nd.parentTaskId }));
+    if (nd.groupId) lines.push(t('airTaskGraphDetailGroup', { value: nd.groupId }));
+    if (nd.mergedInto) lines.push(t('airTaskGraphDetailMergedInto', { value: nd.mergedInto }));
+    if (nd.separatedFromTaskId) lines.push(t('airTaskGraphDetailSeparatedFrom', { value: nd.separatedFromTaskId }));
+    if (nd.forkedFromTaskId) lines.push(t('airTaskGraphDetailForkedFrom', { value: nd.forkedFromTaskId }));
+    if (nd.independentFromSessionId) lines.push(t('airTaskGraphDetailIndependentFrom', { value: nd.independentFromSessionId }));
+    if (nd.chatSessionId || nd.sessionId) lines.push(t('airTaskGraphDetailSession', { value: nd.chatSessionId || nd.sessionId }));
     if (nd.kind !== 'shell' && nd.sources && nd.sources.length) {
-      lines.push(`记录来源：${nd.sources.join(' + ')}`);
+      lines.push(t('airTaskGraphDetailSources', { value: nd.sources.join(' + ') }));
     }
-    detailEl.textContent = lines.length ? lines.join('\n') : '（无更多详情）';
+    detailEl.textContent = lines.length ? lines.join('\n') : t('airTaskGraphDetailNone');
 
     const openBtn = el('tg-node-open');
     if (openBtn) {
@@ -497,17 +511,17 @@
       for (const it of arr) {
         const b = document.createElement('button');
         b.className = 'mn-link';
-        const typeLabel = edgeOf(it.type).label + (it.user ? '（手动）' : '');
+        const typeLabel = t(edgeOf(it.type).labelKey) + (it.user ? t('airTaskGraphManualSuffix') : '');
         b.textContent = `${arrow} [${typeLabel}] ${it.n.title || it.n.id}`;
         b.onclick = () => { tgNodeModalOpen(it.n.id); focusNode(it.n); };
         linksBox.appendChild(b);
       }
     };
-    section('指向', out, '→');
-    section('被指向', inc, '←');
+    section(t('airTaskGraphSectionOut'), out, '→');
+    section(t('airTaskGraphSectionIn'), inc, '←');
     if (!out.length && !inc.length) {
       const p = document.createElement('div'); p.style.cssText = 'color:var(--faint);font-size:12px';
-      p.textContent = '（暂无关联，孤立节点）'; linksBox.appendChild(p);
+      p.textContent = t('airTaskGraphNoLinks'); linksBox.appendChild(p);
     }
     modal.classList.add('open');
   };

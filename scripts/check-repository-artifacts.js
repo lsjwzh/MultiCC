@@ -18,6 +18,9 @@ const RUNTIME_BASENAMES = new Set([
   'official-provider-selection.json', 'provider-defaults.json', 'voice_examples.json', 'whisper_vocab.json',
   'tunnel-config.json', 'tunnel-repair-ledger.json', 'orchestration.json', 'orchestration.sqlite',
   'orchestration.sqlite-wal', 'orchestration.sqlite-shm', 'task_board.json',
+  // 敏感信息保险箱：明文 API key 的唯一落盘处。它同时被 build-task-shell-image 的
+  // excluded() 当排除名单用，所以放进这里等于「一旦被跟踪就报错 + 永不进镜像」。
+  'secrets.json',
 ]);
 
 const HIGH_CONFIDENCE_SECRET_PATTERNS = [

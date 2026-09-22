@@ -955,6 +955,24 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .air-doc-actions button:hover, .air-doc-actions a:hover { border-color: #d9e5f0; background: #f5f9fd; }
 .air-doc-actions .danger { color: #a6533c; }
 
+/* ── 敏感信息（保险箱）：Air 原生面板 ────────────────────────────────── */
+/* 一行是一条「会按同名环境变量注入子进程」的配置，所以行里最重的是名字（等宽）；
+   值平时没有节点，只有用户点开「显示」的那一下才画 .air-secret-value 这一层。 */
+.air-secret-list { display: grid; gap: 8px; }
+.air-secret-card { min-width: 0; display: flex; align-items: center; gap: 12px; padding: 13px 15px; border: 1px solid var(--hairline); border-radius: 16px; background: #fff; box-shadow: var(--shadow-1); }
+.air-secret-mark { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; border-radius: 11px; background: #f2f7fd; }
+.air-secret-copy { min-width: 0; flex: 1; }
+.air-secret-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.air-secret-name { overflow: hidden; color: #2f536f; font-size: 12px; font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
+.air-secret-tag { flex: 0 0 auto; padding: 2px 6px; color: #537ba0; border-radius: 6px; background: #eaf3fb; font-size: 8.5px; }
+.air-secret-copy small { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.air-secret-value { display: block; margin-top: 7px; padding: 7px 9px; color: #2f536f; border: 1px solid var(--hairline); border-radius: 10px; background: #f7fafd; font-size: 11px; word-break: break-all; }
+.air-secret-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.air-secret-actions button { min-height: 30px; padding: 4px 9px; color: #56718b; border: 1px solid transparent; border-radius: 9px; background: transparent; font-size: 9.5px; }
+.air-secret-actions button:hover { border-color: #d9e5f0; background: #f5f9fd; }
+.air-secret-actions .danger { color: #a6533c; }
+.air-secret-count { color: var(--muted); font-size: 10px; }
+
 .air-provider-page { display: grid; gap: 14px; }
 .air-provider-intro { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .air-provider-intro h3 { margin: 4px 0; color: #294760; font-size: 17px; }
@@ -1303,7 +1321,9 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 #console-here { color: var(--muted); font-size: 13px; font-weight: 400; }
 #console-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 #console-actions:empty { display: none; }
-#console-close { flex: 0 0 auto; }
+#console-close, #console-secrets { flex: 0 0 auto; }
+/* 顶栏上这颗是常驻入口（不是某一页的工具），所以给它一圈底，跟「返回任务」区分开。 */
+#console-secrets { display: flex; align-items: center; gap: 6px; color: #2c6ba8; border-color: #cfe1f3; background: #f2f8ff; }
 #console-body { min-height: 0; flex: 1; overflow: auto; padding: 26px 30px 46px; }
 
 /* 控制台那一行的常驻徽标：接管原先「跨目录活动」承担的「别处有事在等」信号，
@@ -1670,6 +1690,8 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #schedule-list { grid-template-columns: 1fr; }
   .air-doc-card { align-items: flex-start; flex-wrap: wrap; }
   .air-doc-actions { width: 100%; padding-left: 46px; flex-wrap: wrap; }
+  .air-secret-card { flex-wrap: wrap; }
+  .air-secret-actions { width: 100%; padding-left: 44px; }
   .air-provider-cards { grid-template-columns: 1fr; }
   .air-usage-card .admin-panel-head { align-items: flex-start; flex-direction: column; }
   .air-usage-action { width: 100%; }
@@ -1681,6 +1703,8 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #console-panel { width: calc(100% - 22px); border-radius: 0 18px 18px 0; box-shadow: 8px 0 40px #263f5d24; }
   #console-head { align-items: flex-start; flex-wrap: wrap; gap: 10px; padding: 16px 15px 13px; }
   #console-actions { order: 3; width: 100%; }
+  /* 顶栏在手机上只剩图标：标题那一行本来就挤，名字留给 aria-label。 */
+  #console-secrets > span { display: none; }
   #console-body { padding: 18px 15px 36px; }
   .console-title h2 { font-size: 19px; }
   #palette { top: 68px; max-height: min(520px, calc(100dvh - 110px)); }
