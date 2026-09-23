@@ -224,7 +224,7 @@ function mountAirRoutes(app, deps) {
         id: record.id, kind: 'chat', dirId: record.dirId, label: record.label,
         cli: record.cli, cwd: record.worktreePath || deps.directories.get(record.dirId)?.path || '',
         createdAt: record.createdAt, taskBoundTaskId: record.taskBoundTaskId || null,
-        autoCommit: record.autoCommit !== false,
+        autoCommit: !!record.autoCommit,
       } : null };
   }));
   app.post('/api/air/tasks/:id/delivery/reconcile', route(async req => {

@@ -38,6 +38,11 @@ test('Air chat-open endpoint returns only authorized session metadata and skips 
   assert.deepEqual(calls, [['t', { includeMessages: false }]]);
   assert.equal(entry.session.id, 'bound');
   assert.equal(entry.session.autoCommit, false);
+  // 老记录（没有这个键）也必须读成「关」：Air 的任务开关直接照这个字段渲染，
+  // 缺键读成「开」会跟网页 `#auto-commit-btn`（走 session-dto 的 `!!`）打架。
+  delete record.autoCommit;
+  assert.equal((await read()).session.autoCommit, false, '缺 autoCommit 的旧记录读作关');
+  record.autoCommit = false;
   assert.equal(entry.session.cwd, '/repo');
   assert.equal(entry.configuration.cli, 'codex');
   assert.equal(entry.configuration.provider, null);

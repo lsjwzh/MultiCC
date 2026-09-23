@@ -5,14 +5,15 @@ import '../providers/session_manager.dart';
 import 'session_service.dart';
 import 'settings_service.dart';
 
-/// 会话级「自动提交」开关当前值（Web 的 `#auto-commit-btn`）。服务端缺省是
-/// 「开」（`create-record.js` 里判的是 `autoCommit !== false`），会话列表里还
-/// 没这一条时也按「开」算 —— 跟 `Session.autoCommit` 的解析保持一致。
+/// 会话级「自动提交」开关当前值（Web 的 `#auto-commit-btn`）。新会话缺省是
+/// 「关」（`create-record.js` 里判的是 `!!autoCommit`，默认参数 false），会话
+/// 列表里还没这一条时也按「关」算 —— 跟 `Session.autoCommit` 的解析保持一致，
+/// 免得列表慢一拍就替用户把这一轮合并了。
 bool sessionAutoCommitOf(List<Session> sessions, String sessionId) {
   for (final s in sessions) {
     if (s.id == sessionId) return s.autoCommit;
   }
-  return true;
+  return false;
 }
 
 /// 最后一轮用户消息的 id —— Web 的 `_lastUserBubble`。每轮自动提交的勾选框就
