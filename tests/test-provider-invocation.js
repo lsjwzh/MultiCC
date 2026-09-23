@@ -115,8 +115,9 @@ test('a resident lane keeps one route capability across turns and follows the sp
 });
 
 test('a codex app-server resident child keys its route on the binding, not on per-turn argv', () => {
+  let sequence = 0;
   const attempts = createProviderAttemptRuntime({
-    runtimeEpoch: 'epoch-1', nextId: prefix => `${prefix}-1`,
+    runtimeEpoch: 'epoch-1', nextId: prefix => `${prefix}-${++sequence}`,
   });
   const router = {
     createBinding(session, overrides = {}) {
@@ -165,6 +166,28 @@ test('a codex app-server resident child keys its route on the binding, not on pe
   });
   assert.equal(second.proxySessionId, first.proxySessionId,
     'the app-server takes model/effort per turn, so argv is not part of its spawn contract');
+  attempts.finishAttempt(second.attempt, { outcome: 'succeeded' });
+  session.model = 'other-main-model';
+  const third = factory.prepare({ request, turn: { ...turn, turnId: 'turn-3' }, session,
+    provider: spawning(['bridge', '--model', session.model]), envelope, attemptNo: 1 });
+  assert.equal(third.proxySessionId, first.proxySessionId, 'a per-turn model change does not invalidate the home');
+});
+
+test('changing only the Codex subagent model rotates its baked route', () => {
+  const { factory, attempts } = makeHarness();
+  const session = { id: 'session-1', cli: 'codex-exp', provider: 'provider-a', model: 'main',
+    subagent: { providerId: 'provider-b', model: 'child-old' } };
+  const request = normalizeTurnRequest({ sessionId: session.id, text: 'hello', cli: session.cli, forceFirst: true });
+  const provider = { buildInvocation: () => ({ cmd: 'node', streamArgs: ['bridge', '--resident'], payload: 'hello' }) };
+  const prepare = n => factory.prepare({ request, turn: createTurnLifecycle(request, { turnId: `turn-${n}` }),
+    session, provider, envelope: { userText: 'hello', spawnOpts: {}, historyHandle: {} }, attemptNo: 1 });
+  const first = prepare(1);
+  attempts.finishAttempt(first.attempt, { outcome: 'succeeded' });
+  session.subagent.model = 'child-new';
+  const second = prepare(2);
+  assert.notEqual(second.proxySessionId, first.proxySessionId);
+  attempts.finishAttempt(second.attempt, { outcome: 'succeeded' });
+  assert.equal(prepare(3).proxySessionId, second.proxySessionId);
 });
 
 test('child env route overrides do not qualify an OpenCode-style wire model twice', () => {

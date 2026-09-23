@@ -70,7 +70,12 @@ function createSessionHibernation(deps) {
       }
       return blockers;
     },
-    closePersistent: id => chatStream.closeAndWait(id),
+    closePersistent: async (id, record) => {
+      // Shared-shell sessions can leave the last warm child under a sibling ID.
+      // Retire every child on the checkout before hibernation removes it.
+      await chatStream.claimWorkspace?.(id, { id: record.workspaceId, path: record.worktreePath }, { exclusive: true });
+      return chatStream.closeAndWait(id);
+    },
     updateChatCwd: (id, cwd) => { const chat = chatSessions.get(id); if (chat) chat.cwd = cwd; },
     pathExists: record => !!record.worktreePath && fs.existsSync(record.worktreePath),
     idleMs: process.env.MULTICC_SESSION_HIBERNATE_IDLE_MS,
