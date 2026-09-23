@@ -637,7 +637,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // 分开摆（口径来自服务端 registry 的 residency），右边跟一颗「现在回收」。
     assert.ok(await page.waitFor(`document.getElementById('directory-worktrees').hidden===false`));
     assert.equal(await page.evaluate(`document.getElementById('directory-worktree-summary').textContent`),
-      '6 个 Worktree · 本地 3 · 休眠 2 · 计划 1 · 占用中 1');
+      '本地 3 · 休眠 2 · 计划 1 · 占用中 1 （共 6 条会话记录）');
     assert.equal(await page.evaluate(`document.querySelector('#directory-worktrees .worktree-policy').textContent`), '闲置超过 24 小时会自动回收');
     // 目录卡那一行是同一个 summary()：不必点进去才知道这个目录在不在涨。
     assert.equal(await page.evaluate(`[...document.querySelectorAll('#directory-grid small')].some(el=>el.textContent.includes('本地 3 · 休眠 2 · 计划 1'))`), true);

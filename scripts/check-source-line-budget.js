@@ -130,9 +130,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 4 条结果／路径文案，中英各 5 行 = +10 行），抬到 6286/385832。
   // 关盖运行的免密助手补 10 条键（airGlobalHelper* ：按钮两态、已装／未装、等待、
   // 两条结果、两条失败、一段说明，中英各 10 行 = +20 行），抬到 6306/387580。
+  // 合并 main 时两侧各自抬过这一格（本分支 6306，main 因 airWorktreeRecordTotal
+  // 一条键抬到 6266，两者从不同基线出发）。冲突解法定式是「以重新生成后的真实数字
+  // 为准」，不是取某一侧：下面这组是两侧键全在的 i18n 重新生成后量出来的。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6306,
-    maxBytes: 387580,
+    maxLines: 6308,
+    maxBytes: 387698,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
