@@ -535,6 +535,19 @@ function createOrchestrationRoutes(rawDeps) {
               await deps.runtime.tick();
               schedule = await deps.runtime.sessionScheduler.status(session.id);
             }
+            // A cancel that did not free the slot is not the end of the story:
+            // the promoted entry is still held, and the usual cause is a
+            // completed turn's workspace lease pinned by background work the host
+            // can no longer stop. "Insert now" already asked for the current work
+            // to be interrupted, so escalate — kill the writer — and re-tick.
+            if (entryHeld(schedule) && typeof deps.unstickBlocked === 'function') {
+              result.unstick = await deps.unstickBlocked(session.id, { source: 'insert_queued', trusted: true });
+              for (let attempt = 0; entryHeld(schedule) && attempt < 5; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 300));
+                await deps.runtime.tick();
+                schedule = await deps.runtime.sessionScheduler.status(session.id);
+              }
+            }
             result.schedule = schedule;
             result.started = !entryHeld(schedule);
             if (!result.started) {
@@ -561,6 +574,14 @@ function createOrchestrationRoutes(rawDeps) {
             reason: body.reason || 'user_cancelled',
             operationId: req.get('Idempotency-Key') || body.idempotencyKey || body.operationId || null,
           });
+          // A cancel reports ok when there was no runner left to stop, which is
+          // also what a session wedged on a workspace lease looks like. Report
+          // the escalation when something really is waiting behind it (the
+          // admission side owns that check and stays silent otherwise) instead of
+          // answering "cancelled" while the user's next message never arrives.
+          if (result.ok && typeof deps.unstickBlocked === 'function') {
+            result.unstick = await deps.unstickBlocked(session.id, { source: 'manual_cancel' });
+          }
           // No tick(): a cancel does not advance the FIFO. Only a D verdict
           // drains the queue, and that policy lives in the scheduler.
           const status = result.ok ? 200

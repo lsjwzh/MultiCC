@@ -9,7 +9,27 @@ async function sdkFixture(t, reply, { authorize, onRequest } = {}) {
   const cwd = path.join(root, 'project');
   const configDir = path.join(root, 'claude');
   fs.mkdirSync(cwd); fs.mkdirSync(configDir);
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // Teardown order is not a style question here. `after` hooks run in
+  // registration order, and this hook is registered before the caller can even
+  // create its runner — so the old "delete the temp root" hook ran while the SDK
+  // child was still writing this directory, threw ENOTEMPTY on
+  // `claude/sessions`, and, because a throwing hook aborts every hook after it,
+  // skipped the upstream close further down: one rmdir leak left a listening
+  // socket behind and hung `node --test` for the whole file forever. Callers
+  // therefore push their "stop the child" work into `teardown.tasks` instead of
+  // registering their own after-hook, and nothing in here is allowed to throw.
+  const teardown = { tasks: [] };
+  t.after(async () => {
+    for (const task of [...teardown.tasks].reverse()) {
+      try { await task(); } catch (_) { /* one failed stop must not skip the others */ }
+    }
+    // A child that outlives its kill still writes here; retry rather than throw,
+    // because throwing here is what skipped the hooks below it.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try { fs.rmSync(root, { recursive: true, force: true }); return; }
+      catch (_) { await new Promise(resolve => setTimeout(resolve, 100)); }
+    }
+  });
   // Parent history checks and SDK subprocesses use the SAME isolated store.
   const previousConfig = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = configDir;
@@ -48,7 +68,7 @@ async function sdkFixture(t, reply, { authorize, onRequest } = {}) {
     CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_API_KEY: 'isolated-test-only',
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstream.address().port}`,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' };
-  return { root, cwd, configDir, env, requests };
+  return { root, cwd, configDir, env, requests, teardown };
 }
 
 module.exports = sdkFixture;

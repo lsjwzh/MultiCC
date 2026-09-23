@@ -86,6 +86,10 @@ function createOrchestrationRuntime({
   // Optional diagnostic companion to isBusy: (sessionId, item) → string[] of
   // reason codes. Used only for skip logging; never changes the decision.
   busyReasons = null,
+  // Optional: (sessionId) → void. Told exactly when a real queued item was
+  // refused, which is the only signal the workspace escalation reacts to (a
+  // pinned lease means a writer exists, not that anyone is waiting on it).
+  noteBlockedDelivery = null,
   isDeliveryLocked = () => false,
   deliveryGroup = id => id,
   isSlotUnavailable = () => false,
@@ -1098,6 +1102,9 @@ function createOrchestrationRuntime({
       if (!item) return null;
       if (isBusy(item.sessionId, projected)) {
         noteDeliverySkip(item, 'session_busy', projected);
+        if (typeof noteBlockedDelivery === 'function') {
+          try { noteBlockedDelivery(item.sessionId); } catch (_) { /* diagnostics never veto */ }
+        }
         return null;
       }
       if (inFlightDeliveries.has(item.id)) return null;

@@ -11,6 +11,20 @@ const { createStreamRouter } = require('../src/chat/stream-router');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const sdkFixture = require('./helpers/claude-sdk-fixture');
 
+// The runtime is closed inside a try/finally so a throw from closeAndWait can
+// never skip the sweep, and the sweep is what the temp-directory removal in the
+// fixture depends on: a child still holding its session files makes rmSync fail
+// with ENOTEMPTY, and a failing after hook skips every hook registered after it.
+async function stopRuntime(runtime, children = []) {
+  try { await runtime.closeAndWait('sdk'); }
+  finally {
+    for (const { proc } of children) {
+      if (proc.exitCode !== null || proc.signalCode !== null) continue;
+      try { proc.kill('SIGKILL'); } catch (_) { /* exited between check and kill */ }
+    }
+  }
+}
+
 async function runtimeFixture(t, reply, routing, streamDeps = {}) {
   const fixture = await sdkFixture(t, reply, routing);
   const children = [];
@@ -18,7 +32,7 @@ async function runtimeFixture(t, reply, routing, streamDeps = {}) {
     const proc = spawn(...args); children.push({ proc, args }); return proc;
   } });
   const runtime = createStreamRouter({ status: () => null, closeAndWait: async () => ({ closed: true }) }, sdk);
-  t.after(() => runtime.closeAndWait('sdk'));
+  fixture.teardown.tasks.push(() => stopRuntime(runtime, children));
   const cfg = { cwd: fixture.cwd, sessionId: randomUUID(), env: fixture.env,
     sdkOptions: { model: 'claude-sonnet-4-6' } };
   const events = [];
@@ -147,7 +161,7 @@ test('closing during SDK loading cannot spawn a child after cleanup completes', 
     await new Promise(resolve => { release = resolve; });
     return { query() { spawned = true; throw new Error('must not spawn'); } };
   } });
-  t.after(() => runtime.closeAndWait('sdk'));
+  t.after(() => stopRuntime(runtime));
   runtime.ensure('sdk', { cwd: '/unused', sessionId: randomUUID(), env: {}, sdkOptions: {} });
   const rejected = assert.rejects(runtime.send('sdk', 'closing'), /cancelled/);
   await ready;

@@ -1349,6 +1349,8 @@ providerRouterRuntime.mountProtocolProxies(app, {
   protocols: ['claude'], authorizeProxyRequest: providerAttemptRuntime.authorizeProxyRequest, claudeProxy: { readOfficialCredential: arg => claudeAccountCredentials.readOfficialCredential(arg) }, // multi-account: marked providers resolve the account credential (refresh-on-read); the shared login keeps the default Keychain read
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
+  // A 409 here is a host decision, and it used to leave no trace at all.
+  onRejected: event => logger.warn('provider_proxy_route_rejected', event),
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
@@ -1363,6 +1365,7 @@ const codexProxyMounts = providerRouterRuntime.mountProtocolProxies(app, {
   onTransportRotate: event => { metrics.inc('multicc_provider_dispatcher_rotations_total'); logger.warn('provider_dispatcher_rotated', event); },
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
+  onRejected: event => logger.warn('provider_proxy_route_rejected', event),
   onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
@@ -2006,6 +2009,12 @@ function dispatchTargetBusyReasons(sid, item = null) {
   catch (_) { reasons.push('repo_lease_check_failed'); }
   try { if (taskShellHost.isWorkspaceBusy(sid)) reasons.push('task_shell_workspace_busy'); }
   catch (_) { reasons.push('task_shell_busy_check_failed'); }
+  // Occupancy outliving its delivery is annotated, never reclaimed: `reasons`
+  // is already non-empty here, so a diagnostic can never create a busy verdict.
+  if (reasons.length) {
+    try { const stuck = workspaceAdmission?.stuckHint(sid); if (stuck) reasons.push(stuck); }
+    catch (_) { /* diagnostics never change the decision */ }
+  }
   return reasons;
 }
 function dispatchTargetBusy(sid, item = null) {
@@ -2536,9 +2545,13 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   getState: id => chatSessions.get(id), hibernation: () => sessionHibernationRuntime,
   hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
   closePersistent: id => chatStream.closeAndWait(id),
+  // Escalation inputs: stopping a pinned writer also means settling the host's
+  // belief that its background work still runs — and only once it went quiet.
+  reapBackground: (id, opts) => backgroundTaskRuntime.reapSessionShadows(id, opts),
+  backgroundSilence: id => backgroundTaskRuntime.backgroundSilenceMs(id),
   updateCwd: (id, cwd) => { const state = chatSessions.get(id); if (state) state.cwd = cwd; },
   pendingInput: id => userInputSignalHost.pending(id), loadHistory: id => viewChatHistory(id),
-  budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2), staleUncertainMs: Number(process.env.MULTICC_WORKSPACE_STALE_UNCERTAIN_MS || 300000) },
+  budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2), staleUncertainMs: Number(process.env.MULTICC_WORKSPACE_STALE_UNCERTAIN_MS || 300000), stuckBlockedMs: Number(process.env.MULTICC_WORKSPACE_STUCK_BLOCKED_MS || 1800000), stuckSilenceMs: Number(process.env.MULTICC_WORKSPACE_STUCK_SILENCE_MS || 600000) },
   log: (event, data) => logger.warn(event, data),
   // P4 交付蒸馏：merge 回执 published 后把交付记录写进任务级记忆。
   onIntegrationPublished: ({ sessionId, taskId, baseRef, operationId }) => {
@@ -2674,7 +2687,7 @@ services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
-  isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, deliveryGroup: id => taskShellHost.workspaceGroup(id), isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
+  isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, noteBlockedDelivery: id => workspaceAdmission?.noteBlockedDelivery(id), deliveryGroup: id => taskShellHost.workspaceGroup(id), isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
@@ -2757,6 +2770,8 @@ createOrchestrationRoutes({
   cancelActiveTurn: (sessionId, options) => sessionWorkHost.cancelActiveTurn(sessionId, options),
   dismissUserInput: (id, requestId) => sessionWorkHost.dismissUserInput(id, requestId),
   busyReasons: dispatchTargetBusyReasons,
+  // "Cancel did not take" gets one more move: stop the writer holding it.
+  unstickBlocked: (id, opts) => workspaceAdmission?.escalate(id, opts),
 }).mountRoutes(app);
 
 // WebSocket authentication, endpoint routing, terminal attachment and keep-alive
