@@ -16,7 +16,7 @@
   const presets = {
     'claude-subscription': { appType: 'claude', name: t('airProviderPresetClaudeSubscription'), baseUrl: '', model: '', apiFormat: 'anthropic' },
     'claude-api': { appType: 'claude', name: t('airProviderPresetClaudeApi'), baseUrl: 'https://api.anthropic.com', model: '', apiFormat: 'anthropic' },
-    'claude-glm': { appType: 'claude', name: t('airProviderPresetGlm'), baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-5.2', apiFormat: 'anthropic' },
+    'claude-glm': { appType: 'claude', name: t('airProviderPresetGlm'), baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-5.2', apiFormat: 'anthropic', aliasMap: { fable: { model: 'glm-5.3', name: 'GLM5.3' } } },
     'claude-deepseek': { appType: 'claude', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-chat', apiFormat: 'anthropic' },
     'claude-minimax': { appType: 'claude', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/anthropic', model: 'MiniMax-M2', apiFormat: 'anthropic' },
     'claude-qwen': { appType: 'claude', name: t('airProviderPresetQwen'), baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3-coder-plus', apiFormat: 'anthropic' },
@@ -98,6 +98,7 @@
     if (!preset || !form) return;
     for (const name of ['appType', 'name', 'baseUrl', 'model', 'apiFormat']) form.elements[name].value = preset[name];
     form.elements.models.value = preset.model || '';
+    fillAliases(form, preset.aliasMap || null);
     syncDialogProtocol();
     form.elements.authToken.focus();
   }
@@ -206,7 +207,14 @@
     const speed = button(latency.has(provider.id) ? latency.get(provider.id) : t('airProviderSpeedTest'), () => speedTest(provider, speed));
     actions.append(speed);
     if (!provider.isOfficial) {
-      actions.append(button(t('airProviderEdit'), () => openEditor(provider)), button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
+      actions.append(
+        button(t('airProviderEdit'), () => openEditor(provider)),
+        // 生成一份带独立令牌的借道分享码（manage-provider-relay.js，弹层自带样式）。
+        button(t('airProviderRelayShare'), () => {
+          root.MultiCCAirProviderAdvanced?.prepare(context);
+          root.shareRelayProvider?.(provider.appType, provider.id);
+        }),
+        button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
     } else actions.append(make('span', t('airProviderOfficialSwitchHint')));
     card.append(actions);
     return card;
@@ -315,8 +323,10 @@
     const cards = make('div', null, 'air-provider-cards'); cards.id = 'air-provider-cards';
     const advanced = make('section', null, 'air-provider-advanced'); advanced.id = 'air-provider-advanced'; advanced.hidden = !advancedOpen;
     const note = make('div', null, 'air-migration-note'); note.append(make('strong', t('airProviderAdvancedTitle')), make('span', t('airProviderAdvancedBody')));
-    const frame = make('iframe', null, 'air-legacy-frame'); frame.title = t('airProviderAdvancedFrameTitle'); frame.dataset.src = '/manage.html?view=provider&embed=air';
-    advanced.append(note, frame);
+    // 官方多账号 / 借道 / ZCode / Kimi 那四块正文由 air-provider-advanced.js 画进这个空壳，
+    // 而且要等真正展开才画：它开四个接口，默认折叠的那一格不该替用户付这笔。
+    const advancedBody = make('div'); advancedBody.id = 'air-provider-advanced-body';
+    advanced.append(note, advancedBody);
     page.append(intro, defaults, toolbar, cards, advanced);
     el('admin-content').replaceChildren(page);
     setProtocol(activeProtocol);
@@ -330,6 +340,7 @@
     if (grid) grid.replaceChildren(make('p', t('airProviderLoadingList'), 'admin-empty'));
     try {
       data = catalogApi.normalizeCatalog(await context.api('/api/providers'));
+      root._providerData = data; // manage-provider-relay.js 的 shareRelayProvider 只认这个裸全局
       renderDefaults(); renderCards();
       const control = el('air-provider-import');
       if (control) {
@@ -353,8 +364,13 @@
     const advanced = el('air-provider-advanced');
     if (!advanced) return;
     advanced.hidden = !advancedOpen;
-    const frame = advanced.querySelector('iframe');
-    if (advancedOpen && !frame.src) frame.src = frame.dataset.src;
+    const host = el('air-provider-advanced-body');
+    // 第一次展开才建那四块；之后每次展开只复读一遍状态（账号可能刚在终端里登录过），
+    // 不重建 DOM —— 重建会把用户填到一半的 API Key 表单清掉。
+    if (advancedOpen && host) {
+      if (host.childElementCount) root.MultiCCAirProviderAdvanced?.refresh();
+      else root.MultiCCAirProviderAdvanced?.render(host, context);
+    }
     if (advancedOpen) advanced.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 

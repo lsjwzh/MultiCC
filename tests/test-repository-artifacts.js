@@ -319,13 +319,9 @@ test('publish-apk serializes builds and recovers a stale process lock', () => {
   }
 });
 
-test('manage only downloads the selected local-or-release APK source', () => {
-  const source = fs.readFileSync(path.join(REPO_ROOT, 'public', 'manage-host-settings.js'), 'utf8');
-  const html = fs.readFileSync(path.join(REPO_ROOT, 'public', 'manage.html'), 'utf8');
-  assert.match(html, /id="apk-download-btn"[^>]+href="\/multicc\.apk"/);
-  assert.match(html, /id="apk-source-status"[^>]+aria-live="polite"/);
-  assert.doesNotMatch(html, /apk-build-btn|startApkBuild/);
-  assert.match(source, /info\.source === 'release'/);
-  assert.match(source, /info\.downloadUrl/);
+test('Air only downloads the local APK the host already built', () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, 'public', 'air-ops.js'), 'utf8');
+  assert.match(source, /get\('\/api\/apk-info'\)/);
+  assert.match(source, /apk\.downloadUrl \|\| '\/multicc\.apk'/);
   assert.doesNotMatch(source, /startApkBuild|\/api\/apk-build/);
 });

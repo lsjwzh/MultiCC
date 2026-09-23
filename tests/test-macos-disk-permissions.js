@@ -354,18 +354,12 @@ const NO_TOOLS = 'Command failed: git init\n'
       && /createDeveloperToolsRoutes\(\)\.mountRoutes\(app\)/.test(read('src/routes/system.js')),
       'wiring: the install route is mounted');
 
-    for (const [file, needle] of [
-      ['public/air-task-settings.js', '/api/system/developer-tools/install'],
-      ['public/manage-workspace-setup.js', '/api/system/developer-tools/install'],
-    ]) {
-      ok(read(file).includes(needle), `wiring: ${file} offers the repair as a button`);
-    }
+    ok(read('public/air-task-settings.js').includes('/api/system/developer-tools/install'),
+      'wiring: the task-settings dialog offers the repair as a button');
     ok(/if \(result\.fix\) failure\.fix = result\.fix;/.test(read('public/air-task-settings.js')),
       'wiring: the Air client keeps the fix code off the error body');
-    ok(/error\.details && error\.details\.fix/.test(read('public/manage-workspace-setup.js')),
-      'wiring: first-run setup reads the fix code the API client preserved');
-    ok(/id="newdir-fix"/.test(read('public/manage.html')),
-      'wiring: first-run setup has somewhere to render the button');
+    ok(/renderFix\(fixBox, e\.fix\)/.test(read('public/air-task-settings.js')),
+      'wiring: the dialog has somewhere to render the button');
   }
 
   console.log(`\n== macos disk permissions: ${pass} passed, ${fail} failed ==`);

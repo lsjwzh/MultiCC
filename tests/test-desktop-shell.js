@@ -428,7 +428,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     '--out', path.join(out, 'app-server'), '--no-install'], { encoding: 'utf8' });
   assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
   const staged = path.join(out, 'app-server');
-  for (const must of ['server.js', 'src/paths.js', 'public/manage.html', 'public/chat.html',
+  for (const must of ['server.js', 'src/paths.js', 'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
     'package.json']) {
@@ -455,7 +455,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
 function stubRepoRoot(dir) {
   fs.writeFileSync(path.join(dir, 'package.json'),
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
-  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/manage.html',
+  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/air.html',
     'scripts/multicc-router-mcp.js',
     'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
     const file = path.join(dir, rel);
@@ -654,7 +654,7 @@ test('desktop-stage-standalone stages the same Resources tree a package ships', 
   const res = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'desktop-stage-standalone.js'),
     '--out', out, '--no-install', '--no-runtime'], { encoding: 'utf8' });
   assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
-  for (const must of ['app-server/server.js', 'app-server/public/manage.html',
+  for (const must of ['app-server/server.js', 'app-server/public/air.html',
     'launcher/standalone-launcher.js', 'launcher/standalone-cli.js',
     'launcher/lib/backend-supervisor.js', 'launcher/lib/desktop-env.js',
     'bundle-manifest.json']) {

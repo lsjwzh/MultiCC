@@ -529,7 +529,7 @@ function writePlatformShell({ bundleDir, resourcesDir, version, platform, nodeVe
 function sanityGate({ bundleDir, resourcesDir, platform, arch, install, runtime, appServerDir, logger = console }) {
   const must = [
     path.join(appServerDir, 'server.js'),
-    path.join(appServerDir, 'public', 'manage.html'),
+    path.join(appServerDir, 'public', 'air.html'),
     path.join(appServerDir, 'plugins', 'bridges', 'wechat-ilink.js'),
     path.join(resourcesDir, 'launcher', 'standalone-launcher.js'),
     path.join(resourcesDir, 'launcher', 'standalone-cli.js'),

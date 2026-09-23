@@ -245,8 +245,8 @@
     if (!response.ok || result.ok === false) {
       throw Object.assign(new Error(result.message || result.error || result.code || `HTTP ${response.status}`), result);
     }
-    // 校验符记在「这份正文已经被收下」之后：失败响应（Express 也会给错误体配一个
-    // ETag）要是被记下来，下一轮就会拿它换回 304 —— 一次失败被固化成永远读不到。
+    // 校验符记在「这份正文已被收下」之后：失败响应的 ETag 若被记下，下一轮就会拿它
+    // 换回 304 —— 一次失败被固化成永远读不到。
     if (conditional) {
       const etag = response.headers.get('etag');
       if (etag) resourceEtag.set(path, etag);
@@ -1605,7 +1605,7 @@
       docs: [t('airCrumbTools'), t('airDocs'), t('airAdminDocsHint')],
       memory: [t('airCrumbTools'), t('airMemoryGraph'), t('airAdminMemoryHint')],
       taskgraph: [t('airCrumbTools'), t('airTaskGraph'), t('airAdminTaskGraphHint')],
-      workspaces: [t('airCrumbTools'), '工作区', 'worktree 休眠回收'],
+      workspaces: [t('airCrumbSettings'), t('airAdminPanelWorkspaces'), t('airAdminPanelWorkspacesDesc')],
       settings: [t('airCrumbSystemSettings'), t('airSettingsCenter'), t('airAdminSettingsHint')],
       voice: [t('airCrumbSettings'), t('airAdminVoice'), t('airAdminVoiceHint')],
       goal: [t('airCrumbSettings'), t('airAdminGoal'), t('airAdminGoalHint')],
