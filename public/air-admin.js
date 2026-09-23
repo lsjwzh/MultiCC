@@ -682,9 +682,18 @@
     if (!body) return;
     const s = auxView.status || {};
     const health = s.health || {};
+    const serial = (s.lanes && s.lanes.serial) || {};
+    // 并发池读数：active/total 是「几个槽在跑」，queueDepth 仍是「几个在排队」。
+    // 老服务端只肯给 processing/queueDepth 时退化成 1/1，不编造槽位数。
+    const capacity = Number(s.capacity) > 0
+      ? Number(s.capacity)
+      : (Number(s.concurrency) > 0 ? Number(s.concurrency) + 1 : 1);
+    const active = Number.isFinite(Number(s.active)) ? Number(s.active) : (s.processing ? 1 : 0);
     const state = s.processing ? t('airAdminProcessing') : (s.queueDepth > 0 ? t('airAdminQueuedCount', { n: s.queueDepth }) : t('airAdminStatusIdle'));
     const rows = [
       [t('airAdminLabelStatus'), s.currentTask ? t('airAdminStatusExecuting', { state, type: s.currentTask.type || '' }) : state],
+      [t('airAdminPool'), t('airAdminPoolValue', { active, total: capacity, queued: Number(s.queueDepth) || 0 })],
+      [t('airAdminSerialLane'), t('airAdminSerialLaneValue', { active: Number(serial.active) || 0, queued: Number(serial.queueDepth) || 0 })],
       [t('airAdminTotalProcessed'), t('airAdminNItems', { n: s.totalProcessed || 0 })],
       [t('airAdminLastRun'), s.lastTaskTime ? new Date(s.lastTaskTime).toLocaleString(getLocale()) : '—'],
     ];

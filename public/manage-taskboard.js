@@ -647,7 +647,7 @@ function createTbComposer(host, opts) {
   // only — an already-bound session changes through its ordinary Chat surface.
   const cliSel = $q('.tb-cli');
   const provSel = $q('.tb-provider');
-  const TB_CLI_LABELS = { claude: 'Claude', 'claude-exp': 'Claude Exp', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
+  const TB_CLI_LABELS = { claude: 'Claude', 'claude-exp': 'Claude Agent SDK', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
   let runtimeSuggest = null;           // {cli, provider} from the host
   const providerCache = new Map();     // cli -> [{appType,id,name}]
   const autoDrafts = new Map();        // fleet + cli + protocol -> committed selection

@@ -39,11 +39,22 @@ const MIGRATION_DEBT = Object.freeze({
   // 天花板同样是各自已提交的高水位，拆分哪个就压哪个，落到 <= target 时删掉这条。
   // 保险箱页头（adminHeadings 加一条 secrets，页头才不会掉出原始 key）本该把这行加
   // 回去，但闸只认字节不认「这条该不该有」：就地压掉同区几行注释的赘语把这笔抵掉了，
-  // 于是高水位继续往下走到 3039/163299。工作区面板页头（adminHeadings 加一条
-  // workspaces）用同样的办法就地抵掉，高水位再往下压一格到 3038/163257。
+  // 于是高水位继续往下走到 3039/163299。
+  // 工作区面板页头（adminHeadings 加一条 workspaces）用同样的办法就地抵掉，高水位
+  // 再往下压一格到 3038/163257。
+  // 定时任务「执行记录」（airScheduleRuns* 4 条键的卡片渲染 + 复用 scheduleTime）
+  // 让它长到 3062/164739：记录本身是产品要求，但这一格确实是该拆的 —— 下一次动
+  // 定时中心应把 renderSchedules 整块抽成独立模块，而不是继续抬这个天花板。
+  // Worktree 生命周期那一格（目录页的拆解 + 「现在回收」）整块落在新模块
+  // public/air-worktrees.js，air.js 只多了两处接线：目录卡那行文案改走
+  // MultiCCAirWorktrees.summary()（原表达式留作 fallback），render() 多一行把快照
+  // 递进去。三行注释 + 一段 fallback，没有别的 DOM 逻辑进来 —— 下一位再动目录页，
+  // 该拆的仍是 renderSchedules / renderDirectoryOverview，不是这里。
+  // 与工作区面板那条一起合入后，两个方向的增量都还在：合并树实测 3067/165249，
+  // 天花板就登记这个实测值（不抬到任何一个分支的旧值上去）。
   'public/air.js': Object.freeze({
-    ceiling: 3038,
-    byteCeiling: 163257,
+    ceiling: 3067,
+    byteCeiling: 165249,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -102,13 +113,20 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // （记忆/任务图谱、语音、Goal、全局、推送、桥接、Agent 资源、技能同步、临时上传
   // 各一格的正文文案；桥接那格的二维码/登录流程与图谱两个画布的图例先前是旧模块里
   // 的中文字面量，也一并进了词典）。按测试自己的 countLines 量法对齐到当前高水位。
+  // 定时任务执行记录补 5 条键（airScheduleRuns / RunsEmpty / RunsManual /
+  // RunsScheduled / RunsHint，中英各 5 行 = +10 行），再抬到 6232/381217。
+  // Worktree 生命周期补 12 条键（airWorktree*：拆解、占用、策略、回收与四条回收
+  // 回执，中英各 12 行 = +24 行），抬到 6256/382946。
   // 面板搬成原生之后，被复用的旧模块（manage-bridges / task-graph / memory-* ）原先
   // 藏在 iframe 里的中文一下子进了 Air 的扫描面：Air 的 i18n 关卡只认 DOM 文本，旧页
   // 里的字面量以前扫不到、现在扫得到，于是这四个模块也一并入典（键名前缀沿用它们各自
   // 的面板名）。中文值逐字保留，中文渲染与既有断言不受影响。
+  // Aux 并发池补 4 条键（airAdminPool / PoolValue / SerialLane / SerialLaneValue，
+  // 中英各 4 行 = +8 行），抬到 6264/383378；同时把任务板回填的确认文案去掉「串行」
+  // 字样（aux 已经是并发池），纯值文本改写不动行数。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6222,
-    maxBytes: 380667,
+    maxLines: 6264,
+    maxBytes: 383378,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

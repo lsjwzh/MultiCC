@@ -356,7 +356,8 @@ extension SessionCliX on SessionCli {
   /// Human-readable label for UI display.
   String get displayName => switch (this) {
     SessionCli.claude => 'Claude',
-    SessionCli.claudeExp => 'Claude Exp',
+    // 显示名跟产品走：这是 Anthropic 的 Claude Agent SDK（内部 id 仍是 claude-exp）。
+    SessionCli.claudeExp => 'Claude Agent SDK',
     SessionCli.codex => 'Codex',
     SessionCli.codexExp => 'Codex Exp',
     SessionCli.opencode => 'OpenCode',
@@ -1151,6 +1152,47 @@ class DirectoryPushState {
   }
 }
 
+/// 定时任务的一次触发记录（服务端 `task.runs`，最近的在前、有界）。
+///
+/// 「上次结果」只有一个格子，回答不了用户真正要问的问题：今天到底跑没跑、总共几次、
+/// 哪一次失败、失败原因是什么。字段就为这几个问题而留，不做通用审计日志。
+class CronRun {
+  final int at; // epoch ms
+  final String reason; // 'schedule'（到点）| 'manual'（点了立即运行）
+  final String status; // 'ok' | 'queued' | 'error' | ...
+
+  /// 失败原因原文（服务端已截断到 200 字符）。
+  final String error;
+
+  const CronRun({
+    required this.at,
+    this.reason = 'schedule',
+    this.status = '',
+    this.error = '',
+  });
+
+  bool get failed => status == 'error';
+
+  /// 这一次的结局，列表里那一列说的话（与 Web 端 airSchedule* 文案同一套说法）。
+  String get outcome {
+    if (status == 'queued') return '已入队';
+    if (status == 'ok') return '成功';
+    return error.isNotEmpty ? error : '失败';
+  }
+
+  /// 谁触发的：定时到点，还是用户按的「立即运行」。
+  String get source => reason == 'manual' ? '手动' : '定时';
+
+  factory CronRun.fromJson(Map<String, dynamic> json) => CronRun(
+    // 时间戳只在是真数字时才算数：脏数据宁可说「—」，也不许在解析里抛异常把
+    // 整张规则表带崩（面板会连一条规则都显示不出来）。
+    at: json['at'] is num ? (json['at'] as num).toInt() : 0,
+    reason: (json['reason'] ?? 'schedule').toString(),
+    status: (json['status'] ?? '').toString(),
+    error: (json['error'] ?? '').toString(),
+  );
+}
+
 /// A multicc-native scheduled (cron) task. Mirrors the `toView` shape returned
 /// by the server's /api/cron endpoints (see cron-tasks.js).
 ///
@@ -1177,6 +1219,11 @@ class CronTask {
   final String? lastStatus; // 'ok' | 'queued' | 'error' | null
   final String lastError;
   final int runCount;
+
+  /// 最近的触发记录（服务端回放上限 10 条，最近的在前）。旧服务端没有这一格时是空表，
+  /// 界面照旧只报「上次结果」—— 编不出历史就不摆一个空壳。
+  final List<CronRun> runs;
+
   final int? nextRunAt; // epoch ms
 
   /// 这条规则的固定 Air 任务。null 表示绑定还没建立起来。
@@ -1205,6 +1252,7 @@ class CronTask {
     this.lastStatus,
     this.lastError = '',
     this.runCount = 0,
+    this.runs = const <CronRun>[],
     this.nextRunAt,
     this.taskId,
     this.taskTitle = '',
@@ -1230,6 +1278,11 @@ class CronTask {
     lastStatus: json['lastStatus']?.toString(),
     lastError: (json['lastError'] ?? '').toString(),
     runCount: (json['runCount'] as num?)?.toInt() ?? 0,
+    runs: (json['recentRuns'] as List?)
+            ?.whereType<Map>()
+            .map((entry) => CronRun.fromJson(Map<String, dynamic>.from(entry)))
+            .toList(growable: false) ??
+        const <CronRun>[],
     nextRunAt: (json['nextRunAt'] as num?)?.toInt(),
     taskId: json['taskId']?.toString(),
     taskTitle: (json['taskTitle'] ?? '').toString(),

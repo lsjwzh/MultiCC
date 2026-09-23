@@ -36,8 +36,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   ] };
   const configPatches = [], quickDispatches = [], quickCreates = [], syncRequests = [];
   let syncFailure = true;
-  const directory = { id: 'd1', name: 'MultiCC', path: '/projects/multicc' };
-  const otherDirectory = { id: 'd2', name: 'Design Lab', path: '/projects/design-lab' };
+  // worktreeCount 是总数，worktreeLifecycle 是拆解（口径来自服务端 registry 的
+  // residency）：只报「几个」看不出这个数是怎么长的 —— 本地真占着磁盘的、睡下只剩
+  // 一条分支引用的、计划了还没落地的，是三种状态，而用户要判断的正是要不要腾地方。
+  const directory = { id: 'd1', name: 'MultiCC', path: '/projects/multicc', worktreeCount: 6,
+    worktreeLifecycle: { resident: 2, retained: 1, hibernated: 2, planned: 1, leased: 1, onDisk: 3, total: 6 } };
+  const otherDirectory = { id: 'd2', name: 'Design Lab', path: '/projects/design-lab', worktreeCount: 0,
+    worktreeLifecycle: { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0, onDisk: 0, total: 0 } };
   const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource },
     // 另一个目录里、这次会话从没打开过的一条：用来证明「pin 会把它拉到侧栏最
     // 上面」—— 它本来既不在最近记录里，也不在当前目录里。
@@ -53,6 +58,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
   routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'claude'], migration: { errors: [] },
+    // 自动回收的策略：面板照着它把「多久没用会被收走」说准，客户端不猜默认值。
+    worktreePolicy: { idleMs: 86400000, intervalMs: 900000, startupDelayMs: 30000, batchSize: 16, enabled: true },
     // The list snapshot and task-entry endpoint read the same runtime in production.
     // Keep the fixture in lockstep when later assertions move the run through
     // running/error/idle; otherwise the stale list row overwrites fresh entry state.
@@ -73,7 +80,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/api/cron'] = () => json([{ id: 'cron-a', name: '每日体验巡检', dirId: 'd1', dirName: 'MultiCC',
     cli: 'codex', provider: 'codex-lab', model: 'gpt-5.6-sol', prompt: '检查 Air 任务体验并记录结果。', cron: '0 9 * * *', enabled: true,
     taskId: 'tsk_a', taskTitle: entry.task.title, taskStatus: 'active', taskUrl: '/air?task=tsk_a&dir=d1',
-    lastRunAt: Date.now() - 60000, lastStatus: 'ok', runCount: 4, nextRunAt: Date.now() + 3600000 }]);
+    lastRunAt: Date.now() - 60000, lastStatus: 'ok', runCount: 4, nextRunAt: Date.now() + 3600000,
+    // 执行记录：面板要能把「跑了什么、哪次失败」摊开给人看。
+    recentRuns: [
+      { at: Date.now() - 60000, reason: 'schedule', status: 'ok', decision: 'continue', taskId: 'tsk_a', receiptId: 'r-2', error: '' },
+      { at: Date.now() - 3600000, reason: 'manual', status: 'error', decision: null, taskId: 'tsk_a', receiptId: null, error: '固定任务已归档或只读' },
+    ] }]);
   routes['/api/docs-registry'] = () => json([
     { id: 'service-a', kind: 'service', title: '本地预览服务', url: 'http://127.0.0.1:4173', status: 'down', startCmd: 'npm run preview', source: 'manual', pinned: true },
     { id: 'page-a', kind: 'page', title: 'Air 改造说明', url: '/docs/air.html', source: 'artifact' },
@@ -125,6 +137,17 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   };
   routes['/api/git/directory-status'] = () => json({ branch: 'main', upstream: 'origin/main', baseBranch: 'main', ahead: gitAhead, behind: 1,
     dirtyFiles: [{ status: 'M', path: 'README.md' }, { status: '??', path: 'notes/scratch.md' }] });
+  // 「现在回收」：默认只收过了闲置阈值的；一个都没收到而本地还占着地方，才轮到
+  // 前端问一句「连最近用过的也一起收吗」—— 那一下才带 force。这里两段式回应，
+  // 正好把「先问后收」这条路走完。
+  const reclaimRequests = [];
+  routes['POST /api/air/worktrees/reclaim'] = ({ body }) => {
+    const value = JSON.parse(body);
+    reclaimRequests.push(value);
+    return json(value.force
+      ? { ok: true, dirId: value.dirId, considered: 3, attempted: 3, hibernated: 3, failed: 0, skipped: 0 }
+      : { ok: true, dirId: value.dirId, considered: 3, attempted: 3, hibernated: 0, failed: 0, skipped: 3 });
+  };
   routes['/api/git/log'] = () => json({ repoPath: '/projects/multicc', commits: [
     { hash: 'c2'.repeat(20), short: 'c2c2c2c', author: 'green', date: '2026-09-17T10:00:00+08:00', subject: 'Air 目录首页加 Git 状态', refs: 'HEAD -> main' },
     { hash: 'c1'.repeat(20), short: 'c1c1c1c', author: 'green', date: '2026-09-16T09:00:00+08:00', subject: '上一条提交', refs: '' },
@@ -576,6 +599,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent==='定时任务' && document.getElementById('task-state').textContent.includes('写入同一任务')`), true);
     assert.equal(await page.evaluate(`document.querySelector('#schedule-center .schedule-hero')===null && document.querySelector('#task-header #schedule-create')!==null`), true);
     assert.equal(await page.evaluate(`document.querySelector('.schedule-fixed-task').innerText.includes('tsk_a')`), true);
+    // 执行记录：默认收起（不占卡片高度），展开后逐条给出时间/来源/结果，
+    // 失败那一条要把原因带出来，而不是只印一个「失败」。
+    assert.equal(await page.evaluate(`document.querySelector('details.schedule-runs')!==null
+      && document.querySelector('details.schedule-runs').open===false`), true);
+    assert.equal(await page.evaluate(`(()=>{const d=document.querySelector('details.schedule-runs');
+      d.open=true; return d.querySelectorAll('.schedule-run').length;})()`), 2);
+    assert.equal(await page.evaluate(`document.querySelector('details.schedule-runs').innerText.includes('固定任务已归档或只读')`), true);
+    assert.equal(await page.evaluate(`document.querySelector('details.schedule-runs').innerText.includes('手动')`), true);
     // 标题行：左边一组说明，右边一个尾巴（计数、✕）。这条曾经全仓没有基础规则，
     // 于是尾巴永远换行 —— 侧栏竖成「任务 / 最近任务 / 1」三条，目录页同样，
     // 每个弹窗的 ✕ 都独占一行。断言按几何量：尾巴要跟头一组有纵向重叠，并且
@@ -602,6 +633,24 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===4`));
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent.includes('MultiCC') && document.getElementById('task-state').textContent.includes('/projects/multicc')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.directory-task-row').length`), 1);
+    // Worktree 生命周期：只报「几个」看不出这个数是怎么长的，所以本地 / 休眠 / 计划
+    // 分开摆（口径来自服务端 registry 的 residency），右边跟一颗「现在回收」。
+    assert.ok(await page.waitFor(`document.getElementById('directory-worktrees').hidden===false`));
+    assert.equal(await page.evaluate(`document.getElementById('directory-worktree-summary').textContent`),
+      '6 个 Worktree · 本地 3 · 休眠 2 · 计划 1 · 占用中 1');
+    assert.equal(await page.evaluate(`document.querySelector('#directory-worktrees .worktree-policy').textContent`), '闲置超过 24 小时会自动回收');
+    // 目录卡那一行是同一个 summary()：不必点进去才知道这个目录在不在涨。
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('#directory-grid small')].some(el=>el.textContent.includes('本地 3 · 休眠 2 · 计划 1'))`), true);
+    // 「现在回收」：先按阈值收一次，一个都没收到而本地还占着地方，才问一句「连最近
+    // 用过的也一起收吗」；点头之后才带 force 再打一次。
+    await page.evaluate(`window.__reclaimAsks=[]; window.confirm = text => { window.__reclaimAsks.push(text); return true; }`);
+    await page.evaluate(`document.querySelector('#directory-worktrees .worktree-reclaim').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('已回收 3 个')`));
+    assert.deepEqual(reclaimRequests, [{ dirId: 'd1' }, { dirId: 'd1', force: true }],
+      '默认那一下不带 force；force 只出现在用户点头之后的第二次');
+    assert.equal(await page.evaluate(`window.__reclaimAsks.length`), 1);
+    assert.equal(await page.evaluate(`window.__reclaimAsks[0].includes('还有 3 个没到闲置阈值')`), true);
+    assert.equal(await page.evaluate(`document.getElementById('notice').textContent`), '已回收 3 个（检查 3 个，跳过 0 个）');
     // Git 状态卡：未推送提交数、主检出的脏文件，提交列表与 diff 懒加载。
     assert.ok(await page.waitFor(`document.getElementById('directory-git').textContent.includes('2 个提交未推送')`));
     assert.equal(await page.evaluate(`document.getElementById('directory-git').textContent.includes('2 个未提交文件')`), true);

@@ -255,7 +255,8 @@ class _DirectoryCard extends StatelessWidget {
                       directory.external
                           ? '共享工作区'
                                 '${directory.interactive ? '' : ' · 授权已失效'}'
-                          : '${tasks.length} 个任务 · $active 个未完成 · ${directory.worktreeCount} 个 Worktree',
+                          : '${tasks.length} 个任务 · $active 个未完成'
+                                ' · ${airWorktreeSummary(directory)}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -561,6 +562,129 @@ class AirDirectoryStats extends StatelessWidget {
 /// Web `air.css` 的 `.directory-stat`：卡片顶上那截 18×3 的色条只有 blue/green
 /// 两种，其余两张是默认灰。色条是「哪张卡值得先看」的唯一提示，别省。
 enum _StatTone { plain, blue, green }
+
+/// Web `air.html` 的 `#directory-worktrees`（内容由 `air-worktrees.js` 渲染）：
+/// 目录下 worktree 的生命周期拆解，外加一个「现在回收」。
+///
+/// 为什么单列一块：只报「有几个 worktree」看不出这个数是怎么长的 —— 本地真占着
+/// 磁盘的、已经睡下只剩一条分支引用的、计划了还没落地的，是三种完全不同的状态，
+/// 而用户要判断的正是「要不要现在腾地方」。口径来自服务端的 workspace registry
+/// （`/api/air` 快照的 `directory.worktreeLifecycle`），客户端只读不推断。
+///
+/// 回收只删本地 checkout，分支与提交始终保留（下次打开这条任务时按需重建），所以
+/// 这一步不需要「会丢东西」的警告；按钮变灰只说明「本地没有可收的」。
+class AirWorktreePanel extends StatelessWidget {
+  const AirWorktreePanel({
+    super.key,
+    required this.lifecycle,
+    this.idleMs = 0,
+    this.busy = false,
+    this.onReclaim,
+  });
+
+  final AirWorktreeLifecycle lifecycle;
+
+  /// 自动回收的闲置阈值（毫秒），来自快照的 `worktreePolicy`。
+  /// 0 = 自动回收已关闭（`MULTICC_SESSION_HIBERNATE_IDLE_MS=0`）。
+  final int idleMs;
+
+  /// 正在回收：按钮换成「回收中…」并禁用，避免连点出两批回收。
+  final bool busy;
+
+  /// 「现在回收」。null = 只读（远端工作区那行没有本机 worktree 可收）。
+  final VoidCallback? onReclaim;
+
+  @override
+  Widget build(BuildContext context) {
+    // 默认阈值是 24 小时，说成「闲置超过 24 小时」比说 86400000 有用；服务端把
+    // 自动回收关了（idleMs = 0）也要照实说，别让人以为它一直在后台收东西。
+    final hours = (idleMs / 3600000).round().clamp(1, 24 * 365);
+    final policy = idleMs > 0 ? '闲置超过 $hours 小时会自动回收' : '自动回收已关闭';
+    final summary = [
+      '${lifecycle.total} 个 Worktree',
+      airWorktreeBreakdown(lifecycle),
+      if (lifecycle.leased > 0) '占用中 ${lifecycle.leased}',
+    ].join(' · ');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 14),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(AppColors.radiusCard),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Worktrees',
+                      style: TextStyle(color: AppColors.faint, fontSize: 11.5),
+                    ),
+                    const SizedBox(height: 2),
+                    const Text(
+                      'Worktree 生命周期',
+                      style: TextStyle(
+                        color: AppColors.text,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (onReclaim != null) ...[
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  key: const ValueKey('air-worktree-reclaim'),
+                  onPressed: busy || lifecycle.onDisk == 0 ? null : onReclaim,
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: AppColors.blueSoft,
+                    side: const BorderSide(color: AppColors.lineStrong),
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                  ),
+                  child: Text(
+                    busy ? '回收中…' : '现在回收',
+                    style: const TextStyle(
+                      color: AppColors.accent,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            summary,
+            key: const ValueKey('air-worktree-summary'),
+            style: const TextStyle(color: AppColors.muted, fontSize: 11.5),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            '本地留着的 checkout 会随闲置时间自动收起，分支与提交始终保留。',
+            style: TextStyle(
+              color: AppColors.muted,
+              fontSize: 11.5,
+              height: 1.5,
+            ),
+          ),
+          Text(
+            policy,
+            style: const TextStyle(color: AppColors.faint, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _StatTile extends StatelessWidget {
   const _StatTile({

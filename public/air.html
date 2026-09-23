@@ -269,6 +269,17 @@
             </div>
           </section>
           <div id="directory-stats" aria-label="当前目录任务统计" data-i18n-aria-label="airDirectoryStats"></div>
+          <!-- Worktree 生命周期：只报「有几个」看不出这个数是本地占着磁盘、还是已经
+               睡下只剩分支引用、还是计划了没落地，而用户要判断的正是要不要现在腾地方。
+               三个数分开摆，配合「现在回收」按钮（默认只收过期的，force 要用户再点一次
+               确认）。口径与渲染都在 air-worktrees.js，air.js 只负责递上下文。 -->
+          <section id="directory-worktrees" class="directory-worktrees" hidden aria-label="目录 Worktree 生命周期" data-i18n-aria-label="airWorktreeLifecycle">
+            <div class="section-heading">
+              <div><span class="caption" data-i18n="airDirWorktrees">Worktrees</span><strong data-i18n="airWorktreeLifecycle">Worktree 生命周期</strong></div>
+              <span id="directory-worktree-summary"></span>
+            </div>
+            <div id="directory-worktree-body"></div>
+          </section>
           <section class="directory-task-panel">
             <div class="section-heading">
               <div><span class="caption" data-i18n="airCurrentDirectory">当前目录</span><strong id="directory-task-heading" data-i18n="airRecentTasks">最近任务</strong></div>
@@ -599,6 +610,7 @@
        渲染把快照递进去（同 air-admin.js 的 render(ctx) 契约）。要先于 air.js 注册，
        它的第一次 render 就会调到这里。 -->
   <script src="air-directory-mode.js"></script>
+  <script src="air-worktrees.js"></script>
   <script src="air.js"></script>
   <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->
   <script src="air-quick-fold.js"></script>

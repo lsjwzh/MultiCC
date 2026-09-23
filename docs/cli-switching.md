@@ -11,7 +11,7 @@ This is MultiCC's defining feature, so it is worth being precise about what it d
 | CLI | Value | Provider support | One-click install from the UI |
 |---|---|---|---|
 | Claude Code | `claude` | yes | `npm install -g @anthropic-ai/claude-code` |
-| Claude Exp (Agent SDK) | `claude-exp` | yes — shares the Claude Messages provider pool | bundled with MultiCC; upgrade MultiCC to update the SDK |
+| Claude Agent SDK | `claude-exp` | yes — shares the Claude Messages provider pool | bundled with MultiCC; upgrade MultiCC to update the SDK |
 | OpenAI Codex | `codex` | yes | `npm install -g @openai/codex` |
 | Codex Exp (app-server) | `codex-exp` | yes — shares the Codex Responses provider pool | `npm install -g @openai/codex` |
 | OpenCode | `opencode` | yes | `npm install -g opencode-ai` |

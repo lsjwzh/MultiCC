@@ -1458,7 +1458,7 @@ function createTaskBoardRuntime(deps) {
       }
     }
     Promise.allSettled(jobs).then(() => { backfillState.running = false; });
-    res.json({ ok: true, queued: backfillState.queued, note: `已入队 ${backfillState.queued} 个会话的历史归档（aux 串行处理，完成后任务板自动刷新）` });
+    res.json({ ok: true, queued: backfillState.queued, note: `已入队 ${backfillState.queued} 个会话的历史归档（aux 后台处理，完成后任务板自动刷新）` });
   }
 
   // ── REST ──────────────────────────────────────────────────────────────────

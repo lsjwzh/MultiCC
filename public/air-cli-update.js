@@ -41,7 +41,10 @@
   let lastState = null;
   let lastError = false;
   let opened = false;
-  let upgrade = null; // { cli, jobId } —— 同一时刻只跑一个升级
+  // 每一行各有各的升级任务: 不同 CLI 之间没有任何冲突(服务端只对「同一个安装目标」
+  // 返回 409), 所以不再用一个全局开关把整块面板锁成「一次只能点一个」。
+  // 刷新会重建行 DOM, 所以进度存在这里, render() 之后按 cli 复原。
+  const inFlight = new Map(); // cli -> { phase: 'running', text }
 
   // ── Requests ───────────────────────────────────────────────────────────
   // auth-client.js already wraps window.fetch, so same-origin calls carry the
@@ -160,6 +163,13 @@
       if (built.button) {
         built.button.onclick = () => { void startUpgrade(cli, built.status, built.button); };
       }
+      // 重建 DOM 不能把「正在升级」的那一行擦回原样: 另一个 CLI 升级完成触发的
+      // refresh 会走到这里, 若不复原, 用户会以为任务没了。
+      const live = inFlight.get(cli);
+      if (live && live.phase === 'running') {
+        if (built.status) built.status.textContent = live.text;
+        if (built.button) built.button.disabled = true;
+      }
       host.append(built.row);
     }
     if (checked && lastState.checkedAt) {
@@ -224,9 +234,9 @@
   }
 
   // ── Upgrade ────────────────────────────────────────────────────────────
-  // 同一时刻只跑一个升级，所以进度写回「该行的副标题 + 浮层底部那一块日志」，
-  // 不重建整块 —— 重建会把用户正在看的日志抹掉。
-  function paintProgress(status, text, log) {
+  // 进度写回「该行的副标题 + 浮层底部那一块日志」，不重建整块 —— 重建会把用户
+  // 正在看的日志抹掉。多个 CLI 可以同时升级，所以日志行带产品名前缀，谁的就看得清。
+  function paintProgress(cli, status, text, log) {
     if (status) status.textContent = text;
     const line = el('cli-update-log');
     if (!line) return;
@@ -235,13 +245,15 @@
       line.hidden = true;
       return;
     }
-    line.textContent = log;
+    line.textContent = cli ? `[${CLI_LABELS[cli] || cli}] ${log}` : log;
     line.hidden = false;
     line.scrollTop = line.scrollHeight;
   }
 
   async function startUpgrade(cli, status, button) {
-    if (upgrade) return;
+    // 同一行不并行(服务端也会 409)，但别的行不受影响。
+    const live = inFlight.get(cli);
+    if (live && live.phase === 'running') return;
     const name = CLI_LABELS[cli] || cli;
     const entry = ((lastState && lastState.versions) || {})[cli] || {};
     const inUse = Number(entry.inUseCount) || 0;
@@ -256,19 +268,21 @@
       started = await raw(`/api/cli/${encodeURIComponent(cli)}/upgrade`, {});
     } catch (error) {
       button.disabled = false;
-      paintProgress(status, t('airCliUpdateFailed', { error: error.message }), null);
+      inFlight.delete(cli);
+      paintProgress(cli, status, t('airCliUpdateFailed', { error: error.message }), null);
       return;
     }
     const data = started.data || {};
     if (!started.ok || !data.jobId) {
       button.disabled = false;
-      paintProgress(status, t('airCliUpdateFailed', { error: data.error || `HTTP ${started.status}` }), null);
+      inFlight.delete(cli);
+      paintProgress(cli, status, t('airCliUpdateFailed', { error: data.error || `HTTP ${started.status}` }), null);
       return;
     }
 
     button.disabled = false;
-    upgrade = { cli, jobId: data.jobId };
-    paintProgress(status, t('airCliUpdateUpgrading'), null);
+    inFlight.set(cli, { phase: 'running', text: t('airCliUpdateUpgrading') });
+    paintProgress(cli, status, t('airCliUpdateUpgrading'), null);
     const startedAt = Date.now();
     for (;;) {
       let job = null;
@@ -280,22 +294,25 @@
       }
       if (job) {
         if (job.status === 'done') {
-          upgrade = null;
-          paintProgress(status, t('airCliUpdateDone'), job.logTail || '');
+          inFlight.delete(cli);
+          paintProgress(cli, status, t('airCliUpdateDone'), job.logTail || '');
           await refresh(true);
           return;
         }
         if (job.status === 'error') {
-          upgrade = null;
-          paintProgress(status, t('airCliUpdateFailed', { error: job.error || '' }), job.logTail || '');
+          inFlight.delete(cli);
+          // hint 是服务端查明的具体原因(网络/证书/新版本装到了别的位置)，比一行
+          // 退出码有用得多，必须和日志一起给出来。
+          const detail = job.hint ? `${job.logTail || ''}\n\n${job.hint}` : (job.logTail || '');
+          paintProgress(cli, status, t('airCliUpdateFailed', { error: job.error || '' }), detail);
           await refresh(false);
           return;
         }
-        paintProgress(status, t('airCliUpdateUpgrading'), job.logTail || '');
+        paintProgress(cli, status, t('airCliUpdateUpgrading'), job.logTail || '');
       }
       if (Date.now() - startedAt > MAX_WAIT_MS) {
-        upgrade = null;
-        paintProgress(status, t('airCliUpdateTimeout'), null);
+        inFlight.delete(cli);
+        paintProgress(cli, status, t('airCliUpdateTimeout'), null);
         return;
       }
       await sleep(POLL_MS);

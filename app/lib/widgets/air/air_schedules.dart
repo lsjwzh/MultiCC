@@ -7,6 +7,7 @@ import '../../services/manage_service.dart';
 import '../../services/session_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
+import '../cron_run_history.dart';
 import 'air_task_status.dart';
 
 /// 定时任务中心 —— Web `public/air.js` 的 `renderSchedules`（`#schedule-center`）。
@@ -460,6 +461,10 @@ class _ScheduleCard extends StatelessWidget {
           _fixedTask(),
           const SizedBox(height: 10),
           _state(),
+          if (task.runs.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            CronRunHistory(task: task),
+          ],
           const SizedBox(height: 10),
           Text(
             task.prompt,

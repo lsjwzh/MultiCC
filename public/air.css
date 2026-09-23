@@ -616,6 +616,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #empty.is-terminal-mode #directory-terminals { display: block; }
 #empty.is-terminal-mode > #setup-card,
 #empty.is-terminal-mode > #directory-stats,
+#empty.is-terminal-mode > #directory-worktrees,
 #empty.is-terminal-mode > .directory-task-panel,
 #empty.is-terminal-mode > #directory-git,
 #empty.is-terminal-mode > #quick-task-form { display: none; }
@@ -641,6 +642,20 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-stat span { color: #6d8094; font-size: 10px; }
 .directory-stat strong { display: block; margin: 2px 0; color: #2d4d68; font-size: 19px; line-height: 1.1; }
 .directory-stat small { color: #8a9aab; font-size: 10.5px; }
+/* ── Worktree 生命周期（air-worktrees.js）─────────────────────────────────────
+   光报「有几个 worktree」看不出这个数是怎么长的：本地真占着磁盘的、已经睡下只剩
+   一条分支引用的、计划了还没落地的，是三种完全不同的状态，而用户要判断的正是
+   「要不要现在腾地方」。所以这块把三个数分开摆，右边跟一个「现在回收」。
+   它跟统计卡同一族（浅蓝白卡片），但说的不是任务而是磁盘。 */
+.directory-worktrees { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 14px; padding: 11px 14px; border: 1px solid #dbe6f1; border-radius: 12px; background: rgba(255, 255, 255, .86); }
+.directory-worktrees .section-heading { flex: 1 1 100%; }
+.directory-worktrees .section-heading strong { font-size: 12px; }
+.directory-worktrees .section-heading span { color: var(--muted); font-size: 11px; }
+#directory-worktree-body { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.directory-worktrees p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.directory-worktrees .worktree-policy { color: var(--faint); }
+.worktree-reclaim { min-height: 30px; margin-left: auto; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 9px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.worktree-reclaim:disabled { opacity: .5; cursor: default; }
 .directory-task-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
 .directory-task-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 .directory-task-heading-actions { display: flex; align-items: center; gap: 10px; }
@@ -1204,6 +1219,17 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .schedule-state small { text-align: right; }
 .schedule-prompt { min-height: 38px; display: -webkit-box; overflow: hidden; color: #66798d; font-size: 11px; line-height: 1.65; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .schedule-actions { display: flex; align-items: center; gap: 6px; padding-top: 11px; border-top: 1px solid #e6edf5; }
+.schedule-runs { border: 1px solid #e3ecf6; border-radius: 8px; background: #f8fbff; }
+.schedule-runs > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; color: #526d88; font-size: 10px; cursor: pointer; }
+.schedule-runs-badge { min-width: 18px; padding: 1px 6px; border-radius: 9px; background: #e6f0fb; color: #146dcc; text-align: center; font-size: 10px; }
+.schedule-runs-empty { padding: 0 10px 8px; color: #8b9bb0; font-size: 10px; }
+.schedule-runs-list { margin: 0; padding: 0 10px 6px; list-style: none; }
+.schedule-run { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: #526d88; font-size: 10px; }
+.schedule-run time { flex: 0 0 auto; color: #8b9bb0; font-variant-numeric: tabular-nums; }
+.schedule-run-source { flex: 0 0 auto; padding: 0 5px; border-radius: 5px; background: #eef4fa; color: #6c8199; }
+.schedule-run-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-run.error .schedule-run-status { color: #ad4d36; }
+.schedule-runs-hint { display: block; padding: 0 10px 8px; color: #a3b1c2; font-size: 10px; }
 .schedule-actions span { flex: 1; }
 .schedule-actions button { min-height: 31px; padding: 5px 8px; color: #526d88; border-color: transparent; background: transparent; font-size: 10px; }
 .schedule-actions button:hover { border-color: #d7e5f2; background: #f4f8fd; }

@@ -203,6 +203,9 @@ function createHostLifecycle(deps) {
       task.cancelled = true;
       try { task.reject(error); } catch (_) {}
     }
+    // 并发池：每一个在跑的槽都要标脏，不能只标第一个（旧的 currentTask 语义）。
+    // `|| []` 保持对测试替身（只给 queue/currentTask 的对象）的兼容。
+    for (const task of auxQueue.running || []) task.cancelled = true;
     if (auxQueue.currentTask) auxQueue.currentTask.cancelled = true;
   }
 

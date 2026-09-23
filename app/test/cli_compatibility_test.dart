@@ -110,6 +110,9 @@ void main() {
       expect(SessionCli.claudeExp.supportsSubagent, isTrue);
       expect(SessionCli.claudeExp.poolKey, 'claude');
       expect(SessionCli.claudeExp.defaultEffort, 'medium');
+      // 显示名跟产品走：这是 Anthropic 的 Claude Agent SDK（内部 id 仍是 claude-exp）。
+      expect(SessionCli.claudeExp.displayName, 'Claude Agent SDK');
+      expect(SessionCli.claude.displayName, 'Claude');
 
       expect(SessionCli.opencode.supportsAgent, isTrue);
       expect(SessionCli.opencode.supportsSubagent, isFalse);

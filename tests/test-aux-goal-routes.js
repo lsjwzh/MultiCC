@@ -3,9 +3,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   AUX_SESSION_ID,
   AUX_HISTORY_MAX,
+  AUX_CONCURRENCY_DEFAULT,
+  AUX_CONCURRENCY_MAX,
+  resolveAuxConcurrency,
   normalizeGoalConfig,
   resolveGoalLimits,
   buildGoalLimitNote,
@@ -217,7 +222,7 @@ test('queue retains shutdown guard, history metadata and health accounting', asy
   );
 });
 
-test('Aux queue is FIFO and never overlaps direct HTTP tasks', async () => {
+test('the Aux pool runs five direct HTTP tasks at once and keeps FIFO order', async () => {
   let sequence = 0;
   const started = [];
   const pending = [];
@@ -228,19 +233,198 @@ test('Aux queue is FIFO and never overlaps direct HTTP tasks', async () => {
       pending.push(resolve);
     }),
   });
-  const first = harness.runtime.auxQueue.enqueue({ type: 'manual', prompt: 'first', meta: {} });
-  const second = harness.runtime.auxQueue.enqueue({ type: 'manual', prompt: 'second', meta: {} });
+  const prompts = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth'];
+  const tasks = prompts.map(prompt => harness.runtime.auxQueue.enqueue({ type: 'manual', prompt, meta: {} }));
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(started, ['first']);
-  assert.equal(harness.runtime.auxQueue.getStatus().queueDepth, 1);
+  // Five slots → the first five are already in flight; only the sixth waits.
+  assert.deepEqual(started, ['first', 'second', 'third', 'fourth', 'fifth']);
+  assert.equal(harness.runtime.auxQueue.getStatus().active, 5);
+  assert.deepEqual(harness.runtime.auxQueue.queue.map(task => task.prompt), ['sixth']);
 
   pending.shift()('one');
-  assert.deepEqual(await first, { text: 'one', cancelled: false });
+  assert.deepEqual(await tasks[0], { text: 'one', cancelled: false });
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(started, ['first', 'second']);
-  pending.shift()('two');
-  assert.deepEqual(await second, { text: 'two', cancelled: false });
+  // The freed slot admits exactly the next queued task, in order.
+  assert.deepEqual(started, ['first', 'second', 'third', 'fourth', 'fifth', 'sixth']);
+  pending.forEach((resolve, index) => resolve(`done-${index}`));
+  await Promise.all(tasks);
+  assert.equal(harness.runtime.auxQueue.getStatus().queueDepth, 0);
   assert.equal(harness.runtime.auxQueue.processing, false);
+});
+
+test('resolveAuxConcurrency defaults to 5 and clamps the env override', () => {
+  assert.equal(AUX_CONCURRENCY_DEFAULT, 5);
+  assert.equal(AUX_CONCURRENCY_MAX, 16);
+  assert.equal(resolveAuxConcurrency({}), 5);
+  assert.equal(resolveAuxConcurrency({ MULTICC_AUX_CONCURRENCY: '3' }), 3);
+  assert.equal(resolveAuxConcurrency({ AUX_CONCURRENCY: '2' }), 2);
+  assert.equal(resolveAuxConcurrency({ MULTICC_AUX_CONCURRENCY: '0' }), 1);
+  assert.equal(resolveAuxConcurrency({ MULTICC_AUX_CONCURRENCY: '-4' }), 1);
+  assert.equal(resolveAuxConcurrency({ MULTICC_AUX_CONCURRENCY: '999' }), AUX_CONCURRENCY_MAX);
+  assert.equal(resolveAuxConcurrency({ MULTICC_AUX_CONCURRENCY: 'nope' }), 5);
+});
+
+test('the pool size follows the injected env', async () => {
+  const started = [];
+  const gates = new Map();
+  const harness = createHarness({
+    env: { MULTICC_AUX_CONCURRENCY: '2' },
+    executeAuxHttp: ({ prompt }) => new Promise(resolve => {
+      started.push(prompt);
+      gates.set(prompt, resolve);
+    }),
+  });
+  const tasks = ['a', 'b', 'c'].map(prompt => harness.runtime.auxQueue.enqueue({ type: 'manual', prompt, meta: {} }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(started, ['a', 'b']);
+  assert.equal(harness.runtime.auxQueue.getStatus().concurrency, 2);
+  assert.deepEqual(harness.runtime.auxQueue.queue.map(task => task.prompt), ['c']);
+  const settle = async prompt => {
+    gates.get(prompt)(`r-${prompt}`);
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  await settle('a');
+  await settle('b');
+  assert.deepEqual(started, ['a', 'b', 'c']);
+  await settle('c');
+  assert.deepEqual((await Promise.all(tasks)).map(result => result.text), ['r-a', 'r-b', 'r-c']);
+  assert.deepEqual(harness.runtime.auxQueue.getStatus().running, []);
+});
+
+// 同一把 key = 同一个 session：并发池可以让不同 session 同时判词，但同一个
+// session 的两次判词仍然严格先旧后新 —— 这是单并发时代靠全局串行顺带保证的。
+test('tasks sharing a serialization key never overlap while other sessions keep running', async () => {
+  const started = [];
+  const pending = [];
+  const harness = createHarness({
+    executeAuxHttp: ({ prompt }) => new Promise(resolve => {
+      started.push(prompt);
+      pending.push(resolve);
+    }),
+  });
+  const queue = harness.runtime.auxQueue;
+  const a1 = queue.enqueue({ type: 'intent_classify', prompt: 'a1', meta: { sessionName: 'A' } });
+  const b1 = queue.enqueue({ type: 'intent_classify', prompt: 'b1', meta: { sessionName: 'B' } });
+  const a2 = queue.enqueue({ type: 'intent_classify', prompt: 'a2', meta: { sid: 'A' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(started, ['a1', 'b1']);
+  assert.deepEqual(queue.queue.map(task => task.prompt), ['a2']);
+  assert.equal(queue.hasPendingFor('A'), true);
+
+  pending[0]('one');
+  assert.deepEqual(await a1, { text: 'one', cancelled: false });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(started, ['a1', 'b1', 'a2']);
+  pending[1]('two');
+  pending[2]('three');
+  await Promise.all([b1, a2]);
+});
+
+// 「必须严格顺序执行」的那一类单独一条单并发 lane：memory 提炼/复盘写共享记忆
+// 目录（多个 session 可能落到同一个 folder），并发写会互相覆盖。
+test('strictly ordered Aux work runs in its own single-slot lane', async () => {
+  const started = [];
+  const pending = [];
+  const harness = createHarness({
+    executeAuxHttp: ({ prompt }) => new Promise(resolve => {
+      started.push(prompt);
+      pending.push(resolve);
+    }),
+  });
+  const queue = harness.runtime.auxQueue;
+  const review = queue.enqueue({ type: 'memory_review', prompt: 'mem-1', meta: { sessionId: 's1' } });
+  const distill = queue.enqueue({ type: 'memory_distill', prompt: 'mem-2', meta: { sessionId: 's2' } });
+  const classify = queue.enqueue({ type: 'intent_classify', prompt: 'cls', meta: { sessionName: 's1' } });
+  await new Promise(resolve => setImmediate(resolve));
+  // The two memory writes are serialized; the classify is untouched by them.
+  assert.deepEqual(started, ['mem-1', 'cls']);
+  assert.deepEqual(queue.queue.map(task => task.prompt), ['mem-2']);
+  assert.deepEqual(queue.getStatus().lanes, {
+    serial: { concurrency: 1, active: 1, queueDepth: 1 },
+    pool: { concurrency: 5, active: 1, queueDepth: 0 },
+  });
+
+  pending[0]('one');
+  await review;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(started, ['mem-1', 'cls', 'mem-2']);
+  pending[1]('two');
+  pending[2]('three');
+  await Promise.all([classify, distill]);
+  assert.equal(queue.isUnhealthy(), false);
+});
+
+test('the Aux status DTO keeps its legacy keys and adds the pool breakdown', async () => {
+  let sequence = 0;
+  const gate = new Promise(() => {});
+  const harness = createHarness({
+    crypto: { randomUUID: () => `slot-${++sequence}` },
+    executeAuxHttp: () => gate,
+  });
+  const queue = harness.runtime.auxQueue;
+  queue.enqueue({ type: 'intent_classify', prompt: 'busy', meta: { sessionName: 's9' } }).catch(() => {});
+  queue.enqueue({ type: 'intent_classify', prompt: 'wait', meta: { sessionName: 's9' } }).catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+
+  const status = (await invoke(harness.app, 'GET', '/api/aux/status')).body;
+  assert.deepEqual(Object.keys(status).sort(), [
+    'active', 'capacity', 'concurrency', 'currentTask', 'health', 'lanes',
+    'lastTaskTime', 'processing', 'queueDepth', 'running', 'totalProcessed',
+  ]);
+  assert.equal(status.processing, true);
+  assert.equal(status.queueDepth, 1);
+  assert.deepEqual(status.currentTask, { id: 'slot-1', type: 'intent_classify', lane: 'pool' });
+  assert.equal(status.active, 1);
+  assert.equal(status.concurrency, 5);
+  assert.equal(status.capacity, 6);
+  assert.deepEqual(status.running, [{ id: 'slot-1', type: 'intent_classify', lane: 'pool' }]);
+  assert.deepEqual(status.lanes.pool, { concurrency: 5, active: 1, queueDepth: 1 });
+  assert.deepEqual(status.lanes.serial, { concurrency: 1, active: 0, queueDepth: 0 });
+});
+
+test('cancel and pending checks see every running slot, not only the first', async () => {
+  let sequence = 0;
+  const harness = createHarness({
+    crypto: { randomUUID: () => `slot-${++sequence}` },
+    executeAuxHttp: () => new Promise(() => {}),
+  });
+  const queue = harness.runtime.auxQueue;
+  queue.enqueue({ type: 'intent_classify', prompt: 'one', meta: { sessionName: 's1' } }).catch(() => {});
+  queue.enqueue({ type: 'intent_classify', prompt: 'two', meta: { sessionName: 's2' } }).catch(() => {});
+  const queued = queue.enqueue({ type: 'manual', prompt: 'three', meta: { sessionName: 's2' } });
+  queued.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(queue.running.map(task => task.id), ['slot-1', 'slot-2']);
+  assert.deepEqual(queue.queue.map(task => task.id), ['slot-3']);
+  assert.equal(queue.hasPendingFor('s2'), true);
+  assert.equal(queue.hasPendingFor('nope'), false);
+
+  // Cancelling a slot that is NOT currentTask used to be a no-op.
+  queue.cancel('slot-2');
+  assert.equal(queue.running.find(task => task.id === 'slot-2').cancelled, true);
+  // A queue-only cancel (the third task never starts) still rejects its promise.
+  queue.cancel('slot-3');
+  await assert.rejects(queued, error => error && error.cancelled === true);
+  assert.equal(queue.queue.length, 0);
+});
+
+test('concurrent Aux failures still drive the shared health machine', async () => {
+  const harness = createHarness({ executeAuxHttp: async () => { throw new Error('aux failed'); } });
+  const queue = harness.runtime.auxQueue;
+  await Promise.allSettled([
+    queue.enqueue({ type: 'manual', prompt: 'one', meta: {} }),
+    queue.enqueue({ type: 'manual', prompt: 'two', meta: {} }),
+    queue.enqueue({ type: 'manual', prompt: 'three', meta: {} }),
+  ]);
+  assert.equal(queue.health.consecutiveFails, 3);
+  assert.equal(queue.isUnhealthy(), true);
+  assert.deepEqual(queue.getStatus().running, []);
+  const recovered = createHarness({ executeAuxHttp: async () => 'ok' });
+  recovered.runtime.auxQueue.health.unhealthy = true;
+  recovered.runtime.auxQueue.health.consecutiveFails = 3;
+  await recovered.runtime.auxQueue.enqueue({ type: 'manual', prompt: 'fine', meta: {} });
+  assert.equal(recovered.runtime.auxQueue.health.consecutiveFails, 0);
+  assert.equal(recovered.runtime.auxQueue.isUnhealthy(), false);
 });
 
 test('in-flight cancellation does not poison Aux health when transport later fails', async () => {
@@ -281,14 +465,19 @@ test('cancelClassifyFor drops a session\'s queued and in-flight judgements, and 
   classify({ sessionName: 's2' }, 'judge s2');
   queue.enqueue({ type: 'manual', prompt: 'unrelated', meta: { sessionName: 's1' } }).catch(() => {});
   await new Promise(resolve => setImmediate(resolve));
+  // 并发池：s1 的第一条在跑，s1 的第二条与那条 manual 因为同一把 key 排在它后面；
+  // s2 是另一把 key，所以它和 s1 同时在跑。
+  assert.deepEqual(queue.running.map(task => task.id), ['cls-1', 'cls-3']);
+  assert.deepEqual(queue.queue.map(task => task.id), ['cls-2', 'cls-4']);
   assert.equal(queue.currentTask.id, 'cls-1');
 
   // Two: the one already executing plus the one still queued.
   assert.equal(queue.cancelClassifyFor('s1'), 2);
-  assert.equal(queue.currentTask.cancelled, true);
+  assert.equal(queue.running.find(task => task.id === 'cls-1').cancelled, true);
   await assert.rejects(queued, error => error && error.cancelled === true);
   // Another session's judgement and this session's non-classify work are untouched.
-  assert.deepEqual(queue.queue.map(task => task.id), ['cls-3', 'cls-4']);
+  assert.deepEqual(queue.queue.map(task => task.id), ['cls-4']);
+  assert.deepEqual(queue.running.map(task => task.id), ['cls-1', 'cls-3']);
   // Idempotent: a repeated cancel has nothing left to drop.
   assert.equal(queue.cancelClassifyFor('s1'), 0);
   running.catch(() => {});
@@ -447,6 +636,104 @@ test('Goal routes preserve settings DTO and downgrade scores below threshold', a
   assert.equal(res.body.score, 70);
   assert.match(res.body.issues[0], /低于设定阈值 80/);
   assert.equal(res.body.revised, 'better');
+});
+
+// Regression (2026-09-23 user report): Goal precheck answered every time with a
+// bare client abort. Two things had to be true: the request must be allowed to
+// outlive the 15s generic client budget, and the server must never hold the
+// response open forever behind a stalled Aux transport.
+test('goal precheck answers with an explicit AUX_TIMEOUT instead of hanging on a stalled aux transport', async () => {
+  const harness = createHarness({
+    env: { AUX_TIMEOUT_MS: '12345', GOAL_PRECHECK_TIMEOUT_MS: '30' },
+    executeAuxHttp: () => new Promise(() => {}),   // never settles
+  });
+  const res = await invoke(harness.app, 'POST', '/api/goal/precheck', { body: { task: 'ship it' } });
+  assert.equal(res.body.ok, false);
+  assert.equal(res.body.code, 'AUX_TIMEOUT');
+  assert.match(res.body.error, /预检超时/);
+});
+
+// Regression (2026-09-23 user follow-up): "辅助模型应该很快啊，他就是一个请求而已？"
+// 池子满了以后（5 个在跑）才是排序问题：预检曾经排在一堆后台 classify /
+// memory_review 后面，队列等待实测最长可到两分钟。人在等的那个请求必须插队。
+test('an interactive goal precheck jumps ahead of already-queued background Aux work', async () => {
+  const releases = [];
+  const started = [];
+  const harness = createHarness({
+    executeAuxHttp: async ({ prompt }) => {
+      const kind = prompt.includes('任务质量审查助手') ? 'goal_check' : 'background';
+      started.push(kind);
+      // 只把填满池子的那 5 个后台任务挂住：第 6 个和预检都必须等出槽位。
+      if (kind === 'background' && started.filter(item => item === 'background').length <= 5) {
+        await new Promise(resolve => { releases.push(resolve); });
+      }
+      return kind === 'goal_check'
+        ? JSON.stringify({ verdict: 'ok', score: 90, issues: [], questions: [], criteria: [], revised: '' })
+        : 'aux-result';
+    },
+  });
+  harness.runtime.auxQueue.init();
+
+  const backgrounds = [];
+  for (let index = 0; index < 6; index += 1) {
+    backgrounds.push(harness.runtime.auxQueue.enqueue({ type: 'intent_classify', prompt: `bg-${index}`, meta: {} }));
+  }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(started.filter(item => item === 'background').length, 5);
+  assert.deepEqual(harness.runtime.auxQueue.queue.map(task => task.prompt), ['bg-5']);
+
+  const res = createResponse();
+  const pending = harness.app.routes.get('POST /api/goal/precheck')({ body: { task: 'ship it' } }, res);
+  // The precheck arrived last and still queues ahead of bg-5: order is the point.
+  assert.deepEqual(harness.runtime.auxQueue.queue.map(task => task.type), ['goal_check', 'intent_classify']);
+  assert.deepEqual(harness.runtime.auxQueue.queue.map(task => task.priority), ['interactive', 'background']);
+
+  releases.splice(0).forEach(resolve => resolve());
+  // The precheck route answers from inside the queue's `.then`, so the handler
+  // itself returns nothing — wait on the response instead.
+  assert.equal(pending, undefined);
+  await res.completed;
+  assert.equal(res.body.ok, true);
+  // The freed slots admit the precheck first, then the leftover background task.
+  assert.deepEqual(started.slice(5, 7), ['goal_check', 'background']);
+  await Promise.all(backgrounds);
+  assert.equal(harness.runtime.auxQueue.getStatus().queueDepth, 0);
+});
+
+// The web client must consume the published budget rather than repeat the number.
+// Two hard-coded copies is exactly how this broke: 15s of generic client budget
+// against a ~18s Aux call.
+test('the web precheck consumes the published wait budget instead of hard-coding one', () => {
+  const host = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.js'), 'utf8');
+  const settingsRead = host.slice(host.indexOf("'/api/settings/goal'"));
+  assert.ok(settingsRead.includes('precheckWaitMs'), 'loadGoalDims reads precheckWaitMs');
+  assert.ok(host.includes('timeoutMs: goalPrecheckTimeoutMs()'), 'precheck uses the derived budget');
+  const call = host.slice(host.indexOf("'/api/goal/precheck'"), host.indexOf('renderGoalVerdict'));
+  assert.ok(!/timeoutMs:\s*\d+/.test(call), 'no numeric literal on the precheck call');
+});
+
+// The client must not guess this number: whatever the route enforces is what
+// /api/settings/goal publishes, so the two cannot drift apart again.
+test('the precheck wait budget the client reads is the one the route enforces', async () => {
+  const tuned = createHarness({ env: { AUX_TIMEOUT_MS: '12345', GOAL_PRECHECK_TIMEOUT_MS: '30' } });
+  assert.equal((await invoke(tuned.app, 'GET', '/api/settings/goal')).body.precheckWaitMs, 1000);
+
+  const dflt = createHarness({ env: { AUX_TIMEOUT_MS: '12345' } });
+  // max(30s, 2 × AUX_TIMEOUT_MS) = 30s here: one queued call plus this one.
+  assert.equal((await invoke(dflt.app, 'GET', '/api/settings/goal')).body.precheckWaitMs, 30000);
+});
+
+test('goal precheck forwards its own inference timeout to the aux transport', async () => {
+  const seen = [];
+  const harness = createHarness({
+    executeAuxHttp: async (args) => {
+      seen.push(args.timeoutMs);
+      return JSON.stringify({ verdict: 'ok', score: 90, issues: [], questions: [], criteria: [], revised: '' });
+    },
+  });
+  const res = await invoke(harness.app, 'POST', '/api/goal/precheck', { body: { task: 'ship it' } });
+  assert.equal(res.body.ok, true);
+  assert.deepEqual(seen, [12345]);
 });
 
 test('enqueue with valid id echoes taskId in both success and failure responses', async () => {

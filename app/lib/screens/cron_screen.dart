@@ -5,6 +5,7 @@ import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/cron_run_history.dart';
 
 /// 定时任务 (Cron) 管理。镜像网页管理台的「定时任务」面板：列出、新建、编辑、
 /// 启停、立即运行、删除 multicc 原生定时任务（到点向目标目录的专属会话发 prompt）。
@@ -285,6 +286,10 @@ class _CronCard extends StatelessWidget {
               ),
             ],
           ),
+          if (task.runs.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            CronRunHistory(task: task),
+          ],
           const Divider(height: 18, color: AppColors.line),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
