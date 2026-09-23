@@ -87,7 +87,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     // streaming (流式常驻) is now claude's default mode: keep the claude process
     // alive across turns for faster, context-preserving continuation. Non-claude
     // CLIs ignore this field. Only claude chat sessions default on.
-    streaming: cli === 'claude' && kind === 'chat',
+    streaming: ['claude', 'claude-exp'].includes(cli) && kind === 'chat',
     // autoContinue is no longer a user-facing toggle (the picker keeps only the
     // streaming option). The field stays true for back-compat only; the old
     // auto-drive mechanisms are retired.

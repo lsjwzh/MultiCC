@@ -100,7 +100,7 @@ function fixture(options = {}) {
     finishProviderAttempt: (attempt, facts) => calls.push(['finish-provider-attempt', attempt, facts]),
     appendMessage: (...args) => calls.push(['append-message', ...args]),
     cancelPreparation: (...args) => calls.push(['cancel-preparation', ...args]),
-    chatStream: { isAlive: () => false, cancel() {} },
+    chatStream: options.chatStream || { isAlive: () => false, cancel() {} },
     zcodeAuth: options.zcodeAuth || { ensureZcodeAuth: () => ({ ok: true }) },
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
     runnerKillGraceMs: options.runnerKillGraceMs,
@@ -402,6 +402,23 @@ test('confirmed cancellation releases the workspace for the next sibling task', 
   assert.equal(workspace.busy('s2'), true);
   assert.equal((await h.host.cancelActiveTurn('s1')).ok, true);
   assert.equal(workspace.busy('s2'), false);
+});
+
+test('SDK cancellation waits for the turn to drain while allowing the native process to remain alive', async () => {
+  let busy = true, interrupted = false;
+  const state = { cli: 'claude-exp', isStreaming: true, _activeRunner: {} };
+  const h = fixture({ chatState: state, runnerStopTimeoutMs: 2000,
+    chatStream: {
+      isAlive: () => true,
+      status: () => ({ busy }),
+      cancel() { interrupted = true; setTimeout(() => { busy = false; }, 20); },
+    },
+  });
+  const result = await h.host.cancelActiveTurn('s1');
+  assert.equal(result.ok, true);
+  assert.equal(interrupted, true);
+  assert.equal(busy, false, 'runner stop must wait for the SDK result/interrupt boundary');
+  assert.equal(state._activeRunner, null);
 });
 
 test('a failed cancellation retains the runner claim and blocks sibling tasks', async () => {

@@ -674,4 +674,7 @@ function status(name) {
   };
 }
 
-module.exports = { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle };
+module.exports = require('./stream-router').createStreamRouter(
+  { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle },
+  require('./claude-sdk-stream').createSdkStream(),
+);
