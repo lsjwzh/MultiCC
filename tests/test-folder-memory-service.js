@@ -9,7 +9,7 @@ const test = require('node:test');
 const { readMemoryFolder } = require('../src/memory-store');
 const { ENTRY_DELIMITER, scanMemoryContent } = require('../src/memory-store');
 const {
-  DOCS_REGISTRY_RULE, DOCS_REGISTRY_RULE_MARKER, SECRET_VAULT_RULE, SECRET_VAULT_RULE_MARKER, ensureBuiltinSharedMemory,
+  DOCS_REGISTRY_RULE, DOCS_REGISTRY_RULE_MARKER, SECRET_VAULT_RULE, SECRET_VAULT_RULE_MARKER, SHARED_FILES_RULE, SHARED_FILES_RULE_MARKER, ensureBuiltinSharedMemory,
 } = require('../src/memory/builtin-rules');
 const {
   SESSION_MEM_CAP,
@@ -152,7 +152,7 @@ test('fresh installations seed registered projects before any session opens', t 
   const f = fixture();
   t.after(f.cleanup);
   const memory = path.join(f.service.sharedDir('d1'), 'MEMORY.md');
-  assert.equal(fs.readFileSync(memory, 'utf8'), DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
+  assert.equal(fs.readFileSync(memory, 'utf8'), DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
   assert.equal(scanMemoryContent(DOCS_REGISTRY_RULE), null);
   assert.equal(scanMemoryContent(SECRET_VAULT_RULE), null);
   assert.match(DOCS_REGISTRY_RULE, /两项辅助动作/);
@@ -184,10 +184,10 @@ test('upgrade appends once, preserves user bytes, and skips hand-written legacy 
   };
   const read = id => fs.readFileSync(path.join(root, id, '_shared', 'MEMORY.md'), 'utf8');
   createFolderMemoryService(deps); // Same constructor used during server startup.
-  assert.equal(read('existing'), contents.get('existing') + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
-  assert.equal(read('legacy'), contents.get('legacy') + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
-  assert.equal(read('legacy-secret'), contents.get('legacy-secret') + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n');
-  for (const id of ['empty', 'missing']) assert.equal(read(id), DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
+  assert.equal(read('existing'), contents.get('existing') + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
+  assert.equal(read('legacy'), contents.get('legacy') + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
+  assert.equal(read('legacy-secret'), contents.get('legacy-secret') + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
+  for (const id of ['empty', 'missing']) assert.equal(read(id), DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
   const first = new Map([...deps.directories.keys()].map(id => [id, read(id)]));
   const service = createFolderMemoryService(deps); // Second startup.
   for (const [id, expected] of first) {
@@ -204,9 +204,9 @@ test('new project registration and first-session fallback seed shared memory', t
   f.directories.set('new-project', { id: 'new-project' });
   assert.equal(f.service.ensureShared('new-project'), true);
   assert.equal(fs.readFileSync(path.join(f.service.sharedDir('new-project'), 'MEMORY.md'), 'utf8'),
-    DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
+    DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
   const { shared } = f.service.ensureDirs({ id: 'session', dirId: 'late-project', cli: 'claude' });
-  assert.equal(fs.readFileSync(path.join(shared, 'MEMORY.md'), 'utf8'), DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
+  assert.equal(fs.readFileSync(path.join(shared, 'MEMORY.md'), 'utf8'), DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
   const source = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
   assert.match(source, /seedCommander: dir => \{ folderMemory\.ensureShared\(dir.id\); return seedCommanderSession\(dir\); \}/);
 });
@@ -222,13 +222,13 @@ test('a large shared store still injects the rule once within the existing budge
   assert.ok(sharedBlock.length <= SHARED_MEM_CAP);
   assert.ok(sharedBlock.includes(DOCS_REGISTRY_RULE));
   assert.equal(sharedBlock.split(DOCS_REGISTRY_RULE_MARKER).length - 1, 1);
-  assert.equal(fs.readFileSync(file, 'utf8'), previous + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
+  assert.equal(fs.readFileSync(file, 'utf8'), previous + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
   // Legacy text is projected as-is instead of being replaced by the new seed.
   const legacy = DOCS_REGISTRY_RULE_MARKER + ' 手写版本保持原样';
   fs.writeFileSync(file, previous + ENTRY_DELIMITER + legacy);
   assert.ok(f.service.buildBlock({ id: 's1', dirId: 'd1' }).includes(legacy));
   // The docs rule is present (hand-written), so only the secret rule is appended.
-  assert.equal(fs.readFileSync(file, 'utf8'), previous + ENTRY_DELIMITER + legacy + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
+  assert.equal(fs.readFileSync(file, 'utf8'), previous + ENTRY_DELIMITER + legacy + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
 });
 
 test('rule priority preserves memory safety filtering', t => {
@@ -251,7 +251,7 @@ test('seed write failure preserves existing contents and can be retried', t => {
   assert.equal(fs.readFileSync(file, 'utf8'), 'user content');
   rename.mock.restore();
   assert.equal(ensureBuiltinSharedMemory(path.dirname(file)), true);
-  assert.equal(fs.readFileSync(file, 'utf8'), 'user content' + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'user content' + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
 });
 
 // ── 五层记忆（P1）：机器全局 / CLI / 任务 / 技能 ──────────────────────────

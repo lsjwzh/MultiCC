@@ -99,7 +99,7 @@ const stateStore = require('./src/state/store');
 const stateTx = require('./src/state/tx');
 const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session/persistence'); const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
-const { createSessionHibernationRuntime, initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
+const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
 const { createOrchestrationRuntime } = require('./src/orchestration/runtime');
 const { createRouterToolHost } = require('./src/router-tool-host'); const { createOfficialImageBridgeRuntime } = require('./src/codex/image-bridge-runtime');
 const { createHostLifecycle } = require('./src/host-lifecycle');
@@ -255,7 +255,7 @@ let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
-let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null;
+let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null; let worktreeOrphanScanner = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability;
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
@@ -2149,6 +2149,14 @@ const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefr
 // route ordering stays byte-compatible while accounting lives in one runtime.
 tokenUsageRuntime.mountRoutes(app);
 
+// Workspace overview + manual sweep for the /manage「工作区」panel
+// (src/routes/workspaces.js): hibernation status, per-directory awake counts,
+// unknown-ignored deletion audit and the orphan-worktree report.
+require('./src/routes/workspaces').mountWorkspaceRoutes(app, {
+  records: persistedSessions, directories,
+  getHibernation: () => sessionHibernationRuntime, getOrphanScanner: () => worktreeOrphanScanner,
+});
+
 providerRoutes.mountManagementRoutes(app);
 
 // GET /api/providers/:appType/:id/balance + GET /api/providers/balances —
@@ -2515,53 +2523,12 @@ const backgroundTaskRuntime = createBackgroundTaskRuntime({
   logger,
 });
 
-sessionHibernationRuntime = createSessionHibernationRuntime({
+sessionHibernationRuntime = require('./src/session/hibernation-composition').createSessionHibernation({
   records: persistedSessions, directories, persistence: sessionPersistence, loadHistory: id => viewChatHistory(id),
-  git: {
-    inspect: async (dir, record) => { if (!dir || !record.worktreePath || !record.branch) return { pathExists: false, branchExists: false, valid: false }; const result = await gitWorktreeValidate(dir.path, record.worktreePath, record.branch, { sessionId: record.id }); return { pathExists: result.pathExists, branchExists: result.branchExists, valid: result.ok, code: result.code }; },
-    detach: (dir, record) => gitWorktreeDetach(dir.path, record.worktreePath, record.branch, { sessionId: record.id }),
-    thaw: async (dir, record) => {
-      try {
-        return await gitWorktreeAdd(dir.path, record.id, dir.baseBranch, {
-          sessionId: record.id,
-          requireExistingBranch: true,
-        });
-      } catch (error) {
-        if (error?.code !== 'WORKTREE_BRANCH_MISSING') throw error;
-        // A missing retained ref must not make a conversation permanently
-        // unusable. Recreate only this session's isolated branch/path from the
-        // directory base; an existing detached/conflicted checkout is retained
-        // by gitWorktreeAdd and continues in place.
-        return gitWorktreeAdd(dir.path, record.id, dir.baseBranch, { sessionId: record.id });
-      }
-    },
-  },
-  inspectBlockers: async (id, record) => {
-    const blockers = [], chat = chatSessions.get(id), stream = chatStream.status(id);
-    if (invalidSessions.has(id)) blockers.push('invalid_session');
-    try { if (workspaceAdmission?.hasActiveLease?.(id)) blockers.push('workspace_lease'); } catch (_) { blockers.push('workspace_lease_unknown'); }
-    if (defaultRepoActor.isLeased(id)) blockers.push('repo_lease');
-    if (chat?.isStreaming || chat?.claudeProc || chat?._cancelledProc || chat?._activeRunner) blockers.push('active_cli');
-    if (stream?.busy || stream?.queued) blockers.push('active_stream');
-    if (backgroundTaskRuntime.hasLiveBackgroundTasks(id)) blockers.push('background_task');
-    if (waitInjector.hasWait(id)) blockers.push('pending_wait');
-    if (orchestrationRuntime && await orchestrationRuntime.hasSessionActivity(id)) blockers.push('durable_work');
-    if (sessionWorkHost?.isRunActive(id)) blockers.push('running_task');
-    if (record.worktreePath && fs.existsSync(record.worktreePath)) {
-      const state = await gitWorktreeMergeState(directories.get(record.dirId), record).catch(() => null);
-      if (!state) blockers.push('git_state_unknown'); else if (state.conflict) blockers.push('git_conflict');
-    }
-    return blockers;
-  },
-  closePersistent: id => chatStream.closeAndWait(id),
-  updateChatCwd: (id, cwd) => { const chat = chatSessions.get(id); if (chat) chat.cwd = cwd; },
-  pathExists: record => !!record.worktreePath && fs.existsSync(record.worktreePath),
-  idleMs: process.env.MULTICC_SESSION_HIBERNATE_IDLE_MS,
-  intervalMs: process.env.MULTICC_SESSION_HIBERNATE_INTERVAL_MS,
-  startupDelayMs: process.env.MULTICC_SESSION_HIBERNATE_STARTUP_DELAY_MS,
-  batchSize: process.env.MULTICC_SESSION_HIBERNATE_BATCH_SIZE,
-  onEvent: event => { logger.info('session_workspace_lifecycle', event); const record = event.sessionId && persistedSessions.get(event.sessionId); if (record?.dirId) workspaceBroadcast(record.dirId, event); if (event.action === 'hibernate' && event.status === 'success') workspaceAdmission?.reconcileResidency?.(); },
-  metric: name => metrics.inc(name), logger,
+  gitWorktreeValidate, gitWorktreeDetach, gitWorktreeAdd, gitWorktreeMergeState,
+  invalidSessions, defaultRepoActor, chatSessions, chatStream,
+  backgroundTaskRuntime, waitInjector, orchestrationRuntime, sessionWorkHost,
+  getWorkspaceAdmission: () => workspaceAdmission, workspaceBroadcast, metrics, logger,
 });
 workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmission({
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, persistence: sessionPersistence,
@@ -2581,6 +2548,14 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
       text: `交付记录：代码已合入 ${baseRef}（${String(operationId).slice(0, 24)}）`,
       tag: '交付',
     });
+    // Auto-reclaim the task worktree once its delivery is merged (opt-out).
+    // Best-effort: a running task or failed removal keeps the worktree for
+    // the manual one-click action.
+    if (process.env.MULTICC_TASK_WORKTREE_AUTOCLEANUP !== '0' && taskBoardRuntime?.taskWorktree?.cleanupWorktree) {
+      Promise.resolve(taskBoardRuntime.taskWorktree.cleanupWorktree(taskId))
+        .then(result => { if (result?.removed) logger.info('task_worktree_autocleanup', { taskId }); })
+        .catch(error => logger.warn('task_worktree_autocleanup_failed', { taskId, code: error?.code || 'failed' }));
+    }
   },
 });
 
@@ -2968,6 +2943,12 @@ app.use(safeErrorHandler(logger));
     skillSyncRuntime.start();
     triggerRuntime.start();
     sessionHibernationRuntime.start();
+    worktreeOrphanScanner = require('./src/workspace/orphan-scan').createWorktreeOrphanScanner({
+      records: persistedSessions, directories, repoActor: defaultRepoActor, logger,
+      deleteOrphans: process.env.MULTICC_WORKTREE_ORPHAN_DELETE === '1',
+      listTaskWorktreePaths: () => Object.values(taskBoardRuntime?.getBoard?.()?.tasks || {}).map(task => task?.worktreePath),
+    });
+    worktreeOrphanScanner.start();
     try { voiceHost.prepareBoot(); } catch (err) { logger.warn('voice_boot_prepare_failed', { error: err.message }); }
     qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
     // Periodic scan retries unresolved task attribution; first tick waits for Aux warm-up.

@@ -1182,3 +1182,18 @@ test('claim_released broadcasts the queue with the rejected item already rolled 
   assert.equal((await h.runtime.stats()).pendingDeliveries, 1);
   await h.runtime.stop();
 });
+
+test('hibernation activity view grants amnesty to stale durable rows via staleMs', async t => {
+  const clock = { value: 1_000_000 };
+  const h = fixture(t, { clock });
+  await h.runtime.admitSessionWork({
+    sessionId: 'bound-stale', text: 'question', idempotencyKey: 'q-1', options: {},
+  });
+  assert.equal(await h.runtime.hasSessionActivity('bound-stale'), true);
+  // Without amnesty a zombie row blocks forever; with staleMs it stops counting.
+  assert.equal(await h.runtime.hasSessionActivity('bound-stale', { staleMs: 60_000 }), true);
+  clock.value += 120_000;
+  assert.equal(await h.runtime.hasSessionActivity('bound-stale'), true, 'default view unchanged');
+  assert.equal(await h.runtime.hasSessionActivity('bound-stale', { staleMs: 60_000 }), false, 'stale row earns amnesty');
+  await h.runtime.stop();
+});

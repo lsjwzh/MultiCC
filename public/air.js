@@ -1573,12 +1573,13 @@
     } : selectedEntry;
     const selectedTask = headerEntry?.task || listedTask;
     const adminHeadings = {
-      // 「谁在等我」整页：控制台那一格只放最近几条，这里是完整清单。
+      // 「谁在等我」完整清单（控制台只放最近几条）。
       attention: [t('airCrumbConsole'), t('airAdminAttention'), t('airAdminAttentionHint')],
       secrets: [t('airCrumbSettings'), t('airAdminPanelSecrets'), t('secretsVaultShortHint')],
       docs: [t('airCrumbTools'), t('airDocs'), t('airAdminDocsHint')],
       memory: [t('airCrumbTools'), t('airMemoryGraph'), t('airAdminMemoryHint')],
       taskgraph: [t('airCrumbTools'), t('airTaskGraph'), t('airAdminTaskGraphHint')],
+      workspaces: [t('airCrumbTools'), '工作区', 'worktree 休眠回收'],
       settings: [t('airCrumbSystemSettings'), t('airSettingsCenter'), t('airAdminSettingsHint')],
       voice: [t('airCrumbSettings'), t('airAdminVoice'), t('airAdminVoiceHint')],
       goal: [t('airCrumbSettings'), t('airAdminGoal'), t('airAdminGoalHint')],
@@ -1592,9 +1593,7 @@
       skillsync: [t('airCrumbSettings'), t('airAdminSkillSync'), t('airAdminSkillSyncHint')],
       storage: [t('airCrumbSettings'), t('airAdminStorage'), t('airAdminStorageHint')],
     };
-    // The card stands for the current directory, so it stays lit while that
-    // directory's own page is open; the directory library itself is ⌘K / the
-    // 控制台 shortcut.
+    // The card stays lit on the directory's own page; the library is ⌘K / 控制台.
     $('library').classList.toggle('active', mode === 'tasks' && !taskId);
     $('overview').classList.toggle('active', consoleOpen);
     $('schedules').classList.toggle('active', mode === 'schedules');

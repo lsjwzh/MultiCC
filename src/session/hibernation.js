@@ -6,10 +6,17 @@ const path = require('node:path');
 const { createHibernationReclaimer } = require('./hibernation-reclaimer');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_HIBERNATE_IDLE_MS = DAY_MS;
+// Idle gate for the periodic sweep. The LRU resident budget (awakeLimit) is
+// the primary convergence mechanism; six hours keeps same-day follow-ups warm
+// without letting yesterday's tasks pile up.
+const DEFAULT_HIBERNATE_IDLE_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_HIBERNATE_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_HIBERNATE_STARTUP_DELAY_MS = 30 * 1000;
 const DEFAULT_HIBERNATE_BATCH_SIZE = 16;
+// Per-directory budget of awake (on-disk) task worktrees. Worker's slots and
+// task chats share one LRU: past the budget the least-recently-worked session
+// hibernates regardless of idle time. 0 disables the budget.
+const DEFAULT_AWAKE_LIMIT = 16;
 const WORKSPACE_STATES = new Set(['planned', 'awake', 'hibernating', 'hibernated', 'thawing']);
 const EXCLUDED_TYPES = new Set(['commander', 'gateway', 'worker', 'aux', 'system']);
 
@@ -52,7 +59,7 @@ function stateOf(record) {
 }
 
 function evaluateSessionEligibility(record, {
-  nowMs = Date.now(), idleMs = DEFAULT_HIBERNATE_IDLE_MS, blockers = [],
+  nowMs = Date.now(), idleMs = DEFAULT_HIBERNATE_IDLE_MS, blockers = [], allowTypes = [],
 } = {}) {
   const reasons = [];
   if (!record || record.kind !== 'chat') reasons.push('not_task_chat');
@@ -62,7 +69,9 @@ function evaluateSessionEligibility(record, {
   if (record?.ephemeral) reasons.push('ephemeral');
   if (record?.experimental || record?.experimentalMode) reasons.push('experimental');
   if (record?.loginFlow) reasons.push('login_flow');
-  if (record?.type && EXCLUDED_TYPES.has(record.type)) reasons.push(`type_${record.type}`);
+  // The LRU budget pass deliberately reclaims idle worker slots (their home
+  // worktree is pure weight); every other excluded type stays excluded.
+  if (record?.type && EXCLUDED_TYPES.has(record.type) && !allowTypes.includes(record.type)) reasons.push(`type_${record.type}`);
   if (Array.isArray(record?.triggers) && record.triggers.some(trigger => trigger?.enabled)) reasons.push('enabled_trigger');
   if (stateOf(record) !== 'awake') reasons.push(`state_${stateOf(record)}`);
   if (record?.rebaseInProgress || record?.conflicts?.length || record?.mergeInProgress) reasons.push('git_transition');
@@ -128,6 +137,7 @@ function createSessionHibernationRuntime(options = {}) {
   const intervalMs = numericOption(options.intervalMs, DEFAULT_HIBERNATE_INTERVAL_MS);
   const startupDelayMs = numericOption(options.startupDelayMs, DEFAULT_HIBERNATE_STARTUP_DELAY_MS);
   const batchSize = Math.max(1, Math.min(64, Number(options.batchSize) || DEFAULT_HIBERNATE_BATCH_SIZE));
+  const awakeLimit = Math.max(0, Math.min(1024, Number(numericOption(options.awakeLimit, DEFAULT_AWAKE_LIMIT)) || 0));
   const tails = new Map();
   const operations = new Set();
   let sweepPromise = null;
@@ -259,18 +269,18 @@ function createSessionHibernationRuntime(options = {}) {
     return serialized(sessionId, () => ensureAwakeUnlocked(sessionId));
   }
 
-  async function hibernateUnlocked(sessionId, { eligibilityChecked = false, ignoreIdle = false } = {}) {
+  async function hibernateUnlocked(sessionId, { eligibilityChecked = false, ignoreIdle = false, allowTypes = [] } = {}) {
     const record = records.get(sessionId);
     if (!record) return { ok: false, code: 'session_not_found' };
     if (stateOf(record) === 'hibernated') return { ok: true, already: true };
     const effectiveIdleMs = ignoreIdle ? 0 : idleMs;
-    const preliminary = evaluateSessionEligibility(record, { nowMs: now(), idleMs: effectiveIdleMs });
+    const preliminary = evaluateSessionEligibility(record, { nowMs: now(), idleMs: effectiveIdleMs, allowTypes });
     if (!eligibilityChecked && !preliminary.eligible) {
       publish('hibernate', 'skip', sessionId, preliminary.reasons[0] || 'ineligible');
       return { ok: false, skipped: true, code: preliminary.reasons[0] || 'ineligible' };
     }
     const blockers = await inspectBlockers(sessionId, record);
-    const verdict = evaluateSessionEligibility(record, { nowMs: now(), idleMs: effectiveIdleMs, blockers });
+    const verdict = evaluateSessionEligibility(record, { nowMs: now(), idleMs: effectiveIdleMs, blockers, allowTypes });
     if (!verdict.eligible) {
       publish('hibernate', 'skip', sessionId, verdict.reasons[0] || 'ineligible');
       return { ok: false, skipped: true, code: verdict.reasons[0] || 'ineligible' };
@@ -297,6 +307,11 @@ function createSessionHibernationRuntime(options = {}) {
         current.workspaceState = 'hibernated';
         current.hibernatedAt = iso(now());
         current.hibernateSnapshot = result.snapshot || null;
+        // Audit trail for unknown ignored files deleted with the checkout
+        // (paths/sizes/mtimes only — never contents).
+        if (Array.isArray(result.removedUnknownIgnored) && result.removedUnknownIgnored.length) {
+          current.hibernateRemovedIgnored = { at: iso(now()), entries: result.removedUnknownIgnored };
+        }
         current.workspaceStateErrorCode = null;
       });
       publish('hibernate', 'success', sessionId);
@@ -325,13 +340,61 @@ function createSessionHibernationRuntime(options = {}) {
     hibernate, publish, isStopped: () => stopped,
   });
 
+  // LRU resident budget: per directory, awake on-disk task workspaces beyond
+  // awakeLimit hibernate oldest-first regardless of idle time. Eligibility is
+  // asserted here (this pass deliberately includes worker slots, whose idle
+  // home worktree is pure weight); runtime blockers still re-check inside
+  // hibernate(), so anything actively writing is left alone.
+  function budgetCandidates() {
+    const awake = [];
+    for (const record of records.values()) {
+      if (record?.kind !== 'chat' || !record.taskBoundTaskId || record.workspaceOwnerSessionId) continue;
+      if (record.ephemeral || record.experimental || record.experimentalMode) continue;
+      if (stateOf(record) !== 'awake' || !pathExists(record)) continue;
+      if (Array.isArray(record.triggers) && record.triggers.some(trigger => trigger?.enabled)) continue;
+      if (record.taskState?.runState === 'running' || record.taskState?.queueState === 'running') continue;
+      if (record.rebaseInProgress || record.conflicts?.length || record.mergeInProgress) continue;
+      awake.push(record);
+    }
+    const byDir = new Map();
+    for (const record of awake) {
+      const list = byDir.get(record.dirId) || [];
+      list.push(record);
+      byDir.set(record.dirId, list);
+    }
+    const excess = [];
+    for (const list of byDir.values()) {
+      if (list.length <= awakeLimit) continue;
+      list.sort((left, right) =>
+        (millis(left.lastWorkAt) ?? millis(left.createdAt) ?? 0) - (millis(right.lastWorkAt) ?? millis(right.createdAt) ?? 0)
+        || left.id.localeCompare(right.id));
+      excess.push(...list.slice(0, list.length - awakeLimit));
+    }
+    return excess;
+  }
+
+  async function enforceAwakeBudget() {
+    if (!awakeLimit) return { considered: 0, hibernated: 0 };
+    const excess = budgetCandidates();
+    let hibernated = 0;
+    for (const record of excess) {
+      let result;
+      try { result = await hibernate(record.id, { eligibilityChecked: true, ignoreIdle: true, allowTypes: ['worker'] }); }
+      catch (_) { continue; }
+      if (result?.ok && result.hibernated) hibernated += 1;
+    }
+    if (excess.length) publish('budget', 'success', null, null);
+    return { considered: excess.length, hibernated };
+  }
+
   function sweep() {
     if (sweepPromise) return sweepPromise;
     const work = (async () => {
       const candidates = reclaimer.candidatesFor();
       const result = await reclaimer.runCandidates(candidates);
+      const budget = await enforceAwakeBudget();
       publish('sweep', 'success', null, null);
-      return { ok: true, considered: candidates.length, ...result };
+      return { ok: true, considered: candidates.length, ...result, budget };
     })();
     sweepPromise = work.finally(() => { sweepPromise = null; });
     return sweepPromise;
@@ -458,6 +521,7 @@ function createSessionHibernationRuntime(options = {}) {
 
   function status() {
     return Object.freeze({ stopped, scheduled: !!timer, sweeping: !!sweepPromise,
+      awakeLimit, idleMs,
       capacityReclaims: reclaimer.pendingCapacity(), activeOperations: operations.size });
   }
 
@@ -466,6 +530,7 @@ function createSessionHibernationRuntime(options = {}) {
     admit,
     assertAwake,
     ensureAwake,
+    enforceAwakeBudget,
     hibernate,
     isLocked,
     reclaimForCapacity: reclaimer.reclaimForCapacity,
@@ -537,6 +602,7 @@ async function initializeSessionWorktrees(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_AWAKE_LIMIT,
   DEFAULT_HIBERNATE_BATCH_SIZE,
   DEFAULT_HIBERNATE_IDLE_MS,
   DEFAULT_HIBERNATE_INTERVAL_MS,

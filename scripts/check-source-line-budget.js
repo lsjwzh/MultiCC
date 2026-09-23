@@ -39,10 +39,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 天花板同样是各自已提交的高水位，拆分哪个就压哪个，落到 <= target 时删掉这条。
   // 保险箱页头（adminHeadings 加一条 secrets，页头才不会掉出原始 key）本该把这行加
   // 回去，但闸只认字节不认「这条该不该有」：就地压掉同区几行注释的赘语把这笔抵掉了，
-  // 于是高水位继续往下走到 3039/163299。
+  // 于是高水位继续往下走到 3039/163299。工作区面板页头（adminHeadings 加一条
+  // workspaces）用同样的办法就地抵掉，高水位再往下压一格到 3038/163257。
   'public/air.js': Object.freeze({
-    ceiling: 3039,
-    byteCeiling: 163299,
+    ceiling: 3038,
+    byteCeiling: 163257,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.

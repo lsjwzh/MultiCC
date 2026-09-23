@@ -490,19 +490,27 @@ function createOrchestrationRuntime({
     });
   }
 
-  async function hasSessionActivity(sessionId) {
+  async function hasSessionActivity(sessionId, { staleMs = 0 } = {}) {
     const id = String(sessionId || '').trim();
     if (!id) return false;
+    // Hibernation blocker amnesty: non-terminal rows whose last update is
+    // older than staleMs are zombies (crashed writers, lost callbacks) and
+    // must not pin a workspace awake forever. They keep their durable state —
+    // recovery still owns their lifecycle — they just stop counting as
+    // "activity" for the blocker check.
+    const cutoff = staleMs > 0 ? Number(now()) - staleMs : null;
+    const fresh = row => cutoff == null || Number(row?.updatedAt || row?.createdAt || 0) >= cutoff;
     return store.read((draft) => {
-      if (Object.values(draft.waits).some(wait => wait.sessionId === id && wait.status === 'pending')) return true;
-      if (Object.values(draft.outbox).some(item => item.sessionId === id && ['pending', 'leased'].includes(item.state))) return true;
+      if (Object.values(draft.waits).some(wait => wait.sessionId === id && wait.status === 'pending' && fresh(wait))) return true;
+      if (Object.values(draft.outbox).some(item => item.sessionId === id && ['pending', 'leased'].includes(item.state) && fresh(item))) return true;
       if (Object.values(draft.operations).some(operation => !TERMINAL_OPERATION_STATES.has(operation.status)
+          && fresh(operation)
           && (operation.ownerSessionId === id || operation.spec?.chatId === id || operation.spec?.targetId === id))) return true;
-      if (Object.values(draft.tasks).some(task => task.parentSessionId === id && !TERMINAL_TASK_STATES.has(task.status))) return true;
+      if (Object.values(draft.tasks).some(task => task.parentSessionId === id && !TERMINAL_TASK_STATES.has(task.status) && fresh(task))) return true;
       const schedule = draft.sessionSchedules[id];
       const waitingOnly = schedule?.active && (schedule.classifyState === 'W'
         || ['awaiting_user_input', 'classify_waiting'].includes(schedule.freezeReason));
-      return !!(schedule?.active && !waitingOnly);
+      return !!(schedule?.active && !waitingOnly && fresh(schedule));
     });
   }
 
