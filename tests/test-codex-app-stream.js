@@ -17,7 +17,7 @@ const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
 const BRIDGE = path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs');
 
-function createFixture(name, env = {}) {
+function createFixture(name, env = {}, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `multicc-codex-stream-${name}-`));
   const logFile = path.join(root, 'requests.jsonl');
   fs.writeFileSync(logFile, '');
@@ -30,8 +30,10 @@ function createFixture(name, env = {}) {
     baseArgs: [BRIDGE, '--codex-bin', bin, '--resident'],
     env: childEnv,
     idleMs: 60_000,
+    ...options,
   });
   return {
+    root,
     stream,
     bin,
     logFile,
@@ -210,4 +212,37 @@ test('process capabilities are prepared once per spawn, including after recycle'
     assert.equal(prepared, 2);
   } finally { await stream.closeAndWait('spawn-hooks'); }
   assert.equal(disposed, 1);
+});
+
+test('idle shutdown fences a new send until exit, then resumes on a fresh child', { timeout: 8000 }, async () => {
+  const { stream, root } = createFixture('idle-race', { FAKE_CODEX_IGNORE_TERM: '1' }, { idleMs: 30 });
+  try {
+    await stream.send('idle-race', 'first', () => {});
+    const state = stream.ensure('idle-race', {}), oldPid = state.proc.pid;
+    const next = new Promise((resolve, reject) => state.proc.stdin.once('finish', () => {
+      assert.equal(stream.status('idle-race').recycling, true);
+      stream.send('idle-race', 'during shutdown', () => {}).then(resolve, reject);
+    }));
+    await next;
+    assert.notEqual(stream.status('idle-race').pid, oldPid);
+    assert.equal(stream.status('idle-race').threadId, 'thread-resident');
+  } finally { await stream.closeAndWait('idle-race'); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a close deadline cannot erase the old child or permit an early workspace handoff', { timeout: 8000 }, async () => {
+  const { stream, root } = createFixture('join-timeout', { FAKE_CODEX_IGNORE_TERM: '1' });
+  const router = require('../src/chat/stream-router').createStreamRouter(stream, stream, stream);
+  const w = { id: 'join-workspace', path: root };
+  router.ensure('join-timeout', { streamBackend: 'app-server', cwd: root });
+  try {
+    await router.send('join-timeout', 'first', () => {});
+    const pid = router.status('join-timeout').pid;
+    router.parkWorkspace('join-timeout', w);
+    await assert.rejects(router.closeAndWait('join-timeout', { timeoutMs: 10 }), { code: 'CODEX_APP_STREAM_CLOSE_TIMEOUT' });
+    assert.doesNotThrow(() => process.kill(pid, 0));
+    await assert.rejects(router.claimWorkspace('next-owner', w), { code: 'workspace_busy' });
+    await router.closeAndWait('join-timeout');
+    await router.claimWorkspace('next-owner', w);
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  } finally { await router.closeAndWait('join-timeout'); await router.closeAndWait('next-owner'); fs.rmSync(root, { recursive: true, force: true }); }
 });

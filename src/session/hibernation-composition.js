@@ -59,7 +59,7 @@ function createSessionHibernation(deps) {
       if (defaultRepoActor.isLeased(id)) blockers.push('repo_lease');
       if (chat?.isStreaming || chat?.claudeProc || chat?._cancelledProc || chat?._activeRunner) blockers.push('active_cli');
       if (stream?.busy || stream?.queued) blockers.push('active_stream');
-      if (backgroundTaskRuntime.hasLiveBackgroundTasks(id)) blockers.push('background_task');
+      if ((backgroundTaskRuntime.hasProcessBackgroundTasks || backgroundTaskRuntime.hasLiveBackgroundTasks)(id)) blockers.push('background_task');
       if (waitInjector.hasWait(id)) blockers.push('pending_wait');
       const durableStaleMs = Number(process.env.MULTICC_HIBERNATE_DURABLE_STALE_MS || DEFAULT_DURABLE_STALE_MS);
       if (orchestrationRuntime && await orchestrationRuntime.hasSessionActivity(id, { staleMs: durableStaleMs })) blockers.push('durable_work');

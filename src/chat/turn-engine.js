@@ -372,7 +372,7 @@ function createChatTurnEngine(deps) {
   const autoProviderRuntime = deps.autoProviderRuntime || createAutoProviderRuntime({
     providers, providerLimitCache, emit: chatBroadcast, logger,
     hasLiveBackgroundTasks: sessionId => {
-      try { return getBackgroundTaskRuntime()?.hasLiveBackgroundTasks?.(sessionId) === true; }
+      try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
       catch (_) { return true; }
     },
   });
@@ -381,7 +381,7 @@ function createChatTurnEngine(deps) {
       waitInjector.injectSystemMsg(sessionId, text, delayMs, metadata)
     ),
     hasLiveBackgroundTasks: sessionId => {
-      try { return getBackgroundTaskRuntime()?.hasLiveBackgroundTasks?.(sessionId) === true; }
+      try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
       catch (_) { return true; }
     },
     logger,
@@ -2321,8 +2321,8 @@ function createChatTurnEngine(deps) {
       },
       env: childEnv,
       onDispose: () => routerToolHost.releasePersistentProcess(cs),
-      onBackgroundEvent: (evt) => getBackgroundTaskRuntime().handleEvent(sessionName, cs, evt),
-      isBackgroundActive: () => getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName),
+      monitorAdmission: true, onBackgroundEvent: (evt) => getBackgroundTaskRuntime().handleEvent(sessionName, cs, evt),
+      isBackgroundActive: () => getBackgroundTaskRuntime().hasProcessBackgroundTasks(sessionName),
       onExit: () => {
         try {
           const reaped = getBackgroundTaskRuntime().reapSessionShadows(sessionName, { reason: 'stream_exit' });

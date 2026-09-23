@@ -51,7 +51,7 @@ test('the real host selects the persistent SDK runner and preserves native sessi
 test('switching stream backends waits for the previous native process before accepting input', async () => {
   let exit, oldAlive = true, sends = 0;
   const legacy = { ensure() {}, status: () => ({ alive: oldAlive }),
-    closeAndWait: () => new Promise(resolve => { exit = () => { oldAlive = false; resolve(); }; }) };
+    closeAndWait: () => new Promise(resolve => { exit = () => { oldAlive = false; resolve({ closed: true }); }; }) };
   const sdk = { ensure() {}, send() { assert.equal(oldAlive, false); sends++; return Promise.resolve('done'); } };
   const stream = createStreamRouter(legacy, sdk);
   stream.ensure('switch', {});

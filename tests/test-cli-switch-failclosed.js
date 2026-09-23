@@ -49,7 +49,13 @@ try { count = Number(fs.readFileSync(countFile, 'utf8')) || 0; } catch (_) {}
 count += 1;
 fs.writeFileSync(countFile, String(count));
 let sent = false;
-process.stdin.on('data', () => {
+require('readline').createInterface({ input: process.stdin }).on('line', line => {
+  const message = JSON.parse(line);
+  if (message.type === 'control_request') {
+    process.stdout.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: {} } }) + '\\n');
+    return;
+  }
+  if (message.type !== 'user') return;
   if (sent) return;
   sent = true;
   if (count > 1) process.exit(7);

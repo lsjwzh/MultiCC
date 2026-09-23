@@ -22,8 +22,8 @@
 //
 // The idle threshold is deliberately NOT here. Each lane already reclaims its own
 // child after DEFAULT_IDLE_MS of no turns (chat-stream / claude-sdk-stream /
-// codex-app-stream), and the legacy lane additionally holds a child past idle
-// while it still owns live background work, up to a hard ceiling. That policy is
+// codex-app-stream). Claude lanes retain children that own live background work
+// until that work completes or is explicitly stopped. That policy is
 // per-child and needs backend-internal knowledge (background activity, exit
 // handling); this module only bounds the COUNT, which no backend can see.
 //
