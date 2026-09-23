@@ -267,6 +267,32 @@ test('separation barrier holds the workspace, rechecks the frozen revision and r
   await nextGuard.complete({ accepted: false, durable: false });
 });
 
+test('a separation barrier accepts the checkout AutoCommit moved after the turn ended', async t => {
+  const f = await hostFixture(t), d = f.descriptor('drift-run');
+  const guard = await f.host.beforeDeliver(d);
+  f.host.bindTurn(f.record.id, d.opts, 'turn-drift', 'task-source');
+  f.host.starting(f.record.id, d.opts, 'attempt-drift'); await guard.complete({ accepted: true });
+  f.host.settled(f.record.id, { status: 'completed' });
+  f.host.finalized({ sessionName: f.record.id, turn: { turnId: 'turn-drift', resultDurable: true }, usageDurable: true,
+    runner: { providerAttempt: { routeAttemptId: 'attempt-drift' } } },
+  { effects: [{ type: 'classify-turn-end', classification: 'succeeded' }], facts: { completion: { state: 'completed' } } });
+  for (let i = 0; i < 100 && f.host.snapshot().leases.length; i++) await new Promise(r => setTimeout(r, 20));
+  const finished = f.host.deliveryEvidence(f.record.id, 'turn-drift').run;
+  assert.ok(finished.endCodeRevision);
+  assert.equal(f.host.deliveryEvidence(f.record.id, 'turn-drift').barrier.codeRevision, finished.endCodeRevision);
+  // The reported production race: AutoCommit lands right after the turn closed,
+  // so the revision the finished turn recorded is no longer the checkout.
+  fs.writeFileSync(path.join(f.record.worktreePath, 'autocommit.txt'), 'landed after the turn\n');
+  let captured;
+  await f.host.withSeparationBarrier({ sessionId: f.record.id, turnId: 'turn-drift', separationId: 'sep-drift' },
+    async value => { captured = value; });
+  assert.equal(captured.barrier.revisionDrifted, true, 'the drift is recorded, not refused');
+  assert.equal(captured.barrier.runEndRevision, finished.endCodeRevision);
+  assert.equal(captured.code.dirty, true, 'uncommitted work is exactly what the new task takes over');
+  const view = f.host.deliveryEvidence(f.record.id, 'turn-drift');
+  assert.equal(view.barrier.id, captured.barrier.id, 'the card shows the barrier that was actually taken');
+  assert.equal(view.barrier.writersStopped, true);
+});
 test('separation drains a terminal wait-for-user lease before taking its snapshot', async t => {
   const f = await hostFixture(t), d = f.descriptor('waiting-source');
   const guard = await f.host.beforeDeliver(d);

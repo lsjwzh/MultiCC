@@ -211,6 +211,7 @@ test('a separation application receipt is required before the fourth step can co
 });
 
 test('a workspace-snapshot separation does not masquerade as an unmerged delivery', async t => {
+
   const f = fixture(t), start = await captureCodeRevision(f.wt);
   f.begin('turn-waiting', { startCodeRevision: start.revision, startHead: start.head, startDirty: start.dirty });
   fs.writeFileSync(path.join(f.wt, 'isolated.txt'), 'snapshot');
@@ -231,3 +232,55 @@ test('a workspace-snapshot separation does not masquerade as an unmerged deliver
   ]);
   assert.equal(barrier.dirty, false);
 });
+
+test('a separation barrier takes the checkout as it is now, not the revision the finished turn wrote down', async t => {
+  const f = fixture(t), start = await captureCodeRevision(f.wt);
+  f.begin('turn1', { startCodeRevision: start.revision, startHead: start.head, startDirty: start.dirty });
+  const run = await f.finish();
+  // AutoCommit / sibling sync moved the worktree on between the verdict and the
+  // user's click — the exact production race that used to report
+  // barrier_code_changed and park the suggestion as blocked.
+  fs.writeFileSync(path.join(f.wt, 'later.txt'), 'later work\n');
+  const code = await captureCodeRevision(f.wt);
+  assert.notEqual(code.revision, run.endCodeRevision, 'the fixture must really drift');
+  assert.equal(code.dirty, true);
+  const barrier = f.evidence.recordWriterBarrier({ sessionId: 's', turnId: 'turn1', separationId: 'sep-drift',
+    workspaceId: 'w', leaseId: 'lease-drift', generation: 1, code });
+  assert.equal(barrier.codeRevision, code.revision);
+  assert.equal(barrier.runEndRevision, run.endCodeRevision);
+  assert.equal(barrier.revisionDrifted, true);
+  assert.equal(barrier.dirty, true, 'the moved snapshot is allowed to be dirty');
+  const separation = { id: 'sep-drift', sessionId: 's', turnId: 'turn1', sourceTaskId: 'A',
+    sourceTitle: 'Source', taskId: 'B', title: 'Independent', state: 'pending', phase: 'indexing_task',
+    deliveryKind: 'workspace_snapshot' };
+  const view = await deliveryView({ sessionId: 's', taskId: 'A', separation, admission: f.admission, cwd: f.repo });
+  assert.deepEqual(view.blockers, ['separation_application_required']);
+  assert.equal(view.barrier.dirty, true);
+  assert.deepEqual(view.steps.map(step => [step.label, step.status]), [
+    ['源会话已停写', 'done'], ['隔离基线已冻结', 'done'], ['源现场稳定', 'done'], ['分离生效', 'pending'],
+  ]);
+  // The turn-end barrier keeps the strict equality: a writer that ran past the
+  // drain must still be reported instead of silently accepted.
+  assert.throws(() => f.evidence.recordWriterBarrier({ sessionId: 's', turnId: 'turn1',
+    workspaceId: 'w', leaseId: 'lease-turn-end', generation: 1, code }), { code: 'barrier_code_changed' });
+});
+
+test('a separation barrier still records when the turn-end observation never produced a revision', async t => {
+  // The production report came from a turn whose own revision capture failed
+  // (AutoCommit writing during the observation). The run then records no
+  // revision at all, and refusing the transfer for that would block separation
+  // for a reason the user can neither see nor fix.
+  const f = fixture(t, { capture: async () => { throw new Error('code_changed_during_observation'); } });
+  f.begin();
+  const run = await f.finish();
+  assert.equal(run.endCodeRevision, null);
+  assert.equal(run.repoId, null);
+  const code = await captureCodeRevision(f.wt);
+  const barrier = f.evidence.recordWriterBarrier({ sessionId: 's', turnId: 'turn1', separationId: 'sep-unobserved',
+    workspaceId: 'w', leaseId: 'lease-unobserved', generation: 1, code });
+  assert.equal(barrier.codeRevision, code.revision);
+  assert.equal(barrier.runEndRevision, null);
+  assert.equal(barrier.revisionDrifted, null, 'no recorded revision means there is nothing to drift from');
+  assert.equal(barrier.writersStopped, true);
+});
+

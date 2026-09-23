@@ -129,12 +129,26 @@ function createDeliveryEvidence(store, {
   function recordWriterBarrier({ sessionId, turnId, separationId = null, workspaceId, leaseId, generation, code }) {
     const run = facts.getFact('run-result', turnId);
     if (!run || run.sessionId !== sessionId || run.workspaceId !== workspaceId) throw fail('barrier_run_mismatch');
-    if (!code?.revision || code.revision !== run.endCodeRevision || code.repoId !== run.repoId) throw fail('barrier_code_changed');
+    const recorded = run.endCodeRevision || null;
+    if (!code?.revision) throw fail('barrier_code_changed');
+    // A recorded repository identity is binding: a barrier for another
+    // checkout is never this run's.
+    if (run.repoId && code.repoId !== run.repoId) throw fail('barrier_code_changed');
+    // A turn-end barrier re-verifies the revision the run wrote down: anything
+    // else means a writer escaped the drain. A separation barrier instead
+    // freezes a checkout for a *transfer*, and AutoCommit or sibling sync
+    // legitimately move the source revision between the verdict and the click —
+    // there the recorded revision is diagnostics, not a refusal, and the
+    // revision captured here is what the transfer actually carries. A run whose
+    // own turn-end observation failed recorded no revision at all; the barrier
+    // then keeps the repository identity and the revision it observed.
+    if (!separationId && recorded && code.revision !== recorded) throw fail('barrier_code_changed');
     const id = 'barrier_' + key(turnId, separationId, leaseId, generation, code.revision).slice(0, 48);
     const existing = facts.getFact('writer-barrier', id);
     const identity = { id, sessionId, turnId, separationId, taskId: run.taskId,
       attemptId: run.attemptId, workspaceId, leaseId, generation, codeRevision: code.revision,
-      head: code.head, repoId: code.repoId, dirty: code.dirty, writersStopped: true };
+      head: code.head, repoId: code.repoId, dirty: code.dirty, writersStopped: true,
+      runEndRevision: recorded, revisionDrifted: recorded === null ? null : code.revision !== recorded };
     if (existing) {
       if (Object.entries(identity).some(([name, value]) => existing[name] !== value)) throw fail('immutable_fact_conflict');
       return existing;
