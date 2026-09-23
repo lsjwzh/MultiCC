@@ -234,7 +234,7 @@ test('Web picker keeps only a short memory catalog and explicit refresh replaces
 test('Web and App consume the same endpoint and contain no production Astra guess', () => {
   const files = [
     'public/shared/models.js',
-    'public/manage-session-lifecycle.js',
+    'public/air-admin.js',
     'app/lib/services/codex_models_service.dart',
     'app/lib/widgets/create_session_dialog.dart',
     'app/lib/widgets/ai_config_sheet.dart',
@@ -242,11 +242,11 @@ test('Web and App consume the same endpoint and contain no production Astra gues
   const sources = files.map(file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8'));
   assert.match(sources[0], /\/api\/codex\/models/);
   assert.match(sources[2], /\/api\/codex\/models/);
-  assert.match(sources[1], /forceRefresh: true/);
+  assert.match(sources[1], /\/api\/codex\/models\?refresh=1/);
   assert.match(sources[2], /forceRefresh/);
   for (let index = 0; index < sources.length; index += 1) {
     assert.equal(sources[index].includes('gpt-6-astra'), false, files[index]);
   }
-  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage.js'), 'utf8');
-  assert.match(manage, /key: 'codex-official'[^\n]+model: '', models: ''/);
+  const air = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-provider.js'), 'utf8');
+  assert.match(air, /'codex-official': \{[^\n]+model: ''/);
 });

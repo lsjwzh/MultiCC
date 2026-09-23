@@ -37,8 +37,6 @@ const AIR_ADMIN = read('air-admin.js');
 const AIR = read('air.js');
 const CHAT_HTML = read('chat.html');
 const STATUS_PRESENTATION = read('status-presentation.js');
-const MANAGE_HTML = read('manage.html');
-const MANAGE_DASHBOARD = read('manage-dashboard.js');
 const COMPOSER_CSS = read('composer.css');
 
 test('Air 的壳不再常驻毛玻璃：每一层 backdrop-filter 都是 none', () => {
@@ -89,12 +87,10 @@ test('圈的调色板：每一档都过得了像素门槛，而且是按 id 挑�
   assert.equal(/Math\.random\(/.test(hashBody.slice(0, hashBody.indexOf('\n  }'))), false,
     'ringTint 里不该出现 Math.random：同一个任务必须每次都是同一个颜色');
 
-  // 两个消费者都得走这一份，不许各自留个数组抄一遍。
+  // 消费者得走这一份，不许自己留个数组抄一遍。（旧看板 manage-dashboard.js 是
+  // 另一个消费者，随 /manage.html 一起删了。）
   assert.ok(/registry\(\)[\s\S]{0,40}?\.ringTint\(seed\)/.test(AIR_ADMIN), 'air-admin.js 应该向 registry 要颜色');
-  assert.ok(/typeof sp\.ringTint === 'function'[\s\S]{0,60}?sp\.ringTint\(seed\)/.test(MANAGE_DASHBOARD),
-    'manage-dashboard.js 应该向 registry 要颜色');
   assert.equal(/RING_TINTS = \[/.test(AIR_ADMIN), false, 'air-admin.js 不该再自带一份调色板');
-  assert.equal(/RING_TINTS = \[/.test(MANAGE_DASHBOARD), false, 'manage-dashboard.js 不该再自带一份调色板');
 
   // 每一个调用点都得把 id 传下去，否则那条线的颜色会退回主题色 —— 圈还在，但
   // 「哪条和哪条不一样」这件事就没了，而它正是这次替代动画的东西。
@@ -187,27 +183,6 @@ test('所有「一直动」的动画只碰 transform / opacity', () => {
     }
   }
   assert.deepEqual(offenders, [], `这些永续动画每帧都要重排/重绘：\n${offenders.join('\n')}`);
-});
-
-test('老看板的运行标记也是静态描边，不再是彩虹', () => {
-  // 这一处和 Air 的圈是同一条规则的另一份实现：谁在跑 → 加粗的浅色边，颜色按 id
-  // 从同一份调色板里挑。原来是 3s infinite 的 border-color + 带模糊光晕的
-  // box-shadow —— 逐帧重绘整张卡，比 Air 那个还贵。
-  assert.equal(/@keyframes\s+rainbow-border/.test(MANAGE_HTML), false, '彩虹那套关键帧不该回来');
-  const rule = /\.card-border-rainbow\s*\{([^}]*)\}/.exec(MANAGE_HTML);
-  assert.ok(rule, 'manage.html 里找不到 .card-border-rainbow');
-  assert.equal(/animation\s*:/.test(rule[1]), false, '运行标记上不该挂动画');
-  assert.ok(/var\(--card-tint,\s*var\(--codex\)\)/.test(rule[1]),
-    '颜色要写成 var(--card-tint, var(--codex))：量不到变量时退回主题色，边不会整个消失');
-
-  // 颜色由 manage-dashboard.js 按 id 写进来，摘类的时候要清掉（卡片是复用的）。
-  assert.ok(/style\.setProperty\('--card-tint'/.test(MANAGE_DASHBOARD), '运行中要写 --card-tint');
-  assert.ok(/style\.removeProperty\('--card-tint'/.test(MANAGE_DASHBOARD), '不跑了要把颜色清掉');
-
-  // 同一张板上另外几处「一直闪」的装饰也一起改掉了：角标、冲突按钮、页签下划线。
-  assert.equal(/@keyframes\s+pulse-badge/.test(MANAGE_HTML), false, '角标不该再闪');
-  assert.equal(/@keyframes\s+conflictPulse/.test(MANAGE_HTML), false, '冲突按钮不该再脉冲');
-  assert.equal(/@keyframes\s+ddTabRunningSweep/.test(MANAGE_HTML), false, '页签下划线不该再扫');
 });
 
 test('running 的标记不再旋转', () => {

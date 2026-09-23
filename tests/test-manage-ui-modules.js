@@ -146,59 +146,31 @@ function browserContext() {
   };
 }
 
-test('manage loads extracted classic modules before page bootstrap', () => {
-  const html = read('public/manage.html');
-  const bridge = html.indexOf('<script src="manage-bridges.js"></script>');
-  const host = html.indexOf('<script src="manage-host-settings.js"></script>');
+// 这两个经典模块（消息桥接、千问语音）比旧管理台活得久：旧页删了，air.html 把它们
+// 原样引了进来，由 air-bridges.js / air-voice.js 当宿主。所以这里改断 Air 的加载顺序
+// —— 宿主在 IIFE 之后才调 initialize()，模块必须先于宿主脚本登记。
+test('Air loads the surviving classic modules before the panels that drive them', () => {
+  const html = read('public/air.html');
+  const bridges = html.indexOf('<script src="manage-bridges.js"></script>');
   const qwen = html.indexOf('<script src="manage-qwen-audio.js"></script>');
-  const page = html.indexOf('<script src="manage.js"></script>');
-  const pwa = html.indexOf('<script src="pwa.js"></script>');
-  assert.ok(pwa > 0 && pwa < bridge && bridge < host && host < qwen && qwen < page);
-  assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+manage-(?:bridges|host-settings|qwen-audio)/i);
+  const airBridges = html.indexOf('<script src="air-bridges.js"></script>');
+  const airVoice = html.indexOf('<script src="air-voice.js"></script>');
+  assert.ok(bridges > 0 && qwen > 0, 'air.html must still load both classic modules');
+  assert.ok(qwen < airVoice, 'manage-qwen-audio.js must be registered before air-voice.js');
+  assert.ok(bridges < airBridges, 'manage-bridges.js must be registered before air-bridges.js');
+  assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+manage-(?:bridges|qwen-audio)/i);
 });
 
-test('manage facade stays below the migration ceiling and no longer owns extracted domains', () => {
-  const page = read('public/manage.js');
+test('the surviving classic modules stay bounded and keep their published surface', () => {
   const bridges = read('public/manage-bridges.js');
-  const host = read('public/manage-host-settings.js');
   const qwen = read('public/manage-qwen-audio.js');
-  assert.ok(page.split(/\r?\n/).length <= 5300, 'manage.js should stay at or below 5300 lines after this extraction');
   assert.ok(bridges.split(/\r?\n/).length < 2000);
-  assert.ok(host.split(/\r?\n/).length < 2000);
   assert.ok(qwen.split(/\r?\n/).length < 1000);
-  assert.doesNotMatch(page, /function\s+(?:wechat|feishu|bridge)[A-Z]/);
-  assert.doesNotMatch(page, /function\s+(?:load|save)TunnelSettings/);
-  assert.match(page, /MultiCCManageBridges\.initialize\(\)/);
-  assert.match(page, /MultiCCManageHostSettings\.initialize\(\)/);
-  assert.match(page, /MultiCCManageQwenAudio\.initialize\(/);
+  assert.match(bridges, /MultiCCManageBridges\s*=\s*Object\.freeze/);
   assert.doesNotMatch(qwen, /\.innerHTML\s*=|insertAdjacentHTML|document\.write/);
   assert.match(qwen, /textContent\s*=/);
   assert.match(qwen, /MultiCCManageQwenAudio\s*=\s*Object\.freeze/);
   assert.match(qwen, /Object\.freeze\(\{ initialize, loadPanel, openGlobalVoice \}\)/);
-});
-
-// The roster is the surface that started this: a fleet card kept showing a
-// judgement Aux had stopped revising. The plumbing is four pins — the socket
-// branch, the per-session store it feeds, the repaint it triggers, and the
-// `stale` flag reaching the shared badge renderer (whose behaviour is pinned in
-// tests/test-status-presentation.js). Loading the whole page into a sandbox to
-// assert the same four facts would restate this and break on every new script.
-test('the roster records Aux freshness and repaints every judgement it froze', () => {
-  const page = read('public/manage.js');
-  assert.match(page, /msg\.type === 'aux_verdict_staleness'/,
-    'the freshness-only broadcast must be handled: no task_state follows it');
-  assert.match(page, /auxUnhealthy === true/,
-    'freshness must be read as a boolean, never as a truthy string');
-  const branch = page.slice(page.indexOf("msg.type === 'aux_verdict_staleness'"));
-  const body = branch.slice(0, branch.indexOf('\n    } else if'));
-  assert.match(body, /for \(const \[sessionId, entry\] of _workspaceClassify\)/,
-    'every judgement on the page froze with Aux, so every card needs the mark');
-  assert.match(body, /updateSessionClassifyDom\(sessionId\)/,
-    'recording the fact without repainting leaves the stale badge on screen');
-  assert.match(page, /stale: c\.stale === true/,
-    'the recorded freshness must reach the shared badge renderer');
-  assert.match(page, /stale: s\.auxUnhealthy === true|stale: msg\.auxUnhealthy === true/,
-    'snapshot and task_state payloads carry their own freshness');
 });
 
 test('bridge controller keeps relative credential-free URLs and safe DOM log rendering', async () => {
@@ -245,287 +217,7 @@ test('every bridge owns reconnect generation and cannot reconnect after stop', a
   }
 });
 
-test('Git tree renders every API field as text even for hostile payloads', async () => {
-  const html = read('public/manage.html');
-  const marker = '<script>\n    window._gitTreeDir = null;';
-  const start = html.indexOf(marker);
-  const end = html.indexOf('</script>', start);
-  assert.ok(start > 0 && end > start);
-  const source = html.slice(start + '<script>'.length, end);
-  assert.doesNotMatch(source, /\.innerHTML\s*=/);
-  assert.doesNotMatch(source, /\bhtml\s*\+=/);
-
-  const harness = browserContext();
-  let payload = {
-    repoPath: '<img src=x onerror=repo()>',
-    commits: [{
-      short: '<svg onload=short()>',
-      date: '<script>date()</script>',
-      author: '<img src=x onerror=author()>',
-      subject: '<script>subject()</script>',
-      refs: 'tag: <img src=x onerror=ref()>',
-    }],
-  };
-  harness.context.fetch = async () => ({ async json() { return payload; } });
-  vm.runInContext(source, harness.context, { filename: 'manage-git-tree-inline.js' });
-  harness.context.openGitTree('dir-1');
-  await new Promise(resolve => setImmediate(resolve));
-
-  const collectText = node => String(node && node.textContent || '')
-    + (node && node.children || []).map(collectText).join('');
-  const body = harness.context.document.getElementById('git-tree-body');
-  const rendered = collectText(body);
-  assert.match(rendered, /<svg onload=short\(\)>/);
-  assert.match(rendered, /<img src=x onerror=author\(\)>/);
-  assert.match(rendered, /<script>subject\(\)<\/script>/);
-  assert.match(rendered, /<img src=x onerror=ref\(\)>/);
-  assert.equal(harness.context.document.getElementById('git-tree-path').textContent, payload.repoPath);
-  assert.deepEqual([...new Set(harness.createdTags)].sort(), ['div', 'span']);
-
-  payload = { error: '<img src=x onerror=error()>' };
-  harness.context.openGitTree('dir-2');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.match(collectText(body), /错误: <img src=x onerror=error\(\)>/);
-});
-
-test('host settings preserve bootstrap header auth without credential query parameters', async () => {
-  const source = read('public/manage-host-settings.js');
-  assert.doesNotMatch(source, /\.innerHTML\s*=/);
-  assert.doesNotMatch(source, /[?&]token=/i);
-  assert.doesNotMatch(source, /fetch\(\s*[`'"]https?:\/\//i);
-  const harness = browserContext();
-  const toggle = harness.context.document.getElementById('cc-oauth-enabled');
-  toggle.checked = true;
-  vm.runInContext(source, harness.context, { filename: 'manage-host-settings.js' });
-  assert.equal(typeof harness.context.MultiCCManageHostSettings.initialize, 'function');
-  assert.equal(typeof harness.context.saveOfficialOAuthSetting, 'function');
-
-  await harness.context.saveOfficialOAuthSetting();
-  const request = harness.requests.find(item => item.url === '/api/settings/official-oauth');
-  assert.equal(request.options.method, 'POST');
-  assert.equal(request.options.headers['X-Access-Token'], 'bootstrap-secret');
-  assert.equal(JSON.parse(request.options.body).enabled, true);
-  assert.doesNotMatch(request.url, /token/i);
-});
-
-function catalogTranslator(locale = 'zh') {
-  const catalog = JSON.parse(read(`app/assets/i18n/${locale}.json`));
-  return (key, params) => {
-    let text = catalog[key] || key;
-    if (params) {
-      text = text.replace(/\{(\w+)\}/g, (_, name) =>
-        Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : `{${name}}`);
-    }
-    return text;
-  };
-}
-
-function apkHarness(initialSteps = [], { now = Date.parse('2026-08-20T12:01:00.000Z'), locale = 'zh' } = {}) {
-  const harness = browserContext();
-  const steps = initialSteps.slice();
-  harness.context.Date = class extends Date {
-    constructor(...args) { super(...(args.length ? args : [now])); }
-    static now() { return now; }
-  };
-  harness.context.t = catalogTranslator(locale);
-  harness.context.fetch = async (url, options = {}) => {
-    const request = { url: String(url), options };
-    harness.requests.push(request);
-    const step = steps.shift();
-    if (!step) throw new Error(`unscripted fetch: ${request.url}`);
-    if (step.url) assert.equal(request.url, step.url);
-    if (step.error) throw step.error;
-    const status = step.status || 200;
-    return {
-      ok: status >= 200 && status < 300,
-      status,
-      async json() { return step.body; },
-    };
-  };
-  harness.enqueue = (...more) => steps.push(...more);
-  harness.fireNextTimer = async () => {
-    const index = harness.timers.findIndex(timer => !timer.cleared);
-    assert.notEqual(index, -1, 'a retry/poll timer should be scheduled');
-    const [timer] = harness.timers.splice(index, 1);
-    await timer.callback();
-  };
-  vm.runInContext(read('public/manage-host-settings.js'), harness.context, { filename: 'manage-host-settings.js' });
-  return harness;
-}
-
-test('APK management is download-only and explains the release fallback', () => {
-  const html = read('public/manage.html');
-  assert.match(html, /<a[^>]+id="apk-download-btn"[^>]+href="\/multicc\.apk"/);
-  assert.doesNotMatch(html, /apk-build-btn|startApkBuild|apk-build-log/);
-  assert.match(html, /id="apk-source-status"[^>]+role="status"[^>]+aria-live="polite"/);
-
-  const zh = JSON.parse(read('app/assets/i18n/zh.json'));
-  const en = JSON.parse(read('app/assets/i18n/en.json'));
-  const apkKeys = Object.keys(zh).filter(key => key.startsWith('apk')).sort();
-  assert.deepEqual(Object.keys(en).filter(key => key.startsWith('apk')).sort(), apkKeys);
-  assert.ok(apkKeys.includes('apkArtifactRelease'));
-  assert.ok(apkKeys.includes('apkArtifactLocal'));
-  assert.equal(apkKeys.some(key => key.startsWith('apkBuild')), false);
-});
-
-test('APK management prefers a local package even when its version is stale', async () => {
-  const harness = apkHarness([
-    {
-      url: '/api/apk-info',
-      body: {
-        exists: true, localExists: true, source: 'local', localCurrent: false,
-        current: false, downloadUrl: '/multicc.apk', versionName: '2.1.0', versionCode: 10,
-        targetVersionName: '2.2.0', targetVersionCode: 11, size: 1048576,
-        mtime: '2026-08-20T11:00:00.000Z',
-      },
-    },
-  ]);
-
-  await harness.context.loadApkInfo();
-  assert.deepEqual(harness.requests.map(request => request.url), ['/api/apk-info']);
-  assert.equal(harness.context.document.getElementById('apk-download-btn').href, '/multicc.apk');
-  assert.equal(harness.context.document.getElementById('apk-download-btn').getAttribute('aria-disabled'), null);
-  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /本地/);
-  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /2\.1\.0\+10/);
-  assert.match(harness.context.document.getElementById('apk-source-status').textContent, /目标版本 2\.2\.0\+11/);
-});
-
-test('APK management uses the exact current-version GitHub Release when local is absent', async () => {
-  const releaseUrl = 'https://github.com/lsjwzh/MultiCC/releases/download/v1.5.3/multicc.apk';
-  const harness = apkHarness([
-    {
-      url: '/api/apk-info',
-      body: {
-        exists: true, localExists: false, source: 'release', releaseTag: 'v1.5.3',
-        downloadUrl: releaseUrl, versionName: '2.30.0', versionCode: 120,
-        targetVersionName: '2.30.1', targetVersionCode: 121, size: 62914560,
-        mtime: '2026-08-20T12:00:00.000Z',
-      },
-    },
-  ]);
-
-  await harness.context.loadApkInfo();
-  assert.equal(harness.context.document.getElementById('apk-download-btn').href, releaseUrl);
-  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /GitHub Release v1\.5\.3/);
-  assert.match(harness.context.document.getElementById('apk-card-hint').textContent, /线上/);
-});
-
-test('APK management stays honest when the current release has no verified asset', async () => {
-  const harness = apkHarness([
-    {
-      url: '/api/apk-info',
-      body: {
-        exists: false, localExists: false, source: null, releaseTag: 'v1.5.2',
-        targetVersionName: '2.29.7', targetVersionCode: 119,
-        error: 'release_asset_missing',
-      },
-    },
-  ]);
-
-  await harness.context.loadApkInfo();
-  const download = harness.context.document.getElementById('apk-download-btn');
-  assert.equal(download.getAttribute('aria-disabled'), 'true');
-  assert.equal(download.getAttribute('href'), null);
-  assert.match(harness.context.document.getElementById('apk-artifact-summary').textContent, /v1\.5\.2/);
-});
-
-/**
- * The sidebar uptime read-out.
- *
- * Its whole value is that a restart moves it, so what is pinned here is that
- * the numbers come from the server's *uptime* rather than its wall clock: a
- * host running a few hours ahead of the browser would otherwise render a start
- * time in the future, which reads as a bug in the service the line is meant to
- * reassure you about.
- */
-function bootHarness(payload, { now = Date.parse('2026-07-27T13:32:00+08:00') } = {}) {
-  const harness = browserContext();
-  harness.context.Date = class extends Date {
-    constructor(...args) { super(...(args.length ? args : [now])); }
-    static now() { return now; }
-  };
-  harness.context.fetch = async (url) => {
-    const path = String(url);
-    harness.requests.push({ url: path, options: {} });
-    // initialize() wakes the other host panels too; they only need to not throw.
-    const body = path === '/api/server-info' ? payload
-      : path.startsWith('/api/push/health') ? { global: {}, subscriptions: [] }
-      : {};
-    return { ok: true, status: 200, async json() { return body; } };
-  };
-  vm.runInContext(read('public/manage-host-settings.js'), harness.context, { filename: 'manage-host-settings.js' });
-  return harness;
-}
-
-test('the sidebar shows when the service last started, derived from uptime not the host clock', async () => {
-  // The host's clock is a full day ahead of the browser's. Reading startedAt
-  // would put the start in the future; uptime cannot.
-  const harness = bootHarness({
-    uptimeMs: 8100000,                              // 2h 15m
-    startedAt: '2026-07-28T03:17:00.000Z',
-  });
-  await harness.context.loadBootTime();
-
-  assert.equal(harness.requests.at(-1).url, '/api/server-info');
-  // The rendered wall time uses the browser's local zone, so the expectation
-  // must be formatted from the same instant here instead of pinning one
-  // zone's rendering (the release runners are UTC, the dev box is UTC+8).
-  const boot = new Date(Date.parse('2026-07-27T13:32:00+08:00') - 8100000);
-  const pad = value => String(value).padStart(2, '0');
-  assert.equal(
-    harness.context.document.getElementById('boot-time').textContent,
-    `${pad(boot.getMonth() + 1)}-${pad(boot.getDate())} ${pad(boot.getHours())}:${pad(boot.getMinutes())}`,
-  );
-  assert.equal(harness.context.document.getElementById('boot-uptime').textContent, '2h 15m');
-});
-
-test('the uptime line is translated, and the short clock keeps the full instant in its tooltip', async () => {
-  const harness = bootHarness({ uptimeMs: 8100000 });
-  harness.context.t = (key, params) => `${key}:${params.duration}`;
-  await harness.context.loadBootTime();
-  assert.equal(harness.context.document.getElementById('boot-uptime').textContent, 'uptimeDuration:2h 15m');
-  assert.ok(harness.context.document.getElementById('boot-time').title, 'the year is dropped on screen, so it must survive in the title');
-});
-
-test('uptime is coarse, and a server that just came up says so rather than showing 0', async () => {
-  const cases = [
-    [30 * 1000, '<1m'],
-    [90 * 1000, '1m'],
-    [59 * 60 * 1000, '59m'],
-    [3600 * 1000, '1h 0m'],
-    [8100 * 1000, '2h 15m'],
-    [26 * 3600 * 1000, '1d 2h'],
-    [48 * 3600 * 1000, '2d'],
-  ];
-  for (const [uptimeMs, expected] of cases) {
-    const harness = bootHarness({ uptimeMs });
-    await harness.context.loadBootTime();
-    assert.equal(harness.context.document.getElementById('boot-uptime').textContent, expected, `${uptimeMs}ms`);
-  }
-});
-
-test('a server-info response without uptime leaves the placeholder rather than printing a wrong time', async () => {
-  for (const payload of [{}, { uptimeMs: null }, { uptimeMs: 'soon' }]) {
-    const harness = bootHarness(payload);
-    harness.context.document.getElementById('boot-time').textContent = '—';
-    await harness.context.loadBootTime();
-    assert.equal(harness.context.document.getElementById('boot-time').textContent, '—');
-  }
-});
-
-test('the read-out is re-fetched when the tab comes back, since only a restart changes it', () => {
-  const harness = bootHarness({ uptimeMs: 1000 });
-  harness.context.MultiCCManageHostSettings.initialize();
-  const before = harness.requests.filter(item => item.url === '/api/server-info').length;
-  assert.equal(before, 1, 'one read on load');
-
-  const visibility = harness.listeners.filter(item => item.type === 'visibilitychange');
-  assert.equal(visibility.length, 1, 'exactly one visibility listener, not one per repaint');
-  harness.context.document.hidden = true;
-  visibility[0].handler({});
-  assert.equal(harness.requests.filter(item => item.url === '/api/server-info').length, before,
-    'a tab going away is not a reason to poll');
-  harness.context.document.hidden = false;
-  visibility[0].handler({});
-  assert.equal(harness.requests.filter(item => item.url === '/api/server-info').length, before + 1);
-});
+// 安装包面板、开机时间读数、推送按钮这几组原本跑的是 manage-host-settings.js。
+// 那个模块随旧页删掉了，Air 侧的同名功能在 air-ops.js，由 tests/test-air-ops.js 盯着
+// （官方 OAuth 开关落在 air-global.js）。旧页那份 APK 面板比 Air 的多一层「本地没有就
+// 去 GitHub Release 找」的回退，它跟着页面一起退场了 —— 不是搬家漏了，是一并删了。

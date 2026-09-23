@@ -312,32 +312,7 @@ test('async host adapters keep the newest open, class UI and shared session filt
   assert.equal(document.elements['memo-modal'].classList.contains('open'), false);
 });
 
-test('manage loads the classic memo controller before page code and retains only UI glue', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
-  const manage = fs.readFileSync(path.join(ROOT, 'public', 'manage.js'), 'utf8');
-  const auth = html.indexOf('<script src="auth-client.js"></script>');
-  const api = html.indexOf('<script src="api-client.js"></script>');
-  const controller = html.indexOf('<script src="memo-controller.js"></script>');
-  const providers = html.indexOf('<script src="provider-catalog.js"></script>');
-  const page = html.indexOf('<script src="manage.js"></script>');
-  assert.ok(auth > 0 && auth < api && api < controller && controller < providers && providers < page);
-  assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+memo-controller/i);
-
-  const start = manage.indexOf('// ── Per-directory memo');
-  const end = manage.indexOf('async function renameDirectory', start);
-  const memoBlock = manage.slice(start, end);
-  assert.match(memoBlock, /window\.MultiCCMemo\.createController/);
-  assert.match(memoBlock, /getDirectories: \(\) => _cachedDirectories/);
-  assert.match(memoBlock, /getSessions: \(\) => _cachedSessions/);
-  assert.doesNotMatch(memoBlock, /\bfetch\s*\(/);
-  assert.doesNotMatch(memoBlock, /tokenQS/);
-  assert.doesNotMatch(memoBlock, /\.innerHTML\s*=/);
-  assert.ok(memoBlock.split(/\r?\n/).length < 40, 'manage.js memo block should remain UI glue');
-});
-
-test('Dashboard, Standalone and Chat load one classic client/controller with host-only UI glue', () => {
-  const manageHtml = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
-  const manage = fs.readFileSync(path.join(ROOT, 'public', 'manage.js'), 'utf8');
+test('Standalone and Chat load one classic client/controller with host-only UI glue', () => {
   const memoHtml = fs.readFileSync(path.join(ROOT, 'public', 'memo.html'), 'utf8');
   const chatHtml = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');
   const chat = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
@@ -348,7 +323,7 @@ test('Dashboard, Standalone and Chat load one classic client/controller with hos
     return value;
   }
 
-  for (const html of [manageHtml, memoHtml, chatHtml]) {
+  for (const html of [memoHtml, chatHtml]) {
     assert.ok(position(html, 'auth-client.js') < position(html, 'api-client.js'));
     assert.ok(position(html, 'api-client.js') < position(html, 'memo-controller.js'));
     assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+(?:api-client|memo-controller)/i);
@@ -356,16 +331,12 @@ test('Dashboard, Standalone and Chat load one classic client/controller with hos
   assert.ok(position(chatHtml, 'memo-controller.js') < position(chatHtml, 'chat-notifications.js'));
   assert.ok(position(chatHtml, 'chat-notifications.js') < position(chatHtml, 'chat.js'));
 
-  const manageStart = manage.indexOf('// ── Per-directory memo');
-  const manageEnd = manage.indexOf('async function renameDirectory', manageStart);
-  const manageGlue = manage.slice(manageStart, manageEnd);
   const chatStart = chat.indexOf('// Shared Memo protocol/controller');
   const chatEnd = chat.indexOf('let isStreaming = false;', chatStart);
   const chatGlue = chat.slice(chatStart, chatEnd);
   const memoInlineStart = memoHtml.lastIndexOf('<script>');
   const memoInline = memoHtml.slice(memoInlineStart, memoHtml.lastIndexOf('</script>'));
 
-  assert.match(manageGlue, /MultiCCMemo\.createController/);
   assert.match(chatGlue, /MultiCCMemo\.createClient/);
   assert.match(chatGlue, /MultiCCMemo\.createController/);
   assert.match(memoInline, /MultiCCMemo\.createClient/);
@@ -373,7 +344,7 @@ test('Dashboard, Standalone and Chat load one classic client/controller with hos
   assert.match(memoInline, /await memoClient\.resolveDirectoryId/);
   assert.match(chatGlue, /await chatMemoClient\.resolveDirectoryId/);
 
-  for (const [host, glue] of [['Dashboard', manageGlue], ['Standalone', memoInline], ['Chat', chatGlue]]) {
+  for (const [host, glue] of [['Standalone', memoInline], ['Chat', chatGlue]]) {
     assert.doesNotMatch(glue, /\bfetch\s*\(/, `${host} must not implement Memo fetch`);
     assert.doesNotMatch(glue, /tokenQS|withToken/, `${host} must not add Memo URL credentials`);
     assert.doesNotMatch(glue, /\/api\/directories\/.+\/memo/, `${host} must not own Memo endpoints`);
@@ -381,7 +352,6 @@ test('Dashboard, Standalone and Chat load one classic client/controller with hos
     assert.doesNotMatch(glue, /error\.message|\.json\(\)\.catch/, `${host} must use the safe shared error boundary`);
   }
 
-  assert.ok(manageGlue.split(/\r?\n/).length < 40);
   assert.ok(chatGlue.split(/\r?\n/).length < 90);
   assert.ok(memoInline.split(/\r?\n/).length < 80);
 });

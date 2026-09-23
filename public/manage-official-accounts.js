@@ -14,6 +14,9 @@
 
 (function () {
   const api = () => window.MultiCCApi;
+  // 旧页删掉之后这个模块只剩 Air 在用（air-provider-advanced.js 画骨架、显式调 load()），
+  // 所以它自己写进 DOM 的那些文案也归 i18n 管了 —— 全部走 t()，key 以 airOfficialAcct 开头。
+  const tr = (key, params) => (typeof window.t === 'function' ? window.t(key, params) : key);
   const esc = (v) => (typeof escapeHtml === 'function' ? escapeHtml(String(v == null ? '' : v)) : String(v == null ? '' : v));
   const toast = (msg, isError) => { if (typeof showToast === 'function') showToast(msg, isError); };
 
@@ -41,9 +44,9 @@
 
   function quotaHtml(vendor, id) {
     const q = state.quota[quotaKey(vendor, id)];
-    if (!q) return '<span style="color:var(--faint)">余量未查询</span>';
-    if (q.status === 'loading') return '<span style="color:var(--faint)">余量查询中…</span>';
-    if (q.status === 'err') return '<span style="color:var(--danger)">余量：' + esc(q.error) + '</span>';
+    if (!q) return '<span style="color:var(--faint)">' + esc(tr('airOfficialAcctQuotaIdle')) + '</span>';
+    if (q.status === 'loading') return '<span style="color:var(--faint)">' + esc(tr('airOfficialAcctQuotaLoading')) + '</span>';
+    if (q.status === 'err') return '<span style="color:var(--danger)">' + esc(tr('airOfficialAcctQuotaError', { message: q.error })) + '</span>';
     return q.html;
   }
 
@@ -51,18 +54,18 @@
     const bar = window.QuotaBarView && data.bar ? window.QuotaBarView.resolveQuotaBar(data.bar) : null;
     if (bar && bar.text) {
       const extra = [];
-      if (data.planType) extra.push('套餐 ' + esc(data.planType));
-      if (data.credits && data.credits.hasCredits) extra.push('credits $' + esc(data.credits.balance));
+      if (data.planType) extra.push(esc(tr('airOfficialAcctPlan', { plan: data.planType })));
+      if (data.credits && data.credits.hasCredits) extra.push(esc(tr('airOfficialAcctCredits', { balance: data.credits.balance })));
       return '<span style="color:' + esc(bar.color) + '" title="' + esc(bar.title || '') + '">' + esc(bar.text) + '</span>'
         + (extra.length ? ' <span style="color:var(--faint);font-size:11px">' + extra.join(' · ') + '</span>' : '');
     }
-    return '<span style="color:var(--faint)">余量不可用</span>';
+    return '<span style="color:var(--faint)">' + esc(tr('airOfficialAcctQuotaUnavailable')) + '</span>';
   }
 
   function renderClaudeQuota(data) {
     const usage = data.usage || {};
     const segs = [];
-    const windowLabel = { five_hour: '5h', seven_day: '周', seven_day_sonnet: '周·Sonnet' };
+    const windowLabel = { five_hour: tr('airOfficialAcctWindow5h'), seven_day: tr('airOfficialAcctWindowWeek'), seven_day_sonnet: tr('airOfficialAcctWindowWeekSonnet') };
     for (const key of Object.keys(windowLabel)) {
       const w = usage[key];
       if (!w || typeof w.utilization !== 'number') continue;
@@ -75,9 +78,9 @@
           resets = ' ' + window.QuotaBarView.humanizeCountdown(Math.max(0, at - Date.now()));
         }
       }
-      segs.push('<span style="color:' + color + '">' + windowLabel[key] + ' 剩 ' + remaining + '%' + esc(resets) + '</span>');
+      segs.push('<span style="color:' + color + '">' + esc(tr('airOfficialAcctWindowLeft', { window: windowLabel[key], percent: remaining })) + esc(resets) + '</span>');
     }
-    if (!segs.length) return '<span style="color:var(--faint)">余量不可用</span>';
+    if (!segs.length) return '<span style="color:var(--faint)">' + esc(tr('airOfficialAcctQuotaUnavailable')) + '</span>';
     return segs.join('<span style="color:var(--faint)"> · </span>');
   }
 
@@ -89,7 +92,7 @@
         ? '/api/codex/quota?account=' + encodeURIComponent(id)
         : '/api/claude/accounts/' + encodeURIComponent(id) + '/quota');
       if (data.status !== 'ok') {
-        state.quota[quotaKey(vendor, id)] = { status: 'err', error: data.error || data.status || '查询失败' };
+        state.quota[quotaKey(vendor, id)] = { status: 'err', error: data.error || data.status || tr('airOfficialAcctQuotaFailed') };
       } else {
         state.quota[quotaKey(vendor, id)] = {
           status: 'ok',
@@ -97,7 +100,7 @@
         };
       }
     } catch (err) {
-      state.quota[quotaKey(vendor, id)] = { status: 'err', error: err.message || '查询失败' };
+      state.quota[quotaKey(vendor, id)] = { status: 'err', error: err.message || tr('airOfficialAcctQuotaFailed') };
     }
     paint();
   }
@@ -115,46 +118,46 @@
   }
 
   function codexRow(a) {
-    if (a.global) return accountRow('codex', a, chip('使用本机 Codex 登录', '#58a6ff'));
+    if (a.global) return accountRow('codex', a, chip(tr('airOfficialAcctUseLocalCodex'), '#58a6ff'));
     const chips = a.loggedIn
-      ? chip('已登录', '#58a6ff') + (a.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(a.email) + '</span>' : '')
-      : chip('未登录', '#f85149') + ' <span style="font-size:11px;color:var(--faint)">' + esc(a.reason || '') + '</span>';
+      ? chip(tr('airOfficialAcctSignedIn'), '#58a6ff') + (a.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(a.email) + '</span>' : '')
+      : chip(tr('airOfficialAcctSignedOut'), '#f85149') + ' <span style="font-size:11px;color:var(--faint)">' + esc(a.reason || '') + '</span>';
     const refresh = a.refresh && a.refresh.lastError
-      ? ' <span style="font-size:11px;color:var(--danger)" title="凭证刷新">刷新异常：' + esc(a.refresh.lastError) + '</span>' : '';
+      ? ' <span style="font-size:11px;color:var(--danger)" title="' + esc(tr('airOfficialAcctRefreshTitle')) + '">' + esc(tr('airOfficialAcctRefreshError', { message: a.refresh.lastError })) + '</span>' : '';
     return accountRow('codex', a, chips + refresh);
   }
 
   function claudeRow(a) {
-    if (a.global) return accountRow('claude', a, chip('使用本机 Claude 登录', '#58a6ff'));
+    if (a.global) return accountRow('claude', a, chip(tr('airOfficialAcctUseLocalClaude'), '#58a6ff'));
     let chips;
     const login = a.login || { state: 'idle' };
     if (login.state === 'pending') {
-      chips = chip('等待浏览器授权…', '#d29922');
+      chips = chip(tr('airOfficialAcctAwaitingBrowser'), '#d29922');
     } else if (login.state === 'error') {
-      chips = chip('登录失败', '#f85149') + ' <span style="font-size:11px;color:var(--danger)">' + esc(login.error || '') + '</span>';
+      chips = chip(tr('airOfficialAcctLoginFailed'), '#f85149') + ' <span style="font-size:11px;color:var(--danger)">' + esc(login.error || '') + '</span>';
     } else if (a.loggedIn) {
-      chips = chip('已登录', '#58a6ff') + (a.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(a.email) + '</span>' : '');
+      chips = chip(tr('airOfficialAcctSignedIn'), '#58a6ff') + (a.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(a.email) + '</span>' : '');
     } else {
-      chips = chip('未登录', '#f85149');
+      chips = chip(tr('airOfficialAcctSignedOut'), '#f85149');
     }
     const cred = a.credential || {};
-    if (cred.lastError) chips += ' <span style="font-size:11px;color:var(--danger)" title="凭证刷新">刷新异常：' + esc(cred.lastError) + '</span>';
-    else if (cred.lastRefreshAt) chips += ' <span style="font-size:11px;color:var(--faint)">上次刷新 ' + esc(fmtTime(cred.lastRefreshAt)) + '</span>';
+    if (cred.lastError) chips += ' <span style="font-size:11px;color:var(--danger)" title="' + esc(tr('airOfficialAcctRefreshTitle')) + '">' + esc(tr('airOfficialAcctRefreshError', { message: cred.lastError })) + '</span>';
+    else if (cred.lastRefreshAt) chips += ' <span style="font-size:11px;color:var(--faint)">' + esc(tr('airOfficialAcctLastRefresh', { at: fmtTime(cred.lastRefreshAt) })) + '</span>';
     return accountRow('claude', a, chips);
   }
 
   function accountRow(vendor, a, chipsHtml) {
-    const name = a.label || (vendor === 'codex' ? 'Codex 账号' : 'Claude 账号') + ' ' + a.id.slice(0, 6);
+    const name = a.label || tr(vendor === 'codex' ? 'airOfficialAcctCodexAccount' : 'airOfficialAcctClaudeAccount', { id: a.id.slice(0, 6) });
     const provider = a.providerName
       ? '<span style="font-size:11px;color:var(--faint)">⇄ ' + esc(a.providerName) + '</span>' : '';
     return '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">'
       + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-      + '<b style="font-size:13px">' + esc(name) + '</b>' + chipsHtml + provider + (a.active ? chip('当前使用', '#3fb950') : '')
+      + '<b style="font-size:13px">' + esc(name) + '</b>' + chipsHtml + provider + (a.active ? chip(tr('airOfficialAcctActive'), '#3fb950') : '')
       + '<span style="margin-left:auto;display:flex;gap:6px">'
-      + (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="' + vendor + '" data-id="' + a.id + '">切换使用</button>')
-      + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">刷新余量</button>')
-      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '">重新登录</button>'
-      + (a.global || a.active ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">删除</button>')
+      + (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
+      + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctRefreshQuota')) + '</button>')
+      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctRelogin')) + '</button>'
+      + (a.global || a.active ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>')
       + '</span></div>'
       + (a.global ? '' : '<div style="font-size:12px">' + quotaHtml(vendor, a.id) + '</div>')
       + '</div>';
@@ -163,7 +166,7 @@
   function vendorSection(vendor, title, hint, accounts, rowFn) {
     const rows = accounts.length
       ? accounts.map(rowFn).join('')
-      : '<div style="font-size:12px;color:var(--faint)">暂无账号，点下方按钮添加。</div>';
+      : '<div style="font-size:12px;color:var(--faint)">' + esc(tr('airOfficialAcctEmpty')) + '</div>';
     return '<div style="display:flex;flex-direction:column;gap:8px">'
       + '<div style="font-size:12px;color:var(--muted);font-weight:600">' + title
       + ' <span style="font-weight:400;color:var(--faint)">' + hint + '</span></div>'
@@ -173,10 +176,10 @@
   function paint() {
     const el = bodyEl();
     if (!el) return;
-    if (state.loading) { el.innerHTML = '<span style="color:var(--faint);font-size:13px">加载中…</span>'; return; }
-    el.innerHTML = vendorSection('codex', 'Codex 官方账号', '（全局切换，所有 Codex 官方会话的新请求生效）', state.codex, codexRow)
+    if (state.loading) { el.innerHTML = '<span style="color:var(--faint);font-size:13px">' + esc(tr('airOfficialAcctLoading')) + '</span>'; return; }
+    el.innerHTML = vendorSection('codex', tr('airOfficialAcctCodexSection'), tr('airOfficialAcctCodexSectionHint'), state.codex, codexRow)
       + '<div style="border-top:1px solid var(--border);margin:10px 0"></div>'
-      + vendorSection('claude', 'Claude 官方账号', '（全局切换，所有 Claude 官方会话的新请求生效）', state.claude, claudeRow);
+      + vendorSection('claude', tr('airOfficialAcctClaudeSection'), tr('airOfficialAcctClaudeSectionHint'), state.claude, claudeRow);
   }
 
   async function loadOfficialAccounts() {
@@ -199,7 +202,7 @@
     } catch (err) {
       state.loading = false;
       const el = bodyEl();
-      if (el) el.innerHTML = '<span style="color:var(--danger);font-size:13px">加载失败：' + esc(err.message) + '</span>';
+      if (el) el.innerHTML = '<span style="color:var(--danger);font-size:13px">' + esc(tr('airOfficialAcctLoadFailed', { message: err.message })) + '</span>';
     }
   }
 
@@ -212,16 +215,16 @@
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
     const isCodex = vendor === 'codex';
     overlay.innerHTML = '<div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:440px;max-width:92vw;">'
-      + '<div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">添加 ' + (isCodex ? 'Codex' : 'Claude') + ' 官方账号</div>'
+      + '<div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">' + esc(tr(isCodex ? 'airOfficialAcctAddCodexTitle' : 'airOfficialAcctAddClaudeTitle')) + '</div>'
       + '<div style="font-size:12px;color:var(--faint);margin-bottom:10px;line-height:1.6">'
       + (isCodex
-        ? '打开登录终端完成浏览器授权，登录完成后点击「切换使用」即可让所有 Codex 官方会话使用该账号。'
-        : '打开 Claude 授权页完成登录，随后点击「切换使用」即可让所有 Claude 官方会话使用该账号。')
+        ? esc(tr('airOfficialAcctAddCodexBody'))
+        : esc(tr('airOfficialAcctAddClaudeBody')))
       + '</div>'
-      + '<input data-k="label" type="text" placeholder="备注（可选），如：工作号" maxlength="64" style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none">'
+      + '<input data-k="label" type="text" placeholder="' + esc(tr('airOfficialAcctLabelPlaceholder')) + '" maxlength="64" style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none">'
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
-      + '<button class="btn" data-act="close" style="font-size:13px">取消</button>'
-      + '<button class="btn btn-green" data-act="ok" style="font-size:13px">创建并登录</button>'
+      + '<button class="btn" data-act="close" style="font-size:13px">' + esc(tr('airOfficialAcctCancel')) + '</button>'
+      + '<button class="btn btn-green" data-act="ok" style="font-size:13px">' + esc(tr('airOfficialAcctCreateAndLogin')) + '</button>'
       + '</div>'
       + '<div data-k="status" class="status-text" style="margin-top:8px"></div></div>';
     document.body.appendChild(overlay);
@@ -233,68 +236,68 @@
 
   async function addOfficialAccount(vendor) {
     labelOverlay(vendor, async (label, st, close) => {
-      st.textContent = '创建中…'; st.className = 'status-text';
+      st.textContent = tr('airOfficialAcctCreating'); st.className = 'status-text';
       try {
         const data = await api().json('/api/' + vendor + '/accounts', { method: 'POST', json: { label } });
         close();
         if (vendor === 'codex') {
           if (data.loginSessionId) {
-            toast('已创建，正在打开登录终端…');
+            toast(tr('airOfficialAcctCreatedOpeningTerminal'));
             window.open('index.html?id=' + encodeURIComponent(data.loginSessionId), '_blank');
-          } else { toast('账号已创建，但登录终端打开失败：' + (data.error || ''), true); }
+          } else { toast(tr('airOfficialAcctTerminalOpenFailed', { message: data.error || '' }), true); }
         } else {
-          toast('已创建，请在打开的授权页完成登录');
+          toast(tr('airOfficialAcctCreatedFinishInBrowser'));
           if (data.oauthUrl) window.open(data.oauthUrl, '_blank');
           watchClaudeLogin(data.accountId);
         }
         loadOfficialAccounts();
         refreshProviders();
       } catch (err) {
-        st.textContent = 'Failed: ' + err.message; st.className = 'status-text err';
+        st.textContent = tr('airOfficialAcctFailed', { message: err.message }); st.className = 'status-text err';
       }
     });
   }
 
   async function relogin(vendor, id) {
-    setStatus('正在重新打开登录…');
+    setStatus(tr('airOfficialAcctReopeningLogin'));
     try {
       const data = await api().json(id === 'global' ? '/api/' + vendor + '/oauth/login' : '/api/' + vendor + '/accounts/' + encodeURIComponent(id) + '/relogin', { method: 'POST', json: {} });
       if (id === 'global') {
         if (data.sessionId) window.open('index.html?id=' + encodeURIComponent(data.sessionId), '_blank');
-        toast('登录终端已打开');
+        toast(tr('airOfficialAcctTerminalOpened'));
       } else if (vendor === 'codex') {
         if (data.loginSessionId) window.open('index.html?id=' + encodeURIComponent(data.loginSessionId), '_blank');
-        toast(data.loginSessionId ? '登录终端已打开' : ('登录终端打开失败：' + (data.error || '')), !data.loginSessionId);
+        toast(data.loginSessionId ? tr('airOfficialAcctTerminalOpened') : tr('airOfficialAcctTerminalOpenFailed', { message: data.error || '' }), !data.loginSessionId);
       } else {
         if (data.oauthUrl) { window.open(data.oauthUrl, '_blank'); watchClaudeLogin(id); }
-        toast('请在打开的授权页完成登录');
+        toast(tr('airOfficialAcctFinishInBrowser'));
       }
       setStatus('');
       loadOfficialAccounts();
-    } catch (err) { setStatus('重新登录失败：' + err.message, true); }
+    } catch (err) { setStatus(tr('airOfficialAcctReloginFailed', { message: err.message }), true); }
   }
 
   async function activate(vendor, id) {
-    setStatus('正在切换账号…');
+    setStatus(tr('airOfficialAcctSwitching'));
     try {
       await api().json('/api/' + vendor + '/accounts/' + encodeURIComponent(id) + '/activate', { method: 'POST', json: {} });
-      setStatus('已全局切换，新请求使用此账号');
+      setStatus(tr('airOfficialAcctSwitched'));
       await loadOfficialAccounts();
       refreshProviders();
-    } catch (err) { setStatus('切换失败：' + err.message, true); }
+    } catch (err) { setStatus(tr('airOfficialAcctSwitchFailed', { message: err.message }), true); }
   }
 
   async function removeAccount(vendor, id) {
-    if (!window.confirm('删除该官方账号及其保存的登录凭证？')) return;
-    setStatus('删除中…');
+    if (!window.confirm(tr('airOfficialAcctDeleteConfirm'))) return;
+    setStatus(tr('airOfficialAcctDeleting'));
     try {
       await api().json('/api/' + vendor + '/accounts/' + encodeURIComponent(id), { method: 'DELETE' });
       delete state.quota[quotaKey(vendor, id)];
-      toast('已删除');
+      toast(tr('airOfficialAcctDeleted'));
       setStatus('');
       loadOfficialAccounts();
       refreshProviders();
-    } catch (err) { setStatus('删除失败：' + err.message, true); }
+    } catch (err) { setStatus(tr('airOfficialAcctDeleteFailed', { message: err.message }), true); }
   }
 
   // ── claude browser-login watch ─────────────────────────────────────────────
@@ -309,9 +312,9 @@
         if (s.state === 'pending') return;
         stopWatch(accountId);
         if (s.state === 'complete') {
-          toast('Claude 账号登录完成' + (s.email ? '：' + s.email : ''));
+          toast(s.email ? tr('airOfficialAcctClaudeLoginDoneEmail', { email: s.email }) : tr('airOfficialAcctClaudeLoginDone'));
         } else if (s.state === 'error') {
-          toast('Claude 账号登录失败：' + (s.error || ''), true);
+          toast(tr('airOfficialAcctClaudeLoginFailed', { message: s.error || '' }), true);
         }
         loadOfficialAccounts();
       } catch (_) { /* transient — keep polling until the timeout */ }

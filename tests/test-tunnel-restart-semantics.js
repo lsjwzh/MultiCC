@@ -714,18 +714,22 @@ test('normalizeTunnelUpdate accepts monitorOnly for every provider and drops non
   assert.equal('monitorOnly' in update.natapp, false);
 });
 
-test('manage UI gates the restart button and exposes the monitorOnly switch', () => {
-  const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-host-settings.js'), 'utf8');
-  assert.match(ui, /function tnlGateRestart\(/);
-  assert.match(ui, /tnlGateRestart\('tnl-sf-restart', av\.sakurafrp, !!sf\.monitorOnly\)/);
-  assert.match(ui, /tnl-sf-monitoronly/);
-  assert.match(ui, /data\.message \|\| data\.error/);
-  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage.html'), 'utf8');
-  assert.match(html, /id="tnl-sf-monitoronly"/);
-  assert.match(html, /id="tnl-sf-restart"/);
-  assert.match(html, /id="tnl-ts-publicurl"/);
-  assert.match(ui, /公网 Funnel 部分可用/);
-  assert.match(html, /重连控制面/);
+test('the tunnel UI gates the restart button and exposes the monitorOnly switch', () => {
+  // 旧 manage 页那份 host-settings 模块随该页删除，这一格现在是 Air 原生面板
+  // （public/air-tunnel.js，骨架和文案都在同一个文件里，文案走 t()）。
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-tunnel.js'), 'utf8');
+  // 只读模式下「立即重启」必须是禁用的 —— 三处（SakuraFrp / Tailscale / 其余线路）
+  // 用的是同一条判据，缺任何一处就会出现「勾了只监控还能点重启」。
+  const gates = [...ui.matchAll(/restart\.disabled = !available \|\| !!(?:provider)?[Cc]onfig\.monitorOnly/g)];
+  assert.equal(gates.length, 3, 'every restart button must be gated by availability + monitorOnly');
+  assert.match(ui, /id="air-sf-restart"/);
+  assert.match(ui, /setChecked\('air-sf-monitor', config\.monitorOnly\)/);
+  assert.match(ui, /setChecked\('air-ts-monitor', config\.monitorOnly\)/);
+  assert.match(ui, /id="air-ts-public-url"/);
+  assert.match(ui, /airTunnelPartialEdgeDegraded/);
+  assert.match(ui, /airTunnelReconnectControlPlane/);
+  // 服务端给的 message 优先于兜底文案，跟旧页的 data.message || data.error 同义。
+  assert.match(ui, /result\.message \|\| t\('airTunnelRestartTriggered'\)/);
 });
 
 test('stale restart failure is cleared once the probe turns healthy', withFreshTunnel(async tunnel => {
@@ -763,25 +767,21 @@ test('active guardrail note survives a healthy probe', withFreshTunnel(async tun
   );
 }));
 
-test('manage UI never renders historical restart text for monitorOnly or uninstalled clients', () => {
-  const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-host-settings.js'), 'utf8');
-  // Both indeterminate and normal paths return inside their monitorOnly branch
-  // before any historical action text can be appended.
-  const monitorOnlyBranches = [...ui.matchAll(/if \(prov\.monitorOnly\) \{([\s\S]*?)\n    \}/g)];
-  assert.equal(monitorOnlyBranches.length, 2);
-  for (const branch of monitorOnlyBranches) {
-    assert.match(branch[1], /return s;/);
-    const returnAt = branch[1].indexOf('return s;');
-    const actionAt = branch[1].indexOf('p.lastAction');
-    assert.ok(actionAt === -1 || returnAt < actionAt, 'monitorOnly must return before lastAction');
+test('the tunnel UI states an uninstalled client as a fact, not as a historical failure', () => {
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-tunnel.js'), 'utf8');
+  // providerHealth 是这一格唯一的状态判据。「未安装」在它里面排在探测结果之前，
+  // 所以一台没装客户端的机器读到的是事实，而不是上一次重启失败的旧话。
+  const health = ui.slice(ui.indexOf('function providerHealth('));
+  const notInstalled = health.indexOf('airTunnelClientNotInstalled');
+  const probe = health.indexOf('lastCheckAt');
+  assert.ok(notInstalled > 0 && notInstalled < probe,
+    'the not-installed branch must return before any probe-derived verdict');
+  assert.match(ui, /if \(available === false\) return \{ text: t\('airTunnelClientNotInstalled'\)/);
+  // lastAction 只作为状态行的后缀出现，永远不是状态本身。
+  for (const line of ui.split('\n').filter(l => l.includes('lastAction'))) {
+    assert.match(line, /runtime\.lastAction \?/, 'lastAction may only be appended conditionally');
   }
-  // Uninstalled client → neutral fact instead of historical failure.
-  assert.match(ui, /function tnlFmtStatus\(p, prov, avail\)/);
-  assert.match(ui, /客户端: 未安装（非 multicc 托管）/);
-  assert.match(ui, /tnlFmtStatus\(pr\.sakurafrp \|\| \{\}, sf, av\.sakurafrp\)/);
-  assert.match(ui, /近1h修复\/重连/);
-  assert.match(ui, /最近动作:/);
-  assert.match(ui, /不自动修复 Funnel/);
+  assert.match(ui, /airTunnelLastAction/);
 });
 
 test('Sakura launcher detection supports system and user apps without changing non-macOS availability', () => {

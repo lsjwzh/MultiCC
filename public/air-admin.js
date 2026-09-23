@@ -25,8 +25,7 @@
     docs: [t('airAdminPanelDocs'), t('airAdminPanelDocsDesc'), 'DOCS'],
     memory: [t('airAdminPanelMemory'), t('airAdminPanelMemoryDesc'), 'MEMORY'],
     taskgraph: [t('airAdminPanelTaskgraph'), t('airAdminPanelTaskgraphDesc'), 'TASKGRAPH'],
-    // 工作区（worktree 休眠回收）还是 legacy iframe 页：manage 那边的视图同名。
-    workspaces: ['工作区', 'worktree 休眠回收：预算 / 审计 / 孤儿对账', 'WORKSPACES'],
+    workspaces: [t('airAdminPanelWorkspaces'), t('airAdminPanelWorkspacesDesc'), 'WORKSPACES'],
     // aux 不是 legacy iframe 页(manage 那边配置在弹窗里,没有 view 可嵌)——
     // 这条只为设置中心的卡片和 modes 集合提供元数据,渲染走下面的 renderAux。
     aux: ['AI Assistant', t('airAdminPanelAuxDesc'), 'AUX'],
@@ -66,6 +65,7 @@
     resources: { module: 'MultiCCAirResources', back: 'settings' },
     skillsync: { module: 'MultiCCAirSkillsync', back: 'settings' },
     storage: { module: 'MultiCCAirStorage', back: 'settings' },
+    workspaces: { module: 'MultiCCAirWorkspaces', back: 'settings' },
   };
   let activeMode = null;
   let currentContext = null;
@@ -151,8 +151,8 @@
    *  调色板和哈希都住在 status-presentation.js —— 老看板那张卡片的描边用的是同
    *  一份（.card-border-rainbow 和 .ring-running 是同一条规则的两个壳），同一件
    *  东西在两页上不该是两个颜色，所以这里不再自己留一份调色板。
-   *  status-presentation.js 必须在本脚本之前加载（air.html / manage.html 里就是
-   *  这么排的）；万一没有，圈退回主题强调色 —— 少一个变量不该让圈整个消失。 */
+   *  status-presentation.js 必须在本脚本之前加载（air.html 里就是这么排的）；
+   *  万一没有，圈退回主题强调色 —— 少一个变量不该让圈整个消失。 */
   function ringTint(seed) {
     const shared = registry();
     return shared ? shared.ringTint(seed) : '#7fb0ff';
@@ -929,27 +929,6 @@
     content.replaceChildren(groups);
   }
 
-  // 还没搬成原生页的格子才走这里（把旧 manage 页整页嵌进来）。侧栏那十几格现在
-  // 全在 nativePanels 里，所以这条只剩 render() 末尾那道「认不出的 mode」的兜底 ——
-  // 留着是为了下一格还没搬的面板仍能直接开，而不是为了模块没挂上时顶替
-  // （那种情况见 renderModuleMissing）。
-  function renderLegacy(mode, context) {
-    const [title] = legacyPanels[mode] || [mode];
-    const legacyView = mode;
-    const homeMode = ['memory', 'taskgraph'].includes(mode) ? 'overview' : 'settings';
-    setActions([
-      action(homeMode === 'overview' ? t('airAdminBackToConsole') : t('airAdminBackToSettings'), () => context.setMode(homeMode), '', panelIcon('←')),
-      action(t('airAdminOpenInNewPage'), () => window.open(`/manage.html?view=${encodeURIComponent(legacyView)}`, '_blank', 'noopener'), '', panelIcon('↗')),
-    ]);
-    const note = make('div', null, 'air-migration-note');
-    note.append(make('strong', t('airAdminMigrating')), make('span', t('airAdminMigrationNote')));
-    const frame = make('iframe', null, 'air-legacy-frame');
-    frame.title = title;
-    frame.src = `/manage.html?view=${encodeURIComponent(legacyView)}&embed=air`;
-    frame.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-downloads');
-    el('admin-content').replaceChildren(note, frame);
-  }
-
   // 面板模块没挂上时的兜底（旧页面、缓存了半套静态资源）：说一句「刷新页面重试」，
   // 不再把旧管理台的 iframe 塞回来。旧页已经不再维护，英文模式下它还会露出一屏中文，
   // 而且塞回来的是另一份文档 —— 用户看到的是「一个长得不一样的旧界面」，比一句
@@ -1030,7 +1009,10 @@
     if (mode === 'aux') return renderAux(context);
     if (mode === 'secrets') return renderSecrets(context);
     if (nativePanels[mode]) return renderNative(mode, context);
-    renderLegacy(mode, context);
+    // 认不出的 mode：旧 manage 页已经删了，没有「先嵌回去」这条退路。工具条先回到
+    // 设置中心（否则留着上一格的按钮，点下去动的是另一格），正文说一句刷新重试。
+    setActions([action(t('airAdminBackToSettings'), () => context.setMode('settings'), '', panelIcon('←'))]);
+    renderModuleMissing();
   }
 
   function bindServiceDialog(context) {

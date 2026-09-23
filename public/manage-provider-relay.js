@@ -4,7 +4,7 @@
    Provider 范围凭据；服务端仅保存哈希，明文只在创建响应的分享码中出现一次。
    导入端粘贴后走普通 POST /api/providers。依赖 manage.js 的全局 helper（escapeHtml、
    providerApi、showToast、loadProviders、_providerData、providerCatalog），
-   点击时才解析，因此脚本顺序只要求在 manage.html 里加载即可。 */
+   点击时才解析，因此脚本顺序只要求在 air.html 里、画按钮的 air-provider-advanced.js 之前加载即可。 */
 
 function parseRelayShareCode(raw) {
   const text = String(raw || '').trim();

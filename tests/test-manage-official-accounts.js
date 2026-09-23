@@ -1,9 +1,10 @@
 'use strict';
 
 // Client-side guard for public/manage-official-accounts.js (官方账号多登录区块):
-// manage.html must load it (plus quota-bar-view.js) before manage.js, the card
-// container must exist, and the quota renderers must pin their remaining-%
-// math and escaping — they display server data as innerHTML.
+// 旧管理台整页删掉之后，画这张卡的是 Air 的「Provider · 高级」面板 —— air.html must
+// load it (plus quota-bar-view.js) before air-provider-advanced.js, the card
+// container it queries by id must exist, and the quota renderers must pin their
+// remaining-% math and escaping — they display server data as innerHTML.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -14,9 +15,15 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 const SOURCE_PATH = path.join(ROOT, 'public', 'manage-official-accounts.js');
 
+// 旧页删掉之后这个模块只剩 Air 在用，文案全部搬进词典（tr → window.t）。下面几条断的
+// 还是渲染出来的中文，所以沙箱要装一个真正查 zh.json 的 t()，而不是回退成 key。
+const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
+const t = (key, params) => String(zh[key] == null ? key : zh[key])
+  .replace(/\{(\w+)\}/g, (whole, name) => (params && params[name] != null ? String(params[name]) : whole));
+
 function loadModule() {
   const context = vm.createContext({
-    window: {},
+    window: { t },
     document: {
       body: { dataset: {}, appendChild() {} },
       getElementById: () => null,
@@ -33,18 +40,21 @@ function loadModule() {
   return context;
 }
 
-test('manage.html wires the official-accounts card and loads the module before manage.js', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
-  assert.ok(html.includes('id="official-accounts-card"'), 'card container must exist');
-  assert.ok(html.includes('id="official-accounts-body"'), 'list body must exist');
-  assert.ok(html.includes('data-act="add" data-vendor="codex"'), 'codex add button must exist');
-  assert.ok(html.includes('data-act="add" data-vendor="claude"'), 'claude add button must exist');
+test('Air draws the official-accounts card the module expects, and loads it in order', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
+  const panel = fs.readFileSync(path.join(ROOT, 'public', 'air-provider-advanced.js'), 'utf8');
+  assert.ok(panel.includes("'official-accounts-card'"), 'card container must exist');
+  assert.ok(panel.includes("body.id = 'official-accounts-body'"), 'list body must exist');
+  // 模块只认 data-act="add" + data-vendor 的事件委托，骨架用 dataset 把这两颗按钮标出来。
+  assert.match(panel, /control\.dataset\.act = 'add'/, 'the add buttons must carry data-act="add"');
+  assert.match(panel, /control\.dataset\.vendor = vendor/, 'the add buttons must carry data-vendor');
+  assert.match(panel, /\['codex', [^\]]*\], \['claude', /, 'both vendors must get an add button');
   const quotaView = html.indexOf('<script src="quota-bar-view.js"></script>');
   const mod = html.indexOf('<script src="manage-official-accounts.js"></script>');
-  const manage = html.indexOf('<script src="manage.js"></script>');
+  const advanced = html.indexOf('<script src="air-provider-advanced.js"></script>');
   assert.ok(quotaView >= 0, 'quota-bar-view.js must be loaded (bar placeholder expansion)');
   assert.ok(mod > quotaView, 'module loads after quota-bar-view.js');
-  assert.ok(manage > mod, 'module must be loaded before manage.js');
+  assert.ok(advanced > mod, 'module must be loaded before the panel that mounts its card');
 });
 
 test('Codex add and relogin open the terminal client with its id parameter', async () => {
@@ -62,6 +72,7 @@ test('Codex add and relogin open the terminal client with its id parameter', asy
     const sessionId = 'codex-acct-login-test';
     const context = vm.createContext({
       window: {
+        t,
         MultiCCApi: { json: async () => ({ loginSessionId: sessionId }) },
         open: (url, target) => opened.push({ url, target }),
       },
@@ -148,7 +159,7 @@ test('global account controls switch via account API and retain the singleton pr
   let active = 'global';
   const id = 'aaaaaaaaaaaaaaaa';
   const context = vm.createContext({
-    window: { MultiCCApi: { json: async (url, options) => {
+    window: { t, MultiCCApi: { json: async (url, options) => {
       calls.push({ url, method: options?.method || 'GET' });
       if (url.endsWith('/activate')) { active = id; return { ok: true }; }
       if (url.endsWith('/accounts')) return { accounts: [

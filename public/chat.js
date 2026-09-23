@@ -1678,7 +1678,7 @@ async function loadSessionModel() {
   syncAutoCommitChoice();
   void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
     cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
-    onProvider: () => modelBtn?.click(), onSettings: () => window.open('/manage.html?view=provider', '_blank', 'noopener'),
+    onProvider: () => modelBtn?.click(), onSettings: () => window.open('/air?view=provider', '_blank', 'noopener'),
   });
 }
 
