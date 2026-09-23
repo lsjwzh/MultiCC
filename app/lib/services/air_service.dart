@@ -97,6 +97,25 @@ String airResourceText(Map<String, dynamic>? resource) {
   return airLabel(resource['residency']?.toString());
 }
 
+/// 「本地 3 · 休眠 8 · 计划 1」—— 逐字对应 Web `public/air-worktrees.js` 的
+/// `translate('airWorktreeBreakdown')`。三个数分开说：本地那几个才是真占磁盘的，
+/// 休眠的只剩一条分支引用，计划态还没落地（见 [AirWorktreeLifecycle]）。
+String airWorktreeBreakdown(AirWorktreeLifecycle life) =>
+    '本地 ${life.onDisk} · 休眠 ${life.hibernated} · 计划 ${life.planned}';
+
+/// 目录卡上那行 worktree 摘要：「12 个 Worktree · 本地 3 · 休眠 8 · 计划 1」。
+/// 同一份口径 Web 那边也拼一遍（`air-worktrees.js` 的 `summary()`）—— 分母是总数，
+/// 分子是三种状态。没有拆解（旧服务）或一个 worktree 都没有时只说总数：三个 0 摆
+/// 出来只是噪声，统计卡那行已经说过「0 个 WT」了。
+String airWorktreeSummary(AirDirectory directory) {
+  final life = directory.worktreeLifecycle;
+  final total = directory.worktreeCount > 0
+      ? directory.worktreeCount
+      : (life?.total ?? 0);
+  if (life == null || total == 0) return '$total 个 Worktree';
+  return '$total 个 Worktree · ${airWorktreeBreakdown(life)}';
+}
+
 /// `/api/air` 的一个工作目录。
 ///
 /// 也可以是一台**导入进来的远端工作区**（[external]）：Web 那边
@@ -112,6 +131,7 @@ class AirDirectory {
     this.externalFleetId,
     this.interactive = false,
     this.worktreeCount = 0,
+    this.worktreeLifecycle,
   });
 
   final String id;
@@ -132,6 +152,19 @@ class AirDirectory {
   /// deletion signal.
   final int worktreeCount;
 
+  /// 这些 worktree 现在各处在什么状态（见 [AirWorktreeLifecycle]）。Web 那边是
+  /// `/api/air` 快照的 `directory.worktreeLifecycle`，两端同一份口径。
+  ///
+  /// 旧服务不给这一格时是 null：那时候只报得出总数，硬说「全是本地」是编数字。
+  final AirWorktreeLifecycle? worktreeLifecycle;
+
+  /// 值不值得摆出拆解那块面板：服务端给了这一格、而且这个目录真的有 worktree。
+  /// 一个都没有时不摆 —— 统计卡那行「0 个 WT」已经说过了。
+  AirWorktreeLifecycle? get visibleWorktreeLifecycle {
+    final life = worktreeLifecycle;
+    return (life != null && life.total > 0) ? life : null;
+  }
+
   static AirDirectory fromJson(Map<String, dynamic> json) => AirDirectory(
     id: '${json['id']}',
     name: '${json['name'] ?? ''}',
@@ -140,6 +173,9 @@ class AirDirectory {
     externalFleetId: json['externalFleetId'] as String?,
     interactive: json['interactive'] == true,
     worktreeCount: (json['worktreeCount'] as num?)?.toInt() ?? 0,
+    worktreeLifecycle: AirWorktreeLifecycle.fromJson(
+      json['worktreeLifecycle'] as Map<String, dynamic>?,
+    ),
   );
 
   /// 把一台外部舰队铺成目录记录。`path` 位放源站 —— 本机没有它的目录，
@@ -153,6 +189,68 @@ class AirDirectory {
     interactive: fleet.interactive,
     worktreeCount: 0,
   );
+}
+
+/// 目录下 worktree 的生命周期拆解。
+///
+/// 只报「有几个 worktree」看不出这个数是怎么长的：本地真占着磁盘的、已经睡下只剩
+/// 一条分支引用的、计划了还没落地的，是三种完全不同的状态 —— 而用户要判断的正是
+/// 「要不要现在腾地方」。口径由服务端按 workspace registry 的 residency 折算
+/// （`src/workspace/air-routes.js` 的 `lifecycleByDirectory`），客户端只读不推断。
+class AirWorktreeLifecycle {
+  const AirWorktreeLifecycle({
+    this.resident = 0,
+    this.retained = 0,
+    this.hibernated = 0,
+    this.planned = 0,
+    this.leased = 0,
+    this.onDisk = 0,
+    this.total = 0,
+  });
+
+  final int resident;
+  final int retained;
+
+  /// 本地 checkout 已删、分支与提交保留，下次打开这条任务时按需重建。
+  final int hibernated;
+
+  /// 记录建了，worktree 还没落地。
+  final int planned;
+
+  /// 此刻正被一条执行中的派发占用 —— 占用的不一定是本地那几份，单独报。
+  final int leased;
+
+  /// resident + retained：磁盘上真有这份 checkout，占地方的就是它们。
+  final int onDisk;
+  final int total;
+
+  /// 快照里没有这一格（旧服务）就返回 null —— 拆解的意义正是区分本地和睡下的，
+  /// 编不出来就不说。
+  static AirWorktreeLifecycle? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    int read(String key) => (json[key] as num?)?.toInt() ?? 0;
+    return AirWorktreeLifecycle(
+      resident: read('resident'),
+      retained: read('retained'),
+      hibernated: read('hibernated'),
+      planned: read('planned'),
+      leased: read('leased'),
+      onDisk: read('onDisk'),
+      total: read('total'),
+    );
+  }
+}
+
+/// 自动回收的策略（`/api/air` 快照的 `worktreePolicy`）。面板据此把「多久没用会被
+/// 收走」说准，而不是在客户端再猜一个默认值。
+class AirWorktreePolicy {
+  const AirWorktreePolicy({this.idleMs = 0});
+
+  /// 闲置多久算「可以收」。0 = 自动回收已关闭（`MULTICC_SESSION_HIBERNATE_IDLE_MS=0`）。
+  final int idleMs;
+
+  static AirWorktreePolicy fromJson(Map<String, dynamic>? json) =>
+      AirWorktreePolicy(idleMs: (json?['idleMs'] as num?)?.toInt() ?? 0);
 }
 
 /// 一条工作区分享（`src/fleet-sharing.js` 的 `publicShare`）。
@@ -320,6 +418,7 @@ class AirSnapshot {
     required this.sessions,
     this.taskPins = const [],
     this.externalFleets = const [],
+    this.worktreePolicy = const AirWorktreePolicy(),
   });
 
   final List<AirDirectory> directories;
@@ -338,6 +437,10 @@ class AirSnapshot {
   /// [directories] 里 —— 这里额外留一份原始记录，好知道「别名、分享链接、
   /// 能不能操作」这些目录记录放不下的字段。
   final List<ExternalFleet> externalFleets;
+
+  /// 自动回收 worktree 的策略（闲置阈值）。面板用它把话说准：多久没动过的会被
+  /// 自动收起来，用户不必去猜一个默认值。
+  final AirWorktreePolicy worktreePolicy;
 
   static AirSnapshot fromJson(
     Map<String, dynamic> json, {
@@ -360,6 +463,9 @@ class AirSnapshot {
         .map((e) => '$e')
         .toList(),
     externalFleets: externalFleets,
+    worktreePolicy: AirWorktreePolicy.fromJson(
+      (json['worktreePolicy'] as Map?)?.cast<String, dynamic>(),
+    ),
   );
 
   /// 这个任务被 pin 住了吗。
@@ -606,6 +712,18 @@ class AirService {
   /// 会话，不能在这里接管。
   Future<Map<String, dynamic>> openTask(String taskId) =>
       _get('/api/air/tasks/${Uri.encodeComponent(taskId)}');
+
+  /// 主动回收这个目录下闲置的 worktree（Web 目录页那个「现在回收」）。
+  ///
+  /// 只删本地 checkout，分支与提交始终保留，所以这一步不是「删除」。默认只收过了
+  /// 闲置阈值的；[force] 连最近用过的也一起收 —— 只有用户明确点了那一下才带它。
+  Future<Map<String, dynamic>> reclaimWorktrees(
+    String dirId, {
+    bool force = false,
+  }) => _post('/api/air/worktrees/reclaim', {
+    'dirId': dirId,
+    if (force) 'force': true,
+  });
 
   /// 同一个端点，但读的是详情而不是会话：`attribution` / `execution` 只在这一份
   /// 响应里，任务行上那份 `/api/air` 快照没有它们。

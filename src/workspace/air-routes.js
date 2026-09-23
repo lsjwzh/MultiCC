@@ -64,6 +64,35 @@ function mountAirRoutes(app, deps) {
   }
   // 一次请求只读一次 admission 快照：这是整表读（workspace:record + lease），
   // 按卡片各读一次时 1069 张卡片要多花约 0.4s 的 CPU 与等量 JSON 解析。
+  // workspace 记录按目录折成「worktree 生命周期」计数：光有总数看不出增长方式，
+  // 而用户要判断的正是「在本地占着地的是哪些、休眠了哪些、还有多少没落地」。
+  // 口径直接来自 registry 的 residency（resident/retained 都在磁盘上、hibernated
+  // 只剩分支引用、planned 还没落地），再叠一层「此刻是否被占用」。
+  function lifecycleByDirectory(snapshot) {
+    const byDir = new Map();
+    const byId = new Map();
+    for (const workspace of snapshot.workspaces || []) {
+      byId.set(workspace.id, workspace);
+      if (!workspace.dirId) continue;
+      const bucket = byDir.get(workspace.dirId)
+        || { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0 };
+      const residency = ['resident', 'retained', 'hibernated'].includes(workspace.residency)
+        ? workspace.residency : 'planned';
+      bucket[residency] += 1;
+      byDir.set(workspace.dirId, bucket);
+    }
+    for (const lease of snapshot.leases || []) {
+      const workspace = byId.get(lease.workspaceId);
+      const bucket = workspace && workspace.dirId && byDir.get(workspace.dirId);
+      if (bucket) bucket.leased += 1;
+    }
+    for (const bucket of byDir.values()) {
+      bucket.onDisk = bucket.resident + bucket.retained;
+      bucket.total = bucket.onDisk + bucket.hibernated + bucket.planned;
+    }
+    return byDir;
+  }
+
   function resource(sessionId, snapshot = deps.admission.snapshot()) {
     const record = deps.records.get(sessionId);
     const workspace = snapshot.workspaces.find(w => w.ownerId === (record?.workspaceOwnerSessionId || sessionId));
@@ -118,6 +147,10 @@ function mountAirRoutes(app, deps) {
     const hasTurnState = sessionId => core.sessionHasTurn(deps.records.get(sessionId));
     const projectNow = Date.now();
     const admission = deps.admission.snapshot();
+    const lifecycle = lifecycleByDirectory(admission);
+    const hibernationPolicy = (() => {
+      try { return deps.hibernation?.()?.policy?.() || null; } catch (_) { return null; }
+    })();
     const tasks = boardTasks().map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
       const access = deps.shell.taskAccess(t);
@@ -144,12 +177,35 @@ function mountAirRoutes(app, deps) {
     return { ok: true, directories: [...deps.directories.values()].map(d => ({
       id: d.id, name: d.name, path: d.path,
       worktreeCount: worktreesByDir.get(d.id)?.size || 0,
+      // 生命周期拆解（见 lifecycleByDirectory）：本地/休眠/计划各几个、此刻几个在用。
+      worktreeLifecycle: lifecycle.get(d.id) || { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0, onDisk: 0, total: 0 },
     })),
       tasks, taskPins: pins().read(), budgets: admission.budgets, clis: deps.clis, migration, lastRuntime,
+      // 自动回收的策略（闲置阈值/间隔）由运行时给出，面板据此把「多久没用会被收走」
+      // 说准，而不是在客户端再猜一个默认值。
+      worktreePolicy: hibernationPolicy,
       sessions: [...deps.records.values()].filter(s => s.kind === 'terminal' && !['aux', 'gateway'].includes(s.type))
         .map(s => ({ id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli })) };
   }
   app.get('/api/air', route(async (req, res) => conditionalBody(req, res, await airSnapshot())));
+
+  // 主动回收：把空闲的 worktree 收起来（本地 checkout 删掉，分支与提交全部保留，
+  // 下次打开这条任务时按需重建）。无人值守那条路是 session hibernation 的定时
+  // sweep（默认闲置 24 小时），这里是「用户现在就想腾地方」的即时版本：
+  // dirId 限定目录，force 表示连「最近用过」的也一起收。
+  app.post('/api/air/worktrees/reclaim', route(async req => {
+    const hibernation = deps.hibernation?.();
+    if (!hibernation || typeof hibernation.reclaim !== 'function') {
+      return { ok: false, code: 'hibernation_unavailable', considered: 0, hibernated: 0 };
+    }
+    const body = req.body || {};
+    const dirId = body.dirId ? String(body.dirId) : null;
+    if (dirId && !deps.directories.get(dirId)) {
+      throw Object.assign(new Error('directory not found'), { status: 404, code: 'directory_not_found' });
+    }
+    const result = await hibernation.reclaim({ dirId, force: body.force === true });
+    return { ok: result.ok !== false, dirId, ...result };
+  }));
   app.get('/api/air/resolve', route(async req => {
     await deps.shell.migrateTaskSessions();
     let taskId = req.query.task;

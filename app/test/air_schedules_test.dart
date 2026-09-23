@@ -14,6 +14,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 下次运行 / 最近触发那两个时间用本地时区造的，断言的写法与机器时区无关。
 final int _next = DateTime(2026, 9, 13, 8, 5).millisecondsSinceEpoch;
 final int _last = DateTime(2026, 9, 12, 7, 1).millisecondsSinceEpoch;
+final int _ranAt = DateTime(2026, 9, 12, 7, 1).millisecondsSinceEpoch;
+final int _ranBefore = DateTime(2026, 9, 11, 7, 1).millisecondsSinceEpoch;
 
 /// 三条规则，三种处境：
 ///   c1 绑好了、还没跑过（enabled）· c2 停用了、最近一次成功 ·
@@ -75,7 +77,15 @@ const List<Map<String, dynamic>> _rules = [
 /// 带着 _next / _last 的那份规则表（时间得在上面的 const 之外补）。
 List<Map<String, dynamic>> _rulesWithTimes() => [
   {..._rules[0], 'nextRunAt': _next},
-  {..._rules[1], 'lastRunAt': _last},
+  {
+    ..._rules[1],
+    'lastRunAt': _last,
+    // c2 跑过三次，服务端回放最近两次：一份正常、一份是用户手点后失败的那次。
+    'recentRuns': [
+      {'at': _ranAt, 'reason': 'schedule', 'status': 'ok', 'error': ''},
+      {'at': _ranBefore, 'reason': 'manual', 'status': 'error', 'error': '发送失败：会话冻结'},
+    ],
+  },
   _rules[2],
 ];
 
@@ -323,6 +333,39 @@ void main() {
     // c3：绑定坏了，坏在哪写在卡上，不是只留一个感叹号。
     expect(inCard('c3', '固定任务绑定失败'), findsOneWidget);
     expect(inCard('c3', '发送失败'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('执行记录：默认只报条数，点开才看到哪次失败、谁触发的', (tester) async {
+    _tallCanvas(tester);
+    final calls = _Calls();
+    final client = _client(calls);
+    await _pump(tester, client);
+
+    Finder inCard(String id, Finder finder) => find.descendant(
+      of: find.byKey(ValueKey('air-schedule-$id')),
+      matching: finder,
+    );
+
+    // c2 有最近两次记录：卡片上先只说条数，不铺开。
+    expect(
+      inCard('c2', find.text('执行记录（最近 2 次 / 共 3 次）')),
+      findsOneWidget,
+    );
+    expect(find.text('发送失败：会话冻结'), findsNothing);
+    expect(find.byKey(const ValueKey('cron-runs-head-c2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('cron-runs-head-c2')));
+    await tester.pump();
+    expect(find.text('发送失败：会话冻结'), findsOneWidget);
+    expect(find.text('手动'), findsOneWidget);
+    expect(find.text('定时'), findsOneWidget);
+
+    // 没记录的两条规则连这一块都不出现 —— 不摆空壳。
+    expect(find.byKey(const ValueKey('cron-runs-head-c1')), findsNothing);
+    expect(find.byKey(const ValueKey('cron-runs-head-c3')), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();

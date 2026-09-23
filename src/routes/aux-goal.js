@@ -6,6 +6,44 @@ const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
 const AUX_SESSION_ID = '__aux__';
 const AUX_HISTORY_MAX = 200;
 
+// Aux 是纯 HTTP 调用：没有共享的 CLI 进程、没有 per-session 会话状态，所以并发
+// 跑是安全的。以前是单并发串行（currentTask + processing 一个门），于是一条
+// classify / memory_review 就能把人在等的 Goal 预检排到两分钟之后 —— 实测
+// intent_classify 排队长尾 118.9s、duration 长尾 17min。默认 5 个槽位。
+const AUX_CONCURRENCY_DEFAULT = 5;
+const AUX_CONCURRENCY_MAX = 16;
+
+function resolveAuxConcurrency(env) {
+  const source = env || {};
+  const raw = parseInt(source.MULTICC_AUX_CONCURRENCY ?? source.AUX_CONCURRENCY, 10);
+  if (!Number.isFinite(raw)) return AUX_CONCURRENCY_DEFAULT;
+  return Math.max(1, Math.min(AUX_CONCURRENCY_MAX, raw));
+}
+
+// 需要严格顺序执行的 Aux 工作单独走一条单并发 lane：memory 提炼/复盘会写共享记忆
+// 目录（多个 session 可能落在同一个 folder）并推进 review cursor/淘汰，并发写会
+// 互相覆盖；它们量小，串行没有代价。其余一切（按 session 判词的 classify、task
+// 归因、Goal 预检、语音）都进 pool 并发跑，互不相干的 session 不再互相排队。
+const AUX_SERIAL_TYPES = new Set(['memory_distill', 'memory_review']);
+// serial lane 的互斥键：同一时刻只允许一个 serial 任务占着这条 lane。
+const AUX_SERIAL_LANE_KEY = '__aux_serial_lane__';
+
+function auxLaneOf(task) {
+  if (task && (task.lane === 'serial' || task.lane === 'pool')) return task.lane;
+  return task && task.type && AUX_SERIAL_TYPES.has(task.type) ? 'serial' : 'pool';
+}
+
+// 同一把 key 的任务永远不重叠（在队列里按 FIFO 依次放行），因此「同一 session 的
+// 两次判词」还是严格先旧后新 —— 单并发时代是靠全局串行顺带保证的。serial lane 用
+// 一个常量键把自己锁成独享。没有 key 的任务（Goal 预检、语音）随时可跑。
+function auxSerialKeyOf(task) {
+  if (!task) return null;
+  if (auxLaneOf(task) === 'serial') return AUX_SERIAL_LANE_KEY;
+  if (task.key) return task.key;
+  const meta = task.meta || {};
+  return meta.sessionName || meta.sid || meta.sessionId || null;
+}
+
 const GOAL_DIMENSIONS = {
   objective: '目标明确：清楚要达成什么结果，而非含糊方向。',
   criteria: '完成标准明确：有可判断「做完了」的验收标准或可观察的产出。',
@@ -174,6 +212,14 @@ function mountAuxGoalRoutes(app, dependencies) {
   } = dependencies;
 
   const timeoutMs = Math.max(10000, parseInt(env.AUX_TIMEOUT_MS || '90000', 10) || 90000);
+  // Goal 预检要等多久：这是唯一来源 —— 路由用它，客户端也从 /api/settings/goal 读到
+  // 同一个数字再加自己的余量。以前两边各写一个魔法数字，必然漂移：15s 的通用客户端
+  // 预算去等一个 90s 量级的 Aux 调用，就是「每次预检都 API_TIMEOUT」的来因。
+  // 口径 = 还要等一个完整 Aux 调用（timeoutMs），加上自己这一次（timeoutMs）。并发池把
+  // 「等前面那批」从队列长度降成槽位竞争，但这个上界仍然成立，所以不随池子变小。
+  function goalPrecheckWaitMs() {
+    return Math.max(1000, Number(env.GOAL_PRECHECK_TIMEOUT_MS) || Math.max(30000, timeoutMs * 2));
+  }
   let auxConfig = { protocol: 'anthropic', providerId: null, model: null };
 
   function saveAuxConfig() {
@@ -196,8 +242,10 @@ function mountAuxGoalRoutes(app, dependencies) {
 
   const auxQueue = {
     queue: [],
-    currentTask: null,
-    processing: false,
+    // 并发池：running 里最多 concurrency 个任务同时在跑，其余在 queue 里等。
+    // 每个任务在结束的 finally 里释放自己的槽并重新填池，没有全局锁。
+    running: [],
+    concurrency: resolveAuxConcurrency(env),
     totalProcessed: 0,
     lastTaskTime: null,
     health: {
@@ -213,7 +261,13 @@ function mountAuxGoalRoutes(app, dependencies) {
     },
     clients: new Set(),
 
-    recordFail(error) {
+    // 旧的单并发读数保留成派生值：host-lifecycle 的 drain 探针、session-admin 的
+    // `active`、/api/aux/status 的 processing/currentTask 都还在读它们。语义变成
+    // 「任意槽在跑」/「第一个在跑的槽」，老消费方不需要改。
+    get processing() { return this.running.length > 0; },
+    get currentTask() { return this.running[0] || null; },
+
+    recordFail(error, task) {
       const publicMessage = safeAuxErrorMessage(error);
       const detail = error && typeof error === 'object' ? error : {};
       const response = detail.response && typeof detail.response === 'object' ? detail.response : {};
@@ -236,7 +290,7 @@ function mountAuxGoalRoutes(app, dependencies) {
         phase: 'before_first_token',
         partialOutput: false,
         sideEffects: false,
-        idempotencyKey: `aux:${this.currentTask?.id || 'unknown'}`,
+        idempotencyKey: `aux:${(task && task.id) || 'unknown'}`,
       });
       const health = this.health;
       health.consecutiveFails = (health.consecutiveFails || 0) + 1;
@@ -329,7 +383,7 @@ function mountAuxGoalRoutes(app, dependencies) {
           savePersistedSessionsBestEffort('startup.aux-session-repair');
         }
       }
-      logger.log('[multicc/aux] AuxQueue initialized (direct HTTP)');
+      logger.log(`[multicc/aux] AuxQueue initialized (direct HTTP, pool=${this.concurrency} + serial lane=1)`);
     },
 
     enqueue(task) {
@@ -342,17 +396,29 @@ function mountAuxGoalRoutes(app, dependencies) {
         task.id = task.id || crypto.randomUUID();
         task.ts = Date.now();
         task.cancelled = false;
+        // 交互式任务（用户在等结果的 Goal 预检、操作台里手发的 Aux 指令）插到后台任务
+        // 前面：classify / memory_review / 探针都是机会性的，晚几秒没有代价；而人在等的
+        // 那一个晚几秒就是「点了没反应」。正在跑的那个不会被打断（它的结果还要落盘），
+        // 变的只是排队顺序。同类之间仍保持 FIFO。
+        task.priority = task.priority === 'interactive' ? 'interactive' : 'background';
+        task.lane = auxLaneOf(task);
         task.resolve = resolve;
         task.reject = reject;
-        this.queue.push(task);
+        if (task.priority === 'interactive') {
+          let at = 0;
+          while (at < this.queue.length && this.queue[at].priority === 'interactive') at += 1;
+          this.queue.splice(at, 0, task);
+        } else {
+          this.queue.push(task);
+        }
         this.broadcast({
           type: 'aux_event',
           status: 'queued',
-          task: { id: task.id, type: task.type, meta: task.meta },
+          task: { id: task.id, type: task.type, priority: task.priority, lane: task.lane, meta: task.meta },
           queueDepth: this.queue.length,
         });
-        logger.log(`[multicc/aux] Enqueued ${task.type} (queue: ${this.queue.length})`);
-        this.drain();
+        logger.log(`[multicc/aux] Enqueued ${task.type} [${task.priority}/${task.lane}] (queue: ${this.queue.length}, running: ${this.running.length})`);
+        this.pump();
       });
     },
 
@@ -365,8 +431,12 @@ function mountAuxGoalRoutes(app, dependencies) {
         logger.log(`[multicc/aux] Cancelled queued task ${taskId}`);
         return;
       }
-      if (this.currentTask?.id === taskId) {
-        this.currentTask.cancelled = true;
+      // 正在跑的任何一个槽：以前只有一个 currentTask，现在可能是并发池里的
+      // 任意一个。标记而不 abort socket —— 见 runSlot 的 catch，被取消的在飞
+      // 请求不许计入上游健康统计。
+      const running = this.running.find(task => task.id === taskId);
+      if (running) {
+        running.cancelled = true;
         this.broadcast({ type: 'aux_event', status: 'cancelled', task: { id: taskId } });
         logger.log(`[multicc/aux] Marked in-flight task ${taskId} as cancelled`);
       }
@@ -378,7 +448,7 @@ function mountAuxGoalRoutes(app, dependencies) {
         const meta = task && task.meta || {};
         return meta.sessionName === sessionName || meta.sid === sessionName;
       };
-      if (this.currentTask && matches(this.currentTask)) return true;
+      if (this.running.some(matches)) return true;
       return this.queue.some(matches);
     },
 
@@ -396,20 +466,47 @@ function mountAuxGoalRoutes(app, dependencies) {
       // to finish and resolve — harmless for state (applyClassifyResult drops a
       // verdict once cancelledAt is set) but it still spent an Aux call and
       // logged a judgement for a turn nobody was waiting on. `cancel()` marks it,
-      // it does not abort the socket: see drain()'s catch, which deliberately
+      // it does not abort the socket: see runSlot()'s catch, which deliberately
       // keeps a cancelled in-flight request out of the upstream health stats.
-      if (this.currentTask && isClassify(this.currentTask) && !this.currentTask.cancelled) {
-        this.cancel(this.currentTask.id);
-        cancelled++;
+      // 现在是并发池：每个在跑的槽都要看，不能只看第一个。
+      for (const task of [...this.running]) {
+        if (isClassify(task) && !task.cancelled) {
+          this.cancel(task.id);
+          cancelled++;
+        }
       }
       return cancelled;
     },
 
-    async drain() {
-      if (this.processing || this.queue.length === 0) return;
-      this.processing = true;
-      const task = this.queue.shift();
-      this.currentTask = task;
+    // 这个任务现在能不能起：serial lane 独享；pool lane 不能超过 5 个；同一把 key
+    // 的任务不许与在跑的任何一个重叠（跨 lane 也成立，所以 serial 也不会撞上同
+    // session 的 classify）。不满足就继续往后扫 —— 被 key 挡住的排队者不堵别人。
+    canStart(task) {
+      if (auxLaneOf(task) === 'serial') {
+        if (this.running.some(item => auxLaneOf(item) === 'serial')) return false;
+      } else {
+        const poolRunning = this.running.filter(item => auxLaneOf(item) === 'pool').length;
+        if (poolRunning >= this.concurrency) return false;
+      }
+      const key = auxSerialKeyOf(task);
+      return !key || !this.running.some(item => auxSerialKeyOf(item) === key);
+    },
+
+    // 填满空闲槽位。按队列顺序（交互式已插到前面）扫描，能起的就起，然后从队首
+    // 重扫一次（刚起的任务可能占掉了某个 key 或最后一个 pool 槽位）。每个任务在
+    // 自己的 finally 里释放槽位并再调一次 pump()，所以「谁在跑」只由 running 表达。
+    pump() {
+      for (let index = 0; index < this.queue.length; index += 1) {
+        const task = this.queue[index];
+        if (!this.canStart(task)) continue;
+        this.queue.splice(index, 1);
+        this.running.push(task);
+        this.runSlot(task).catch(() => {});
+        index = -1;
+      }
+    },
+
+    async runSlot(task) {
       this.broadcast({
         type: 'aux_event',
         status: 'processing',
@@ -461,7 +558,7 @@ function mountAuxGoalRoutes(app, dependencies) {
         // A user-cancelled in-flight request may still finish by failing because
         // the transport itself is intentionally not aborted. That is not an
         // upstream health failure and must retain cancellation semantics.
-        const failure = !task.cancelled ? this.recordFail(error) : null;
+        const failure = !task.cancelled ? this.recordFail(error, task) : null;
         appendChatMessage(AUX_SESSION_ID, {
           role: 'user',
           content: task.prompt,
@@ -506,9 +603,9 @@ function mountAuxGoalRoutes(app, dependencies) {
           logger.error(`[multicc/aux] Task ${task.id} failed:`, message);
         }
       } finally {
-        this.currentTask = null;
-        this.processing = false;
-        this.drain();
+        const index = this.running.indexOf(task);
+        if (index !== -1) this.running.splice(index, 1);
+        this.pump();
       }
     },
 
@@ -552,10 +649,31 @@ function mountAuxGoalRoutes(app, dependencies) {
     },
 
     getStatus() {
+      const brief = task => ({ id: task.id, type: task.type, lane: auxLaneOf(task) });
+      const inLane = (list, lane) => list.filter(item => auxLaneOf(item) === lane);
       return {
-        processing: this.processing,
+        // Legacy keys first: existing consumers (web KPI, session-admin
+        // `active`, the /api/aux/status fixtures) read exactly these.
+        processing: this.running.length > 0,
         queueDepth: this.queue.length,
-        currentTask: this.currentTask ? { id: this.currentTask.id, type: this.currentTask.type } : null,
+        currentTask: this.running.length ? brief(this.running[0]) : null,
+        // Pool observability: how many of the slots are busy right now.
+        active: this.running.length,
+        capacity: this.concurrency + 1,
+        concurrency: this.concurrency,
+        running: this.running.map(brief),
+        lanes: {
+          serial: {
+            concurrency: 1,
+            active: inLane(this.running, 'serial').length,
+            queueDepth: inLane(this.queue, 'serial').length,
+          },
+          pool: {
+            concurrency: this.concurrency,
+            active: inLane(this.running, 'pool').length,
+            queueDepth: inLane(this.queue, 'pool').length,
+          },
+        },
         totalProcessed: this.totalProcessed,
         lastTaskTime: this.lastTaskTime,
         health: { ...this.health },
@@ -660,7 +778,9 @@ function mountAuxGoalRoutes(app, dependencies) {
     const validId = /^[A-Za-z0-9_-]+$/.test(trimmedId) && trimmedId.length >= 1 && trimmedId.length <= 80
       ? trimmedId : '';
     const taskId = validId || crypto.randomUUID();
-    auxQueue.enqueue({ id: taskId, type: type || 'manual', prompt, meta: meta || {} })
+    // 操作台里手发的 Aux 指令和 Goal 预检一样是「有人在等」的：让它们插到后台
+    // classify / memory_review 前面，别让一次点击排在两分钟的队列后面。
+    auxQueue.enqueue({ id: taskId, type: type || 'manual', priority: 'interactive', prompt, meta: meta || {} })
       .then(result => res.json({ ok: true, result: result.text, taskId }))
       .catch(error => res.json({
         ok: false,
@@ -727,7 +847,9 @@ function mountAuxGoalRoutes(app, dependencies) {
   });
 
   app.get('/api/settings/goal', (req, res) => {
-    res.json({ ...goalConfig, dimensionLabels: GOAL_DIMENSIONS });
+    // precheckWaitMs 是服务端对这次预检的等待上限；客户端在它之上留余量即可，不必
+    // 自己猜一个（猜错的两种姿势都很难看：猜小了每次超时，猜大了白等两分钟）。
+    res.json({ ...goalConfig, dimensionLabels: GOAL_DIMENSIONS, precheckWaitMs: goalPrecheckWaitMs() });
   });
 
   app.post('/api/settings/goal', (req, res) => {
@@ -746,18 +868,39 @@ function mountAuxGoalRoutes(app, dependencies) {
     let minScore = parseInt(body.minScore, 10);
     if (!Number.isFinite(minScore)) minScore = goalConfig.minScore;
     minScore = Math.max(0, Math.min(100, minScore));
+    // The queue may be busy with classify/summarize work before this task even
+    // reaches the model, so the wait budget is the queue plus one full
+    // inference. Without a bounded wait a stalled Aux transport held the HTTP
+    // request open indefinitely and the client only ever saw an abort.
+    const waitMs = goalPrecheckWaitMs();
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      res.json({ ok: false, code: 'AUX_TIMEOUT',
+        error: `预检超时（辅助模型 ${Math.round(waitMs / 1000)} 秒内未返回）。请检查辅助模型的可用性与配额，或直接「用原文发送」。` });
+    }, waitMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    const finish = payload => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { res.json(payload); } catch (_) {}
+    };
     auxQueue.enqueue({
       type: 'goal_check',
+      // 人在等这个结果：插到后台任务（classify / memory_review / 探针）前面。
+      priority: 'interactive',
       prompt: buildGoalPrecheckPrompt(task, dimensions),
-      meta: { taskLen: task.length },
+      meta: { taskLen: task.length, timeout: timeoutMs },
     }).then(result => {
       const verdict = parseGoalVerdict(result.text);
       if (minScore > 0 && verdict.verdict === 'ok' && verdict.score < minScore) {
         verdict.verdict = 'needs_work';
         verdict.issues = [`符合度 ${verdict.score} 低于设定阈值 ${minScore}`, ...verdict.issues];
       }
-      res.json({ ok: true, ...verdict, dimensions, minScore });
-    }).catch(error => res.json({ ok: false, error: safeAuxErrorMessage(error) }));
+      finish({ ok: true, ...verdict, dimensions, minScore });
+    }).catch(error => finish({ ok: false, error: safeAuxErrorMessage(error) }));
   });
 
   return {
@@ -773,6 +916,12 @@ function mountAuxGoalRoutes(app, dependencies) {
 module.exports = {
   AUX_SESSION_ID,
   AUX_HISTORY_MAX,
+  AUX_CONCURRENCY_DEFAULT,
+  AUX_CONCURRENCY_MAX,
+  resolveAuxConcurrency,
+  AUX_SERIAL_TYPES,
+  auxLaneOf,
+  auxSerialKeyOf,
   GOAL_DIMENSIONS,
   normalizeAuxProtocol,
   normalizeGoalConfig,

@@ -10,6 +10,7 @@ import '../providers/session_manager.dart';
 import '../models/message.dart';
 import '../services/attachment_picker.dart';
 import '../services/chat_service.dart';
+import '../services/goal_precheck.dart';
 import '../services/voice_clip_recorder.dart';
 import '../services/voice_dictation_service.dart';
 import '../services/voice_launch_service.dart';
@@ -717,6 +718,10 @@ class _InputBarState extends State<InputBar> {
   // proposes a rewrite, then we wrap the accepted task in a short goal-mode
   // instruction and send it through the normal sendMessage() path.
 
+  /// 服务端公布的预检等待上限（/api/settings/goal 的 precheckWaitMs）。null = 旧
+  /// 服务端没给，或还没拉到设置，用 goal_precheck.dart 里的兜底值。
+  int? _goalPrecheckWaitMs;
+
   String _goalWrap(String task) {
     return t('goalExecutionPrompt', {'task': task});
   }
@@ -740,9 +745,23 @@ class _InputBarState extends State<InputBar> {
             headers: headers,
             body: jsonEncode({'task': task, 'dimensions': dims}),
           )
-          .timeout(const Duration(seconds: 45));
+          // The server queues this behind other Aux work and then gives the
+          // model its own budget; this waits for that budget plus slack, so the
+          // server's explicit AUX_TIMEOUT message wins the race instead of a
+          // bare client abort (see services/goal_precheck.dart).
+          .timeout(Duration(milliseconds: goalPrecheckTimeoutMs(_goalPrecheckWaitMs)));
       if (res.statusCode != 200) {
-        return {'ok': false, 'error': 'HTTP ${res.statusCode}'};
+        // The goal routes answer with JSON on every branch, so prefer the
+        // server's own words over a bare status code.
+        String detail = '';
+        try {
+          final body = jsonDecode(utf8.decode(res.bodyBytes));
+          if (body is Map && body['error'] != null) detail = "${body['error']}";
+        } catch (_) {}
+        return {
+          'ok': false,
+          'error': detail.isNotEmpty ? detail : 'HTTP ${res.statusCode}',
+        };
       }
       return jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     } catch (e) {
@@ -764,6 +783,9 @@ class _InputBarState extends State<InputBar> {
           .timeout(const Duration(seconds: 15));
       if (res.statusCode != 200) return;
       final d = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+      // 预检预算跟着服务端走（它拥有 Aux 队列）；旧服务端没这个字段就留 null。
+      final wait = d['precheckWaitMs'];
+      _goalPrecheckWaitMs = wait is num ? wait.toInt() : null;
       final g = (d['dimensions'] as Map?) ?? {};
       for (final k in const ['objective', 'criteria', 'scope', 'executable']) {
         dims[k] = g[k] != false;

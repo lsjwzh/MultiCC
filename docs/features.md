@@ -30,6 +30,7 @@ The AI Assistant is the core background service for intent classification, task 
 - Configured from its own console page in the Air console (Settings › AI & execution) — a lightweight flash-tier model is enough.
 - Run records are visible on the same page.
 - Works alongside the per-session AI configuration pill in the new-task composer.
+- **Runs as a concurrent pool** (5 slots by default, `MULTICC_AUX_CONCURRENCY`) instead of one serial lane: judges for different sessions no longer queue behind each other, interactive work (Goal precheck, console commands) is inserted ahead of opportunistic background jobs, and two aux tasks carrying the same session key never overlap — so a session's successive judgements stay strictly oldest-first. The few jobs that must be strictly ordered (memory distill/review, which write shared memory folders and advance the review cursor) keep a single-slot lane of their own. The console page shows `active/capacity` plus the queue depth for both.
 
 ## Multi-provider support
 

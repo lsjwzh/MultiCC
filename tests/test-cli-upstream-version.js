@@ -8,6 +8,9 @@
 
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
 const upstream = require('../src/cli/cli-upstream-version');
@@ -69,13 +72,90 @@ test('semver comparison only ever moves forward into an update', () => {
 });
 
 test('the registry base follows npm_config_registry so mirror users compare like with like', () => {
-  assert.equal(upstream.resolveRegistryBase({}), upstream.DEFAULT_REGISTRY);
+  // 显式给一个不存在的 npmrc 路径: 真实结果不能被开发机自己的 ~/.npmrc 影响。
+  const noNpmrc = { npmrcPath: path.join(__dirname, 'fixtures', 'no-such-npmrc') };
+  assert.equal(upstream.resolveRegistryBase({}, noNpmrc), upstream.DEFAULT_REGISTRY);
   assert.equal(upstream.resolveRegistryBase({ npm_config_registry: 'https://registry.npmmirror.com' }),
     'https://registry.npmmirror.com/');
   assert.equal(upstream.resolveRegistryBase({ NPM_CONFIG_REGISTRY: 'https://r.example.com/' }),
     'https://r.example.com/');
   // 不是 URL 就退回官方源, 而不是拼出一个坏 URL
-  assert.equal(upstream.resolveRegistryBase({ npm_config_registry: 'not-a-url' }), upstream.DEFAULT_REGISTRY);
+  assert.equal(upstream.resolveRegistryBase({ npm_config_registry: 'not-a-url' }, noNpmrc),
+    upstream.DEFAULT_REGISTRY);
+});
+
+// 服务进程的 env 里通常没有 npm_config_registry(那个变量只在 npm 拉起的子进程里),
+// 用 .npmrc 配镜像的用户只能靠读文件才认得出来。
+test('a mirror configured in the user .npmrc is honoured', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-npmrc-'));
+  try {
+    const npmrc = path.join(dir, '.npmrc');
+    fs.writeFileSync(npmrc, '; comment\nfund=false\nregistry=https://registry.npmmirror.com\n');
+    assert.equal(upstream.readNpmrcRegistry({}, { npmrcPath: npmrc }), 'https://registry.npmmirror.com/');
+    assert.equal(upstream.resolveRegistryBase({}, { npmrcPath: npmrc }), 'https://registry.npmmirror.com/');
+    // env 里的显式配置优先于文件
+    assert.equal(upstream.resolveRegistryBase({ npm_config_registry: 'https://r.example.com' }, { npmrcPath: npmrc }),
+      'https://r.example.com/');
+    // 没有 registry 行的 npmrc 不算配置
+    fs.writeFileSync(npmrc, 'fund=false\n');
+    assert.equal(upstream.resolveRegistryBase({}, { npmrcPath: npmrc }), upstream.DEFAULT_REGISTRY);
+    // 文件读不到 -> 官方源, 不抛
+    assert.equal(upstream.resolveRegistryBase({}, { npmrcPath: path.join(dir, 'missing') }), upstream.DEFAULT_REGISTRY);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// 官方源在部分网络环境整段不可达(实测 5s 无响应), 没有兜底源时最新版恒为 null,
+// 整个「有没有新版」的功能都是死的。
+test('an unreachable primary registry falls back to a mirror, and says which one answered', async () => {
+  assert.deepEqual(upstream.resolveRegistryCandidates({}, { npmrcPath: '/nonexistent/npmrc' }),
+    [upstream.DEFAULT_REGISTRY, 'https://registry.npmmirror.com/']);
+  // 主源已经是镜像时不重复
+  assert.deepEqual(upstream.resolveRegistryCandidates(
+    { npm_config_registry: 'https://registry.npmmirror.com/' }, { npmrcPath: '/nonexistent/npmrc' }),
+  ['https://registry.npmmirror.com/']);
+  // 可以关掉, 也可以换成自建镜像
+  assert.deepEqual(upstream.resolveRegistryCandidates(
+    { MULTICC_CLI_REGISTRY_FALLBACKS: '' }, { npmrcPath: '/nonexistent/npmrc' }),
+  [upstream.DEFAULT_REGISTRY]);
+  assert.deepEqual(upstream.resolveRegistryCandidates(
+    { MULTICC_CLI_REGISTRY_FALLBACKS: 'https://mirror.example.com' }, { npmrcPath: '/nonexistent/npmrc' }),
+  [upstream.DEFAULT_REGISTRY, 'https://mirror.example.com/']);
+
+  // 主源超时(官方源在本机就是这样) -> 用镜像的答案, 并如实回报是哪个源答的
+  const https = fakeHttps((req, url) => {
+    if (url.startsWith('https://registry.npmjs.org/')) {
+      process.nextTick(() => req.emit('error', new Error('ETIMEDOUT')));
+      return null;
+    }
+    return fakeResponse(200, JSON.stringify({ version: '2.1.280' }));
+  });
+  const result = await upstream.fetchLatestVersionWithSource('@anthropic-ai/claude-code', {
+    httpsImpl: https, env: { MULTICC_CLI_REGISTRY_FALLBACKS: 'https://registry.npmmirror.com' },
+    npmrcPath: '/nonexistent/npmrc',
+  });
+  assert.equal(result.version, '2.1.280');
+  assert.equal(result.registry, 'https://registry.npmmirror.com/');
+  assert.equal(https.requests.length, 2, '先问主源, 再问兜底源');
+  // 显式给了 registryBase 就只问那一个源(调用方已经指定了源)
+  const solo = fakeHttps(fakeResponse(200, JSON.stringify({ version: '1.0.0' })));
+  const pinned = await upstream.fetchLatestVersionWithSource('opencode-ai', {
+    httpsImpl: solo, registryBase: 'https://registry.npmjs.org/',
+  });
+  assert.equal(pinned.registry, 'https://registry.npmjs.org/');
+  assert.equal(solo.requests.length, 1);
+  // 所有源都答不上来 -> version 与 registry 都是 null(不能把「没人答」伪装成「这个源说没有新版」)
+  const dead = await upstream.fetchLatestVersionWithSource('opencode-ai', {
+    httpsImpl: fakeHttps(req => { process.nextTick(() => req.emit('error', new Error('ENOTFOUND'))); }),
+    npmrcPath: '/nonexistent/npmrc',
+  });
+  assert.deepEqual(dead, { version: null, registry: null });
+  // fetchLatestVersion 保持只回版本号的老契约
+  assert.equal(await upstream.fetchLatestVersion('opencode-ai', {
+    httpsImpl: fakeHttps(fakeResponse(200, JSON.stringify({ version: '3.1.4' }))),
+    registryBase: 'https://registry.npmjs.org/',
+  }), '3.1.4');
 });
 
 test('scoped package names keep their @ and escape only the slash', () => {

@@ -185,6 +185,107 @@ test('Air reports unique worktree counts per directory for manual task cleanup',
     'duplicate record paths count once; detached task worktrees still count');
 });
 
+test('Air folds workspace residency into a per-directory worktree lifecycle', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post: (p, fn) => handlers.set(p, fn) };
+  // 光有总数看不出这个数是怎么长的：本地占着磁盘的、睡下只剩分支引用的、计划了还
+  // 没落地的，是三种状态，而用户要判断的正是要不要现在腾地方。口径来自 registry 的
+  // residency，这里逐档各放一条，另外两条用来钉住「不属于本目录的不算」和「认不出来的
+  // residency 落到计划态」。
+  const workspaces = [
+    { id: 'w1', dirId: 'd1', residency: 'resident' },
+    { id: 'w2', dirId: 'd1', residency: 'retained' },
+    { id: 'w3', dirId: 'd1', residency: 'hibernated' },
+    { id: 'w4', dirId: 'd1', residency: 'planned' },
+    { id: 'w5', dirId: 'd2', residency: 'resident' },
+    { id: 'w6', dirId: 'd1', residency: 'not-a-residency' },
+  ];
+  const leases = [{ id: 'l1', workspaceId: 'w1' }, { id: 'l2', workspaceId: 'w5' }];
+  mountAirRoutes(app, {
+    admission: { snapshot: () => ({ workspaces, leases, budgets: {} }) },
+    hibernation: () => ({ policy: () => ({ idleMs: 86400000, intervalMs: 900000, startupDelayMs: 30000, batchSize: 16, enabled: true }) }),
+    records: new Map(),
+    directories: new Map([
+      ['d1', { id: 'd1', name: 'Repo', path: '/repo' }],
+      ['d2', { id: 'd2', name: 'Other', path: '/other' }],
+    ]),
+    getBoard: () => ({ modules: {}, tasks: {} }),
+    clis: ['codex'],
+    shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
+  });
+  const res = airResponse();
+  await handlers.get('/api/air')({}, res);
+  const snapshot = JSON.parse(res.body);
+  const d1 = snapshot.directories.find(directory => directory.id === 'd1');
+  const d2 = snapshot.directories.find(directory => directory.id === 'd2');
+  // resident + retained 才是磁盘上真占地方的；认不出来的 residency 按计划态算。
+  assert.deepEqual(d1.worktreeLifecycle,
+    { resident: 1, retained: 1, hibernated: 1, planned: 2, leased: 1, onDisk: 2, total: 5 });
+  assert.deepEqual(d2.worktreeLifecycle,
+    { resident: 1, retained: 0, hibernated: 0, planned: 0, leased: 1, onDisk: 1, total: 1 },
+    'a lease in another directory never shows up on this one');
+  // 自动回收的策略跟着快照走：面板据此把「多久没用会被收走」说准，客户端不猜默认值。
+  assert.equal(snapshot.worktreePolicy.idleMs, 86400000);
+  assert.equal(snapshot.worktreePolicy.enabled, true);
+});
+
+test('Air reclaims worktrees on demand: idles first, force only when asked, unknown directory is a 404', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const calls = [];
+  const mount = (deps = {}) => {
+    const handlers = new Map();
+    mountAirRoutes({ get: (p, fn) => handlers.set(p, fn), post: (p, fn) => handlers.set(p, fn) }, {
+      admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+      records: new Map(),
+      directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+      getBoard: () => ({ modules: {}, tasks: {} }),
+      clis: ['codex'],
+      shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
+      ...deps,
+    });
+    return async body => {
+      const res = airResponse();
+      await handlers.get('/api/air/worktrees/reclaim')({ body }, res);
+      return { status: res.statusCode, body: JSON.parse(res.body) };
+    };
+  };
+  const hibernation = {
+    policy: () => ({ idleMs: 86400000, intervalMs: 900000, startupDelayMs: 30000, batchSize: 16, enabled: true }),
+    reclaim: async ({ dirId, force }) => {
+      calls.push({ dirId, force });
+      // 没到阈值的那两条会被跳过 —— 这个数就是面板回答「为什么只剩它没收」的依据。
+      return force
+        ? { ok: true, considered: 3, attempted: 3, hibernated: 3, failed: 0, skipped: 0 }
+        : { ok: true, considered: 3, attempted: 3, hibernated: 1, failed: 0, skipped: 2 };
+    },
+  };
+  const post = mount({ hibernation: () => hibernation });
+
+  // 不带 dirId = 所有目录，且默认不带 force：替用户决定「连最近用过的也收」不是这里的事。
+  const idleFirst = await post({});
+  assert.deepEqual(calls[0], { dirId: null, force: false });
+  assert.equal(idleFirst.status, 200);
+  assert.equal(idleFirst.body.ok, true);
+  assert.equal(idleFirst.body.hibernated, 1);
+  assert.equal(idleFirst.body.skipped, 2, 'skipped 要说出来，面板才能解释「为什么还剩几个」');
+
+  const forced = await post({ dirId: 'd1', force: true });
+  assert.deepEqual(calls[1], { dirId: 'd1', force: true });
+  assert.equal(forced.body.hibernated, 3);
+  assert.equal(forced.body.dirId, 'd1');
+
+  const missing = await post({ dirId: 'nope' });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.code, 'directory_not_found');
+  assert.equal(calls.length, 2, '目录不存在就不该去动任何 worktree');
+
+  // 旧实例（没接线）如实说「这条能力现在不可用」，不是 500、也不是假装收了 0 个。
+  const unavailable = await mount()({ dirId: 'd1' });
+  assert.equal(unavailable.status, 200);
+  assert.equal(unavailable.body.ok, false);
+  assert.equal(unavailable.body.code, 'hibernation_unavailable');
+});
+
 test('Air lists and pins hide unseparated tasks across decisions and restarts, then show the same identity after separation', async t => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const { createTaskShellRuntime } = require('../src/task-shell/runtime');

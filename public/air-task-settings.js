@@ -2,7 +2,7 @@
   'use strict';
 
   const CLI_LABELS = Object.freeze({
-    claude: 'Claude Code', 'claude-exp': 'Claude Exp', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode',
+  claude: 'Claude Code', 'claude-exp': 'Claude Agent SDK', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode',
     qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', kimi: 'Kimi Code',
   });
   const CLI_MARKS = Object.freeze({

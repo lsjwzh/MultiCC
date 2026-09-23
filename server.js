@@ -2560,7 +2560,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
 });
 
 require('./src/workspace/air-routes').mountAirRoutes(app, {
-  admission: workspaceAdmission,
+  admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
   records: persistedSessions,
   directories,
   shell: taskShellHost,

@@ -103,6 +103,7 @@ const TXT = {
   current: t('airCliUpdateCurrent'),
   notInstalled: t('airCliUpdateNotInstalled'),
   allCurrent: t('airCliUpdateAllCurrent'),
+  upgrading: t('airCliUpdateUpgrading'),
 };
 
 function entry(overrides = {}) {
@@ -321,4 +322,86 @@ test('升级请求被拒时把错误说出来，不留下一个假装在跑的�
   const button = rowButtons(context.registry)[0];
   assert.equal(button.disabled, false, '失败后按钮要恢复，不能永久禁用');
   assert.match(rowTexts(context.registry)[0], /busy/);
+});
+
+// 用户抱怨的「升级按钮一次只能点一个」: 不同 CLI 之间本来就没有冲突(服务端只对同一
+// 个安装目标 409), 界面不该用一个全局开关把它们串起来。
+test('两个 CLI 可以同时升级，完成的那一个不会擦掉另一个的进度', async () => {
+  const codexStatus = { value: 'running' };
+  const fetchImpl = createFetch({
+    '/api/cli/versions': versionsBody({
+      claude: entry({ latest: '2.0.2', updateAvailable: true }),
+      codex: entry({ version: '0.20.0', latest: '0.21.0', updateAvailable: true }),
+    }, 2),
+    '/api/cli/versions?refresh=1': versionsBody({
+      claude: entry({ version: '2.0.2', latest: '2.0.2' }),
+      codex: entry({ version: '0.20.0', latest: '0.21.0', updateAvailable: true }),
+    }, 1),
+    'POST /api/cli/claude/upgrade': { status: 202, body: { ok: true, jobId: 'job_claude', cli: 'claude' } },
+    'POST /api/cli/codex/upgrade': { status: 202, body: { ok: true, jobId: 'job_codex', cli: 'codex' } },
+    '/api/cli/install-status/job_claude': {
+      ok: true,
+      body: { ok: true, job: { id: 'job_claude', cli: 'claude', status: 'done', exitCode: 0, error: null, logTail: 'claude upgraded\n' } },
+    },
+    '/api/cli/install-status/job_codex': () => ({
+      ok: true,
+      body: {
+        ok: true,
+        job: { id: 'job_codex', cli: 'codex', status: codexStatus.value, exitCode: null, error: null, logTail: 'installing codex\n' },
+      },
+    }),
+  });
+  const context = buildContext({ fetchImpl });
+  await settle();
+  openPopover(context.registry);
+  const buttons = rowButtons(context.registry);
+  assert.equal(buttons.length, 2, '两个 CLI 都该有升级按钮');
+  buttons[0].onclick();
+  buttons[1].onclick();
+  await settle();
+  assert.ok(fetchImpl.called('POST', '/api/cli/claude/upgrade'), '第二个升级不该被第一个挡住');
+  assert.ok(fetchImpl.called('POST', '/api/cli/codex/upgrade'));
+
+  // claude 已经完成并触发了一次刷新: 重建后的 codex 行必须还在「升级中」且按钮禁用
+  const codexRow = rowTexts(context.registry).find(text => text.includes('Codex'));
+  assert.match(codexRow, new RegExp(TXT.upgrading), '完成的那一个不能把另一个的进度擦掉');
+  const disabled = rowButtons(context.registry).filter(button => button.disabled);
+  assert.equal(disabled.length, 1, '只剩还在跑的那个按钮是禁用的');
+  assert.notEqual(context.registry['cli-update-log'].textContent, '', '进度日志不能是空的');
+
+  // 第二个跑完后一切归位: 角标清零, 按钮不再禁用
+  codexStatus.value = 'done';
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  assert.equal(rowButtons(context.registry).filter(button => button.disabled).length, 0);
+  assert.match(context.registry['cli-update-log'].textContent, /installing codex/);
+  // 角标数的是「还剩几个可升级」: claude 已完成, 桩里 codex 仍是旧版, 所以是 1。
+  assert.equal(context.registry['cli-update-badge'].textContent, '1');
+});
+
+// 升级「命令成功但没作用到派生的二进制」这类失败, 服务端会带回具体原因(hint);
+// 只显示一行退出码用户无从下手。
+test('升级失败时把服务端查明的具体原因一并说出来', async () => {
+  const hint = '新版本装到了另一个位置，multicc 实际派生的这个二进制没有变化。解决办法二选一：① 设置环境变量 CLAUDE_CMD …';
+  const fetchImpl = createFetch({
+    '/api/cli/versions': versionsBody({ claude: entry({ latest: '2.0.2', updateAvailable: true }) }, 1),
+    'POST /api/cli/claude/upgrade': { status: 202, body: { ok: true, jobId: 'job_hint', cli: 'claude' } },
+    '/api/cli/install-status/job_hint': {
+      ok: true,
+      body: {
+        ok: true,
+        job: {
+          id: 'job_hint', cli: 'claude', status: 'error', exitCode: 0,
+          error: '升级命令已完成，但 multicc 派生的 /bin/claude 仍是 v2.0.1',
+          hint, logTail: 'changed 1 package\n',
+        },
+      },
+    },
+  });
+  const context = buildContext({ fetchImpl });
+  await settle();
+  openPopover(context.registry);
+  rowButtons(context.registry)[0].onclick();
+  await settle();
+  assert.match(rowTexts(context.registry)[0], /v2\.0\.1/);
+  assert.match(context.registry['cli-update-log'].textContent, /CLAUDE_CMD/);
 });
