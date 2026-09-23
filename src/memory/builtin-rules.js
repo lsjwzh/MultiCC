@@ -14,11 +14,16 @@ const SECRET_VAULT_RULE = fs.readFileSync(path.join(__dirname,
   '../../skills/multicc-secrets/references/secret-vault-rule.md'), 'utf8').trim();
 const SECRET_VAULT_RULE_MARKER = SECRET_VAULT_RULE.split('\n')[0];
 
+const SHARED_FILES_RULE = fs.readFileSync(path.join(__dirname,
+  '../../skills/multicc-workspaces/references/shared-files-rule.md'), 'utf8').trim();
+const SHARED_FILES_RULE_MARKER = SHARED_FILES_RULE.split('\n')[0];
+
 // Immutable built-ins, seeded into every shared MEMORY.md and injected as
 // pinned retrieval entries. Order only matters for first-seed layout.
 const BUILTIN_RULES = Object.freeze([
   { rule: DOCS_REGISTRY_RULE, marker: DOCS_REGISTRY_RULE_MARKER },
   { rule: SECRET_VAULT_RULE, marker: SECRET_VAULT_RULE_MARKER },
+  { rule: SHARED_FILES_RULE, marker: SHARED_FILES_RULE_MARKER },
 ]);
 
 function hasRuleMarker(text, marker) {
@@ -56,6 +61,8 @@ module.exports = {
   DOCS_REGISTRY_RULE_MARKER,
   SECRET_VAULT_RULE,
   SECRET_VAULT_RULE_MARKER,
+  SHARED_FILES_RULE,
+  SHARED_FILES_RULE_MARKER,
   BUILTIN_RULES,
   hasDocsRegistryRule,
   ensureBuiltinSharedMemory,

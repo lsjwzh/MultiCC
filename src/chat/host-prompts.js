@@ -87,6 +87,10 @@ function createHostPrompts(env = process.env) {
     `★这对子任务尤其关键：派 subagent / Workflow / Task 时，必须在指令里明确写「禁止 grep，只用 Read 或 node fs」——子 agent 不读你的记忆，遇到 grep 全空会不断换关键词无限重试、直接 stall（一直跑却不收尾，只能 TaskStop 收场）。`,
     '',
     '【代码落点与 AutoCommit】每个 chat 会话只在自己的 worktree + 分支（multicc/<sessionId>）里修改代码并完成验证，main 是只读基分支。禁止直接编辑主 worktree 的文件，也不要擅自撤销主 worktree 的未提交改动。AutoCommit（会话开关与本轮勾选框）的提交和合并由 MultiCC 在本轮成功后统一执行；Agent 不要因为“任务做完了”就自行 git commit 或调用 merge 接口，否则会绕过用户关闭的开关。只有用户在任务中明确要求提交/合并时，才由 Agent 在自己的 worktree 提交并调用 POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/merge；这类明确指令优先于自动提交设置。没有明确要求时，完成修改和验证后报告结果，保留代码等待自动提交或用户手动合并。',
+    '',
+    '【共享文件约定】不要在任务 worktree 里新建 .env、密钥、数据文件等被 .gitignore 忽略的文件——worktree 会被系统休眠回收，未跟踪的忽略文件会被直接删除（仅留审计清单），不可恢复。',
+    '需要长期存在或跨任务共享的文件：请放在【主仓库根目录】里并按用途起好名字（如 config/dev.env、data/<用途>.json），主仓的未跟踪/忽略文件不会被回收；之后在任何任务里直接用主仓绝对路径读取。',
+    'worktree 里确需临时生成环境文件时，优先写成 symlink 或启动脚本从主仓路径复制，而不是当作长期存储。',
   ].join('\n');
   return {
     codexEnvConstraint,

@@ -55,17 +55,22 @@ test('detach snapshots dirty and untracked files, preserves branch, reclaims cac
   assert.equal((await gitWorktreeValidate(dir, thawed.worktreePath, thawed.branch)).ok, true);
 });
 
-test('detach fails closed on unknown ignored files and leaves checkout untouched', async t => {
+test('detach deletes unknown ignored files and returns an audit manifest', async t => {
   const dir = repo();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const added = await gitWorktreeAdd(dir, 'bound-secret', 'main');
-  fs.writeFileSync(path.join(added.worktreePath, '.env'), 'SECRET=must-stay\n');
-  await assert.rejects(
-    gitWorktreeDetach(dir, added.worktreePath, added.branch, { sessionId: 'bound-secret' }),
-    error => error.code === 'HIBERNATE_UNKNOWN_IGNORED',
-  );
-  assert.equal(fs.existsSync(added.worktreePath), true);
-  assert.equal(fs.readFileSync(path.join(added.worktreePath, '.env'), 'utf8'), 'SECRET=must-stay\n');
+  fs.writeFileSync(path.join(added.worktreePath, '.env'), 'SECRET=goes-away\n');
+  const detached = await gitWorktreeDetach(dir, added.worktreePath, added.branch, { sessionId: 'bound-secret' });
+  assert.equal(detached.ok, true);
+  assert.equal(detached.detached, true);
+  assert.equal(fs.existsSync(added.worktreePath), false);
+  const entry = detached.removedUnknownIgnored.find(item => item.path === '.env');
+  assert.ok(entry, 'manifest records the deleted unknown ignored file');
+  assert.equal(entry.bytes, Buffer.byteLength('SECRET=goes-away\n'));
+  assert.ok(entry.mtime);
+  // The branch is retained, so a thaw still works — only the ignored file is gone.
+  const thawed = await gitWorktreeAdd(dir, 'bound-secret', 'main', { requireExistingBranch: true });
+  assert.equal(fs.existsSync(path.join(thawed.worktreePath, '.env')), false);
 });
 
 test('detach refuses a clean checkout with an in-progress Git operation', async t => {
