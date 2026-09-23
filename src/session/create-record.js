@@ -89,8 +89,9 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     autoCommit: autoCommit !== false,
     // streaming (流式常驻) keeps the CLI process alive across turns for faster,
     // context-preserving continuation. Non-resident CLIs ignore this field, and a
-    // resident CLI whose session was routed through a concrete codex provider
-    // stays per-turn (its credentials are leased per attempt — see the lane table).
+    // resident CLI keeps it whatever provider the session is routed through: the
+    // lane holds a route that outlives the attempt on every path (see the lane
+    // table and src/codex/resident-route.js).
     streaming: isResidentSession(cli, { provider: providerId, subagent: subagentChecked.value }) && kind === 'chat',
     // autoContinue is no longer a user-facing toggle (the picker keeps only the
     // streaming option). The field stays true for back-compat only; the old

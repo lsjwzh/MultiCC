@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const { releaseResidentRoute } = require('../codex/resident-route');
 
 // ── Resident codex app-server process per chat session ──
 //
@@ -50,10 +51,17 @@ function isAlive(name) {
 // OPENAI_* environment at spawn, so a provider / base-url / key switch is
 // invisible to a live process until it respawns — the same trap chat-stream
 // documents for ANTHROPIC_*, on the other protocol.
+//
+// CODEX_HOME belongs here for the same reason and on the same footing: it holds
+// config.toml, which is where this protocol's base_url actually lives. A
+// resident child's home is swapped rather than rewritten when its managed route
+// moves (only a respawn can move it), so a home that moved must read as a
+// routing change — without this key the child would keep talking to the retired
+// route for the rest of its life.
 function routeFingerprint(env) {
   if (!env || typeof env !== 'object') return '';
   return Object.keys(env)
-    .filter((k) => k.startsWith('OPENAI_'))
+    .filter((k) => k.startsWith('OPENAI_') || k === 'CODEX_HOME')
     .sort()
     .map((k) => `${k}=${env[k]}`)
     .join('\n');
@@ -369,6 +377,11 @@ function close(name) {
   }
   try { s.onDispose?.(); } catch (_) {}
   sessions.delete(name);
+  // The child that held this session's private Codex home is gone, so its route
+  // goes with it: the next turn re-materializes one before it spawns, and a home
+  // nobody is reading has no business staying on disk. Recycle deliberately does
+  // NOT come through here — it must respawn onto the same home it was spawned on.
+  releaseResidentRoute(name);
 }
 
 // Same contract as chat-stream's: the map entry being gone proves no new turn can
