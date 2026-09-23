@@ -64,7 +64,7 @@ function createTurnRuntimeStore(options = {}) {
       phase: 'preparing',
       generation: previous.generation + 1,
       cli: String(meta.cli || 'claude'),
-      transport: String(meta.transport || (meta.cli === 'claude' ? 'claude-stream' : 'cli-process')),
+      transport: String(meta.transport || (['claude', 'claude-exp'].includes(meta.cli) ? 'claude-stream' : 'cli-process')),
       messageDurable: false,
       providerRouteResolved: false,
       claimedAt: Number(now()),

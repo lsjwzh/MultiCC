@@ -6,7 +6,8 @@ const { createClaudeExpAdapter } = require('../../src/cli-adapters/claude-exp');
 
 // Drive the real host through admission, context composition, and adapter argv.
 // Stop at buildInvocation, before any provider attempt or process can start.
-module.exports = function prepareTurn({ record, cwd, history = [], connected = false, text = 'hello', goalLimits }) {
+module.exports = function prepareTurn({ record, cwd, history = [], connected = false, text = 'hello', goalLimits,
+  stopAtInvocation = true, hostDeps = {} }) {
   const noop = () => {};
   const ok = () => ({ ok: true });
   let prepared;
@@ -51,8 +52,10 @@ module.exports = function prepareTurn({ record, cwd, history = [], connected = f
     effectiveSessionModel: () => record.model,
     providerFor: () => ({ ...adapter, buildInvocation(envelope) {
       prepared = { envelope, invocation: adapter.buildInvocation(envelope) };
-      throw new Error('test stopped after real adapter invocation');
+      if (stopAtInvocation) throw new Error('test stopped after real adapter invocation');
+      return prepared.invocation;
     } }),
+    ...hostDeps,
   });
   engine.runChatTurn(record.id, text, { taskId: 'sdk-task', goalLimits });
   assert.ok(prepared, `host did not reach adapter invocation: ${errors.join('; ')}`);

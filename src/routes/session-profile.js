@@ -224,10 +224,9 @@ function createSessionProfileRoutes(rawDeps) {
           return rejectMutation(400, { error: 'invalid model' });
         }
         s.model = model || null;
-        // Non-Claude chat sessions spawn per turn. Claude chat keeps a warm
-        // process, so close it now or the UI would report the new model while the
-        // next turn still runs on the old one. Terminal sessions still need a
-        // manual restart to relaunch their CLI with it.
+        // Ordinary Claude requires a fresh process to apply --model. The SDK
+        // runner applies setModel() at the next turn boundary; other chat CLIs
+        // spawn per turn. Terminals still need a manual restart.
         if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
         appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
       }

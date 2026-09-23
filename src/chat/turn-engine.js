@@ -1246,9 +1246,9 @@ function createChatTurnEngine(deps) {
       });
     }
 
-    const streamBusy = turnRequest.cli === 'claude' && !!chatStream.status(sessionName)?.busy;
+    const streamBusy = ['claude', 'claude-exp'].includes(turnRequest.cli) && !!chatStream.status(sessionName)?.busy;
     let claudeManagedProxy = false;
-    if (turnRequest.cli === 'claude' && persisted.provider) {
+    if (['claude', 'claude-exp'].includes(turnRequest.cli) && persisted.provider) {
       try {
         const summary = providerRouterRuntime.getProviderSummary('claude', persisted.provider);
         claudeManagedProxy = !!(summary && (summary.baseUrl
@@ -1501,7 +1501,7 @@ function createChatTurnEngine(deps) {
         text, persisted, sessionName,
         opts: {
           isFirstTurn, goalLimits, taskContextSeed: managed?.seed ?? taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
-          mode: cs.cli === 'claude' ? 'streaming' : 'per-turn',
+          mode: ['claude', 'claude-exp'].includes(cs.cli) ? 'streaming' : 'per-turn',
         },
         deps: {
           resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
@@ -1567,7 +1567,7 @@ function createChatTurnEngine(deps) {
     }
 
     // Streaming and process runners both require the minted workspace permit.
-    if (cs.cli === 'claude') {
+    if (cs.cli === 'claude' || cs.cli === 'claude-exp') {
       const accepted = runChatTurnStreaming(
         sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation, autoTurn, 0, opts,
       );
@@ -2226,10 +2226,6 @@ function createChatTurnEngine(deps) {
   ) {
     getWorkspaceAdmission?.()?.starting(sessionName, workspaceOpts || getWorkspaceAdmission?.()?.optionsForTurn(sessionName, turn), prepared.attempt.routeAttemptId);
     const { invocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
-    // Per-session provider env. buildChildEnv strips inherited ANTHROPIC_* routing
-    // vars before applying the provider env, so the provider choice is always
-    // authoritative — see providers.CLAUDE_ROUTING_KEYS. The full computed env is
-    // passed through; chat-stream uses it verbatim (no second process.env merge).
     const { env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
       TERM: 'dumb', NO_COLOR: '1',
       MULTICC_SESSION_ID: sessionName,
@@ -2241,29 +2237,28 @@ function createChatTurnEngine(deps) {
       subagent: persisted.subagent, port: getPort(),
       officialOAuth: getClaudeOfficialViaProxy(),
     });
-    // Same settings-override as the per-turn spawn path: ~/.claude/settings.json
-    // env must not win over the session's provider routing (see
-    // src/providers/claude-settings-override.js). The file is rewritten each
-    // turn, so a provider switch (which recycles the process via the chat-stream
-    // env fingerprint) is picked up by the respawned process.
     const streamSettingsFile = providers.settingsOverrideFor(sessionName, childEnv, invocation.settings);
     const streamBaseArgs = streamSettingsFile
       ? [...invocation.args, '--settings', streamSettingsFile]
       : invocation.args;
-    const resumeExistingStream = !!persisted._streamSessionId;
-    if (!persisted._streamSessionId) {
-      persisted._streamSessionId = crypto.randomUUID();
+    const nativeKey = invocation.sdkOptions ? 'cliSessionId' : '_streamSessionId';
+    const resumeExistingStream = invocation.sdkOptions
+      ? !prepared.invocationEnvelope.historyHandle.isFirstTurn : !!persisted[nativeKey];
+    if (!persisted[nativeKey]) {
+      persisted[nativeKey] = crypto.randomUUID();
       rememberActiveCliState(persisted);
       savePersistedSessionsBestEffort('runtime.streaming-session-id-allocate');
     }
     chatStream.ensure(sessionName, {
       cmd: invocation.cmd,
       cwd: cs.cwd,
-      sessionId: persisted._streamSessionId,
+      sessionId: persisted[nativeKey],
+      sdkOptions: invocation.sdkOptions,
+      settingsFile: streamSettingsFile,
       resume: resumeExistingStream,
       baseArgs: streamBaseArgs,
       onNewSessionId: (newId) => {
-        persisted._streamSessionId = newId;
+        persisted[nativeKey] = newId;
         rememberActiveCliState(persisted);
         savePersistedSessionsBestEffort('runtime.streaming-session-id-capture');
       },
