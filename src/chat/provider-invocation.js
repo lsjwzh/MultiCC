@@ -2,6 +2,7 @@
 
 const { createProviderRevision } = require('./provider-attempt-runtime');
 const { createProviderRouteProof } = require('./turn-request');
+const { protocolFamilyOf } = require('../cli/cli-capability');
 
 function clean(value) {
   return value == null ? '' : String(value).trim();
@@ -10,9 +11,7 @@ function clean(value) {
 function protocolFor(cli, summary) {
   const explicit = clean(summary && (summary.apiFormat || summary.protocol));
   if (explicit) return explicit;
-  if (cli === 'claude' || cli === 'claude-exp') return 'anthropic';
-  if (cli === 'codex' || cli === 'codex-exp') return 'openai_responses';
-  return clean(cli) || 'native';
+  return protocolFamilyOf(cli, 'api') || clean(cli) || 'native';
 }
 
 function providerRetryRouteOptions(attempt) {
