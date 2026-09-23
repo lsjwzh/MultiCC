@@ -72,7 +72,7 @@ test('classic VM export never returns raw malicious marked output when purifier 
 
 test('chat loads purifier and the shared boundary before host rendering', () => {
   const purify = 'vendor/dompurify/purify.min.js';
-  const marked = 'marked@12.0.1/marked.min.js';
+  const marked = 'vendor/marked/marked.min.js';
   const boundary = '<script src="safe-markdown.js"></script>';
   const host = '<script src="chat.js"></script>';
   assert.ok(HTML.indexOf(purify) > 0);
