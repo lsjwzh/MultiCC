@@ -135,12 +135,12 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.6/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.6/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.ps1 | iex
 ```
 
 One line, no flags: the tag in the URL *is* the version. The script downloads that
@@ -163,7 +163,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # From a package you already downloaded
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.6-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.7-darwin-arm64.tar.gz
 
 # Server/automation installs: install without starting, or start without a browser
 curl -sSL .../install.sh | bash -s -- --no-start
