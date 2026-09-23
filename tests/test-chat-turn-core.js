@@ -263,7 +263,7 @@ test('Claude Exp resumes native history even before the first successful reply',
     for (const hasNativeSession of [true, false]) {
       const turn = request({ cli: 'claude-exp', turnCount, hasNativeSession });
       assert.deepEqual(turn.execution, {
-        transport: 'cli-process',
+        transport: 'claude-stream',
         historyIntent: hasNativeSession ? 'resume' : 'first',
         isFirstTurn: !hasNativeSession,
       });

@@ -45,6 +45,11 @@ function createClaudeExpAdapter(deps = {}) {
         cmd: process.execPath,
         args,
         payload: renderPrompt(env),
+        sdkOptions: {
+          model, effort, agent: so.rawAgent, systemPrompt: env.systemPrompt,
+          disallowedTools: deps.chatDisallowedTools || [], maxTurns: so.maxTurns,
+          routerNode: deps.routerMcpNode, routerScript: deps.routerMcpScript,
+        },
         ...(ultracode ? { settings: { ultracode: true } } : {}),
       };
     },

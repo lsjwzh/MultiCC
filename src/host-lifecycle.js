@@ -236,7 +236,7 @@ function createHostLifecycle(deps) {
   //   • streaming turn — NO per-turn child; it runs on the persistent chatStream
   //     process and its liveness is chatStream.status(name).busy (not cs.claudeProc).
   shutdownCoordinator.onDrain(async ({ graceMs }) => {
-    const isStreamingBusy = (name, cs) => cs && cs.cli === 'claude' && !!chatStream.status(name)?.busy;
+    const isStreamingBusy = (name, cs) => cs && ['claude', 'claude-exp'].includes(cs.cli) && !!chatStream.status(name)?.busy;
     const draining = new Set();
     for (const [name, cs] of chatSessions) {
       if (cs && (cs.claudeProc || isStreamingBusy(name, cs))) draining.add(name);
