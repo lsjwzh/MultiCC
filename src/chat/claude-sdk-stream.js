@@ -5,6 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { isMainResult } = require('../cli-adapters/result-completion');
 const { managedRoute, createRouteRelay } = require('./claude-sdk-route');
 const { fingerprint, processOptions } = require('./claude-sdk-config');
+const { createMonitorAdmission, isMonitorHandoffResult } = require('./monitor-admission');
 
 function messageQueue() {
   const messages = [];
@@ -36,10 +37,7 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     clearIdle(s);
     if (s.disposed || s.current || !s.run) return;
     s.idleTimer = setTimeout(() => {
-      if (hasBackground(s)) {
-        s.heldSince ||= Date.now();
-        if (Date.now() - s.heldSince < (s.cfg.idleMaxHoldMs ?? 7200000)) { armIdle(s); return; }
-      }
+      if (hasBackground(s)) { armIdle(s); return; }
       void stop(s).catch(() => {});
     }, s.cfg.idleMs ?? 600000);
     s.idleTimer.unref?.();
@@ -96,9 +94,9 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
         }
         if (event.type === 'system' && /^(task_started|task_progress|task_updated|task_notification|background_tasks_changed)$/.test(event.subtype || '')) {
           safe(s.cfg.onBackgroundEvent, event);
-          s.heldSince = 0;
           armIdle(s);
         }
+        if (isMonitorHandoffResult(event)) continue;
         if (!item || !item.sent || item.finishing) continue;
         if (!item.firstByte) { item.firstByte = true; safe(item.onTiming, 'firstByte'); }
         if (!item.cancelled) safe(item.onEvent, event);
@@ -150,6 +148,9 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
       run.fingerprint = fingerprint(cfg);
       run.model = cfg.sdkOptions.model;
       const options = { ...materialized.options,
+        ...(cfg.onBackgroundEvent ? { hooks: { UserPromptSubmit: [{ hooks: [createMonitorAdmission(
+          event => s.cfg.onBackgroundEvent(event), prompt => s.current?.text === prompt,
+        )] }] } } : {}),
         spawnClaudeCodeProcess({ command, args, ...opts }) {
           if (s.disposed || s.run !== run) throw cancelled();
           const proc = spawnProcess(command, args, { ...opts, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -230,7 +231,7 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     let s = sessions.get(name);
     if (!s) {
       s = { cfg, nextCfg: cfg, started: cfg.resume === true, queue: [], current: null,
-        run: null, disposed: false, recycling: false, heldSince: 0 };
+        run: null, disposed: false, recycling: false };
       sessions.set(name, s);
     } else s.nextCfg = cfg;
     return s;
@@ -276,9 +277,9 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     done.finally(() => { if (closing.get(name) === done) closing.delete(name); }).catch(() => {});
     return done;
   }
-  async function closeAndWait(name, { timeoutMs = 5000 } = {}) {
-    const hadProcess = !!sessions.get(name)?.run;
-    const done = close(name);
+  async function waitForClose(name, { timeoutMs = 5000 } = {}) {
+    const done = closing.get(name) || Promise.resolve();
+    const hadProcess = closing.has(name);
     let timer;
     try {
       await Promise.race([done, new Promise((_, reject) => {
@@ -288,11 +289,16 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
       return { closed: true, hadProcess };
     } finally { clearTimeout(timer); }
   }
+  function closeAndWait(name, opts) {
+    close(name);
+    return waitForClose(name, opts);
+  }
   function status(name) {
     const s = sessions.get(name);
     if (!s) return null;
     return { alive: alive(s.run), busy: !!s.current || !!s.stopping || s.pumping,
       queued: s.queue.length, started: s.started, pid: s.run?.proc?.pid || null,
+      backgroundActive: hasBackground(s),
       recycling: !!s.stopping, recycleRequested: !!s.recycleRequested, backend: 'sdk' };
   }
   function recycle(name) {
@@ -305,8 +311,8 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     void pump(s);
     return { ok: true, applied: 'now' };
   }
-  return { ensure, send, inject: send, cancel, close, closeAndWait, status, recycle,
-    isAlive: name => alive(sessions.get(name)?.run) };
+  return { ensure, send, inject: send, cancel, close, closeAndWait, waitForClose, status, recycle,
+    isAlive: name => alive(sessions.get(name)?.run), isClosing: name => closing.has(name) };
 }
 
 module.exports = { createSdkStream };

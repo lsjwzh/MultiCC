@@ -41,6 +41,7 @@ function createWorkspaceResidency({ status, closeAndWait, pending }) {
       if (id !== name && entry.path !== target && !(workspace.id && entry.workspaceId === workspace.id)) continue;
       if (!idle(id)) throw busy();
       if (id === name && entry.path === target && !exclusive) continue;
+      if (status(id)?.backgroundActive) throw busy();
       // Block direct sends throughout the asynchronous close/join barrier.
       entry.parked = true;
       const result = await closeAndWait(id);

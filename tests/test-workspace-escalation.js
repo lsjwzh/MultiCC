@@ -176,6 +176,21 @@ test('a running turn is never escalated, and an unconfirmed stop releases nothin
   assert.equal(f.host.occupied(f.record.id), true);
 });
 
+test('cancel or insert in a sibling cannot kill or release the actual workspace writer', async t => {
+  const f = await hostFixture(t);
+  await f.pinned('active-writer');
+  f.deps.getState = id => id === f.record.id ? { isStreaming: true } : {};
+  f.records.set('sibling', { ...f.record, id: 'sibling', workspaceOwnerSessionId: f.record.id });
+  f.host.noteBlockedDelivery('sibling');
+  for (const trusted of [false, true]) {
+    const result = await f.host.escalate('sibling', { source: trusted ? 'insert_queued' : 'manual_cancel', trusted });
+    assert.equal(result.code, 'workspace_owned_by_other_session');
+    assert.equal(result.released, false);
+  }
+  assert.equal(f.flags.stops + f.flags.kills + f.flags.closes + f.flags.reaps, 0);
+  assert.equal(f.host.snapshot().leases[0].sessionId, f.record.id);
+});
+
 test('a long-blocked delivery is reported as stuck once, and is never reclaimed on a timer', async t => {
   const events = [];
   const f = await hostFixture(t, { deps: { log: (event, data) => events.push({ event, data }),

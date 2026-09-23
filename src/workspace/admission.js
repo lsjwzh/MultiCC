@@ -466,6 +466,8 @@ function createWorkspaceAdmission(deps) {
     catch (error) { return { ok: false, escalated: false, released: false, code: error.code || 'workspace_identity_unresolved' }; }
     const lease = workspace && registry.lease(workspace.id);
     if (!lease || !ACTIVE_LEASE_STATES.has(lease.state)) return { ok: false, escalated: false, released: false, code: 'no_active_lease' };
+    // Shared checkout does not grant cancellation authority over its writer.
+    if (lease.sessionId !== id) return { ok: false, escalated: false, released: false, code: 'workspace_owned_by_other_session' };
     const permit = active.get(id);
     if (permit && !permit.terminal) return { ok: false, escalated: false, released: false, code: 'turn_still_running' };
     escalating.add(id);

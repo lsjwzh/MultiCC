@@ -41,6 +41,9 @@ const sessions = new Map();
 const DEFAULT_IDLE_MS = 10 * 60 * 1000; // reclaim a warm-but-unused app-server after 10min
 const CLOSE_KILL_GRACE_MS = 1_500;
 const RECYCLE_KILL_GRACE_MS = 3_000;
+const closer = require('./process-close').createProcessCloser({
+  timeoutMs: CLOSE_KILL_GRACE_MS + 1_000, code: 'CODEX_APP_STREAM_CLOSE_TIMEOUT',
+});
 
 function isAlive(name) {
   const s = sessions.get(name);
@@ -90,8 +93,17 @@ function spawnProc(name, s) {
     if (sessions.get(name)?.proc !== proc) return;
     s.stderrTail = (s.stderrTail + chunk.toString()).slice(-1000);
   });
+  proc.stdin.on('error', () => {
+    if (sessions.get(name)?.proc !== proc) return;
+    s.recycling = true;
+    try { proc.kill('SIGTERM'); } catch (_) {}
+    armKillEscalation(proc, CLOSE_KILL_GRACE_MS);
+  });
   proc.on('exit', (code, signal) => { if (sessions.get(name)?.proc === proc) onExit(name, code, signal); });
-  proc.on('error', (err) => { if (sessions.get(name)?.proc === proc) onExit(name, null, null, err); });
+  proc.on('error', (err) => {
+    if (sessions.get(name)?.proc !== proc) return;
+    if (!proc.pid) onExit(name, null, null, err); else s.recycling = true;
+  });
   return proc;
 }
 
@@ -173,26 +185,16 @@ function onExit(name, code, signal, err) {
 // The caller must already have re-queued whatever turn triggered this. The
 // escalation exists for the same reason as chat-stream's: a child that ignores
 // SIGTERM would otherwise wedge the session forever, and a respawn alongside a
-// zombie beats a session that accepts no messages.
+// second writer must never start alongside an unconfirmed old one.
 function killForRecycle(name, s) {
   const proc = s.proc;
   s.recycling = true;
   clearIdle(s);
-  try { proc.kill('SIGTERM'); }
-  catch (_) {
-    s.recycling = false;
-    setImmediate(() => pump(name));
-    return false;
-  }
+  // A signal error is not exit evidence. Keep the fence until onExit.
+  try { proc.kill('SIGTERM'); } catch (_) {}
   const escalate = setTimeout(() => {
     if (s.proc !== proc || !s.recycling) return;
     try { proc.kill('SIGKILL'); } catch (_) {}
-    const release = setTimeout(() => {
-      if (s.proc !== proc || !s.recycling) return;
-      s.recycling = false;
-      pump(name);
-    }, RECYCLE_KILL_GRACE_MS);
-    if (release.unref) release.unref();
   }, RECYCLE_KILL_GRACE_MS);
   if (escalate.unref) escalate.unref();
   return true;
@@ -207,6 +209,13 @@ function turnLine(text, turn) {
 function pump(name) {
   const s = sessions.get(name);
   if (!s || s.busy || s.recycling) return;
+  if (closer.isClosing(name)) {
+    if (!s.joiningClose) {
+      s.joiningClose = true;
+      void closer.drained(name).then(() => { s.joiningClose = false; pump(name); });
+    }
+    return;
+  }
   const next = s.queue.shift();
   if (!next) return;
 
@@ -265,7 +274,9 @@ function armIdle(name) {
 function reclaimIfIdle(name) {
   const s = sessions.get(name);
   if (!s || !isAlive(name) || s.busy || s.queue.length > 0) return;
+  s.recycling = true;
   try { s.proc.stdin.end(); } catch (_) {}
+  armKillEscalation(s.proc, CLOSE_KILL_GRACE_MS);
 }
 
 function clearIdle(s) {
@@ -363,6 +374,7 @@ function cancel(name) {
   const pending = s.queue.splice(0);
   for (const q of pending) { try { q.reject(new Error('cancelled')); } catch (_) {} }
   if (s.proc) {
+    s.recycling = true;
     try { s.proc.kill('SIGTERM'); } catch (_) {}
     armKillEscalation(s.proc, CLOSE_KILL_GRACE_MS);
   }
@@ -370,6 +382,7 @@ function cancel(name) {
 
 function close(name) {
   const s = sessions.get(name);
+  closer.track(name, s?.proc);
   cancel(name);
   if (!s) return;
   clearIdle(s);
@@ -390,43 +403,8 @@ function close(name) {
 // Same contract as chat-stream's: the map entry being gone proves no new turn can
 // use the child, but callers that must clean up transcript files also need the
 // process to have actually exited (SIGKILL escalation included).
-function closeAndWait(name, { timeoutMs = CLOSE_KILL_GRACE_MS + 1_000 } = {}) {
-  const numericTimeout = Number(timeoutMs);
-  if (!Number.isFinite(numericTimeout) || numericTimeout < 1) {
-    return Promise.reject(Object.assign(new TypeError('valid close timeout required'), {
-      code: 'CODEX_APP_STREAM_CLOSE_TIMEOUT_INVALID',
-    }));
-  }
-  const processState = sessions.get(name)?.proc || null;
-  if (!processState || processState.exitCode !== null) {
-    close(name);
-    return Promise.resolve(Object.freeze({ closed: true, hadProcess: false }));
-  }
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let timer = null;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      try { processState.removeListener('exit', onExitEvt); } catch (_) {}
-      if (error) reject(error);
-      else resolve(Object.freeze({ closed: true, hadProcess: true }));
-    };
-    const onExitEvt = () => finish();
-    try { processState.once('exit', onExitEvt); } catch (cause) {
-      finish(Object.assign(new Error('cannot join app-server process', { cause }), {
-        code: 'CODEX_APP_STREAM_CLOSE_JOIN_FAILED',
-      }));
-      return;
-    }
-    timer = setTimeout(() => finish(Object.assign(
-      new Error('app-server process did not exit before the cleanup deadline'),
-      { code: 'CODEX_APP_STREAM_CLOSE_TIMEOUT' },
-    )), numericTimeout);
-    close(name);
-    if (processState.exitCode !== null) finish();
-  });
+function closeAndWait(name, opts) {
+  return closer.wait(name, () => close(name), opts);
 }
 
 function status(name) {
@@ -446,6 +424,7 @@ function status(name) {
 
 module.exports = {
   createCodexAppStream: () => ({
-    ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle,
+    ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle, isClosing: closer.isClosing,
+    waitForClose: (name, opts) => closer.wait(name, () => {}, opts),
   }),
 };
