@@ -52,6 +52,11 @@
 .air-voice-hint-block { margin: 6px 0 0 142px; }
 .air-voice-save { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .air-voice-save > button { width: auto; }
+.air-voice-global-call { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.air-voice-global-call > button { width: auto; }
+.air-voice-global-call .air-voice-desc { margin: 0; }
+.air-voice-beta-tag { font-size: 11px; letter-spacing: .06em; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--muted); }
 .air-voice-status { color: var(--muted); font-size: 10.5px; }
 .air-voice-status.ok { color: #2c7d5c; }
 .air-voice-status.err { color: #b34b34; }
@@ -157,6 +162,17 @@
     const footer = make('div', null, 'air-voice-save');
     footer.append(save, install, enable, status);
     section.append(footer);
+    // 全局实时语音的启动入口。旧 manage 页把它放在首页那颗 #overview-voice-beta
+    // 按钮上；那一页删了之后，web 上就只剩 dashboard.html 和聊天页两个入口，所以
+    // 这里补回来 —— 同一个 openGlobalVoice()，同一条 /api/v1/voice-gateway/launch，
+    // BETA 的标记照旧留着（功能确实还在 beta，别在搬家的时候把话说满）。
+    const callRow = make('div', null, 'air-voice-global-call');
+    const call = button(t('globalVoiceCall'), () => root.MultiCCManageQwenAudio?.openGlobalVoice(call));
+    call.id = 'air-voice-global-call';
+    const beta = make('span', 'BETA', 'air-voice-beta-tag');
+    const hint = make('span', t('globalVoiceBetaHint'), 'air-voice-desc');
+    callRow.append(call, beta, hint);
+    section.append(callRow);
     return section;
   }
 

@@ -65,6 +65,8 @@
       "artifactName": "multicc-desktop-${version}-macos-${arch}.${ext}",
       "identity": null,
       "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
         "NSDesktopFolderUsageDescription": "MultiCC 需要访问「桌面」才能把工作目录设在这里。",
         "NSDocumentsFolderUsageDescription": "MultiCC 需要访问「文档」才能把工作目录设在这里。",

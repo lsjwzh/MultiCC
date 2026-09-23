@@ -51,7 +51,10 @@ test('native Air registry and compatibility panels preserve every former manage 
   assert.match(admin, /api\/docs-registry/);
   assert.match(admin, /MultiCCAirProvider/);
   assert.match(admin, /service-dialog/);
-  assert.match(admin, /embed=air/);
+  // 旧 manage 页已删：面板路由里不能再有任何一条「嵌回去」的退路（注释里的出处说明不算）。
+  assert.doesNotMatch(admin, /embed=air/);
+  assert.doesNotMatch(admin, /createElement\('iframe'\)|<iframe/);
+  assert.doesNotMatch(admin, /manage\.html\?/);
   // 分组标题现在存的是 key（显示文案查词典，className 判定也比这个 key），
   // 但「四组、顺序、每组装哪些面板」这条结构不能变 —— 保险箱是有意插在第一组最前面
   // 的那一条：它是子进程环境变量，不归任何一组功能。工作区（worktree 休眠回收）是继
@@ -59,8 +62,8 @@ test('native Air registry and compatibility panels preserve every former manage 
   assert.match(admin, /const settingGroups = \[[\s\S]*?\['airAdminGroupFeatured', \['secrets', 'docs', 'memory', 'taskgraph', 'workspaces'\]\]/);
   assertLocalized(admin, 'public/air-admin.js', 'airAdminGroupFeatured', '重要功能', "make\\('h3', t\\(title\\)\\)");
   assert.match(admin, /air-settings-feature-group/);
-  assert.match(read('public/manage.html'), /manage-air-embed\.css/);
-  assert.match(read('public/manage-air-embed.css'), /html\.air-embed #nav/);
+  // 兼容皮肤（manage-air-embed.css）随旧页一起退场，public/ 下不该再有它。
+  assert.equal(fs.existsSync(path.join(root, 'public', 'manage-air-embed.css')), false);
 });
 
 test('global CLI and Provider settings are native in Air', () => {

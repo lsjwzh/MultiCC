@@ -671,8 +671,8 @@ test('constructor rejects broad or incomplete ports before routes are mounted', 
 test('web usage labels distinguish fresh input and cache from legacy consumed input', () => {
   const root = path.join(__dirname, '..');
   const chat = fs.readFileSync(path.join(root, 'public', 'chat.js'), 'utf8');
-  const manage = fs.readFileSync(path.join(root, 'public', 'manage.js'), 'utf8');
-  const manageHtml = fs.readFileSync(path.join(root, 'public', 'manage.html'), 'utf8');
+  // 旧 manage 页的「统计 / 用量」子页随该页删除，这一块现在是 Air 原生面板。
+  const usage = fs.readFileSync(path.join(root, 'public', 'air-usage.js'), 'utf8');
   const catalog = fs.readFileSync(path.join(root, 'public', 'provider-catalog.js'), 'utf8');
   // The labels moved into the i18n catalogs (provider-catalog.js only holds the
   // keys now), so the guard is: the zh wording still distinguishes fresh input
@@ -687,11 +687,13 @@ test('web usage labels distinguish fresh input and cache from legacy consumed in
   }
   assert.match(chat, /const _providerCatalog = window\.MultiCCProviderCatalog/);
   assert.match(chat, /_providerCatalog\.formatUsageWindow/);
-  assert.match(manage, /providerCatalog\.formatUsageWindow/);
-  assert.match(manage, /providerCatalog\.formatUsageCumulative/);
-  assert.match(manageHtml, /id="gu-metric-tabs"/);
-  assert.match(manageHtml, /setGuMetric\('fresh'\)[\s\S]*setGuMetric\('inclusive'\)/);
-  assert.match(manage, /let _guMetric = 'fresh'/);
-  assert.match(manage, /fresh && hasFreshTrend[\s\S]*_globalUsage\.byDayFresh[\s\S]*_globalUsage\.byDay/);
-  assert.match(manage, /_guMetric === 'inclusive'[\s\S]*b\.cacheWrite \+ b\.cacheRead/);
+  // 两个口径各有一个页签，默认停在「纯新增」那一档。
+  assert.match(usage, /\['fresh', t\('airUsageMetricFresh'\)\][\s\S]*\['inclusive', t\('airUsageMetricInclusive'\)\]/);
+  assert.match(usage, /let activeMetric = 'fresh'/);
+  assert.match(usage, /tab\.dataset\.metric = value/);
+  // 趋势：只有服务端真给了 byDayFresh 才用纯新增序列，否则退回含缓存的并标注。
+  assert.match(usage, /fresh && hasFreshTrend \? globalUsage\.byDayFresh : globalUsage\.byDay/);
+  assert.match(usage, /airUsageTrendFallbackNote/);
+  // 含缓存口径才把两路缓存加进总数。
+  assert.match(usage, /activeMetric === 'inclusive'[\s\S]*cacheWrite[\s\S]*cacheRead/);
 });

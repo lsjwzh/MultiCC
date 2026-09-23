@@ -1,6 +1,7 @@
 'use strict';
 
 const { execFile } = require('child_process');
+const { createPrivilegedHelper } = require('../../src/privileged-helper');
 
 function isAvailable(platform = process.platform) {
   return platform === 'darwin';
@@ -44,15 +45,24 @@ async function setLidSleepPrevention(enabled, options = {}) {
   if (!isAvailable(platform)) throw new Error('This setting is only available on macOS');
 
   const value = enabled ? '1' : '0';
-  const script = `do shell script "/usr/bin/pmset -a disablesleep ${value}" with administrator privileges`;
-  try {
-    await runFile('/usr/bin/osascript', ['-e', script], { timeout: 120000 }, options.execFile || execFile);
-  } catch (error) {
-    const detail = `${error.message || ''} ${error.stderr || ''}`;
-    if (/User canceled|(-128)/i.test(detail)) {
-      throw new Error('Administrator authorization was canceled');
+
+  // Preferred path: the optional privileged helper, which runs this exact
+  // command with no password. It returns null when it is not installed (the
+  // normal case) rather than failing, so the prompt below stays the fallback
+  // and nothing about this function's contract depends on the helper existing.
+  const helper = options.privileged || createPrivilegedHelper({ platform, run: options.execFile || execFile });
+  const viaHelper = await helper.run(enabled ? 'lid-sleep-on' : 'lid-sleep-off');
+  if (!viaHelper || !viaHelper.ok) {
+    const script = `do shell script "/usr/bin/pmset -a disablesleep ${value}" with administrator privileges`;
+    try {
+      await runFile('/usr/bin/osascript', ['-e', script], { timeout: 120000 }, options.execFile || execFile);
+    } catch (error) {
+      const detail = `${error.message || ''} ${error.stderr || ''}`;
+      if (/User canceled|(-128)/i.test(detail)) {
+        throw new Error('Administrator authorization was canceled');
+      }
+      throw new Error(`Failed to update macOS power settings: ${error.message}`);
     }
-    throw new Error(`Failed to update macOS power settings: ${error.message}`);
   }
 
   const status = await getLidSleepPrevention(options);

@@ -152,7 +152,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   }
 
   // 4) sanity gate — a silent missing file here becomes "app won't start" there
-  for (const must of ['server.js', 'src/paths.js', 'public/manage.html', 'public/chat.html',
+  for (const must of ['server.js', 'src/paths.js', 'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js',
     'skills/multicc-artifact/references/registration-rule.md',
     // Storage needs no compiled addon (src/sqlite/driver.js uses the SQLite

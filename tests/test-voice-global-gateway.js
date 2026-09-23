@@ -814,11 +814,12 @@ test('every voice entry point goes through the one launch endpoint', () => {
   assert.match(manage, /\/api\/v1\/voice-gateway/);
   assert.match(manage, /Object\.freeze\(\{ initialize, loadPanel, openGlobalVoice \}\)/);
   assert.equal(/voice-gateway\/fleets|renderFleets/.test(manage), false, 'the Fleet list is gone');
-  const manageHtml = readRepoFile('public/manage.html');
-  assert.match(manageHtml, /id="overview-voice-beta"/);
-  assert.match(manageHtml, /data-i18n="globalVoiceBetaHint"/);
-  assert.match(manageHtml, /MultiCCManageQwenAudio\.openGlobalVoice/);
-  assert.match(manageHtml, />BETA</, 'the primary home entry clearly marks the feature as beta');
+  // 旧 manage 页首页那颗 #overview-voice-beta 按钮随该页删除，入口搬进 Air 的语音面板。
+  const airVoice = readRepoFile('public/air-voice.js');
+  assert.match(airVoice, /id = 'air-voice-global-call'/);
+  assert.match(airVoice, /t\('globalVoiceBetaHint'\)/);
+  assert.match(airVoice, /MultiCCManageQwenAudio\?\.openGlobalVoice/);
+  assert.match(airVoice, /'BETA'/, 'the Air entry clearly marks the feature as beta');
 
   const dart = readRepoFile('app/lib/services/voice_launch_service.dart');
   assert.match(dart, /\/api\/v1\/voice-gateway\/launch/);

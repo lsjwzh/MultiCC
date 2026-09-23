@@ -549,6 +549,15 @@
   <!-- 用量统计要先于线路页那个模块加载：Provider 页渲染时会把它挂上去。 -->
   <script src="air-usage.js"></script>
   <script src="air-provider.js"></script>
+  <!-- Provider 页「高级」那四块（官方多账号 / 借道 / ZCode / Kimi 原生连接）。前两块直接
+       复用旧 manage 页那两个模块，它们按 id 找元素、按 document 委托点击，所以要和骨架
+       一起加载；quota-bar-view.js 是官方账号那块画余量条要的，base-url-options.js 是借道
+       分享挑本机地址要的（旧页里也是这两个）。 -->
+  <script src="quota-bar-view.js"></script>
+  <script src="base-url-options.js"></script>
+  <script src="manage-official-accounts.js"></script>
+  <script src="manage-provider-relay.js"></script>
+  <script src="air-provider-advanced.js"></script>
   <!-- 外网穿透是 Air 原生页：国内 SakuraFrp / 海外 Tailscale 分流与全部操作
        都在这里完成，不再嵌入旧 manage 页面。要先于 air-admin.js 注册。 -->
   <script src="air-tunnel.js"></script>
@@ -590,6 +599,7 @@
   <script src="air-resources.js"></script>
   <script src="air-skillsync.js"></script>
   <script src="air-storage.js"></script>
+<script src="air-workspaces.js"></script>
   <!-- 状态注册表要先于 air-admin.js：任务行的徽标和「在不在跑」的判定都由它出。 -->
   <script src="status-presentation.js"></script>
   <script src="air-admin.js"></script>

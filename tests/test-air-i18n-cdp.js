@@ -177,6 +177,19 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
   routes['/api/aux/config'] = () => json({});
   routes['/api/aux/status'] = () => json({});
   routes['/api/aux/history'] = () => json({ runs: [] });
+  // 工作区那一格（air-workspaces.js）：空回包只会画出四句「还没有…」，那等于没扫。
+  // 所以这里把四块卡都喂满 —— 超预算标记、待建/迁移中两个可选计数、孤儿的删与留、
+  // 审计里的目录条目与截断标记，每一条都对应面板里一句只在该分支出现的文案。
+  routes['/api/workspaces/overview'] = () => json({
+    status: { awakeLimit: 2, idleMs: 5_400_000, scheduled: true, stopped: false, sweeping: false },
+    totals: { awake: 3, hibernated: 4 },
+    directories: [{ id: 'd1', path: '/projects/multicc', awake: 3, hibernated: 4, planned: 1, transitioning: 1, total: 9 }],
+    removedIgnoredAudit: [{ sessionId: 's1', title: 'Fix login redirect', at: '2026-09-20T04:05:00.000Z',
+      entries: [{ path: '.env.local', bytes: 2048 }, { path: 'node_modules', files: 120, truncated: true }] }],
+    orphans: { at: '2026-09-20T03:00:00.000Z', total: 2, removed: 1, deleteOrphans: true, orphans: [
+      { path: '/projects/multicc/.wt/a', branch: 'multicc/task-a', ahead: 0, dirty: false, removed: true },
+      { path: '/projects/multicc/.wt/b', branch: null, ahead: 3, dirty: true, removed: false }] },
+  });
 
   await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-air-i18n-qa') }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -323,8 +336,8 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     // 面板模块一旦没挂上就会静默退回 iframe，而 iframe 里的中文恰好是扫不到的 ——
     // 那样这道关会绿着放走一整格没搬完的页面。
     const ADMIN_VIEWS = [
-      'docs', 'secrets', 'memory', 'taskgraph', 'voice', 'goal', 'provider', 'global',
-      'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
+      'docs', 'secrets', 'memory', 'taskgraph', 'workspaces', 'voice', 'goal', 'provider',
+      'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
     ];
     // 先把「谁没挂上」说清楚：下面每格失败时报的是「还在嵌旧页面」，而根因往往是某个
     // 模块的 <script> 没加载（或者加载时抛了错）—— 那一行直接把名字给出来。
@@ -332,6 +345,7 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       'MultiCCAirMemory', 'MultiCCAirTaskgraph', 'MultiCCAirVoice', 'MultiCCAirGoal',
       'MultiCCAirGlobal', 'MultiCCAirPush', 'MultiCCAirBridges', 'MultiCCAirResources',
       'MultiCCAirSkillsync', 'MultiCCAirStorage', 'MultiCCAirProvider', 'MultiCCAirTunnel',
+      'MultiCCAirWorkspaces', 'MultiCCAirProviderAdvanced',
     ].filter(name => !window[name]))`));
     for (const view of [...ADMIN_VIEWS, 'settings']) {
       // 除设置中心自己，每一格在设置中心都有一张卡片（legacyPanels 是卡片文案的来源），
@@ -348,10 +362,8 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
         const panel = document.getElementById('admin-content');
         return !!panel && panel.textContent.trim().length > 0;
       })()`), `the "${view}" panel must render something to scan`);
-      // 判据是「这一格真的把旧管理台装进来了」，而不是「DOM 里有没有那个 iframe 元素」：
-      // Provider 页的「高级」折叠区里就留着一个 air-legacy-frame，但它是惰性的
-      // （只写 dataset.src，展开高级时才落到 src 上），没展开时它不加载任何文档 ——
-      // 那属于「已知还没搬的旧页面」，不该被这条断言算成整格没搬完。
+      // 旧 manage 页已经删了，所以这条不再有任何豁免：哪一格的正文里出现指向它的
+      // iframe，都只可能是搬迁退回去了（而 iframe 里的中文恰好是扫不到的）。
       assert.deepEqual(
         await page.evaluate(`(() => [...document.querySelectorAll('#admin-content iframe')]
           .map(frame => frame.getAttribute('src') || '')
@@ -364,6 +376,21 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       // 记一下每格画出多少字：空面板扫出来当然干净，那不算数。
       t.diagnostic(`${view} panel (${via}): ${await page.evaluate(`document.getElementById('admin-content').textContent.trim().length`)} chars`);
     }
+
+    // Provider 页的「高级」默认折叠，上面那一圈只扫到它的外壳。官方多账号 / 借道 /
+    // ZCode / Kimi 四块正文是展开时才画的（air-provider-advanced.js），所以单独展开一次
+    // 再扫：这四块以前藏在旧 manage 页的 iframe 里，正是这道关扫不到的地方。
+    await page.evaluate(`(() => {
+      document.querySelector('[data-air-card="provider"]')?.click();
+      window.MultiCCAirProvider.toggleAdvanced();
+    })()`);
+    assert.ok(await page.waitFor(`(() => {
+      const host = document.getElementById('air-provider-advanced-body');
+      return !!host && host.childElementCount > 0;
+    })()`), 'the Provider panel must draw the advanced block when it is expanded');
+    const advancedLeaked = await page.evaluate(SCAN);
+    assert.deepEqual(advancedLeaked, [], `Chinese left in the Provider advanced block:\n  ${advancedLeaked.join('\n  ')}`);
+    t.diagnostic('provider advanced block: ' + await page.evaluate(`document.getElementById('air-provider-advanced-body').textContent.trim().length`) + ' chars');
 
     // ── 硬要求：整个 Air 文档里不再有中文 ─────────────────────────────────
     // 浮层、对话框、详情抽屉都留在 DOM 里（只是没显示），所以这一次扫描已经把它们

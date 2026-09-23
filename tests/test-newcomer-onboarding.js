@@ -7,8 +7,6 @@ const test = require('node:test');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'tour.js'), 'utf8');
 const root = path.join(__dirname, '..');
-const setupSource = fs.readFileSync(path.join(root, 'public', 'manage-workspace-setup.js'), 'utf8');
-const manageHtml = fs.readFileSync(path.join(root, 'public', 'manage.html'), 'utf8');
 const airHtml = fs.readFileSync(path.join(root, 'public', 'air.html'), 'utf8');
 const airJs = fs.readFileSync(path.join(root, 'public', 'air.js'), 'utf8');
 
@@ -33,25 +31,16 @@ test('a real first assistant result advances the final onboarding step', () => {
   assert.match(source, /show\(4\)/);
 });
 
-test('empty state offers a safe opt-in sample instead of registering live source', () => {
-  const dashboard = fs.readFileSync(path.join(root, 'public', 'manage-dashboard.js'), 'utf8');
+test('the opt-in sample workspace never writes into the running source tree', () => {
   const sample = fs.readFileSync(path.join(root, 'src', 'directory', 'sample-workspace.js'), 'utf8');
-  assert.match(dashboard, /体验示例工作区（约 2 分钟）/);
-  assert.match(dashboard, /不会修改正在运行的 MultiCC 源码/);
-  assert.match(setupSource, /\/api\/onboarding\/sample-workspace/);
+  const controller = fs.readFileSync(path.join(root, 'src', 'directory', 'controller.js'), 'utf8');
   assert.match(sample, /sampleRoot\(\)/);
   assert.doesNotMatch(sample, /PKG_ROOT|__dirname/);
   assert.match(sample, /writeFileExclusive/);
-  const sampleDialog = setupSource.slice(
-    setupSource.indexOf('function createSampleWorkspace()'),
-    setupSource.indexOf('Object.assign(global'),
-  );
-  assert.doesNotMatch(sampleDialog, /loadTemplates\(\)/);
-  assert.doesNotMatch(sampleDialog, /api\.json/);
-  assert.match(setupSource, /sampleFlow\s*\?\s*await api\.json\('\/api\/onboarding\/sample-workspace'/);
+  assert.match(controller, /\/api\/onboarding\/sample-workspace/);
 });
 
-test('workspace setup exposes curated team bundles backed by valid role presets', () => {
+test('curated team bundles stay backed by valid role presets', () => {
   const teams = JSON.parse(fs.readFileSync(path.join(root, 'public', 'team-presets.json'), 'utf8'));
   const agents = JSON.parse(fs.readFileSync(path.join(root, 'public', 'agent-presets.json'), 'utf8'));
   const ids = new Set(agents.presets.map(item => item.id));
@@ -63,18 +52,14 @@ test('workspace setup exposes curated team bundles backed by valid role presets'
     assert.ok(team.roles.length <= 4, `${team.id} should stay cognitively bounded`);
     for (const role of team.roles) assert.ok(ids.has(role.presetId), `${role.presetId} must exist`);
   }
-  assert.doesNotMatch(setupSource, /role-workers|provisionTeam/);
-  assert.match(setupSource, /timeoutMs: 60000/);
-  assert.match(setupSource, /submit\.disabled = busy/);
 });
 
 test('directory creation leaves roles and execution to tasks', () => {
-  assert.match(manageHtml, /创建工作区/);
-  assert.match(manageHtml, /工作区是希望 MultiCC 帮你处理的本地文件夹/);
-  assert.doesNotMatch(manageHtml, /选择 Agent 团队/);
-  assert.match(manageHtml, /角色在任务中按需附加/);
-  assert.match(manageHtml, /路径不存在时，创建这个文件夹/);
-  assert.doesNotMatch(manageHtml, /Fleet不存在时自动创建/);
+  const settings = fs.readFileSync(path.join(root, 'public', 'air-task-settings.js'), 'utf8');
+  const zh = JSON.parse(fs.readFileSync(path.join(root, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
+  assert.match(settings, /t\('airTaskSettingsCreateIfMissing'\)/);
+  assert.equal(zh.airTaskSettingsCreateIfMissing, '路径不存在时自动创建');
+  assert.doesNotMatch(settings, /选择 Agent 团队|role-workers|provisionTeam/);
 });
 
 // 2.0：新用户落地是 /air（/ 与 /manage 都重定向过去），而旧版 tour.js 只挂

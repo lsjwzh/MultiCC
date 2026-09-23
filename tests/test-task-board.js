@@ -79,56 +79,6 @@ test('task detail session links use the encoded chat navigation contract', () =>
   assert.doesNotMatch(source, /sessionChatUrl\([^)]*\)[^\n]*(?:token|cwd)=/);
 });
 
-test('M4 task rows carry the modal-only operations after the detail modal retirement', async () => {
-  const context = vm.createContext({
-    console: createSandboxConsole(),
-    window: { MultiCCTaskBoardUi: taskBoardUi },
-    document: {
-      getElementById: () => null,
-      createElement: () => ({}),
-      body: { appendChild: () => {} },
-      head: { appendChild: () => {} },
-    },
-    fetch: async () => ({ json: async () => ({ ok: false }) }),
-    setInterval: () => 0,
-    clearInterval: () => {},
-    setTimeout: () => 0,
-    clearTimeout: () => {},
-    Date,
-  });
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '..', 'public', 'status-presentation.js'), 'utf8'),
-    context,
-  );
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8'),
-    context,
-  );
-  const row = vm.runInContext(`
-    _tbBoard = { modules: [], tasks: [], sessionLabels: {} };
-    _tbTaskRowHtml({
-      id: 'task-m4', title: '退役验证', status: 'active', refCount: 1, lastTs: 10,
-      runState: 'succeeded', sessionIds: [], attemptCount: 1,
-      worktreePath: '/repo/.multicc-worktrees/task-ab12cd34',
-      moduleAssignment: { running: false },
-    });
-  `, context);
-  // The modal-only operations survive at row level; handlers take the event
-  // first and stop propagation inside (the row itself opens the chat view).
-  assert.match(row, /cleanupTaskWorktree\(event,'task-m4'/);
-  assert.match(row, /setTaskBoardStatus\('task-m4','done',event\)/);
-  assert.match(row, /reclassifyTaskBoardTask\(event,'task-m4'\)/);
-  // A task without a worktree shows no cleanup button.
-  const bare = vm.runInContext(`
-    _tbTaskRowHtml({
-      id: 'task-bare', title: '无 worktree', status: 'active', refCount: 1,
-      lastTs: 10, sessionIds: [], attemptCount: 1,
-    });
-  `, context);
-  assert.doesNotMatch(bare, /cleanupTaskWorktree/);
-  assert.match(bare, /setTaskBoardStatus\('task-bare','done',event\)/);
-});
-
 test('task board UI keeps pending modules first and sorts tasks by last activity', () => {
   const modules = [
     { id: 'z', name: 'Beta', source: 'ai' },
@@ -145,12 +95,10 @@ test('task board UI keeps pending modules first and sorts tasks by last activity
   assert.deepEqual(modules.map(m => m.id), ['z', 'p', 'a']);
   assert.deepEqual(tasks.map(t => t.id), ['old', 'new', 'middle']);
 
-  const manageSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
+  // 旧管理台删掉后 meta.html 是 web 上唯一一块任务板。
   const metaSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
-  for (const source of [manageSource, metaSource]) {
-    assert.match(source, /MultiCCTaskBoardUi\.sortModules/);
-    assert.match(source, /MultiCCTaskBoardUi\.sortTasks/);
-  }
+  assert.match(metaSource, /MultiCCTaskBoardUi\.sortModules/);
+  assert.match(metaSource, /MultiCCTaskBoardUi\.sortTasks/);
 });
 
 test('task board display state follows classify runState for icon and status text', () => {
@@ -185,17 +133,14 @@ test('task board display state follows classify runState for icon and status tex
     assert.equal(display.running, display.key === 'running');
   }
 
-  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
   const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
-  for (const source of [manage, meta]) {
-    assert.match(source, /MultiCCTaskBoardUi\.taskDisplayState\(t\)/);
-    assert.match(source, /tb-run-state st-tone-\$\{display\.tone\}[\s\S]*?\$\{(?:_tbEsc|esc)\(display\.label\)\}/);
-    // The row glyph is the shared badge, not a locally chosen emoji.
-    assert.match(source, /statusBadgeHtml\('task', display\.status/);
-    assert.match(source, /className: 'tb-icon'/);
-    assert.match(source, /moduleAssignment/);
-    assert.doesNotMatch(source, /\.classification\b|classificationLabel|waiting_reply|retry_wait/);
-  }
+  assert.match(meta, /MultiCCTaskBoardUi\.taskDisplayState\(t\)/);
+  assert.match(meta, /tb-run-state st-tone-\$\{display\.tone\}[\s\S]*?\$\{esc\(display\.label\)\}/);
+  // The row glyph is the shared badge, not a locally chosen emoji.
+  assert.match(meta, /statusBadgeHtml\('task', display\.status/);
+  assert.match(meta, /className: 'tb-icon'/);
+  assert.match(meta, /moduleAssignment/);
+  assert.doesNotMatch(meta, /\.classification\b|classificationLabel|waiting_reply|retry_wait/);
 
   const runStateAdapter = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'session-work', 'host.js'), 'utf8');
@@ -259,30 +204,8 @@ test('task board UI hides the Commander routing chip on the card', () => {
   assert.equal(taskBoardUi.taskRoutingLabel({
     routing: { mode: 'manual', targetSessionId: 'worker-1' },
   }), '');
-  for (const file of ['public/manage-taskboard.js', 'public/meta.html']) {
-    const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-    assert.match(source, /taskRoutingLabel/);
-  }
-  // The one-shot send toast ("已交给 Commander…") is a transient send-time
-  // acknowledgement from the board-tab composer — it stays.
-  const composerSrc = fs.readFileSync(path.join(__dirname, '..', 'public/manage-taskboard.js'), 'utf8');
-  assert.match(composerSrc, /交给 Commander/);
-});
-
-test('task board composer pins cli/provider on the new task (default = recently active)', () => {
-  // #34: the dir composer carries explicit runtime picks for the task's bound
-  // chat session. The placeholders resolve to the host's "most recently
-  // active" suggestion, so a send always carries concrete values; explicit
-  // picks apply at creation only — an already-bound session's runtime is its
-  // resume file and changes through the ordinary per-session surface.
-  const tb = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
-  assert.match(tb, /task-board\/suggested-runtime/);
-  assert.match(tb, /\/api\/providers\?cli=/);
-  assert.match(tb, /payload\.cli\s*=\s*effCli/);
-  assert.match(tb, /payload\.provider\s*=\s*effProvider/);
-  // A provider picked without a cli must ride the cli its list was filtered
-  // by, never inherit the commander's cli from under a foreign provider.
-  assert.match(tb, /provListCli/);
+  const source = fs.readFileSync(path.join(__dirname, '..', 'public/meta.html'), 'utf8');
+  assert.match(source, /taskRoutingLabel/);
 });
 
 // ── parseTagResult ──────────────────────────────────────────────────────────
@@ -889,8 +812,8 @@ test('the task row renders the origin marker from the DTO, or from the id on an 
   assert.equal(taskBoardUi.taskOrigin({ id: 'tsk_0123456789abcdef0123456789abcdef' }).key, 'session');
   assert.notEqual(taskBoardUi.taskOrigin({ origin: 'board' }).label,
     taskBoardUi.taskOrigin({ origin: 'session' }).label);
-  const row = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
-  assert.match(row, /_tbOriginHtml\(task\)\}\$\{_tbEsc\(task\.title\)\}/);
+  const row = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
+  assert.match(row, /taskOrigin/);
 });
 
 test('a task-bound session resumes its card after a cancel dropped the turn lineage', () => {
@@ -1333,30 +1256,21 @@ test('bulk cleanup archives only user-completed tasks in scope and is idempotent
 });
 
 test('task board cleanup controls use the bulk archive endpoint and display-state predicate', () => {
-  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
   const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
-  for (const source of [manage, meta]) {
-    assert.match(source, /一键清理/);
-    assert.match(source, /\/api\/task-board\/archive-completed/);
-    assert.match(source, /MultiCCTaskBoardUi\.taskDisplayState\(t\)\.done/);
-  }
-  assert.match(manage, /JSON\.stringify\(\{ dirId \}\)/);
+  assert.match(meta, /一键清理/);
+  assert.match(meta, /\/api\/task-board\/archive-completed/);
+  assert.match(meta, /MultiCCTaskBoardUi\.taskDisplayState\(t\)\.done/);
   assert.match(meta, /body: '\{\}'/);
 });
 
 test('task rows expose quick archive immediately after the classify action', () => {
-  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
   const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
 
-  assert.match(manage, /_tbModuleAssignmentHtml\(task\)[\s\S]*?_tbQuickArchiveHtml\(task\)/);
-  assert.match(manage, /archiveTaskBoardTask\(event,'\$\{_tbEsc\(task\.id\)\}',this\)/);
   assert.match(meta,
     /\$\{assignment \? `<button class="tb-reclassify"[\s\S]*?<\/button>` : ''\}<button class="tb-quick-archive"/);
-  for (const source of [manage, meta]) {
-    assert.match(source, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/status/);
-    assert.match(source, /归档该任务？（从任务板隐藏，数据保留）/);
-    assert.match(source, /stopPropagation\(\)/);
-  }
+  assert.match(meta, /\/api\/task-board\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/status/);
+  assert.match(meta, /归档该任务？（从任务板隐藏，数据保留）/);
+  assert.match(meta, /stopPropagation\(\)/);
 });
 
 test('board send binds a fresh task-bound session even with multiple active ordinary sessions', async () => {
@@ -1462,26 +1376,17 @@ test('panel routing sends the original user text verbatim into the bound session
 });
 
 test('task body UI folds long text and escapes or text-renders untrusted content', () => {
-  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
   const meta = fs.readFileSync(path.join(__dirname, '..', 'public', 'meta.html'), 'utf8');
-  // M4: the row-level fold is the only manage surface left (the detail
-  // modal's tb-body-detail reader retired with it).
-  assert.match(manage, /tb-body-fold[\s\S]*?_tbEsc\(task\.body\)/);
   assert.match(meta, /tb-body-fold[\s\S]*?esc\(task\.body\)/);
   assert.match(meta, /querySelector\('\.tb-body-fold'\)[\s\S]*?stopPropagation/);
   assert.match(meta, /pre\.textContent = t\.body/);
   assert.match(meta, /reconcileSnapshot\(d\)/);
   assert.match(meta, /partitionTaskIdentity\(tasks\)/);
   assert.match(meta, /历史身份待确认/);
-  assert.doesNotMatch(manage, /innerHTML\s*=\s*t(?:ask)?\.body/);
   assert.doesNotMatch(meta, /innerHTML\s*=\s*t\.body/);
 });
 
 test('task board composers have no session picker; input always enters the task virtual session', () => {
-  const manage = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-taskboard.js'), 'utf8');
-  assert.doesNotMatch(manage, /tb-target/, 'web composer must not render a target <select>');
-  assert.doesNotMatch(manage, /payload\.target/, 'web composer must never send an explicit target');
-  assert.doesNotMatch(manage, /setTargets/, 'web composer target plumbing is removed');
   const appView = fs.readFileSync(path.join(__dirname, '..', 'app', 'lib', 'widgets', 'task_board_view.dart'), 'utf8');
   assert.doesNotMatch(appView, /_targetDropdown/, 'app composer must not render a target dropdown');
   assert.doesNotMatch(appView, /_idleChatTargets/, 'app target list plumbing is removed');

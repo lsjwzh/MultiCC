@@ -56,20 +56,18 @@ function createStaticAssetsRoutes(rawDeps) {
   }
 
   function mountRoutes(app) {
-    // `/manage` is now the stable bookmark for the Air control surface. Keep
-    // `/manage.html` as the explicit compatibility document while its deeper
-    // tools are migrated one by one; this prevents old links from dropping the
-    // user back onto the retired dashboard shell.
-    app.get('/manage', (req, res) => {
-      if (req.query.focus === 'aux') {
-        const legacy = new URLSearchParams({ focus: 'aux' });
-        if (typeof req.query.token === 'string' && req.query.token) legacy.set('token', req.query.token);
-        return res.redirect(`/manage.html?${legacy.toString()}`);
-      }
-      const requested = typeof req.query.view === 'string' ? req.query.view : 'overview';
+    // `/manage` is the stable bookmark for the Air control surface. The old
+    // dashboard document is gone — every one of its tools is an Air native
+    // panel now — so this route no longer has a legacy shell to fall back to;
+    // anything it cannot name lands on the overview rather than a 404.
+    // Both spellings share one handler so an old `/manage.html?view=provider`
+    // bookmark keeps its view instead of being flattened onto the overview.
+    app.get(['/manage', '/manage.html'], (req, res) => {
+      const requested = typeof req.query.view === 'string' ? req.query.view
+        : (req.query.focus === 'aux' ? 'aux' : 'overview');
       const aliases = { cron: 'schedules', tasks: 'overview', planner: 'overview' };
       const allowed = new Set([
-        'overview', 'schedules', 'docs', 'memory', 'settings', 'voice', 'goal',
+        'overview', 'schedules', 'docs', 'memory', 'settings', 'voice', 'goal', 'aux',
         'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage',
       ]);
       const view = aliases[requested] || (allowed.has(requested) ? requested : 'overview');
@@ -83,9 +81,8 @@ function createStaticAssetsRoutes(rawDeps) {
     });
 
     // The legacy task planner has been removed, including its embedded entry.
-    app.get(['/air', '/air.html', '/manage.html'], (req, res, next) => {
-      if (req.query.view !== 'planner'
-          && !(req.path === '/manage.html' && req.query.view === 'tasks')) return next();
+    app.get(['/air', '/air.html'], (req, res, next) => {
+      if (req.query.view !== 'planner') return next();
       const params = new URLSearchParams({ view: 'overview' });
       for (const key of ['dir', 'task', 'token', 'external']) {
         if (typeof req.query[key] === 'string' && req.query[key]) params.set(key, req.query[key]);
@@ -93,14 +90,11 @@ function createStaticAssetsRoutes(rawDeps) {
       return res.redirect(`/air?${params.toString()}`);
     });
 
-    // Root → manage page (unless ?id= is specified, which means a terminal session)
+    // Root → Air (unless ?id= is specified, which means a terminal session)
     app.get('/', (req, res, next) => {
-      if (req.query.id === '__aux__') {
-        const params = new URLSearchParams();
-        params.set('focus', 'aux');
-        res.redirect(`/manage.html?${params.toString()}`);
-        return;
-      }
+      // `__aux__` is not a real session id — it is the old dashboard's shorthand
+      // for "open the assistant panel", which is an Air mode now.
+      if (req.query.id === '__aux__') return res.redirect('/air?view=aux');
       if (req.query.id || req.query.newid || req.query.cwd) return next(); // terminal session
       res.redirect('/air');
     });

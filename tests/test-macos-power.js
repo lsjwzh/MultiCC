@@ -47,6 +47,10 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   const invocations = [];
   const status = await setLidSleepPrevention(true, {
     platform: 'darwin',
+    // No privileged helper installed — the case this block is about. Stated
+    // explicitly because the injected execFile below answers every command
+    // successfully, which would otherwise look like a helper that is present.
+    privileged: { run: async () => null },
     execFile(file, args, options, callback) {
       invocations.push({ file, args, options });
       if (file === '/usr/bin/pmset') {

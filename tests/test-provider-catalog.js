@@ -151,25 +151,21 @@ test('provider-in-use references become bounded display data', () => {
   assert.deepEqual(data.items[3], { kind: 'aux', title: 'openai', detail: '' });
 });
 
-test('manage loads classic auth/API/catalog scripts in order and provider calls use the shared client', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
-  const manage = fs.readFileSync(path.join(ROOT, 'public', 'manage.js'), 'utf8');
-  const headEnd = html.indexOf('</head>');
+test('Air loads the classic auth/API/catalog scripts in order and provider calls use the shared client', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
+  const air = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
   const auth = html.indexOf('<script src="auth-client.js"></script>');
-  const api = html.indexOf('<script src="api-client.js"></script>');
   const providers = html.indexOf('<script src="provider-catalog.js"></script>');
-  const page = html.indexOf('<script src="manage.js"></script>');
+  const panel = html.indexOf('<script src="air-provider.js"></script>');
 
-  assert.ok(auth > 0 && auth < api && api < providers && providers < headEnd);
-  assert.ok(providers < page);
+  assert.ok(auth > 0 && auth < providers && providers < panel);
   assert.doesNotMatch(html, /<script[^>]+type=["']module["'][^>]+(?:api-client|provider-catalog)/i);
-  assert.match(manage, /providerApi\.json\('\/api\/providers'/);
-  assert.match(manage, /providerCatalog\.normalizeCatalog/);
-  assert.match(manage, /providerCatalog\.groupByAppType/);
-  assert.match(manage, /providerCatalog\.deleteReferenceDisplayData/);
-  assert.doesNotMatch(manage, /fetch\([^)]*[`'"]\/api\/providers/);
-  assert.doesNotMatch(manage, /fetch\([^)]*[`'"]\/api\/provider-defaults/);
-  assert.doesNotMatch(manage, /\/api\/providers[^\n]+tokenQS/);
+  assert.match(air, /root\.MultiCCProviderCatalog/);
+  assert.match(air, /catalogApi\.normalizeCatalog\(await context\.api\('\/api\/providers'\)\)/);
+  assert.match(air, /catalogApi\.deleteReferenceDisplayData/);
+  assert.doesNotMatch(air, /fetch\([^)]*[`'"]\/api\/providers/);
+  assert.doesNotMatch(air, /fetch\([^)]*[`'"]\/api\/provider-defaults/);
+  assert.doesNotMatch(air, /\/api\/providers[^\n]+tokenQS/);
 });
 
 test('quotaKindForProvider routes providers to the matching quota route', () => {

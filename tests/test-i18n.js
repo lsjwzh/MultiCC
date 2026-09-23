@@ -60,7 +60,7 @@ const airFiles = ['air.html', ...fs.readdirSync(path.join(root, 'public'))
 const webRefs = new Set();
 // chat-ai-config.js 和 auto-provider-editor.js 也是 Air 里真的会渲染出来的共享模块
 // （任务配置弹窗的模型/线路下拉、Auto 候选池），所以一起扫。
-for (const name of ['chat.html', 'chat.js', 'manage.html', 'manage.js', 'manage-session-lifecycle.js',
+for (const name of ['chat.html', 'chat.js',
   'chat-ai-config.js', 'auto-provider-editor.js', ...airFiles]) {
   const source = fs.readFileSync(path.join(root, 'public', name), 'utf8');
   for (const match of source.matchAll(/(?:\btt|\bt)\(\s*(['"])([^'"\n]+)\1/g)) webRefs.add(match[2]);
