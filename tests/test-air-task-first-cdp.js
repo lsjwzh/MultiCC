@@ -927,11 +927,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('air-doc-summary').textContent.includes('2 条登记')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.air-legacy-frame').length`), 0);
     await page.evaluate(`document.querySelector('[data-air-view="settings"]').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心' && document.querySelectorAll('.air-setting-card').length===15`));
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置中心' && document.querySelectorAll('.air-setting-card').length===16`));
     // 保险箱排在第一格：它管的不是某一组功能里的开关，而是子进程的 spawn 环境
     // （条目按同名环境变量注入），所以跟「重要功能」并列，且在最前。
     assert.deepEqual(await page.evaluate(`[...document.querySelector('.air-settings-feature-group').querySelectorAll('.air-setting-card strong')].map(el=>el.textContent)`),
-      ['敏感信息', '服务与文档', '记忆图谱', '任务图谱'], '重要功能固定在设置中心顶部，保险箱第一格');
+      ['敏感信息', '服务与文档', '记忆图谱', '任务图谱', '工作区'], '重要功能固定在设置中心顶部，保险箱第一格');
     assert.equal(await page.evaluate(`document.body.innerText.includes('Provider 配置')`), true);
     // AI Assistant(aux):设置与运行记录在控制台有原生页,不再只能回 manage 弹窗。
     await page.evaluate(`[...document.querySelectorAll('.air-setting-card')].find(x=>x.innerText.includes('AI Assistant')).click()`);
