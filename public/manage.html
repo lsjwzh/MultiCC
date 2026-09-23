@@ -856,6 +856,7 @@
     <button class="nav-item" data-view="cron" onclick="setView('cron')"><span class="ic">⏱</span> <span data-i18n="cronTasks">定时任务</span> <span class="badge" id="nav-cron-count">0</span></button>
     <button class="nav-item" data-view="memory" onclick="setView('memory')"><span class="ic">🧠</span> <span data-i18n="memoryGraph">记忆图谱</span> <span class="badge" id="nav-memory-count">0</span></button>
     <button class="nav-item" data-view="taskgraph" onclick="setView('taskgraph')"><span class="ic">⛓</span> <span>任务图谱</span></button>
+    <button class="nav-item" data-view="workspaces" onclick="setView('workspaces')"><span class="ic">▦</span> <span>工作区</span></button>
     <button class="nav-item" data-view="docs" onclick="setView('docs')"><span class="ic">🗂</span> <span data-i18n="docsServices">服务与文档</span></button>
 
     <div class="nav-label" data-i18n="settingsTitle">Settings</div>
@@ -1173,6 +1174,26 @@
               <div class="mn-summary" id="tg-node-detail"></div>
               <div class="mn-links" id="tg-node-links"></div>
             </div>
+          </div>
+        </section>
+
+        <!-- ─── Workspaces（worktree 休眠回收） ─── -->
+        <section class="view" data-view="workspaces">
+          <div class="sec-head"><h2>▦ 工作区 <span id="ws-count" style="color:var(--faint);font-weight:400;"></span></h2><div class="line"></div>
+            <button class="btn btn-sm" onclick="loadWorkspacePanel()">刷新</button>
+            <button class="btn btn-green btn-sm" onclick="runWorkspaceSweep(false)">立即休眠清扫</button>
+            <button class="btn btn-sm" onclick="runWorkspaceSweep(true)" title="同时对账孤儿 worktree">清扫＋孤儿对账</button>
+          </div>
+          <p class="sec-desc">闲置会话的 worktree 会被休眠回收（分支保留，可随时解冻）；每目录活跃数受 LRU 预算限制。回收时被 .gitignore 忽略的未知文件会被删除并留审计清单。</p>
+          <div class="settings-card" style="max-width:none"><div class="sc-header">概览</div><div class="sc-body" id="ws-summary" style="gap:8px;"></div></div>
+          <div class="settings-card" style="max-width:none"><div class="sc-header">工作目录</div><div class="sc-body" id="ws-dirs" style="gap:6px;"></div></div>
+          <div class="settings-card" style="max-width:none">
+            <div class="sc-header">孤儿 worktree 对账</div>
+            <div class="sc-body" id="ws-orphans" style="gap:6px;"></div>
+          </div>
+          <div class="settings-card" style="max-width:none">
+            <div class="sc-header">忽略文件删除审计</div>
+            <div class="sc-body" id="ws-audit" style="gap:6px;"></div>
           </div>
         </section>
 
@@ -2387,6 +2408,7 @@
   <script src="manage-aux-history.js"></script>
 <script src="docs-registry.js"></script>
 <script src="manage-secrets.js"></script>
+<script src="manage-workspaces.js"></script>
 <script src="manage-update.js"></script>
   <script>
     /* ── Redesign shell: nav view switching, KPI row, search ── */
@@ -2407,6 +2429,7 @@
         secrets: ['🔐 敏感信息', '本地密钥保险箱 · 值不经过 LLM'],
         memory: ['🧠 记忆图谱', '项目记忆系统网络'],
         taskgraph: ['⛓ 任务图谱', '任务关联网络：父子 / 分组 / 合并 / 壳链接'],
+        workspaces: ['▦ 工作区', 'worktree 休眠回收：预算 / 审计 / 孤儿对账'],
       };
       window.setView = function (v) {
         if (v === 'tasks' || v === 'planner') {
@@ -2439,6 +2462,7 @@
         if (v === 'voice') window.MultiCCManageQwenAudio?.loadPanel?.();
         if (v === 'docs') window.loadDocsRegistry?.();
         if (v === 'secrets') window.loadSecrets?.();
+        if (v === 'workspaces') window.loadWorkspacePanel?.();
         // Sync the active provider tab when the provider view is shown.
         if (v === 'provider') {
           const activeTab = document.querySelector('#prov-tabs .prov-tab.active');
@@ -2446,7 +2470,7 @@
         }
       };
       const requestedView = new URLSearchParams(location.search).get('view') || 'docs';
-      const allowedViews = ['overview', 'memory', 'taskgraph', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs', 'secrets'];
+      const allowedViews = ['overview', 'memory', 'taskgraph', 'workspaces', 'cron', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage', 'docs', 'secrets'];
       if (allowedViews.includes(requestedView) || ['tasks', 'planner'].includes(requestedView)) {
         window.setView(requestedView);
       }

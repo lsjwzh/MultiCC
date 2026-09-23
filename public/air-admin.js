@@ -25,6 +25,8 @@
     docs: [t('airAdminPanelDocs'), t('airAdminPanelDocsDesc'), 'DOCS'],
     memory: [t('airAdminPanelMemory'), t('airAdminPanelMemoryDesc'), 'MEMORY'],
     taskgraph: [t('airAdminPanelTaskgraph'), t('airAdminPanelTaskgraphDesc'), 'TASKGRAPH'],
+    // 工作区（worktree 休眠回收）还是 legacy iframe 页：manage 那边的视图同名。
+    workspaces: ['工作区', 'worktree 休眠回收：预算 / 审计 / 孤儿对账', 'WORKSPACES'],
     // aux 不是 legacy iframe 页(manage 那边配置在弹窗里,没有 view 可嵌)——
     // 这条只为设置中心的卡片和 modes 集合提供元数据,渲染走下面的 renderAux。
     aux: ['AI Assistant', t('airAdminPanelAuxDesc'), 'AUX'],
@@ -42,7 +44,7 @@
   // 分组标题原来既当显示文案、又当 renderSettings 里拼 className 的比较值（'重要功能'）。
   // 现在这里存 i18n key：显示文案由 t() 查，className 判定也改比这个 key。
   const settingGroups = [
-    ['airAdminGroupFeatured', ['secrets', 'docs', 'memory', 'taskgraph']],
+    ['airAdminGroupFeatured', ['secrets', 'docs', 'memory', 'taskgraph', 'workspaces']],
     ['airAdminGroupAi', ['provider', 'aux', 'goal', 'voice', 'global']],
     ['airAdminGroupConnect', ['push', 'tunnel', 'bridges']],
     ['airAdminGroupStorage', ['resources', 'skillsync', 'storage']],

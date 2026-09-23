@@ -368,18 +368,61 @@ async function gitWorktreeValidate(dirPath, worktreePath, branch, opts = {}) {
   }), opts);
 }
 
+// Regenerable ignored paths a hibernate detach may delete outright: package
+// caches, build outputs, OS noise and tool-generated files that a later
+// install/build recreates byte-for-byte (or never needs again).
 const RECLAIMABLE_IGNORED_PREFIXES = Object.freeze([
-  'node_modules/', '.dart_tool/', 'build/', '.gradle/',
+  'node_modules/', '.dart_tool/', 'build/', '.gradle/', 'logs/', '.journal/',
   'app/node_modules/', 'app/.dart_tool/', 'app/build/', 'app/.gradle/',
-  'android/.gradle/', 'app/android/.gradle/',
+  'android/.gradle/', 'app/android/.gradle/', 'app/ios/Flutter/ephemeral/',
+]);
+
+const RECLAIMABLE_IGNORED_FILES = Object.freeze([
+  'app/.flutter-plugins-dependencies',
+  'app/android/local.properties',
+  'app/ios/Flutter/Generated.xcconfig',
+  'app/ios/Flutter/flutter_export_environment.sh',
+  'app/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java',
+  'app/ios/Runner/GeneratedPluginRegistrant.h',
+  'app/ios/Runner/GeneratedPluginRegistrant.m',
 ]);
 
 function reclaimableIgnored(relative) {
   const value = String(relative || '').replace(/\\/g, '/').replace(/^\.\//, '');
   if (!value || value.startsWith('/') || value.split('/').includes('..')) return false;
+  if (value === '.DS_Store' || value.endsWith('/.DS_Store')) return true;
+  if (RECLAIMABLE_IGNORED_FILES.includes(value)) return true;
   if (RECLAIMABLE_IGNORED_PREFIXES.some(prefix => value === prefix.slice(0, -1) || value.startsWith(prefix))) return true;
   return /^(?:app\/)?(?:build\/[^/]+\/)*multicc[^/]*\.apk$/i.test(value)
     || /^app\/build\/app\/outputs\/flutter-apk\/[^/]+\.apk$/i.test(value);
+}
+
+// Audit manifest for unknown ignored files. Reclamation policy (2026-09):
+// unknown ignored files are DELETED along with the checkout — never packed —
+// but every deletion is recorded here (path/bytes/mtime, never contents) so
+// the user can always answer "what did that sweep remove". Shared files
+// belong in the main checkout, not inside task worktrees (built-in memory).
+const UNKNOWN_IGNORED_MANIFEST_MAX_ENTRIES = 64;
+const UNKNOWN_IGNORED_MANIFEST_MAX_FILES_PER_DIR = 2000;
+
+async function ignoredEntryManifest(root, relative) {
+  const target = path.resolve(root, relative);
+  const stat = await fsp.lstat(target).catch(() => null);
+  if (!stat) return { path: relative, bytes: 0, mtime: null };
+  if (!stat.isDirectory()) return { path: relative, bytes: stat.size, mtime: stat.mtime.toISOString() };
+  let bytes = 0, files = 0, truncated = false;
+  const stack = [target];
+  while (stack.length && !truncated) {
+    const dir = stack.pop();
+    const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (files >= UNKNOWN_IGNORED_MANIFEST_MAX_FILES_PER_DIR) { truncated = true; break; }
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else { files += 1; bytes += (await fsp.lstat(full).catch(() => null))?.size || 0; }
+    }
+  }
+  return { path: relative, bytes, mtime: stat.mtime.toISOString(), files, truncated };
 }
 
 async function worktreeOperationInProgress(execGit, worktreePath) {
@@ -401,9 +444,10 @@ async function worktreeOperationInProgress(execGit, worktreePath) {
   return null;
 }
 
-// Hibernate-only primitive: snapshot every Git-visible change, delete only
-// explicitly-regenerable ignored files, remove the checkout, and retain the
-// session branch. This intentionally does not call gitWorktreeRemove(), whose
+// Hibernate-only primitive: snapshot every Git-visible change, delete the
+// regenerable ignored files, record an audit manifest for (and then delete)
+// any unknown ignored files, remove the checkout, and retain the session
+// branch. This intentionally does not call gitWorktreeRemove(), whose
 // lifecycle contract includes deleting the branch.
 async function gitWorktreeDetach(dirPath, worktreePath, branch, opts = {}) {
   const sessionId = opts.sessionId || path.basename(worktreePath || branch || 'session');
@@ -426,11 +470,15 @@ async function gitWorktreeDetach(dirPath, worktreePath, branch, opts = {}) {
     ]).catch(() => '');
     const ignored = String(ignoredRaw || '').split('\0').filter(Boolean);
     const unknown = ignored.filter(relative => !reclaimableIgnored(relative));
-    if (unknown.length) {
-      const error = new Error('worktree contains ignored user files');
-      error.code = 'HIBERNATE_UNKNOWN_IGNORED';
-      error.count = unknown.length;
-      throw error;
+    // Unknown ignored files no longer refuse the detach: the audit manifest
+    // (paths/sizes/mtimes, never contents) is returned to the caller, which
+    // persists it on the session record before the checkout is removed.
+    const removedUnknownIgnored = [];
+    for (const relative of unknown.slice(0, UNKNOWN_IGNORED_MANIFEST_MAX_ENTRIES)) {
+      removedUnknownIgnored.push(await ignoredEntryManifest(worktreePath, relative));
+    }
+    if (unknown.length > UNKNOWN_IGNORED_MANIFEST_MAX_ENTRIES) {
+      removedUnknownIgnored.push({ path: `…and ${unknown.length - UNKNOWN_IGNORED_MANIFEST_MAX_ENTRIES} more`, bytes: 0, mtime: null, truncated: true });
     }
     progress('snapshot');
     const committed = await commitAllWith(execGit, worktreePath,
@@ -461,7 +509,7 @@ async function gitWorktreeDetach(dirPath, worktreePath, branch, opts = {}) {
       throw error;
     }
     await execGit(dirPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`]);
-    return { ok: true, detached: true, committed, snapshot };
+    return { ok: true, detached: true, committed, snapshot, removedUnknownIgnored };
   }, { ...opts, sessionId });
 }
 
