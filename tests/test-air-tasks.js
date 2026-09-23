@@ -275,6 +275,11 @@ test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行�
     records: new Map([
       // 会话记录在，但从头到尾没有任何 taskState：这一轮连受理都没发生过。
       ['ghost', { id: 'ghost', dirId: 'd1', kind: 'chat' }],
+      // 有 taskState，但里面只有归因标注（goal/phase/taskId），执行侧字段全是默认值：
+      // 归因会写 goal，调度事件才写 queueState —— 后者缺位就是没受理过。
+      ['attributed', { id: 'attributed', dirId: 'd1', kind: 'chat', taskState: {
+        goal: '调查 400', taskId: 'a', phase: 'done', lastSummaryAt: stale,
+        classifyState: null, lastTurnEndedAt: null, startedAt: null, endedAt: null, classifyHistory: [] } }],
       // 会话有调度状态：卡片自报什么就是什么。
       ['live', { id: 'live', dirId: 'd1', kind: 'chat', taskState: { queueState: 'running' } }],
     ]),
@@ -282,6 +287,8 @@ test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行�
     getBoard: () => ({ modules: {}, tasks: {
       g: { id: 'g', title: '新任务', status: 'active', runState: 'running', runStateAt: stale, updatedAt: stale,
         refs: [{ sessionId: 'ghost', dirId: 'd1' }] },
+      a: { id: 'a', title: '只剩标注', status: 'active', runState: 'running', runStateAt: stale, updatedAt: stale,
+        refs: [{ sessionId: 'attributed', dirId: 'd1' }] },
       l: { id: 'l', title: '真在跑', status: 'active', runState: 'running', runStateAt: stale, updatedAt: stale,
         refs: [{ sessionId: 'live', dirId: 'd1' }] },
     } }),
@@ -289,6 +296,7 @@ test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行�
   const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
   const byId = Object.fromEntries(response.tasks.map(task => [task.id, task.runState]));
   assert.equal(byId.g, 'idle', '派发时的乐观值 + 会话从没受理过 → 空闲，不是执行中');
+  assert.equal(byId.a, 'idle', '只有归因标注不算受理物证');
   assert.equal(byId.l, 'running', '会话有调度状态时不越权改判');
 });
 
