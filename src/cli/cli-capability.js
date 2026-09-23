@@ -10,9 +10,9 @@
 //
 // These used to be one fact derived from an inline pair of claude CLI names
 // (`Array.includes` over a two-element name list) repeated at ten call sites.
-// That made "streams" and "is resident" look like the same question, so a CLI whose
-// protocol can be resident but whose lane is not — codex-exp speaks the
-// long-lived app-server protocol yet is still spawned per turn — had nowhere to
+// That made "streams" and "is resident" look like the same question, so a CLI
+// whose protocol is long-lived but whose lane had not caught up — codex-exp
+// speaks the app-server protocol but was still spawned per turn — had nowhere to
 // be described, and moving a CLI between lanes meant editing ten places without
 // missing one.
 //
@@ -56,26 +56,31 @@ function isResident(cli) {
   return capabilityOf(cli).lifecycle === 'resident';
 }
 
-// The lane a SESSION may run on, which is not always the lane its CLI is in.
+// The lane a SESSION may run on. This used to be narrower than the CLI's own
+// lane: a codex session routed through a concrete provider materialized a
+// credential-bearing CODEX_HOME per attempt and scrubbed it when the turn ended,
+// so a warm child would have outlived the credentials it was holding, and such a
+// session stayed per-turn (src/codex/proxy-policy.js).
 //
-// A resident child outlives the attempt that spawned it, but the codex provider
-// path materializes a credential-bearing CODEX_HOME per attempt and scrubs it
-// when the turn ends (src/codex/proxy-policy.js: "every concrete provider must
-// be materialized as an attempt-scoped local proxy route"). A codex session
-// routed through a concrete provider therefore stays on the per-turn lane: a
-// warm child would outlive — and keep using — credentials belonging to a
-// finished attempt. Every other resident protocol routes through a host-side
-// proxy whose identity is per-session, so it may stay warm.
+// That is no longer the case. A resident lane now holds a route that outlives the
+// attempt on both provider paths: claude's rides in the ANTHROPIC_* env the host
+// rebuilds every turn (and in a route capability the lane keeps stable while its
+// spawn contract holds — src/chat/provider-attempt-runtime.js), while a codex
+// session owns a session-scoped CODEX_HOME instead of an attempt-scoped one
+// (src/codex/resident-route.js). So a session's provider no longer moves it off
+// the resident lane, and every resident CLI answers true here.
 //
-// Callers that hold the session ask here; without one only the static lane is
-// known, and `isResident` is the answer to that narrower question.
-function isResidentSession(cli, session) {
-  if (!isResident(cli)) return false;
-  if (protocolFamilyOf(cli, 'api') !== 'openai_responses') return true;
-  const providerId = String(session?.provider || '').trim();
-  const subProviderId = String(session?.subagent?.providerId || '').trim();
-  const concrete = id => !!id && id !== '_default_';
-  return !(concrete(providerId) || concrete(subProviderId));
+// What that buys is residency — one child across turns instead of a respawn per
+// turn. What it costs is attribution scope: a child orphaned by a finished
+// attempt of the same spawn contract can still reach the host proxy during a
+// later attempt of that session. It holds only an opaque local capability, never
+// an upstream key, so this widens attribution, not credential exposure.
+//
+// The predicate keeps its session-shaped call sites (each caller has the session
+// in hand anyway) without consulting one: today the answer depends on the CLI
+// alone, and a caller without a session asks `isResident` for that same question.
+function isResidentSession(cli) {
+  return isResident(cli);
 }
 
 function protocolOf(cli) {

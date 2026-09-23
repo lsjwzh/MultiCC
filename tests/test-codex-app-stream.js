@@ -130,6 +130,29 @@ test('a routing-env change replaces the child at a turn boundary and keeps the t
   await stream.closeAndWait('env');
 });
 
+test('a moved CODEX_HOME replaces the child, because the route lives in that home', async (t) => {
+  // This protocol's upstream base_url is not in the env: it is in config.toml
+  // inside CODEX_HOME, and codex reads it once at startup. A resident lane whose
+  // managed route moves therefore swaps the home rather than rewriting it, so the
+  // turn boundary has to see that swap — otherwise the child keeps talking to a
+  // route the host has already retired.
+  const homeA = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-home-a-'));
+  const homeB = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-home-b-'));
+  const fixture = createFixture('home', { CODEX_HOME: homeA });
+  const { stream } = fixture;
+  t.after(() => { stream.close('home'); });
+
+  const sink = collect();
+  await stream.send('home', 'before switch', sink.onEvent);
+  stream.ensure('home', { env: { ...fixture.childEnv, CODEX_HOME: homeB } });
+  await stream.send('home', 'after switch', sink.onEvent);
+
+  assert.deepEqual(fixture.methods(),
+    ['initialize', 'thread/start', 'turn/start', 'initialize', 'thread/resume', 'turn/start'],
+    'a new home means a new config.toml, so the child is replaced and re-attaches to the thread');
+  await stream.closeAndWait('home');
+});
+
 test('cancel stops the child and settles the in-flight turn', async (t) => {
   const fixture = createFixture('cancel', { FAKE_CODEX_HOLD_MS: '30000' });
   const { stream } = fixture;
