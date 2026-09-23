@@ -3,7 +3,7 @@ const path = require('node:path');
 const { normalizeSubagentInput } = require('./subagent');
 function createSessionRecordFactory(deps) {
   const { sharedWorkspace, SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow } = deps;
-async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, subagent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true, workspaceOwnerSessionId = null, workspaceBaseCommit = null, validateOnly = false }) {
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, subagent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = false, workspaceOwnerSessionId = null, workspaceBaseCommit = null, validateOnly = false }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
   if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
@@ -80,7 +80,12 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     effort: sessionEffort || null, // null = follow Claude Code/provider default
     agent: sessionAgent || null, // Claude/OpenCode/Qoder native --agent; unsupported CLIs keep null
     provider: providerId, providerSelection: autoSelection.value, // concrete manual fallback + optional virtual Auto policy
-    autoCommit: autoCommit !== false, // experiment branches explicitly disable automatic merge
+    // Auto-commit+merge is opt-in: a new session starts WITHOUT it, and only an
+    // explicit truthy value (the create UI's switch, a fork that inherits it, or
+    // the session PATCH) turns it on. `!!` matches every other read of this field
+    // (session-dto / session-admin / the profile PATCH), so a record that simply
+    // lacks the key reads as "off" everywhere instead of "on" in some places.
+    autoCommit: !!autoCommit,
     // streaming (流式常驻) is now claude's default mode: keep the claude process
     // alive across turns for faster, context-preserving continuation. Non-claude
     // CLIs ignore this field. Only claude chat sessions default on.
