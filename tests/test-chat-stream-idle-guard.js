@@ -39,7 +39,7 @@ function ensure(name, opts) {
     baseArgs: ['-e', fakeCli, '--'],
     env: { ...process.env },
     idleMs: 30,            // tiny idle window so the timer fires fast in-test
-    idleMaxHoldMs: 150,    // small hard ceiling for the leak-backstop case
+    idleMaxHoldMs: 150,    // former ceiling, now ignored
     ...opts,
   });
 }
@@ -71,16 +71,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     'after background work ends, the process is reclaimed normally');
   stream.close('idle-bg');
 
-  // ── Case 3: hard ceiling → a permanently "active" (leaked) task can't pin
-  //    the process forever; it is reclaimed after idleMaxHoldMs. ──
+  // Case 3: silent background work survives even the former hard ceiling.
   ensure('idle-leak', { isBackgroundActive: () => true }); // never turns false
   await stream.send('idle-leak', 'leak', () => {});
   await sleep(120);
   assert.strictEqual(stream.isAlive('idle-leak'), true,
     'still held before the hard ceiling');
   await sleep(200); // now past idleMaxHoldMs (150) since the hold began
-  assert.strictEqual(stream.isAlive('idle-leak'), false,
-    'the hard ceiling reclaims a permanently-silent (leaked) task');
+  assert.strictEqual(stream.isAlive('idle-leak'), true,
+    'silence cannot authorize killing a background task');
   stream.close('idle-leak');
 
   console.log('chat-stream idle-guard tests passed');

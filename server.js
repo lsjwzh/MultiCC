@@ -1580,7 +1580,7 @@ const cliSwitchRuntime = createCliSwitchRuntime({
   cliStateSummary,
   gitWorktreeSnapshot,
   cwdForSession,
-  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
+  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
   cancelClassify,
   assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   appendMessage: appendChatMessage,
@@ -1613,7 +1613,7 @@ createSessionProfileRoutes({
   providerRouterRuntime,
   // chatStream / providerRoutes are composed further down this file; resolve
   // them lazily or mounting would hit the const TDZ before boot finishes.
-  getChatStream: () => chatStream, getChatState: id => chatSessions.get(id), hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
+  getChatStream: () => chatStream, getChatState: id => chatSessions.get(id), hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
   validProviderId: (...args) => validProviderId(...args),
   asyncHandler,
   appendEvent,
@@ -1704,7 +1704,7 @@ sessionGitRuntime.mountRoutes(app);
 const sessionLifecycleRuntime = createSessionLifecycleRuntime({
   sessions, chatSessions, persistedSessions, directories, invalidSessions,
   sessionPersistence,
-  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasLiveBackgroundTasks(id) === true, reapBackgroundTasks: (id, reason) => backgroundTaskRuntime?.reapSessionShadows(id, { reason }) || 0,
+  getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, reapBackgroundTasks: (id, reason) => backgroundTaskRuntime?.reapSessionShadows(id, { reason }) || 0,
   // sessionWorkHost is composed further down this file; forward lazily past the TDZ.
   getSessionWorkHost: () => sessionWorkHost,
   asyncHandler,
@@ -2082,7 +2082,7 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   recentEvents: dirId => recentEvents(dirId),
   deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
   persistRecords: (source, fn) => sessionPersistence.mutate(source, fn), closeExecution: id => chatStream.closeAndWait(id), resetChatState: id => chatSessions.delete(id),
-  hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
+  hasBackground: id => backgroundTaskRuntime.hasProcessBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
   getWorkspaceAdmission: () => workspaceAdmission,
 });
 taskShellHost.mountRoutes(app);

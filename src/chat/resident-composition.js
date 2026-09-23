@@ -19,7 +19,7 @@ function createResidentPoolComposition(deps) {
     // conversation — so blocking on them would keep the pool full without
     // protecting anything that a respawn could lose.
     blocked: id => {
-      if (backgroundTaskRuntime.hasLiveBackgroundTasks(id)) return 'background_task';
+      if ((backgroundTaskRuntime.hasProcessBackgroundTasks || backgroundTaskRuntime.hasLiveBackgroundTasks)(id)) return 'background_task';
       try { if (getWorkspaceAdmission()?.hasActiveLease?.(id)) return 'workspace_lease'; }
       catch (_) { return 'workspace_lease_unknown'; }
       if (sessionWorkHost?.isRunActive?.(id)) return 'running_task';
