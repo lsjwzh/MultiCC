@@ -116,7 +116,7 @@ async function test(name, fn) {
   await test('public API is narrow and frozen', () => {
     const { runtime } = makeHarness();
     assert.deepStrictEqual(Object.keys(runtime).sort(), [
-      'handleEvent', 'hasLiveBackgroundTasks', 'listActiveBackgroundTasks',
+      'backgroundSilenceMs', 'handleEvent', 'hasLiveBackgroundTasks', 'listActiveBackgroundTasks',
       'markTaskOutputAwaiting', 'reapSessionShadows', 'recordMainToolUseId',
       'stopAll', 'stopSession',
     ]);
@@ -186,6 +186,32 @@ async function test(name, fn) {
     const snapshot = h.runtime.listActiveBackgroundTasks('s1');
     assert.deepStrictEqual(snapshot, [{ id: 'task-bg', task_id: 'task-bg', description: 'long build' }]);
     assert.strictEqual(h.runtime.hasLiveBackgroundTasks('other-session'), false);
+  });
+
+  await test('background silence tracks the quietest gap a tail reports, and never invents one', () => {
+    const h = makeHarness();
+    assert.strictEqual(h.runtime.backgroundSilenceMs('s1'), 0, 'no background work at all is not silence');
+    h.runtime.handleEvent('s1', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'tool-bg', name: 'Bash', input: { run_in_background: true } }],
+    }, { subtype: 'task_started', task_id: 'task-bg', tool_use_id: 'tool-bg', session_id: 'native', description: 'long build' });
+    // A task that has never printed a line is indistinguishable from one that
+    // died mid-line, so it reports unbounded silence rather than a young age.
+    assert.strictEqual(h.runtime.backgroundSilenceMs('s1'), Infinity);
+    h.clock.advance(6000);
+    h.processes[0].stdout.emit('data', 'still building\n');
+    h.clock.advance(2000);
+    assert.strictEqual(h.runtime.backgroundSilenceMs('s1'), 2000, 'the last progress line starts the gap');
+    assert.strictEqual(h.runtime.backgroundSilenceMs('other-session'), 0);
+    // A persistent Monitor runs without a tail shadow: it cannot report progress,
+    // so it must not be read as silent background work either.
+    h.runtime.recordMainToolUseId('s2', 'persistent-mon-tool');
+    h.runtime.handleEvent('s2', {
+      cwd: '/repo',
+      currentToolCalls: [{ id: 'persistent-mon-tool', name: 'Monitor', input: { pattern: 'DONE', persistent: true } }],
+    }, { subtype: 'task_started', task_id: 'mon-task', tool_use_id: 'persistent-mon-tool', session_id: 'native', description: 'persistent progress' });
+    h.clock.advance(600000);
+    assert.strictEqual(h.runtime.backgroundSilenceMs('s2'), 0, 'no shadow means no silence signal');
   });
 
   await test('reapSessionShadows settles orphaned tasks with interrupted ledger + monitor_done, and is idempotent', () => {
