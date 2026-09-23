@@ -193,6 +193,24 @@ test('busy tasks are unchanged and failed deletion stays blocked until cleanup r
   assert.equal((await f.call('delete')).body.deleted, true);
 });
 
+test('a permanent purge refusal rolls back the deleting barrier and names the pinning tasks', async t => {
+  const f = harness(t, { purgeTaskData: async () => {
+    throw Object.assign(new Error('task-linked history must be retained with its task archive'), {
+      code: 'TASK_HISTORY_REFERENCED',
+      tasks: [{ id: 'keep', title: '同壳任务', via: 'messages' }],
+      taskIds: ['keep'],
+    });
+  } });
+  const res = await f.call('delete');
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.error, 'TASK_HISTORY_REFERENCED');
+  assert.deepEqual(res.body.taskIds, ['keep']);
+  assert.deepEqual(res.body.tasks, [{ id: 'keep', title: '同壳任务', via: 'messages' }]);
+  assert.match(res.body.message, /同一对话中的任务：「同壳任务」/);
+  assert.equal(f.board.tasks.old.deleting, undefined, 'barrier rolled back — the card is not wedged');
+  assert.equal((await f.call('post', '/status', { status: 'archived' })).statusCode, 200, 'task stays operable');
+});
+
 test('archive blocks shell controls and direct admission; purge clears cursor and links without affecting siblings', async t => {
   const tasks = new Map();
   const f = fixture(t, { getTask: id => tasks.get(id) });
