@@ -415,6 +415,10 @@ function createProviderRouterPort(options = {}) {
       : null;
     const authorizeProxyRequest = typeof mountOptions.authorizeProxyRequest === 'function'
       ? mountOptions.authorizeProxyRequest : null;
+    // Host-owned diagnostic port for attempt rejections. The 409 itself is
+    // unchanged; this is what makes it visible in the log with an identity.
+    const onRejected = typeof mountOptions.onRejected === 'function'
+      ? mountOptions.onRejected : null;
     if (mountOptions.protocols != null && !Array.isArray(mountOptions.protocols)) {
       throw new ProviderRouterPortError('protocols must be an array', 'PROXY_PROTOCOL_INVALID');
     }
@@ -462,10 +466,11 @@ function createProviderRouterPort(options = {}) {
       const admission = authorizeProxyRequest ? createProviderProxyAdmission({
         protocol: 'claude', app, getProvider, authorizeProxyRequest,
         onActivity: mountOptions.onActivity, onUsageEvent: common.onUsageEvent, onOutcome: mountOptions.onProxyOutcome,
+        ...(onRejected ? { onRejected } : {}),
       }) : null;
       if (authorizeProxyRequest) app.use(
         `/${String(mountOptions.claudeProxyPath || '/claude-proxy').replace(/^\/+|\/+$/g, '')}`,
-        createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest }),
+        createProviderProxyGuard({ protocol: 'claude', authorizeProxyRequest, ...(onRejected ? { onRejected } : {}) }),
       );
       mounted.claude = requireMethod(backend, 'mountClaudeProxy', mode === 'cpr' ? 'router' : 'legacy')(
         admission ? admission.app : app,
@@ -476,10 +481,11 @@ function createProviderRouterPort(options = {}) {
       const admission = authorizeProxyRequest ? createProviderProxyAdmission({
         protocol: 'codex', app, getProvider, authorizeProxyRequest,
         onActivity: mountOptions.onActivity, onUsageEvent: common.onUsageEvent, onOutcome: mountOptions.onProxyOutcome,
+        ...(onRejected ? { onRejected } : {}),
       }) : null;
       if (authorizeProxyRequest) app.use(
         `/${String(mountOptions.codexProxyPath || '/codex-proxy').replace(/^\/+|\/+$/g, '')}`,
-        createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest }),
+        createProviderProxyGuard({ protocol: 'codex', authorizeProxyRequest, ...(onRejected ? { onRejected } : {}) }),
       );
       // MultiCC's cross-upstream history correction runs INSIDE the router, at
       // the dial point, instead of before the proxy: this is where the upstream

@@ -276,6 +276,22 @@ function createBackgroundTaskRuntime(deps = {}) {
     return false;
   }
 
+  // Longest silence among this session's live background shadows. Any tail line
+  // counts as activity and a shadow that never printed reports Infinity, so a
+  // task that is still reporting progress can never be mistaken for a hung one.
+  // The workspace escalation reads this: a lease pinned by background work is
+  // only escalated once that work has stopped saying anything at all.
+  function backgroundSilenceMs(sessionName, at = now()) {
+    const sessionShadows = shadows.get(sessionName);
+    if (!sessionShadows || sessionShadows.size === 0) return 0;
+    let longest = 0;
+    for (const taskId of sessionShadows.keys()) {
+      if (!isBackgroundShadow(sessionName, taskId)) continue;
+      longest = Math.max(longest, at - sessionShadows.get(taskId).lastProgressAt);
+    }
+    return longest;
+  }
+
   // Authoritative live-task snapshot for a (re)connecting client: the current
   // set of background tasks the server still believes are running. The frontend
   // reconciles its danmaku against this to settle any spinner whose terminal
@@ -582,6 +598,7 @@ function createBackgroundTaskRuntime(deps = {}) {
     recordMainToolUseId,
     markTaskOutputAwaiting,
     hasLiveBackgroundTasks,
+    backgroundSilenceMs,
     listActiveBackgroundTasks,
     reapSessionShadows,
     stopSession,

@@ -218,6 +218,55 @@ test('final admission authorizes the Provider decoded from a Claude sub route', 
   assert.equal(decisions[0].providerId, 'provider-unauthorized');
 });
 
+test('a guard rejection is reported with the route the caller asked for, and a failing reporter never changes it', () => {
+  const rejected = [];
+  const guard = createProviderProxyGuard({
+    protocol: 'codex',
+    authorizeProxyRequest: () => ({ ok: false, code: 'attempt_retired' }),
+    // The reporter is a diagnostic: it throws on the second call to prove the
+    // 409 is owned by the guard and not by the observer.
+    onRejected: event => {
+      rejected.push(event);
+      if (rejected.length > 1) throw new Error('reporter exploded');
+    },
+  });
+  const first = responseHarness();
+  guard({ method: 'POST', url: '/provider-a/pr1.session.token/main/responses' }, first.res, () => {});
+  assert.deepEqual(rejected, [{
+    protocol: 'codex', stage: 'http_guard', method: 'POST',
+    providerId: 'provider-a', sessionId: 'pr1.session.token', role: 'main',
+    reason: 'attempt_retired',
+  }]);
+  assert.equal(first.state.status, 409);
+
+  guard({ method: 'POST', url: '/provider-a/pr1.session.token/main/responses' }, first.res, () => {});
+  assert.equal(rejected.length, 2);
+  assert.equal(first.state.status, 409, 'a reporter that throws cannot change the rejection');
+});
+
+test('a replay reaching the final admission is reported against the identity it requested', async () => {
+  let mounted;
+  const rejected = [];
+  const app = { use(_pathname, handler) { mounted = handler; } };
+  const admission = createProviderProxyAdmission({
+    protocol: 'claude', app,
+    authorizeProxyRequest: () => ({ ok: false, code: 'attempt_retired' }),
+    getProvider: () => { throw new Error('a rejected route must never reach the provider lookup'); },
+    onRejected: event => rejected.push(event),
+  });
+  admission.app.use('/claude-proxy', async () => admission.getProvider('claude', 'provider-b'));
+  const { state, res } = responseHarness();
+  await mounted({ method: 'POST', url: '/provider-a/pr1.session.token/v1/messages' }, res, () => {});
+  assert.equal(state.status, 409);
+  // The session came from the context, the provider from the lookup argument —
+  // the caller's own request, not whatever this session resolved last.
+  assert.deepEqual(rejected, [{
+    protocol: 'claude', stage: 'getProvider',
+    providerId: 'provider-b', sessionId: 'pr1.session.token', role: 'sub',
+    reason: 'attempt_retired',
+  }]);
+});
+
 test('an exception after proxy request activity always closes the producer exactly once', async () => {
   let mounted;
   const activities = [];
