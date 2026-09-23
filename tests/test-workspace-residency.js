@@ -75,3 +75,36 @@ test('dead backend entries do not spend the resident process budget', () => {
   live.get('a').alive = false;
   assert.deepEqual(router.residents(), []);
 });
+
+test('a failed close is retried after the old process exits, rather than poisoning admission', async () => {
+  const { router, workspace, lane, live } = fixture();
+  let closing = true, joins = 0;
+  lane.isClosing = () => closing;
+  lane.closeAndWait = async () => {
+    joins += 1;
+    live.delete('a');
+    if (closing) throw Object.assign(new Error('deadline'), { code: 'CLOSE_TIMEOUT' });
+    return { closed: true };
+  };
+  await assert.rejects(router.close('a'), { code: 'CLOSE_TIMEOUT' });
+  router.residents(); // Pool observation must not lose the backend owning the exit barrier.
+  await assert.rejects(router.claimWorkspace('b', workspace), { code: 'workspace_busy' });
+  closing = false;
+  await router.claimWorkspace('b', workspace);
+  assert.equal(joins, 2);
+});
+
+test('a same-session claim retries a failed lifecycle close before sending again', async () => {
+  const { router, workspace, lane, live } = fixture();
+  let fail = true;
+  lane.closeAndWait = async () => {
+    live.delete('a');
+    if (fail) throw new Error('deadline');
+    return { closed: true };
+  };
+  await assert.rejects(router.close('a'), /deadline/);
+  fail = false;
+  await router.claimWorkspace('a', workspace);
+  router.ensure('a', { cwd: workspace.path });
+  await router.send('a', 'next');
+});

@@ -112,6 +112,22 @@ const running = pid => { try { process.kill(pid, 0); return true; } catch (_) { 
   assert.strictEqual(disposed, 1, 'closing an already-closed session does not re-dispose');
   assert.doesNotThrow(() => stream.close('never-existed'), 'closing an unknown session is a no-op');
 
+  // A deadline belongs to its caller, not to the retained child. Re-ensuring
+  // this session must still join that child before it accepts another prompt.
+  ensure('close-timeout', "process.on('SIGTERM', () => {});" + echoCli);
+  await stream.send('close-timeout', 'first', () => {});
+  const timedOutPid = stream.status('close-timeout').pid;
+  await assert.rejects(stream.closeAndWait('close-timeout', { timeoutMs: 10 }), { code: 'CHAT_STREAM_CLOSE_TIMEOUT' });
+  assert.strictEqual(running(timedOutPid), true);
+  ensure('close-timeout', echoCli);
+  const replacement = stream.send('close-timeout', 'second', () => {});
+  await sleep(40);
+  assert.strictEqual(stream.status('close-timeout').pid, null, 'no second writer while the first is closing');
+  await replacement;
+  assert.strictEqual(running(timedOutPid), false);
+  assert.notStrictEqual(stream.status('close-timeout').pid, timedOutPid);
+  await stream.closeAndWait('close-timeout');
+
   console.log('chat-stream close(): in-flight settle + SIGKILL escalation + respawn OK');
   process.exit(0);
 })().catch(err => { console.error(err); process.exit(1); });

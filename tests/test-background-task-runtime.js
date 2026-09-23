@@ -116,7 +116,7 @@ async function test(name, fn) {
   await test('public API is narrow and frozen', () => {
     const { runtime } = makeHarness();
     assert.deepStrictEqual(Object.keys(runtime).sort(), [
-      'backgroundSilenceMs', 'handleEvent', 'hasLiveBackgroundTasks', 'listActiveBackgroundTasks',
+      'backgroundSilenceMs', 'handleEvent', 'hasLiveBackgroundTasks', 'hasProcessBackgroundTasks', 'listActiveBackgroundTasks',
       'markTaskOutputAwaiting', 'reapSessionShadows', 'recordMainToolUseId',
       'stopAll', 'stopSession',
     ]);
@@ -305,7 +305,7 @@ async function test(name, fn) {
     assert.strictEqual(h.injections.length, 0);
   });
 
-  await test('non-persistent Monitor keeps the shadow fallback without injecting a silent nudge', () => {
+  await test('Monitor notifications use hook admission and never pin a writer shadow', () => {
     const h = makeHarness();
     h.files.set('/out/monitor', 'DONE\n');
     h.runtime.recordMainToolUseId('s1', 'mon-tool');
@@ -317,7 +317,8 @@ async function test(name, fn) {
       session_id: 'native', description: '1688 image extraction pass progress',
     });
     assert.strictEqual(started.kind, 'monitor');
-    assert.strictEqual(h.processes.length, 1, 'non-persistent Monitor still gets a tail shadow fallback');
+    assert.strictEqual(h.processes.length, 0, 'Monitor lifetime is separate from writer shadows');
+    assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), true);
     h.broadcasts.length = 0;
     h.observations.length = 0;
     const result = h.runtime.handleEvent('s1', {}, {
@@ -325,18 +326,21 @@ async function test(name, fn) {
       output_file: '/out/monitor', status: 'completed', summary: 'stream ended',
     });
     assert.strictEqual(result.decision, 'monitor');
-    assert.strictEqual(h.processes[0].killed, true, 'completion stops the fallback shadow');
+    assert.strictEqual(h.runtime.listActiveBackgroundTasks('s1').length, 0, 'completion retires the watch');
     const done = h.broadcasts.find(item => item.event.type === 'monitor_done');
     assert.ok(done, 'Monitor completion still closes the UI spinner');
     assert.strictEqual(done.event.task_id, 'mon-task');
     assert.strictEqual(done.event.output, 'DONE\n');
     assert.strictEqual(h.observations[0].status, 'completed');
     h.clock.advance(100);
-    assert.strictEqual(h.notes.length, 0);
-    assert.strictEqual(h.injections.length, 0);
+    assert.strictEqual(h.notes.length, 1);
+    assert.strictEqual(h.injections.length, 1);
+    assert.match(h.injections[0].text, /DONE/);
+    h.clock.advance(5000);
+    assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), false);
   });
 
-  await test('persistent Monitor behaves like an already-consumed wait and starts no shadow', () => {
+  await test('persistent Monitor retains the process and its hook owns notification delivery', () => {
     const h = makeHarness();
     h.files.set('/out/persistent-monitor', 'DONE\n');
     h.runtime.recordMainToolUseId('s1', 'persistent-mon-tool');
@@ -362,8 +366,50 @@ async function test(name, fn) {
     assert.strictEqual(done.event.output, 'DONE\n');
     assert.strictEqual(h.observations[0].status, 'completed');
     h.clock.advance(100);
-    assert.strictEqual(h.notes.length, 0);
-    assert.strictEqual(h.injections.length, 0);
+    assert.strictEqual(h.notes.length, 1);
+    assert.strictEqual(h.injections.length, 1);
+    assert.match(h.injections[0].text, /DONE/);
+    h.clock.advance(5000);
+    assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), false);
+  });
+
+  await test('Monitor hooks deduplicate deliveries, preserve distinct events and respect session ownership', () => {
+    const h = makeHarness();
+    const state = { cwd: '/repo', currentToolCalls: [{ id: 'tool', name: 'Monitor', input: { persistent: true } }] };
+    h.runtime.recordMainToolUseId('s1', 'tool');
+    h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'watch', tool_use_id: 'tool', session_id: 'native' });
+    h.clock.advance(25 * 60 * 60 * 1000);
+    assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), true, 'even day-long silence cannot kill a live Monitor');
+    const event = { subtype: 'monitor_prompt', task_id: 'watch', event_id: 'event-1', output: 'first' };
+    assert.strictEqual(h.runtime.handleEvent('s2', {}, event).handled, false);
+    assert.strictEqual(h.runtime.handleEvent('s1', {}, event).decision, 'inject');
+    assert.strictEqual(h.runtime.handleEvent('s1', {}, event).decision, 'duplicate');
+    h.runtime.handleEvent('s1', {}, { ...event, event_id: 'event-2', output: 'second' });
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1);
+    assert.match(h.injections[0].text, /first[\s\S]*second/);
+    h.files.set('/out/terminal', 'final');
+    const completion = { subtype: 'task_notification', task_id: 'watch', status: 'completed', output_file: '/out/terminal' };
+    h.runtime.handleEvent('s1', {}, completion);
+    h.runtime.handleEvent('s1', {}, completion);
+    h.runtime.handleEvent('s1', {}, { ...event, event_id: 'terminal', status: 'completed' });
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 2, 'terminal bookend and native hook produce only one delivery');
+    assert.match(h.injections[1].text, /final/);
+    assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), false);
+    h.runtime.stopSession('s1');
+    assert.strictEqual(h.runtime.handleEvent('s1', {}, event).handled, false);
+  });
+
+  await test('a process exit retires and reports active Monitor watches without leaking tails', () => {
+    const h = makeHarness();
+    h.runtime.handleEvent('s1', { currentToolCalls: [{ id: 'tool', name: 'Monitor', input: { persistent: true } }] },
+      { subtype: 'task_started', task_id: 'watch', tool_use_id: 'tool', session_id: 'native' });
+    assert.strictEqual(h.runtime.reapSessionShadows('s1'), 1);
+    assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), false);
+    assert.strictEqual(h.runtime.reapSessionShadows('s1'), 0);
+    assert.strictEqual(h.processes.length, 0);
+    assert.strictEqual(h.observations.at(-1).status, 'interrupted');
   });
 
   await test('unconsumed completions coalesce once with output tails and full origin metadata', () => {

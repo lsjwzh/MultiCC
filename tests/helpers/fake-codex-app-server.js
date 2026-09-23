@@ -16,6 +16,7 @@ const SCRIPT = `#!/usr/bin/env node
 const fs=require('node:fs'),readline=require('node:readline');
 const log=process.env.FAKE_CODEX_LOG;
 let turn=0;
+if(process.env.FAKE_CODEX_IGNORE_TERM)process.on('SIGTERM',()=>{});
 readline.createInterface({input:process.stdin}).on('line',line=>{
   const m=JSON.parse(line);fs.appendFileSync(log,line+'\\n');
   const out=o=>process.stdout.write(JSON.stringify(o)+'\\n');

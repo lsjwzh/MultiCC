@@ -139,7 +139,7 @@ test('a stalled SDK interrupt falls back to closing the captured child before re
 test('SDK idle cleanup holds live background work, then closes and resumes the same history', { timeout: 90000 }, async t => {
   const f = await runtimeFixture(t);
   let background = true;
-  f.cfg = { ...f.cfg, idleMs: 25, isBackgroundActive: () => background };
+  f.cfg = { ...f.cfg, idleMs: 25, idleMaxHoldMs: 30, isBackgroundActive: () => background };
   f.runtime.ensure('sdk', f.cfg);
   await f.send('IDLE_HISTORY_MARKER');
   await new Promise(resolve => setTimeout(resolve, 90));

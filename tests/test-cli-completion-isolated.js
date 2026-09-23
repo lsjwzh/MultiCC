@@ -53,7 +53,14 @@ function reply() {
 }
 if (cli === 'claude' && process.argv.includes('--input-format')) {
   let pending = '';
-  process.stdin.on('data', data => { pending += data; if (pending.includes('\\n')) { pending = ''; reply(); } });
+  process.stdin.on('data', data => {
+    pending += data;
+    while (pending.includes('\\n')) {
+      const i = pending.indexOf('\\n'), message = JSON.parse(pending.slice(0, i)); pending = pending.slice(i + 1);
+      if (message.type === 'control_request') emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: {} } });
+      else if (message.type === 'user') reply();
+    }
+  });
 } else reply();
 `, { mode: 0o755 });
 }
