@@ -658,6 +658,24 @@ test('a dispatch claim nobody ever admitted reads idle instead of 执行中 fore
   assert.equal(dto.runState, 'running');
 });
 
+test('attribution-only taskState never counts as proof of an admitted turn', () => {
+  // 归因链路（annotateChatTurn / recordTaskBoardGoal）也会往空白记录里写 taskState：
+  // goal/phase/taskId/lastSummaryAt 一应俱全，执行侧字段却全是默认值 —— 那是一份
+  // 「标注」，不是一次调度。只有执行侧真正写下的字段才算受理物证。
+  const attribution = { goal: '调查 400', taskId: 'tsk-x', phase: 'done', lastSummaryAt: 1,
+    lastTurnEndedAt: null, classifyState: null, classifyUpdatedAt: null, startedAt: null,
+    endedAt: null, classifyHistory: [] };
+  for (const record of [null, { id: 'no-task-state' }, { taskState: 'garbage' }, { taskState: attribution }]) {
+    assert.equal(core.sessionHasTurn(record), false, `${JSON.stringify(record)} 不是受理物证`);
+  }
+  for (const evidence of [{ queueState: 'running' }, { queueState: 'idle' }, { classifyState: 'D' },
+    { classifyUpdatedAt: 1 }, { lastTurnEndedAt: 1 }, { startedAt: 1 }, { endedAt: 1 },
+    { classifyHistory: [{ at: 1, state: 'D' }] }]) {
+    assert.equal(core.sessionHasTurn({ taskState: { ...attribution, ...evidence } }), true,
+      `${JSON.stringify(evidence)} 应当算受理过`);
+  }
+});
+
 test('routing retries append attempts on one task and replayed operations stay idempotent', () => {
   const task = {
     id: 'tsk-stable', title: 'T', status: 'active', areas: [], refs: [],

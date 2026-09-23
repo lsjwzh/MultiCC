@@ -111,13 +111,11 @@ function mountAirRoutes(app, deps) {
       const dirId = core.taskDirId(board, task) || deps.records.get(sessionId)?.dirId;
       noteWorktree(dirId, task.worktreePath);
     }
-    // 与任务板同一条自愈规则（见 task-board/view.js 的 deadDispatchClaim）：派发时
-    // 写下的乐观 runState，如果名下会话从来没有过 taskState，就证明这一轮从没被受理
-    // 过 —— 不把这类卡片继续报成「执行中」（否则它会挂在控制台上直到天荒地老）。
-    const hasTurnState = sessionId => {
-      const record = deps.records.get(sessionId);
-      return !!(record && record.taskState);
-    };
+    // 与任务板同一条自愈规则（见 task-board/view.js 的 deadDispatchClaim /
+    // sessionHasTurn）：派发时写下的乐观 runState，如果名下会话拿不出受理物证，
+    // 就证明这一轮从没被受理过 —— 不把这类卡片继续报成「执行中」（否则它会挂在
+    // 控制台上直到天荒地老）。
+    const hasTurnState = sessionId => core.sessionHasTurn(deps.records.get(sessionId));
     const projectNow = Date.now();
     const admission = deps.admission.snapshot();
     const tasks = boardTasks().map(t => {
