@@ -215,6 +215,9 @@ function createWorkspaceAdmission(deps) {
     permits.add(permit); active.set(descriptor.sessionId, permit);
     let materialized = false;
     try {
+      // The execution lease is ours now; retire another session's parked child
+      // on this checkout before restoring or delivering to its next writer.
+      await deps.claimPersistent?.(descriptor.sessionId, workspace);
       await materialize(descriptor.sessionId, lease);
       materialized = true;
       try { permit.startCode = await captureCodeRevision(workspace.path); }
@@ -243,7 +246,7 @@ function createWorkspaceAdmission(deps) {
       // validated and marked resident. Do not mislabel those failures as a Git
       // materialization failure or permanently pin an otherwise healthy tree.
       const reason = materialized ? 'prelaunch_failed' : 'materialization_failed';
-      if (!materialized && fs.existsSync(workspace.path)) registry.retain(lease, reason);
+      if (!materialized && error.code !== 'workspace_busy' && fs.existsSync(workspace.path)) registry.retain(lease, reason);
       registry.release(lease, { stopped: true, reason });
       active.delete(descriptor.sessionId); throw error;
     }
@@ -305,10 +308,16 @@ function createWorkspaceAdmission(deps) {
     permit.draining = true;
     const release = (async () => {
       try {
-        // A warm native process also owns its directory. Close and confirm it
-        // before releasing this run; background work prevents this path.
-        const stopped = await deps.closePersistent?.(id);
-        if (closed || stopped?.closed !== true || active.get(id) !== permit || isLive(id)) return;
+        // Parked residency cannot accept new sends without the next execution
+        // lease. Unknown/per-turn backends retain the verified-close fallback.
+        const workspace = registry.workspace(permit.lease.workspaceId);
+        const residency = deps.parkPersistent?.(id, workspace);
+        // A busy/queued/recycling resident refused to park: retain its lease,
+        // never turn that refusal into a destructive close fallback.
+        if (residency && residency.parked !== true) return;
+        const parked = residency?.parked === true;
+        const stopped = parked ? null : await deps.closePersistent?.(id);
+        if (closed || (!parked && stopped?.closed !== true) || active.get(id) !== permit || isLive(id)) return;
         if (permit.evidenceBound) {
           try {
             const code = await captureCodeRevision(permit.lease.workspaceId && registry.workspace(permit.lease.workspaceId)?.path);
@@ -316,6 +325,7 @@ function createWorkspaceAdmission(deps) {
               leaseId: permit.lease.id, generation: permit.lease.generation, code });
           } catch (error) { deps.log('writer_barrier_not_recorded', { sessionId: id, code: error.code || error.message }); }
         }
+        if (closed || active.get(id) !== permit || isLive(id)) return;
         registry.release(permit.lease, { stopped: true, reason: permit.terminal.status || 'stopped' });
         active.delete(id);
       } catch (error) { deps.log('workspace_release_retained', { sessionId: id, code: error.code }); }
@@ -539,6 +549,7 @@ function createWorkspaceAdmission(deps) {
     let stopped = false;
     try {
       await materialize(sessionId, lease);
+      await deps.claimPersistent?.(sessionId, workspace, { exclusive: true });
       const closedPersistent = await deps.closePersistent?.(sessionId);
       if (closedPersistent?.closed !== true || siblingLive()) throw failure('workspace_busy');
       stopped = true;

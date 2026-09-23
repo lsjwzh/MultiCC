@@ -54,6 +54,32 @@ function treeText(directory) {
 
 test.after(restoreEnvironment);
 
+test('official follow-main subagent validates and materializes through the host relay', () => {
+  const { normalizeSubagentInput } = require('../src/session/subagent');
+  const { resolveSubagent } = require('../public/chat-ai-config');
+  const official = providers.createProvider({ appType: 'codex', name: 'Follow main official' });
+  const validProviderId = (_cli, id) => ({ ok: !!providers.getProvider('codex', id), value: id });
+  for (const cli of ['codex', 'codex-exp']) {
+    const picked = resolveSubagent({ cli, providerId: '', primaryProviderId: official.id, model: 'gpt-child' });
+    const checked = normalizeSubagentInput({ cli, provider: official.id, subagent: picked, validProviderId, providers });
+    assert.equal(checked.ok, true);
+    assert.deepEqual(checked.value, { providerId: official.id, model: 'gpt-child' });
+    const { env } = providers.buildChildEnv({}, { cli, provider: official.id });
+    try {
+      assert.equal(providers.applyCodexProxyConfig(env, { providerId: official.id,
+        sessionId: 'pr1.follow.fixture', subagent: checked.value, port: 3000 }), true);
+      const config = treeText(env.CODEX_HOME);
+      assert.ok(config.includes(`/codex-proxy/${official.id}/pr1.follow.fixture/sub`));
+      assert.match(config, /model\s*=\s*"gpt-child"/);
+      assert.equal(fs.existsSync(path.join(env.CODEX_HOME, 'auth.json')), false);
+    } finally { providers.releaseCodexProxyConfig(env); }
+    assert.equal(normalizeSubagentInput({ cli, provider: official.id, subagent: null, validProviderId, providers }).value, null);
+  }
+  const invalid = providers.createProvider({ appType: 'codex', name: 'No endpoint', settingsConfig: { auth: {}, config: '' } });
+  assert.equal(normalizeSubagentInput({ cli: 'codex', provider: official.id,
+    subagent: { providerId: invalid.id, model: 'anything' }, validProviderId, providers }).ok, false);
+});
+
 test('Codex proxy requirement matrix requires every managed provider, including Official OAuth', () => {
   const customRequired = codexProxyConfigRequired({
     providerId: 'custom-main', officialOAuth: false,

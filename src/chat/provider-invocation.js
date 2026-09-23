@@ -24,12 +24,12 @@ function protocolFor(cli, summary) {
 // --agent argv, so the argv and SDK options belong here. The codex app-server
 // reads its route from CODEX_HOME and takes model/effort per turn (turn/start,
 // see the adapter's turnOptions), so its provider binding alone is the contract.
-function spawnKeyFor({ cli, providerId, protocol, providerRevision, subagentProviderId, invocation }) {
-  const contract = [providerId, protocol, providerRevision, clean(subagentProviderId)];
+function spawnKeyFor({ cli, providerId, protocol, providerRevision, subagent, invocation }) {
+  const contract = [providerId, protocol, providerRevision, subagent];
   if (protocolFamilyOf(cli, 'api') !== 'openai_responses') {
     contract.push(
-      invocation && (invocation.streamArgs || invocation.args) || null,
-      invocation && invocation.sdkOptions || null,
+      invocation && (invocation.sdkOptions || invocation.streamArgs || invocation.args) || null,
+      invocation && invocation.settings || null,
     );
   }
   return createHash('sha256').update(JSON.stringify(contract)).digest('base64url');
@@ -146,8 +146,15 @@ function createProviderInvocationFactory(options = {}) {
       reasonCode: input.reasonCode,
       continuation: input.continuation === true,
       spawnKey: spawnKeyFor({
-        cli: binding.cli, providerId, protocol, providerRevision,
-        subagentProviderId: session.subagent && session.subagent.providerId,
+        cli: binding.cli, providerId, protocol,
+        providerRevision: protocolFamilyOf(binding.cli, 'api') === 'openai_responses'
+          ? createProviderRevision({ cli: binding.cli, providerId, protocol, model: '_spawn_', summary }) : providerRevision,
+        subagent: session.subagent ? {
+          providerId: clean(session.subagent.providerId), model: clean(session.subagent.model),
+          revision: createProviderRevision({ cli: binding.cli, providerId: session.subagent.providerId,
+            protocol, model: session.subagent.model || '_default_',
+            summary: router.getProviderSummary(undefined, session.subagent.providerId) }),
+        } : null,
         invocation,
       }),
     });

@@ -1,7 +1,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
-const { releaseResidentRoute } = require('../codex/resident-route');
+const { releaseResidentRoute, retainResidentRoute } = require('../codex/resident-route');
 
 // ── Resident codex app-server process per chat session ──
 //
@@ -68,6 +68,7 @@ function routeFingerprint(env) {
 }
 
 function spawnProc(name, s) {
+  s.beforeSpawn?.({ sessionId: s.threadId });
   const args = s.threadId ? [...s.baseArgs, '--thread-id', s.threadId] : [...s.baseArgs];
   const proc = spawn(s.cmd, args, {
     cwd: s.cwd,
@@ -75,6 +76,8 @@ function spawnProc(name, s) {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   s.proc = proc;
+  const releaseHome = retainResidentRoute(s.env?.CODEX_HOME);
+  proc.once('close', releaseHome);
   s.spawnedFingerprint = routeFingerprint(s.env);
   s.lineBuf = '';
   s.stderrTail = '';
@@ -286,6 +289,7 @@ function ensure(name, cfg) {
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       onExit: cfg.onExit || null,
       onDispose: cfg.onDispose || null,
+      beforeSpawn: cfg.beforeSpawn || null,
       proc: null, started: !!cfg.sessionId, busy: false,
       queue: [], current: null, lineBuf: '', stderrTail: '',
       idleTimer: null, jsonlParseErrors: 0,
@@ -297,6 +301,7 @@ function ensure(name, cfg) {
     if (cfg.env !== undefined) s.env = cfg.env;
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
+    if (cfg.beforeSpawn !== undefined) s.beforeSpawn = cfg.beforeSpawn;
     if (cfg.sessionId) s.threadId = cfg.sessionId;
   }
   return s;
@@ -377,10 +382,8 @@ function close(name) {
   }
   try { s.onDispose?.(); } catch (_) {}
   sessions.delete(name);
-  // The child that held this session's private Codex home is gone, so its route
-  // goes with it: the next turn re-materializes one before it spawns, and a home
-  // nobody is reading has no business staying on disk. Recycle deliberately does
-  // NOT come through here — it must respawn onto the same home it was spawned on.
+  // Retire the session route now; its directory stays pinned until proc.close.
+  // Recycle keeps the session route so the next child can reuse the same home.
   releaseResidentRoute(name);
 }
 

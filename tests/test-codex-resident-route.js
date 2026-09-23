@@ -99,14 +99,12 @@ test('a resident codex turn holds one home across turns and routes on it', () =>
 });
 
 test('a moved capability retires the old home so the child cannot keep a dead route', () => {
-  const timers = [];
   const providers = createPort();
-  const routes = createCodexResidentRoutes({
-    providers, retireMs: 30_000, setTimer: (fn) => { timers.push(fn); return { unref() {} }; },
-  });
+  const routes = createCodexResidentRoutes({ providers });
 
   const warm = childEnv();
   routes.prepare(warm, codexTurn());
+  const processClosed = routes.retain(warm.CODEX_HOME);
   const moved = childEnv();
   routes.prepare(moved, codexTurn({ sessionId: 'pr1.session.rotated' }));
 
@@ -115,7 +113,8 @@ test('a moved capability retires the old home so the child cannot keep a dead ro
   assert.deepEqual(providers.calls.released, [], 'the previous child is still alive until its turn boundary');
   assert.deepEqual(routes.stats(), { live: 1, retired: 1 });
 
-  timers.forEach((fn) => fn());
+  processClosed();
+  processClosed(); // process error + close cannot double-release
   assert.deepEqual(providers.calls.released, [warm.CODEX_HOME],
     'the replaced home is released once the respawned child has had its boundary');
   assert.deepEqual(routes.stats(), { live: 1, retired: 0 });
@@ -200,26 +199,21 @@ test('releasing a session drops its home and lets the next turn materialize a fr
   assert.equal(providers.calls.codex.length, 2);
 });
 
-test('an idle session gives its home back, and a session taking turns keeps it', () => {
+test('other sessions and elapsed time cannot reclaim a running child home', t => {
   const providers = createPort();
-  let clock = 1_000_000;
-  const routes = createCodexResidentRoutes({
-    providers, idleMs: 60_000, now: () => clock, setTimer: () => ({ unref() {} }),
-  });
-
-  routes.prepare(childEnv(), codexTurn({ logicalSessionId: 'session-idle' }));
-  routes.prepare(childEnv(), codexTurn({ logicalSessionId: 'session-warm' }));
-
-  clock += 30_000;
-  routes.prepare(childEnv(), codexTurn({ logicalSessionId: 'session-warm' }));
-  clock += 40_000; // idle is now 70s stale, warm 40s
-  assert.equal(routes.sweepIdle(), 1);
-  assert.equal(providers.calls.released.length, 1);
+  const routes = createCodexResidentRoutes({ providers });
+  const first = childEnv();
+  routes.prepare(first, codexTurn());
+  const processClosed = routes.retain(first.CODEX_HOME);
+  const later = Date.now() + 24 * 60 * 60_000;
+  t.mock.method(Date, 'now', () => later);
+  routes.prepare(childEnv(), codexTurn({ logicalSessionId: 'other' }));
+  assert.equal(fs.existsSync(first.CODEX_HOME), true);
+  routes.release('session-1');
+  assert.equal(fs.existsSync(first.CODEX_HOME), true, 'close request is not proof of child exit');
+  processClosed();
+  assert.equal(fs.existsSync(first.CODEX_HOME), false);
   assert.deepEqual(routes.stats(), { live: 1, retired: 0 });
-
-  clock += 60_000;
-  assert.equal(routes.sweepIdle(), 1, 'the warm session is reclaimed once it stops taking turns');
-  assert.deepEqual(routes.stats(), { live: 0, retired: 0 });
 });
 
 test('a teardown path that never ran a resident codex turn is inert', () => {

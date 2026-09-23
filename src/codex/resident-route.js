@@ -21,29 +21,26 @@ const { assertCodexProxyConfigApplied, codexProxyConfigRequired } = require('./p
 // capability, this module replaces the home, and CODEX_HOME changes — which is
 // what the app-server lane's routing fingerprint watches for, so the child is
 // recycled instead of hot-swapping a route that codex only reads at startup.
-const RETIRED_HOME_GRACE_MS = 30_000;
-// A warm child that has not taken a turn for this long gives up its private home.
-const IDLE_HOME_MS = 30 * 60_000;
 
 function clean(value) {
   return value == null ? '' : String(value).trim();
 }
 
-function createCodexResidentRoutes({
-  providers, logger = console, now = Date.now,
-  retireMs = RETIRED_HOME_GRACE_MS, idleMs = IDLE_HOME_MS, setTimer = setTimeout,
-} = {}) {
+function createCodexResidentRoutes({ providers, logger = console } = {}) {
   if (!providers || typeof providers.applyCodexProxyConfig !== 'function'
       || typeof providers.releaseCodexProxyConfig !== 'function'
       || typeof providers.applyClaudeProxyEnv !== 'function') {
     throw new TypeError('[resident-route] a provider port is required');
   }
-  const homes = new Map();      // logicalSessionId -> { capability, holder, lastUsedAt }
-  const retired = new Set();    // holders kept past the route that owned them
+  const homes = new Map();      // logicalSessionId -> current route
+  const entries = new Map();    // home path -> current or process-pinned route
+  const retired = new Set();
 
-  function releaseHolder(holder) {
-    retired.delete(holder);
-    try { return providers.releaseCodexProxyConfig(holder); } catch (error) {
+  function releaseHolder(entry) {
+    if (!entry.retired || entry.readers) return false;
+    retired.delete(entry);
+    entries.delete(entry.holder.CODEX_HOME);
+    try { return providers.releaseCodexProxyConfig(entry.holder); } catch (error) {
       // Same fail-open as the per-turn path: an unscrbubbed home is an orphan
       // attempt-home's own sweep will collect, never a reason to fail a turn.
       logger.warn('[multicc/codex-resident] failed to scrub a private Codex home; orphan retained', {
@@ -53,33 +50,31 @@ function createCodexResidentRoutes({
     }
   }
 
-  // The child spawned on the replaced route is still alive until the lane
-  // recycles it at the next turn boundary, and it still has that home open, so
-  // the directory stays for a grace period. attempt-home's orphan sweep is the
-  // backstop for a crash in between.
+  // Wall-clock age says nothing about a running turn. A retired home remains
+  // readable until every child pinned to that exact path has actually closed.
   function retire(entry) {
-    retired.add(entry.holder);
-    const timer = setTimer(() => releaseHolder(entry.holder), retireMs);
-    if (timer && typeof timer.unref === 'function') timer.unref();
+    entry.retired = true;
+    retired.add(entry);
+    releaseHolder(entry);
   }
 
-  function sweepIdle() {
-    const cutoff = now() - idleMs;
-    let swept = 0;
-    for (const [logicalSessionId, entry] of [...homes]) {
-      if (entry.lastUsedAt > cutoff) continue;
-      homes.delete(logicalSessionId);
-      releaseHolder(entry.holder);
-      swept += 1;
-    }
-    return swept;
+  function retain(home) {
+    const entry = entries.get(home);
+    if (!entry) return () => {};
+    entry.readers += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      entry.readers -= 1;
+      releaseHolder(entry);
+    };
   }
 
   function prepareCodex(childEnv, options = {}) {
     const logicalSessionId = clean(options.logicalSessionId);
     const capability = clean(options.sessionId);
     if (!logicalSessionId || !capability) return false;
-    sweepIdle();
     let entry = homes.get(logicalSessionId);
     // A home may only outlive the route baked into it while nobody is reading
     // it. A moved capability means config.toml disagrees with the capability the
@@ -97,10 +92,10 @@ function createCodexResidentRoutes({
       // keeps its lease private; here the holder itself is what stays live.
       const holder = { CODEX_HOME: String(childEnv.CODEX_HOME || '') };
       if (!providers.applyCodexProxyConfig(holder, options)) return false;
-      entry = { capability, holder, lastUsedAt: 0 };
+      entry = { capability, holder, readers: 0, retired: false };
       homes.set(logicalSessionId, entry);
+      entries.set(holder.CODEX_HOME, entry);
     }
-    entry.lastUsedAt = now();
     childEnv.CODEX_HOME = entry.holder.CODEX_HOME;
     return true;
   }
@@ -142,14 +137,15 @@ function createCodexResidentRoutes({
     const entry = homes.get(id);
     if (!entry) return false;
     homes.delete(id);
-    return releaseHolder(entry.holder);
+    retire(entry);
+    return true;
   }
 
   function stats() {
     return Object.freeze({ live: homes.size, retired: retired.size });
   }
 
-  return Object.freeze({ prepare, prepareCodex, release, sweepIdle, stats });
+  return Object.freeze({ prepare, prepareCodex, release, retain, stats });
 }
 
 let shared = null;
@@ -172,16 +168,20 @@ function prepareResidentChildEnv(childEnv, options) {
 // with nothing prepared there is nothing to release, and a process that only ever
 // served claude sessions must not pay for this module.
 //
-// Idle homes need no sweeper of their own. A session that comes back after the
-// idle window sweeps its own on the way in, and one that never comes back has its
-// home released by whichever teardown path ends it — or, failing both, collected
-// by attempt-home's startup sweep once this host is gone.
+// Homes belong to sessions, not an idle timer. The lane owns process idle
+// reclamation; lifecycle close retires the route and actual process close
+// releases its final reader. Crash leftovers use attempt-home's startup sweep.
 function releaseResidentRoute(logicalSessionId) {
   return shared ? shared.release(logicalSessionId) : false;
+}
+
+function retainResidentRoute(home) {
+  return shared ? shared.retain(home) : () => {};
 }
 
 module.exports = {
   createCodexResidentRoutes,
   prepareResidentChildEnv,
   releaseResidentRoute,
+  retainResidentRoute,
 };

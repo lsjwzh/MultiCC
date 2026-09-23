@@ -2003,7 +2003,11 @@ function applyClaudeProxyEnv(env, options) {
 }
 
 function codexProviderProxyable(providerOrId) {
-  return cliProviderRouter.codexProviderProxyable(providerOrId, { getProvider });
+  const provider = typeof providerOrId === 'string' ? getProvider('codex', providerOrId) : providerOrId;
+  // Official OAuth has a host-owned relay even though its stored config has no
+  // HTTP endpoint. Use the same capability as applyCodexProxyConfig below.
+  return isOfficialCodexOAuthProvider(provider)
+    || cliProviderRouter.codexProviderProxyable(provider, { getProvider });
 }
 
 function codexProxyConfigRequired(options = {}) {
