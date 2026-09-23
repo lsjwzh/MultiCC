@@ -11,6 +11,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const WebSocket = require('ws');
 const { createPaths, assertTestDir } = require('../src/paths');
 const { readJson } = require('../src/state/store');
+const { createTaskShellStore } = require('../src/task-shell/store');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-isolated-'));
 const dataDir = assertTestDir(path.join(root, 'data'));
@@ -268,6 +269,83 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     assert.equal(fs.realpathSync(rows().find(r => r.sessionId === fork.sessionId).cwd), fs.realpathSync(forkRecord.worktreePath));
     assert.equal(gitAt(forkRecord.worktreePath, 'rev-parse', 'HEAD'), sourceCommit);
     assert.equal(fs.readFileSync(path.join(forkRecord.worktreePath, 'fork-evidence'), 'utf8'), 'source-only');
+    // ── Task separation keeps the work: the source checkout — branch tip plus
+    // everything still uncommitted — moves into the new task, the source
+    // checkout is deleted, and the next source message rebuilds it. The
+    // suggestion row is normally written by the attribution pass (which needs a
+    // live classifier), so the test writes the same durable row that pass writes
+    // and then drives the real accept path end to end over HTTP.
+    fs.writeFileSync(path.join(recordA.worktreePath, 'fork-evidence'), 'edited source-only');
+    fs.writeFileSync(path.join(recordA.worktreePath, 'split-uncommitted.txt'), 'work in progress\n');
+    const shellView = await api(`/api/task-shells/${sa.id}`);
+    const shellStore = createTaskShellStore(paths.taskShellDbFile);
+    const sourceRun = shellStore.list('task-first:run-result')
+      .filter(run => run.sessionId === first.sessionId && run.finalized === true).at(-1);
+    shellStore.close();
+    assert.ok(sourceRun, 'the completed turn must leave a durable run result');
+    const anchor = (await api(`/api/sessions/${first.sessionId}/history?limit=100`)).messages
+      .filter(message => ['user', 'assistant'].includes(message.role) && message.content).at(-1);
+    assert.ok(anchor, 'the judged turn must be anchored in the source transcript');
+    const splitTaskId = 'tsk_0123456789abcdef0123456789abcdef';
+    const splitSessionId = 'task-0123456789abcdef0123456789abcdef';
+    const splitSuggestionId = 'sep_0123456789abcdef0123456789abcdef';
+    const writer = createTaskShellStore(paths.taskShellDbFile);
+    writer.transaction(() => {
+      writer.set('task', splitTaskId, { id: splitTaskId, dirId: directory.id, sessionId: splitSessionId,
+        ownerShellId: sa.id, title: 'Uncommitted split', taskFirst: true, separatedFromTaskId: first.taskId,
+        embedded: true, ready: false, snapshotIds: [], createdAt: Date.now(),
+        // propose() inherits the source conversation's runtime for the embedded task.
+        runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent']
+          .filter(k => recordA[k] !== undefined).map(k => [k, recordA[k]])) });
+      writer.set('link', `${sa.id}:${splitTaskId}`, { shellId: sa.id, taskId: splitTaskId });
+      writer.set('task-separation', splitSuggestionId, { id: splitSuggestionId, sessionId: first.sessionId,
+        receiptId: shellView.cursorReceiptId, sourceTaskId: first.taskId, sourceTitle: preview.task.title,
+        taskId: splitTaskId, title: 'Uncommitted split', reason: 'Independent delivery goal', turnId: sourceRun.id,
+        anchorMessageId: anchor.id, cursorVersion: shellView.cursorVersion, state: 'pending', createdAt: Date.now() });
+    });
+    writer.close();
+    const separated = await api(`/api/sessions/${first.sessionId}/task-separation/${splitSuggestionId}`,
+      { decision: 'separate' });
+    assert.equal(separated.taskId, splitTaskId);
+    assert.equal(separated.sessionId, splitSessionId);
+    const movedSessions = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
+    const movedSource = movedSessions.find(record => record.id === first.sessionId);
+    const movedTarget = movedSessions.find(record => record.id === splitSessionId);
+    const sourceTip = gitAt(project, 'rev-parse', `multicc/${first.sessionId}`);
+    assert.equal(fs.existsSync(movedSource.worktreePath), false, 'the source checkout is gone after the split');
+    assert.equal(movedSource.workspaceState, 'hibernated');
+    assert.equal(fs.readFileSync(path.join(movedTarget.worktreePath, 'split-uncommitted.txt'), 'utf8'), 'work in progress\n',
+      'the new task owns the still-uncommitted work');
+    assert.equal(fs.readFileSync(path.join(movedTarget.worktreePath, 'fork-evidence'), 'utf8'), 'edited source-only');
+    assert.equal(gitAt(movedTarget.worktreePath, 'rev-parse', 'HEAD'), sourceTip, 'the new task starts at the source tip');
+    assert.match(gitAt(movedTarget.worktreePath, 'status', '--porcelain'), /split-uncommitted\.txt/,
+      'the carried work is not silently committed');
+    assert.equal(gitAt(project, 'rev-parse', `multicc/${first.sessionId}`), sourceTip,
+      'the source branch stays at its own tip so it can be rebuilt');
+    // The moved checkout keeps running: the next turn of the new task runs in it.
+    await api(`/api/task-shell-tasks/${splitTaskId}/messages`, { text: 'SPLIT_CONTINUE', clientMsgId: 'split-continue', intent: 'work' });
+    await wait(() => rows().some(record => record.sessionId === splitSessionId), 'the split task never executed');
+    assert.equal(fs.realpathSync(rows().find(record => record.sessionId === splitSessionId).cwd),
+      fs.realpathSync(movedTarget.worktreePath));
+    assert.equal(fs.readFileSync(path.join(movedTarget.worktreePath, 'split-uncommitted.txt'), 'utf8'), 'work in progress\n');
+    await wait(async () => (await api(`/api/task-shell-tasks/${splitTaskId}`)).messages
+      .some(message => message.role === 'assistant' && String(message.content).includes('SHELL_COMPLETED_EVIDENCE')),
+    'the split task never completed');
+    // …and the source conversation rebuilds its own checkout on the next message,
+    // without the work that just moved out.
+    const rebuiltTurn = await api(`/api/task-shells/${sa.id}/messages`, { text: 'SOURCE_REBUILT', clientMsgId: 'source-rebuilt', intent: 'work' });
+    assert.equal(rebuiltTurn.taskId, first.taskId);
+    await wait(() => rows().filter(record => record.sessionId === first.sessionId).length === 2, 'the source never ran again');
+    assert.equal(fs.realpathSync(rows().filter(record => record.sessionId === first.sessionId).at(-1).cwd),
+      fs.realpathSync(movedSource.worktreePath), 'the next message rebuilds the source checkout');
+    assert.equal(fs.existsSync(path.join(movedSource.worktreePath, 'split-uncommitted.txt')), false,
+      'the moved work did not come back with the rebuild');
+    assert.equal(fs.readFileSync(path.join(movedSource.worktreePath, 'fork-evidence'), 'utf8'), 'source-only');
+    await wait(async () => (await api(`/api/task-shells/${sa.id}/tasks/${first.taskId}`)).messages
+      .some(message => message.role === 'assistant' && String(message.content).includes('SHELL_COMPLETED_EVIDENCE') && message.turnId !== anchor.turnId),
+    'the rebuilt source turn never completed');
+    assert.equal(readJson(paths.sessionsFile, { legacyIsArray: true }).data.find(record => record.id === first.sessionId).workspaceState,
+      'awake', 'the rebuilt source checkout reports awake');
     const protectedMerge = await api(`/api/task-board/tasks/${first.taskId}/merge-tasks`, { sourceTaskIds: [second.taskId] }, 409);
     assert.equal(protectedMerge.error, 'task_shell_identity_immutable');
     // Freeze two sources as references in a fresh task. This is sharing, not a merge.

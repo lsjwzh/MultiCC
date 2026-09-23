@@ -28,7 +28,12 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     return open(sid);
   }
   function access(taskOrId) {
-    const task = typeof taskOrId === 'string' ? findTask(taskOrId) : store.get('task', taskOrId.id) || taskOrId;
+    const task = typeof taskOrId === 'string' ? findTask(taskOrId)
+      : taskOrId && (store.get('task', taskOrId.id) || taskOrId);
+    // A transcript can carry a task id whose record is gone (deleted task or a
+    // pre-migration annotation). Nothing may be written to it, and a read
+    // projection must not fail because one row lost its card.
+    if (!task) return { status: 'active', readOnly: true, ownerShellId: null, sourceSessionId: null, forkedFromTaskId: null };
     const owner = ownerOf(task);
     const lifecycle = getTask(task.id) || task;
     return { status: lifecycle.status || 'active', readOnly: lifecycle.status === 'archived' || lifecycle.deleting === true || (owner ? !owner.standalone && !task.taskFirst : task.origin !== 'board'), ownerShellId: owner?.id || null,

@@ -14,7 +14,14 @@ const { shellHistoryPage, watchShellHistory } = require('./chat-history');
 const { createAttributionSettingsFromEnv } = require('./attribution-settings');
 
 function createTaskShellHost(deps) {
-  let runtime, store, candidates;
+  let runtime, store, candidates, transfer;
+  // Built on first use: the transfer needs the same durable record map the rest
+  // of the host writes through, which is only reachable after composition.
+  const separationTransfer = () => (transfer = transfer || require('../workspace/separation-transfer').createSeparationTransfer({
+    records: deps.records, directories: deps.directories,
+    persistence: { mutate: (source, fn) => deps.persistRecords(source, fn) },
+    log: deps.log || console,
+  }));
   const workspace = require('./workspace').createShellWorkspaceHost(deps);
   // Automatic attribution (P2) is a host policy switch, not a per-call flag:
   // it lives with the other host settings so a restart can neither widen nor
@@ -150,6 +157,10 @@ function createTaskShellHost(deps) {
       },
       withSeparationBarrier: (input, work) => deps.getWorkspaceAdmission?.()?.withSeparationBarrier(input, work),
       recordSeparationApplication: input => deps.getWorkspaceAdmission?.()?.recordSeparationApplication(input),
+      // Separation moves the source checkout itself — branch tip plus the
+      // uncommitted work — into the new task. It runs inside the barrier the
+      // caller holds, so this port must never open a second writer.
+      transferWorkspace: input => separationTransfer()(input),
       // Separation handoff side effects: the new task's visible transcript is
       // seeded through the chat-history writer, and the judged turn's open
       // wait_user question moves through the session work host (which owns the
