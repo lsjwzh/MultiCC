@@ -3,6 +3,7 @@
 const defaultFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { isResidentSession } = require('./cli-capability');
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 const CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -360,7 +361,7 @@ function createReportedModelRuntime(options) {
     }
     let updated = 0;
     for (const record of records.values()) {
-      if (record.reportedModel || (record.cli && !['claude', 'claude-exp'].includes(record.cli)) || !record.cliSessionId) continue;
+      if (record.reportedModel || (record.cli && !isResidentSession(record.cli, record)) || !record.cliSessionId) continue;
       if (effectiveSessionModel(record)) continue;
       for (const directory of directories) {
         const transcript = path.join(projects, directory.name, `${record.cliSessionId}.jsonl`);

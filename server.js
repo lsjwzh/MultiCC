@@ -75,6 +75,7 @@ const { findProviderReferences } = require('./src/providers/references');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
+const { isResidentSession } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { renderPrompt } = require('./src/message-composer');
 const {
@@ -1552,7 +1553,7 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 function createSessionRecord(input) {
   return require('./src/session/create-record').createSessionRecordFactory({
     sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
-    SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow
+    SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow
   })(input);
 }
 
@@ -2385,9 +2386,8 @@ const cleanupPushMonitor = pushRuntime.cleanup;
 
 // ── Task state persistence (step ①) ───────────────────────────────────────────
 // persisted.taskState is the durable closed-loop task snapshot: it survives
-// restarts so the reconcile (②) can
-// decide what was running, whether it stalled, and whether to nudge. Falls back
-// to {} for legacy sessions that predate this field.
+// restarts so the reconcile (②) can decide what was running, whether it stalled,
+// and whether to nudge. Falls back to {} for legacy sessions predating this field.
 //
 // Shape:
 //   { goal, phase, startedAt, endedAt, lastSummary, lastSummaryAt,
@@ -2875,6 +2875,7 @@ tunnel.init();
 
 // Graceful shutdown and service timers live in src/host-lifecycle.js; mutable host state stays lazy via accessors.
 const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostLifecycle({
+  isResidentSession,
   getShuttingDown: () => _shuttingDown,
   setShuttingDown: (v) => { _shuttingDown = v; },
   setServiceReady: (v) => { serviceReady = v; },
@@ -2917,10 +2918,9 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   sessionHibernationRuntime,
 });
 shutdownCoordinator.onClose(() => { taskShellHost.close(); workspaceAdmission.close(); }); shutdownCoordinator.onClose(() => codexProxyMounts.codex?.close?.());
-// Terminal error handler: catches errors that reach next(err) or throw out of
-// async handlers wrapped with asyncHandler(). Redacts stacks/stderr, returns a
-// generic {error, requestId} so clients can't fingerprint the filesystem.
-// Registered LAST so every route falls through here.
+// Terminal error handler: catches next(err) and anything thrown by an
+// asyncHandler() route. Redacts stacks/stderr into a generic {error, requestId}
+// so clients can't fingerprint the filesystem. Registered LAST so everything falls here.
 app.use(safeErrorHandler(logger));
 
 (async () => {
@@ -2966,6 +2966,8 @@ app.use(safeErrorHandler(logger));
     worktreeOrphanScanner.start();
     try { voiceHost.prepareBoot(); } catch (err) { logger.warn('voice_boot_prepare_failed', { error: err.message }); }
     qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
+    // Resident children are a machine-wide process budget, not a per-directory one.
+    const residentPool = require('./src/chat/resident-composition').createResidentPoolComposition({ chatStream, backgroundTaskRuntime, sessionWorkHost, logger, getWorkspaceAdmission: () => workspaceAdmission }); trackServiceTimer(setInterval(() => residentPool.sweep(), residentPool.policy().sweepMs));
     // Periodic scan retries unresolved task attribution; first tick waits for Aux warm-up.
     trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
     trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));

@@ -98,8 +98,27 @@ function createCodexExpAdapter(deps = {}) {
       const effort = deps.codexReasoningLevel?.(session);
       if (effort) args.push('--effort', effort);
       for (const config of configArgs(session)) args.push('--config', config);
-      args.push('--');
-      return { cmd: process.execPath, args, payload: prompt };
+      return {
+        cmd: process.execPath,
+        // One-shot argv: `--` terminates the flags and the prompt is appended
+        // after it by the spawn path.
+        args: [...args, '--'],
+        payload: prompt,
+        // Resident argv: the app-server lane takes its prompt on stdin like every
+        // later turn, so `--resident` stands where the one-shot prompt would and
+        // no `--` may precede it (`--` would swallow the flag as the prompt).
+        streamArgs: [...args, '--resident'],
+        streamBackend: 'app-server',
+        // The thread id is allocated by the app-server and observed from its
+        // `thread/started` notification, so the host must not mint one and must
+        // persist it under cliSessionId — the same field the per-turn lane fills
+        // from the same notification.
+        nativeKey: 'cliSessionId',
+        clientAllocatesNativeId: false,
+        // Per-turn model/effort ride on turn/start, so changing either never
+        // forces the resident app-server to respawn.
+        turnOptions: { model: env.spawnOpts.rawModel || null, effort: effort || null },
+      };
     },
     decodeEvent(event) {
       const method = event?.method;

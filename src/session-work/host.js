@@ -4,6 +4,7 @@ const { runStateForFreezeReason } = require('./scheduler');
 const zcodeAuth = require('../cli-adapters/zcode-auth');
 const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
+const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
 
 function requireFunction(deps, name) {
   if (typeof deps?.[name] !== 'function') {
@@ -653,8 +654,13 @@ function createSessionWorkHost(deps = {}) {
     if (state.isStreaming) return false;
     if (state.claudeProc) return false;
     if (processAlive(state._cancelledProc)) return false;
-    if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) return false;
-    if (state.cli === 'claude-exp' && deps.chatStream.status(sessionId)?.busy) return false;
+    // Two ways a resident lane can still be running after a cancel: the child is
+    // still alive (cancel reaps it) or a turn is still in flight (cancel
+    // interrupts it in place and the child outlives the cancel).
+    const streamStopped = cancelStopsProcess(state.cli)
+      ? !deps.chatStream.isAlive(sessionId)
+      : !deps.chatStream.status(sessionId)?.busy;
+    if (!streamStopped) return false;
     return true;
   }
 
@@ -710,7 +716,7 @@ function createSessionWorkHost(deps = {}) {
         outcome: 'failed', errorCategory: 'cancelled', reasonCode: killReason,
       });
     }
-    if (['claude', 'claude-exp'].includes(state.cli)
+    if (isResidentSession(state.cli, state)
         && (deps.chatStream.isAlive(sessionId) || deps.chatStream.status?.(sessionId)?.busy)) {
       log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested (${reason})`);
       deps.chatStream.cancel(sessionId);

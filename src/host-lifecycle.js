@@ -14,7 +14,12 @@ const { createShutdownCoordinator } = require('./shutdown');
 const SHUTDOWN_GRACE_MS = 60000;   // max time to let in-flight turns finish
 
 function createHostLifecycle(deps) {
+  // The CLI lane table is a dependency-free leaf, but this module's dependency set
+  // is deliberately pinned by tests/test-host-lifecycle-task-run-close.js, so the
+  // predicate arrives as a port like every other runtime here.
+  if (typeof deps?.isResidentSession !== 'function') throw new TypeError('[host-lifecycle] isResidentSession port is required');
   const {
+    isResidentSession,
     // Host state accessors (server.js keeps the source of truth).
     getShuttingDown,
     setShuttingDown,
@@ -236,7 +241,7 @@ function createHostLifecycle(deps) {
   //   • streaming turn — NO per-turn child; it runs on the persistent chatStream
   //     process and its liveness is chatStream.status(name).busy (not cs.claudeProc).
   shutdownCoordinator.onDrain(async ({ graceMs }) => {
-    const isStreamingBusy = (name, cs) => cs && ['claude', 'claude-exp'].includes(cs.cli) && !!chatStream.status(name)?.busy;
+    const isStreamingBusy = (name, cs) => cs && isResidentSession(cs.cli, cs) && !!chatStream.status(name)?.busy;
     const draining = new Set();
     for (const [name, cs] of chatSessions) {
       if (cs && (cs.claudeProc || isStreamingBusy(name, cs))) draining.add(name);

@@ -677,4 +677,5 @@ function status(name) {
 module.exports = require('./stream-router').createStreamRouter(
   { ensure, send, inject, cancel, close, closeAndWait, isAlive, status, recycle },
   require('./claude-sdk-stream').createSdkStream(),
+  require('./codex-app-stream').createCodexAppStream(),
 );

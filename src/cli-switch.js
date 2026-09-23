@@ -7,6 +7,7 @@
 const SUPPORTED_CHAT_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh']);
 const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
 const { repairZcodeSessionState } = require('./cli-adapters/zcode-session');
+const { isResidentSession } = require('./cli/cli-capability');
 
 function supportedCli(cli) {
   return SUPPORTED_CHAT_CLIS.includes(String(cli || ''));
@@ -96,7 +97,7 @@ function activateCliState(session, targetCli, options = {}) {
   session.agent = state.agent || null;
   if (state.reportedModel) session.reportedModel = state.reportedModel;
   else delete session.reportedModel;
-  session.streaming = ['claude', 'claude-exp'].includes(targetCli) && session.kind === 'chat';
+  session.streaming = isResidentSession(targetCli, session) && session.kind === 'chat';
   session.cliSwitchEpoch = Math.max(0, Number(session.cliSwitchEpoch) || 0) + 1;
 
   session.cliStates[targetCli] = {
