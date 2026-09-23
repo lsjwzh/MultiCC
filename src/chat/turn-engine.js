@@ -75,6 +75,7 @@ const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { createDeliveryProbeRegistry, shouldReexecutePersistedDelivery } = require('./delivery-probe');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
 const { processSpawnArgs } = require('./process-spawn-args');
+const { isResident, isResidentSession } = require('../cli/cli-capability');
 
 function admissionRootCause(value) {
   const raw = value instanceof Error
@@ -1246,9 +1247,9 @@ function createChatTurnEngine(deps) {
       });
     }
 
-    const streamBusy = ['claude', 'claude-exp'].includes(turnRequest.cli) && !!chatStream.status(sessionName)?.busy;
+    const streamBusy = isResidentSession(turnRequest.cli, persisted) && !!chatStream.status(sessionName)?.busy;
     let claudeManagedProxy = false;
-    if (['claude', 'claude-exp'].includes(turnRequest.cli) && persisted.provider) {
+    if (isResident(turnRequest.cli) && persisted.provider) {
       try {
         const summary = providerRouterRuntime.getProviderSummary('claude', persisted.provider);
         claudeManagedProxy = !!(summary && (summary.baseUrl
@@ -1501,7 +1502,7 @@ function createChatTurnEngine(deps) {
         text, persisted, sessionName,
         opts: {
           isFirstTurn, goalLimits, taskContextSeed: managed?.seed ?? taskContextHost?.taskShellContextSeed?.(sessionName, opts.taskContextSeed, isFirstTurn) ?? opts.taskContextSeed,
-          mode: ['claude', 'claude-exp'].includes(cs.cli) ? 'streaming' : 'per-turn',
+          mode: isResidentSession(cs.cli, persisted) ? 'streaming' : 'per-turn',
         },
         deps: {
           resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
@@ -1567,7 +1568,7 @@ function createChatTurnEngine(deps) {
     }
 
     // Streaming and process runners both require the minted workspace permit.
-    if (cs.cli === 'claude' || cs.cli === 'claude-exp') {
+    if (isResidentSession(cs.cli, persisted)) {
       const accepted = runChatTurnStreaming(
         sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation, autoTurn, 0, opts,
       );
@@ -2238,13 +2239,15 @@ function createChatTurnEngine(deps) {
       officialOAuth: getClaudeOfficialViaProxy(),
     });
     const streamSettingsFile = providers.settingsOverrideFor(sessionName, childEnv, invocation.settings);
+    // Adapter-declared argv for a protocol whose prompt moves from argv to stdin.
+    const streamArgs = invocation.streamArgs || invocation.args;
     const streamBaseArgs = streamSettingsFile
-      ? [...invocation.args, '--settings', streamSettingsFile]
-      : invocation.args;
-    const nativeKey = invocation.sdkOptions ? 'cliSessionId' : '_streamSessionId';
+      ? [...streamArgs, '--settings', streamSettingsFile]
+      : streamArgs;
+    const nativeKey = invocation.nativeKey || (invocation.sdkOptions ? 'cliSessionId' : '_streamSessionId');
     const resumeExistingStream = invocation.sdkOptions
       ? !prepared.invocationEnvelope.historyHandle.isFirstTurn : !!persisted[nativeKey];
-    if (!persisted[nativeKey]) {
+    if (invocation.clientAllocatesNativeId !== false && !persisted[nativeKey]) {
       persisted[nativeKey] = crypto.randomUUID();
       rememberActiveCliState(persisted);
       savePersistedSessionsBestEffort('runtime.streaming-session-id-allocate');
@@ -2254,6 +2257,7 @@ function createChatTurnEngine(deps) {
       cwd: cs.cwd,
       sessionId: persisted[nativeKey],
       sdkOptions: invocation.sdkOptions,
+      streamBackend: invocation.streamBackend,
       settingsFile: streamSettingsFile,
       resume: resumeExistingStream,
       baseArgs: streamBaseArgs,
@@ -2357,7 +2361,7 @@ function createChatTurnEngine(deps) {
           || !attemptRuntime.acceptEvent(runner.providerAttempt)) return;
       turnTiming.markFirstByte(sessionName, turn.turnId);
       applyAdapterChatEvent(provider, cs, persisted, sessionName, evt, forward, turn, runner);
-    }, {
+    }, { turnOptions: invocation.turnOptions,
       onTiming: (phase) => {
         if (phase === 'spawned') { turnTiming.markSpawned(sessionName, turn.turnId); getWorkspaceAdmission?.()?.spawned(sessionName, { pid: chatStream.status(sessionName)?.pid }); }
         else if (phase === 'sent') { turnTiming.markSent(sessionName, turn.turnId); managedContext.contextSent(turn); }

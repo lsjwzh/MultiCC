@@ -1,6 +1,7 @@
 'use strict';
 
 const { assertProviderBinding } = require('../providers/binding');
+const { transportOf } = require('../cli/cli-capability');
 
 const REQUEST_KIND = 'chat-turn-request.v1';
 const MAX_ID_LENGTH = 128;
@@ -109,7 +110,7 @@ function normalizeTurnRequest(input) {
   const text = String(input.text == null ? '' : input.text).trim();
   if (!text) throw new TurnRequestError('empty_text', 'turn text is required');
   const cli = cleanId(input.cli || 'claude', 'cli', true).toLowerCase();
-  const transport = ['claude', 'claude-exp'].includes(cli) ? 'claude-stream' : 'cli-process';
+  const transport = transportOf(cli);
   const turnCount = input.turnCount == null ? 0 : Number(input.turnCount);
   if (!Number.isInteger(turnCount) || turnCount < 0) {
     throw new TurnRequestError('invalid_request', 'turnCount must be a non-negative integer');

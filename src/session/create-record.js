@@ -2,7 +2,10 @@
 const path = require('node:path');
 const { normalizeSubagentInput } = require('./subagent');
 function createSessionRecordFactory(deps) {
-  const { sharedWorkspace, SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow } = deps;
+  // Injected by the composition root. src/session is a bounded context and must
+  // not reach into src/cli for the lane table (tests/test-architecture-boundaries.js).
+  if (typeof deps?.isResidentSession !== 'function') throw new TypeError('[session/create-record] isResidentSession port is required');
+  const { isResidentSession, sharedWorkspace, SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow } = deps;
 async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, subagent = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true, workspaceOwnerSessionId = null, workspaceBaseCommit = null, validateOnly = false }) {
   if (!dir) return { ok: false, error: 'directory not found' };
   if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
@@ -84,10 +87,11 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
     // otherwise: the per-turn checkbox defaults to it, so an explicit `false`
     // (experiment / task-shell branches) must stay the only way to opt out.
     autoCommit: autoCommit !== false,
-    // streaming (流式常驻) is now claude's default mode: keep the claude process
-    // alive across turns for faster, context-preserving continuation. Non-claude
-    // CLIs ignore this field. Only claude chat sessions default on.
-    streaming: ['claude', 'claude-exp'].includes(cli) && kind === 'chat',
+    // streaming (流式常驻) keeps the CLI process alive across turns for faster,
+    // context-preserving continuation. Non-resident CLIs ignore this field, and a
+    // resident CLI whose session was routed through a concrete codex provider
+    // stays per-turn (its credentials are leased per attempt — see the lane table).
+    streaming: isResidentSession(cli, { provider: providerId, subagent: subagentChecked.value }) && kind === 'chat',
     // autoContinue is no longer a user-facing toggle (the picker keeps only the
     // streaming option). The field stays true for back-compat only; the old
     // auto-drive mechanisms are retired.

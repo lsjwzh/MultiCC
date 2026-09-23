@@ -1,5 +1,7 @@
 'use strict';
 
+const { transportOf } = require('../cli/cli-capability');
+
 function clone(record) {
   if (!record) return null;
   return {
@@ -64,7 +66,7 @@ function createTurnRuntimeStore(options = {}) {
       phase: 'preparing',
       generation: previous.generation + 1,
       cli: String(meta.cli || 'claude'),
-      transport: String(meta.transport || (['claude', 'claude-exp'].includes(meta.cli) ? 'claude-stream' : 'cli-process')),
+      transport: String(meta.transport || transportOf(meta.cli)),
       messageDurable: false,
       providerRouteResolved: false,
       claimedAt: Number(now()),
