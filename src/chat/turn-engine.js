@@ -2233,9 +2233,10 @@ function createChatTurnEngine(deps) {
       MULTICC_DIR_ID: persisted.dirId || '',
       MULTICC_BASE_URL: `http://127.0.0.1:${getPort()}`,
     }, routeOverrides);
-    providers.applyClaudeProxyEnv(childEnv, {
-      providerId: binding.providerId, sessionId: proxySessionId,
-      subagent: persisted.subagent, port: getPort(),
+    providers.prepareResidentChildEnv(childEnv, {
+      cli: persisted.cli, providerId: binding.providerId, sessionId: proxySessionId,
+      subagent: persisted.subagent, port: getPort(), logicalSessionId: sessionName,
+      nativeSessionId: persisted.cliSessionId, allowMissingNativeSession: !persisted.cliSessionId,
       officialOAuth: getClaudeOfficialViaProxy(),
     });
     const streamSettingsFile = providers.settingsOverrideFor(sessionName, childEnv, invocation.settings);

@@ -31,6 +31,12 @@ const { createOpencodeModelLimitResolver } = require('./opencode-model-limits');
 const { createCodexAttemptHome } = require('../codex/attempt-home');
 const { createCodexSessionHomeRuntime } = require('../codex/session-home');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
+// Resident lanes hold their route across turns, so they own the codex home that
+// bakes it (see the module). It reaches back here for the physical
+// materialization, which is why it is required from this side.
+const {
+  prepareResidentChildEnv, releaseResidentRoute,
+} = require('../codex/resident-route');
 const { codexAccountAuthFilePath } = require('../official-accounts');
 const { relayRouteFromBaseUrl } = require('./relay-share-store');
 const {
@@ -2151,6 +2157,8 @@ module.exports = {
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired,
   releaseCodexProxyConfig,
+  prepareResidentChildEnv,
+  releaseResidentRoute,
   materializeCodexRoutingHome,
   codexProviderProxyable,
   isOfficialCodexOAuthProvider,
