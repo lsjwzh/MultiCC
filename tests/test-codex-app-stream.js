@@ -48,6 +48,20 @@ function collect() {
   return { events, onEvent: (evt) => events.push(evt) };
 }
 
+for (const method of ['thread/start', 'thread/resume', 'turn/start']) {
+  test(`a rejected ${method} exits and releases the host turn`, { timeout: 5000 }, async () => {
+    const name = `reject-${method}`;
+    const { stream } = createFixture(name.replace('/', '-'), { FAKE_CODEX_REJECT: method });
+    const id = name.replace('/', '-');
+    if (method === 'thread/resume') stream.ensure(id, { sessionId: 'missing-thread' });
+    try {
+      await assert.rejects(stream.send(id, 'hello', () => {}), /fixture request rejected/);
+      assert.equal(stream.status(id).busy, false);
+      assert.equal(stream.status(id).alive, false);
+    } finally { await stream.closeAndWait(id); }
+  });
+}
+
 test('a warm app-server serves several turns on one thread', async (t) => {
   const fixture = createFixture('turns');
   const { stream } = fixture;
@@ -181,4 +195,19 @@ test('recycle replaces the child at a boundary and preserves the thread', async 
   assert.deepEqual(fixture.methods(),
     ['initialize', 'thread/start', 'turn/start', 'initialize', 'thread/resume', 'turn/start']);
   await stream.closeAndWait('recycle');
+});
+
+test('process capabilities are prepared once per spawn, including after recycle', { timeout: 5000 }, async () => {
+  const { stream } = createFixture('spawn-hooks');
+  let prepared = 0, disposed = 0;
+  stream.ensure('spawn-hooks', { beforeSpawn: () => { prepared++; }, onDispose: () => { disposed++; } });
+  try {
+    await stream.send('spawn-hooks', 'one', () => {});
+    await stream.send('spawn-hooks', 'two', () => {});
+    assert.equal(prepared, 1);
+    stream.recycle('spawn-hooks', 'test');
+    await stream.send('spawn-hooks', 'three', () => {});
+    assert.equal(prepared, 2);
+  } finally { await stream.closeAndWait('spawn-hooks'); }
+  assert.equal(disposed, 1);
 });

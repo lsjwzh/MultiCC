@@ -19,6 +19,7 @@ let turn=0;
 readline.createInterface({input:process.stdin}).on('line',line=>{
   const m=JSON.parse(line);fs.appendFileSync(log,line+'\\n');
   const out=o=>process.stdout.write(JSON.stringify(o)+'\\n');
+  if(m.method===process.env.FAKE_CODEX_REJECT){out({id:m.id,error:{code:-32600,message:'fixture request rejected'}});return;}
   if(m.method==='initialize')out({id:m.id,result:{userAgent:'fake/'+(process.env.FAKE_CODEX_VERSION||'0.154.0')+' (test)',codexHome:'/tmp/codex',platformFamily:'unix',platformOs:'linux'}});
   if(m.method==='thread/start'){out({id:m.id,result:{thread:{id:'thread-resident'}}});out({method:'thread/started',params:{thread:{id:'thread-resident'}}});}
   if(m.method==='thread/resume')out({id:m.id,result:{thread:{id:m.params.threadId}}});

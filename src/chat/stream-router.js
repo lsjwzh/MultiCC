@@ -12,6 +12,11 @@ function createStreamRouter(legacy, sdk, appServer) {
   // every backend can supply without each of them growing its own clock; the
   // residency pool reads it back through residents().
   const used = new Map();
+  const pending = new Map();
+  const residency = require('./workspace-residency').createWorkspaceResidency({
+    status: name => backend(name).status(name),
+    closeAndWait: name => api.closeAndWait(name), pending: name => (pending.get(name) || 0) + Number(barriers.has(name)),
+  });
   const backend = name => {
     const mode = modes.get(name);
     if (mode === 'sdk') return sdk;
@@ -20,6 +25,7 @@ function createStreamRouter(legacy, sdk, appServer) {
   };
   const api = {
     ensure(name, cfg) {
+      residency.track(name, cfg.cwd);
       const mode = cfg.streamBackend === 'app-server' ? 'app-server'
         : cfg.sdkOptions ? 'sdk' : 'legacy';
       if (modes.has(name) && modes.get(name) !== mode) {
@@ -32,24 +38,39 @@ function createStreamRouter(legacy, sdk, appServer) {
       return backend(name).ensure(name, cfg);
     },
     async send(name, ...args) {
-      const barrier = barriers.get(name);
-      if (barrier) { await barrier; if (barriers.get(name) === barrier) barriers.delete(name); }
-      used.set(name, Date.now());
-      return backend(name).send(name, ...args);
+      residency.assertSend(name);
+      pending.set(name, (pending.get(name) || 0) + 1);
+      try {
+        const barrier = barriers.get(name);
+        if (barrier) { await barrier; if (barriers.get(name) === barrier) barriers.delete(name); }
+        residency.assertSend(name);
+        used.set(name, Date.now());
+        return await backend(name).send(name, ...args);
+      } finally {
+        const count = (pending.get(name) || 1) - 1;
+        if (count) pending.set(name, count); else pending.delete(name);
+      }
     },
     close(name) {
       const selected = backend(name);
       used.delete(name);
-      Promise.resolve(selected.close(name)).then(() => {
-        if (backend(name) === selected && !selected.status(name)) modes.delete(name);
+      const barrier = Promise.resolve(selected.closeAndWait(name));
+      barriers.set(name, barrier);
+      barrier.then(() => {
+        if (barriers.get(name) === barrier) barriers.delete(name);
+        if (backend(name) === selected && !selected.status(name)) { modes.delete(name); residency.forget(name); }
       }).catch(() => {});
+      return barrier;
     },
     async closeAndWait(name, opts) {
       await barriers.get(name);
       const result = await backend(name).closeAndWait(name, opts);
       barriers.delete(name); modes.delete(name); used.delete(name);
+      residency.forget(name);
       return result;
     },
+    parkWorkspace: (name, workspace) => residency.park(name, workspace),
+    claimWorkspace: (name, workspace, opts) => residency.claim(name, workspace, opts),
     // Every warm resident child this host currently holds — the pool's input.
     // Each entry is a child the backend still reports, so a name whose child was
     // reaped (or closed by a lifecycle caller) drops out here by itself instead
@@ -60,6 +81,7 @@ function createStreamRouter(legacy, sdk, appServer) {
       for (const [name, mode] of [...modes]) {
         const status = backend(name)?.status?.(name);
         if (!status) { modes.delete(name); used.delete(name); continue; }
+        if (!status.alive) continue;
         warm.push(Object.freeze({
           name, mode,
           busy: !!status.busy, queued: status.queued || 0,
