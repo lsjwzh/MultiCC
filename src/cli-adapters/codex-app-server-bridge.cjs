@@ -57,6 +57,21 @@ let terminal = false;
 // Set by the resident loop; fires when the app-server reports the current turn
 // is over, i.e. the bridge is ready for the next stdin line.
 let onTurnComplete = null;
+let stopping = false;
+function stopChild(error) {
+  if (stopping) return;
+  stopping = true;
+  if (error) {
+    process.stderr.write(`[codex-exp] ${error.message}\n`);
+    process.exitCode = 1;
+  }
+  // Setting exitCode alone cannot finish a bridge with open pipes. Join the
+  // child, escalating if necessary, so the host observes an actual exit.
+  const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 1000);
+  timer.unref();
+  child.once('close', () => clearTimeout(timer));
+  try { child.kill('SIGTERM'); } catch (_) {}
+}
 
 function write(message) {
   child.stdin.write(`${JSON.stringify(message)}\n`);
@@ -118,7 +133,7 @@ childLines.on('line', (line) => {
   if (message.method === 'turn/completed') {
     if (onTurnComplete) { onTurnComplete(); return; }
     terminal = true;
-    setImmediate(() => child.kill('SIGTERM'));
+    setImmediate(() => stopChild());
   }
 });
 
@@ -142,7 +157,7 @@ child.on('close', (code, signal) => {
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
-    try { child.kill(signal); } catch (_) {}
+    stopChild();
   });
 }
 
@@ -205,19 +220,12 @@ async function runOneShot() {
 // `queued` instead of interleaving two turns on one thread.
 async function runResident() {
   await initialize();
-  let threadId = null;
-  try {
-    threadId = await openThread(options.threadId, options.model);
-  } catch (error) {
-    process.stderr.write(`[codex-exp] ${error.message}\n`);
-    process.exitCode = 1;
-    return;
-  }
+  let threadId = await openThread(options.threadId, options.model);
   const queued = [];
   let busy = false;
 
   async function pump() {
-    if (busy) return;
+    if (busy || stopping) return;
     const next = queued.shift();
     if (!next) return;
     busy = true;
@@ -225,8 +233,7 @@ async function runResident() {
       await startTurn(threadId, next);
     } catch (error) {
       busy = false;
-      process.stderr.write(`[codex-exp] turn failed: ${error.message}\n`);
-      process.exitCode = 1;
+      stopChild(error);
       return;
     }
     // busy stays true until the app-server reports the turn over; any queued
@@ -257,8 +264,7 @@ async function runResident() {
         queued.push({ text, model: turn.model || options.model, effort: turn.effort || options.effort });
         pump();
       }).catch((error) => {
-        process.stderr.write(`[codex-exp] thread resume failed: ${error.message}\n`);
-        process.exitCode = 1;
+        stopChild(error);
       });
       return;
     }
@@ -271,13 +277,9 @@ async function runResident() {
   // graceful shutdown this lane has, so the app-server goes with it.
   stdinLines.on('close', () => {
     terminal = true;
-    try { child.kill('SIGTERM'); } catch (_) {}
+    stopChild();
   });
 }
 
 const run = options.resident ? runResident : runOneShot;
-run().catch((error) => {
-  process.stderr.write(`[codex-exp] ${error.message}\n`);
-  process.exitCode = 1;
-  try { child.kill('SIGTERM'); } catch (_) {}
-});
+run().catch(stopChild);

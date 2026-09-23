@@ -207,7 +207,7 @@ test('the router reports every warm child a lane still holds, and forgets the re
   const lane = (label) => {
     const live = new Map();
     return {
-      ensure: name => { live.set(name, { busy: false, queued: 0 }); },
+      ensure: name => { live.set(name, { alive: true, busy: false, queued: 0 }); },
       send: () => Promise.resolve(),
       close: name => { live.delete(name); },
       closeAndWait: name => { live.delete(name); return Promise.resolve({ closed: true }); },

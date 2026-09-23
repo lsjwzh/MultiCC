@@ -2545,6 +2545,8 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   getState: id => chatSessions.get(id), hibernation: () => sessionHibernationRuntime,
   hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
   closePersistent: id => chatStream.closeAndWait(id),
+  parkPersistent: (id, workspace) => chatStream.parkWorkspace(id, workspace),
+  claimPersistent: (id, workspace, opts) => chatStream.claimWorkspace(id, workspace, opts),
   // Escalation inputs: stopping a pinned writer also means settling the host's
   // belief that its background work still runs — and only once it went quiet.
   reapBackground: (id, opts) => backgroundTaskRuntime.reapSessionShadows(id, opts),
