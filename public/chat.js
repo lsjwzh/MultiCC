@@ -400,7 +400,8 @@ let currentCli = 'claude';
 const cliBtn = document.getElementById('cli-btn');
 const CLI_META = {
   claude: { label: 'Claude', color: '#f78166' },
-  'claude-exp': { label: 'Claude Exp', color: '#ff9a76' },
+    // 产品名（不是文案）：Anthropic 的 Claude Agent SDK，内部 id 仍是 claude-exp。
+    'claude-exp': { label: 'Claude Agent SDK', color: '#ff9a76' },
   codex: { label: 'Codex', color: '#2ea043' },
   'codex-exp': { label: 'Codex Exp', color: '#20a66a' },
   opencode: { label: 'OpenCode', color: '#388bfd' },
@@ -2702,6 +2703,21 @@ cwdConfirm.onclick = () => {
    goal-ready (clear objective, clear done-criteria, bounded, executable). The
    user accepts/edits the rewritten version, then it's wrapped in a short
    goal-mode instruction and sent through the normal send() path. */
+// The precheck is a real Aux inference, and Aux is one-at-a-time: measured on
+// this host a single precheck costs ~18s even with an idle queue, and the same
+// queue also carries classify/memory work. The generic API client budget (15s)
+// aborted every precheck before the model could answer — that is the whole
+// "[API_TIMEOUT]" story.
+// The wait budget has exactly one source of truth: the server publishes its own
+// limit as `precheckWaitMs` (/api/settings/goal), the client only adds slack so
+// the server's explicit AUX_TIMEOUT message wins the race instead of a bare
+// client abort. The number is not guessed here on purpose.
+const GOAL_PRECHECK_FALLBACK_WAIT_MS = 180000;
+const GOAL_PRECHECK_SLACK_MS = 30000;
+let goalPrecheckWaitMs = 0;
+function goalPrecheckTimeoutMs() {
+  return (goalPrecheckWaitMs || GOAL_PRECHECK_FALLBACK_WAIT_MS) + GOAL_PRECHECK_SLACK_MS;
+}
 const goalModal       = document.getElementById('goal-modal');
 const goalBtn         = document.getElementById('goal-btn');
 const goalTaskEl      = document.getElementById('goal-task');
@@ -2745,6 +2761,10 @@ async function loadGoalDims() {
   try {
     const res = await fetch(withToken('/api/settings/goal'));
     const d = await res.json();
+    // The server owns the queue, so it owns the budget too (see the comment on
+    // goalPrecheckTimeoutMs). Absent on old servers → keep the fallback.
+    const wait = Number(d && d.precheckWaitMs);
+    goalPrecheckWaitMs = Number.isFinite(wait) && wait > 0 ? wait : 0;
     const dims = d.dimensions || {};
     boxes.forEach(cb => { cb.checked = dims[cb.dataset.dim] !== false; });
   } catch (_) {
@@ -2822,6 +2842,7 @@ if (goalPrecheckBtn) goalPrecheckBtn.onclick = async () => {
   try {
     const data = await chatApi.json(withToken('/api/goal/precheck'), {
       method: 'POST', json: { task, dimensions: collectGoalDims() },
+      timeoutMs: goalPrecheckTimeoutMs(),
     });
     if (!data.ok) throw chatApi.errorFromPayload({ ...data, error: data.error || '预检失败' });
     renderGoalVerdict(data);

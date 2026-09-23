@@ -222,6 +222,39 @@ test('with no limit event, the idle Claude placeholder shows under claude but hi
   } finally { f.cleanup(); }
 });
 
+// Regression (2026-09-23 user report): under Codex Exp / Claude Exp on their
+// official providers the subscription bar never appeared. Claude Exp is the
+// Agent SDK build of the SAME account and provider pool as Claude Code, so the
+// bar must be gated on the Claude family, not on the literal 'claude' cli id.
+test('the Claude subscription bar (and its idle placeholder) also shows under claude-exp', () => {
+  const f = freshClient();
+  try {
+    f.C.setCli('claude-exp');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block',
+      'claude-exp on a Claude provider keeps the idle tap target');
+    assert.match(f.element('claude-rate-limit-bar').textContent, /^5h - · 1wk -/);
+
+    const info = { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.72, resetsAt: (NOW + 3_600_000) / 1000 };
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    f.C.consumeRateLimitEvent(info, 'exp-1', bar);
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    assert.match(f.element('claude-rate-limit-bar').textContent, /^5h 28%/);
+
+    // A provider routed underneath Claude still switches the bar species:
+    // on a Zhipu endpoint the subscription bar hides (same rule as 'claude').
+    f.C.setProviderBaseUrl('https://open.bigmodel.cn/api/paas/v4');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+  } finally { f.cleanup(); }
+});
+
+test('providerMatchesCli treats the Claude family as one CLI', () => {
+  assert.equal(Client.providerMatchesCli('claude', 'claude'), true);
+  assert.equal(Client.providerMatchesCli('claude', 'claude-exp'), true);
+  assert.equal(Client.providerMatchesCli('claude', 'codex'), false);
+  assert.equal(Client.providerMatchesCli('codex', 'codex-exp'), true);
+  assert.equal(Client.providerMatchesCli('codex', 'claude-exp'), false);
+});
+
 test('consumeBalanceEvent renders, gates (codex shows, claude hides), and persists', () => {
   const f = freshClient();
   try {

@@ -97,6 +97,7 @@ function createHarness(overrides = {}) {
     execFileVersion: overrides.execFileVersion,
     // 默认桩: 不打真实 npm registry。想断言「有新版」的用例自己注入一个。
     fetchLatestVersion: overrides.fetchLatestVersion || (async () => null),
+    fetchLatestVersionWithSource: overrides.fetchLatestVersionWithSource,
     registryBase: overrides.registryBase,
   });
   const app = {
@@ -391,7 +392,7 @@ test('install-specs returns the static official command table', async () => {
   assert.equal(res.body.ok, true);
   assert.deepEqual(res.body.specs, {
     claude: { auto: true, command: 'npm install -g @anthropic-ai/claude-code', display: 'npm install -g @anthropic-ai/claude-code' },
-    'claude-exp': { auto: false, manual: 'Claude Exp 使用 MultiCC 内置的 Claude Agent SDK；请升级 MultiCC 来更新 SDK' },
+    'claude-exp': { auto: false, manual: 'Claude Agent SDK 由 MultiCC 内置；请升级 MultiCC 来更新 SDK' },
     codex: { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
     'codex-exp': { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
     opencode: { auto: true, command: 'npm install -g opencode-ai', display: 'npm install -g opencode-ai' },
@@ -835,4 +836,145 @@ test('a successful upgrade invalidates both caches so the badge clears on the ne
   assert.equal(after.body.versions.claude.version, '2.0.2');
   assert.equal(after.body.versions.claude.updateAvailable, false);
   assert.equal(after.body.updateCount, 0);
+});
+
+// 只要升级命令跑起来, 就必须和「看到最新版的那个源」用同一个源: 官方源不可达时
+// 检测走的是兜底镜像, 安装却去打官方源, 就是「有新版可升级但升级永远失败」。
+test('the install job installs from the registry that answered the version probe', async () => {
+  const spawns = [];
+  const fakeSpawn = (cmd, args, options) => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    spawns.push({ cmd, args, env: options && options.env });
+    return ee;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: (cmd, args, _options, cb) => cb(null, 'claude v2.0.1', ''),
+    fetchLatestVersionWithSource: async () => ({ version: '2.0.2', registry: 'https://registry.npmmirror.com/' }),
+    availability: { claude: { available: true } },
+  });
+  const versions = await harness.invokeVersions();
+  assert.equal(versions.body.versions.claude.latestRegistry, 'https://registry.npmmirror.com/');
+  assert.equal(versions.body.latestRegistries.claude, 'https://registry.npmmirror.com/');
+
+  const started = await harness.invokeUpgrade('claude');
+  assert.equal(started.statusCode, 202);
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].env.npm_config_registry, 'https://registry.npmmirror.com/');
+  assert.match(spawns[0].args.join(' '), /npm install -g @anthropic-ai\/claude-code/);
+
+  // 上游查不到最新版时不许瞎指定源, 让 npm 自己按用户配置决定
+  const quiet = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: (cmd, args, _options, cb) => cb(null, 'claude v2.0.1', ''),
+    fetchLatestVersion: async () => null,
+    availability: { claude: { available: true } },
+  });
+  await quiet.invokeVersions();
+  await quiet.invokeUpgrade('claude');
+  assert.equal(spawns.length, 2);
+  assert.equal(spawns[1].env.npm_config_registry, undefined);
+});
+
+// 「命令成功」≠「multicc 派生的那个二进制升级了」。同一台机器上 claude 既有原生安装
+// (multicc 优先派生的那个)又有 npm 全局安装时, npm 装完新版本, 派生路径纹丝不动 ——
+// 不查这一下, 用户看到的就是一个永远消不掉的「可升级」角标。
+test('an upgrade that leaves the spawned binary untouched is reported as failed, with a way out', async () => {
+  let proc = null;
+  const fakeSpawn = () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    return proc;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/bin/claude' },
+    // 无论命令跑多少次, 被派生的那个二进制始终是 2.0.1(新版装到了别的位置)
+    execFileVersion: (cmd, args, _options, cb) => cb(null, 'claude v2.0.1', ''),
+    fetchLatestVersion: async () => '2.0.2',
+    availability: { claude: { available: true } },
+  });
+  const before = await harness.invokeVersions();
+  assert.equal(before.body.versions.claude.updateAvailable, true);
+
+  const started = await harness.invokeUpgrade('claude');
+  assert.equal(started.statusCode, 202);
+  proc.stdout.emit('data', 'changed 1 package in 2s\n');
+  proc.emit('exit', 0, null);
+  for (let i = 0; i < 6; i += 1) await new Promise(resolve => setImmediate(resolve));
+
+  const status = await harness.invokeStatus(started.body.jobId);
+  assert.equal(status.body.job.status, 'error', '派生二进制没变就不能报成功');
+  assert.match(status.body.job.error, /2\.0\.1/);
+  assert.match(status.body.job.hint, /CLAUDE_CMD/);
+  assert.match(status.body.job.hint, /\/bin\/claude/);
+
+  // 命令把派生二进制真的换掉时, 仍然是 done, 且不误报
+  let installed = 'claude v2.0.1';
+  let proc2 = null;
+  const harness2 = createHarness({
+    spawnProcess: () => {
+      proc2 = new EventEmitter();
+      proc2.stdout = new EventEmitter();
+      proc2.stderr = new EventEmitter();
+      proc2.kill = () => {};
+      return proc2;
+    },
+    cliCommands: { claude: '/bin/claude' },
+    execFileVersion: (cmd, args, _options, cb) => cb(null, installed, ''),
+    fetchLatestVersion: async () => '2.0.2',
+    availability: { claude: { available: true } },
+  });
+  await harness2.invokeVersions();
+  const second = await harness2.invokeUpgrade('claude');
+  installed = 'claude v2.0.2';
+  proc2.emit('exit', 0, null);
+  for (let i = 0; i < 6; i += 1) await new Promise(resolve => setImmediate(resolve));
+  const secondStatus = await harness2.invokeStatus(second.body.jobId);
+  assert.equal(secondStatus.body.job.status, 'done');
+  assert.equal(secondStatus.body.job.hint, null);
+});
+
+// codex 与 codex-exp 派生同一个二进制、跑同一条 npm install: 并发跑会让 npm 自己踩
+// 自己的全局目录, 所以串行键是「安装目标」而不是 CLI 名。不同目标仍然可以并行。
+test('install jobs serialize by install target, and different targets run in parallel', async () => {
+  const spawned = [];
+  const fakeSpawn = (cmd, args) => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    spawned.push(args.join(' '));
+    return ee;
+  };
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    availability: { codex: { available: false }, opencode: { available: false }, dsh: { available: false } },
+  });
+  const first = await harness.invokeUpgrade('codex');
+  assert.equal(first.statusCode, 202);
+  // 同一条命令 -> 409, 并说清是另一个 CLI 占着
+  const twin = await harness.invokeUpgrade('codex-exp');
+  assert.equal(twin.statusCode, 409);
+  assert.equal(twin.body.running, true);
+  assert.equal(twin.body.jobId, first.body.jobId);
+  assert.match(twin.body.error, /codex/);
+  // 不同目标 -> 允许并行(用户抱怨的「升级按钮一次只能点一个」)
+  const other = await harness.invokeUpgrade('opencode');
+  assert.equal(other.statusCode, 202);
+  const third = await harness.invokeUpgrade('dsh');
+  assert.equal(third.statusCode, 202);
+  assert.equal(spawned.length, 3);
+  // 三个任务各自独立可查
+  for (const jobId of [first.body.jobId, other.body.jobId, third.body.jobId]) {
+    const status = await harness.invokeStatus(jobId);
+    assert.equal(status.body.job.status, 'running');
+  }
 });

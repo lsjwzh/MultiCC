@@ -278,3 +278,29 @@ test('forced shutdown reaps each chat background shadow exactly once before stre
   assert.equal(reaps.length, 1);
   assert.ok(timeline.indexOf(reaps[0]) < timeline.indexOf('stream-close:chat-a'));
 });
+
+// stopAuxQueue 从「一个 currentTask」变成「并发池里的每一个槽」：停机时每一个在飞
+// 的 Aux 请求都要标脏，否则它的结果会在关停中途回流；排队的照旧带着
+// SERVER_SHUTTING_DOWN 被拒。
+test('shutdown marks every running aux slot cancelled, not only the first', async () => {
+  const timeline = [];
+  const rejected = [];
+  const slots = ['slot-1', 'slot-2', 'slot-3'].map(id => ({ id, cancelled: false }));
+  const queued = ['wait-1', 'wait-2'].map(id => ({
+    id,
+    cancelled: false,
+    reject: error => rejected.push({ id, code: error.code }),
+  }));
+  const loaded = loadHostLifecycle();
+  const deps = createDeps({ timeline });
+  deps.auxQueue = { queue: queued, running: slots, processing: true, currentTask: slots[0] };
+  loaded.createHostLifecycle(deps);
+
+  await loaded.getCoordinator().shutdown({ graceMs: 0 });
+
+  assert.deepEqual(rejected, [
+    { id: 'wait-1', code: 'SERVER_SHUTTING_DOWN' },
+    { id: 'wait-2', code: 'SERVER_SHUTTING_DOWN' },
+  ]);
+  assert.deepEqual(slots.map(slot => slot.cancelled), [true, true, true]);
+});

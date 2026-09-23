@@ -10,6 +10,27 @@ const autoEditor = require('../public/auto-provider-editor');
 const providerCatalog = require('../public/provider-catalog');
 
 const ROOT = path.join(__dirname, '..');
+// 显示名只有一个：Anthropic 的 Claude Agent SDK（内部 id 仍是 claude-exp）。这张表
+// 在四个地方各有一份（聊天头、任务设置、管理台新建会话、任务板），重命名最容易出的
+// 事就是改一处漏三处，所以在这里锁住。
+test('every claude-exp label map says "Claude Agent SDK", never "Claude Exp"', () => {
+  const labelled = [
+    'public/chat.js',
+    'public/air-task-settings.js',
+    'public/manage-session-lifecycle.js',
+    'public/manage-taskboard.js',
+  ];
+  for (const file of labelled) {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.match(source, /['"]claude-exp['"]\s*:\s*(?:\{\s*label:\s*)?['"]Claude Agent SDK['"]/, `${file} labels claude-exp as Claude Agent SDK`);
+  }
+  const anyUi = [...labelled, 'public/manage-dashboard.js', 'src/cli-adapters/claude-exp.js', 'src/cli/switch-runtime.js'];
+  for (const file of anyUi) {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.ok(!source.includes('Claude Exp'), `${file} still says "Claude Exp"`);
+  }
+});
+
 const CLAUDE_MODELS = [
   { value: '', label: 'Default' },
   { value: 'claude-opus-4-8', label: 'Opus 4.8' },

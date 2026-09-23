@@ -51,7 +51,7 @@ function createClaudeExpAdapter(deps = {}) {
     decodeEvent(event) {
       if (event?.type === 'system' && event.subtype === 'sdk_error') {
         return [{
-          type: 'error', label: 'Claude Exp', kind: 'provider',
+      type: 'error', label: 'Claude Agent SDK', kind: 'provider',
           message: event.error || 'Claude Agent SDK bridge failed',
         }];
       }

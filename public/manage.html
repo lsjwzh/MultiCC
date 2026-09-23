@@ -2530,7 +2530,11 @@
         const s = all.find(x => x.type === 'aux');
         const aux = (s && s.auxStatus) || {};
         let cls = 'idle', text = aux.warmReady ? '就绪' : '空闲';
-        if (aux.processing) { cls = 'running'; text = '处理中'; }
+        // 并发池：显示「处理中 3/6」而不是笼统的「处理中」——槽位数就是并发上限
+        // （pool + 那条严格顺序 lane），排队数仍是 queueDepth。
+        const auxCapacity = Number(aux.capacity) > 0 ? Number(aux.capacity) : 1;
+        const auxActive = Number.isFinite(Number(aux.active)) ? Number(aux.active) : (aux.processing ? 1 : 0);
+        if (aux.processing) { cls = 'running'; text = auxCapacity > 1 ? `处理中 ${auxActive}/${auxCapacity}` : '处理中'; }
         else if (aux.queueDepth > 0) { cls = 'waiting'; text = `${aux.queueDepth} 排队`; }
         const badge = document.getElementById('kpi-aux-status');
         if (badge) { badge.className = 'status-badge ' + cls; badge.textContent = text; }

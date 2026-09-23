@@ -1235,8 +1235,9 @@ class ManageService {
   }
 
   /// POST /api/task-board/backfill -> enqueue historical archiving of chat
-  /// sessions into the board (aux classifies serially; progress is readable
-  /// from the board payload's `backfill` state). Returns {ok, queued, note}.
+  /// sessions into the board (the aux pool classifies them, several at a time;
+  /// progress is readable from the board payload's `backfill` state).
+  /// Returns {ok, queued, note}.
   /// 409 = a backfill is already running (`backfill_running`), 503 = aux
   /// unhealthy — both surface as [BoardRouteException]; 403 ->
   /// [LocalOnlyException] is the pre-57bfe99 skew fallback.

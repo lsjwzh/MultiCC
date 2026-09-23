@@ -17,7 +17,7 @@ const OFFICIAL_INSTALL_SPECS = Object.freeze({
   },
   'claude-exp': {
     auto: false,
-    manual: 'Claude Exp 使用 MultiCC 内置的 Claude Agent SDK；请升级 MultiCC 来更新 SDK',
+      manual: 'Claude Agent SDK 由 MultiCC 内置；请升级 MultiCC 来更新 SDK',
   },
   codex: {
     auto: true,
@@ -153,9 +153,12 @@ function createCliSwitchRuntime(options) {
   const cliCommandsOverride = options.cliCommands;
   const execFileVersionOverride = options.execFileVersion;
   const fetchLatestVersionOverride = options.fetchLatestVersion;
+  const fetchLatestSourceOverride = options.fetchLatestVersionWithSource;
   const registryBaseOverride = options.registryBase;
   const versionCache = { at: 0, versions: null };
-  const latestCache = { at: 0, latest: null };
+  // registry 与 latest 一起缓: 记下「这个新版是从哪个源读到的」, 安装时把同一个源
+  // 交给 npm, 保证报得出的新版一定装得到(见 buildInstallEnv)。
+  const latestCache = { at: 0, latest: null, registry: null };
   let updateWatchStarted = false;
 
   function resolveCliCommandMap() {
@@ -174,6 +177,16 @@ function createCliSwitchRuntime(options) {
   function resolveFetchLatestVersion() {
     if (typeof fetchLatestVersionOverride === 'function') return fetchLatestVersionOverride;
     return pkg => cliUpstream.fetchLatestVersion(pkg, { registryBase: registryBaseOverride });
+  }
+
+  // 与 resolveFetchLatestVersion 同一件事, 但多带一个「哪个源答的」。注入的老接口
+  // (只回版本号)继续被兼容: 包成 {version, registry: 显式源或 null}。
+  function resolveFetchLatestVersionWithSource() {
+    if (typeof fetchLatestSourceOverride === 'function') return fetchLatestSourceOverride;
+    if (typeof fetchLatestVersionOverride === 'function') {
+      return async pkg => ({ version: await fetchLatestVersionOverride(pkg), registry: registryBaseOverride || null });
+    }
+    return pkg => cliUpstream.fetchLatestVersionWithSource(pkg, { registryBase: registryBaseOverride });
   }
 
   function resolveSpawn() {
@@ -219,10 +232,20 @@ function createCliSwitchRuntime(options) {
   }
 
   function findRunningInstallJob(cli) {
+    // 串行键是「安装目标」而不是「CLI 名」: codex 与 codex-exp 派生同一个二进制、
+    // 跑同一条 `npm install -g @openai/codex`, 两个并发任务会让 npm 自己踩自己的
+    // 全局目录。同目标必须串行, 不同目标可以并行。
+    const target = installTargetKey(cli);
     for (const job of installJobs.values()) {
-      if (job.cli === cli && job.status === 'running') return job;
+      if (job.status === 'running' && installTargetKey(job.cli) === target) return job;
     }
     return null;
+  }
+
+  function installTargetKey(cli) {
+    const spec = installSpecs[cli];
+    const command = spec && typeof spec.command === 'string' ? spec.command.trim() : '';
+    return command || `cli:${cli}`;
   }
 
   function serializeInstallJob(job) {
@@ -231,11 +254,15 @@ function createCliSwitchRuntime(options) {
       cli: job.cli,
       status: job.status,
       command: job.command,
+      target: job._target || null,
       startedAt: job.startedAt,
       endedAt: job.endedAt,
       exitCode: job.exitCode,
       error: job.error,
-      hint: classifyInstallHint(job._log.tail()),
+      // job.hint 优先: 它是「命令成功但没作用到派生的二进制」这类我们已经查明的
+      // 具体原因, 比按日志正则猜出来的通用提示更准。
+      hint: job.hint || classifyInstallHint(job._log.tail()),
+      registry: job._registry || null,
       logTail: job._log.tail(),
     };
   }
@@ -329,27 +356,35 @@ function createCliSwitchRuntime(options) {
   async function probeLatestVersions({ force, versions }) {
     const now = clock();
     const fresh = !force && latestCache.latest && (now - latestCache.at) < CLI_LATEST_TTL_MS;
-    if (fresh) return { latest: latestCache.latest, at: latestCache.at, cached: true };
-    const fetchLatest = resolveFetchLatestVersion();
+    if (fresh) {
+      return { latest: latestCache.latest, registry: latestCache.registry, at: latestCache.at, cached: true };
+    }
+    const fetchLatest = resolveFetchLatestVersionWithSource();
     const next = {};
+    const usedRegistry = {};
     await Promise.all(supportedClis.map(async (cli) => {
       const pkg = cliUpstream.npmPackageFor(cli);
       const entry = versions[cli];
-      if (!pkg || !entry || !entry.available) { next[cli] = null; return; }
+      if (!pkg || !entry || !entry.available) { next[cli] = null; usedRegistry[cli] = null; return; }
       try {
-        next[cli] = await fetchLatest(pkg);
+        const result = await fetchLatest(pkg);
+        // 兼容两种注入: 老接口回版本号, 新接口回 {version, registry}。
+        next[cli] = typeof result === 'string' ? result : (result && result.version) || null;
+        usedRegistry[cli] = (result && typeof result === 'object' && result.registry) || null;
       } catch (_) {
         next[cli] = null;
+        usedRegistry[cli] = null;
       }
     }));
     latestCache.at = now;
     latestCache.latest = next;
-    return { latest: next, at: now, cached: false };
+    latestCache.registry = usedRegistry;
+    return { latest: next, registry: usedRegistry, at: now, cached: false };
   }
 
   // 合并成对外契约。原有字段(cmd/available/version/error)一个不动, 只新增
-  // latest/updateAvailable/updateSource/inUseCount, 老客户端继续照旧读。
-  function decorateVersions(versions, latest, inUse = {}) {
+  // latest/updateAvailable/updateSource/inUseCount/latestRegistry, 老客户端继续照旧读。
+  function decorateVersions(versions, latest, inUse = {}, registry = {}) {
     const out = {};
     for (const cli of supportedClis) {
       const entry = versions[cli] || { cmd: null, available: false, version: null, error: null };
@@ -360,6 +395,9 @@ function createCliSwitchRuntime(options) {
         latest: verdict.latest,
         updateAvailable: verdict.updateAvailable,
         updateSource: pkg ? 'npm' : null,
+        // 这个 latest 是从哪个 registry 读到的(null = 没读到)。面板拿它解释「为什么
+        // 走的是镜像」, 升级则用同一个源去装。
+        latestRegistry: (registry && registry[cli]) || null,
         inUseCount: inUse[cli] || 0,
       };
     }
@@ -369,7 +407,7 @@ function createCliSwitchRuntime(options) {
   async function collectCliVersions({ force = false } = {}) {
     const local = await probeLocalVersions({ force });
     const upstream = await probeLatestVersions({ force, versions: local.versions });
-    const versions = decorateVersions(local.versions, upstream.latest, cliInUseCounts());
+    const versions = decorateVersions(local.versions, upstream.latest, cliInUseCounts(), upstream.registry);
     const updateCount = Object.values(versions).filter(entry => entry.updateAvailable).length;
     return {
       versions,
@@ -377,6 +415,7 @@ function createCliSwitchRuntime(options) {
       checkedAt: new Date(Math.max(local.at, upstream.at)).toISOString(),
       lastCheckedAt: new Date(local.at).toISOString(),
       latestCheckedAt: new Date(upstream.at).toISOString(),
+      latestRegistries: upstream.registry || null,
       updateCount,
     };
   }
@@ -386,6 +425,7 @@ function createCliSwitchRuntime(options) {
     versionCache.versions = null;
     latestCache.at = 0;
     latestCache.latest = null;
+    latestCache.registry = null;
   }
 
   // 启动后探一次, 之后每 24h 一次。两个 timer 都 unref: 检测永远不该把一个进程
@@ -413,9 +453,47 @@ function createCliSwitchRuntime(options) {
   }
 
   // spawn 的 PATH 追加常见二进制目录(homebrew/local/user-local)。
-  function buildInstallEnv() {
+  function buildInstallEnv(cli) {
     const extra = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin')];
-    return { ...process.env, PATH: [process.env.PATH, ...extra].filter(Boolean).join(':') };
+    const env = { ...process.env, PATH: [process.env.PATH, ...extra].filter(Boolean).join(':') };
+    // 「在哪个源上看到新版，就在哪个源上装」：检测走了兜底镜像（官方源不可达）时，
+    // 必须把同一个源交给 npm，否则升级命令会去打一个连不上的官方源 —— 用户看到的
+    // 就是「明明说有新版，升级却总是失败」。只作用于这次安装子进程，不写任何配置。
+    const registry = (latestCache.registry && latestCache.registry[cli]) || null;
+    if (registry) env.npm_config_registry = registry;
+    return env;
+  }
+
+  // 各 CLI 用来覆盖可执行文件路径的环境变量(与 cli-adapters/commands.js 一致),
+  // 用于「升级没作用到派生二进制」时给出可直接照做的出路。
+  const CLI_CMD_ENV = Object.freeze({
+    claude: 'CLAUDE_CMD', codex: 'CODEX_CMD', 'codex-exp': 'CODEX_CMD',
+    opencode: 'OPENCODE_CMD', zcode: 'ZCODE_CMD', kimi: 'KIMI_CMD',
+    qoder: 'QODER_CMD', codebuddy: 'CODEBUDDY_CMD', dsh: 'DSH_CMD',
+  });
+
+  // 「命令成功」不等于「multicc 派生的那个二进制升级了」。实测: 同一台机器上 claude
+  // 既有原生安装(~/.local/bin/claude, 也是 multicc 优先派生的那个)又有 npm 全局安装,
+  // `npm install -g` 把新版装进 /opt/homebrew, 派生路径纹丝不动 —— 面板上「有新版」的
+  // 角标永不消失, 用户看到的就是「升级总是失败」。
+  // 判据: 升级前就已知有新版, 升级后派生二进制的 `--version` 一个字符都没变 ->
+  // 这次升级没作用到真正在用的那份, 如实报错并给出两条可照做的出路。
+  async function verifyInstallReachedBinary(job, cli) {
+    const before = job._beforeVersion;
+    const expected = job._expectedLatest;
+    if (!before || !expected) return; // 升级前就不知道版本/最新版 -> 不下结论
+    if (cliUpstream.compareSemver(before, expected) >= 0) return; // 本来就不落后
+    const cmd = resolveCliCommandMap()[cli];
+    if (!cmd) return;
+    const probed = await probeCliVersion(cmd);
+    if (!probed || !probed.version) return; // 探不到就不下结论
+    if (cliUpstream.compareSemver(before, probed.version) !== 0) return; // 真的换掉了
+    job.status = 'error';
+    job.error = `升级命令已完成，但 multicc 派生的 ${cmd} 仍是 v${before}`;
+    job.hint = '新版本装到了另一个位置，multicc 实际派生的这个二进制没有变化。'
+      + `解决办法二选一：① 设置环境变量 ${CLI_CMD_ENV[cli] || `${String(cli).toUpperCase()}_CMD`}`
+      + ' 指向升级后的可执行文件，然后重启 multicc；'
+      + `② 移除或重命名被派生的旧安装（${cmd}），让 multicc 回退到新装的那一份。`;
   }
 
   function launchInstallJob(cli) {
@@ -424,9 +502,18 @@ function createCliSwitchRuntime(options) {
     const jobId = makeInstallJobId();
     const startedAt = new Date(clock()).toISOString();
     const log = createLogRing();
+    // 升级前的基线: 派生二进制的当前版本 + 我们已知的上游最新版。两者都有时, 命令跑完
+    // 才能判断「这次升级到底有没有作用到真正在用的那个二进制」(见 verifyInstallReachedBinary)。
+    // 缓存是冷的就不下结论 —— 宁可少一次诊断, 不可误报一次失败。
+    const beforeEntry = (versionCache.versions && versionCache.versions[cli]) || null;
     const job = {
       id: jobId, cli, status: 'running', command, startedAt,
       endedAt: null, exitCode: null, error: null, _log: log, _timer: null,
+      hint: null,
+      _target: installTargetKey(cli),
+      _registry: (latestCache.registry && latestCache.registry[cli]) || null,
+      _beforeVersion: (beforeEntry && beforeEntry.version) || null,
+      _expectedLatest: (latestCache.latest && latestCache.latest[cli]) || null,
     };
     if (installJobs.size >= INSTALL_JOB_CAPACITY) {
       const oldest = installJobs.keys().next().value;
@@ -435,7 +522,7 @@ function createCliSwitchRuntime(options) {
     installJobs.set(jobId, job);
 
     const spawn = resolveSpawn();
-    const env = buildInstallEnv();
+    const env = buildInstallEnv(cli);
     let proc;
     try {
       // 命令全来自静态表, 无用户输入拼接; 仅用 async spawn, 禁止同步子进程调用。
@@ -485,7 +572,12 @@ function createCliSwitchRuntime(options) {
         if (avail && avail[cli] && avail[cli].available) {
           job.status = 'done';
           // 装/升级成功 -> 两份缓存都作废, 下一次读取立刻反映新版本(角标随之消失)。
+          // 先同步作废缓存(调用方可能立刻再读 /api/cli/versions), 再异步做「升级
+          // 真的作用到派生二进制了吗」的复查 —— 它能推翻上面这个 done。
           invalidateVersionCaches();
+          Promise.resolve()
+            .then(() => verifyInstallReachedBinary(job, cli))
+            .catch(() => { /* 复查只是尽力而为, 失败不改状态 */ });
         } else {
           job.status = 'error';
           job.error = '安装已完成, 但未在 PATH 找到可执行文件, 请重开终端或手动配置 PATH';
@@ -836,7 +928,14 @@ function createCliSwitchRuntime(options) {
       }
       const running = findRunningInstallJob(cli);
       if (running) {
-        return res.status(409).json({ ok: false, running: true, jobId: running.id });
+        return res.status(409).json({
+          ok: false, running: true, jobId: running.id,
+          // 串行是按「安装目标」判的, 所以可能是另一个 CLI(codex / codex-exp 跑同一条
+          // npm 命令)占着。说清楚是谁在占, 比一个干巴巴的 409 有用。
+          error: running.cli === cli
+            ? `${cli} 的安装/升级任务正在进行中`
+            : `${running.cli} 与 ${cli} 使用同一条安装命令，请等它跑完再试`,
+        });
       }
       const job = launchInstallJob(cli);
       return res.status(202).json({ ok: true, jobId: job.id, cli: job.cli, command: job.command });
@@ -884,7 +983,12 @@ function createCliSwitchRuntime(options) {
       }
       const running = findRunningInstallJob(cli);
       if (running) {
-        return res.status(409).json({ ok: false, running: true, jobId: running.id });
+        return res.status(409).json({
+          ok: false, running: true, jobId: running.id,
+          error: running.cli === cli
+            ? `${cli} 的升级任务正在进行中`
+            : `${running.cli} 与 ${cli} 使用同一条安装命令，请等它跑完再试`,
+        });
       }
       const job = launchInstallJob(cli);
       return res.status(202).json({

@@ -20,7 +20,10 @@
 // loop or a DNS failure resolves to null — never a throw, never a rejection —
 // so one unreachable registry cannot blank the panel or fail a request.
 
+const fs = require('node:fs');
 const https = require('node:https');
+const os = require('node:os');
+const path = require('node:path');
 
 const NPM_PACKAGES = Object.freeze({
   claude: '@anthropic-ai/claude-code',
@@ -34,6 +37,14 @@ const NPM_PACKAGES = Object.freeze({
 });
 
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org/';
+// 兜底源：只在「主源读不出结果」时才用。
+// 为什么必须有它：registry.npmjs.org 在部分网络环境是整段不可达（本机实测 5s 无响应、
+// http=000，而 registry.npmmirror.com 0.12s 返回 200）。没有兜底时 latest 恒为 null，
+// 「有没有新版」这一整个功能都是死的 —— 面板只剩「无法检测最新版」。
+// 关键约束：读哪个源报「可升级」，就在哪个源上装（见 resolveRegistryCandidates 与
+// switch-runtime 的 buildInstallEnv），否则会出现「报得出新版、却装不到」的假升级。
+// MULTICC_CLI_REGISTRY_FALLBACKS='' 可整体关掉（或换成自建镜像，逗号分隔）。
+const FALLBACK_REGISTRIES = Object.freeze(['https://registry.npmmirror.com/']);
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
@@ -66,13 +77,57 @@ function compareSemver(a, b) {
   return left.prerelease ? -1 : 1;
 }
 
+function normalizeRegistry(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!/^https?:\/\//i.test(text)) return null;
+  return text.endsWith('/') ? text : `${text}/`;
+}
+
+// `registry=...` 是 npm 自己的用户级配置。npm_config_registry 只在 npm 启动的
+// 子进程里才有，服务常驻进程的 env 里通常没有 —— 只看 env 会把「用 .npmrc 配了镜像」
+// 的用户当成官方源用户，于是既报不出最新版，也装不上。所以这里按 npm 的顺序读一次
+// 用户 .npmrc（可用 NPM_CONFIG_USERCONFIG 指定，测试里用 npmrcPath 注入）。
+function readNpmrcRegistry(env = process.env, options = {}) {
+  const explicit = options.npmrcPath
+    || (env && (env.NPM_CONFIG_USERCONFIG || env.npm_config_userconfig))
+    || path.join(options.homeDir || os.homedir(), '.npmrc');
+  let text;
+  try {
+    text = fs.readFileSync(explicit, 'utf8');
+  } catch (_) {
+    return null;
+  }
+  for (const line of String(text).split('\n')) {
+    const match = line.match(/^\s*registry\s*=\s*(.+?)\s*$/i);
+    if (match) {
+      const normalized = normalizeRegistry(match[1].replace(/^["']|["']$/g, ''));
+      if (normalized) return normalized;
+    }
+  }
+  return null;
+}
+
 // 国内镜像用户把 npm_config_registry 指到 npmmirror 时，最新版必须从同一个源读，
 // 否则会拿官方源的最新版去比镜像里装的旧版，报出用户装不到的「可更新」。
-function resolveRegistryBase(env = process.env) {
-  const raw = (env && (env.npm_config_registry || env.NPM_CONFIG_REGISTRY)) || DEFAULT_REGISTRY;
-  const text = String(raw).trim();
-  if (!/^https?:\/\//i.test(text)) return DEFAULT_REGISTRY;
-  return text.endsWith('/') ? text : `${text}/`;
+function resolveRegistryBase(env = process.env, options = {}) {
+  const fromEnv = normalizeRegistry(env && (env.npm_config_registry || env.NPM_CONFIG_REGISTRY));
+  if (fromEnv) return fromEnv;
+  return readNpmrcRegistry(env, options) || DEFAULT_REGISTRY;
+}
+
+// 主源 + 兜底源，按顺序尝试。第一个给出答案的源就是「报出这个新版」的源，调用方
+// 要把它交给 npm 去装。
+function resolveRegistryCandidates(env = process.env, options = {}) {
+  const raw = env && env.MULTICC_CLI_REGISTRY_FALLBACKS;
+  const fallbacks = raw == null
+    ? FALLBACK_REGISTRIES
+    : String(raw).split(',').map(entry => entry.trim()).filter(Boolean);
+  const out = [resolveRegistryBase(env, options)];
+  for (const candidate of fallbacks) {
+    const normalized = normalizeRegistry(candidate);
+    if (normalized && !out.includes(normalized)) out.push(normalized);
+  }
+  return out;
 }
 
 // scoped 包名里的 `/` 是包名的一部分，只有 @ 需要转义。
@@ -95,15 +150,13 @@ function readJsonBody(response, limit = MAX_BODY_BYTES) {
   });
 }
 
-async function fetchLatestVersion(pkg, options = {}) {
+async function fetchLatestFrom(pkg, registryBase, options = {}) {
   const {
-    registryBase,
     timeoutMs = FETCH_TIMEOUT_MS,
-    env = process.env,
     httpsImpl = https,
   } = options;
-  if (!pkg) return null;
-  const url = latestUrl(pkg, registryBase || resolveRegistryBase(env));
+  if (!pkg || !registryBase) return null;
+  const url = latestUrl(pkg, registryBase);
 
   const request = (target, redirectsLeft) => new Promise((resolve) => {
     let settled = false;
@@ -150,6 +203,24 @@ async function fetchLatestVersion(pkg, options = {}) {
   }
 }
 
+// 显式给 registryBase 时只问那一个源（调用方已经知道要用谁）；没给就按
+// 主源 → 兜底源的顺序试，并如实回报是哪个源答的。version 为 null 时 registry
+// 也是 null —— 「没答上来」不能伪装成「这个源说没有新版」。
+async function fetchLatestVersionWithSource(pkg, options = {}) {
+  const { registryBase, env = process.env, ...rest } = options;
+  if (!pkg) return { version: null, registry: null };
+  const bases = registryBase ? [registryBase] : resolveRegistryCandidates(env);
+  for (const base of bases) {
+    const version = await fetchLatestFrom(pkg, base, rest);
+    if (version) return { version, registry: base };
+  }
+  return { version: null, registry: null };
+}
+
+async function fetchLatestVersion(pkg, options = {}) {
+  return (await fetchLatestVersionWithSource(pkg, options)).version;
+}
+
 // 任一为空就不下结论 —— 「不知道最新版」必须与「已是最新」区分开。
 function classifyUpdate(installed, latest) {
   const current = parseSemver(installed) ? String(installed).replace(/^v/, '') : null;
@@ -171,9 +242,14 @@ module.exports = {
   FETCH_TIMEOUT_MS,
   parseSemver,
   compareSemver,
+  FALLBACK_REGISTRIES,
+  normalizeRegistry,
   resolveRegistryBase,
+  resolveRegistryCandidates,
+  readNpmrcRegistry,
   latestUrl,
   fetchLatestVersion,
+  fetchLatestVersionWithSource,
   classifyUpdate,
   npmPackageFor,
 };

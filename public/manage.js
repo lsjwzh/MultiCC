@@ -1176,6 +1176,28 @@ async function loadCronTasks() {
       // 活动状态
       const statusColor = t.lastStatus === 'ok' ? 'var(--accent)' : (t.lastStatus ? 'var(--danger)' : 'var(--faint)');
 
+      // 执行记录：卡片上只留「上次」不够用，用户要回答的是「今天跑没跑、哪次失败」。
+      // 默认收起，展开显示最近几次（服务端每次触发都记一条，有界）。
+      const recentRuns = Array.isArray(t.recentRuns) ? t.recentRuns : [];
+      const runsHtml = recentRuns.length ? `
+        <details style="font-size:12px;color:var(--muted);background:rgba(0,0,0,0.12);border-radius:8px;padding:6px 10px;">
+          <summary style="cursor:pointer;color:var(--faint);">执行记录（最近 ${recentRuns.length} 次${t.runCount > recentRuns.length ? ` / 共 ${t.runCount} 次` : ''}）</summary>
+          <div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;">
+            ${recentRuns.slice(0, 8).map(run => {
+              const when = _cronTime(run.at);
+              const source = run.reason === 'manual' ? '手动' : '定时';
+              const outcome = run.status === 'queued' ? '已入队' : run.status === 'ok' ? '成功' : (run.error || '失败');
+              const color = run.status === 'error' ? 'var(--danger)' : 'var(--muted)';
+              return `<div style="display:flex;gap:8px;align-items:center;">
+                <span style="color:var(--faint);white-space:nowrap;">${escapeHtml(String(when))}</span>
+                <span style="color:var(--faint);">${source}</span>
+                <span style="color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(String(outcome))}</span>
+              </div>`;
+            }).join('')}
+          </div>
+        </details>
+      ` : '';
+
       row.innerHTML = `
         <!-- 标题行 -->
         <div style="display:flex;align-items:center;gap:8px;">
@@ -1236,6 +1258,8 @@ async function loadCronTasks() {
         <div style="font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:6px 10px;background:rgba(0,0,0,0.1);border-radius:6px;">
           💬 ${escapeHtml((t.prompt || '').slice(0, 120))}${(t.prompt || '').length > 120 ? '…' : ''}
         </div>
+
+        ${runsHtml}
 
         <!-- 操作按钮 -->
         <div style="display:flex;gap:6px;margin-top:auto;padding-top:4px;border-top:1px solid var(--line);">
