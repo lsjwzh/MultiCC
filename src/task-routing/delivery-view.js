@@ -18,17 +18,22 @@ async function deliveryView({ sessionId, taskId, candidate, separation, admissio
   const codeChanged = codeObserved && run.startCodeRevision
     ? run.startCodeRevision !== run.endCodeRevision : null;
   const noCodeChange = codeChanged === false;
-  // A confirmed task separation starts a new worktree at a clean source
-  // snapshot.  It is deliberately not a request to integrate source code into
-  // main, so showing “code has not been merged” here is both misleading and a
-  // false blocker for a perfectly usable new task.
+  // A confirmed task separation moves the source checkout — committed state
+  // and uncommitted work alike — into the new task. It is deliberately not a
+  // request to integrate source code into main, so showing “code has not been
+  // merged” here is both misleading and a false blocker for a perfectly usable
+  // new task.
   const workspaceSnapshot = separation?.deliveryKind === 'workspace_snapshot';
   const integrationCurrent = !!integration && baseline?.effectValid === true;
   const codeDelivered = workspaceSnapshot
-    ? !!barrier && barrier.writersStopped === true && barrier.dirty === false
+    ? !!barrier && barrier.writersStopped === true
     : codeObserved && (noCodeChange || integrationCurrent);
-  const barrierCurrent = !!barrier && barrier.turnId === run?.id
-    && barrier.codeRevision === run?.endCodeRevision && barrier.writersStopped === true;
+  // A workspace-snapshot barrier freezes whatever the checkout holds *now*: the
+  // revision that finished turn recorded is diagnostics there, because
+  // AutoCommit and sibling sync move it in between. Delivery barriers keep the
+  // strict revision equality.
+  const barrierCurrent = !!barrier && barrier.turnId === run?.id && barrier.writersStopped === true
+    && (workspaceSnapshot || barrier.codeRevision === run?.endCodeRevision);
   const separationApplied = separation?.state === 'separated' && !!application
     && application.separationId === separation.id && application.targetTaskId === separation.taskId;
   const fixedAttribution = !separation && !candidate && !!run && (!taskId || run.taskId === taskId);

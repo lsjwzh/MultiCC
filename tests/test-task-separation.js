@@ -1,7 +1,13 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { fixture } = require('./helpers/task-shell');
+const { gitWorktreeAdd } = require('../src/git/service');
+const { createSeparationTransfer } = require('../src/workspace/separation-transfer');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
 const { parseTaskAttribution, buildTaskAttributionSystemPrompt } = require('../src/classify/task-attribution');
 const { mountTaskShellRoutes } = require('../src/task-shell/routes');
@@ -165,18 +171,126 @@ test('a clean source snapshot does not require a merge receipt', async t => {
     verifyDeliveryBaseline: async () => ({ effectValid: false }) });
   assert.equal((await stale.runtime.separation.decide('a', stale.propose().id, 'separate')).ok, true);
 });
-test('busy and dirty sources retain the suggestion and expose the original error', async t => {
+test('busy sources keep the suggestion while a dirty source moves its checkout into the new task', async t => {
   const f = await setup(t), p = f.propose();
   f.ports.withSeparationBarrier = async (input, work) => {
     if (f.statuses.get('a')?.busy) throw Object.assign(new Error('busy'), { code: 'fork_source_busy' });
     return work({ barrier: { id: `barrier-${input.separationId}` },
-      code: { revision: 'revision-1', head: 'a'.repeat(40), repoId: 'repo-1', dirty: true } });
+      code: { revision: 'revision-9', head: 'a'.repeat(40), repoId: 'repo-1', dirty: true } });
   };
   f.statuses.set('a', { busy: true });
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_busy' });
   f.statuses.set('a', { busy: false });
-  await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'fork_source_dirty' });
-  assert.equal(f.runtime.separation.latest('a').id, p.id); assert.equal(f.store.list('task').length, 2);
+  // A dirty checkout is no longer a refusal: it is exactly what the new task
+  // takes over, and the source keeps nothing but its branch.
+  const result = await f.runtime.separation.decide('a', p.id, 'separate');
+  assert.equal(result.ok, true);
+  assert.equal(f.transfers.length, 1);
+  assert.deepEqual(f.transfers[0], { separationId: p.id, turnId: 'turn-1', barrierId: `barrier-${p.id}`,
+    sourceSessionId: 'a', sourceTaskId: p.sourceTaskId, targetTaskId: p.taskId,
+    targetSessionId: p.taskId.replace(/^tsk_/, 'task-'), baseCommit: 'a'.repeat(40) });
+  assert.equal(f.records.get(result.sessionId).workspaceState, 'awake');
+  assert.equal(f.store.get('task-separation', p.id).lastError, null);
+  assert.equal(f.store.list('task').length, 2);
+});
+test('a failed checkout transfer stays retryable and never records an application', async t => {
+  const f = await setup(t), p = f.propose(), transfer = f.ports.transferWorkspace;
+  f.ports.transferWorkspace = async input => { f.transfers.push(input); return { ok: false, code: 'split_off_failed', error: 'carry patch does not apply' }; };
+  await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'split_off_failed' });
+  const saved = f.store.get('task-separation', p.id);
+  assert.equal(saved.phase, 'blocked');
+  assert.deepEqual(saved.lastError, { code: 'split_off_failed' });
+  assert.equal(f.applications.length, 0, 'no application receipt without a moved checkout');
+  assert.equal(f.runtime.separation.latest('a').id, p.id);
+  f.ports.transferWorkspace = transfer;
+  const retried = await createTaskShellRuntime(f.ports).separation.decide('a', p.id, 'separate');
+  assert.equal(retried.ok, true);
+  assert.equal(f.transfers.length, 2, 'the retry moves the checkout instead of reusing a partial one');
+  assert.equal(f.creations.length, 1, 'the new execution is not created twice');
+  assert.equal(f.applications.length, 1);
+});
+test('a host that cannot move the checkout refuses to split the task', async t => {
+  const f = await setup(t, { transferWorkspace: undefined }), p = f.propose();
+  await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'separation_transfer_unavailable' });
+  assert.equal(f.store.get('task-separation', p.id).phase, 'blocked');
+  assert.equal(f.applications.length, 0);
+  assert.equal(f.store.list('task').length, 2);
+});
+test('a real separation moves the checkout, keeps the branch and rebuilds the source on demand', async t => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-split-'));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(repo, 'init', '-b', 'main');
+  git(repo, 'config', 'user.name', 'Test'); git(repo, 'config', 'user.email', 'test@example.invalid');
+  fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n');
+  git(repo, 'add', '.'); git(repo, 'commit', '-m', 'base');
+  const worktrees = path.join(repo, '.multicc-worktrees'), source = 'shell-a', target = 'task-b';
+  const sourceDir = path.join(worktrees, source), targetDir = path.join(worktrees, target);
+  git(repo, 'worktree', 'add', '-b', `multicc/${source}`, sourceDir);
+  // The judged turn already committed work; more of it is still uncommitted.
+  fs.writeFileSync(path.join(sourceDir, 'committed.txt'), 'landed\n');
+  git(sourceDir, 'add', '.'); git(sourceDir, 'commit', '-m', 'turn work');
+  const tip = git(sourceDir, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(sourceDir, 'base.txt'), 'edited\n');
+  fs.writeFileSync(path.join(sourceDir, 'new-file.txt'), 'untracked\n');
+  const records = new Map([
+    [source, { id: source, dirId: 'd', kind: 'chat', taskBoundTaskId: 'tsk_a', worktreePath: sourceDir,
+      branch: `multicc/${source}`, workspaceState: 'awake' }],
+    [target, { id: target, dirId: 'd', kind: 'chat', taskBoundTaskId: 'tsk_b', worktreePath: targetDir,
+      branch: `multicc/${target}`, workspaceState: 'planned' }],
+  ]);
+  const directories = new Map([['d', { id: 'd', path: repo, baseBranch: 'main' }]]);
+  const transfer = createSeparationTransfer({ records, directories, persistence: { mutate: (id, fn) => fn(records) },
+    log: { warn() {} } });
+  const moved = await transfer({ sourceSessionId: source, targetSessionId: target, baseCommit: tip });
+  assert.equal(moved.ok, true, JSON.stringify(moved));
+  assert.equal(git(targetDir, 'rev-parse', 'HEAD'), tip);
+  assert.equal(fs.readFileSync(path.join(targetDir, 'base.txt'), 'utf8'), 'edited\n');
+  assert.equal(fs.readFileSync(path.join(targetDir, 'new-file.txt'), 'utf8'), 'untracked\n');
+  assert.equal(fs.readFileSync(path.join(targetDir, 'committed.txt'), 'utf8'), 'landed\n');
+  assert.equal(git(targetDir, 'status', '--porcelain').split('\n').filter(Boolean).length, 2,
+    'the moved work is still uncommitted in the new task');
+  assert.equal(fs.existsSync(sourceDir), false, 'the source checkout is gone');
+  assert.equal(git(repo, 'rev-parse', `refs/heads/multicc/${source}`), tip, 'the source branch is kept at its own tip');
+  assert.equal(records.get(source).workspaceState, 'hibernated');
+  assert.equal(records.get(target).workspaceState, 'awake');
+  // The very next message on the source rebuilds its checkout — without the work
+  // that just moved to the new task.
+  const rebuilt = await gitWorktreeAdd(repo, source, null, { sessionId: source, requireExistingBranch: true });
+  assert.equal(rebuilt.ok, true);
+  assert.equal(git(sourceDir, 'rev-parse', 'HEAD'), tip);
+  assert.equal(fs.readFileSync(path.join(sourceDir, 'base.txt'), 'utf8'), 'base\n');
+  assert.equal(fs.existsSync(path.join(sourceDir, 'new-file.txt')), false);
+});
+test('a checkout holding non-regenerable ignored files is retained instead of deleted', async t => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-split-kept-'));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(repo, 'init', '-b', 'main');
+  git(repo, 'config', 'user.name', 'Test'); git(repo, 'config', 'user.email', 'test@example.invalid');
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules\n.env\n');
+  fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n');
+  git(repo, 'add', '.'); git(repo, 'commit', '-m', 'base');
+  const worktrees = path.join(repo, '.multicc-worktrees'), source = 'shell-a', target = 'task-b';
+  const sourceDir = path.join(worktrees, source), targetDir = path.join(worktrees, target);
+  git(repo, 'worktree', 'add', '-b', `multicc/${source}`, sourceDir);
+  fs.writeFileSync(path.join(sourceDir, '.env'), 'SECRET=1\n');
+  fs.mkdirSync(path.join(sourceDir, 'node_modules'), { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, 'node_modules/dep.js'), '// regenerable\n');
+  const records = new Map([
+    [source, { id: source, dirId: 'd', kind: 'chat', worktreePath: sourceDir, branch: `multicc/${source}`, workspaceState: 'awake' }],
+    [target, { id: target, dirId: 'd', kind: 'chat', worktreePath: targetDir, branch: `multicc/${target}`, workspaceState: 'planned' }],
+  ]);
+  const directories = new Map([['d', { id: 'd', path: repo, baseBranch: 'main' }]]);
+  const transfer = createSeparationTransfer({ records, directories, persistence: { mutate: (id, fn) => fn(records) },
+    log: { warn() {} } });
+  const moved = await transfer({ sourceSessionId: source, targetSessionId: target });
+  assert.equal(moved.ok, true, JSON.stringify(moved));
+  assert.deepEqual(moved.sourceRetained, { reason: 'ignored_files', count: 1 });
+  assert.equal(fs.existsSync(targetDir), true, 'the new task still gets the checkout');
+  assert.equal(fs.existsSync(path.join(sourceDir, '.env')), true, 'user files git cannot regenerate are never deleted');
+  assert.equal(records.get(source).workspaceState, 'awake', 'a retained checkout stays the source workspace');
+  assert.equal(records.get(target).workspaceState, 'awake');
 });
 test('a transiently blocked suggestion stays retryable after the conversation advances', async t => {
   const f = await setup(t), p = f.propose();

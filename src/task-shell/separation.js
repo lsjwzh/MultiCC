@@ -279,89 +279,93 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
       const tailAtStart = getHistory(sessionId).at(-1)?.id || null;
       const tailMoved = () => (getHistory(sessionId).at(-1)?.id || null) !== tailAtStart;
       let task = suggestion.taskId && store.get('task', suggestion.taskId);
-      if (!task) {
-        // Legacy path: a suggestion written before identity split at propose
-        // time. The task is created at accept, exactly as it always was.
-        if (store.list('task').filter(t => t.dirId === source.dirId).length >= 200) throw fail('task_shell_task_limit');
-        if (typeof ports.withSeparationBarrier !== 'function') throw fail('separation_barrier_unavailable');
-        if (typeof ports.recordSeparationApplication !== 'function') throw fail('separation_application_unavailable');
-        const taskId = `tsk_${hash(id).slice(0, 32)}`, nextSessionId = `task-${taskId.slice(4)}`, shellId = `sh_${hash(nextSessionId).slice(0, 24)}`;
-        await ports.withSeparationBarrier({ sessionId, turnId: suggestion.turnId, separationId: suggestion.id }, async ({ barrier, code }) => {
-          // Revalidate after the writer lease is held.  The code head captured
-          // here, not main's head, is the isolated task's reproducible start.
-          if (!usable(suggestion) || tailMoved()) throw fail('separation_stale');
-          if (code.dirty) throw fail('fork_source_dirty', 'Commit and merge the source changes before separating');
-          const snapshot = handoffSnapshot(taskId, getHistory(sessionId), { ...suggestion, receipt,
-            sourceWorkspace: getRecord(sessionId)?.worktreePath });
-          if (!snapshot) throw fail('separation_context_missing');
-          const record = getRecord(sessionId);
-          const baseline = { commit: code.head,
-            branch: record?.branch || null, sourceSessionId: sessionId,
-            sourceWorkspace: record?.worktreePath || null };
-          task = { id: taskId, dirId: source.dirId, sessionId: nextSessionId, ownerShellId: shellId,
-            title: suggestion.title, taskFirst: true, separatedFromTaskId: source.id,
-            ready: false, snapshotIds: [snapshot.hash], forkBaseline: baseline, createdAt: Date.now(),
-            runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent']
-              .filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) } };
-          store.transaction(() => {
-            if (!usable(suggestion) || tailMoved()) throw fail('separation_stale');
-            store.set('snapshot', snapshot.hash, snapshot);
+      // A suggestion written before the identity was split at propose time
+      // still creates its task at accept. Everything after the identity exists
+      // is shared: the new execution and the moved checkout are created inside
+      // the same writer barrier the identity was frozen under.
+      const legacy = !task;
+      if (legacy && store.list('task').filter(t => t.dirId === source.dirId).length >= 200) throw fail('task_shell_task_limit');
+      if (typeof ports.withSeparationBarrier !== 'function') throw fail('separation_barrier_unavailable');
+      if (typeof ports.recordSeparationApplication !== 'function') throw fail('separation_application_unavailable');
+      const targetTaskId = legacy ? `tsk_${hash(id).slice(0, 32)}` : task.id;
+      const targetSessionId = legacy ? `task-${targetTaskId.slice(4)}` : task.sessionId;
+      const shellId = `sh_${hash(targetSessionId).slice(0, 24)}`;
+      await ports.withSeparationBarrier({ sessionId, turnId: suggestion.turnId, separationId: suggestion.id }, async ({ barrier, code }) => {
+        // Revalidate after the writer lease is held. The state this captures,
+        // not the revision the finished turn wrote down, is the isolation
+        // baseline: AutoCommit and sibling sync legitimately move the checkout
+        // between the verdict and the user's click — and a dirty checkout is
+        // exactly what the new task is taking over, not a reason to refuse.
+        const alive = () => (legacy ? usable(suggestion) : splitAlive(suggestion));
+        if (!alive() || tailMoved()) throw fail('separation_stale');
+        const snapshot = handoffSnapshot(targetTaskId, getHistory(sessionId), { ...suggestion, receipt,
+          sourceWorkspace: getRecord(sessionId)?.worktreePath });
+        if (!snapshot) throw fail('separation_context_missing');
+        const record = getRecord(sessionId);
+        store.transaction(() => {
+          if (!alive() || tailMoved()) throw fail('separation_stale');
+          store.set('snapshot', snapshot.hash, snapshot);
+          if (legacy) {
+            task = { id: targetTaskId, dirId: source.dirId, sessionId: targetSessionId, ownerShellId: shellId,
+              title: suggestion.title, taskFirst: true, separatedFromTaskId: source.id,
+              ready: false, snapshotIds: [snapshot.hash],
+              // The code head captured here, not main's head, is the isolated
+              // task's reproducible start.
+              forkBaseline: { commit: code.head, branch: record?.branch || null,
+                sourceSessionId: sessionId, sourceWorkspace: record?.worktreePath || null },
+              createdAt: Date.now(),
+              runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent']
+                .filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) } };
             store.set('task', task.id, task);
-            store.set('shell', shellId, { id: shellId, sourceSessionId: nextSessionId, dirId: task.dirId,
-              standalone: true, currentTaskId: task.id, defaultTaskId: task.id, cursorVersion: 0, createdAt: task.createdAt });
-            store.set('link', `${shellId}:${task.id}`, { shellId, taskId: task.id });
             roles?.inherit(source.id, task.id);
-            suggestion = { ...suggestion, taskId: task.id, barrierId: barrier.id,
-              // This receipt proves a clean, stopped source snapshot.  It is
-              // intentionally distinct from an integration receipt: the source
-              // task can be delivered to main later, on its own schedule.
-              deliveryKind: 'workspace_snapshot', integrationId: null,
-              phase: 'target_recorded', lastError: null };
-            store.set('task-separation', id, suggestion);
-          });
-        });
-      } else if (task.embedded === true || !store.get('shell', task.ownerShellId)?.standalone) {
-        // The identity was split at propose time; accepting gives that
-        // existing task its own execution and a standalone shell.
-        if (typeof ports.withSeparationBarrier !== 'function') throw fail('separation_barrier_unavailable');
-        if (typeof ports.recordSeparationApplication !== 'function') throw fail('separation_application_unavailable');
-        const shellId = `sh_${hash(task.sessionId).slice(0, 24)}`, sourceShellId = task.ownerShellId;
-        await ports.withSeparationBarrier({ sessionId, turnId: suggestion.turnId, separationId: suggestion.id }, async ({ barrier, code }) => {
-          if (!splitAlive(suggestion) || tailMoved()) throw fail('separation_stale');
-          if (code.dirty) throw fail('fork_source_dirty', 'Commit and merge the source changes before separating');
-          const snapshot = handoffSnapshot(task.id, getHistory(sessionId), { ...suggestion, receipt,
-            sourceWorkspace: getRecord(sessionId)?.worktreePath });
-          if (!snapshot) throw fail('separation_context_missing');
-          const record = getRecord(sessionId);
-          store.transaction(() => {
-            if (!splitAlive(suggestion) || tailMoved()) throw fail('separation_stale');
-            store.set('snapshot', snapshot.hash, snapshot);
-            if (!store.get('shell', shellId)) {
-              store.set('shell', shellId, { id: shellId, sourceSessionId: task.sessionId, dirId: task.dirId,
-                standalone: true, currentTaskId: task.id, defaultTaskId: task.id, cursorVersion: 0, createdAt: Date.now() });
-            }
-            store.set('link', `${shellId}:${task.id}`, { shellId, taskId: task.id });
-            if (sourceShellId && sourceShellId !== shellId) store.remove('link', `${sourceShellId}:${task.id}`);
+          } else {
+            const sourceShellId = task.ownerShellId;
             task = { ...task, ownerShellId: shellId, embedded: false,
               snapshotIds: [...new Set([...(task.snapshotIds || []), snapshot.hash])],
               forkBaseline: task.forkBaseline || { commit: code.head,
                 branch: record?.branch || null, sourceSessionId: sessionId,
                 sourceWorkspace: record?.worktreePath || null } };
             store.set('task', task.id, task);
-            suggestion = { ...suggestion, barrierId: barrier.id,
-              deliveryKind: 'workspace_snapshot', integrationId: null,
-              phase: 'target_recorded', lastError: null };
-            store.set('task-separation', id, suggestion);
-          });
+            if (sourceShellId && sourceShellId !== shellId) store.remove('link', `${sourceShellId}:${task.id}`);
+          }
+          if (!store.get('shell', shellId)) {
+            store.set('shell', shellId, { id: shellId, sourceSessionId: targetSessionId, dirId: task.dirId,
+              standalone: true, currentTaskId: task.id, defaultTaskId: task.id, cursorVersion: 0,
+              createdAt: task.createdAt || Date.now() });
+          }
+          store.set('link', `${shellId}:${task.id}`, { shellId, taskId: task.id });
+          suggestion = { ...suggestion, taskId: task.id, barrierId: barrier.id,
+            // This receipt proves a stopped source whose current checkout moved
+            // to the new task. It is intentionally distinct from an integration
+            // receipt: the source task can be delivered to main later, on its
+            // own schedule.
+            deliveryKind: 'workspace_snapshot', integrationId: null,
+            phase: 'target_recorded', lastError: null };
+          store.set('task-separation', id, suggestion);
         });
-      }
-      if (!task.ready) {
-        store.set('task-separation', id, { ...suggestion, phase: 'creating_execution', lastError: null });
-        const created = await createExecution(task, task.runtime);
-        if (!created?.ok) throw fail(created?.code || 'execution_create_failed', created?.error || 'Execution creation failed');
-        task = { ...task, ready: true, baseline: created.baseline };
+        // The execution exists before its checkout: the transfer attaches the
+        // moved worktree to this record. Both run under the lease this callback
+        // holds, so no source writer can slip between the frozen snapshot and
+        // the move.
+        if (!task.ready) {
+          store.set('task-separation', id, { ...suggestion, phase: 'creating_execution', lastError: null });
+          const created = await createExecution(task, task.runtime);
+          if (!created?.ok) throw fail(created?.code || 'execution_create_failed', created?.error || 'Execution creation failed');
+          task = { ...task, ready: true, baseline: created.baseline };
+          store.set('task', task.id, task);
+        }
+        if (typeof ports.transferWorkspace !== 'function') throw fail('separation_transfer_unavailable');
+        store.set('task-separation', id, { ...suggestion, phase: 'transferring_workspace', lastError: null });
+        const moved = await ports.transferWorkspace({ separationId: suggestion.id, turnId: suggestion.turnId,
+          barrierId: barrier.id, sourceSessionId: sessionId, sourceTaskId: source.id,
+          targetTaskId: task.id, targetSessionId: task.sessionId,
+          baseCommit: task.forkBaseline?.commit || code.head });
+        if (!moved?.ok) throw fail(moved?.code || 'workspace_transfer_failed',
+          moved?.error || 'The source checkout could not be moved to the new task');
+        task = { ...task, baseline: { ...(task.baseline || {}), ...(moved.worktreePath
+          ? { worktreePath: moved.worktreePath, branch: moved.branch || null } : {}) } };
         store.set('task', task.id, task);
-      }
+      });
       store.set('task-separation', id, { ...suggestion, phase: 'indexing_task', lastError: null });
       if (!(await indexTask(task))?.ok) throw fail('task_index_failed');
       const application = ports.recordSeparationApplication({ separationId: suggestion.id,
