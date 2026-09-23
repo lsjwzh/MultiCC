@@ -1649,13 +1649,13 @@
 
      所以这里按同样的办法排队：切走的帧留在 DOM 里（hidden），切回来直接显示。
      「当前这个」永远是 #conversation —— 切走时把 id 摘下来交给下一个，页面里那一堆
-     $('conversation') 因此不用改。容量给 2（连当前的一共 3 个），每个帧是一整个聊天页
+     $('conversation') 因此不用改。容量给 6（连当前的一共 7 个），每个帧是一整个聊天页
      加一条 WS，手机再多就不划算了。
 
      后台帧不是「没在跑」：它照旧收消息、照旧渲染，只是不再做 liveness 轮询、不再响 ——
      那两件事由 chat.js 的 __multiccChatSetActive 开关，不然看 A 的时候 B 完成一轮会
      在耳边叫。 */
-  const MAX_POOLED_FRAMES = 2;
+  const MAX_POOLED_FRAMES = 6;
   const _framePool = new Map();   // taskId → { frame, lastUsed }
   let _frameHoldsTask = null;     // 现在这个 #conversation 里装的是哪个任务
 

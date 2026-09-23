@@ -12,7 +12,7 @@ test('task shell browser: current-task queue, explicit new task, token saving, r
   if (!findChromeBinary()) return t.skip('Chrome is required');
   const f = fixture(t), routes = {};
   const json = (value, status = 200) => ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
-  for (const file of ['task-shell.html', 'task-shell.js', 'task-shell-client.js', 'task-board-entry.js', 'task-shell.css', 'safe-markdown.js', 'i18n.js', 'i18n-catalog.js', 'vendor/dompurify/purify.min.js']) {
+  for (const file of ['task-shell.html', 'task-shell.js', 'task-shell-client.js', 'task-board-entry.js', 'task-shell.css', 'safe-markdown.js', 'i18n.js', 'i18n-catalog.js', 'vendor/dompurify/purify.min.js', 'vendor/marked/marked.min.js']) {
     routes['/' + file] = { body: fs.readFileSync(path.join(__dirname, '..', 'public', file)), headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } };
   }
   routes['/auth-client.js'] = { body: '', headers: { 'content-type': 'text/javascript' } };
@@ -86,7 +86,7 @@ test('board browser fails closed, previews conversation history and forks only o
   const source = f.runtime.adopt(f.a.id, 'a');
   f.histories.set('a', [{ id: 'u', role: 'user', taskId: source.id, content: 'Source requirement' }]);
   const routes = {}, json = (value, status = 200) => ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) });
-  for (const file of ['task-shell.html', 'task-shell.js', 'task-board-entry.js', 'task-shell-client.js', 'task-shell.css', 'safe-markdown.js', 'i18n.js', 'i18n-catalog.js', 'vendor/dompurify/purify.min.js']) {
+  for (const file of ['task-shell.html', 'task-shell.js', 'task-board-entry.js', 'task-shell-client.js', 'task-shell.css', 'safe-markdown.js', 'i18n.js', 'i18n-catalog.js', 'vendor/dompurify/purify.min.js', 'vendor/marked/marked.min.js']) {
     routes['/' + file] = { body: fs.readFileSync(path.join(__dirname, '..', 'public', file)), headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } };
   }
   routes['/auth-client.js'] = { body: '', headers: { 'content-type': 'text/javascript' } };
