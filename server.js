@@ -649,7 +649,7 @@ const invalidSessions = new Map();       // sessionId → reason; recovery is sk
 // Destructured so existing call sites are unchanged. ensureDirGitReady() and
 // the loadDirectories/saveDirectories persistence stay below in server.js.
 const {
-  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason, directoryWriteDenied,
+  isHomeOrAbove, realPathOf, dirSuitability, friendlyDirReason, dirReasonFix, directoryWriteDenied,
 } = require('./src/directories');
 
 // Make sure a directory is a usable git repo; refuses $HOME and missing paths.
@@ -928,7 +928,7 @@ const directoryModule = createDirectoryModule({
       .map(e => ({ name: e.name, isDirectory: e.isDirectory(), isSymbolicLink: e.isSymbolicLink() })),
     writeFileExclusive: (p, content) => { try { fs.writeFileSync(p, content, { flag: 'wx' }); return true; } catch (e) { if (e.code === 'EEXIST') return false; throw e; } },
   },
-  helpers: { resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason },
+  helpers: { resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason, dirReasonFix },
   // Cross-file transaction wiring updates both state files under one journal entry, so a crash between the
   // two writes is finished by replayJournals() on next boot rather than
   // leaving the two files inconsistent (dir deleted + its sessions still

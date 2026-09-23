@@ -1008,12 +1008,64 @@ async function loadMacosPowerSettings() {
     toggle.checked = !!data.enabled;
     status.textContent = data.enabled ? '已开启' : '已关闭';
     status.className = `status-text ${data.enabled ? 'ok' : ''}`;
+    await loadPrivilegedHelper();
   } catch (error) {
     card.style.display = available ? '' : 'none';
     if (available) {
       status.textContent = `读取失败：${providerApi.errorText(error)}`;
       status.className = 'status-text err';
     }
+  }
+}
+
+/* The optional privileged helper: installing it makes the toggle above stop
+   asking for a password. Installing is itself one authorization prompt, and
+   declining anywhere leaves today's behaviour untouched. */
+// keepStatus：刚说完一句话（取消了、失败了）之后的那次复查要带上它 —— 复查是为了把
+// 按钮态校准到服务端说的那个，不是为了把那句话抹掉换成一行干巴巴的「已安装」。
+async function loadPrivilegedHelper(keepStatus = false) {
+  const row = document.getElementById('privileged-helper-row');
+  const button = document.getElementById('privileged-helper-btn');
+  const status = document.getElementById('privileged-helper-status');
+  if (!row || !button || !status) return;
+  try {
+    const data = await providerApi.json('/api/system/privileged-helper' + tokenQS('?'));
+    if (!data.applicable) { row.style.display = 'none'; return; }
+    row.style.display = '';
+    button.dataset.installed = data.installed ? '1' : '';
+    button.textContent = data.installed ? '移除免密助手' : '免密切换（安装助手）';
+    if (keepStatus) return;
+    status.textContent = data.installed ? `已安装（用户 ${data.user}）` : '未安装，每次切换都会要求输入密码';
+    status.className = `status-text ${data.installed ? 'ok' : ''}`;
+  } catch (error) {
+    // 读不到状态时那句话必须盖掉：此刻屏幕上的「已取消」谁也担保不了了。
+    status.textContent = `读取失败：${providerApi.errorText(error)}`;
+    status.className = 'status-text err';
+  }
+}
+
+async function togglePrivilegedHelper() {
+  const button = document.getElementById('privileged-helper-btn');
+  const status = document.getElementById('privileged-helper-status');
+  const removing = !!button.dataset.installed;
+  button.disabled = true;
+  status.textContent = '等待管理员授权…';
+  status.className = 'status-text';
+  let keepStatus = false;
+  try {
+    const data = await providerApi.json(
+      `/api/system/privileged-helper/${removing ? 'uninstall' : 'install'}` + tokenQS('?'), { method: 'POST' });
+    // Cancelling the password dialog is a deliberate choice, not a fault — and
+    // it is this click's only outcome, so the re-probe below must not erase it.
+    if (data.status === 'canceled') { status.textContent = data.error; status.className = 'status-text'; keepStatus = true; }
+    else showToast(removing ? '已移除免密助手' : '已安装免密助手，之后切换不再要密码');
+  } catch (error) {
+    status.textContent = `操作失败：${providerApi.errorText(error)}`;
+    status.className = 'status-text err';
+    keepStatus = true;
+  } finally {
+    button.disabled = false;
+    await loadPrivilegedHelper(keepStatus);
   }
 }
 

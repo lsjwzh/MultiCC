@@ -23,6 +23,14 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
   assertPort('fsPort', fsPort, FS_PORT);
   assertPort('helpers', helpers, HELPER_PORT);
 
+  // The controller spreads `extra` into the HTTP body, so a failure with no
+  // one-command remedy must yield undefined rather than a null field every
+  // client would have to special-case.
+  const fixExtra = (reason) => {
+    const fix = helpers.dirReasonFix(reason);
+    return fix ? { fix } : undefined;
+  };
+
   const dirBaseBranch = async (d) => d.baseBranch || await git.baseBranch(d.path);
 
   // Browse / autocomplete filesystem directories for the "new directory" picker.
@@ -123,7 +131,10 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     const ready = await git.ensureReady(dir);
     if (!ready.ok) {
       repo.remove(dir.id);
-      return err('invalid', helpers.friendlyDirReason(ready.reason));
+      // Carry the fix code alongside the prose so the client can offer the one
+      // command that repairs this (e.g. installing macOS developer tools) as a
+      // button rather than as text to retype.
+      return err('invalid', helpers.friendlyDirReason(ready.reason), fixExtra(ready.reason));
     }
     repo.save();
     // Seed a default Agent Commander chat session so a workspace coordinator is ready
@@ -161,7 +172,7 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
         // Path changed → re-verify git readiness for the new location.
         git.unmarkReady(d.id);
         const ready = await git.ensureReady(d);
-        if (!ready.ok) return err('invalid', helpers.friendlyDirReason(ready.reason));
+        if (!ready.ok) return err('invalid', helpers.friendlyDirReason(ready.reason), fixExtra(ready.reason));
       }
     }
     if (body.rolePrompt !== undefined) {

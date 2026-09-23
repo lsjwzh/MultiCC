@@ -34,6 +34,14 @@
 .workspace-setup-note{margin:12px 22px 0;padding:9px 11px;border-radius:9px;background:rgba(106,163,255,.08);border:1px solid rgba(106,163,255,.22);color:var(--muted);font-size:11px;line-height:1.5}
 .workspace-setup-status{display:none;margin:12px 22px 0;font-size:12px;line-height:1.5;color:var(--muted)}
 .workspace-setup-status.visible{display:block}.workspace-setup-status.error{color:var(--danger)}
+/* 服务端的多行说明（例如缺 macOS 命令行工具那段）默认会被折成一坨。 */
+.workspace-setup-status{white-space:pre-line}
+/* 「一键修复」按钮：只有服务端报了可修复的失败时才有内容，空的时候不占位。 */
+.workspace-setup-fix{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 22px 0}
+.workspace-setup-fix:empty{display:none}
+.workspace-setup-fix-status{font-size:12px;line-height:1.5;color:var(--muted)}
+/* A path to paste into System Settings: wrap it, and keep it selectable. */
+.workspace-setup-fix-detail:not(:empty){display:block;font-size:12px;word-break:break-all;user-select:all;color:var(--muted)}
 .workspace-setup-actions{display:flex;gap:8px;justify-content:flex-end;padding:16px 22px 20px}
 .workspace-setup-actions .btn:disabled{opacity:.55;cursor:wait}
 .workspace-empty{grid-column:1/-1;padding:42px 24px;text-align:center;border:1px dashed var(--line);border-radius:var(--radius);background:linear-gradient(145deg,rgba(58,214,197,.06),rgba(106,163,255,.035))}
@@ -42,4 +50,4 @@
 .workspace-sample-note{margin-top:10px;color:var(--faint);font-size:10px;font-family:var(--mono)}
 .sample-badge{display:inline-flex;margin-left:7px;padding:2px 6px;border-radius:999px;background:rgba(106,163,255,.12);border:1px solid rgba(106,163,255,.3);color:var(--blue);font:9px var(--mono);vertical-align:2px}
 .sample-flow .workspace-path-create{display:none}
-@media(max-width:700px){.workspace-team-grid{grid-template-columns:1fr}.workspace-setup-head{padding:17px 17px 13px}.workspace-setup-fields,.workspace-team-fieldset{padding-left:17px;padding-right:17px}.workspace-setup-note,.workspace-setup-status{margin-left:17px;margin-right:17px}.workspace-setup-actions{padding:14px 17px 18px;position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line)}}
+@media(max-width:700px){.workspace-team-grid{grid-template-columns:1fr}.workspace-setup-head{padding:17px 17px 13px}.workspace-setup-fields,.workspace-team-fieldset{padding-left:17px;padding-right:17px}.workspace-setup-note,.workspace-setup-status,.workspace-setup-fix{margin-left:17px;margin-right:17px}.workspace-setup-actions{padding:14px 17px 18px;position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line)}}

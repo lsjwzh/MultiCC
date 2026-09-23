@@ -1526,6 +1526,12 @@
                 <span>关盖时保持运行，不进入睡眠</span>
               </label>
               <div class="sec-desc" style="margin:0">开启后会阻止所有系统睡眠（包括关盖睡眠）。切换时需要在 Mac 上完成管理员授权，请注意散热和耗电。</div>
+              <!-- 免密助手：装了之后上面这个开关不再每次要密码。安装本身要授权一次。 -->
+              <div class="sec-desc" style="margin:8px 0 0" id="privileged-helper-row">
+                <button class="btn" id="privileged-helper-btn" onclick="togglePrivilegedHelper()">免密切换（安装助手）</button>
+                <span class="status-text" id="privileged-helper-status"></span>
+                <div style="margin-top:4px">助手只授权 <code>pmset -a disablesleep</code> 这一条命令免密运行，写在 <code>/etc/sudoers.d/multicc</code>，随时可移除。</div>
+              </div>
             </div>
             <div class="sc-footer">
               <button class="btn" onclick="loadMacosPowerSettings()">刷新状态</button>
@@ -2128,6 +2134,7 @@
       </div>
       <div class="workspace-setup-note">角色在任务中按需附加；任务首次执行时才准备工作区。</div>
       <div id="newdir-status" class="workspace-setup-status" role="status" aria-live="polite"></div>
+      <div id="newdir-fix" class="workspace-setup-fix"></div>
       <div class="workspace-setup-actions">
         <button id="newdir-cancel" class="btn" type="button" onclick="closeNewDirectoryModal()">取消</button>
         <button id="newdir-submit" class="btn btn-green" type="button" onclick="submitNewDirectory()">创建工作目录</button>

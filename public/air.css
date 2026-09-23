@@ -1262,7 +1262,16 @@ dialog fieldset button { margin-top: 9px; color: #a04936; }
 dialog summary { cursor: pointer; padding: 10px 0; color: #526d88; font-size: 12px; }
 .form-row { display: flex; gap: 13px; }
 .form-row label { min-width: 0; flex: 1; }
-dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; }
+/* 服务端的失败说明是多行的（例如缺 macOS 命令行工具时那段指引），默认的空白
+   折叠会把它挤成一坨。pre-line 只保留换行，不影响单行报错。 */
+dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; white-space: pre-line; }
+/* 「一键修复」按钮：错误文案下面单独一行，按钮 + 结果状态并排。 */
+.air-fix-action { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.air-fix-action button { flex: none; }
+.air-fix-status { color: var(--muted); font-size: 12px; line-height: 1.6; }
+/* A filesystem path the user must paste into System Settings: it has to wrap
+   rather than overflow, and stay selectable as one unit. */
+.air-fix-detail:not(:empty) { flex-basis: 100%; font-size: 12px; word-break: break-all; user-select: all; color: var(--muted); }
 
 /* 侧栏「＋ 新任务」的弹窗：它自己不带表单，只是把 #empty 里那个统一输入框模块
    搬进来（air.js 的 openNewTaskComposer）。所以这里只安排两件事 —— 外壳比默认

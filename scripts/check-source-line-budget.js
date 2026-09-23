@@ -124,9 +124,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // Aux 并发池补 4 条键（airAdminPool / PoolValue / SerialLane / SerialLaneValue，
   // 中英各 4 行 = +8 行），抬到 6264/383378；同时把任务板回填的确认文案去掉「串行」
   // 字样（aux 已经是并发池），纯值文本改写不动行数。
+  // 缺 macOS 命令行工具时的「一键安装」补 6 条键（airTaskSettingsInstallDevTools
+  // 及其 5 条结果文案，中英各 6 行 = +12 行），抬到 6276/384713。
+  // macOS 磁盘权限的「一键打开设置」补 5 条键（airTaskSettingsOpenDiskAccess 及其
+  // 4 条结果／路径文案，中英各 5 行 = +10 行），抬到 6286/385832。
+  // 关盖运行的免密助手补 10 条键（airGlobalHelper* ：按钮两态、已装／未装、等待、
+  // 两条结果、两条失败、一段说明，中英各 10 行 = +20 行），抬到 6306/387580。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6264,
-    maxBytes: 383378,
+    maxLines: 6306,
+    maxBytes: 387580,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
