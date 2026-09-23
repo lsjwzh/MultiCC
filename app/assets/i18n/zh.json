@@ -2477,6 +2477,7 @@
   "airWorktreeLifecycleHint": "本地留着的 checkout 会随闲置时间自动收起，分支与提交始终保留。",
   "airWorktreePolicy": "闲置超过 {hours} 小时会自动回收",
   "airWorktreePolicyOff": "自动回收已关闭",
+  "airWorktreeRecordTotal": "（共 {n} 条会话记录）",
   "airWorktreeReclaim": "现在回收",
   "airWorktreeReclaimDone": "已回收 {hibernated} 个（检查 {considered} 个，跳过 {skipped} 个）",
   "airWorktreeReclaimEmpty": "没有可回收的 worktree：都不闲置，或者正被占用。",

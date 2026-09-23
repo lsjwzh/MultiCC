@@ -47,14 +47,19 @@
 
   function totalOf(directory, life) { return Number(directory?.worktreeCount) || life?.total || 0; }
 
-  // 目录卡上那一行（air.js 的 renderDirectories 直接拿它当文案）：总数 + 拆解，
-  // 空目录照说「0 个」（一眼看出「这里没有」比留白有用），但没有拆解或总数是 0 时
-  // 就只说总数 —— 三个 0 摆出来只是噪声，统计卡那行已经说过「0 个 WT」了。
+  // 总数是「会话记录」条数（含已休眠、只存分支引用的），不是磁盘上的 checkout 数。
+  // 所以文案上拆解（本地/休眠/计划）永远摆前面，总数带标签压尾，不再以
+  // 「98 个 Worktree」开头 —— 那个读法会让人以为磁盘上真有 98 份。
+  function recordTotal(total) { return translate('airWorktreeRecordTotal', { n: total }); }
+
+  // 目录卡上那一行（air.js 的 renderDirectories 直接拿它当文案）：拆解 + 带标签的
+  // 记录总数；空目录照说「0 个」（一眼看出「这里没有」比留白有用），但没有拆解或
+  // 总数是 0 时就只说总数 —— 三个 0 摆出来只是噪声，统计卡那行已经说过「0 个 WT」了。
   function summary(directory) {
     const life = lifecycleOf(directory);
     const total = totalOf(directory, life);
     if (!life || !total) return translate('airDirWorktreeCount', { n: total });
-    return [translate('airDirWorktreeCount', { n: total }), breakdown(life)].join(' · ');
+    return `${breakdown(life)} ${recordTotal(total)}`;
   }
 
   let ctx = null;
@@ -82,8 +87,8 @@
     section.hidden = false;
     const heading = el('directory-worktree-summary');
     if (heading) {
-      heading.textContent = [translate('airDirWorktreeCount', { n: totalOf(directory, life) }), breakdown(life),
-        life.leased ? translate('airWorktreeLeased', { n: life.leased }) : ''].filter(Boolean).join(' · ');
+      const parts = [breakdown(life), life.leased ? translate('airWorktreeLeased', { n: life.leased }) : ''].filter(Boolean);
+      heading.textContent = `${parts.join(' · ')} ${recordTotal(totalOf(directory, life))}`;
     }
     const reclaim = node('button', busy ? translate('airWorktreeReclaiming') : translate('airWorktreeReclaim'), 'worktree-reclaim');
     reclaim.type = 'button';
