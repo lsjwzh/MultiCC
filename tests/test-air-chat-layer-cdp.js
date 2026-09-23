@@ -28,6 +28,29 @@ const TASKS = [
 ];
 const DIRECTORY = { id: 'd1', name: 'MultiCC', path: '/projects/multicc' };
 
+// 浮层升上来是一段 260ms 的 transform 过渡（air.css 的 #chat-layer.is-open），而
+// 「等 is-open 这个类名」只等到动画开始。帧加载比动画慢的时候（脚本还在外面 CDN 上的
+// 年代，动辄几百毫秒）量到的正好是静止位置；帧本地化之后几十毫秒就绪，量到的就成了
+// 动画中途 —— 「底边要能看到底页」这类几何断言于是时灵时不灵。等它真的停下来
+// （连续两次采样一致）再量，跟网络快慢脱钩。
+const layerRect = `(() => {
+  const layer = document.getElementById('chat-layer');
+  if (!layer) return null;
+  const b = layer.getBoundingClientRect();
+  return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) };
+})()`;
+
+async function settleLayer(page) {
+  let previous = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const current = await page.evaluate(layerRect);
+    if (current && previous && ['x', 'y', 'w', 'h'].every(key => current[key] === previous[key])) return current;
+    previous = current;
+    await new Promise(resolve => setTimeout(resolve, 80));
+  }
+  return previous;
+}
+
 // 一屏的几何：这一层、内容区、页头各自在哪，以及几个「谁在上面」的命中测试。
 // 命中测试用 elementFromPoint：z-index 预算写错时，量出来的 rect 照样是对的，
 // 只有真去点一下才知道谁在上面。
@@ -185,6 +208,7 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     assert.equal(await page.evaluate(clickTask('任务 A')), true, '侧栏里点得到任务 A');
     assert.ok(await page.waitFor(frameReady('task-a')), '对话帧要立起来');
     assert.ok(await page.waitFor(`document.getElementById('chat-layer').classList.contains('is-open')`), '浮层要升上来');
+    await settleLayer(page);          // 等滑入动画落地，量到的才是静止几何
 
     const open = await page.evaluate(geometry);
     assert.ok(open.layer.x > open.content.x && open.layer.y > open.content.y,
@@ -216,6 +240,7 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     // ── 展开：浮层从带留白的卡片变为主区全屏 ───────────────────────────────
     await page.evaluate(`document.getElementById('chat-expand').click()`);
     assert.ok(await page.waitFor(`document.getElementById('chat-layer').classList.contains('is-expanded')`), '要进展开态');
+    await settleLayer(page);          // 展开也是一段过渡，量之前先等它停下来
     const expanded = await page.evaluate(geometry);
     assert.deepEqual({ x: expanded.layer.x, y: expanded.layer.y, w: expanded.layer.w, h: expanded.layer.h },
       { x: open.content.x, y: 0, w: expanded.viewport.w - open.content.x, h: expanded.viewport.h },
@@ -232,6 +257,7 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     // ── 收起：回到默认态 ────────────────────────────────────────────────────
     await page.evaluate(`document.getElementById('chat-expand').click()`);
     assert.ok(await page.waitFor(`!document.getElementById('chat-layer').classList.contains('is-expanded')`), '要退回默认态');
+    await settleLayer(page);          // 收起同样是过渡
     const collapsed = await page.evaluate(geometry);
     assert.deepEqual(collapsed.layer, open.layer, `收起=回到同一张浮卡：${JSON.stringify(collapsed)}`);
     assert.equal(collapsed.headerHit.inLayer, true, '收起后标题仍留在聊天浮层顶部');
@@ -299,6 +325,7 @@ test('Air keeps the mobile title inside the overlay and lets a downward fling cl
 
     assert.equal(await page.evaluate(clickTask('任务 A')), true);
     assert.ok(await page.waitFor(frameReady('task-a')), '对话帧要立起来');
+    await settleLayer(page);          // 同上：先等滑入动画落地
     const open = await page.evaluate(geometry);
     assert.deepEqual({ x: open.layer.x, y: open.layer.y, w: open.layer.w, h: open.layer.h },
       { x: open.content.x, y: open.content.y, w: open.content.w, h: open.content.h },
@@ -328,6 +355,7 @@ test('Air keeps the mobile title inside the overlay and lets a downward fling cl
     assert.ok(await page.waitFor(frameReady('task-b')), 'B 的对话帧要立起来');
     await page.evaluate(`document.getElementById('chat-expand').click()`);
     assert.ok(await page.waitFor(`document.getElementById('chat-layer').classList.contains('is-expanded')`), '要进展开态');
+    await settleLayer(page);          // 手机上这一跳也是过渡
     const expanded = await page.evaluate(geometry);
     assert.deepEqual({ x: expanded.layer.x, y: expanded.layer.y, w: expanded.layer.w, h: expanded.layer.h },
       { x: 0, y: 0, w: expanded.viewport.w, h: expanded.viewport.h },

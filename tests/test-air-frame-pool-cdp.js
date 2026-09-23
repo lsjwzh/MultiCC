@@ -21,14 +21,26 @@ const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 const publicDir = path.resolve(__dirname, '../public');
 const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
+// 池子上限按 air.js 里的真身来：这一条要开满池子、再多开一个，才知道「到顶之后
+// 收走的是最久没用的那个」。上限调大时这里跟着长大，不用手改两个数字。
+const POOL_CAP = (() => {
+  const source = fs.readFileSync(path.join(publicDir, 'air.js'), 'utf8');
+  const match = source.match(/const MAX_POOLED_FRAMES\s*=\s*(\d+)\s*;/);
+  assert.ok(match, 'air.js 里要有 MAX_POOLED_FRAMES 这个常量');
+  const cap = Number(match[1]);
+  assert.ok(cap >= 2 && cap <= 6, `池子上限该在 2..6 之间（再大要给下面的任务表加字母），实际 ${cap}`);
+  return cap;
+})();
+
 // 每个任务一套绑定：task-board 把一个任务解析成一个会话，会话再解析成一个 shell。
 // 帧最后落在 /chat.html?session=<会话>&air=1 上（task 参数在这一跳里被换掉了）。
-const TASKS = [
-  { id: 'tsk_a', session: 'task-a', shell: 'shell-a', title: '任务 A' },
-  { id: 'tsk_b', session: 'task-b', shell: 'shell-b', title: '任务 B' },
-  { id: 'tsk_c', session: 'task-c', shell: 'shell-c', title: '运行 TikTok 库存同步脚本（xlwms→TikTok 每小时同步）' },
-  { id: 'tsk_d', session: 'task-d', shell: 'shell-d', title: '任务 D' },
-];
+// 任务数 = 上限 + 2：够把池子装满，再富余一个用来触发淘汰。第三个故意用一条长标题 ——
+// 手机上的错位回归（下面那一条）量的就是长标题被挤成一条竖排窄列。
+const LONG_TITLE = '运行 TikTok 库存同步脚本（xlwms→TikTok 每小时同步）';
+const TASKS = 'ABCDEFGH'.slice(0, POOL_CAP + 2).split('').map((letter, index) => {
+  const slug = letter.toLowerCase();
+  return { id: `tsk_${slug}`, session: `task-${slug}`, shell: `shell-${slug}`, title: index === 2 ? LONG_TITLE : `任务 ${letter}` };
+});
 const DIRECTORY = { id: 'd1', name: 'MultiCC', path: '/projects/multicc' };
 
 const frameState = `(() => {
@@ -68,7 +80,7 @@ const frameReady = (session, mark) => `(() => {
   return true;
 })()`;
 
-// 一个目录、四个任务的 fixture：静态文件按真身发，接口按帧池要用的那几支回。
+// 一个目录、上限 + 2 个任务的 fixture：静态文件按真身发，接口按帧池要用的那几支回。
 function buildAirRoutes() {
   const routes = {};
   for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
@@ -80,7 +92,17 @@ function buildAirRoutes() {
   for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
     routes['/shared/' + file] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
   }
-  routes['/vendor/dompurify/purify.min.js'] = { headers: { 'content-type': 'text/javascript' }, body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')) };
+  // vendor/ 整棵子树照 express.static 的行为发出去：聊天页的 marked / highlight.js
+  // 现在都在这里，字体表也一样。少发一支，页面就静悄悄地退化成「没有高亮」。
+  const vendorDir = path.join(publicDir, 'vendor');
+  const walkVendor = directory => fs.readdirSync(directory, { withFileTypes: true })
+    .flatMap(entry => (entry.isDirectory() ? walkVendor(path.join(directory, entry.name)) : [path.join(directory, entry.name)]));
+  for (const file of walkVendor(vendorDir).filter(f => /\.(js|css)$/.test(f))) {
+    routes['/' + path.relative(publicDir, file).split(path.sep).join('/')] = {
+      body: fs.readFileSync(file),
+      headers: { 'content-type': file.endsWith('.css') ? 'text/css' : 'text/javascript' },
+    };
+  }
   routes['/air'] = routes['/air.html'];
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
 
@@ -147,7 +169,7 @@ test('Air keeps the recently opened conversations warm instead of reloading them
     assert.ok(await page.waitFor(`(${frameState}).parked.length === 1 && (${frameState}).parked[0].mark === 'A'`),
       'A 那一帧应该还留在 DOM 里，而且带着我们盖的记号');
     const parkedBand = await page.evaluate(frameState);
-    assert.equal(parkedBand.count, 2, `同一时刻最多两个帧（当前一个 + 池子里一个）：${JSON.stringify(parkedBand)}`);
+    assert.equal(parkedBand.count, 2, `切走一个只该多出一个帧（当前一个 + 池子里一个）：${JSON.stringify(parkedBand)}`);
     assert.equal(parkedBand.parked[0].hidden, true, '池子里的帧要藏起来');
     assert.equal(parkedBand.parked[0].id, '', '「当前这个」永远是 #conversation，旧的要把 id 摘掉');
     assert.match(parkedBand.parked[0].src, /task=tsk_a/, '池子里的帧保留原地址，才能在切回来时接着用');
@@ -170,20 +192,29 @@ test('Air keeps the recently opened conversations warm instead of reloading them
     assert.equal(resumed.activeHidden, false, '上台的帧要显示出来');
     assert.deepEqual(resumed.activeLog, [false, true], '切回来的帧要被告知「你又上台了」');
 
-    // ── 上限：连开四个任务，最久没用的那个要被收走 ────────────────────────
-    assert.equal(await page.evaluate(clickTask(TASKS[2].title)), true);
-    assert.ok(await page.waitFor(frameReady('task-c')), 'C 的对话帧要立起来');
-    assert.equal((await page.evaluate(frameState)).count, 3, '两个热帧 + 当前一个，正好到顶');
+    // ── 上限：一路开到池子满，再多开一个，最久没用的那个要被收走 ────────────
+    for (let index = 2; index < TASKS.length - 1; index += 1) {
+      assert.equal(await page.evaluate(clickTask(TASKS[index].title)), true, `侧栏里点得到「${TASKS[index].title}」`);
+      assert.ok(await page.waitFor(frameReady(TASKS[index].session)), `「${TASKS[index].title}」的对话帧要立起来`);
+    }
+    const filled = await page.evaluate(frameState);
+    assert.equal(filled.count, POOL_CAP + 1,
+      `攒到上限：当前一个 + 池子里 ${POOL_CAP} 个，正好到顶：${JSON.stringify(filled)}`);
 
-    assert.equal(await page.evaluate(clickTask('任务 D')), true);
-    assert.ok(await page.waitFor(frameReady('task-d')), 'D 的对话帧要立起来');
-    // 用完 A、B、C、D 之后：当前是 D，池子里应该是最新的两个，B（最久没用）被收走。
-    assert.ok(await page.waitFor(`(${frameState}).count === 3`), '再多开一个也不该超过三个帧');
+    const last = TASKS[TASKS.length - 1];
+    assert.equal(await page.evaluate(clickTask(last.title)), true, `侧栏里点得到「${last.title}」`);
+    assert.ok(await page.waitFor(frameReady(last.session)), `「${last.title}」的对话帧要立起来`);
+    // 用完所有任务之后：当前是最后一个，池子里留着最新停进来的 POOL_CAP 个。
+    // 出局的是 B 而不是 A —— 淘汰比的是「最后一次停进池子」的时间：上面切回 A 那一步
+    // 把 A 重新停了一次（它比 B 新），B 才是最早闲下来的那个。
+    assert.ok(await page.waitFor(`(${frameState}).count === ${POOL_CAP + 1}`), `再多开一个也不该超过 ${POOL_CAP + 1} 个帧`);
     const capped = await page.evaluate(frameState);
+    assert.equal(capped.parked.some(frame => frame.src.includes(TASKS[1].id)), false,
+      `池子里最久没用的那个（B）该被收走：${JSON.stringify(capped)}`);
     assert.deepEqual(capped.parked.map(frame => frame.src).sort(),
-      ['/chat.html?task=tsk_a&air=1', '/chat.html?task=tsk_c&air=1'].sort(),
-      `留在池子里的该是最新的两个，最久没用的 B 被收走：${JSON.stringify(capped)}`);
-    assert.match(capped.activeSearch, /session=task-d/);
+      TASKS.filter(task => task !== TASKS[1] && task !== last).map(task => `/chat.html?task=${task.id}&air=1`).sort(),
+      `留在池子里的该是除 B 之外的那些（当前那个不在池子里）：${JSON.stringify(capped)}`);
+    assert.match(capped.activeSearch, new RegExp(`session=${last.session}`));
 
     await page.screenshot('01-air-frame-pool');
   });

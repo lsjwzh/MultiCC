@@ -64,6 +64,16 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     maxBytes: DEFAULT_MAX_BYTES,
     reason: 'vendored minified QR encoder',
   }),
+  // 终端页（public/index.html）原先四支 xterm 资源全走 cdn.jsdelivr.net，断网/被墙时
+  // 整页打不开，现在按用户要求全部收进 public/vendor/。xterm.js 是 npm 包里唯一一份
+  // 浏览器构建，上游没有 min 版：2 行 283404 字节，超的不是手写量而是体积，故按
+  // qrcode.min.js 的先例登记成「已复核的第三方资产」。升级 xterm 时同步更新这里的
+  // 字节数和 public/vendor/xterm/README.md 里记的 SHA-256。
+  'public/vendor/xterm/xterm.js': Object.freeze({
+    maxLines: ABSOLUTE_EXCEPTION_MAX_LINES,
+    maxBytes: 283404,
+    reason: 'vendored third-party UMD build of xterm 5.3.0 (upstream ships no minified file)',
+  }),
   // 生成物，不是手写代码：scripts/generate-i18n.js 把 app/assets/i18n/{zh,en}.json
   // 原样拼成这一份双语词典，键数就是产品的文案条数。Air 补齐英文之后它从 2634 行
   // 长到 4988 行，对话帧（chat.html 的 title/aria-label 与运行期文案）补齐后又到 5156
