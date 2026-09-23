@@ -136,14 +136,14 @@ test('ANTHROPIC_DEFAULT_FABLE_MODEL is stripped from the inherited server env fo
   assert.ok(providers.CLAUDE_ROUTING_KEYS.includes('ANTHROPIC_DEFAULT_FABLE_MODEL'));
 });
 
-test('manage.js claude-glm preset prefills fable=glm-5.3 in the model-mapping editor', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage.js'), 'utf8');
-  const presetLine = src.split('\n').find(l => /key: 'claude-glm'/.test(l));
+test('the Air claude-glm preset prefills fable=glm-5.3 in the model-mapping editor', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-provider.js'), 'utf8');
+  const presetLine = src.split('\n').find(l => /'claude-glm':/.test(l));
   assert.ok(presetLine, 'claude-glm preset exists');
   assert.match(presetLine, /aliasMap:\s*\{\s*fable:\s*\{\s*model:\s*'glm-5\.3'/);
   assert.match(presetLine, /name:\s*'GLM5\.3'/);
-  // applyProviderPreset must wire the preset aliasMap into the mapping rows
-  // and clear them when the preset is deselected.
-  assert.match(src, /fillAliasMapFields\('prov-new-alias',\s*document,\s*preset\.aliasMap \|\| null\)/);
-  assert.match(src, /if \(!preset\) \{[\s\S]*?fillAliasMapFields\('prov-new-alias', document, null\)/);
+  // 选中预设要把映射填进四档的输入框；换成没有 aliasMap 的预设则要清空，
+  // 不能把上一个预设的映射留在表单里跟着提交。
+  assert.match(src, /fillAliases\(form, preset\.aliasMap \|\| null\)/);
+  assert.match(src, /function fillAliases\(form, values\) \{[\s\S]*?values\?\.\[tier\]\?\.model \|\| ''/);
 });

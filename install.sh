@@ -14,10 +14,12 @@
 # Or download and run it locally:
 #   chmod +x install.sh && ./install.sh
 #
-# You do NOT need Node, npm, git, Homebrew or Xcode. This script only downloads
+# You do NOT need Node, npm, git, Homebrew or Xcode to run this script: it only downloads
 # the standalone package for your platform, verifies its checksum and unpacks
 # it; the package carries its own Node runtime and its own dependencies. The
 # only tools it needs are curl (or wget), tar and a SHA-256 utility.
+# MultiCC itself does need a working git at runtime (one worktree per session);
+# this script checks for it at the end and prints how to install it.
 #
 # Options:
 #   --dir <path>        Install into this directory (default: ~/MultiCC)
@@ -120,8 +122,9 @@ Usage — newest release instead of this pinned one:
 Or download and run it locally:
   chmod +x install.sh && ./install.sh
 
-No Node, npm, git, Homebrew or Xcode required: the standalone package ships
-its own runtime.
+No Node, npm, git, Homebrew or Xcode required to install: the standalone
+package ships its own runtime. MultiCC does need a working git to run;
+the installer checks and tells you how to get it.
 
 Options:
   --dir <path>        Install into this directory (default: ~/MultiCC)
@@ -529,6 +532,61 @@ fi
 chmod +x "$INSTALL_DIR/multicc" 2>/dev/null || true
 ok "Installed MultiCC ${VERSION_NUMBER}"
 
+# ── Check git ─────────────────────────────────────────────────────────────
+# MultiCC gives every session its own git worktree, so git has to actually work
+# here. The package ships its own Node runtime, but it cannot ship git. On macOS
+# /usr/bin/git is only a Command Line Tools shim: it exists even when the tools
+# do not, and every call then pops an install dialog and exits non-zero — which
+# surfaces much later as "无法将目录初始化为 git 仓库" the first time a directory
+# is added. `xcode-select -p` answers the question without triggering that
+# dialog, so it is asked first and `git --version` only runs behind it.
+step "Checking git"
+# What is required is a working git, NOT the Command Line Tools — a git from
+# Homebrew, MacPorts or git-scm.com is just as good, and nagging those users to
+# install Xcode tools they do not need would be wrong. So the tools are only
+# consulted when the only git on PATH is /usr/bin/git, which on macOS is the
+# shim. Any other path is a real binary and can be asked for its version safely.
+GIT_MISSING=false
+GIT_NEEDS_CLT=false
+GIT_PATH="$(command -v git 2>/dev/null || true)"
+if [ -z "$GIT_PATH" ]; then
+  GIT_MISSING=true
+  # Written as a full `if`, not `[ ... ] && ...`: under `set -e` the && form
+  # exits non-zero on every non-macOS host and would abort the installer.
+  if [ "$PLATFORM" = "darwin" ]; then GIT_NEEDS_CLT=true; fi
+elif [ "$PLATFORM" = "darwin" ] && [ "$GIT_PATH" = "/usr/bin/git" ] && ! xcode-select -p >/dev/null 2>&1; then
+  # Only the shim is present and it has nothing behind it. Do not run it: that
+  # is what pops the install dialog in the middle of an install script.
+  GIT_MISSING=true
+  GIT_NEEDS_CLT=true
+elif ! "$GIT_PATH" --version >/dev/null 2>&1; then
+  GIT_MISSING=true
+fi
+if [ "$GIT_MISSING" = true ]; then
+  if [ "$GIT_NEEDS_CLT" = true ]; then
+    warn "git does not work yet — macOS Command Line Tools are not installed."
+    echo "       MultiCC needs a working git (every session gets its own worktree)."
+    echo "       Fix it with one command, then confirm in the dialog it opens:"
+    echo "         ${C_CYAN}xcode-select --install${C_RESET}"
+    echo "       Already have Xcode? Point the tools at it instead:"
+    echo "         ${C_CYAN}sudo xcode-select --switch /Applications/Xcode.app${C_RESET}"
+    echo "       Any other git works too (Homebrew, git-scm.com) — the tools are"
+    echo "       just the shortest route."
+  elif [ "$PLATFORM" = "darwin" ]; then
+    warn "git is on PATH but does not run: ${GIT_PATH}"
+    echo "       MultiCC needs a working git (every session gets its own worktree)."
+    echo "       Reinstall it, e.g. 'brew install git' or from https://git-scm.com."
+  else
+    warn "git was not found on PATH."
+    echo "       MultiCC needs a working git (every session gets its own worktree)."
+    echo "       Install it with your package manager, e.g. 'sudo apt install git'."
+  fi
+  echo "       Installation continues — MultiCC starts fine, but adding a"
+  echo "       directory will fail until git works."
+else
+  ok "git is available"
+fi
+
 # ── Configure ─────────────────────────────────────────────────────────────
 # The command is the bundle's own CLI, so the config lands wherever the CLI
 # (and therefore the launcher and the server) reads it: the per-user data
@@ -652,6 +710,20 @@ echo ""
 echo "  Sessions, providers and chat history live outside this directory,"
 echo "  so replacing or updating the package never touches them."
 echo ""
+# Repeated here because the check above scrolls past behind the service prompt
+# and the startup output — this is the last thing on screen, and it is the one
+# thing standing between a finished install and a working first session.
+if [ "$GIT_MISSING" = true ]; then
+  if [ "$PLATFORM" = "darwin" ]; then
+    echo "  ${C_BOLD}${C_YELLOW}One thing left: install git${C_RESET}"
+    echo "    ${C_CYAN}xcode-select --install${C_RESET}"
+    echo "    Until that finishes, adding a directory fails with a git error."
+  else
+    echo "  ${C_BOLD}${C_YELLOW}One thing left: install git${C_RESET}"
+    echo "    MultiCC needs git on PATH; adding a directory fails until it is there."
+  fi
+  echo ""
+fi
 ok "Happy building!"
 echo ""
 

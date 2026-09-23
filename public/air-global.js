@@ -57,6 +57,9 @@
         .air-global-status { min-width: 0; color: var(--faint); font-size: 10.5px; overflow-wrap: anywhere; }
         .air-global-status.ok { color: #2f7d52; }
         .air-global-status.err { color: #b34b34; }
+        /* 免密助手是同一张卡里的附属选项，不是第二件事：靠一条细线和缩进把它
+           归到关盖开关下面，而不是再画一张卡。 */
+        .air-global-helper { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--hairline); }
       `;
     }
     host.append(styleNode); // replaceChildren 会把它一起清掉，每次重绘都挂回去
@@ -181,8 +184,87 @@
     const foot = make('div', null, 'air-global-foot');
     foot.append(refresh, status);
 
-    panel.append(head, label, make('p', t('airGlobalPowerDesc'), 'air-global-desc'), foot);
+    // 免密助手这一行只在服务端说「这台机器适用」时才出现（loadHelper 里解禁），
+    // 所以先整块藏起来：一个按了必然报错的按钮比没有这个按钮更糟。
+    const helperRow = make('div', null, 'air-global-helper');
+    helperRow.id = 'air-global-helper-row';
+    helperRow.hidden = true;
+    const helperBtn = make('button', t('airGlobalHelperInstall'));
+    helperBtn.type = 'button';
+    helperBtn.id = 'air-global-helper-btn';
+    helperBtn.onclick = () => { void toggleHelper(); };
+    const helperStatus = make('span', '', 'air-global-status');
+    helperStatus.id = 'air-global-helper-status';
+    const helperFoot = make('div', null, 'air-global-foot');
+    helperFoot.append(helperBtn, helperStatus);
+    helperRow.append(helperFoot, make('p', t('airGlobalHelperDesc'), 'air-global-desc'));
+
+    panel.append(head, label, make('p', t('airGlobalPowerDesc'), 'air-global-desc'), foot, helperRow);
     return panel;
+  }
+
+  // 装不装都不影响关盖运行能不能用，所以这块读失败时只写一行状态，绝不把整张卡收掉
+  // ——那会让人以为关盖开关本身出了问题。
+  // keepStatus：刚说完一句话（取消了、失败了）之后的那次复查要带上它 —— 复查是为了
+  // 把按钮态校准到服务端说的那个，不是为了把那句话抹掉换成一行干巴巴的「已安装」。
+  async function loadHelper(keepStatus = false) {
+    const row = el('air-global-helper-row');
+    const button = el('air-global-helper-btn');
+    const status = el('air-global-helper-status');
+    if (!row || !button || !status) return;
+    const say = (text, className) => {
+      if (keepStatus) return;
+      status.textContent = text;
+      status.className = className;
+    };
+    try {
+      const data = await context.api('/api/system/privileged-helper');
+      if (!data || data.applicable === false) { row.hidden = true; return; }
+      row.hidden = false;
+      button.dataset.installed = data.installed ? '1' : '';
+      button.textContent = t(data.installed ? 'airGlobalHelperRemove' : 'airGlobalHelperInstall');
+      say(data.installed ? t('airGlobalHelperInstalled', { user: data.user }) : t('airGlobalHelperMissing'),
+        `air-global-status${data.installed ? ' ok' : ''}`);
+    } catch (error) {
+      // 读不到状态时那句话必须盖掉：此刻屏幕上的「已取消/已移除」谁也担保不了了。
+      row.hidden = false;
+      status.textContent = t('airGlobalHelperReadFailed', { message: error.message || String(error) });
+      status.className = 'air-global-status err';
+    }
+  }
+
+  async function toggleHelper() {
+    const button = el('air-global-helper-btn');
+    const status = el('air-global-helper-status');
+    if (!button || !status) return;
+    const removing = Boolean(button.dataset.installed);
+    // 同关盖开关：这一步会弹系统授权框，先按住按钮并说明在等什么。
+    button.disabled = true;
+    status.textContent = t('airGlobalHelperWaiting');
+    status.className = 'air-global-status';
+    let keepStatus = false;
+    try {
+      await context.api(
+        `/api/system/privileged-helper/${removing ? 'uninstall' : 'install'}`, undefined, 'POST');
+      status.textContent = t(removing ? 'airGlobalHelperRemoved' : 'airGlobalHelperDone');
+      status.className = 'air-global-status ok';
+    } catch (error) {
+      // 取消密码框是用户的选择，不是故障。它走的也是这条 catch —— 外壳的 request()
+      // 把 ok:false 一律当失败抛出，但会把整个回包挂到 error 上，所以这里认 status
+      // 而不是认「抛没抛」：照原样把服务端那句话写出来，不染红。
+      const canceled = error && error.status === 'canceled';
+      status.textContent = canceled
+        ? (error.error || error.message)
+        : t('airGlobalHelperFailed', { message: error.message || String(error) });
+      status.className = `air-global-status${canceled ? '' : ' err'}`;
+      // 两种情况这句话都得留着：它是这一次点击唯一的结果，不该被复查换成「已安装」。
+      keepStatus = true;
+    } finally {
+      button.disabled = false;
+      // 装没装成以服务端的复查为准（sudo 会静默忽略权限不对的 drop-in），
+      // 所以最后总要再问一次，而不是照按钮本地的想法改文案。
+      await loadHelper(keepStatus);
+    }
   }
 
   async function loadPower() {
@@ -201,6 +283,8 @@
       panel.hidden = false;
       toggle.disabled = false;
       toggle.checked = !!data.enabled;
+      // 先把关盖状态画好再问助手：助手读失败不该拖着开关一起显示不出来。
+      void loadHelper();
       if (status) {
         if (data.error) {
           // 读到了「这个平台支持，但状态读不出来」：卡留着，把原因写在状态行上。

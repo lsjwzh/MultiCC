@@ -485,6 +485,7 @@ test('system route mount owns the app-binary metadata and canonical download rou
   };
   mountSystemRoutes({
     get(route, handler) { paths.push(['GET', route, typeof handler]); },
+    post(route, handler) { paths.push(['POST', route, typeof handler]); },
   }, {
     fs,
     path,
@@ -504,6 +505,17 @@ test('system route mount owns the app-binary metadata and canonical download rou
     ['GET', '/multicc.apk', 'function'],
     ['GET', '/api/ios-ota-info', 'function'],
     ['GET', '/ios-ota/manifest.plist', 'function'],
+    ['GET', '/api/system/developer-tools', 'function'],
+    ['POST', '/api/system/developer-tools/install', 'function'],
+    // Host-repair surfaces, all mounted here rather than from server.js because
+    // they need no host state. Listing them exactly is the point: a new route
+    // that grants privileges or opens a settings pane should not slip in
+    // unnoticed.
+    ['GET', '/api/system/privileged-helper', 'function'],
+    ['POST', '/api/system/privileged-helper/install', 'function'],
+    ['POST', '/api/system/privileged-helper/uninstall', 'function'],
+    ['GET', '/api/system/disk-access', 'function'],
+    ['POST', '/api/system/disk-access/open', 'function'],
   ]);
 
   const response = { json(value) { this.body = value; } };

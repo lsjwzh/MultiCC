@@ -206,15 +206,15 @@ test('base-url choices dedupe by root and default to the reachable one', async (
 test('the share dialog and the relay dialog pick roots from one collector', () => {
   const chat = fs.readFileSync(path.join(ROOT, 'public', 'chat.html'), 'utf8');
   const chatJs = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
-  const manage = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
+  const air = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
   const relay = fs.readFileSync(SOURCE_PATH, 'utf8');
 
   // 两个对话框问的是同一个问题。分成两份实现就会各自漂移 —— 一边加了新的穿透
   // 方式，另一边不知道。
   const tag = '<script src="base-url-options.js"></script>';
   assert.ok(chat.includes(tag), 'chat.html must load the shared collector for the share dialog');
-  assert.ok(manage.indexOf(tag) >= 0 && manage.indexOf(tag) < manage.indexOf('<script src="manage-provider-relay.js"></script>'),
-    'manage.html must load the shared collector before the relay module');
+  assert.ok(air.indexOf(tag) >= 0 && air.indexOf(tag) < air.indexOf('<script src="manage-provider-relay.js"></script>'),
+    'air.html must load the shared collector before the relay module');
   assert.match(relay, /multiccBaseUrlOptions\(\{ json: \(url\) => providerApi\.json\(url\) \}\)/);
   // 两个分享对话框（整个会话 / 选中的消息）都用同一个下拉、都要把选中的根域发上去。
   assert.equal(chatJs.split('multiccMountBaseUrlSelect(baseSel);').length - 1, 2,
@@ -227,12 +227,16 @@ test('the share dialog and the relay dialog pick roots from one collector', () =
   assert.doesNotMatch(chatJs, /\/api\/server-info/);
 });
 
-test('manage.html loads the relay module before the manage facade', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'public', 'manage.html'), 'utf8');
+test('air.html loads the relay module before the panel that mounts its buttons', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
+  const panel = fs.readFileSync(path.join(ROOT, 'public', 'air-provider-advanced.js'), 'utf8');
   const relay = html.indexOf('<script src="manage-provider-relay.js"></script>');
-  const manage = html.indexOf('<script src="manage.js"></script>');
-  assert.ok(relay >= 0 && manage > relay, 'relay module must be loaded before manage.js');
-  assert.match(html, /id="prov-relay-records-btn"[^>]+manageRelayShares/);
+  const advanced = html.indexOf('<script src="air-provider-advanced.js"></script>');
+  assert.ok(relay >= 0 && advanced > relay, 'relay module must be loaded before air-provider-advanced.js');
+  // 旧页那两颗按钮写在 HTML 里（onclick="manageRelayShares()"）；现在由面板画，
+  // 调的还是模块导出的同两个全局函数。
+  assert.match(panel, /root\.manageRelayShares\?\.\(\)/);
+  assert.match(panel, /root\.importRelayProvider\?\.\(\)/);
 });
 
 test('new relay creation requires a per-link token and exposes inventory/revocation controls', () => {

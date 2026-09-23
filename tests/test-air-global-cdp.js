@@ -11,6 +11,8 @@
 //   ④ 关盖运行：available:false 时整卡不出现（不是灰掉）、error 有值要在页面上现形、
 //      勾选态以服务端回的 enabled 为准、写入失败时勾选必须回滚；
 //   ⑤ 安装包（APK / iOS OTA）不在这页重复第二张卡 —— 侧栏「主机操作」那颗才是唯一入口。
+//   ⑥ 免密助手：它长在关盖那张卡里（不是第二张）；不适用的机器整行消失；取消密码框
+//      不算失败（不染红）；装没装成一律以服务端复查过的状态为准，本地按钮说了不算。
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
@@ -61,6 +63,21 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     power = { available: true, enabled };
     return json({ ok: true, available: true, enabled });
   };
+  // 免密助手：装了之后关盖开关不再每次要密码。它是**可选**的，所以 fixture 要能演
+  // 「这台机器不适用 / 没装 / 装了 / 用户取消了密码框 / 真失败」五种回答。
+  let helper = { applicable: true, installed: false, user: 'green' };
+  let helperReply = null; // null = 照常成功；否则原样作为 POST 的回包
+  const helperPosts = [];
+  routes['GET /api/system/privileged-helper'] = () => json({ ok: true, ...helper });
+  for (const mode of ['install', 'uninstall']) {
+    routes[`POST /api/system/privileged-helper/${mode}`] = () => {
+      helperPosts.push(mode);
+      if (helperReply) return helperReply;
+      helper = { ...helper, installed: mode === 'install' };
+      return json({ ok: true, status: mode === 'install' ? 'installed' : 'removed', ...helper });
+    };
+  }
+
   routes['/api/air'] = () => json({ ok: true, directories: [{ id: 'd1', name: 'MultiCC 主仓', path: '/projects/multicc' }], clis: ['codex'], migration: { errors: [] }, tasks: [], sessions: [] });
   routes['/api/cron'] = () => json([]);
   routes['/api/docs-registry'] = () => json([]);
@@ -253,5 +270,52 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     assert.equal(await page.evaluate(`document.getElementById('air-global-power-card').hidden`), false, '这张卡还在（支持这个平台）');
     powerError = '';
     await page.screenshot('02-global-power');
+
+    // ── ⑤ 免密助手：它是关盖开关的附属选项，不是第二张卡 ───────────────────
+    // 「不适用 / 未装 / 已装」三态各自要现形，取消密码框不算失败，装没装成一律以
+    // 服务端复查过的状态为准（sudo 会静默忽略权限不对的 drop-in，本地按钮说了不算）。
+    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-row')?.hidden === false`), '适用时这一行在');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-row').closest('#air-global-power-card') !== null`), true,
+      '它长在关盖那张卡里 —— 免密是这条开关的附属选项，不是独立的一件事');
+    assert.equal(await text('#air-global-helper-status'), await t('airGlobalHelperMissing'), '没装时说清「每次都会要密码」');
+    assert.equal(await text('#air-global-helper-btn'), await t('airGlobalHelperInstall'));
+
+    // 装上：发一次 install，文案两处都翻面（按钮变「移除」、状态带用户名）。
+    await page.evaluate(`document.getElementById('air-global-helper-btn').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-btn').disabled`), true, '等授权时按钮按住');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-btn').textContent === ${JSON.stringify(await t('airGlobalHelperRemove'))}`), '装完按钮翻面');
+    assert.deepEqual(helperPosts, ['install']);
+    assert.equal(await text('#air-global-helper-status'), await tParams('airGlobalHelperInstalled', { user: 'green' }),
+      '状态行点名是给哪个用户开的免密 —— 这是一条写进 sudoers 的授权，对象必须写明');
+
+    // 取消密码框是用户的选择，不是故障：按服务端那句话原样显示，且不染成红色。
+    helperReply = { status: 200, headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ok: false, status: 'canceled', error: '已取消授权，功能仍可用，只是每次会要求输入密码。' }) };
+    await page.evaluate(`document.getElementById('air-global-helper-btn').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-status').textContent === '已取消授权，功能仍可用，只是每次会要求输入密码。'`), '取消照原样说');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-status').className.includes('err')`), false, '取消不是错误，不染红');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-btn').textContent`), await t('airGlobalHelperRemove'),
+      '取消之后状态没变：还是「已装」，因为结尾那次复查问的是服务端');
+    helperReply = null;
+
+    // 移除：回到「未装」，并且说清代价（之后切换又要输密码）。
+    await page.evaluate(`document.getElementById('air-global-helper-btn').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-btn').textContent === ${JSON.stringify(await t('airGlobalHelperInstall'))}`), '移除后按钮翻回去');
+    assert.deepEqual(helperPosts, ['install', 'uninstall', 'uninstall']);
+    assert.equal(await text('#air-global-helper-status'), await t('airGlobalHelperMissing'));
+
+    // 真失败要现形，而且按钮得放开让人再试一次。
+    helperReply = { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: '写入 sudoers 失败（演示）' }) };
+    await page.evaluate(`document.getElementById('air-global-helper-btn').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-status').className.includes('err')`), '失败要现形');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-btn').disabled`), false, '失败也要能再试一次');
+    helperReply = null;
+
+    // 不适用的机器上整行消失 —— 一个按了必然报错的按钮比没有这个按钮更糟。
+    helper = { applicable: false, installed: false, user: 'green' };
+    await page.evaluate(`document.getElementById('air-global-power-refresh').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-row').hidden === true`), '不适用时这一行收起来');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-power-card').hidden`), false, '关盖那张卡不受影响 —— 免密装不装都不挡它用');
+    await page.screenshot('03-global-helper');
   });
 });

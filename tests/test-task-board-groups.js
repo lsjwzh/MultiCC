@@ -28,7 +28,7 @@ test('task board UI groups only visible related tasks and leaves every task card
   }]);
   assert.equal(filtered.groups.length, 0);
   assert.deepEqual(filtered.ungrouped.map(task => task.id), ['task-new', 'task-free']);
-  for (const file of ['public/manage-taskboard.js', 'public/meta.html']) {
+  for (const file of ['public/meta.html']) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.match(source, /MultiCCTaskBoardUi\.partitionTaskGroups/);
     assert.match(source, /tb-related-group/);

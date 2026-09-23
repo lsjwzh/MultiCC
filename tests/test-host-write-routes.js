@@ -834,9 +834,10 @@ test('SakuraFrp settings round-trip through the HTTP boundary and durable reload
     tunnel.init();
     assert.deepEqual(tunnel.getStatus().config.sakurafrp, expected);
 
-    const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-host-settings.js'), 'utf8');
-    assert.match(ui, /const d = await res\.json\(\)\.catch/);
-    assert.match(ui, /d\?\.error \|\| \('HTTP ' \+ res\.status\)/);
+    // 旧 manage 页那份 host-settings 模块随该页删除；同一条口径（服务端给的
+    // message/error 优先于裸 HTTP 状态码）现在落在 Air 唯一的请求出口上。
+    const ui = fs.readFileSync(path.join(__dirname, '..', 'public', 'air.js'), 'utf8');
+    assert.match(ui, /result\.message \|\| result\.error \|\| result\.code \|\| `HTTP \$\{response\.status\}`/);
   } finally {
     if (tunnel) tunnel.stop();
     delete require.cache[modulePath];

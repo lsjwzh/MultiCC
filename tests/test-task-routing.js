@@ -37,7 +37,7 @@ function taskFixture(refs = []) {
       id: 'tsk-route',
       moduleId: 'web',
       title: '修复任务详情消息跳转',
-      areas: ['public/manage-taskboard.js', '消息定位'],
+      areas: ['public/task-board-ui.js', '消息定位'],
       refs,
     },
   };

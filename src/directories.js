@@ -9,7 +9,8 @@
 const fs = require('fs');
 const path = require('path');
 const state = require('./state/container');
-const { gitIsRepo, gitRun, WORKTREE_SUBDIR } = require('./git/service');
+const { gitIsRepo, gitRun, WORKTREE_SUBDIR, isDeveloperToolsMissingGitError }
+  = require('./git/service');
 // Shared with src/paths.js — the robust, symlink-ancestor-aware implementations.
 // (Previously duplicated here with a bare fs.realpathSync that threw for
 // not-yet-existing paths and did not collapse ancestor symlinks.)
@@ -171,12 +172,54 @@ function macPermissionGuidance(targets = macPermissionTargets()) {
   return lines.join('\n');
 }
 
+// macOS installs /usr/bin/git as a Command Line Tools shim rather than as git.
+// Without the tools every git call pops an install dialog and exits non-zero,
+// so the raw fatal a user sees ('xcode-select: note: No developer tools were
+// found...') reads like a MultiCC bug. It is not, and it is not fixable by
+// rewriting this in another language either — the shim is in front of every
+// process. Name the one command that fixes it.
+function developerToolsGuidance() {
+  return [
+    'macOS 缺少命令行开发者工具（Command Line Tools），系统里的 git 只是个占位程序，所以任何 git 操作都会失败。',
+    '在终端执行这一句即可（会弹窗，点“安装”等它装完，约几百 MB）：',
+    '    xcode-select --install',
+    '装完后用 git --version 验证：能打印版本号就好了，然后回 MultiCC 重新添加这个目录（不用重启服务）。',
+    '如果你已经装了 Xcode，那只是没选中它：sudo xcode-select --switch /Applications/Xcode.app',
+    '不想装命令行工具也行：MultiCC 要的只是一个能用的 git，用 Homebrew（brew install git）或 git-scm.com 装一个同样可以，'
+      + '命令行工具只是 macOS 上最省事的那条路。',
+  ].join('\n');
+}
+
+// Machine-readable counterpart to friendlyDirReason: names a fix the UI can
+// offer as a button instead of asking the user to retype a command into a
+// terminal they may not have open. Only failures with a one-command remedy get
+// a code; everything else stays null and the prose alone is shown.
+function dirReasonFix(reason) {
+  if (!reason) return null;
+  // Order mirrors friendlyDirReason: when a message carries both shapes, the
+  // missing toolchain is the cause and the denial is downstream noise.
+  if (isDeveloperToolsMissingGitError(reason)) return 'install-developer-tools';
+  if (reason.startsWith('permission-denied: ')
+    || /Operation not permitted|EPERM|unable to get current working directory/i.test(reason)) {
+    // Not a fix that can be applied for the user — only macOS can grant this —
+    // but the pane is two clicks deep and the binary to add is not obvious, so
+    // the button opens the former and the UI names the latter.
+    return 'open-disk-access';
+  }
+  return null;
+}
+
 // Turn an ensureDirGitReady reason code into a user-facing message.
 function friendlyDirReason(reason) {
   if (!reason) return '目录初始化失败';
   if (reason.startsWith('unsuitable: ')) return reason.slice('unsuitable: '.length);
   if (reason === 'home-or-above') return '不允许选择 $HOME 或更高层目录';
   if (reason === 'path-missing') return '目录不存在';
+  // Checked before the denial branch: when both shapes appear in one message,
+  // a missing toolchain is the cause and the denial is downstream noise.
+  if (isDeveloperToolsMissingGitError(reason)) {
+    return developerToolsGuidance() + '\n原始错误: ' + reason;
+  }
   // macOS TCC denies git (getcwd → EPERM) inside Desktop/Documents/Downloads
   // for processes without Full Disk Access; the bare git fatal is unreadable.
   // The text is written for macOS and is also what a Linux EPERM gets — that
@@ -197,6 +240,8 @@ module.exports = {
   dirSuitabilityViaGit,
   dirSuitability,
   friendlyDirReason,
+  developerToolsGuidance,
+  dirReasonFix,
   macPermissionTargets,
   macPermissionGuidance,
   directoryWriteDenied,

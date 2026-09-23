@@ -52,9 +52,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 该拆的仍是 renderSchedules / renderDirectoryOverview，不是这里。
   // 与工作区面板那条一起合入后，两个方向的增量都还在：合并树实测 3067/165249，
   // 天花板就登记这个实测值（不抬到任何一个分支的旧值上去）。
+  // 工作区那一格搬成原生（air-workspaces.js）后，adminHeadings 里那条页头从硬写中文
+  // 改成 t()，行数不变、字节 +29；同区一段注释就地压掉抵账，高水位往下走到 165233。
   'public/air.js': Object.freeze({
     ceiling: 3067,
-    byteCeiling: 165249,
+    byteCeiling: 165233,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -124,9 +126,28 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // Aux 并发池补 4 条键（airAdminPool / PoolValue / SerialLane / SerialLaneValue，
   // 中英各 4 行 = +8 行），抬到 6264/383378；同时把任务板回填的确认文案去掉「串行」
   // 字样（aux 已经是并发池），纯值文本改写不动行数。
+  // 缺 macOS 命令行工具时的「一键安装」补 6 条键（airTaskSettingsInstallDevTools
+  // 及其 5 条结果文案，中英各 6 行 = +12 行），抬到 6276/384713。
+  // macOS 磁盘权限的「一键打开设置」补 5 条键（airTaskSettingsOpenDiskAccess 及其
+  // 4 条结果／路径文案，中英各 5 行 = +10 行），抬到 6286/385832。
+  // 关盖运行的免密助手补 10 条键（airGlobalHelper* ：按钮两态、已装／未装、等待、
+  // 两条结果、两条失败、一段说明，中英各 10 行 = +20 行），抬到 6306/387580。
+  // 合并 main 时两侧各自抬过这一格（本分支 6306，main 因 airWorktreeRecordTotal
+  // 一条键抬到 6266，两者从不同基线出发）。冲突解法定式是「以重新生成后的真实数字
+  // 为准」，不是取某一侧：下面这组是两侧键全在的 i18n 重新生成后量出来的。
+  // 工作区面板原生化再补 51 条键（airAdminPanelWorkspaces* + airWorkspaces*：四张卡的
+  // 标题与 eyebrow、概览三行、两个清扫按钮与四条结果、目录行五个计数、孤儿对账七条、
+  // 审计三条，中英各 51 行 = +102 行），抬到 6410/393445。旧页那一格的中文本来藏在
+  // iframe 里扫不到，搬成原生后每一句都要入典，所以这一笔比寻常一格大。
+  // Provider「高级」那四块（官方多账号 / 借道 / ZCode / Kimi 原生连接）从旧页的 iframe
+  // 搬成原生后再补 55 条键、删 4 条（renderLegacy 的「在独立页打开」+ 迁移提示 + 那个
+  // iframe 的标题）；官方多账号那个模块从旧页搬过来后自己写 DOM 的 60 条文案也归 i18n
+    // 管了，净 +111 键，中英各 111 行 = +222 行，抬到 6632/409893。删 Provider 的那句
+  // 确认词补上「只删本地副本、不动 CC-Switch」这条边界（旧页删掉之后这是唯一的删除
+  // 入口，那条边界不能跟着旧页一起消失）：键数不变、只是变长，字节抬到 410097。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6266,
-    maxBytes: 383496,
+    maxLines: 6632,
+    maxBytes: 410097,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
