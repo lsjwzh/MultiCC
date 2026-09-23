@@ -760,7 +760,7 @@ test('classic host delegates persisted and streaming DOM ownership to the view',
 test('script order is local purifier, parser, safety boundary, state, quote, view, host', () => {
   const scripts = [
     'vendor/dompurify/purify.min.js',
-    'https://cdn.jsdelivr.net/npm/marked@12.0.1/marked.min.js',
+    'vendor/marked/marked.min.js',
     'safe-markdown.js',
     'chat-history-store.js',
     'chat-quote.js',
