@@ -184,9 +184,14 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 抬到 6676/412600。
   // 技能分层每组加一句来源说明（5 键 Hint），中英各 5 行 = +10 行，抬到 6686/413300。
   // 主/辅 token 徽标 tooltip 注明「含缓存」（改写 2 键，行数不变），字节抬到 413500。
+  // Auto Provider 的难度路由（Jev 逐条评估）补 7 条键（中英各 7 行 = +14 行）：路由
+  // 开关后缀 / 说明 / 至少两个候选 / 至少两个不同档位 / 档位上限 / 档位 aria / 档位
+  // title。只在词典源（app/assets/i18n/*.json）里按键名字母序插入，catalog 同步手补
+  // ——没有重跑生成器，免得把 main 上已存在的陈旧漂移（usage* 那几条）带进来。
+  // 抬到 6696/414195。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6686,
-    maxBytes: 413500,
+    maxLines: 6696,
+    maxBytes: 414195,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
