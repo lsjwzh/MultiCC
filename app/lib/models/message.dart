@@ -910,9 +910,8 @@ class Session {
   /// 会话级「自动提交」（对齐 web 的 `#auto-commit-btn`）：每轮成功后若该轮
   /// 的勾选仍为真、且工作树确实有事可合，就自动 merge 回基分支。
   ///
-  /// 新会话缺省是「关」（`create-record.js` 里是 `!!autoCommit`，默认参数
-  /// false），所以这里也把「字段缺失」当成 false，而不是 true —— 跟服务端
-  /// DTO（`!!source.autoCommit`）解析出来的状态一致。
+  /// 服务端缺省是「开」（`create-record.js` 里是 `autoCommit !== false`），
+  /// 所以这里也把「字段缺失」当成 true，而不是 false。
   final bool autoCommit;
 
   Session({
@@ -942,7 +941,7 @@ class Session {
     this.type,
     this.auxLabel,
     this.taskBoundTaskId,
-    this.autoCommit = false,
+    this.autoCommit = true,
   });
 
   factory Session.fromJson(Map<String, dynamic> json) {
@@ -981,7 +980,7 @@ class Session {
       type: json['type']?.toString(),
       auxLabel: json['label']?.toString(),
       taskBoundTaskId: json['taskBoundTaskId']?.toString(),
-      autoCommit: json['autoCommit'] == true,
+      autoCommit: json['autoCommit'] != false,
     );
   }
 
