@@ -23,11 +23,12 @@ let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log('✅', m); } else { fail++; console.log('❌', m); } };
 
 const {
-  isPermissionDeniedGitError, gitIsRepo,
+  isPermissionDeniedGitError, isDeveloperToolsMissingGitError, gitIsRepo,
 } = require('../src/git/service');
 const { defaultRepoActor } = require('../src/repo-actor');
 const {
   friendlyDirReason, macPermissionTargets, macPermissionGuidance, directoryWriteDenied,
+  developerToolsGuidance,
 } = require('../src/directories');
 const {
   isAppTranslocated, translocationGuidance, dequarantine,
@@ -38,6 +39,9 @@ const TCC_FATAL = 'Command failed: git init\n'
   + 'fatal: unable to get current working directory: Operation not permitted\n';
 const NOT_A_REPO = 'Command failed: git rev-parse --is-inside-work-tree\n'
   + 'fatal: not a git repository (or any of the parent directories): .git\n';
+// The CLT shim on a machine that has never installed developer tools.
+const NO_TOOLS = 'Command failed: git init\n'
+  + 'xcode-select: note: No developer tools were found, requesting install.\n';
 
 (async () => {
   // ── classifying git failures ──
@@ -86,6 +90,62 @@ const NOT_A_REPO = 'Command failed: git rev-parse --is-inside-work-tree\n'
     // The patch must be gone, or every later test (and this file's own exit)
     // would still be running against a fake git.
     ok(defaultRepoActor.runGit === real, 'gitIsRepo: runGit seam restored after the test');
+  }
+
+  // ── missing Command Line Tools: same failure shape, different cause ──
+  // /usr/bin/git is a CLT shim on macOS. With the tools absent it prints this
+  // note, pops an install dialog and exits non-zero — reported from a fresh
+  // install where the user reasonably concluded MultiCC (or Node) was at fault.
+  {
+    ok(isDeveloperToolsMissingGitError({ stderr: NO_TOOLS }),
+      'classify: xcode-select install note → developer tools missing');
+    ok(isDeveloperToolsMissingGitError(new Error(
+      "xcode-select: error: tool 'git' requires Xcode, but active developer directory "
+      + "'/Library/Developer/CommandLineTools' is a command line tools instance")),
+      'classify: xcode-select "requires Xcode" → developer tools missing');
+    ok(isDeveloperToolsMissingGitError(new Error(
+      'xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools)')),
+      'classify: xcrun invalid active developer path → developer tools missing');
+    ok(!isDeveloperToolsMissingGitError(new Error(NOT_A_REPO)),
+      'classify: "not a git repository" is NOT a toolchain problem');
+    ok(!isDeveloperToolsMissingGitError({ stderr: TCC_FATAL }),
+      'classify: a TCC denial is NOT a toolchain problem');
+    ok(!isDeveloperToolsMissingGitError(null) && !isDeveloperToolsMissingGitError(new Error('')),
+      'classify: empty/absent error is not a toolchain problem');
+
+    const real = defaultRepoActor.runGit;
+    let initRan = false;
+    try {
+      defaultRepoActor.runGit = async (cwd, args) => {
+        if (args[0] === 'init') { initRan = true; return ''; }
+        throw Object.assign(new Error(NO_TOOLS), { stderr: NO_TOOLS });
+      };
+      let missing = null;
+      try { await gitIsRepo('/fresh-mac'); } catch (e) { missing = e; }
+      ok(missing && missing.code === 'GIT_TOOLS_MISSING',
+        'gitIsRepo: no developer tools → throws GIT_TOOLS_MISSING instead of "no repo"');
+      ok(missing && missing.path === '/fresh-mac', 'gitIsRepo: thrown tools error carries the path');
+      ok(!initRan,
+        'gitIsRepo: refusing to answer false stops the caller before a second `git init` dialog');
+    } finally {
+      defaultRepoActor.runGit = real;
+    }
+    ok(defaultRepoActor.runGit === real, 'gitIsRepo: runGit seam restored after the tools test');
+
+    // The whole point: the user is told the one command that fixes it.
+    const shown = friendlyDirReason('git-error: ' + NO_TOOLS);
+    ok(shown.includes('xcode-select --install'),
+      'friendlyDirReason: toolchain failure names `xcode-select --install`');
+    ok(!shown.startsWith('无法将目录初始化为 git 仓库'),
+      'friendlyDirReason: toolchain failure no longer falls through to the bare git fatal');
+    ok(shown.includes(NO_TOOLS.trim().slice(0, 40)),
+      'friendlyDirReason: original git text is still appended for support');
+    ok(!shown.includes('完全磁盘访问权限'),
+      'friendlyDirReason: a toolchain failure is not mislabelled as a permission problem');
+    ok(friendlyDirReason('git-error: ' + TCC_FATAL).includes('完全磁盘访问权限'),
+      'friendlyDirReason: the TCC branch still wins for a real denial');
+    ok(developerToolsGuidance().includes('xcode-select --switch'),
+      'guidance: an already-installed Xcode gets the --switch hint');
   }
 
   // ── which object the user must actually authorize ──
@@ -214,6 +274,20 @@ const NOT_A_REPO = 'Command failed: git rev-parse --is-inside-work-tree\n'
     const installer = read('install.sh');
     ok(/if \[ "\$PLATFORM" = "darwin" \][^\n]*\n[^\n]*xattr -dr com\.apple\.quarantine "\$UNPACK_DIR"/.test(installer),
       'wiring: install.sh clears the download flag after unpacking (darwin-guarded)');
+    // The installer is where a fresh macOS is still cheap to fix: the package
+    // ships its own Node but cannot ship git, and /usr/bin/git is a shim that
+    // lies about being present. Without this check the user only finds out when
+    // the first directory fails to initialise.
+    ok(/step "Checking git"/.test(installer),
+      'wiring: install.sh checks that git actually works before it finishes');
+    ok(/xcode-select -p/.test(installer),
+      'wiring: install.sh probes with `xcode-select -p`, which does not pop the install dialog');
+    ok(/xcode-select --install/.test(installer),
+      'wiring: install.sh names the command that fixes a fresh macOS');
+    ok(!/No Node, npm, git, Homebrew or Xcode required: the standalone package ships\nits own runtime\./.test(installer),
+      'wiring: install.sh no longer promises that git is unnecessary to run MultiCC');
+    ok(/GIT_MISSING/.test(installer) && installer.indexOf('GIT_MISSING') !== installer.lastIndexOf('GIT_MISSING'),
+      'wiring: the git warning is repeated in the final banner, not just mid-scroll');
     ok(/\|\| true/.test(installer.split('com.apple.quarantine')[1].split('\n')[0]),
       'wiring: a failing xattr never aborts the install');
 
@@ -242,6 +316,56 @@ const NOT_A_REPO = 'Command failed: git rev-parse --is-inside-work-tree\n'
       ok(typeof pkg.build.mac.extendInfo[k] === 'string' && pkg.build.mac.extendInfo[k].length > 0,
         `wiring: desktop build carries ${k}`);
     }
+  }
+
+  // ── one-click repair: the fix code has to survive the whole way out ──
+  // A remedy the user must retype into a terminal is a remedy most users never
+  // apply. The chain is: classifier → dirReasonFix → service `extra` → HTTP body
+  // → button. Any missing link silently degrades it back to prose, so each one
+  // is asserted here rather than left to the end-to-end UI tests.
+  {
+    const { dirReasonFix } = require('../src/directories');
+    ok(dirReasonFix('git-error: ' + NO_TOOLS) === 'install-developer-tools',
+      'dirReasonFix: a missing toolchain names the install remedy');
+    // A TCC denial cannot be repaired by running anything — only the user, in
+    // System Settings, can grant it. It still gets a code, because the pane is
+    // hard to find and the program to add depends on how MultiCC was started.
+    ok(dirReasonFix(TCC_FATAL) === 'open-disk-access',
+      'dirReasonFix: a permission denial points at the Full Disk Access pane');
+    ok(dirReasonFix('boom') === null && dirReasonFix(null) === null,
+      'dirReasonFix: unknown and empty reasons stay null');
+
+    ok(/'dirReasonFix'/.test(read('src/directory/ports.js')),
+      'wiring: dirReasonFix is part of the directory helper port, not an optional extra');
+    const svc = read('src/directory/service.js');
+    ok(/helpers\.dirReasonFix\(reason\)/.test(svc) && /fixExtra\(ready\.reason\)/.test(svc),
+      'wiring: register/update attach the fix code to the failure they return');
+    ok(/helpers: \{ resolveCwd, isHomeOrAbove, realPathOf, friendlyDirReason, dirReasonFix \}/.test(read('server.js')),
+      'wiring: server.js supplies dirReasonFix to the directory service');
+
+    // The endpoint must probe with xcode-select, never with git --version: the
+    // latter pops the very dialog the button is supposed to raise deliberately.
+    const route = read('src/routes/developer-tools.js');
+    ok(/'xcode-select'/.test(route) && /'--install'/.test(route),
+      'wiring: the route runs xcode-select --install');
+    ok(!/git['"\s]*,?\s*\[['"]--version/.test(route),
+      'wiring: the route never probes with git --version');
+    ok(/\/api\/system\/developer-tools\/install/.test(route)
+      && /createDeveloperToolsRoutes\(\)\.mountRoutes\(app\)/.test(read('src/routes/system.js')),
+      'wiring: the install route is mounted');
+
+    for (const [file, needle] of [
+      ['public/air-task-settings.js', '/api/system/developer-tools/install'],
+      ['public/manage-workspace-setup.js', '/api/system/developer-tools/install'],
+    ]) {
+      ok(read(file).includes(needle), `wiring: ${file} offers the repair as a button`);
+    }
+    ok(/if \(result\.fix\) failure\.fix = result\.fix;/.test(read('public/air-task-settings.js')),
+      'wiring: the Air client keeps the fix code off the error body');
+    ok(/error\.details && error\.details\.fix/.test(read('public/manage-workspace-setup.js')),
+      'wiring: first-run setup reads the fix code the API client preserved');
+    ok(/id="newdir-fix"/.test(read('public/manage.html')),
+      'wiring: first-run setup has somewhere to render the button');
   }
 
   console.log(`\n== macos disk permissions: ${pass} passed, ${fail} failed ==`);
