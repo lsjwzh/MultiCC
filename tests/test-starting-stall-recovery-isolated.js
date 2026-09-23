@@ -149,6 +149,14 @@ async function main() {
     }
     check('session wrapped back to idle after recovery', final && final.state === 'idle');
     check('fake codex runner was killed', !fakeRunnerAlive());
+    // The recovery log is emitted right after the turn is wrapped, while the
+    // liveness poll above only proves the wrap already landed: stdout can
+    // arrive a beat later, so give the pipe a bounded window before asserting.
+    // A recovery that never logs still fails, just after this deadline.
+    const logDeadline = Date.now() + 10_000;
+    while (Date.now() < logDeadline && !serverOut.includes('stalled_turn_recovered')) {
+      await new Promise(r => setTimeout(r, 100));
+    }
     check('server logged stalled_turn_recovered', serverOut.includes('stalled_turn_recovered'));
     check('recovery log carries the starting phase', /"phase"\s*:\s*"starting"/.test(serverOut));
   } finally {

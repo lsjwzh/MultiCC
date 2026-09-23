@@ -501,7 +501,10 @@
         node('small', activeCount
           ? t('airDirTaskCountActive', { total: taskCount, active: activeCount })
           : t('airDirTaskCount', { total: taskCount })),
-        node('small', t('airDirWorktreeCount', { n: directory.worktreeCount || 0 })));
+        // 这一行不只有「几个」，还有「本地留着几个、睡下几个、还欠几个」：口径与
+        // 拼法都在 air-worktrees.js（目录首页那块面板用的是同一份）。
+        node('small', window.MultiCCAirWorktrees?.summary?.(directory)
+          || t('airDirWorktreeCount', { n: directory.worktreeCount || 0 })));
       button.onclick = () => navigate(directory.id);
       const card = node('article', null, 'directory-card');
       const memo = node('a', t('memoTitle'), 'directory-memo');
@@ -1224,6 +1227,29 @@
 
       const prompt = node('p', task.prompt, 'schedule-prompt');
       const actions = node('footer', null, 'schedule-actions');
+      // 执行记录：回答「今天到底跑没跑、跑了几次、哪次失败」。默认收起，不占高度。
+      const runs = Array.isArray(task.recentRuns) ? task.recentRuns : [];
+      const history = node('details', null, 'schedule-runs');
+      const historyHead = node('summary');
+      historyHead.append(node('span', t('airScheduleRuns')),
+        node('span', String(task.runCount || runs.length), 'schedule-runs-badge'));
+      history.append(historyHead);
+      if (!runs.length) {
+        history.append(node('p', t('airScheduleRunsEmpty'), 'schedule-runs-empty'));
+      } else {
+        const historyList = node('ul', null, 'schedule-runs-list');
+        for (const run of runs) {
+          const item = node('li', null, `schedule-run ${run.status === 'error' ? 'error' : ''}`);
+          const outcome = run.status === 'queued' ? t('airScheduleQueued')
+            : run.status === 'ok' ? t('airScheduleLastAccepted')
+              : (run.error || t('airScheduleLastFailed'));
+          item.append(node('time', scheduleTime(run.at)),
+            node('span', run.reason === 'manual' ? t('airScheduleRunsManual') : t('airScheduleRunsScheduled'), 'schedule-run-source'),
+            node('span', outcome, 'schedule-run-status'));
+          historyList.append(item);
+        }
+        history.append(historyList, node('small', t('airScheduleRunsHint', { n: runs.length }), 'schedule-runs-hint'));
+      }
       const run = scheduleAction(t('airScheduleRunNow'), () => runSchedule(task.id), 'primary subtle');
       // A rule whose fixed task was archived stops executing until a new fixed
       // task is bound; that repair is explicit, never automatic.
@@ -1234,7 +1260,7 @@
       const edit = scheduleAction(t('airScheduleEdit'), () => openScheduleDialog(task.id));
       const remove = scheduleAction(t('airScheduleDelete'), () => deleteSchedule(task.id), 'danger');
       actions.append(run, ...(rebind ? [rebind] : []), toggle, edit, node('span'), remove);
-      card.append(head, timing, fixed, state, prompt, actions);
+      card.append(head, timing, fixed, state, history, prompt, actions);
       list.append(card);
     }
   }
@@ -1927,6 +1953,9 @@
     renderHeader(dir);
     renderDirectories();
     renderDirectoryOverview();
+    // Worktree 生命周期面板：模块自己管 DOM（同 air-directory-mode.js 的契约），
+    // 这里只把快照 / 当前目录 / api / notice / 重拉快照这几件事递进去。
+    window.MultiCCAirWorktrees?.render({ data, directoryId, api, notice, refresh });
     const adminMode = adminModes.has(mode);
     $('task-sidebar').hidden = adminMode;
     $('directory-library').hidden = mode !== 'library';

@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const { executeAuxHttp, parseResponsesStream } = require('../src/aux-http');
+const { mountAuxGoalRoutes } = require('../src/routes/aux-goal');
 const { createCodexOfficialRelayHandler } = require('../src/codex/official-relay');
 const { createOfficialCatalog } = require('../src/providers/official-catalog');
 
@@ -60,4 +61,83 @@ test('Responses transport still accepts JSON and bounds streaming requests by to
   const target = { url: `${base}/json`, apiKey: 'test', wireApi: 'responses' };
   assert.equal(await executeAuxHttp({ target, model: 'm', prompt: 'p', timeoutMs: 1000 }), 'JSON summary');
   await assert.rejects(executeAuxHttp({ target: { ...target, url: `${base}/hang` }, model: 'm', prompt: 'p', timeoutMs: 50 }), /timeout/);
+});
+
+// The pool is only real if the transport actually carries several requests at
+// once. Everything above stubs `executeAuxHttp`; this one drives the real
+// Messages codec against a real socket and counts simultaneous in-flight
+// requests on the server side.
+test('the Aux pool drives five concurrent real HTTP requests and drains the rest in order', async t => {
+  const started = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const base = await serve(t, async (req, res) => {
+    let data = '';
+    for await (const chunk of req) data += chunk;
+    const prompt = JSON.parse(data).messages[0].content;
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    started.push(prompt);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    inFlight -= 1;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ content: [{ type: 'text', text: `echo:${prompt}` }] }));
+  });
+
+  const routes = new Map();
+  const runtime = mountAuxGoalRoutes({
+    get: (routePath, handler) => routes.set(`GET ${routePath}`, handler),
+    post: (routePath, handler) => routes.set(`POST ${routePath}`, handler),
+  }, {
+    fs: { readFileSync() { throw new Error('ENOENT'); } },
+    crypto: { randomUUID: () => `pool-${routes.size}-${Math.random().toString(16).slice(2)}` },
+    rootDir: '/repo',
+    auxConfigFile: '/tmp/aux-config.json',
+    goalConfigFile: '/tmp/goal-config.json',
+    atomicWriteJson() {},
+    persistedSessions: new Map(),
+    savePersistedSessionsBestEffort() {},
+    isShuttingDown: () => false,
+    recordApiError() {},
+    recordApiSuccess() {},
+    appendChatMessage() {},
+    loadChatHistory: () => [],
+    providers: {
+      listProviders: () => [],
+      resolveAuxHttpTarget: () => ({
+        available: true,
+        wireApi: 'messages',
+        url: `${base}/v1/messages`,
+        apiKey: 'test',
+        model: 'test-model',
+      }),
+    },
+    getPort: () => 1,
+    getClaudeOfficialViaProxy: () => false,
+    executeAuxHttp,
+    broadcast() {},
+    providerLimitCache: null,
+    limitCacheStaleMs: 1000,
+    env: { AUX_TIMEOUT_MS: '5000', MULTICC_AUX_CONCURRENCY: '5' },
+    logger: { log() {}, warn() {}, error() {} },
+  });
+  runtime.auxQueue.init();
+
+  const tasks = [];
+  for (let index = 0; index < 7; index += 1) {
+    tasks.push(runtime.auxQueue.enqueue({
+      type: 'intent_classify', prompt: `p${index}`, meta: { sessionName: `s${index}` },
+    }));
+  }
+  // Seven tasks, five slots: the first five are on the wire, two still wait.
+  assert.equal(runtime.auxQueue.getStatus().active, 5);
+  assert.equal(runtime.auxQueue.getStatus().queueDepth, 2);
+  const results = await Promise.all(tasks);
+  assert.equal(maxInFlight, 5);
+  assert.deepEqual(started.slice(0, 5), ['p0', 'p1', 'p2', 'p3', 'p4']);
+  assert.deepEqual(results.map(result => result.text), [
+    'echo:p0', 'echo:p1', 'echo:p2', 'echo:p3', 'echo:p4', 'echo:p5', 'echo:p6',
+  ]);
+  assert.equal(runtime.auxQueue.getStatus().active, 0);
+  assert.equal(runtime.auxQueue.getStatus().queueDepth, 0);
 });

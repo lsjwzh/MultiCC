@@ -27,6 +27,13 @@ let migration = null;
 let fanoutCleanup = null;
 const bindingFlights = new Map();
 
+// 每个规则保留多少条触发历史。只留一条「上次结果」不够用: 用户要回答的是
+// 「今天到底跑没跑、跑了几次、哪一次失败、失败原因是什么」。历史随任务一起
+// 原子落盘(它就是这个任务文件的一部分), 不另开存储、不无界增长。
+const RUN_HISTORY_LIMIT = 20;
+// /api/cron 列表里回放多少条(这条路径每开一次面板就要跑, 保持小而快)。
+const RUN_HISTORY_VIEW = 10;
+
 function load() {
   const source = !fs.existsSync(STORE) && fs.existsSync(LEGACY_STORE) ? LEGACY_STORE : STORE;
   try { tasks = JSON.parse(fs.readFileSync(source, 'utf8')); }
@@ -145,6 +152,30 @@ function clearBindingBreak(task) {
   task.taskBindingError = '';
   task.taskBindingBrokenAt = null;
   task.taskBindingNotifiedFor = null;
+}
+
+// 一次触发 = 一条记录。字段只留用户排障需要的那几个(时间/来源/结果/去向/错误),
+// 旧的滚出去, 所以文件不会随时间无限长。
+function recordRun(task, entry) {
+  const runs = Array.isArray(task.runs) ? task.runs : [];
+  runs.push({
+    at: Number(entry.at) || Date.now(),
+    reason: entry.reason === 'manual' ? 'manual' : 'schedule',
+    status: entry.status || 'error',
+    decision: entry.decision || null,
+    taskId: entry.taskId || null,
+    sessionId: entry.sessionId || null,
+    receiptId: entry.receiptId || null,
+    error: entry.error ? String(entry.error).slice(0, 200) : '',
+  });
+  if (runs.length > RUN_HISTORY_LIMIT) runs.splice(0, runs.length - RUN_HISTORY_LIMIT);
+  task.runs = runs;
+}
+
+// 最近的在前 —— 面板要的是「刚刚发生了什么」。
+function recentRuns(task, limit = RUN_HISTORY_VIEW) {
+  const runs = Array.isArray(task.runs) ? task.runs : [];
+  return runs.slice(-limit).reverse();
 }
 
 async function ensureTaskInner(task) {
@@ -312,8 +343,18 @@ async function fireTask(task, reason, deliveryKey = null) {
     task.lastSessionId = task.taskSessionId;
   }
   task.runCount = (task.runCount || 0) + 1;
-  save();
   const ok = result?.ok === true;
+  recordRun(task, {
+    at: attemptedAt,
+    reason,
+    status: task.lastStatus,
+    decision: result?.decision || null,
+    receiptId: result?.receiptId || null,
+    taskId: task.taskId || binding?.taskId || null,
+    sessionId: task.taskSessionId || result?.sessionId || binding?.sessionId || null,
+    error: ok ? '' : task.lastError,
+  });
+  save();
   console.log(`[multicc/cron] fired ${task.id} (${task.name}) [${reason}] → Air task ${task.taskId || 'unbound'}, ${ok ? task.lastStatus : task.lastError}`);
   return { ok, taskId: task.taskId || null, sessionId: task.taskSessionId || null,
     receiptId: result?.receiptId || null, decision: result?.decision || null, error: ok ? null : task.lastError };
@@ -362,6 +403,8 @@ function toView(task) {
     lastReceiptId: task.lastReceiptId || null,
     lastDecision: task.lastDecision || null,
     runCount: task.runCount || 0,
+    // 执行记录: 最近的在前, 供面板展开看「哪天跑了、哪次失败」。
+    recentRuns: recentRuns(task),
     nextRunAt: task.enabled ? cronNext(task.cron, new Date()) : null,
   };
 }
@@ -460,6 +503,23 @@ function mount(app) {
     res.json({ ok: r.ok, taskId: r.taskId, sessionId: r.sessionId,
       receiptId: r.receiptId, decision: r.decision, error: r.error });
   }).catch(next));
+
+  // 执行记录: /api/cron 只回放最近几条(列表要小), 这里给完整的那一份(仍是有界的
+  // RUN_HISTORY_LIMIT 条)。
+  app.get('/api/cron/:id/runs', (req, res) => {
+    const task = tasks.find(x => x.id === req.params.id);
+    if (!task) return res.status(404).json({ error: 'task not found' });
+    res.json({
+      ok: true,
+      id: task.id,
+      name: task.name,
+      runCount: task.runCount || 0,
+      lastRunAt: task.lastRunAt || null,
+      lastStatus: task.lastStatus || null,
+      limit: RUN_HISTORY_LIMIT,
+      runs: recentRuns(task, RUN_HISTORY_LIMIT),
+    });
+  });
 }
 
 // One-time consolidation of the fan-out residue left by releases <= 2.0.2 (see
@@ -520,4 +580,5 @@ function stop() {
 
 module.exports = { init, stop, mount, cronValidate, cronNext, _fireTask: fireTask,
   _ensureTask: ensureTask, _rebindTask: rebindTask, _migrateTasks: migrateTasks,
-  _runFanoutCleanup: runFanoutCleanup };
+  _runFanoutCleanup: runFanoutCleanup, _recentRuns: recentRuns,
+  RUN_HISTORY_LIMIT, RUN_HISTORY_VIEW };

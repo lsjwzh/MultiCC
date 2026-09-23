@@ -913,7 +913,7 @@ function showNewSessionMenu(ev, dirId) {
   showPopoverMenu(ev.currentTarget, [
     { label: '+ Claude Chat', onclick: () => newSessionInDir(dirId, 'claude', 'chat') },
     { label: '+ Claude Terminal', onclick: () => newSessionInDir(dirId, 'claude', 'terminal') },
-    { label: '+ Claude Exp Chat', onclick: () => newSessionInDir(dirId, 'claude-exp', 'chat') },
+    { label: '+ Claude Agent SDK Chat', onclick: () => newSessionInDir(dirId, 'claude-exp', 'chat') },
     { sep: true },
     { label: '+ Codex Chat', onclick: () => newSessionInDir(dirId, 'codex', 'chat') },
     { label: '+ Codex Terminal', onclick: () => newSessionInDir(dirId, 'codex', 'terminal') },

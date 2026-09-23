@@ -575,7 +575,7 @@
 
       const title = document.createElement('div');
       title.style.cssText = 'font-size:15px;color:#f2f4f7;font-weight:600;margin-bottom:14px;';
-      const CLI_LABELS = { claude: 'Claude', 'claude-exp': 'Claude Exp', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
+      const CLI_LABELS = { claude: 'Claude', 'claude-exp': 'Claude Agent SDK', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode', qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' };
       title.textContent = `新建 ${CLI_LABELS[cli] || cli} ${kind === 'chat' ? 'Chat' : 'Terminal'}`;
       box.appendChild(title);
 

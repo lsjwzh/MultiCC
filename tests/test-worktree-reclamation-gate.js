@@ -147,6 +147,85 @@ test('reclamation gate: scheduled proactive sweep skips unsafe worktrees, reclai
   }
 });
 
+test('reclamation gate: manual reclaim honours the idle threshold, force and the directory scope', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-reclaim-gate-manual-'));
+  let runtime;
+  try {
+    const repoA = createRepo(root, 'repo-a');
+    const repoB = createRepo(root, 'repo-b');
+    const aged = await gitWorktreeAdd(repoA, 'aged', 'main');
+    const fresh = await gitWorktreeAdd(repoA, 'fresh', 'main');
+    const otherAged = await gitWorktreeAdd(repoB, 'other-aged', 'main');
+    const records = new Map([
+      ['aged', record('aged', 'dir-a', aged, { lastWorkAt: new Date(NOW - 3 * DAY_MS).toISOString() })],
+      // 刚用过一小时：没到闲置阈值，默认那条路不该碰它。
+      ['fresh', record('fresh', 'dir-a', fresh, { lastWorkAt: new Date(NOW - 60 * 60 * 1000).toISOString() })],
+      ['other-aged', record('other-aged', 'dir-b', otherAged, { lastWorkAt: new Date(NOW - 3 * DAY_MS).toISOString() })],
+    ]);
+    const directories = new Map([
+      ['dir-a', { id: 'dir-a', path: repoA, baseBranch: 'main' }],
+      ['dir-b', { id: 'dir-b', path: repoB, baseBranch: 'main' }],
+    ]);
+    runtime = hibernationRuntime(records, directories);
+
+    // 「现在回收」默认只收过了闲置阈值的：dir-a 里那条旧的下去，另一条不动，别的目录
+    // 一点都不碰（一个目录的容量债不该让邻居付）。
+    const scoped = await runtime.reclaim({ dirId: 'dir-a' });
+    assert.equal(scoped.ok, true);
+    assert.equal(scoped.hibernated, 1);
+    assert.equal(scoped.idleMs, DAY_MS, '回执报的是这次真正用的阈值，不是 0');
+    assert.equal(records.get('aged').workspaceState, 'hibernated');
+    assert.equal(fs.existsSync(aged.worktreePath), false);
+    assert.equal(records.get('fresh').workspaceState, 'awake');
+    assert.equal(fs.existsSync(fresh.worktreePath), true);
+    assert.equal(records.get('other-aged').workspaceState, 'awake');
+
+    // 剩下的都没到阈值：considered 是 0，不是「收了但跳过」。只有这样面板才敢把
+    // 「没有可回收的」和「要不要连最近用过的也收」分成两句话（后者要用户点头）。
+    const nothingIdle = await runtime.reclaim({ dirId: 'dir-a' });
+    assert.equal(nothingIdle.considered, 0);
+    assert.equal(nothingIdle.hibernated, 0);
+    assert.equal(records.get('fresh').workspaceState, 'awake');
+
+    // force = 用户明确说了「连最近用过的也一起收」。已经睡下的那条不该被重复算进
+    // considered（它没有活可干），所以这里正好是 1 条。
+    const forced = await runtime.reclaim({ dirId: 'dir-a', force: true });
+    assert.equal(forced.considered, 1);
+    assert.equal(forced.hibernated, 1);
+    assert.equal(forced.idleMs, 0, 'force 才轮到 0（不等闲置）');
+    assert.equal(records.get('fresh').workspaceState, 'hibernated');
+    assert.equal(fs.existsSync(fresh.worktreePath), false);
+
+    const otherDirectory = await runtime.reclaim({ dirId: 'dir-b' });
+    assert.equal(otherDirectory.hibernated, 1, 'each directory pays its own debt');
+    assert.equal(records.get('other-aged').workspaceState, 'hibernated');
+
+    // 不认识的目录、以及停掉之后再来一次：都不该 throw（面板按钮不该变成 500）。
+    const unknownDirectory = await runtime.reclaim({ dirId: 'dir-nope' });
+    assert.equal(unknownDirectory.ok, true);
+    assert.equal(unknownDirectory.considered, 0);
+
+    // 面板照着 policy() 说话：阈值和间隔都由运行时给，客户端不猜默认值；两个里
+    // 任何一个被关掉（<= 0），「自动回收」那一档才算关（手动那条路照旧能用）。
+    const policy = runtime.policy();
+    assert.equal(policy.idleMs, DAY_MS);
+    assert.equal(policy.intervalMs, 15 * 60 * 1000);
+    assert.equal(policy.enabled, true);
+    const disabled = hibernationRuntime(records, directories, { intervalMs: 0 });
+    assert.equal(disabled.policy().enabled, false, '关掉自动扫描不等于把「现在回收」也关了');
+    assert.equal((await disabled.reclaim({ dirId: 'dir-nope' })).ok, true);
+    await disabled.stop();
+
+    await runtime.stop();
+    const afterStop = await runtime.reclaim({});
+    assert.equal(afterStop.ok, false);
+    assert.equal(afterStop.code, 'hibernation_stopped');
+  } finally {
+    await runtime?.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('reclamation gate: a full directory reclaims its own LRU workspace and admits the waiting task', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-reclaim-gate-capacity-'));
   let runtime, admission, guard;

@@ -121,6 +121,7 @@ class _AirTasksViewState extends State<AirTasksView>
   bool _loading = false, _submitting = false, _foreground = true;
   bool _openingTerminal = false;
   bool _creatingTerminal = false;
+  bool _reclaiming = false;
   bool _showAll = false;
   final _taskSearch = TextEditingController();
   String _taskQuery = '';
@@ -665,6 +666,66 @@ class _AirTasksViewState extends State<AirTasksView>
     await _refresh();
     if (!mounted) return;
     _snack('已刷新共享工作区「${fleet.name}」');
+  }
+
+  /// 「现在回收」（Web 目录页那颗按钮，`POST /api/air/worktrees/reclaim`）。
+  ///
+  /// 只删本地 checkout，分支与提交始终保留（下次打开这条任务时按需重建），所以
+  /// 这一步不需要「会丢东西」的警告。默认只收过了闲置阈值的；一个都没收到、本地
+  /// 却确实还占着地方，才问一句要不要连最近用过的也一起收 —— 那是用户按下按钮
+  /// 之后的显式确认，不是自动行为（自动那条路是服务端的定时扫描，阈值见面板）。
+  Future<void> _reclaimWorktrees(AirDirectory directory) async {
+    if (_reclaiming) return;
+    setState(() => _reclaiming = true);
+    try {
+      var answer = await _service.reclaimWorktrees(directory.id);
+      final considered = (answer['considered'] as num?)?.toInt() ?? 0;
+      final reclaimable =
+          answer['ok'] != false &&
+          ((answer['hibernated'] as num?)?.toInt() ?? 0) == 0 &&
+          considered > 0;
+      if (reclaimable && mounted) {
+        final forced = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.panel,
+            content: Text('还有 $considered 个没到闲置阈值。连最近用过的也一起回收吗？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                key: const ValueKey('air-worktree-reclaim-force'),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('一起回收'),
+              ),
+            ],
+          ),
+        );
+        if (forced == true) {
+          answer = await _service.reclaimWorktrees(directory.id, force: true);
+        }
+      }
+      if (!mounted) return;
+      final done = (answer['hibernated'] as num?)?.toInt() ?? 0;
+      final skipped = (answer['skipped'] as num?)?.toInt() ?? 0;
+      final checked = (answer['considered'] as num?)?.toInt() ?? 0;
+      final failed = answer['ok'] == false;
+      _snack(
+        failed
+            ? '回收失败：${answer['code'] ?? ''}'
+            : done > 0
+            ? '已回收 $done 个（检查 $checked 个，跳过 $skipped 个）'
+            : '没有可回收的 worktree：都不闲置，或者正被占用。',
+        danger: failed,
+      );
+      await _refresh();
+    } catch (e) {
+      if (mounted) _snack('回收失败：$e', danger: true);
+    } finally {
+      if (mounted) setState(() => _reclaiming = false);
+    }
   }
 
   Future<void> _refreshExternal(AirDirectory directory) async {
@@ -1685,6 +1746,11 @@ class _AirTasksViewState extends State<AirTasksView>
     // 抬头上的「N 个任务」和统计卡读的是同一份**未截断**的目录任务表：数字说的是
     // 这个目录一共有多少条，不是这一屏摆得下多少条。
     final all = data?.tasksOf(_directoryId) ?? const <AirTask>[];
+    // Worktree 生命周期面板：只有本机目录、服务端确实给了拆解、而且这个目录真的
+    // 有 worktree 时才摆 —— 远端工作区没有本机 worktree，空目录那块也只是噪声。
+    final worktrees = directory == null || directory.external
+        ? null
+        : directory.visibleWorktreeLifecycle;
     return RefreshIndicator(
       onRefresh: _refresh,
       child: ListView(
@@ -1694,6 +1760,13 @@ class _AirTasksViewState extends State<AirTasksView>
             tasks: all,
             worktreeCount: directory?.worktreeCount ?? 0,
           ),
+          if (worktrees != null)
+            AirWorktreePanel(
+              lifecycle: worktrees,
+              idleMs: data?.worktreePolicy.idleMs ?? 0,
+              busy: _reclaiming,
+              onReclaim: () => _reclaimWorktrees(directory!),
+            ),
           const SizedBox(height: 22),
           if (directory != null) ...[
             Row(

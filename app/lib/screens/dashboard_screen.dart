@@ -122,7 +122,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 (e) => _chip(
                   switch (e.key) {
                     'codex' => 'Codex',
-                    'claude-exp' => 'Claude Exp',
+                    'claude-exp' => 'Claude Agent SDK',
                     'codex-exp' => 'Codex Exp',
                     'opencode' => 'OpenCode',
                     'zcode' => 'ZCode',
@@ -255,7 +255,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final active = s['active'] == true;
     final cli = switch (s['cli'] ?? 'claude') {
       'codex' => 'Codex',
-      'claude-exp' => 'Claude Exp',
+      'claude-exp' => 'Claude Agent SDK',
       'codex-exp' => 'Codex Exp',
       'opencode' => 'OpenCode',
       'zcode' => 'ZCode',

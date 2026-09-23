@@ -137,6 +137,12 @@
   }
   function isRelayBaseUrl(baseUrl) { return relayProtocolFromBaseUrl(baseUrl) !== null; }
   function isCodexCli(cli) { return cli === 'codex' || cli === 'codex-exp'; }
+  // Claude Code and the Claude Agent SDK build share one account, one
+  // provider pool and one subscription, so every Claude-specific bar belongs to
+  // both. Gating this on the literal 'claude' hid the whole subscription bar
+  // under claude-exp: the exact-Provider branch only fired after a passive
+  // window event, so before the first turn the bar was simply missing.
+  function isClaudeCli(cli) { return cli === 'claude' || cli === 'claude-exp'; }
   function arkPlanFromBaseUrl(baseUrl) {
     if (!baseUrl || typeof baseUrl !== 'string') return null;
     try { const p = new URL(baseUrl).pathname.toLowerCase(); if (p.includes('/coding')) return 'coding-plan'; if (p.includes('/plan')) return 'agent-plan'; } catch (_) {}
@@ -155,7 +161,7 @@
       if (isCodexCli(cli) || cli === 'opencode') return true;
       return provider === 'glm' && isZhipuBaseUrl(currentProviderBaseUrl);
     }
-    return cli === 'claude' || cli === 'claude-exp' || cli === 'opencode';
+    return isClaudeCli(cli) || cli === 'opencode';
   }
 
   // ── DOM painter ──
@@ -402,7 +408,7 @@
       // The render's trailing '⟳' segment promises a refresh; wire it to the
       // same query that produced the bar.
       onBarClick = () => refreshProviderLimit();
-    } else if (currentCli === 'claude' && claudeProvider) {
+    } else if (isClaudeCli(currentCli) && claudeProvider) {
       // Claude subscription: the scrape (full, with weekly) is authoritative;
       // before it lands the live 5h event or the idle render stands in.
       bar = (currentClaudeUsage && currentClaudeUsage.bar) || currentLimitBar || idleBarFor('claude');
