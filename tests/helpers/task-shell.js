@@ -10,7 +10,7 @@ function fixture(t, extra = {}) {
   const store = createTaskShellStore(file);
   t.after(() => { store.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   const records = new Map(['a', 'b', 'other'].map(id => [id, { id, kind: 'chat', cli: 'codex', dirId: id === 'other' ? 'd2' : 'd1' }]));
-  const statuses = new Map(), histories = new Map(), sends = [], creations = [], cancels = [], barriers = [], applications = [];
+  const statuses = new Map(), histories = new Map(), sends = [], creations = [], cancels = [], barriers = [], applications = [], transfers = [];
   const ports = {
     store,
     getRecord: id => records.get(id),
@@ -42,11 +42,19 @@ function fixture(t, extra = {}) {
       const application = { id: `application-${input.separationId}`, ...input };
       applications.push(application); return application;
     },
+    transferWorkspace: async input => {
+      transfers.push(input);
+      const current = records.get(input.targetSessionId) || {};
+      records.set(input.targetSessionId, { ...current, workspaceState: 'awake',
+        worktreePath: `/work/${input.targetSessionId}`, branch: `multicc/${input.targetSessionId}` });
+      return { ok: true, worktreePath: `/work/${input.targetSessionId}`,
+        branch: `multicc/${input.targetSessionId}`, carried: { files: 1, patchBytes: 24 } };
+    },
     ...extra,
   };
   const runtime = createTaskShellRuntime(ports);
   const a = runtime.open('a'), b = runtime.open('b');
-  return { runtime, store, records, statuses, histories, sends, creations, cancels, barriers, applications, a, b, file, ports };
+  return { runtime, store, records, statuses, histories, sends, creations, cancels, barriers, applications, transfers, a, b, file, ports };
 }
 
 module.exports = { fixture };

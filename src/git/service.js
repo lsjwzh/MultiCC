@@ -784,6 +784,102 @@ async function gitRelocateWorktree(oldDir, targetDir, session, opts = {}) {
   }
 }
 
+// ── Split-off transfer: hand a live checkout to a brand-new task ────────────
+// Task separation moves the source conversation's code in progress into the new
+// task. The target checkout is created at the source tip, the source's
+// uncommitted state (tracked diff + untracked files) is carried verbatim, and
+// only then is the source checkout removed — create-before-delete, so a failed
+// carry leaves the source exactly as it was. The source branch is deliberately
+// neither deleted nor advanced: it keeps the committed history the next message
+// rebuilds from. Ignored files are never carried, so a checkout holding ignored
+// files that are not provably regenerable is retained instead of deleted and
+// reported through `sourceRetained`.
+async function carryAlreadyIn(execGit, targetPath, carried) {
+  if (!carried) return true;
+  if (carried.patch && carried.patch.trim()) {
+    const patchFile = path.join(os.tmpdir(), `multicc-split-check-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}.patch`);
+    await fsp.writeFile(patchFile, carried.patch, 'utf8');
+    try { await execGit(targetPath, ['apply', '--reverse', '--check', patchFile], { maxBuffer: CARRY_MAX_BUFFER }); }
+    catch (_) { return false; }
+    finally { await fsp.rm(patchFile, { force: true }).catch(() => {}); }
+  }
+  for (const relative of carried.untracked) {
+    try {
+      const [source, targetFile] = await Promise.all([
+        fsp.readFile(path.join(carried.worktreePath, relative)),
+        fsp.readFile(path.join(targetPath, relative)),
+      ]);
+      if (Buffer.compare(source, targetFile) !== 0) return false;
+    } catch (_) { return false; }
+  }
+  return true;
+}
+
+async function gitWorktreeSplitOff(dirPath, { sessionId, source, target, baseCommit = null } = {}) {
+  if (!dirPath || !sessionId || !source?.worktreePath || !source?.branch || !target?.sessionId) {
+    return { ok: false, code: 'split_identity_missing', error: 'dirPath, sessionId, source worktree and target session are required' };
+  }
+  const targetPath = target.worktreePath || path.join(dirPath, WORKTREE_SUBDIR, target.sessionId);
+  const targetBranch = target.branch || `multicc/${target.sessionId}`;
+  if (!fs.existsSync(source.worktreePath)) {
+    // A retry after the transfer completed: the target owns the content, and
+    // the source record only still has to be moved to “hibernated”.
+    return fs.existsSync(targetPath)
+      ? { ok: true, already: true, worktreePath: targetPath, branch: targetBranch, carried: null, sourceRemoved: true, sourceRetained: null }
+      : { ok: false, code: 'split_source_missing', error: 'neither the source nor the target checkout exists' };
+  }
+  const facts = await defaultRepoActor.run(dirPath, 'split-off-collect', async ({ execGit }) => {
+    const head = String(await execGit(source.worktreePath, ['rev-parse', 'HEAD'])).trim();
+    const carried = await collectCarryChanges(execGit, source.worktreePath);
+    const ignoredRaw = await execGit(source.worktreePath, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--directory']).catch(() => '');
+    const unknownIgnored = String(ignoredRaw || '').split('\0').filter(Boolean).filter(relative => !reclaimableIgnored(relative));
+    return { ok: true, head, carried, unknownIgnored };
+  }, { sessionId: null }).catch(error => ({ ok: false, error: errorText(error) }));
+  if (!facts.ok) return { ok: false, code: 'split_observation_failed', error: facts.error };
+  const carried = facts.carried.patch?.trim() || facts.carried.untracked.length
+    ? { ...facts.carried, worktreePath: source.worktreePath } : null;
+  let created = null;
+  try {
+    created = await gitWorktreeAdd(dirPath, target.sessionId, baseCommit || facts.head, { sessionId: target.sessionId });
+    // An interrupted earlier attempt may have left a filled target behind.
+    // Re-applying a carry that is already there would be a false conflict, so
+    // the existing checkout is inspected before anything is copied.
+    const alreadyCarried = created.existing && carried ? await defaultRepoActor.run(dirPath, 'split-off-verify',
+      async ({ execGit }) => ({ ok: true, applied: await carryAlreadyIn(execGit, created.worktreePath, carried) }),
+      { sessionId: null }).then(result => result.applied === true).catch(() => false) : false;
+    if (carried && !alreadyCarried) {
+      const applied = await applyCarryChanges(dirPath, created.worktreePath, carried);
+      created.patchBytes = applied.patchBytes;
+      created.appliedFiles = applied.appliedFiles.length;
+    }
+    let retained = null;
+    if (facts.unknownIgnored.length) retained = { reason: 'ignored_files', count: facts.unknownIgnored.length };
+    else {
+      const removed = await gitWorktreeRemove(dirPath, source.worktreePath, null, { sessionId, force: true, skipBackup: true, activeCheck: null });
+      if (!removed.ok) throw Object.assign(new Error(removed.error || 'source checkout removal refused'), { result: removed });
+    }
+    return { ok: true, already: false, worktreePath: created.worktreePath, branch: created.branch,
+      baseCommit: facts.head, sourceRemoved: !retained, sourceRetained: retained,
+      carried: carried ? { patchBytes: created.patchBytes || 0, files: created.appliedFiles || 0, paths: carried.untracked.slice(0, 20) } : null,
+      operationId: created.operationId, queueDepth: created.queueDepth };
+  } catch (error) {
+    // Never roll the target back once the source checkout is gone: the carried
+    // content is the only copy left. The caller retries, and the retry sees
+    // `already: true` because the source path no longer exists.
+    const sourceGone = !fs.existsSync(source.worktreePath);
+    let rollback = null;
+    if (!sourceGone && created && fs.existsSync(created.worktreePath)) {
+      rollback = await gitWorktreeRollbackCreate(dirPath, created.worktreePath, created.branch, { sessionId: `${sessionId}-split-rollback` })
+        .catch(rollbackError => ({ ok: false, error: errorText(rollbackError) }));
+    }
+    return { ok: false, code: error.result?.code || error.code || 'split_off_failed',
+      reasons: error.result?.reasons, sourceRemoved: sourceGone,
+      rolledBack: !created || sourceGone ? false : !!rollback?.ok,
+      rollbackError: rollback && !rollback.ok ? rollback.error : undefined,
+      error: error.result?.error || errorText(error) };
+  }
+}
+
 async function mergeStateWith(execGit, dir, session) {
   if (!dir || !session || !session.worktreePath || !session.branch) {
     return { mergeReady: false, dirty: false, ahead: 0, behind: 0, reason: 'no-worktree' };
@@ -1035,6 +1131,7 @@ module.exports = {
   gitWorktreeRollbackCreate,
   gitWorktreeRemove,
   gitRelocateWorktree,
+  gitWorktreeSplitOff,
   gitWorktreeCommitAll,
   gitWorktreeMergeState,
   gitMergeBack,

@@ -62,6 +62,11 @@
     const code = text(error && error.code);
     const keyByCode = {
       fork_source_busy: 'taskSeparationErrBusy',
+      // The writer barrier could not freeze the source checkout: another
+      // writer holds it, or it moved after the turn ended. Both are retryable
+      // once that work stops, and the split itself is unaffected.
+      workspace_busy: 'taskSeparationErrBusy',
+      barrier_code_changed: 'taskSeparationErrBusy',
       separation_stale: 'taskSeparationErrStale',
       fork_source_dirty: 'taskSeparationErrDirty',
       integration_receipt_required: 'taskSeparationErrDelivery',
