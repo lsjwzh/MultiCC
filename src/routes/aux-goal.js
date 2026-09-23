@@ -880,7 +880,10 @@ function mountAuxGoalRoutes(app, dependencies) {
       res.json({ ok: false, code: 'AUX_TIMEOUT',
         error: `预检超时（辅助模型 ${Math.round(waitMs / 1000)} 秒内未返回）。请检查辅助模型的可用性与配额，或直接「用原文发送」。` });
     }, waitMs);
-    if (typeof timer.unref === 'function') timer.unref();
+    // Deliberately ref'd: this timer is the only path that can deliver the
+    // AUX_TIMEOUT response, so unref'ing it means a process with nothing else
+    // pending never sends the timeout (Node 22 then cancels the rest of the
+    // file's subtests as cancelledByParent).
     const finish = payload => {
       if (settled) return;
       settled = true;
