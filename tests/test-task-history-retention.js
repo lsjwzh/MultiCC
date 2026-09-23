@@ -77,7 +77,11 @@ test('referencingTasks names every task pinning a session, de-duplicated across 
   const ids = retention.referencingTasks('s1').map(task => task.id).sort();
   assert.deepEqual(ids, ['bound', 'byMsg', 'worker']);
   assert.deepEqual(retention.referencingTasks('s1').find(t => t.id === 'bound'),
-    { id: 'bound', title: '绑定任务' });
+    { id: 'bound', title: '绑定任务', via: 'session' });
+  // A task with only stamped messages in this conversation is marked as a
+  // same-shell sibling, so the UI can distinguish it from external owners.
+  assert.deepEqual(retention.referencingTasks('s1').find(t => t.id === 'byMsg'),
+    { id: 'byMsg', title: '消息任务', via: 'messages' });
   // A session nothing references reports an empty list, never a throw.
   assert.deepEqual(retention.referencingTasks('ghost'), []);
 });
@@ -87,7 +91,33 @@ test('referencingTasks falls back to the id when a task has no title', () => {
   const retention = createTaskHistoryRetention({
     getBoard: () => board, getRecord: () => null, loadHistory: () => [],
   });
-  assert.deepEqual(retention.referencingTasks('s1'), [{ id: 't', title: 't' }]);
+  assert.deepEqual(retention.referencingTasks('s1'), [{ id: 't', title: 't', via: 'session' }]);
+});
+
+test('stamps of already-deleted tasks are orphans and must not block disposal', () => {
+  // A message stamped with a taskId that is gone from the board AND listed in
+  // deletedTaskIds belongs to a deleted task; protecting it forever would
+  // wedge every session it lives in. A stamp absent from both is a provisional
+  // task awaiting classification and stays protected.
+  const board = { tasks: {}, deletedTaskIds: ['gone'] };
+  const data = new Map([['s1', [
+    { id: 'u1', role: 'user', taskId: 'gone', content: 'orphan' },
+    { id: 'u2', role: 'user', taskId: 'provisional', content: 'awaiting classification' },
+  ]]]);
+  const retention = createTaskHistoryRetention({
+    getBoard: () => board, getRecord: () => null, loadHistory: id => data.get(id) || [],
+  });
+  const service = createChatHistoryService({
+    ...retention, idFactory: () => 'generated',
+    history: { read: id => data.get(id) || [], write: (id, messages) => data.set(id, messages),
+      deleteSession: id => data.delete(id), hasPersistedDelivery: () => false },
+  });
+  assert.throws(() => service.remove('s1', 'u2'), { code: 'TASK_HISTORY_REFERENCED' });
+  service.remove('s1', 'u1');
+  assert.deepEqual(service.read('s1').map(m => m.id), ['u2']);
+  // The provisional stamp still blocks whole-session disposal on its own.
+  assert.equal(retention.isMessageProtected('s1', { id: 'u2', taskId: 'provisional' }), true);
+  assert.equal(retention.isMessageProtected('s1', { id: 'u1', taskId: 'gone' }), false);
 });
 
 test('a retention refusal error carries the referencing tasks for the UI to name', () => {
@@ -104,7 +134,7 @@ test('a retention refusal error carries the referencing tasks for the UI to name
   let caught;
   try { service.deleteSession('s1'); } catch (error) { caught = error; }
   assert.equal(caught.code, 'TASK_HISTORY_REFERENCED');
-  assert.deepEqual(caught.tasks, [{ id: 'a', title: '季度复盘' }]);
+  assert.deepEqual(caught.tasks, [{ id: 'a', title: '季度复盘', via: 'session' }]);
   assert.deepEqual(caught.taskIds, ['a']);
 });
 
@@ -146,6 +176,14 @@ test('taskHistoryRefusal names the tasks in the user-facing message', () => {
   assert.deepEqual(bare.tasks, []);
   assert.match(bare.error, /无法删除/);
   assert.match(bare.error, /清空历史/);
+  // Tasks are grouped by linkage kind: external owners vs same-conversation
+  // siblings, so the user learns which cards live right in this shell.
+  const grouped = taskHistoryRefusal({
+    code: 'TASK_HISTORY_REFERENCED',
+    tasks: [{ id: 'a', title: '外部任务', via: 'session' }, { id: 'b', title: '同壳任务', via: 'messages' }],
+  });
+  assert.match(grouped.error, /引用它的任务：「外部任务」/);
+  assert.match(grouped.error, /同一对话中的任务：「同壳任务」/);
   // A missing/blank error degrades to history_check_failed, never undefined.
   assert.equal(taskHistoryRefusal().code, 'history_check_failed');
 });
