@@ -569,7 +569,10 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
   assert.equal(res.body.versions.qoder.cmd, '/bin/qoderclicn');
   assert.equal(res.body.versions.qoder.available, true);
   assert.equal(res.body.versions.claude.version, '2.0.1');
-  assert.equal(res.body.versions['claude-exp'].version, '0.3.278');
+  // claude-exp 的版本来自 package.json 里的 SDK 依赖(见 CLAUDE_AGENT_SDK_VERSION),
+  // 跟着真实依赖走, 升级 SDK 不需要改这里。
+  const sdkDep = require('../package.json').dependencies['@anthropic-ai/claude-agent-sdk'];
+  assert.equal(res.body.versions['claude-exp'].version, String(sdkDep).replace(/^[~^]/, ''));
   assert.equal(res.body.versions.codex.version, '0.20.0');
   assert.equal(res.body.versions.zcode.version, '1.2.3'); // 从 stderr 解析
   // 探测确实用的是 --version, 且解析出的正是注入的那个二进制路径
