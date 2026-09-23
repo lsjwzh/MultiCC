@@ -116,12 +116,12 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.6/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.6/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.ps1 | iex
 ```
 
 一行命令，没有任何参数：URL 里的 tag **就是**版本。脚本下载该版本的**独立包**——服务端 + 固定版本的 Node 运行时 + 全部生产依赖，一个压缩包；校验 SHA-256、解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）、移除 macOS 下载隔离标记、生成 `ACCESS_TOKEN`、启动服务并自动打开浏览器，同时可选注册为登录自启（macOS `launchd` / Linux systemd user / Windows Startup）。命令结束时界面已经可用；全程不编译任何东西，**目标机器不需要 Node、npm、git、Homebrew、Visual Studio 或 Xcode**。
@@ -137,7 +137,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用已经下载好的包安装
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.6-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.7-darwin-arm64.tar.gz
 
 # 服务器/自动化环境：装好但不启动，或启动但不打开浏览器
 curl -sSL .../install.sh | bash -s -- --no-start
