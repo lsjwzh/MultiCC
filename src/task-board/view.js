@@ -34,9 +34,35 @@ function taskRunSessionIds(task) {
   return routing?.oneWay && routing.workerSessionId ? [routing.workerSessionId] : sessionIds;
 }
 
+// 「这一轮被受理过」的物证。会话记录里有 taskState 对象 *不等于* 跑过一轮：归因
+// 链路（annotateChatTurn / recordTaskBoardGoal → setTaskState，字段表见
+// routes/task-state-store.js 的 TASK_STATE_DEFAULTS）也会往一份空白记录里写
+// goal/phase/taskId/auxRunId —— 那是一份「标注」，不是一次调度。落盘的证据只有
+// 执行侧写下的这些字段：
+//   · queueState           每一次调度事件都落这个字段（session-work/host.js）
+//   · classifyState        轮次结束后的判定（P/B/C/D/W/E）
+//   · classifyHistory      判定历史（classify 至少跑过一次）
+//   · classifyUpdatedAt    上一次判定的时间戳
+//   · lastTurnEndedAt / startedAt / endedAt  轮次边界
+// 只被归因写过的记录里，这些字段全部是默认值（null / 空数组）。
+const TURN_EVIDENCE_KEYS = [
+  'queueState', 'classifyState', 'classifyHistory', 'classifyUpdatedAt',
+  'lastTurnEndedAt', 'startedAt', 'endedAt',
+];
+
+function sessionHasTurn(record) {
+  const state = record && record.taskState;
+  if (!state || typeof state !== 'object') return false;
+  return TURN_EVIDENCE_KEYS.some(key => {
+    const value = state[key];
+    if (Array.isArray(value)) return value.length > 0;
+    return value !== null && value !== undefined && value !== '';
+  });
+}
+
 // 派发时卡片会先写上一个乐观的 runState（running / queued），真正有没有被受理只有
 // 会话侧知道：每一次调度事件都会把 queueState 落进会话记录，所以「名下所有会话都
-// 没有过 taskState」（会话记录已不存在同理）就是「这一轮连受理都没发生过」的证明。
+// 拿不出受理物证」（会话记录已不存在同理）就是「这一轮连受理都没发生过」的证明。
 // 这种卡片永远不会被谁改回来，读出去就是「执行中」挂到天荒地老 —— 按空闲投影。
 //
 // 宽限只留给派发竞态：卡片写完到第一个调度事件落地之间（毫秒级）卡片上那个值是
@@ -158,5 +184,6 @@ module.exports = {
   aggregateTaskRunState,
   buildBoardDto,
   deadDispatchClaim,
+  sessionHasTurn,
   taskRunSessionIds,
 };
