@@ -57,6 +57,18 @@ function reject(res) {
   return res && typeof res.end === 'function' ? res.end(body) : undefined;
 }
 
+// A 409 on this path is a host decision, not an upstream failure, and it was
+// completely silent: the caller received a rejection from a route it believed it
+// still owned, with nothing naming the session, the provider or which attempt
+// had been retired. During an incident that made a process replaying a finished
+// turn's route — a keep-alive child poking the proxy every half minute —
+// indistinguishable from idle traffic, and the log pointed only at the queue.
+// Diagnostics only: the port is optional and can never change the response.
+function reportRejection(options, detail) {
+  if (typeof options.onRejected !== 'function') return undefined;
+  try { return options.onRejected(detail); } catch (_) { return undefined; }
+}
+
 function createProviderProxyGuard(options = {}) {
   const protocol = clean(options.protocol).toLowerCase();
   const authorize = options.authorizeProxyRequest;
@@ -81,12 +93,18 @@ function createProviderProxyGuard(options = {}) {
     } catch (_) {
       decision = null;
     }
-    if (!decision || decision.ok !== true) return reject(res);
+    const method = clean(req && req.method).toUpperCase();
+    if (!decision || decision.ok !== true) {
+      reportRejection(options, { protocol, stage: 'http_guard', method,
+        providerId: route.providerId, sessionId: route.sessionId, role: route.role,
+        reason: clean(decision && decision.code) || 'attempt_not_active' });
+      return reject(res);
+    }
     // Claude probes connectivity with HEAD /api/hello (older versions use /).
     // This checks the local proxy, not model inference. Keep it behind attempt
     // authorization and out of CPR's upstream usage/error/activity callbacks.
     const apiPath = segments.slice(2).join('/');
-    if (protocol === 'claude' && clean(req && req.method).toUpperCase() === 'HEAD'
+    if (protocol === 'claude' && method === 'HEAD'
         && (apiPath === '' || apiPath === 'api/hello')) {
       res.statusCode = 200;
       return res.end();
@@ -96,10 +114,16 @@ function createProviderProxyGuard(options = {}) {
 }
 
 class ProviderProxyAdmissionError extends Error {
-  constructor() {
+  constructor(detail = {}) {
     super('provider route attempt is no longer active');
     this.name = 'ProviderProxyAdmissionError';
     this.code = 'PROVIDER_PROXY_ADMISSION_REJECTED';
+    // Carried so the rejection can be reported with the identity the caller
+    // actually asked for, instead of whatever this session resolved last.
+    if (detail.providerId) this.providerId = detail.providerId;
+    if (detail.sessionId) this.sessionId = detail.sessionId;
+    if (detail.role) this.role = detail.role;
+    if (detail.reason) this.reason = detail.reason;
   }
 }
 
@@ -174,7 +198,18 @@ function createProviderProxyAdmission(options = {}) {
 
   function handleFailure(error, res, next, context) {
     closeOpenActivity(context, error);
-    if (error instanceof ProviderProxyAdmissionError) return reject(res);
+    if (error instanceof ProviderProxyAdmissionError) {
+      // The rejected lookup is the second half of the same decision the HTTP
+      // guard makes, and it is the half a replayed attempt usually reaches (the
+      // mount already passed the guard when the route was live). Report the
+      // identity the caller asked for, not the context's last resolved one.
+      reportRejection(options, { protocol, stage: 'getProvider',
+        providerId: error.providerId || context?.providerId || context?.mainProviderId || '',
+        sessionId: error.sessionId || context?.sessionId || '',
+        role: error.role || context?.role || '',
+        reason: error.reason || 'attempt_not_active' });
+      return reject(res);
+    }
     if (typeof next === 'function') return next(error);
     throw error;
   }
@@ -231,7 +266,10 @@ function createProviderProxyAdmission(options = {}) {
       } catch (_) {
         decision = null;
       }
-      if (!decision || decision.ok !== true) throw new ProviderProxyAdmissionError();
+      if (!decision || decision.ok !== true) throw new ProviderProxyAdmissionError({
+        providerId: clean(providerId), sessionId: context.sessionId, role,
+        reason: clean(decision && decision.code) || 'attempt_not_active',
+      });
       context.attempt = decision.attempt;
       context.providerId = clean(providerId);
       context.role = role;
