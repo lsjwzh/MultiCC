@@ -2477,6 +2477,7 @@
   "airWorktreeLifecycleHint": "Local checkouts are retired as they go idle; branches and commits are always kept.",
   "airWorktreePolicy": "Auto-reclaim after {hours}h idle",
   "airWorktreePolicyOff": "Automatic reclaim is off",
+  "airWorktreeRecordTotal": "({n} session records)",
   "airWorktreeReclaim": "Reclaim now",
   "airWorktreeReclaimDone": "Reclaimed {hibernated} (checked {considered}, skipped {skipped})",
   "airWorktreeReclaimEmpty": "Nothing to reclaim: all are fresh or in use.",

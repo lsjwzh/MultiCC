@@ -125,8 +125,8 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 中英各 4 行 = +8 行），抬到 6264/383378；同时把任务板回填的确认文案去掉「串行」
   // 字样（aux 已经是并发池），纯值文本改写不动行数。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6264,
-    maxBytes: 383378,
+    maxLines: 6266,
+    maxBytes: 383496,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
