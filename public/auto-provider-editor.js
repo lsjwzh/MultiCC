@@ -12,6 +12,7 @@
   const PROTOCOL_SET = new Set(PROTOCOLS);
   const MAX_CANDIDATES = 12;
   const MAX_ATTEMPTS = 4;
+  const MAX_TIERS = 6;
   const AUTO_PREFIX = '__auto__:';
   const STYLE_ID = 'multicc-auto-provider-editor-style';
   // 候选池预设：每次新建 Auto Provider 都要重新勾一遍候选、调一遍优先级太费事，
@@ -20,6 +21,10 @@
   const PRESET_KEY = 'multicc.autoProvider.presets.v1';
   const MAX_NAMED_PRESETS = 20;
   const MAX_RECENT_PRESETS = 5;
+  // Difficulty routing talks to Jev through the Vercel AI Gateway; the key lives
+  // in the local vault under this name and never reaches the browser.
+  const ROUTING_PROVIDER = 'jev';
+  const ROUTING_API_KEY_NAME = 'vercel-api-key';
 
   // 文案走页面上的全局 t()（i18n.js）：这个编辑器同时挂在 chat 的 AI 配置弹窗、
   // manage 任务板和 Air 的任务配置里，语言得跟着页面走。没有 t()（Node 单测、
@@ -136,6 +141,61 @@
     return Object.freeze({ ok: false, value: null, error, code });
   }
 
+  // Rung of a configured candidate in a declared ladder: the editor shows rungs
+  // (1 = weakest) while the wire carries tier keys, so this is the one place the
+  // two have to agree. `fallback` is the row's own priority rank.
+  function rungFor(configured, ladder, fallback) {
+    if (configured && configured.rung != null) return Number(configured.rung) || fallback;
+    const tier = configured && configured.tier ? String(configured.tier) : '';
+    const index = tier ? ladder.indexOf(tier) : -1;
+    return index >= 0 ? index + 1 : fallback;
+  }
+
+  // Difficulty routing for one draft. Returns the candidates with their tier key
+  // attached plus the frozen routing block, or a failure the editor can show.
+  // Rungs are compacted to `t1..tK` in ascending order: only their order carries
+  // meaning, so a user who leaves a gap never has to close it by hand.
+  function serializeRouting(draft, candidates) {
+    const previous = draft.initialRouting && typeof draft.initialRouting === 'object'
+      ? draft.initialRouting : null;
+    if (draft.routingEnabled !== true) return null;
+    if (candidates.length < 2) {
+      return fail(tt('autoEditorRoutingNeedsTwo', '按难度路由至少需要两个候选 Provider。'),
+        'insufficient_candidates');
+    }
+    const rungs = [...new Set(candidates.map(candidate => Number(candidate.rung) || 0))]
+      .filter(rung => rung > 0).sort((left, right) => left - right);
+    if (rungs.length < 2) {
+      return fail(tt('autoEditorRoutingNeedsTwoTiers', '按难度路由至少需要两个不同档位（简单任务与复杂任务各一档）。'),
+        'provider_routing_requires_tiers');
+    }
+    if (rungs.length > MAX_TIERS) {
+      return fail(tt('autoEditorRoutingTooManyTiers', '最多 {max} 个档位。', { max: MAX_TIERS }),
+        'invalid_provider_routing');
+    }
+    const keyByRung = new Map(rungs.map((rung, index) => [rung, `t${index + 1}`]));
+    return Object.freeze({
+      ok: true,
+      // `rung` is the editor's own control value and never travels on the wire.
+      candidates: candidates.map(({ rung, ...candidate }) => ({
+        ...candidate,
+        tier: keyByRung.get(Number(rung) || 0),
+      })),
+      value: Object.freeze({
+        version: 1,
+        provider: ROUTING_PROVIDER,
+        apiKeyName: previous && previous.apiKeyName ? String(previous.apiKeyName) : ROUTING_API_KEY_NAME,
+        // Never silently reset a knob the editor does not expose: the API can set
+        // onUnknown/timeoutMs/model, and re-saving the pool must not undo it.
+        ...(previous && previous.model ? { model: String(previous.model) } : {}),
+        ...(previous && previous.onUnknown ? { onUnknown: String(previous.onUnknown) } : {}),
+        ...(previous && previous.timeoutMs != null ? { timeoutMs: Number(previous.timeoutMs) } : {}),
+        ...(previous && previous.escalation ? { escalation: { ...previous.escalation } } : {}),
+        tiers: Object.freeze(rungs.map(rung => keyByRung.get(rung))),
+      }),
+    });
+  }
+
   function serializeDraft(draft = {}) {
     const protocol = String(draft.protocol || '');
     if (!PROTOCOL_SET.has(protocol)) {
@@ -165,6 +225,7 @@
         model: raw.model == null || String(raw.model).trim() === '' ? null : String(raw.model).trim(),
         priority,
         enabled: true,
+        ...(raw.rung == null ? {} : { rung: Number(raw.rung) }),
         _index: index,
       });
     }
@@ -176,7 +237,14 @@
         'too_many_candidates');
     }
     candidates.sort((left, right) => left.priority - right.priority || left._index - right._index);
-    const cleanCandidates = candidates.map(({ _index, ...candidate }) => candidate);
+    // `rung` is the editor's own control value: it decides the tier, it never
+    // travels on the wire.
+    const stripped = candidates.map(({ _index, rung, ...candidate }) => candidate);
+    const routing = draft.routingEnabled === true
+      ? serializeRouting(draft, candidates.map(({ _index, ...candidate }) => candidate))
+      : null;
+    if (routing && routing.ok === false) return routing;
+    const cleanCandidates = routing ? routing.candidates : stripped;
     const providers = Array.isArray(draft.providers) ? draft.providers : [];
     const crossesTrust = selectionCrossesTrust(cleanCandidates, providers);
     if (crossesTrust && draft.crossTrustConfirmed !== true) {
@@ -195,6 +263,8 @@
         maxAttempts,
         sticky: draft.sticky !== false,
         allowCrossTrust: crossesTrust && draft.crossTrustConfirmed === true,
+        // Absent for a plain pool, so its wire JSON stays byte-identical.
+        ...(routing ? { routing: routing.value } : {}),
       },
       error: null,
       code: null,
@@ -260,7 +330,7 @@
       .multicc-auto-editor-title{font-size:12px;font-weight:600;margin-bottom:3px}
       .multicc-auto-editor-help{font-size:11px;color:var(--muted,#8b949e);line-height:1.45;margin-bottom:8px}
       .multicc-auto-editor-list{min-width:0}
-      .multicc-auto-editor-row{display:grid;grid-template-columns:22px minmax(150px,1fr) 70px minmax(130px,1fr);gap:7px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line,#21262d)}
+      .multicc-auto-editor-row{display:grid;grid-template-columns:22px minmax(150px,1fr) 70px minmax(130px,1fr) 58px;gap:7px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line,#21262d)}
       .multicc-auto-editor-name{font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .multicc-auto-editor input[type=number],.multicc-auto-editor select{box-sizing:border-box;width:100%;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
       .multicc-auto-editor-error{color:var(--danger,#f85149);font-size:11px;margin:6px 0}
@@ -273,10 +343,11 @@
       .multicc-auto-editor-presets input[type=text]{box-sizing:border-box;flex:1 1 120px;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
       .multicc-auto-editor-presets button{border:1px solid var(--line-strong,#30363d);border-radius:5px;background:transparent;color:var(--text,#c9d1d9);padding:4px 9px;font-size:11px;cursor:pointer}
       .multicc-auto-editor-preset-status{flex-basis:100%;font-size:11px;color:var(--muted,#8b949e)}
+      .multicc-auto-editor-routing-hint{font-size:11px;color:var(--muted,#8b949e);line-height:1.45;margin-top:6px}
       @media (max-width:640px){
         .multicc-auto-editor-row{grid-template-columns:22px minmax(0,1fr);gap:6px 8px;padding:9px 0}
         .multicc-auto-editor-name{white-space:normal;overflow:visible}
-        .multicc-auto-editor-priority,.multicc-auto-editor-model{grid-column:2}
+        .multicc-auto-editor-priority,.multicc-auto-editor-model,.multicc-auto-editor-tier{grid-column:2}
       }
     `;
     (document.head || document.body).appendChild(style);
@@ -343,7 +414,16 @@
     sticky.type = 'checkbox';
     sticky.className = 'multicc-auto-editor-sticky';
     stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 成功后优先沿用')));
-    controls.append(maxLabel, stickyLabel);
+    const routingLabel = element(document, 'label');
+    const routingEnabled = document.createElement('input');
+    routingEnabled.type = 'checkbox';
+    routingEnabled.className = 'multicc-auto-editor-routing';
+    routingLabel.append(routingEnabled, document.createTextNode(
+      tt('autoEditorRoutingSuffix', ' 按难度自动选档（Jev 逐条评估）')));
+    controls.append(maxLabel, stickyLabel, routingLabel);
+    const routingHint = element(document, 'div', 'multicc-auto-editor-routing-hint',
+      tt('autoEditorRoutingHint', '档位 1 最弱、数字越大越强：简单任务给最低档，复杂任务给最高档。评估不可用时按最保守的档位兜底。'));
+    routingHint.style.display = 'none';
     const presetBar = element(document, 'div', 'multicc-auto-editor-presets');
     const presetSelect = document.createElement('select');
     presetSelect.className = 'multicc-auto-editor-preset-select';
@@ -359,7 +439,7 @@
     const presetStatus = element(document, 'div', 'multicc-auto-editor-preset-status');
     presetBar.append(presetSelect, presetDelete, presetName, presetSave, presetStatus);
     if (!presetStore) presetBar.style.display = 'none';
-    container.replaceChildren(title, help, presetBar, list, error, warning, controls);
+    container.replaceChildren(title, help, presetBar, list, error, warning, controls, routingHint);
 
     function rows() {
       return [...list.querySelectorAll('.multicc-auto-editor-row')];
@@ -371,6 +451,7 @@
         model: row.querySelector('.multicc-auto-editor-model').value || null,
         priority: Number(row.querySelector('.multicc-auto-editor-priority').value),
         enabled: row.querySelector('.multicc-auto-editor-enabled').checked,
+        rung: Number(row.querySelector('.multicc-auto-editor-tier').value) || null,
       }));
     }
 
@@ -381,6 +462,30 @@
     function showError(message) {
       error.textContent = message || '';
       error.style.display = message ? '' : 'none';
+    }
+
+    // Rungs are only meaningful for an enabled candidate: a disabled row keeps its
+    // number but cannot claim a tier, so the ladder follows the enabled pool.
+    // `dataset.rung` is how a configured (or freshly rendered) row states its rung
+    // before the option list exists; it is consumed on the first pass.
+    function syncRungs() {
+      const enabled = rows().filter(row => row.querySelector('.multicc-auto-editor-enabled').checked);
+      const ceiling = Math.max(2, Math.min(MAX_TIERS, enabled.length));
+      for (const row of rows()) {
+        const select = row.querySelector('.multicc-auto-editor-tier');
+        const isEnabled = row.querySelector('.multicc-auto-editor-enabled').checked;
+        const requested = Number(select.dataset.rung) || Number(select.value) || 0;
+        select.replaceChildren();
+        for (let rung = 1; rung <= ceiling; rung += 1) {
+          const option = document.createElement('option');
+          option.value = String(rung);
+          option.textContent = String(rung);
+          select.appendChild(option);
+        }
+        select.value = String(isEnabled
+          ? Math.max(1, Math.min(ceiling, requested || enabled.indexOf(row) + 1)) : 1);
+        select.disabled = !isEnabled;
+      }
     }
 
     function syncAttemptLimit() {
@@ -410,6 +515,12 @@
       syncAttemptLimit();
       syncCandidateLimit();
       const crossesTrust = syncTrustWarning();
+      if (routingEnabled.checked) syncRungs();
+      for (const row of rows()) {
+        row.querySelector('.multicc-auto-editor-tier').style.visibility =
+          routingEnabled.checked ? '' : 'hidden';
+      }
+      routingHint.style.display = routingEnabled.checked ? '' : 'none';
       if (onChange) {
         onChange(Object.freeze({
           protocol,
@@ -517,7 +628,7 @@
         ...[...configuredById.values(), ...defaultsById.values()]
           .map(candidate => Number(candidate.priority) || 0));
       const pool = providersForProtocol(providers, protocol);
-      pool.forEach((provider) => {
+      pool.forEach((provider, index) => {
         const providerId = String(provider.id);
         const configured = configuredById.get(providerId);
         const row = element(document, 'div', 'multicc-auto-editor-row');
@@ -555,22 +666,35 @@
           model.appendChild(option);
         }
         model.value = preferredModel || '';
-        row.append(enabled, name, priority, model);
+        const tier = document.createElement('select');
+        tier.className = 'multicc-auto-editor-tier';
+        tier.title = tt('autoEditorTierTitle', '档位：1 最弱，数字越大越强');
+        tier.setAttribute('aria-label',
+        tt('autoEditorTierAria', '{provider} 档位', { provider: provider.name || providerId }));
+        row.append(enabled, name, priority, model, tier);
         list.appendChild(row);
+        // A pool that already routes keeps its own ladder; a fresh one starts at
+        // priority order, which is what the pool list already means.
+        const ladder = configuredSelection?.routing?.tiers || [];
+        tier.dataset.rung = String(rungFor(configured, ladder, index + 1));
         enabled.addEventListener('change', () => {
           if (!selectionCrossesTrust(enabledCandidates(), providers)) confirm.checked = false;
           notify();
         });
         priority.addEventListener('input', notify);
         model.addEventListener('change', notify);
+        tier.addEventListener('change', notify);
       });
       maxAttempts.value = String(configuredSelection?.maxAttempts
         || Math.max(2, Math.min(3, enabledCandidates().length)));
       sticky.checked = configuredSelection ? configuredSelection.sticky !== false : true;
       confirm.checked = configuredSelection?.allowCrossTrust === true;
+      routingEnabled.checked = !!configuredSelection?.routing;
       syncAttemptLimit();
       syncCandidateLimit();
+      syncRungs();
       syncTrustWarning();
+      notify();
     }
 
     maxAttempts.addEventListener('change', notify);
@@ -600,6 +724,9 @@
           maxAttempts: Number(maxAttempts.value),
           sticky: sticky.checked,
           crossTrustConfirmed: confirm.checked,
+          routingEnabled: routingEnabled.checked,
+          initialRouting: (initialSelection && initialSelection.mode === 'auto'
+            && initialSelection.routing) || null,
         });
         showError(result.ok ? '' : result.error);
         if (!result.ok && result.code === 'cross_trust_confirmation_required') confirm.focus();
@@ -627,7 +754,10 @@
     AUTO_PREFIX,
     MAX_ATTEMPTS,
     MAX_CANDIDATES,
+    MAX_TIERS,
     PROTOCOLS,
+    ROUTING_API_KEY_NAME,
+    ROUTING_PROVIDER,
     availableProtocols,
     candidateModel,
     defaultSelection,

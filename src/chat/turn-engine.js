@@ -48,6 +48,7 @@ const {
   providerRetryRouteOptions,
 } = require('./provider-invocation');
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
+const { admissionRootCause, deliverAfterPendingMemory } = require('./admission-progress');
 const { createAutoProviderHandoff } = require('./auto-provider-handoff');
 const { redactProviderRouteCapability } = require('../observability');
 const { createWsEnvelope } = require('../api-contract');
@@ -77,60 +78,9 @@ const { providerSelectionDto } = require('../providers/auto-provider-config');
 const { processSpawnArgs } = require('./process-spawn-args');
 const { isResident, isResidentSession } = require('../cli/cli-capability');
 
-function admissionRootCause(value) {
-  const raw = value instanceof Error
-    ? value.message
-    : typeof value === 'string' ? value : '';
-  return raw.trim() ? sanitizeApiErrorMessage(raw) : null;
-}
-
-async function deliverAfterPendingMemory(pendingMemory, emitProgress, deliver) {
-  if (!pendingMemory) return deliver();
-  const emit = progress => {
-    try { emitProgress?.(progress); } catch (_) {}
-  };
-  emit({ state: 'waiting', reason: 'memory_distill_pending' });
-  let memoryResult;
-  try {
-    memoryResult = await Promise.resolve(pendingMemory);
-  } catch (error) {
-    memoryResult = { error };
-  }
-  const reason = memoryResult?.error
-    ? 'memory_distill_failed'
-    : memoryResult?.skipped ? 'memory_distill_skipped' : null;
-  const memoryRootCause = reason === 'memory_distill_failed'
-    ? admissionRootCause(memoryResult.error)
-    : null;
-  emit({
-    state: reason ? 'skipped' : 'ready',
-    ...(reason ? { reason } : {}),
-    ...(memoryRootCause ? { rootCause: memoryRootCause } : {}),
-  });
-  try {
-    const delivered = await deliver();
-    if (delivered?.ok === false) {
-      const code = typeof delivered.code === 'string' && /^[a-z0-9_]{1,64}$/.test(delivered.code)
-        ? delivered.code : null;
-      const rootCause = admissionRootCause(delivered.error || delivered.message);
-      emit({
-        state: 'failed',
-        reason: 'message_delivery_rejected',
-        ...(code ? { code } : {}),
-        ...(rootCause ? { rootCause } : {}),
-      });
-    }
-    return delivered;
-  } catch (error) {
-    const rootCause = admissionRootCause(error);
-    emit({
-      state: 'failed',
-      reason: 'message_delivery_failed',
-      ...(rootCause ? { rootCause } : {}),
-    });
-    throw error;
-  }
-}
+// Message-admission progress (the frames that keep a delayed user message
+// visible) lives in ./admission-progress; it is re-exported below because its
+// direct test consumes it from this module's public surface.
 
 function appendAdapterAssistantText(current, text, options = {}) {
   const prior = String(current || '');
@@ -1530,7 +1480,7 @@ function createChatTurnEngine(deps) {
     const invocationFactory = createProviderInvocationFactory({
       providerRouterRuntime, providerAttemptRuntime: attemptRuntime, effectiveSessionModel,
     });
-    const autoTurn = autoProviderRuntime.beginTurn({ session: persisted, turnId: turn.turnId });
+    const autoTurn = autoProviderRuntime.beginTurn({ session: persisted, turnId: turn.turnId, promptText: text });
     let providerAttemptNo = 0;
     const prepareInvocation = (attemptOptions = {}) => invocationFactory.prepare({
       request: turnRequest, turn, session: persisted, provider, envelope,
@@ -2934,6 +2884,14 @@ function createChatTurnEngine(deps) {
           let pendingMemory;
           try { pendingMemory = getPendingMemoryDistill(sessionName); }
           catch (error) { pendingMemory = Promise.reject(error); }
+          // Auto Provider difficulty routing has to land before the turn starts —
+          // runChatTurn resolves its initial provider route synchronously — so it
+          // rides this async admission window (see admission-progress.js).
+          const pendingRouting = autoProviderRuntime.prepareAdmission({
+            session: persisted, text: msg.text, providers,
+            sessionId: sessionName, clientMsgId: turnOpts.clientMsgId,
+          });
+          if (pendingRouting) await pendingRouting;
           const deliver = () => taskContextHost.deliverSessionMessage(sessionName, msg.text, turnOpts);
           // A pending memory distill delays delivery so the new turn sees the
           // distilled memory. Surface that otherwise-invisible admission phase
