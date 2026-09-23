@@ -6,6 +6,9 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const { createSandboxConsole } = require('./helpers/sandbox-console');
+// The VM below pins host-lifecycle's require set to `./shutdown`, so the lane
+// predicate is only reachable through `deps` — pass the production one.
+const { isResidentSession } = require('../src/cli/cli-capability');
 
 const HOST_LIFECYCLE_FILE = path.join(__dirname, '..', 'src', 'host-lifecycle.js');
 
@@ -67,6 +70,7 @@ function loadHostLifecycle() {
 function createDeps({ timeline = [], errors = [], taskRunHost, taskRunStore, sessionPersistenceStop } = {}) {
   let shuttingDown = false;
   return {
+    isResidentSession,
     getShuttingDown: () => shuttingDown,
     setShuttingDown: value => { shuttingDown = value; },
     setServiceReady: value => timeline.push(`service-ready:${value}`),

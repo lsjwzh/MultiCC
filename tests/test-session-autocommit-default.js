@@ -8,11 +8,15 @@
 // 的 Session 解析里（`!= false` = 缺键算开），两边必须一致。
 const test = require('node:test'), assert = require('node:assert/strict');
 const { createSessionRecordFactory } = require('../src/session/create-record');
+// src/session 不能 require 车道表（bounded context），所以由组合根注入；这里给真表，
+// 免得桩掉之后 streaming 这类字段在测试里和生产不一致。
+const { isResidentSession } = require('../src/cli/cli-capability');
 
 // 只看创建默认值：每个端口都换成桩，但记录本身由生产代码拼出来。
 function createHarness() {
   const persisted = new Map();
   const factory = createSessionRecordFactory({
+    isResidentSession,
     sharedWorkspace: () => ({ worktreePath: '/wt/shared', branch: 'multicc/shared' }),
     SUPPORTED_CHAT_CLIS: ['claude', 'codex'],
     validateExperimentalSession: () => ({ ok: true }),

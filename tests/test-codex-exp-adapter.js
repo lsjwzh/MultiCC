@@ -10,6 +10,7 @@ const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { addUsage, appServerUsage, createCodexExpAdapter, requestUserInputEvent } = require('../src/cli-adapters/codex-exp');
 const { appendAdapterAssistantText } = require('../src/chat/turn-engine');
 const { createSessionRecordFactory } = require('../src/session/create-record');
+const { isResidentSession } = require('../src/cli/cli-capability');
 const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 
 function envelope({ first = true, threadId = null } = {}) {
@@ -110,7 +111,8 @@ test('native requestUserInput becomes the shared waiting signal', () => {
 
 test('codex-exp is chat-only at the canonical session boundary', async () => {
   const create = createSessionRecordFactory({
-    SUPPORTED_CHAT_CLIS, validateExperimentalSession: () => ({ ok: true }), tuiChatMirrorEnabled: () => false,
+    isResidentSession, SUPPORTED_CHAT_CLIS,
+    validateExperimentalSession: () => ({ ok: true }), tuiChatMirrorEnabled: () => false,
   });
   assert.deepEqual(await create({ dir: { id: 'd' }, cli: 'codex-exp', kind: 'terminal' }), {
     ok: false, error: 'codex-exp only supports chat sessions',

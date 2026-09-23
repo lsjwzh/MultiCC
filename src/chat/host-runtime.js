@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { createChatHostCoordinator } = require('./host-coordinator');
 const { createProviderBinding } = require('../providers/binding');
 const { redactProviderRouteCapability } = require('../observability');
+const { protocolFamilyOf } = require('../cli/cli-capability');
 
 const REQUIRED_PORTS = Object.freeze([
   'appendMessage',
@@ -76,9 +77,7 @@ function normalizeUsage(rawUsage) {
 function protocolFor(cli, explicit) {
   const protocol = clean(explicit);
   if (protocol) return protocol;
-  if (cli === 'codex' || cli === 'codex-exp') return 'openai-responses';
-  if (cli === 'claude' || cli === 'claude-exp') return 'anthropic-messages';
-  return cli || 'unknown';
+  return protocolFamilyOf(cli) || cli || 'unknown';
 }
 
 function attributionSnapshot(state, turn, runner, explicit = {}) {
