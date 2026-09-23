@@ -89,7 +89,18 @@ test('reclamation gate: scheduled proactive sweep skips unsafe worktrees, reclai
     const repo = createRepo(root, 'repo');
     const unsafeAdded = await gitWorktreeAdd(repo, 'unsafe-oldest', 'main');
     const safeAdded = await gitWorktreeAdd(repo, 'safe-younger', 'main');
-    fs.writeFileSync(path.join(unsafeAdded.worktreePath, '.env'), 'MUST_NOT_BE_DELETED=1\n');
+    // Unsafe = an in-progress merge (HIBERNATE_GIT_OPERATION_ACTIVE): detach
+    // must refuse and the sweep must move on to the next candidate.
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'main change\n');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'main change']);
+    fs.writeFileSync(path.join(unsafeAdded.worktreePath, 'tracked.txt'), 'unsafe change\n');
+    git(unsafeAdded.worktreePath, ['add', '.']);
+    git(unsafeAdded.worktreePath, ['commit', '-m', 'unsafe change']);
+    try { git(unsafeAdded.worktreePath, ['merge', 'main']); } catch (_) { /* conflict expected */ }
+    // Unknown ignored files (.env) no longer block reclamation: they are
+    // deleted with an audit manifest persisted on the session record.
+    fs.writeFileSync(path.join(safeAdded.worktreePath, '.env'), 'DISPOSABLE=1\n');
     fs.writeFileSync(path.join(safeAdded.worktreePath, 'tracked.txt'), 'preserved by snapshot\n');
     fs.writeFileSync(path.join(safeAdded.worktreePath, 'draft.txt'), 'also preserved\n');
 
@@ -117,15 +128,19 @@ test('reclamation gate: scheduled proactive sweep skips unsafe worktrees, reclai
     assert.equal(timers[0].delay, 25);
     await timers[0].fn();
     assert.equal(unsafe.workspaceState, 'awake');
-    assert.equal(fs.readFileSync(path.join(unsafe.worktreePath, '.env'), 'utf8'), 'MUST_NOT_BE_DELETED=1\n');
+    assert.equal(fs.existsSync(unsafe.worktreePath), true);
     assert.equal(safe.workspaceState, 'hibernated',
       'the automatic sweep must continue past the unsafe oldest checkout');
     assert.equal(fs.existsSync(safe.worktreePath), false);
+    assert.ok(safe.hibernateRemovedIgnored?.entries?.some(entry => entry.path === '.env'),
+      'the deleted unknown ignored file is recorded in the audit manifest');
 
     assert.equal((await runtime.ensureAwake(safe.id)).ok, true);
     assert.equal(safe.workspaceState, 'awake');
     assert.equal(fs.readFileSync(path.join(safe.worktreePath, 'tracked.txt'), 'utf8'), 'preserved by snapshot\n');
     assert.equal(fs.readFileSync(path.join(safe.worktreePath, 'draft.txt'), 'utf8'), 'also preserved\n');
+    assert.equal(fs.existsSync(path.join(safe.worktreePath, '.env')), false,
+      'deleted ignored files are not restored by thaw');
   } finally {
     await runtime?.stop();
     fs.rmSync(root, { recursive: true, force: true });

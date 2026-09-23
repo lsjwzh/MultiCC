@@ -68,7 +68,7 @@ test('the badge counts vault entries on load, not only after the panel is opened
 test('Air surfaces the vault first, and its page header is not the raw mode key', () => {
   assertContains(airAdmin, /^\s{4}secrets: \[t\('airAdminPanelSecrets'\)/m,
     'the vault panel must be registered in legacyPanels');
-  assertContains(airAdmin, /\['airAdminGroupFeatured', \['secrets', 'docs', 'memory', 'taskgraph'\]\]/,
+  assertContains(airAdmin, /\['airAdminGroupFeatured', \['secrets', 'docs', 'memory', 'taskgraph', 'workspaces'\]\]/,
     'the vault must be the first card of the settings center\'s first group');
   // 控制台那一格现在钉在顶栏上（不用滚到工具格才找得到），所以这条断的是
   // #console-head 里的常驻按钮，而不是工具格的卡。

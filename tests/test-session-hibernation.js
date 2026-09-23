@@ -66,6 +66,8 @@ function harness(overrides = {}) {
     intervalMs: overrides.intervalMs,
     startupDelayMs: overrides.startupDelayMs,
     batchSize: overrides.batchSize,
+    awakeLimit: overrides.awakeLimit,
+    pathExists: overrides.pathExists,
   });
   return { runtime, records, directories, writes, events, timers, git, setNow: n => { nowMs = n; } };
 }
@@ -78,12 +80,12 @@ function bound(id, lastWorkAt = iso(10 * DAY), extra = {}) {
   };
 }
 
-test('eligibility starts at the exact one-day edge and uses a conservative exclusion table', () => {
+test('eligibility starts at the exact idle edge and uses a conservative exclusion table', () => {
   const now = 20 * DAY;
-  assert.equal(DEFAULT_HIBERNATE_IDLE_MS, DAY);
+  assert.equal(DEFAULT_HIBERNATE_IDLE_MS, 6 * 60 * 60 * 1000);
   assert.equal(DEFAULT_HIBERNATE_BATCH_SIZE, 16);
-  assert.equal(evaluateSessionEligibility(bound('edge', iso(now - DAY)), { nowMs: now }).eligible, true);
-  assert.equal(evaluateSessionEligibility(bound('fresh', iso(now - DAY + 1)), { nowMs: now }).eligible, false);
+  assert.equal(evaluateSessionEligibility(bound('edge', iso(now - DEFAULT_HIBERNATE_IDLE_MS)), { nowMs: now }).eligible, true);
+  assert.equal(evaluateSessionEligibility(bound('fresh', iso(now - DEFAULT_HIBERNATE_IDLE_MS + 1)), { nowMs: now }).eligible, false);
   const excluded = [
     { kind: 'terminal' }, { taskBoundTaskId: null }, { taskExecutionSlot: true },
     { ephemeral: true }, { experimentalMode: 'tui' }, { type: 'commander' },
@@ -436,4 +438,56 @@ test('start schedules bounded sweeps and stop clears timers then joins in-flight
   release();
   await Promise.all([running, stopping]);
   assert.equal(h.runtime.status().stopped, true);
+});
+
+test('awake budget hibernates the least-recently-worked excess per directory, including idle worker slots', async () => {
+  const records = new Map();
+  // Three chats in one directory, budget two: the oldest (a worker slot whose
+  // type would exclude it from the idle sweep) must hibernate first.
+  const oldest = bound('slot', iso(DAY), { type: 'worker' });
+  const middle = bound('middle', iso(2 * DAY));
+  const fresh = bound('fresh', iso(3 * DAY));
+  for (const record of [oldest, middle, fresh]) records.set(record.id, record);
+  const h = harness({
+    records,
+    idleMs: 0, // idle sweep off: only the budget pass may act
+    awakeLimit: 2,
+    pathExists: record => record._pathExists !== false,
+  });
+  const result = await h.runtime.enforceAwakeBudget();
+  assert.equal(result.considered, 1);
+  assert.equal(result.hibernated, 1);
+  assert.equal(records.get('slot').workspaceState, 'hibernated');
+  assert.equal(records.get('middle').workspaceState, 'awake');
+  assert.equal(records.get('fresh').workspaceState, 'awake');
+});
+
+test('awake budget leaves directories at or under the limit untouched and skips running sessions', async () => {
+  const running = bound('running', iso(DAY), { taskState: { runState: 'running' } });
+  const other = bound('other', iso(2 * DAY));
+  const h = harness({
+    records: new Map([[running.id, running], [other.id, other]]),
+    idleMs: 0,
+    awakeLimit: 1,
+    pathExists: record => record._pathExists !== false,
+  });
+  const result = await h.runtime.enforceAwakeBudget();
+  // Only 'other' counts toward the budget (running is excluded), so the
+  // directory is at the limit and nothing hibernates.
+  assert.equal(result.considered, 0);
+  assert.equal(other.workspaceState, 'awake');
+});
+
+test('detach audit manifest persists deleted unknown ignored files on the record', async () => {
+  const record = bound('audit', iso(DAY));
+  const h = harness({
+    records: new Map([[record.id, record]]),
+    idleMs: 0,
+    git: { detach: async (_dir, current) => {
+      current._pathExists = false;
+      return { ok: true, snapshot: 's', removedUnknownIgnored: [{ path: '.env', bytes: 12, mtime: iso(DAY) }] };
+    } },
+  });
+  await h.runtime.hibernate(record.id, { ignoreIdle: true });
+  assert.deepEqual(record.hibernateRemovedIgnored, { at: iso(20 * DAY), entries: [{ path: '.env', bytes: 12, mtime: iso(DAY) }] });
 });
