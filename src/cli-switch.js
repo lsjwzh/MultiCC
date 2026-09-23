@@ -96,7 +96,7 @@ function activateCliState(session, targetCli, options = {}) {
   session.agent = state.agent || null;
   if (state.reportedModel) session.reportedModel = state.reportedModel;
   else delete session.reportedModel;
-  session.streaming = targetCli === 'claude' && session.kind === 'chat';
+  session.streaming = ['claude', 'claude-exp'].includes(targetCli) && session.kind === 'chat';
   session.cliSwitchEpoch = Math.max(0, Number(session.cliSwitchEpoch) || 0) + 1;
 
   session.cliStates[targetCli] = {

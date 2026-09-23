@@ -654,6 +654,7 @@ function createSessionWorkHost(deps = {}) {
     if (state.claudeProc) return false;
     if (processAlive(state._cancelledProc)) return false;
     if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) return false;
+    if (state.cli === 'claude-exp' && deps.chatStream.status(sessionId)?.busy) return false;
     return true;
   }
 
@@ -709,7 +710,8 @@ function createSessionWorkHost(deps = {}) {
         outcome: 'failed', errorCategory: 'cancelled', reasonCode: killReason,
       });
     }
-    if (state.cli === 'claude' && deps.chatStream.isAlive(sessionId)) {
+    if (['claude', 'claude-exp'].includes(state.cli)
+        && (deps.chatStream.isAlive(sessionId) || deps.chatStream.status?.(sessionId)?.busy)) {
       log.log?.(`[multicc/chat] [${sessionId}] (streaming) cancel requested (${reason})`);
       deps.chatStream.cancel(sessionId);
     }
