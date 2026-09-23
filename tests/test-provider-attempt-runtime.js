@@ -618,18 +618,24 @@ test('sub producer ownership survives main terminal state and drains the capture
 
 test('an old sub producer ends against its captured capability without binding a retry', () => {
   const { runtime } = harness();
-  const first = runtime.beginAttempt(route({
+  const residentRetry = {
     cli: 'claude', protocol: 'anthropic', subagentProviderId: 'provider-sub',
-  }));
+  };
+  const first = runtime.beginAttempt(route({ ...residentRetry, spawnKey: 'spawn-1' }));
   const oldContext = proxy(runtime, first, {
     role: 'sub', roleKind: 'sub', providerId: 'provider-sub',
   });
   runtime.onProxyActivity({ ...oldContext, phase: 'request' });
   runtime.finishAttempt(first, { outcome: 'failed', errorCategory: 'transport' });
   const second = runtime.beginAttempt(route({
-    cli: 'claude', protocol: 'anthropic', subagentProviderId: 'provider-sub', attemptNo: 2,
+    ...residentRetry, spawnKey: 'spawn-1', attemptNo: 2,
   }));
-  assert.notEqual(runtime.proxySessionId(second), oldContext.sessionId);
+  // A resident lane keeps the route across a same-contract retry, so the old sub
+  // producer ends against a capability that still authorizes today's attempt.
+  // What must not survive is the attempt binding: its usage stays ambiguous and
+  // carries no routeAttemptId, because the attempt that opened it is gone.
+  assert.equal(runtime.proxySessionId(second), oldContext.sessionId);
+  assert.notEqual(second.routeAttemptId, first.routeAttemptId);
   assert.equal(runtime.onProxyActivity({ ...oldContext, phase: 'end' }).sessionId, 'session-1');
   const usage = runtime.attributeProxyUsage({
     ...oldContext, eventId: 'old-sub-usage', phase: undefined,
@@ -871,10 +877,11 @@ test('an attempt capability authorizes only its frozen main and configured sub P
   assert.equal(runtime.snapshot('session-1').outcome, 'failed');
 });
 
-test('Claude rotates its capability at every attempt, including successful serial turns', () => {
+test('a resident lane keeps its capability while the spawn contract holds, and rotates when it moves', () => {
   const { runtime } = harness();
   const claudeRoute = {
     cli: 'claude', protocol: 'anthropic', providerRevision: 'claude-revision',
+    spawnKey: 'argv-model-a',
   };
   const first = runtime.beginAttempt(route(claudeRoute));
   const warmCapability = runtime.proxySessionId(first);
@@ -882,18 +889,62 @@ test('Claude rotates its capability at every attempt, including successful seria
   const second = runtime.beginAttempt(route({
     ...claudeRoute, turnId: 'turn-2', attemptNo: 1,
   }));
-  const secondCapability = runtime.proxySessionId(second);
-  assert.notEqual(secondCapability, warmCapability,
-    'a clean result boundary cannot keep an old attempt capability live');
+  assert.equal(runtime.proxySessionId(second), warmCapability,
+    'the warm child routes on the capability it was spawned with');
   assert.equal(runtime.authorizeProxyRequest({
     sessionId: warmCapability, role: 'main', providerId: 'provider-a',
-  }).ok, false, 'the prior process route is revoked before the next turn starts');
-  runtime.finishAttempt(second, { outcome: 'failed', errorCategory: 'transport' });
-  const retry = runtime.beginAttempt(route({
-    ...claudeRoute, turnId: 'turn-2', attemptNo: 2,
+  }).ok, true, 'residency requires the capability to survive a result boundary');
+  runtime.finishAttempt(second, { outcome: 'succeeded' });
+  // Same provider, new --model: what the child baked at spawn moved, so the
+  // capability must move with it or the warm process keeps the old model.
+  const respawned = runtime.beginAttempt(route({
+    ...claudeRoute, turnId: 'turn-3', attemptNo: 1, spawnKey: 'argv-model-b',
   }));
-  assert.notEqual(runtime.proxySessionId(retry), secondCapability,
-    'a same-turn retry also gets a distinct physical capability');
+  const respawnedCapability = runtime.proxySessionId(respawned);
+  assert.notEqual(respawnedCapability, warmCapability,
+    'a moved spawn contract respawns the child on a fresh capability');
+  assert.equal(runtime.authorizeProxyRequest({
+    sessionId: warmCapability, role: 'main', providerId: 'provider-a',
+  }).ok, false, 'the replaced capability stops authorizing');
+  runtime.finishAttempt(respawned, { outcome: 'failed', errorCategory: 'transport' });
+  const retry = runtime.beginAttempt(route({
+    ...claudeRoute, turnId: 'turn-3', attemptNo: 2, spawnKey: 'argv-model-b',
+  }));
+  assert.equal(runtime.proxySessionId(retry), respawnedCapability,
+    'a same-contract retry reuses the route; attempt identity is routeAttemptId');
+  assert.notEqual(retry.routeAttemptId, respawned.routeAttemptId);
+  assert.equal(runtime.snapshot('session-1').outcome, 'running');
+});
+
+test('a caller that cannot prove its spawn contract gets no residency, and a per-turn lane never keeps one', () => {
+  const { runtime } = harness();
+  const unproven = runtime.beginAttempt(route({
+    cli: 'claude', protocol: 'anthropic', providerRevision: 'claude-revision',
+  }));
+  const unprovenCapability = runtime.proxySessionId(unproven);
+  runtime.finishAttempt(unproven, { outcome: 'succeeded' });
+  const next = runtime.beginAttempt(route({
+    cli: 'claude', protocol: 'anthropic', providerRevision: 'claude-revision',
+    turnId: 'turn-2', attemptNo: 1,
+  }));
+  assert.notEqual(runtime.proxySessionId(next), unprovenCapability,
+    'without a spawn contract the safe answer is the historical per-attempt rotation');
+  runtime.finishAttempt(next, { outcome: 'succeeded' });
+  const perTurnRoute = {
+    cli: 'codex', protocol: 'openai_responses', providerRevision: 'codex-revision',
+    spawnKey: 'argv-model-a',
+  };
+  const first = runtime.beginAttempt(route({ ...perTurnRoute, turnId: 'turn-3', attemptNo: 1 }));
+  const firstCapability = runtime.proxySessionId(first);
+  runtime.finishAttempt(first, { outcome: 'succeeded' });
+  const second = runtime.beginAttempt(route({
+    ...perTurnRoute, turnId: 'turn-4', attemptNo: 1,
+  }));
+  assert.notEqual(runtime.proxySessionId(second), firstCapability,
+    'a per-turn lane has no warm process to protect, so the old route ends with the turn');
+  assert.equal(runtime.authorizeProxyRequest({
+    sessionId: firstCapability, role: 'main', providerId: 'provider-a',
+  }).ok, false, 'the closed attempt route is revoked before the next turn starts');
 });
 
 test('a succeeded logical turn cannot open another provider attempt', () => {

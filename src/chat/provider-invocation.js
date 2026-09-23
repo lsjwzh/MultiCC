@@ -1,5 +1,6 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
 const { createProviderRevision } = require('./provider-attempt-runtime');
 const { createProviderRouteProof } = require('./turn-request');
 const { protocolFamilyOf } = require('../cli/cli-capability');
@@ -12,6 +13,26 @@ function protocolFor(cli, summary) {
   const explicit = clean(summary && (summary.apiFormat || summary.protocol));
   if (explicit) return explicit;
   return protocolFamilyOf(cli, 'api') || clean(cli) || 'native';
+}
+
+// Everything a physical child bakes at spawn, hashed for the route capability.
+// A resident lane keeps its capability while this digest is unchanged and gets a
+// fresh one as soon as it moves, so the lane's own routing fingerprint recycles
+// the warm process exactly when the spawn contract changed — and never because
+// the attempt (or its route token) merely rotated, which is what made residency
+// impossible. Claude bakes its route into ANTHROPIC_* plus --model/--effort/
+// --agent argv, so the argv and SDK options belong here. The codex app-server
+// reads its route from CODEX_HOME and takes model/effort per turn (turn/start,
+// see the adapter's turnOptions), so its provider binding alone is the contract.
+function spawnKeyFor({ cli, providerId, protocol, providerRevision, subagentProviderId, invocation }) {
+  const contract = [providerId, protocol, providerRevision, clean(subagentProviderId)];
+  if (protocolFamilyOf(cli, 'api') !== 'openai_responses') {
+    contract.push(
+      invocation && (invocation.streamArgs || invocation.args) || null,
+      invocation && invocation.sdkOptions || null,
+    );
+  }
+  return createHash('sha256').update(JSON.stringify(contract)).digest('base64url');
 }
 
 function providerRetryRouteOptions(attempt) {
@@ -124,6 +145,11 @@ function createProviderInvocationFactory(options = {}) {
       attemptNo: input.attemptNo,
       reasonCode: input.reasonCode,
       continuation: input.continuation === true,
+      spawnKey: spawnKeyFor({
+        cli: binding.cli, providerId, protocol, providerRevision,
+        subagentProviderId: session.subagent && session.subagent.providerId,
+        invocation,
+      }),
     });
     let routeProof;
     let proxySessionId;

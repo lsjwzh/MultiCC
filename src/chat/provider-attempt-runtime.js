@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { isCompleted } = require('../cli-adapters/completion');
+const { isResident } = require('../cli/cli-capability');
 const { isProxyFailureCompatibleWithCompletion } = require('./adapter-completion');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
@@ -601,11 +602,32 @@ function createProviderAttemptRuntime(options = {}) {
 
     const routeGeneration = (generationBySession.get(sessionId) || 0) + 1;
     generationBySession.set(sessionId, routeGeneration);
-    // This is an invocation-attempt capability, never a warm-process identity.
-    // Rotating at every physical attempt makes an old main/background producer
-    // unambiguously stale. Claude's chat-stream already fingerprints ANTHROPIC_*
-    // env and recycles the idle process with --resume when this URL changes.
-    const proxyRouteToken = required(nextId('proxy-route'), 'proxyRouteToken');
+    // This is a route capability, and for a resident lane it is scoped to the
+    // spawn contract rather than to the physical attempt. A resident child bakes
+    // its route at spawn — Claude through ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
+    // and its --model argv, codex through CODEX_HOME's managed config.toml — and
+    // the lane recycles the warm process the moment any of that changes. A
+    // capability that rotated at every attempt would therefore respawn the child
+    // on every turn and residency could never take effect. The caller that
+    // builds the spawn (provider-invocation) passes the hash of exactly what it
+    // bakes; a resident lane keeps its capability while that hash is unchanged
+    // and mints a fresh one the moment it moves (provider, revision, model,
+    // effort, agent, argv). Per-turn lanes, having no warm process to protect,
+    // still rotate at every physical attempt, and a caller that declines to
+    // prove its spawn contract gets that same rotation.
+    //
+    // Attempt identity does not rest on this token: sameAttempt() compares
+    // routeAttemptId/routeGeneration/turnId, which keep incrementing. What a
+    // stable capability gives up is only the provable staleness of an orphaned
+    // child belonging to an *earlier* attempt of the same spawn contract — such
+    // a child can now reach the proxy during a later attempt. That is
+    // attribution scope, not credential exposure: the child only ever holds this
+    // opaque capability, never a real upstream key.
+    const spawnKey = clean(input.spawnKey);
+    const proxyRouteToken = isResident(cli) && spawnKey && previous
+      && previous.proxyRouteToken && previous.spawnKey === spawnKey
+      ? previous.proxyRouteToken
+      : required(nextId('proxy-route'), 'proxyRouteToken');
     const record = {
       runtimeEpoch,
       decisionId: previous && previous.turnId === turnId
@@ -625,6 +647,7 @@ function createProviderAttemptRuntime(options = {}) {
       attemptNo,
       routeGeneration,
       proxyRouteToken,
+      spawnKey,
       replayFence: continuation && previous ? previous.replayFence : 'none',
       visibleOutputObserved: !!(continuation && previous && previous.visibleOutputObserved),
       toolIntentObserved: !!(continuation && previous && previous.toolIntentObserved),

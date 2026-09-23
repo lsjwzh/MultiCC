@@ -66,25 +66,27 @@ test('a cancel that reaps the child is distinguished from one that interrupts in
   assert.equal(capabilityOf('claude-exp').cancel, 'turn');
 });
 
-test('a session keeps its CLI lane unless its credentials are leased per attempt', () => {
-  // The lane a session runs on can be narrower than its CLI's lane. The codex
-  // provider path materializes a credential-bearing CODEX_HOME per attempt and
-  // scrubs it when the turn ends (src/codex/proxy-policy.js), so a warm child
-  // would outlive the credentials it is holding. Everything else may stay warm:
-  // the anthropic lanes and an un-routed codex session hold no attempt-scoped
-  // secret, and a sub-task's provider is leased the same way as the session's.
-  assert.equal(isResidentSession('codex-exp', { provider: 'deepseek' }), false, 'concrete provider is an attempt-scoped lease');
-  assert.equal(isResidentSession('codex-exp', { provider: null }), true, 'official login keeps no attempt home');
-  assert.equal(isResidentSession('codex-exp', { provider: '_default_' }), true, 'the default pool is not a concrete lease');
+test('a session keeps its CLI lane whatever provider it is routed through', () => {
+  // This predicate used to narrow the lane: a codex session on a concrete
+  // provider leased its CODEX_HOME per attempt, so it had to stay per-turn or a
+  // warm child would outlive the credentials it held. Both provider paths now
+  // hold a route that outlives the attempt (claude in the rebuilt ANTHROPIC_* env
+  // plus a spawn-contract-scoped capability, codex in a session-scoped
+  // CODEX_HOME — src/codex/resident-route.js), so routing no longer changes the
+  // answer: a resident CLI's session is resident.
+  for (const provider of [
+    null, '_default_', 'deepseek',
+  ]) {
+    assert.equal(isResidentSession('codex-exp', { provider }), true,
+      `codex-exp stays resident on provider ${provider === null ? '(none)' : provider}`);
+  }
   assert.equal(isResidentSession('codex-exp', {}), true, 'no provider recorded yet = the default lane');
-  assert.equal(isResidentSession('codex-exp', { provider: 'deepseek', subagent: { providerId: 'kimi' } }), false, 'either route leases an attempt home');
-  assert.equal(isResidentSession('codex-exp', { subagent: { providerId: 'kimi' } }), false);
-  assert.equal(isResidentSession('codex-exp', { subagent: { providerId: '_default_' } }), true);
-  // A concrete provider only narrows the openai lanes; the anthropic lanes route
-  // through a host-side proxy whose identity is per-session, not per-attempt.
+  assert.equal(isResidentSession('codex-exp', { provider: 'deepseek', subagent: { providerId: 'kimi' } }), true);
+  assert.equal(isResidentSession('codex-exp', { subagent: { providerId: 'kimi' } }), true);
   assert.equal(isResidentSession('claude', { provider: 'zhipu' }), true);
   assert.equal(isResidentSession('claude-exp', { provider: 'zhipu' }), true);
-  // And nothing promotes a per-turn CLI into a resident session.
+  // Nothing promotes a per-turn CLI into a resident session — the session can no
+  // longer widen a lane either, only report the one the CLI is already on.
   assert.equal(isResidentSession('codex', { provider: null }), false);
   assert.equal(isResidentSession('opencode', {}), false);
   assert.equal(isResidentSession(undefined, {}), false);
