@@ -570,6 +570,43 @@ console.log('── Suite 5: task-context layer (bound-session cold start) ─�
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
+// Suite 6: sub-agent provider hint (host-prompts.buildSubagentProviderHint)
+// ═══════════════════════════════════════════════════════════════════════
+console.log('── Suite 6: sub-agent provider hint ──');
+
+(function suite6() {
+  const { buildSubagentProviderHint } = require('../src/chat/host-prompts');
+  const deps = makeDeps({ buildSubagentProviderHint });
+  const opts = { isFirstTurn: true, mode: 'per-turn' };
+
+  const without = composeMessage({ text: 'hi', persisted: basePersisted(), sessionName: 's1', opts, deps });
+  assert(without.subagentHint === '', '6a no subagent -> empty subagentHint');
+  assert(without.systemPrompt === `${IMG_HINT}\n\n${ROLE_PROMPT}`, '6a no subagent -> systemPrompt unchanged');
+
+  const withSub = composeMessage({
+    text: 'hi', persisted: basePersisted({ subagent: { providerId: 'xf-ds4', model: 'deepseek-v4' } }),
+    sessionName: 's1', opts, deps,
+  });
+  assert(withSub.subagentHint.includes('xf-ds4 / deepseek-v4'), '6b subagent -> hint names the route');
+  assert(withSub.subagentHint.includes('耗 token'), '6b subagent -> hint steers token-heavy work');
+  assert(withSub.systemPrompt === `${IMG_HINT}\n\n${withSub.subagentHint}\n\n${ROLE_PROMPT}`,
+    '6b systemPrompt = imgHint + subagentHint + rolePrompt');
+  assert(withSub.imgHint === IMG_HINT && withSub.rolePrompt === ROLE_PROMPT, '6b imgHint/rolePrompt untouched');
+  assert(renderPrompt(withSub) === renderPrompt(without), '6b hint lives in systemPrompt, not in prompt body');
+
+  const noRole = composeMessage({
+    text: 'hi', persisted: basePersisted({ subagent: { providerId: 'xf-ds4', model: 'deepseek-v4' } }),
+    sessionName: 's1', opts, deps: makeDeps({ buildSubagentProviderHint, resolveRolePrompt: () => '' }),
+  });
+  assert(noRole.systemPrompt === `${IMG_HINT}\n\n${noRole.subagentHint}`, '6c no role -> imgHint + subagentHint');
+
+  for (const bad of [null, {}, { providerId: '' }, { model: 'x' }]) {
+    assert(buildSubagentProviderHint(bad) === '', `6d inert subagent: ${JSON.stringify(bad)}`);
+  }
+  assert(buildSubagentProviderHint({ providerId: 'p1' }).includes('（p1）'), '6d provider only -> route without model');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

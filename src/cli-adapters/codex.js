@@ -137,6 +137,7 @@ function createCodexAdapter(deps) {
   function firstTurnPrompt(prompt, opts) {
     const promptPrefixes = [multiccImgHint];
     if (envConstraint) promptPrefixes.push(envConstraint);
+    if (opts.subagentHint) promptPrefixes.push(opts.subagentHint);
     if (opts.rolePrompt) {
       promptPrefixes.push(`[角色设定]\n${opts.rolePrompt}\n[角色设定结束]`);
     }
@@ -175,7 +176,7 @@ function createCodexAdapter(deps) {
       const isFirstTurn = env.historyHandle.isFirstTurn;
       const prompt = renderPrompt(env);
       let payload = isFirstTurn
-        ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt })
+        ? firstTurnPrompt(prompt, { rolePrompt: env.rolePrompt, subagentHint: env.subagentHint })
         : envConstraint ? `${envConstraint}\n\n${prompt}` : prompt;
       if (stayAlivePrompt) payload += `\n${stayAlivePrompt}`;
       const args = ['exec'];

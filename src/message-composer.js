@@ -135,9 +135,9 @@ function validateEnvelope(env) {
     }
 
     // 4. systemPrompt derivation consistency
-    const expectedSys = env.rolePrompt ? `${env.imgHint}\n\n${env.rolePrompt}` : env.imgHint;
+    const expectedSys = [env.imgHint, env.subagentHint, env.rolePrompt].filter(Boolean).join('\n\n');
     if (env.systemPrompt !== expectedSys) {
-      violations.push('systemPrompt derivation mismatch (expected rolePrompt ? imgHint+\\n\\n+rolePrompt : imgHint)');
+      violations.push('systemPrompt derivation mismatch (expected [imgHint, subagentHint?, rolePrompt?].join(\\n\\n))');
     }
   }
 
@@ -185,7 +185,7 @@ function validateEnvelope(env) {
  * @param {boolean|undefined} input.opts.skipDefaultModel
  * @param {string[]} [input.opts.disallowedTools=[]]
  * @param {Object} input.deps - injected dependencies (avoids a circular require of server.js):
- *   { resolveRolePrompt, multiccImgHint, buildCliHandoffPrompt, buildGatewayPrompt, buildDispatchContextPrompt,
+ *   { resolveRolePrompt, multiccImgHint, buildSubagentProviderHint, buildCliHandoffPrompt, buildGatewayPrompt, buildDispatchContextPrompt,
  *     buildGoalLimitNote, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
  *     chatBroadcast, normalizeEffort, cliEffortLevel }
  * @returns {MessageEnvelope}
@@ -206,7 +206,11 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
   // ── System prompt (single computation point; today rolePrompt is resolved at server.js:9077) ──
   const rolePrompt = deps.resolveRolePrompt(persisted);
   const imgHint = deps.multiccImgHint;
-  const systemPrompt = rolePrompt ? `${imgHint}\n\n${rolePrompt}` : imgHint;
+  // Sub-agent provider steering sits between the host hint and the role prompt
+  // so it reads as host policy, not as part of the user's role text.
+  const subagentHint = typeof deps.buildSubagentProviderHint === 'function'
+    ? (deps.buildSubagentProviderHint(persisted.subagent) || '') : '';
+  const systemPrompt = [imgHint, subagentHint, rolePrompt].filter(Boolean).join('\n\n');
 
   // ── Context layers ──
   // Today's assembly (server.js:9035-9068) prepends in this order:
@@ -292,6 +296,7 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
 
   const envelope = {
     imgHint,
+    subagentHint,
     rolePrompt,
     systemPrompt,
     contextLayers: contextLayers.sort((a, b) => a.order - b.order),
