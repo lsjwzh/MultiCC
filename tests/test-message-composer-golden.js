@@ -588,7 +588,7 @@ console.log('── Suite 6: sub-agent provider hint ──');
     sessionName: 's1', opts, deps,
   });
   assert(withSub.subagentHint.includes('xf-ds4 / deepseek-v4'), '6b subagent -> hint names the route');
-  assert(withSub.subagentHint.includes('耗 token'), '6b subagent -> hint steers token-heavy work');
+  assert(withSub.subagentHint.includes('token-heavy work'), '6b subagent -> hint steers token-heavy work');
   assert(withSub.systemPrompt === `${IMG_HINT}\n\n${withSub.subagentHint}\n\n${ROLE_PROMPT}`,
     '6b systemPrompt = imgHint + subagentHint + rolePrompt');
   assert(withSub.imgHint === IMG_HINT && withSub.rolePrompt === ROLE_PROMPT, '6b imgHint/rolePrompt untouched');
@@ -603,7 +603,7 @@ console.log('── Suite 6: sub-agent provider hint ──');
   for (const bad of [null, {}, { providerId: '' }, { model: 'x' }]) {
     assert(buildSubagentProviderHint(bad) === '', `6d inert subagent: ${JSON.stringify(bad)}`);
   }
-  assert(buildSubagentProviderHint({ providerId: 'p1' }).includes('（p1）'), '6d provider only -> route without model');
+  assert(buildSubagentProviderHint({ providerId: 'p1' }).includes('(p1)'), '6d provider only -> route without model');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
