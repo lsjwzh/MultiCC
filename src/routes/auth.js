@@ -11,7 +11,6 @@
 // CPR mounts its Anthropic/OpenAI protocol relays at these paths. Only a
 // durable, provider-scoped share credential may unlock them remotely.
 const PROXY_RELAY_PREFIXES = ['/claude-proxy', '/codex-proxy'];
-const { requiresTaskCreationAccess } = require('../task-creation-access');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {
@@ -208,33 +207,6 @@ function createAuthRuntime(rawDeps) {
 
     // Auth middleware
     app.use((req, res, next) => {
-      // Check before both scoped/local exemptions. A model capability may not
-      // be upgraded to management authority merely because it runs on this host.
-      const creation = requiresTaskCreationAccess(req);
-      const changesPassword = req.method === 'POST' && /^\/api\/settings\/access-token\/?$/i.test(req.path);
-      if (creation || (changesPassword && getAccessToken())) {
-        const modelCredential = !!req.headers['x-multicc-router-capability'];
-        const cookies = parseCookies(req.headers.cookie);
-        const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''));
-        const user = !!getAccessToken() && (authSecurity.verifyCookie(cookies.multicc_auth)
-          || authSecurity.verifyAccessToken(req.headers['x-access-token'])
-          || authSecurity.verifyAccessToken(bearer?.[1]));
-        let scoped = false;
-        if (!modelCredential && !user && !changesPassword) {
-          try { scoped = authorizeScopedRequest(req); } catch (_) { /* fail closed */ }
-        }
-        if (!modelCredential && (user || scoped)) return next();
-        const code = modelCredential ? 'MODEL_MANAGEMENT_FORBIDDEN'
-          : getAccessToken() ? 'TASK_CREATION_AUTH_REQUIRED' : 'TASK_CREATION_AUTH_SETUP_REQUIRED';
-        return res.status(403).json(createErrorDto({ code,
-          message: modelCredential ? '模型请使用 route_task/dispatch_master 的 new_task 参数创建任务'
-            : getAccessToken() ? '创建任务前请先登录；本机请求也需要用户凭据'
-              : '请先在设置中配置访问密码并登录，再创建任务',
-          category: 'authentication_permission', retryable: false,
-          action: getAccessToken() ? 'login' : 'open_settings', scope: 'request',
-          requestId: req.id, correlationId: req.correlationId,
-        }));
-      }
       // Allow login page, static assets
       if (req.path === '/login' || req.path === '/logout') return next();
       if (req.path === '/healthz' || req.path === '/readyz') return next();

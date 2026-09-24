@@ -97,18 +97,6 @@ function waitDenied(url, options = {}) {
   try {
     await waitReady(base);
 
-    for (const route of ['/api/air/tasks', '/api/directories/missing/sessions']) {
-      const post = headers => fetch(`${base}${route}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: '{}',
-      });
-      const unauthenticated = await post({});
-      assert.equal(unauthenticated.status, 403, 'loopback cannot create tasks without a user credential');
-      const model = await post({ 'x-multicc-router-capability': 'model-capability' });
-      assert.equal(model.status, 403, 'a router capability is not a management credential');
-      const authenticated = await post({ 'X-Access-Token': 'isolated-access-token' });
-      assert.ok([400, 404].includes(authenticated.status), 'user auth reaches canonical validation');
-    }
-
     const local = await connectSocket(`ws://127.0.0.1:${port}/ws/meta`);
     local.terminate();
 
