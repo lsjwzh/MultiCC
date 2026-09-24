@@ -1301,6 +1301,12 @@ function createTaskBoardRuntime(deps) {
     const task = taskId ? resolvedTask(taskId) : null;
     if (!task) return { ok: false, code: 'task_not_found' };
     const type = String(event.type || '');
+    // A one-way routed card is executed by its worker alone (view
+    // taskRunSessionIds). Another session's queue events carrying this taskId
+    // — the dispatcher waking on the worker's result — are not this run.
+    if (type !== 'reconcile' && core.foreignRunSession(task, event.sessionId)) {
+      return { ok: true, changed: false, code: 'foreign_session_event' };
+    }
     let runState = null;
     if (type === 'queued' && event.workKind !== 'task') {
       return { ok: true, changed: false };

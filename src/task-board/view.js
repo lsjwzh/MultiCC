@@ -75,6 +75,29 @@ function deadDispatchClaim(task, hasTurnState, now = Date.now()) {
   return claimedAt > 0 && now - claimedAt > DISPATCH_CLAIM_GRACE_MS;
 }
 
+// 单向路由的卡片只由被派的 worker 执行；带着这张卡 taskId 的其他会话（派活方
+// 收到回传结果后起的那一轮）不是这张卡的运行。
+function foreignRunSession(task, sessionId) {
+  const routing = normalizeTaskRouting(task?.routing);
+  if (!sessionId || !routing?.oneWay || !routing.workerSessionId) return false;
+  return sessionId !== routing.workerSessionId && sessionId !== task.chatSessionId;
+}
+
+// 自愈：卡片上写着「执行中/排队」，但唯一执行它的 worker 会话自己已经不在跑
+// （队列不是 running/queued），且这个值已过派发宽限 —— 那是被别的会话的事件
+// 写上去、再没人改回来的陈旧值，按 worker 的真实状态投影。
+function staleWorkerClaim(task, getSessionRunState, now = Date.now()) {
+  if (task?.runState !== 'running' && task?.runState !== 'queued') return null;
+  const routing = normalizeTaskRouting(task.routing);
+  if (!routing?.oneWay || !routing.workerSessionId || typeof getSessionRunState !== 'function') return null;
+  const claimedAt = Number(task.runStateAt || task.updatedAt || task.createdAt || 0);
+  if (!(claimedAt > 0 && now - claimedAt > DISPATCH_CLAIM_GRACE_MS)) return null;
+  let workerState = null;
+  try { workerState = getSessionRunState(routing.workerSessionId); } catch (_) { return null; }
+  if (!workerState || workerState === 'running' || workerState === 'queued') return null;
+  return ['done', 'completed'].includes(workerState) ? 'succeeded' : workerState;
+}
+
 function buildBoardDto(board, getSessionRunState, options = {}) {
   const sessionHasTurn = typeof options.sessionHasTurn === 'function' ? options.sessionHasTurn : null;
   const now = Number(options.now) || Date.now();
@@ -118,7 +141,7 @@ function buildBoardDto(board, getSessionRunState, options = {}) {
       ...planning.planningFields(t),
       runState: deadDispatchClaim(t, hasTurnState, now)
         ? 'idle'
-        : (TASK_RUN_STATES.has(t.runState)
+        : staleWorkerClaim(t, getSessionRunState, now) || (TASK_RUN_STATES.has(t.runState)
           ? t.runState
           : aggregateTaskRunState(runSessionIds, getSessionRunState)),
       moduleAssignment: t.moduleAssignment ? {
@@ -184,6 +207,8 @@ module.exports = {
   aggregateTaskRunState,
   buildBoardDto,
   deadDispatchClaim,
+  foreignRunSession,
   sessionHasTurn,
+  staleWorkerClaim,
   taskRunSessionIds,
 };

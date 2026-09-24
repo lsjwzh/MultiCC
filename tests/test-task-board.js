@@ -581,6 +581,36 @@ test('a dispatch claim nobody ever admitted reads idle instead of 执行中 fore
   assert.equal(dto.runState, 'running');
 });
 
+test('a one-way card stuck 执行中 by another session reads its worker\'s real state', () => {
+  const board = core.createEmptyBoard();
+  const now = 1_000_000_000;
+  const [taskId] = core.applyTagResult(board, [{ id: 'new', title: '派出去的任务', module: 'M', areas: [] }],
+    mkRef({ sessionId: 'worker', ts: now - 30 * 60 * 1000 }), now - 30 * 60 * 1000);
+  const task = board.tasks[taskId];
+  task.routing = { mode: 'router-tool', targetSessionId: 'worker', workerSessionId: 'worker',
+    operationId: 'op-1', status: 'running', oneWay: true };
+  task.chatSessionId = 'worker';
+  task.runState = 'running';
+  task.runStateAt = now - 5 * 60 * 1000;
+
+  assert.equal(core.foreignRunSession(task, 'dispatcher'), true);
+  assert.equal(core.foreignRunSession(task, 'worker'), false);
+
+  let workerState = 'succeeded';
+  const local = sid => (sid === 'worker' ? workerState : 'running');
+  let dto = core.buildBoardDto(board, local, { sessionHasTurn: () => true, now }).tasks[0];
+  assert.equal(dto.runState, 'succeeded', 'worker 已完成 → 不再冒充执行中');
+
+  workerState = 'running';
+  dto = core.buildBoardDto(board, local, { sessionHasTurn: () => true, now }).tasks[0];
+  assert.equal(dto.runState, 'running');
+
+  workerState = 'succeeded';
+  task.runStateAt = now - 1000;
+  dto = core.buildBoardDto(board, local, { sessionHasTurn: () => true, now }).tasks[0];
+  assert.equal(dto.runState, 'running', '派发宽限期内保持卡片值');
+});
+
 test('attribution-only taskState never counts as proof of an admitted turn', () => {
   // 归因链路（annotateChatTurn / recordTaskBoardGoal）也会往空白记录里写 taskState：
   // goal/phase/taskId/lastSummaryAt 一应俱全，执行侧字段却全是默认值 —— 那是一份
