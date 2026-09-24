@@ -224,12 +224,12 @@ test('resolve fires onResolved once so every window tears down the prompt', () =
 test('prompt directs models to the MCP signal, not the unavailable built-in', () => {
   const shared = USER_INPUT_SIGNAL_PROMPT.join('\n');
   assert.match(shared, /MCP.*wait_for_user_answer/);
-  assert.match(shared, /阻塞性问题.*必须/);
-  assert.match(shared, /request_user_input.*兼容/);
+  assert.match(shared, /blocking question.*must/);
+  assert.match(shared, /request_user_input.*compatibility/);
   const codex = buildCodexUserInputConstraint(true);
-  assert.match(codex, /内置 request_user_input/);
+  assert.match(codex, /built-in request_user_input/);
   assert.match(codex, /MultiCC MCP.*wait_for_user_answer/);
-  assert.match(codex, /阻塞性问题.*必须/);
+  assert.match(codex, /blocking question.*must/);
   assert.equal(buildCodexUserInputConstraint(false), '');
 });
 

@@ -139,7 +139,7 @@ function createCodexAdapter(deps) {
     if (envConstraint) promptPrefixes.push(envConstraint);
     if (opts.subagentHint) promptPrefixes.push(opts.subagentHint);
     if (opts.rolePrompt) {
-      promptPrefixes.push(`[角色设定]\n${opts.rolePrompt}\n[角色设定结束]`);
+      promptPrefixes.push(`[Role prompt]\n${opts.rolePrompt}\n[End of role prompt]`);
     }
     return `${promptPrefixes.join('\n\n')}\n\n${prompt}`;
   }

@@ -412,7 +412,7 @@ const TOOLS = [
 TOOLS.push({
     name: 'dispatch_slave',
     title: 'Return dispatch result',
-    description: 'Complete the async dispatch addressed to this session by its operation_id. The id is printed in the dispatched task text (【回传要求】) and was returned to the dispatcher as operation_id. Receipt by id works from any turn - including continuations after an interruption - and a late receipt automatically corrects an operation the host auto-failed for a missing receipt. Sync dispatches complete automatically from the final turn output and reject this tool.',
+    description: 'Complete the async dispatch addressed to this session by its operation_id. The id is printed in the dispatched task text ([Receipt required]) and was returned to the dispatcher as operation_id. Receipt by id works from any turn - including continuations after an interruption - and a late receipt automatically corrects an operation the host auto-failed for a missing receipt. Sync dispatches complete automatically from the final turn output and reject this tool.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

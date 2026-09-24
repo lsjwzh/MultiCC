@@ -63,7 +63,7 @@ test('folder snapshot preserves absolute paths, bounded scopes, and system-sessi
     fs.writeFileSync(path.join(own, 'topic.md'), 'private stable fact');
     fs.writeFileSync(path.join(shared, 'MEMORY.md'), 'shared stable fact');
     const block = service.buildBlock(record);
-    assert.match(block, /原生会话快照/);
+    assert.match(block, /native session snapshot/);
     assert.equal(block.includes(own), true);
     assert.equal(block.includes(shared), true);
     assert.match(block, /private stable fact/);
@@ -137,11 +137,11 @@ test('role prompt keeps session override precedence and always appends the folde
   const { service, cleanup } = fixture();
   try {
     const inherited = service.resolveRolePrompt({ id: 's1', dirId: 'd1', cli: 'claude' });
-    assert.equal(inherited.startsWith('directory role\n\n[记忆库'), true);
+    assert.equal(inherited.startsWith('directory role\n\n[Memory store'), true);
     const overridden = service.resolveRolePrompt({
       id: 's2', dirId: 'd1', cli: 'codex', rolePrompt: 'session role',
     });
-    assert.equal(overridden.startsWith('session role\n\n[记忆库'), true);
+    assert.equal(overridden.startsWith('session role\n\n[Memory store'), true);
     assert.equal(service.resolveRolePrompt(null), null);
   } finally {
     cleanup();
@@ -155,7 +155,7 @@ test('fresh installations seed registered projects before any session opens', t 
   assert.equal(fs.readFileSync(memory, 'utf8'), DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
   assert.equal(scanMemoryContent(DOCS_REGISTRY_RULE), null);
   assert.equal(scanMemoryContent(SECRET_VAULT_RULE), null);
-  assert.match(DOCS_REGISTRY_RULE, /两项辅助动作/);
+  assert.match(DOCS_REGISTRY_RULE, /two extra things/);
   for (const field of ['port', 'startCmd', 'cwd']) assert.ok(DOCS_REGISTRY_RULE.includes(`"${field}"`));
   assert.match(DOCS_REGISTRY_RULE, /status=up/);
   assert.match(SECRET_VAULT_RULE, /request_secret_input/);
@@ -218,7 +218,7 @@ test('a large shared store still injects the rule once within the existing budge
   const previous = '[fact] ' + '项目知识'.repeat(8000);
   fs.writeFileSync(file, previous);
   const block = f.service.buildBlock({ id: 's1', dirId: 'd1', cli: 'claude' });
-  const sharedBlock = block.split('【公共记忆】\n')[1].split('\n[记忆库结束]')[0];
+  const sharedBlock = block.split('[Shared memory]\n')[1].split('\n[End of memory store]')[0];
   assert.ok(sharedBlock.length <= SHARED_MEM_CAP);
   assert.ok(sharedBlock.includes(DOCS_REGISTRY_RULE));
   assert.equal(sharedBlock.split(DOCS_REGISTRY_RULE_MARKER).length - 1, 1);
@@ -278,30 +278,30 @@ test('buildBlock injects the five-tier waterfall and skips empty tiers', t => {
   f.service.ensureDirs(record);
   // 空层：只有机器全局/CLI/任务的种子 README 会被 ensureDirs 建出来，但瀑布不注入空段。
   let block = f.service.buildBlock(record);
-  assert.doesNotMatch(block, /【机器全局记忆/);
-  assert.doesNotMatch(block, /【CLI 记忆/);
-  assert.doesNotMatch(block, /【任务记忆/);
-  assert.match(block, /【私有记忆】/);
-  assert.match(block, /【公共记忆】/);
+  assert.doesNotMatch(block, /\[Machine-global memory/);
+  assert.doesNotMatch(block, /\[CLI memory/);
+  assert.doesNotMatch(block, /\[Task memory/);
+  assert.match(block, /\[Private memory\]/);
+  assert.match(block, /\[Shared memory\]/);
   assert.ok(block.includes(path.join(f.root, '_machine')), 'lists the machine dir path');
   assert.ok(block.includes(path.join(f.root, '_cli', 'claude')), 'lists the cli dir path');
   assert.ok(block.includes(path.join(f.root, 'd1', 'tasks', 'tsk_now')), 'lists the task dir path');
-  assert.ok(block.includes('machine=本机全局'), 'documents the new scopes');
+  assert.ok(block.includes('machine = machine-global'), 'documents the new scopes');
 
   // 写入内容后各层注入。
   fs.writeFileSync(path.join(f.service.machineDir(), 'MEMORY.md'), 'user is Zhuanz');
   fs.writeFileSync(path.join(f.service.cliDir('claude'), 'MEMORY.md'), 'claude hates uv env');
   fs.writeFileSync(path.join(f.service.taskDir('d1', 'tsk_now'), 'MEMORY.md'), 'goal: five tiers');
   block = f.service.buildBlock(record);
-  assert.match(block, /【机器全局记忆（本机所有会话共享）】\n#### MEMORY\.md\nuser is Zhuanz/);
-  assert.match(block, /【CLI 记忆（claude）】\n#### MEMORY\.md\nclaude hates uv env/);
-  assert.match(block, /【任务记忆】\n#### MEMORY\.md\ngoal: five tiers/);
+  assert.match(block, /\[Machine-global memory \(shared by every session on this machine\)\]\n#### MEMORY\.md\nuser is Zhuanz/);
+  assert.match(block, /\[CLI memory \(claude\)\]\n#### MEMORY\.md\nclaude hates uv env/);
+  assert.match(block, /\[Task memory\]\n#### MEMORY\.md\ngoal: five tiers/);
 
   // 无绑定任务的会话不注入任务段，也不因缺任务目录而报错。
   const noTask = { id: 's2', dirId: 'd1', cli: 'claude' };
   f.service.ensureDirs(noTask);
   block = f.service.buildBlock(noTask);
-  assert.doesNotMatch(block, /【任务记忆/);
+  assert.doesNotMatch(block, /\[Task memory/);
 });
 
 test('scopeDir and curatedLimit map every scope to its tier with graduated caps', t => {

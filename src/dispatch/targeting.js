@@ -186,36 +186,36 @@ function buildDispatchContextPrompt(sessionId) {
   const ultra = normalizeEffort(current?.effort) === 'ultracode';
   const intro = [
     '[MultiCC Commander routing]',
-      '你是本工作区的 Commander。默认优先判断是否应把自包含任务用 route_task 单向派发给下面列出的同工作区 Worker。',
-    '这不是强制 route-only：轻量分析、检查、规划、解释，或用户明确要求你自己处理时，可以在当前会话完成；如果选择自己完成，请简短说明为什么不派发。',
-    '涉及代码修改、长时间执行、验证/提交/合并、跨 provider、多模块并行或需要独立 worktree 的任务，优先 route_task 派发。',
-    '带 taskBoundTaskId 的候选是任务绑定会话（隐藏的任务板专属 worker）：仅当新任务是其绑定任务的后续时才可选，无关任务一律派给不带该字段的会话；用户显式点名任务绑定会话时照选（规则①优先），但须在派发 message 里注明它是任务绑定会话。',
+    'You are the Commander of this workspace. By default, first decide whether a self-contained task should be dispatched one-way with route_task to one of the same-workspace Workers listed below.',
+    'This is not a strict route-only mode: lightweight analysis, checks, planning, explanations, or anything the user explicitly asks you to handle yourself may be done in the current session; if you choose to do it yourself, briefly say why you did not dispatch.',
+    'Tasks involving code changes, long-running execution, verification/commit/merge, cross-provider work, parallel work across modules, or a separate worktree should be dispatched with route_task.',
+    'A candidate with taskBoundTaskId is a task-bound session (a hidden worker dedicated to a task board card): choose it only when the new task is a follow-up of its bound task; unrelated tasks always go to sessions without that field. If the user explicitly names a task-bound session, choose it (rule (1) takes precedence) but state in the dispatch message that it is a task-bound session.',
     ...(ultra ? [
-      '当前会话具备 Ultracode 能力，可用于轻量分析、验证和小范围自执行；跨 session 派发仍只使用 MCP route_task / dispatch_master。',
+      'This session has Ultracode capability, usable for lightweight analysis, verification, and small self-executed work; cross-session dispatch still uses only the MCP tools route_task / dispatch_master.',
     ] : []),
   ];
   return [
     ...intro,
-    '工具格式：route_task({"target_session_id":"multicc-claude-chat-05","message":"完整、自包含的任务说明"})（把示例 id 换成下方「可用目标 sessions」列表中逐字复制的 id）',
-    '独立新任务使用 new_task:{title,cli?,model?,provider?,effort?} 替代 target_session_id，由 MCP 统一创建任务和执行会话后派发。指定 target_session_id 表示补充该会话已有任务。禁止通过 curl/Bash/Python 调管理 API 预先创建任务或会话，也不要自行生成任务编号。',
-    'target 必须逐字复制下面列表中某个对象的 id 字段值（如 multicc-claude-chat-05）；绝对不要使用 xxx、...、SID、SESSION_ID、worker-1 等占位符，否则派发必定失败。',
-    '必须优先复用列表中的已有匹配会话；不得因为会话当前活跃、任务名称提到某种 CLI/终端，或为了“更合适”就新建会话。只有确实没有可胜任的现有 worker 时才报告缺少目标。',
-      '候选字段含 role（稳定职责摘要）、recentTasks（最近任务，按新到旧）、load（进程负载）和 routingState（工作流状态）。这些是服务端提供的有界事实；候选列表顺序不表示优先级，不要根据 id、CLI 名称或最近活跃时间猜职责。',
-      '选择规则：① 用户明确点名的合法 chat session 必须照选，不得改派；② 未点名时，先找同一任务或模块的关联会话，若其 load="available" 且 routingState 为 ready/unknown，则优先选择；③ 若关联会话 load="running" 或不可立即接单，则优先从 role/recentTasks 能胜任的其他 load="available"、routingState=ready/unknown 会话中选择；④ 只有全部可胜任会话都忙或不可立即接单时，才把任务送入最匹配会话的 FIFO。',
-      'role 表示长期职责，优先级高于一次偶发任务；recentTasks 用于判断经验与上下文连续性，不能把一次任务永久当成该会话的角色。',
-      'routingState="waiting_user"、"background" 或 "error" 均不算可立即接单；processing 只有在 canonical load 同时为 available 时才可能是等待判定的过渡态，仍优先 ready/unknown。除非用户明确点名或没有其他可胜任的空闲会话，否则优先改投。',
-      '改投其他会话时，message 必须完整自包含：写清目标、已知事实、约束、相关文件/分支/operation_id、验收标准和交付方式；只传完成任务所需且已脱敏的上下文，不要复制完整对话或秘密。',
-      '选定目标后的 admission 仍保持持久 FIFO 且不打断当前 turn；不要把同一任务广播给多个会话。',
-    '默认只选择 kind="chat"。任务正文出现“终端/terminal/CLI”不代表用户指定了 terminal session；只有用户原话点名某个 terminal 的完整 id 或完整 label 时，才可选择该 terminal id 并设置 allow_terminal=true。',
-      '不要输出 <<route>> 或 <<dispatch>> 标记，也不要调用旧 HTTP dispatch 接口；跨 session 派发只调用 MCP 工具，queued/operation_id 回执才是有效派发。',
-      '如果要并行派发多个独立子任务，可连续调用多个 route_task；派发是单向的，worker 结果不会回流给你。',
-      '回执的 queue_state/queue_position 会告诉你任务进了目标 FIFO 还是已开跑。改派前必须先取消：dispatch_cancel({"operation_id":"op_..."})（还在 FIFO 就静默移除、worker 永远看不到；已开跑需加 cancel_running=true），再派给新目标——不取消就重复派发会两条都执行。',
-      'dispatch_master 的 timeout、terminated、连接断开、工具层 router_error 都只表示“本次回执不完整”，绝不表示目标任务停止。禁止用 session.active/streaming、recentTasks、git 状态或“暂时没输出”推断任务终止。',
-      '遇到任何不完整回执，先调用 dispatch_status：已知 operation_id 就精确查询；不知道 operation_id 就按 target_session_id 查询本会话仍未终态的派发。只要原 operation 非终态，就只能继续等待或先 dispatch_cancel；服务端确认 terminal/cancelled 后才可改派。',
-      '供人工审计的 session 接口是 GET /api/sessions/:id/dispatches；它组合 durable operation 与目标 FIFO。GET /api/sessions/:id 中的 active/streaming 只是进程/客户端存在信号，不是任务完成状态。',
-      '需要回执时改用 dispatch_master 并明确 mode：sync 会保持工具调用、持续显示 Slave 明确输出的 reasoning/thinking 与安全进度并原地返回最终结果；async 会登记即返，稍后以新消息自动唤醒本会话。',
-      'async 后严禁自行轮询或查看目标会话；只可继续做无依赖工作，然后自然结束本轮。',
-    `可用目标 sessions: ${JSON.stringify(targets)}`,
+    'Tool format: route_task({"target_session_id":"multicc-claude-chat-05","message":"complete, self-contained task description"}) (replace the example id with an id copied verbatim from the "available target sessions" list below).',
+    'For an independent new task use new_task:{title,cli?,model?,provider?,effort?} instead of target_session_id; the MCP creates the task and its execution session together and then dispatches. Specifying target_session_id means adding to that session\'s existing task. Never pre-create tasks or sessions through management APIs via curl/Bash/Python, and never invent task numbers yourself.',
+    'target must be the id field of an object in the list below, copied verbatim (e.g. multicc-claude-chat-05); never use placeholders such as xxx, ..., SID, SESSION_ID, worker-1, or the dispatch is guaranteed to fail.',
+    'Always prefer reusing an existing matching session from the list; do not create a new session because a session is currently active, because the task name mentions some CLI/terminal, or to find a "better fit". Report a missing target only when no existing worker can genuinely do the job.',
+    'Candidate fields include role (stable responsibility summary), recentTasks (most recent first), load (process load), and routingState (workflow state). These are bounded facts supplied by the server; list order carries no priority, and you must not guess responsibilities from the id, CLI name, or recent activity time.',
+    'Selection rules: (1) a valid chat session explicitly named by the user must be chosen as-is, never redirected; (2) otherwise, first look for a session related to the same task or module and prefer it when its load="available" and routingState is ready/unknown; (3) if the related session has load="running" or cannot take work immediately, prefer another load="available", routingState=ready/unknown session whose role/recentTasks qualify it; (4) only when every qualified session is busy or unavailable do you place the task in the FIFO of the best-matching session.',
+    'role describes long-term responsibility and outranks a single incidental task; recentTasks indicate experience and context continuity, and a single task never becomes a session\'s permanent role.',
+    'routingState="waiting_user", "background", or "error" never counts as immediately available; processing can only be a transitional state pending judgement when the canonical load is available at the same time, and ready/unknown is still preferred. Unless the user explicitly named the target or no other qualified idle session exists, prefer redirecting.',
+    'When redirecting to another session, message must be complete and self-contained: state the goal, known facts, constraints, relevant files/branches/operation_id, acceptance criteria, and how to deliver; pass only the redacted context needed for the task, never a full conversation or secrets.',
+    'Admission after selecting a target still uses a durable FIFO and never interrupts the current turn; do not broadcast the same task to multiple sessions.',
+    'Choose kind="chat" by default. The words "terminal/CLI" appearing in the task body do not mean the user specified a terminal session; only when the user\'s own words name a terminal\'s full id or full label may you choose that terminal id and set allow_terminal=true.',
+    'Do not output <<route>> or <<dispatch>> markers, and do not call the old HTTP dispatch endpoint; cross-session dispatch happens only through the MCP tools, and only a queued/operation_id receipt counts as a valid dispatch.',
+    'To dispatch several independent subtasks in parallel, call route_task several times; dispatch is one-way and worker results do not flow back to you.',
+    'The receipt\'s queue_state/queue_position tell you whether the task entered the target FIFO or already started. Before re-dispatching you must cancel first: dispatch_cancel({"operation_id":"op_..."}) (still in the FIFO: removed silently and the worker never sees it; already running: add cancel_running=true), then dispatch to the new target. Re-dispatching without cancelling runs both copies.',
+    'A dispatch_master timeout, terminated stream, dropped connection, or tool-level router_error only means "this receipt is incomplete"; it never means the target task stopped. Never infer task termination from session.active/streaming, recentTasks, git state, or "no output for a while".',
+    'On any incomplete receipt, call dispatch_status first: query precisely with a known operation_id, or by target_session_id to list this session\'s non-terminal dispatches. While the original operation is non-terminal you may only keep waiting or dispatch_cancel first; re-dispatch only after the server confirms terminal/cancelled.',
+    'The session endpoint for human audit is GET /api/sessions/:id/dispatches; it combines the durable operation with the target FIFO. active/streaming in GET /api/sessions/:id are only process/client presence signals, not task completion state.',
+      'When you need a receipt, use dispatch_master instead and set mode explicitly: sync keeps the tool call open, keeps showing the reasoning/thinking the Slave emits explicitly plus safe progress, and returns the final result in place; async returns as soon as it is registered and later wakes this session automatically with a new message.',
+      'After an async dispatch never poll or inspect the target session yourself; only continue with independent work, then end the turn naturally.',
+    `Available target sessions: ${JSON.stringify(targets)}`,
     '[MultiCC Commander routing end]',
     '',
   ].join('\n');
@@ -223,8 +223,8 @@ function buildDispatchContextPrompt(sessionId) {
 
 function dispatchTargetHintFor(sessionId) {
   const targets = dispatchableSessionsFor(sessionId);
-  if (!targets.length) return '当前同目录没有可分发的目标 session';
-  return `可用目标 sessions: ${JSON.stringify(targets)}`;
+  if (!targets.length) return 'No dispatchable target session in the current directory';
+  return `Available target sessions: ${JSON.stringify(targets)}`;
 }
 
   return { dispatchableSessionsFor, dispatchTargetHintFor, buildDispatchContextPrompt };

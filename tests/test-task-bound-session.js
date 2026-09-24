@@ -527,12 +527,12 @@ test('cold start seeds the compiled ledger as prompt context, never as the user 
   assert.equal(sent.text, '继续修');
   // The compiled wall rides the turn options as a prompt prefix instead.
   const seed = sent.options.taskContextSeed;
-  assert.match(seed, /\[MultiCC 任务运行上下文/);
+  assert.match(seed, /\[MultiCC task run context/);
   assert.match(seed, /先复现闪退堆栈/);
   assert.match(seed, /已定位到空指针/);
   // No 当前要求 section and no copy of the user text: composeMessage appends
   // the user message after the layer, so a copy here would duplicate it.
-  assert.equal(seed.includes('当前要求'), false);
+  assert.equal(seed.includes('Current request'), false);
   assert.equal(seed.includes('继续修'), false);
   // Layers concatenate with no separator — the seed carries its own.
   assert.equal(seed.endsWith('\n\n'), true);

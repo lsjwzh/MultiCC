@@ -470,65 +470,65 @@ function createHandoffEnvService(rawDeps) {
     const meta = (payload && payload.sessionMeta) || {};
     const ctx = (payload && payload.contextDeps) || {};
     const lines = [];
-    lines.push('# HANDOFF.md — 会话环境移植说明');
+    lines.push('# HANDOFF.md - session environment handoff notes');
     lines.push('');
-    lines.push(`> 由 multicc session bundle v${(payload && payload.v) || '?'} 导出于 ${(payload && payload.exportedAt) || '未知时间'}；`);
-    lines.push(`> 源会话「${meta.label || meta.id}」（${meta.cli || 'claude'}，模型 ${meta.model || '默认'}）。`);
+    lines.push(`> Exported by multicc session bundle v${(payload && payload.v) || '?'} at ${(payload && payload.exportedAt) || 'unknown time'};`);
+    lines.push(`> source session "${meta.label || meta.id}" (${meta.cli || 'claude'}, model ${meta.model || 'default'}).`);
     lines.push('');
-    lines.push('## 来源仓库 / 分支');
-    lines.push(`- 项目目录名：${ctx.dirName || meta.dirId || '未知'}（源机器路径：${ctx.dirPath || '未知'}）`);
-    lines.push(`- 源远端：${ctx.repoRemote || '（无 origin 或未导出）'} — 目标机器需已有同仓库的目录登记`);
-    lines.push(`- 源分支：${meta.branch || '未知'}（基分支：${ctx.baseBranch || '未知'}）`);
-    if (gitNote) lines.push(`- git 恢复说明：${gitNote}`);
+    lines.push('## Source repository / branch');
+    lines.push(`- Project directory name: ${ctx.dirName || meta.dirId || 'unknown'} (path on the source machine: ${ctx.dirPath || 'unknown'})`);
+    lines.push(`- Source remote: ${ctx.repoRemote || '(no origin, or not exported)'} - the target machine must already have a directory registered for the same repository`);
+    lines.push(`- Source branch: ${meta.branch || 'unknown'} (base branch: ${ctx.baseBranch || 'unknown'})`);
+    if (gitNote) lines.push(`- Git recovery notes: ${gitNote}`);
     lines.push('');
-    lines.push('## 模型 / Provider');
-    lines.push(`- 源模型：${meta.model || '（默认）'}——随包携带，导入时写进新会话。`);
-    lines.push('- Provider 不随包传播：源机器的 provider 选择、环境变量与凭据一律不携带，'
-      + '目标机器用自己的 provider 承接这次 handoff。导入时可用 targetProviderId 指向本机已配置的 provider；'
-      + '不指定则用本机该 CLI 的默认 provider。');
-    lines.push('- 若源模型在本机 provider 上不存在（源机可能用的是另一家线路），'
-      + '请在会话设置里改成本机可用的模型，别拿跨 provider 的模型名去请求。');
+    lines.push('## Model / Provider');
+    lines.push(`- Source model: ${meta.model || '(default)'} - carried in the bundle and written into the new session on import.`);
+    lines.push('- Providers do not travel with the bundle: the source machine\'s provider selection, environment variables, and credentials are never carried; '
+      + 'the target machine serves this handoff with its own provider. On import, targetProviderId may point at a provider configured on this machine; '
+      + 'if omitted, this machine\'s default provider for the CLI is used.');
+    lines.push('- If the source model does not exist on this machine\'s provider (the source machine may have used another vendor), '
+      + 'change the session settings to a model available here instead of requesting a cross-provider model name.');
     lines.push('');
-    lines.push('## 项目指令文件');
+    lines.push('## Project instruction files');
     const docs = ctx.projectDocs || {};
     const docNames = Object.keys(docs);
     if (docNames.length) {
-      for (const name of docNames) lines.push(`- ${name}（已随包携带，内容见 bundle；如目标仓库缺失可从 bundle 恢复）`);
+      for (const name of docNames) lines.push(`- ${name} (carried in the bundle; see the bundle for content and restore it if the target repository lacks it)`);
     } else {
-      lines.push('- （源工作树没有 CLAUDE.md / AGENTS.md）');
+      lines.push('- (the source working tree had no CLAUDE.md / AGENTS.md)');
     }
     lines.push('');
-    lines.push('## 记忆恢复情况');
+    lines.push('## Memory restore report');
     for (const [scope, entry] of Object.entries(memoryReport || {})) {
-      const written = (entry.written || []).slice(0, 8).join('、');
-      lines.push(`- ${scope}：写入 ${entry.written.length} 个文件${written ? `（${written}${entry.written.length > 8 ? '…' : ''}）` : ''}` +
-        (entry.skipped.length ? `，跳过 ${entry.skipped.length} 个（${entry.skipped.map(s => s.name).slice(0, 5).join('、')}…）` : ''));
+      const written = (entry.written || []).slice(0, 8).join(', ');
+      lines.push(`- ${scope}: wrote ${entry.written.length} files${written ? ` (${written}${entry.written.length > 8 ? '...' : ''})` : ''}` +
+        (entry.skipped.length ? `, skipped ${entry.skipped.length} (${entry.skipped.map(s => s.name).slice(0, 5).join(', ')}...)` : ''));
     }
     lines.push('');
-    lines.push('## 技能安装情况');
+    lines.push('## Skill installation report');
     if (Array.isArray(skillResults) && skillResults.length) {
-      for (const r of skillResults) lines.push(`- ${r.name}：${r.status}${r.note ? `（${r.note}）` : ''}`);
-      lines.push('- 抄送到了 ~/.agents/skills，由 skill-sync 分发到各 CLI 的 skills 目录。');
+      for (const r of skillResults) lines.push(`- ${r.name}: ${r.status}${r.note ? ` (${r.note})` : ''}`);
+      lines.push('- Copied to ~/.agents/skills; skill-sync distributes them to each CLI\'s skills directory.');
     } else {
-      lines.push('- 本 bundle 未携带技能（或未检测到被引用的技能）。');
+      lines.push('- This bundle carried no skills (or none of the referenced skills were detected).');
     }
     lines.push('');
-    lines.push('## 对话引用的文件（图片 / 附件）');
+    lines.push('## Files referenced by the conversation (images / attachments)');
     if (Array.isArray(assetMapping) && assetMapping.length) {
-      lines.push('对话里引用的本地文件已随包带来，历史消息中的路径已重写为下列新位置：');
-      for (const m of assetMapping.slice(0, 20)) lines.push(`- ${m.from} → ${m.to}`);
-      if (assetMapping.length > 20) lines.push(`- …共 ${assetMapping.length} 个`);
-      lines.push('- 注意：临时目录会随系统清理，长期需要的文件请转移到项目目录或会话记忆。');
+      lines.push('Local files referenced in the conversation came with the bundle; paths in the history were rewritten to the new locations below:');
+      for (const m of assetMapping.slice(0, 20)) lines.push(`- ${m.from} -> ${m.to}`);
+      if (assetMapping.length > 20) lines.push(`- ...${assetMapping.length} in total`);
+      lines.push('- Note: temporary directories are cleaned by the system; move files you need long-term into the project directory or session memory.');
     } else {
-      lines.push('- 未携带（对话未引用本地文件，或引用的临时文件已被源机器清理）。');
+      lines.push('- None carried (the conversation referenced no local files, or the referenced temporary files were already cleaned on the source machine).');
     }
     lines.push('');
-    lines.push('## 后续构建上下文的建议');
-    lines.push('1. 先读本文件所在文件夹里的记忆文件（含 task-/cli-/machine- 前缀的移植文件）。');
-    lines.push('2. 用 `git log <基分支>..HEAD` 了解本会话已完成的增量；未合入的成果在本会话的 worktree 分支上。');
-    lines.push('3. 缺失的项目指令文件（上方列表）可向源机器索取或从 bundle 的 contextDeps.projectDocs 恢复。');
-    lines.push('4. Provider 由本机决定：bundle 不带源机 provider 配置与凭据，导入副本已接到本机 provider；'
-      + '需要指定时用 targetProviderId 指向本机已配置的 provider。');
+    lines.push('## Suggested next steps to rebuild context');
+    lines.push('1. Read the memory files in the folder containing this file first (including the transplanted files with task-/cli-/machine- prefixes).');
+    lines.push('2. Use `git log <base branch>..HEAD` to see the increments this session completed; unmerged work lives on this session\'s worktree branch.');
+    lines.push('3. Missing project instruction files (listed above) can be requested from the source machine or restored from contextDeps.projectDocs in the bundle.');
+    lines.push('4. The provider is decided by this machine: the bundle carries no source provider configuration or credentials, and the imported copy is already attached to a local provider; '
+      + 'use targetProviderId to point at a provider configured here when you need a specific one.');
     return lines.join('\n') + '\n';
   }
 

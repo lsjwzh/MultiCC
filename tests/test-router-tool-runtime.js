@@ -495,7 +495,7 @@ test('route_task attributes the sender so the recipient can trace who dispatched
   // the caller's own content preserved verbatim after it.
   assert.match(
     admissions[0].message,
-    /^【任务派发方：caller · caller】\n\ninspect the module$/,
+    /^\[Dispatched by: caller · caller\]\n\ninspect the module$/,
   );
   // The caller is still passed as structured metadata for the task board.
   assert.equal(admissions[0].opts.ownerSessionId, 'caller');
@@ -597,7 +597,7 @@ test('dispatch_master returns admitted immediately and backflow outbox is emitte
   assert.match(result.instruction, /end this turn naturally/);
   assert.equal(admissions.length, 1);
   assert.match(admissions[0].message, /dispatch_slave/);
-  assert.match(admissions[0].message, /不要轮询/);
+  assert.match(admissions[0].message, /do not poll/);
   const operationId = result.operation_id;
   // The receipt address travels with the task text: the id printed in the
   // 【回传要求】 instruction IS the admitted operation id.
