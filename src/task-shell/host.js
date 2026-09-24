@@ -185,6 +185,8 @@ function createTaskShellHost(deps) {
       },
       indexTask: task => deps.getTaskBoard().registerShellTask(task),
       taskGraphContext: deps.taskGraphContext,
+      prepareAdmission: (sessionId, text, clientMsgId) =>
+        deps.prepareAutoProviderAdmission?.(sessionId, text, clientMsgId),
       send: (...args) => deps.deliver(...args),
       dispatch: (...args) => deps.dispatch(...args),
       cancel: (id, turnId) => {

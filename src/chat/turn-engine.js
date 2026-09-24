@@ -327,6 +327,13 @@ function createChatTurnEngine(deps) {
       catch (_) { return true; }
     },
   });
+  function prepareAutoProviderAdmission(sessionId, text, clientMsgId) {
+    const session = persistedSessions.get(sessionId);
+    if (!session) return null;
+    return autoProviderRuntime.prepareAdmission({
+      session, text, providers, sessionId, clientMsgId,
+    });
+  }
   const autoProviderHandoff = deps.autoProviderHandoff || createAutoProviderHandoff({
     inject: (sessionId, text, delayMs, metadata) => (
       waitInjector.injectSystemMsg(sessionId, text, delayMs, metadata)
@@ -2888,10 +2895,7 @@ function createChatTurnEngine(deps) {
           // Auto Provider difficulty routing has to land before the turn starts —
           // runChatTurn resolves its initial provider route synchronously — so it
           // rides this async admission window (see admission-progress.js).
-          const pendingRouting = autoProviderRuntime.prepareAdmission({
-            session: persisted, text: msg.text, providers,
-            sessionId: sessionName, clientMsgId: turnOpts.clientMsgId,
-          });
+          const pendingRouting = prepareAutoProviderAdmission(sessionName, msg.text, turnOpts.clientMsgId);
           if (pendingRouting) await pendingRouting;
           const deliver = () => taskContextHost.deliverSessionMessage(sessionName, msg.text, turnOpts);
           // A pending memory distill delays delivery so the new turn sees the
@@ -2940,6 +2944,7 @@ function createChatTurnEngine(deps) {
     runChatTurnStreaming,
     finalizeStreamingTurn,
     handleChatWs,
+    prepareAutoProviderAdmission,
   };
 }
 
