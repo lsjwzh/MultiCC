@@ -32,9 +32,10 @@
   }
 
   // Time left, coarsening as it grows: minutes under an hour, one decimal of an
-  // hour under a day, then days. Never returns '' for a real deadline — a
-  // deadline in the past reads as "1m", so a segment's separators are safe to
-  // bake into the server-rendered string.
+  // hour under a day, then days. Never returns '' for a real deadline, so a
+  // segment's separators are safe to bake into the server-rendered string; a
+  // deadline that has already passed is handled by resolveText (已重置), which
+  // is the only caller.
   function humanizeCountdown(ms) {
     const total = finiteNumber(ms);
     if (total === null || total < 0) return '';
@@ -67,11 +68,22 @@
 
   const TOKEN = /\{(cd|ago):(-?\d+)\}/g;
 
+  // A deadline that is already past is NOT "one minute left". The window has
+  // rolled, and the percentage printed next to it belongs to the window that
+  // just ended — a bar redisplayed from cache four hours later would otherwise
+  // read "5h 93% 1m", i.e. 93% used with a minute to go, which is the most
+  // misleading thing this bar can say. Say what happened instead. The segment
+  // stays non-empty, which is what keeps the separators the server baked in
+  // (see humanizeCountdown) safe to expand.
+  const ROLLED_WINDOW = '已重置';
+
   function resolveText(text, nowMs) {
     if (typeof text !== 'string' || text.indexOf('{') < 0) return text || '';
     return text.replace(TOKEN, (_, kind, raw) => {
       const at = Number(raw);
-      return kind === 'cd' ? humanizeCountdown(Math.max(0, at - nowMs)) : relativeAgo(at, nowMs);
+      if (kind !== 'cd') return relativeAgo(at, nowMs);
+      const left = at - nowMs;
+      return left > 0 ? humanizeCountdown(left) : ROLLED_WINDOW;
     });
   }
 

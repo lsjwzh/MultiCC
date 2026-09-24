@@ -460,16 +460,11 @@ class ChatProvider extends ChangeNotifier {
   ApiErrorPolicyState? _apiErrorPolicy;
   ApiErrorPolicyState? get apiErrorPolicy => _apiErrorPolicy;
 
+  // The record behind the passive rate_limit_event. It is read by [limitView]
+  // (which gates it through providerMatchesCli/balanceBarVisibleFor — the single
+  // gate, see models/vendor_quota.dart) and by the expiry timer below; it is
+  // persisted to the local runtime cache so a cold start can repaint the bars.
   UsageWindowLimit? _usageWindowLimit;
-  UsageWindowLimit? get usageWindowLimit {
-    final value = _usageWindowLimit;
-    if (value == null ||
-        !value.isActiveAt(DateTime.now()) ||
-        !value.matchesCli(_cli.name)) {
-      return null;
-    }
-    return value;
-  }
 
   // ── Server-rendered quota bars ────────────────────────────────────────────
   // Every bar below is the server's render, resolved here at paint time. The
@@ -670,8 +665,12 @@ class ChatProvider extends ChangeNotifier {
   bool _arkInstalling = false;
   bool _kimiLoading = false;
   bool _qoderLoading = false;
-  bool _arkInFlight = false;
-  bool _kimiInFlight = false;
+  // Keyed on the host each query was issued for, for the same reason as
+  // _providerLimitInFlightKey: a switch that lands mid-flight must not suppress
+  // the new host's query (the old response is dropped by the requestBaseUrl
+  // check anyway, so suppressing the new one would blank the bar).
+  String? _arkInFlightUrl;
+  String? _kimiInFlightUrl;
   bool _qoderInFlight = false;
   int _arkErrorAt = 0;
   int _kimiErrorAt = 0;
@@ -940,7 +939,8 @@ class ChatProvider extends ChangeNotifier {
       );
       // Restored unconditionally (the web localStorage limit bar has no
       // staleness filter either): a past 5h reset still leaves the weekly
-      // windows on the bar, and paint-time {cd} tokens clamp themselves.
+      // windows on the bar, and paint-time {cd} tokens resolve that window to
+      // 已重置 rather than to a live-looking countdown.
       if (parsed != null) {
         _usageWindowLimit = parsed;
         _armUsageExpiry();
@@ -1053,9 +1053,10 @@ class ChatProvider extends ChangeNotifier {
     if (reset == null) return;
     final delayMs = reset - DateTime.now().millisecondsSinceEpoch + 50;
     if (delayMs <= 0) {
-      // Already past the reset: just re-render (the {cd} tokens clamp), the way
-      // the web expiry timer does. The limit is NOT cleared — its bar still
-      // shows the windows that have not reset (e.g. weekly).
+      // Already past the reset: just re-render, the way the web expiry timer
+      // does — the {cd} token now resolves to 已重置, so the bar stops claiming
+      // the old reading is still counting down. The limit is NOT cleared — its
+      // bar still shows the windows that have not reset (e.g. weekly).
       notifyListeners();
       return;
     }
@@ -1063,7 +1064,7 @@ class ChatProvider extends ChangeNotifier {
       Duration(milliseconds: delayMs.clamp(1, 2147000000).toInt()),
       () {
         // Mirrors the web scheduleExpiry: re-render at the 5h reset so a stale
-        // countdown refreshes; the bar itself is not cleared (weekly windows
+        // countdown becomes 已重置; the bar itself is not cleared (weekly windows
         // have not reset).
         notifyListeners();
       },
@@ -1904,6 +1905,12 @@ class ChatProvider extends ChangeNotifier {
       // setProviderBaseUrl clears backoff the same way).
       _arkErrorAt = 0;
       _kimiErrorAt = 0;
+      // The vendor bars too: they are per-host, and web setProviderBaseUrl
+      // resets both slots here. Keeping them showed the previous Volcengine /
+      // Moonshot account's quota under the new provider until its own fetch
+      // landed (or forever, if that fetch failed).
+      _arkQuota = null;
+      _kimiQuota = null;
     }
     if (!_providerIdentityKnown || changed) refreshVendorQuotas();
     _providerIdentityKnown = true;
@@ -2108,34 +2115,71 @@ class ChatProvider extends ChangeNotifier {
 
   int _nowMs() => DateTime.now().millisecondsSinceEpoch;
 
+  // One provider-balance query at a time per provider identity (the web's
+  // providerLimitInFlight): this is fired by every provider change and is
+  // click-reachable from the bar's ⟳, so without the guard a burst stacks
+  // duplicate in-flight requests. Keyed on the identity rather than a bare
+  // boolean: a switch landing while the previous provider's query is still open
+  // must not be suppressed by it — that response belongs to the OLD provider and
+  // the revision check below drops it, so suppressing the new query left the bar
+  // blank until some unrelated event fired one (a bare flag did exactly that on
+  // two provider changes in the same microtask, e.g. the CLI config arriving
+  // immediately before the provider PATCH's own re-learn).
+  String? _providerLimitInFlightKey;
+
   Future<void> _fetchActiveProviderLimit(
     int revision,
     String appType,
     String providerId,
   ) async {
-    final data = await _quota.fetchProviderBalance(appType, providerId);
-    if (revision != _providerLimitRevision ||
-        appType != _providerLimitAppType ||
-        providerId != _providerLimitId) {
-      return;
+    final inFlightKey = '$appType:$providerId';
+    if (_providerLimitInFlightKey == inFlightKey) return;
+    _providerLimitInFlightKey = inFlightKey;
+    try {
+      final data = await _quota.fetchProviderBalance(appType, providerId);
+      if (revision != _providerLimitRevision ||
+          appType != _providerLimitAppType ||
+          providerId != _providerLimitId) {
+        return;
+      }
+      // A failed query must NOT erase a good bar. The web's refreshProviderLimit
+      // returns on failure without touching the bars, and the server answers a
+      // transient upstream failure with its cached last-known-good bar for
+      // exactly this reason; nulling it here (the old behavior) meant one 20s
+      // timeout hid the chip until the user switched provider or CLI again.
+      // Nothing is kept across an identity change: that path clears the field.
+      if (data == null || data['ok'] != true) return;
+      _activeProviderLimit = data;
+      notifyListeners();
+    } finally {
+      if (_providerLimitInFlightKey == inFlightKey) {
+        _providerLimitInFlightKey = null;
+      }
     }
-    _activeProviderLimit = data?['ok'] == true ? data : null;
-    notifyListeners();
   }
 
   Future<void> _fetchArkQuota({bool force = false}) async {
-    if (_arkInFlight) return;
+    // Pinned to the baseUrl this query was issued for: a response that lands
+    // after the provider moved on belongs to the previous plan/provider, and
+    // writing it here used to repaint the old window under the new provider.
+    final requestBaseUrl = _providerBaseUrl;
+    if (_arkInFlightUrl == requestBaseUrl) return;
     if (!force &&
         _arkErrorAt != 0 &&
         _nowMs() - _arkErrorAt < _vendorQuotaBackoffMs) {
       return;
     }
-    _arkInFlight = true;
+    _arkInFlightUrl = requestBaseUrl;
     _arkLoading = true;
     notifyListeners();
-    final data = await _quota.fetchArkQuota(_providerBaseUrl);
-    _arkInFlight = false;
-    _arkLoading = false;
+    final data = await _quota.fetchArkQuota(requestBaseUrl);
+    // Only this query's own bookkeeping: if it was superseded by a query for
+    // another host, that one owns the loading flag and will clear it.
+    if (_arkInFlightUrl == requestBaseUrl) {
+      _arkInFlightUrl = null;
+      _arkLoading = false;
+    }
+    if (requestBaseUrl != _providerBaseUrl) { notifyListeners(); return; }
     if (data == null) {
       _arkErrorAt = _nowMs();
     } else {
@@ -2147,20 +2191,24 @@ class ChatProvider extends ChangeNotifier {
   }
 
   Future<void> _fetchKimiQuota({bool force = false}) async {
-    if (_kimiInFlight) return;
+    final requestBaseUrl = _providerBaseUrl;
+    if (_kimiInFlightUrl == requestBaseUrl) return;
     if (!force &&
         _kimiErrorAt != 0 &&
         _nowMs() - _kimiErrorAt < _vendorQuotaBackoffMs) {
       return;
     }
-    _kimiInFlight = true;
+    _kimiInFlightUrl = requestBaseUrl;
     _kimiLoading = true;
     notifyListeners();
     final data = await _quota.fetchKimiQuota(
-      kimiHostFromBaseUrl(_providerBaseUrl),
+      kimiHostFromBaseUrl(requestBaseUrl),
     );
-    _kimiInFlight = false;
-    _kimiLoading = false;
+    if (_kimiInFlightUrl == requestBaseUrl) {
+      _kimiInFlightUrl = null;
+      _kimiLoading = false;
+    }
+    if (requestBaseUrl != _providerBaseUrl) { notifyListeners(); return; }
     if (data == null) {
       _kimiErrorAt = _nowMs();
     } else {
