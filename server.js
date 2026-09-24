@@ -2080,7 +2080,7 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
   recentEvents: dirId => recentEvents(dirId),
-  deliver: (...args) => taskContextHost.deliverSessionMessage(...args), dispatch: (...args) => dispatchToSession(...args),
+  deliver: (...args) => taskContextHost.deliverSessionMessage(...args), dispatch: (...args) => dispatchToSession(...args), prepareAutoProviderAdmission: (...args) => chatTurnEngine.prepareAutoProviderAdmission(...args),
   persistRecords: (source, fn) => sessionPersistence.mutate(source, fn), closeExecution: id => chatStream.closeAndWait(id), resetChatState: id => chatSessions.delete(id),
   hasBackground: id => backgroundTaskRuntime.hasProcessBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
   getWorkspaceAdmission: () => workspaceAdmission,
