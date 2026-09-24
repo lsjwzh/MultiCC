@@ -46,7 +46,7 @@ test('context output is deterministic and sorts messages chronologically', () =>
   assert.deepEqual(second, first);
   assert.ok(first.text.indexOf('第一条') < first.text.indexOf('第二条'));
   assert.ok(first.text.indexOf('第二条') < first.text.indexOf('第三条'));
-  assert.match(first.text, /当前要求[：:]\n现在开始实现纯上下文模块。/);
+  assert.match(first.text, /Current request:\n现在开始实现纯上下文模块。/);
   assert.match(first.hash, /^sha256:[a-f0-9]{64}$/);
   assert.equal(first.manifest.messageCount, 3);
 });
@@ -153,7 +153,7 @@ test('secrets and native CLI session identities are removed from text and manife
     assert.equal(serialized.includes(forbidden), false, `${forbidden} must be redacted`);
   }
   assert.doesNotMatch(serialized, /nativeSessionId|cliSessionId/);
-  assert.match(result.text, /\[已脱敏\]/);
+  assert.match(result.text, /\[redacted\]/);
 });
 
 test('a first run with no history does not render empty history or artifact sections', () => {
@@ -163,8 +163,8 @@ test('a first run with no history does not render empty history or artifact sect
     currentText: '执行首轮请求。',
   });
 
-  assert.doesNotMatch(result.text, /历史对话/);
-  assert.doesNotMatch(result.text, /相关产物/);
+  assert.doesNotMatch(result.text, /Conversation history/);
+  assert.doesNotMatch(result.text, /Related artifacts/);
   assert.doesNotMatch(result.text, /暂无|（空）/);
   assert.equal(result.manifest.messageCount, 0);
   assert.deepEqual(result.manifest.artifacts, []);
@@ -227,9 +227,9 @@ test('includeCurrent:false compiles a prefix wall that omits the current request
   ];
 
   const prefix = buildTaskRunContext({ task, messages, includeCurrent: false });
-  assert.equal(prefix.text.includes('当前要求'), false, 'no current-request section');
-  assert.match(prefix.text, /\[MultiCC 任务运行上下文/);
-  assert.match(prefix.text, /任务：修复登录闪退/);
+  assert.equal(prefix.text.includes('Current request'), false, 'no current-request section');
+  assert.match(prefix.text, /\[MultiCC task run context/);
+  assert.match(prefix.text, /Task: 修复登录闪退/);
   assert.match(prefix.text, /先复现闪退堆栈/);
   assert.match(prefix.text, /已定位到空指针/);
   // Still scaffolding for every consumer that filters transport wrappers.
@@ -242,7 +242,7 @@ test('includeCurrent:false compiles a prefix wall that omits the current request
 
   // The default path is untouched and still refuses an empty current request.
   const full = buildTaskRunContext({ task, messages, currentText: '继续修' });
-  assert.match(full.text, /当前要求：\n继续修/);
+  assert.match(full.text, /Current request:\n继续修/);
   assert.equal(full.manifest.currentTextHash?.startsWith('sha256:'), true);
   assert.throws(() => buildTaskRunContext({ task, messages }), /currentText/);
   assert.throws(() => buildTaskRunContext({ task, messages, includeCurrent: true }), /currentText/);

@@ -292,7 +292,7 @@ assert.deepStrictEqual(
 );
 // 首轮 + rolePrompt → payload 包裹角色设定
 assert.ok(
-  zcode.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' }).payload.includes('[角色设定]'),
+  zcode.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' }).payload.includes('[Role prompt]'),
 );
 let codexReasoningSession = null;
 const codexModelAware = createCodexAdapter({
@@ -461,7 +461,7 @@ assert.strictEqual(
   assert.strictEqual(firstTurn.cmd, 'kimi');
   assert.strictEqual(firstTurn.payload, 'hello');
   const withRole = kimi.buildInvocation({ ...opencodeEnvelope, rolePrompt: '你是审查者' });
-  assert.strictEqual(withRole.payload, '[角色设定]\n你是审查者\n[角色设定结束]\n\nhello');
+  assert.strictEqual(withRole.payload, '[Role prompt]\n你是审查者\n[End of role prompt]\n\nhello');
   const continuation = kimi.buildInvocation({
     ...opencodeEnvelope,
     historyHandle: { isFirstTurn: false, cliSessionId: 'kimi-sess-1' },

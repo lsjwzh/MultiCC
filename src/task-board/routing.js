@@ -176,9 +176,9 @@ function buildRoutedMessage(task, text) {
 function buildCommanderRoutedMessage(task, text) {
   const routed = buildRoutedMessage(task, text);
   return [
-    '【Commander 单向路由任务】',
-    '这是宿主路由器直接投递的执行任务。请在当前 worker 会话完成，不要再次分发。',
-    '结果保留在当前 worker 与任务卡中，不会自动回灌 Commander。',
+    '[Commander one-way routed task]',
+    'This execution task was delivered directly by the host router. Complete it in the current worker session; do not dispatch it again.',
+    'The result stays in the current worker and the task card; it is not fed back to the Commander automatically.',
     '',
     routed,
   ].join('\n');

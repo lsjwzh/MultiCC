@@ -78,19 +78,19 @@ function recordAdapterUserInput({ evt, sessionId, turnId, recordInput } = {}) {
 }
 
 const USER_INPUT_SIGNAL_PROMPT = Object.freeze([
-  '【等待用户回答】当你准备以阻塞性问题结束本轮（缺少用户决定、确认、选择或必要信息，导致任务无法安全继续）时，必须先调用 MultiCC MCP 的 wait_for_user_answer 工具；旧名 request_user_input 仅用于兼容。',
-  '该工具有时显示为 multicc_router.wait_for_user_answer 或 mcp__multicc_router__wait_for_user_answer。调用成功后，把同一问题和选项作为本轮最终回复展示给用户，然后结束本轮，不再执行其他工具。',
-  '如果你可以基于现有信息合理继续，就不要调用。普通建议、可选后续工作或礼貌性反问不属于必须等待用户。',
+  '[Waiting for a user answer] When you are about to end the turn with a blocking question (a missing user decision, confirmation, choice, or required information means the task cannot safely continue), you must first call the MultiCC MCP tool wait_for_user_answer; the old name request_user_input exists only for compatibility.',
+  'The tool may appear as multicc_router.wait_for_user_answer or mcp__multicc_router__wait_for_user_answer. After a successful call, present the same question and options to the user as the final reply of this turn, then end the turn without running further tools.',
+  'Do not call it when you can reasonably continue with the information you have. Ordinary suggestions, optional follow-up work, and polite rhetorical questions do not require waiting for the user.',
 ]);
 
 function buildCodexUserInputConstraint(enabled = true) {
   if (!enabled) return '';
   return [
-    '[MultiCC 环境约束]',
-    '- Codex 内置 request_user_input / AskUserQuestion 在非交互执行环境中不可用。',
-    '- 准备以阻塞性问题结束本轮时，必须先调用 MultiCC MCP 的 wait_for_user_answer（可能显示为 mcp__multicc_router__wait_for_user_answer）；不要调用 Codex 内置同名工具。',
-    '- 工具返回后，把同一问题作为最终回复并结束本轮；能够安全合理继续时不要调用。',
-    '[MultiCC 环境约束结束]',
+    '[MultiCC environment constraints]',
+    '- The Codex built-in request_user_input / AskUserQuestion tools are unavailable in this non-interactive execution environment.',
+    '- Before ending a turn with a blocking question, you must call the MultiCC MCP tool wait_for_user_answer (it may appear as mcp__multicc_router__wait_for_user_answer); do not call the Codex built-in tool of the same name.',
+    '- After the tool returns, present the same question as the final reply and end the turn; do not call it when you can safely and reasonably continue.',
+    '[End of MultiCC environment constraints]',
   ].join('\n');
 }
 

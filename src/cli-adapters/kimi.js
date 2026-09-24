@@ -69,7 +69,7 @@ function createKimiAdapter({ cmd, routerMcpNode, routerMcpScript } = {}) {
       }
       const prompt = renderPrompt(env);
       const payload = isFirstTurn && env.rolePrompt
-        ? `[角色设定]\n${env.rolePrompt}\n[角色设定结束]\n\n${prompt}`
+        ? `[Role prompt]\n${env.rolePrompt}\n[End of role prompt]\n\n${prompt}`
         : prompt;
       // `-p` consumes the following argv; multicc appends the payload as the
       // trailing positional, so `-p` must stay the last flag.

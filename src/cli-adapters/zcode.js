@@ -43,7 +43,7 @@ function createZcodeAdapter({ cmd } = {}) {
       if (env.spawnOpts.rawModel) args.push('--model', env.spawnOpts.rawModel);
       const prompt = renderPrompt(env);
       const payload = isFirstTurn && env.rolePrompt
-        ? `[角色设定]\n${env.rolePrompt}\n[角色设定结束]\n\n${prompt}`
+        ? `[Role prompt]\n${env.rolePrompt}\n[End of role prompt]\n\n${prompt}`
         : prompt;
       // cmd = bridge（带 shebang 的可执行 .cjs）；multicc 会把 payload 追加为末尾 argv。
       return { cmd: BRIDGE, args, payload };

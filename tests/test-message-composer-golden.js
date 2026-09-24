@@ -127,10 +127,10 @@ function todayPrompt({ text, persisted, sessionName, goalLimits, bare }, deps) {
   let promptText = text;
   const pendingNotes = deps.pendingNotesFor(sessionName).slice(0, 10);
   if (pendingNotes.length) {
-    let block = '[multicc 跨 agent 留言 — 来自同目录下的其他 agent]\n';
-    for (const n of pendingNotes) block += `- 来自「${n.fromLabel}」：${n.body}\n`;
-    block += '[留言结束]\n\n';
-    if (block.length > 4000) block = block.slice(0, 4000) + '\n…(截断)\n\n';
+    let block = '[multicc cross-agent notes - from other agents in the same directory]\n';
+    for (const n of pendingNotes) block += `- From "${n.fromLabel}": ${n.body}\n`;
+    block += '[End of notes]\n\n';
+    if (block.length > 4000) block = block.slice(0, 4000) + '\n...(truncated)\n\n';
     promptText = block + text;
   }
   if (persisted.type === 'gateway') {
@@ -313,7 +313,7 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
   }
   if (adapter.name === 'codex') {
     let payload = o.isFirstTurn
-      ? `${IMG_HINT}\n\n${ENV_CONSTRAINT}\n\n[角色设定]\n${o.rolePrompt}\n[角色设定结束]\n\n${promptText}`
+      ? `${IMG_HINT}\n\n${ENV_CONSTRAINT}\n\n[Role prompt]\n${o.rolePrompt}\n[End of role prompt]\n\n${promptText}`
       : `${ENV_CONSTRAINT}\n\n${promptText}`;
     payload += `\n${STAY_ALIVE}`;
     const result = ['exec'];
@@ -329,7 +329,7 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
       ? ['--session', persisted.cliSessionId] : [];
     if (persisted.model) result.push('--model', persisted.model);
     const payload = o.isFirstTurn && o.rolePrompt
-      ? `[角色设定]\n${o.rolePrompt}\n[角色设定结束]\n\n${promptText}`
+      ? `[Role prompt]\n${o.rolePrompt}\n[End of role prompt]\n\n${promptText}`
       : promptText;
     result.push(payload);
     return result;
@@ -342,7 +342,7 @@ function todayBuildChatArgs(adapter, persisted, promptText, o) {
   if (!o.isFirstTurn && persisted.cliSessionId) result.push('--session', persisted.cliSessionId);
   else if (!o.isFirstTurn) result.push('--continue');
   const payload = o.isFirstTurn && o.rolePrompt
-    ? `[角色设定]\n${o.rolePrompt}\n[角色设定结束]\n\n${promptText}`
+    ? `[Role prompt]\n${o.rolePrompt}\n[End of role prompt]\n\n${promptText}`
     : promptText;
   result.push(payload);
   return result;

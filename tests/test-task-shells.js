@@ -76,8 +76,8 @@ test('C01 C02: immutable completed exchanges, provenance and tools; no active or
 test('lazy context prompt distinguishes task attribution from execution ownership', () => {
   const prompt = renderLazyContextPrompt('tsk_current');
   assert.match(prompt, /get_task_context/);
-  assert.match(prompt, /不要猜测缺失上下文/);
-  assert.match(prompt, /任务归属与执行会话相互独立/);
+  assert.match(prompt, /do not guess missing context/);
+  assert.match(prompt, /Task ownership and the executing session are independent/);
   assert.match(prompt, /tsk_current/);
 });
 

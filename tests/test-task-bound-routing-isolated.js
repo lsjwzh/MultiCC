@@ -269,8 +269,8 @@ async function waitUntil(check, message, attempts = 100) {
     const detailTexts = detailView.items.map(item => String(item.text || ''));
     assert.equal(detailTexts.filter(text => text === '从任务面板进入统一通道').length, 1,
       'raw admission text appears exactly once in the task detail projection');
-    assert.equal(detailTexts.some(text => text.includes('【Commander 单向路由任务】')
-      || text.includes('[MultiCC 任务运行上下文')), false,
+    assert.equal(detailTexts.some(text => text.includes('[Commander one-way routed task]')
+      || text.includes('[MultiCC task run context')), false,
     'a bound turn carries no transport wrapper and no compiled ledger context');
 
     // The old per-task send ingress cannot bypass shell ownership.
@@ -293,9 +293,9 @@ async function waitUntil(check, message, attempts = 100) {
     const followupPayload = String(followupExecs[1].args[followupExecs[1].args.length - 1] || '');
     assert.ok(followupPayload.includes('补充同一任务的验收细节'),
       'follow-up payload carries the new admission text');
-    assert.equal(followupPayload.includes('【Commander 单向路由任务】'), false,
+    assert.equal(followupPayload.includes('[Commander one-way routed task]'), false,
       'the pooled transport wrapper is gone');
-    assert.equal(followupPayload.includes('[MultiCC 任务运行上下文'), false,
+    assert.equal(followupPayload.includes('[MultiCC task run context'), false,
       'a live bound session needs no compiled ledger context — the session IS the context');
 
     const detailAfterFollowup = await waitUntil(async () => {
