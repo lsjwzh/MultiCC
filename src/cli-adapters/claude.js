@@ -34,7 +34,9 @@ function createClaudeAdapter(deps) {
       if (session.agent) command += ` --agent ${session.agent}`;
       const effort = cliEffortLevel(session);
       if (effort) command += ` --effort ${effort}`;
-      if (normalizeEffort(session?.effort) === 'ultracode') {
+      // The turn-hook settings file already carries ultracode when requested.
+      if (session.turnHookSettingsArg) command += ` --settings ${session.turnHookSettingsArg}`;
+      else if (normalizeEffort(session?.effort) === 'ultracode') {
         command += ` --settings '{"ultracode":true}'`;
       }
       if (session.cliSessionId) command += ` --session-id ${session.cliSessionId}`;
