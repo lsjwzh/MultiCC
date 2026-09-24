@@ -1620,3 +1620,133 @@ test('system warning with authAction routes to the auth-action renderer, with pl
   }, hooked.controller.beginGeneration()), true);
   assert.deepEqual(hooked.calls.filter(c => c[0] === 'system'), [['system', 'other action']]);
 });
+
+// ── Jev difficulty-routing note ─────────────────────────────────────────────
+const ZH = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+const EN = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/en.json'), 'utf8'));
+const dictT = dict => (key, params) => String(dict[key] ?? key)
+  .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
+const zhT = dictT(ZH);
+
+function autoRoute(routing, extra = {}) {
+  return {
+    type: 'provider_auto_route', version: 1, mode: 'auto', phase: 'selected',
+    providerId: 'deepseek', providerName: 'DeepSeek 官方', model: 'deepseek-v4-flash',
+    tier: 't1', preferredTier: 't1', routing, ...extra,
+  };
+}
+
+test('the Jev note says which tier was judged and which line/model answers', () => {
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2, latencyMs: 412,
+    }), zhT),
+    '🧭 Jev 判定为简单任务 · 选用 DeepSeek 官方（deepseek-v4-flash） · 用时 0.4 秒',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_low_confidence', tier: 't2', tierIndex: 1, tierCount: 2,
+    }, { providerName: 'OpenRouter', model: 'gpt-5.5', tier: 't2', preferredTier: 't2' }), zhT),
+    '🧭 Jev 判定为复杂任务（不太有把握，已往强的提一档） · 选用 OpenRouter（gpt-5.5）',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_choice', tier: 't2', tierIndex: 1, tierCount: 3,
+    }, { model: null }), zhT),
+    '🧭 Jev 判定为中等任务 · 选用 DeepSeek 官方',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+    }), dictT(EN)),
+    '🧭 Jev rated this a simple task · using DeepSeek 官方 (deepseek-v4-flash)',
+  );
+});
+
+test('the Jev note explains a fallback and a tier whose lines were all unavailable', () => {
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'fallback', code: 'jev_key_missing', tier: 't2', tierIndex: 1, tierCount: 2, onUnknown: 'strong',
+    }, { providerName: 'OpenRouter', model: 'gpt-5.5', tier: 't2', preferredTier: 't2' }), zhT),
+    '🧭 Jev 没判断出来（还没配置 Jev key）· 按设置交给强模型 · 选用 OpenRouter（gpt-5.5）',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'fallback', code: 'jev_http_502', tier: null, tierIndex: null, tierCount: 2, onUnknown: 'priority',
+    }), zhT),
+    '🧭 Jev 没判断出来（网关返回 502）· 按线路顺序来 · 选用 DeepSeek 官方（deepseek-v4-flash）',
+  );
+  assert.equal(
+    eventApi.formatAutoRouteNote(autoRoute({
+      source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+    }, { providerName: 'OpenRouter', model: 'gpt-5.5', tier: 't2' }), zhT),
+    '🧭 Jev 判定为简单任务 · 选用 OpenRouter（gpt-5.5）（简单任务的线路暂不可用，改用这条）',
+  );
+  assert.equal(eventApi.formatAutoRouteNote(autoRoute(null), zhT), '');
+  assert.equal(eventApi.formatAutoRouteNote(autoRoute({ source: 'jev', tierIndex: 0, tierCount: 2 },
+    { phase: 'switched' }), zhT), '', 'only the initial selection is narrated');
+});
+
+function noteFixture() {
+  const list = new FakeElement('div');
+  Object.defineProperty(FakeElement.prototype, 'isConnected', {
+    configurable: true, get() { return !!this.parentNode; },
+  });
+  const fixture = controllerFixture({
+    translate: zhT,
+    addSystemMsg(text) {
+      const node = new FakeElement('div');
+      node.className = 'msg system-msg';
+      node.textContent = text;
+      return list.appendChild(node);
+    },
+  });
+  return { ...fixture, notes: () => list.children.map(node => node.textContent) };
+}
+
+test('the "judging" line is rewritten in place into the verdict', () => {
+  const fixture = noteFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'message_admission_progress', stage: 'auto_provider_routing', state: 'waiting',
+    reason: 'auto_provider_routing_pending', message: '改个错别字', clientMsgId: 'c-jev-1',
+  }, generation);
+  assert.deepEqual(fixture.notes(), ['🧭 Jev 正在判断这条消息的难度…']);
+  assert.equal(fixture.liveUi.getThinkingElement().querySelector('.thinking-label').textContent,
+    '🧭 Jev 正在判断这条消息的难度…', 'the loader no longer claims a memory distill is running');
+  fixture.controller.handleEvent(autoRoute({
+    source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2, latencyMs: 1250,
+  }), generation);
+  assert.deepEqual(fixture.notes(),
+    ['🧭 Jev 判定为简单任务 · 选用 DeepSeek 官方（deepseek-v4-flash） · 用时 1.3 秒']);
+  // A later turn that nobody asked Jev about stays silent.
+  fixture.controller.handleEvent(autoRoute({
+    source: 'fallback', code: 'jev_not_prepared', tier: 't2', tierIndex: 1, tierCount: 2, onUnknown: 'strong',
+  }), generation);
+  assert.equal(fixture.notes().length, 1);
+});
+
+test('a failed admission takes its "judging" line with it', () => {
+  const fixture = noteFixture();
+  const generation = fixture.controller.beginGeneration();
+  const base = { type: 'message_admission_progress', message: '做个大重构', clientMsgId: 'c-jev-2' };
+  fixture.controller.handleEvent({ ...base, stage: 'auto_provider_routing', state: 'waiting' }, generation);
+  fixture.controller.handleEvent({ ...base, state: 'failed', reason: 'message_delivery_failed' }, generation);
+  assert.deepEqual(fixture.notes(), ['消息提交失败（内部提交阶段），请重试。']);
+});
+
+test('a message queued behind a live turn gets its verdict line when its turn starts', () => {
+  const fixture = noteFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.state.isStreaming = true;
+  fixture.controller.handleEvent({
+    type: 'message_admission_progress', stage: 'auto_provider_routing', state: 'waiting',
+    message: '排队的消息', clientMsgId: 'c-jev-3',
+  }, generation);
+  assert.deepEqual(fixture.notes(), [], 'nothing is drawn inside the running answer');
+  fixture.state.isStreaming = false;
+  fixture.controller.handleEvent(autoRoute({
+    source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+  }), generation);
+  assert.deepEqual(fixture.notes(), ['🧭 Jev 判定为简单任务 · 选用 DeepSeek 官方（deepseek-v4-flash）']);
+});
