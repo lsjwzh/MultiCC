@@ -581,6 +581,7 @@ const chatLiveUi = window.MultiCCChatLiveUi.createLiveUi({
   translate: tt,
   maybeScrollToBottom,
   retryTransport: () => chatTransport.retryNow(),
+  onManualRetry: options => chatComposer.manualRetry(options),
   isRestarting: () => _isRestarting,
   getBaseTitle: () => _baseTitle,
   debug: dbg,

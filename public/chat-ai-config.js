@@ -792,7 +792,7 @@
 
       function primaryProviderId() {
         if (autoProtocolFromValue(providerSelect.value) && autoEditorRef) {
-          const read = autoEditorRef.read();
+          const read = autoEditorRef.read({ remember: false });
           const first = read && read.ok ? read.value.candidates[0] : null;
           if (first && first.providerId) return first.providerId;
         }

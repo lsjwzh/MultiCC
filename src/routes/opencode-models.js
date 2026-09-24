@@ -113,42 +113,72 @@ function tryCliCandidate(binFile, cb) {
 }
 
 // Strategy: opencode.json is what the USER actually configured (their own
-// providers/auth); the opencode CLI also lists hundreds of built-in free /
-// openrouter providers the user never selected. So the JSON file is the
-// authoritative source and the CLI is the fallback for cases where the config
-// has no providers entry at all.
-function listOpenCodeModels(callback) {
-  if (cache && (Date.now() - cache.at) < OPENCODE_TTL_MS) {
-    return setImmediate(() => callback(null, cache.models, 'cache'));
+// providers/auth); the opencode CLI also lists hundreds of built-in openrouter
+// etc. providers the user never selected. So the JSON file leads the list —
+// but it must not HIDE OpenCode's own preset providers: `opencode/*` is the
+// OpenCode Zen gateway (free models such as big-pickle work without any
+// config), and providers the user signed into with `opencode auth login` live
+// in auth.json, not opencode.json. Those two sources are merged in from the
+// CLI listing after the configured ones. With no configured providers at all
+// the full CLI listing is used, as before.
+const PRESET_PROVIDERS = new Set(['opencode']);
+
+function readOpenCodeAuthProviders() {
+  const home = os.homedir();
+  const dirs = [process.env.XDG_DATA_HOME && path.join(process.env.XDG_DATA_HOME, 'opencode'),
+    home && path.join(home, '.local', 'share', 'opencode')].filter(Boolean);
+  for (const dir of dirs) {
+    try {
+      const auth = JSON.parse(fs.readFileSync(path.join(dir, 'auth.json'), 'utf8'));
+      if (auth && typeof auth === 'object') return new Set(Object.keys(auth));
+    } catch (_) {}
   }
-  let models = null;
-  try {
-    models = readOpenCodeJsonFallback();
-  } catch (_) { models = []; }
-  if (models && models.length) {
-    cache = { at: Date.now(), models };
-    return setImmediate(() => callback(null, models, 'config'));
-  }
+  return new Set();
+}
+
+function mergeOpenCodeModels(configured, cliModels, authProviders = new Set()) {
+  if (!configured.length) return cliModels;
+  const seen = new Set(configured.map(m => `${m.provider}/${m.model}`));
+  const configuredProviders = new Set(configured.map(m => m.provider));
+  const extra = cliModels.filter(m => !seen.has(`${m.provider}/${m.model}`)
+    && !configuredProviders.has(m.provider)
+    && (PRESET_PROVIDERS.has(m.provider) || authProviders.has(m.provider)));
+  return [...configured, ...extra].slice(0, MAX_MODELS);
+}
+
+function listCliModels(callback) {
   const candidates = candidatesForOpenCodeBin();
   let idx = -1;
   const next = () => {
     idx += 1;
-    if (idx >= candidates.length) {
-      return callback(new Error('opencode models unavailable'), [], 'fallback');
-    }
-    const bin = candidates[idx];
-    tryCliCandidate(bin, (err, cliModels) => {
+    if (idx >= candidates.length) return callback(new Error('opencode models unavailable'), []);
+    tryCliCandidate(candidates[idx], (err, cliModels) => {
       if (err || !cliModels || !cliModels.length) {
         if (err && err.killed && err.signal === 'SIGTERM') {
           idx = candidates.length; // timeout — stop trying slower candidates
         }
         return next();
       }
-      cache = { at: Date.now(), models: cliModels };
-      callback(null, cliModels, 'cli');
+      callback(null, cliModels);
     });
   };
   next();
+}
+
+function listOpenCodeModels(callback) {
+  if (cache && (Date.now() - cache.at) < OPENCODE_TTL_MS) {
+    return setImmediate(() => callback(null, cache.models, 'cache'));
+  }
+  let configured = [];
+  try {
+    configured = readOpenCodeJsonFallback() || [];
+  } catch (_) { configured = []; }
+  listCliModels((err, cliModels) => {
+    if (err && !configured.length) return callback(err, [], 'fallback');
+    const models = err ? configured : mergeOpenCodeModels(configured, cliModels, readOpenCodeAuthProviders());
+    cache = { at: Date.now(), models };
+    callback(null, models, configured.length ? 'config' : 'cli');
+  });
 }
 
 function mountOpenCodeModelRoutes(app) {
@@ -166,6 +196,7 @@ module.exports = {
   listOpenCodeModels,
   parseOpenCodeStdout,
   readOpenCodeJsonFallback,
+  mergeOpenCodeModels,
   // exposed for tests
   _setCacheForTest(at, models) { cache = { at, models }; },
   _resetCacheForTest() { cache = null; },

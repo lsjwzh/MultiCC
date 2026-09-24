@@ -349,7 +349,7 @@
 
     function primaryProviderId() {
       if (autoApi.protocolFromValue(providerValue) && autoEditor) {
-        const read = autoEditor.read();
+        const read = autoEditor.read({ remember: false });
         const first = read && read.ok ? read.value.candidates[0] : null;
         if (first && first.providerId) return first.providerId;
       }

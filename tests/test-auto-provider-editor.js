@@ -266,3 +266,71 @@ test('mounted controller renders conservative defaults and gates mixed trust', (
   control.destroy();
   assert.equal(control.read().code, 'editor_destroyed');
 });
+
+function memoryPresetStore(initial = []) {
+  let data = JSON.parse(JSON.stringify(initial));
+  return { load: () => JSON.parse(JSON.stringify(data)), save(list) { data = JSON.parse(JSON.stringify(list)); }, get data() { return data; } };
+}
+
+test('a configured pool can be saved as a named preset and applied to a fresh editor', () => {
+  const store = memoryPresetStore();
+  const mountOne = () => {
+    const document = fakeDocument();
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    return { container, control: editor.mount({ document, container, providers: providers(), protocol: 'anthropic', presetStore: store }) };
+  };
+  const first = mountOne();
+  const rows = first.container.querySelectorAll('.multicc-auto-editor-row');
+  rows[3].querySelector('.multicc-auto-editor-enabled').checked = true; // managed-c
+  rows[3].querySelector('.multicc-auto-editor-priority').value = '1';
+  rows[1].querySelector('.multicc-auto-editor-priority').value = '5';
+  first.container.querySelector('.multicc-auto-editor-preset-name').value = '便宜优先';
+  first.container.querySelector('.multicc-auto-editor-preset-save').emit('click');
+  assert.equal(store.data.length, 1);
+  assert.equal(store.data[0].name, '便宜优先');
+  assert.equal(store.data[0].recent, false);
+  assert.deepEqual(store.data[0].candidates.map(c => c.providerId), ['managed-c', 'managed-b', 'managed-a']);
+
+  const second = mountOne();
+  const select = second.container.querySelector('.multicc-auto-editor-preset-select');
+  assert.equal(select.options.length, 2, '占位 + 一份预设');
+  assert.match(select.options[1].textContent, /^便宜优先 · Managed C → Managed B → Managed A$/);
+  select.value = store.data[0].id;
+  select.emit('change');
+  const applied = second.control.read({ remember: false });
+  assert.equal(applied.ok, true);
+  assert.deepEqual(applied.value.candidates.map(c => c.providerId), ['managed-c', 'managed-b', 'managed-a']);
+  assert.equal(store.data.length, 1, 'remember:false 不记最近使用');
+
+  second.control.read();
+  assert.equal(store.data.length, 1, '与已有预设同一份池子只顶到前面，不重复存');
+  second.container.querySelector('.multicc-auto-editor-preset-delete').emit('click');
+  assert.equal(store.data.length, 0);
+});
+
+test('reading a valid pool records it as a recent preset, deduplicated and capped', () => {
+  const store = memoryPresetStore();
+  const document = fakeDocument();
+  const container = document.createElement('div');
+  const control = editor.mount({ document, container, providers: providers(), protocol: 'anthropic', presetStore: store });
+  control.read();
+  control.read();
+  assert.equal(store.data.length, 1);
+  assert.equal(store.data[0].recent, true);
+  let list = [];
+  for (let i = 0; i < 8; i += 1) {
+    list = editor.rememberPreset(list, {
+      protocol: 'anthropic', maxAttempts: 2, sticky: true,
+      candidates: [{ providerId: 'managed-a', priority: 1 }, { providerId: 'managed-b', priority: i + 2 }],
+    }, { recent: true, now: i });
+  }
+  assert.equal(list.length, 5, '最近使用最多留 5 份');
+  // 协议不同或候选已失效（池里不足两个）的预设不出现在下拉里。
+  const other = memoryPresetStore([{ id: 'x', name: 'gone', recent: false, protocol: 'anthropic', maxAttempts: 2, sticky: true,
+    candidates: [{ providerId: 'managed-a', priority: 1 }, { providerId: 'deleted', priority: 2 }] }]);
+  const doc2 = fakeDocument();
+  const box = doc2.createElement('div');
+  editor.mount({ document: doc2, container: box, providers: providers(), protocol: 'anthropic', presetStore: other });
+  assert.equal(box.querySelector('.multicc-auto-editor-preset-select').options.length, 1);
+});

@@ -35,8 +35,8 @@ test('the Air agent-resources panel is native: skill list, history list, guarded
   // ── 夹具 ───────────────────────────────────────────────────────────────
   // 技能名/描述/路径全是磁盘上的字符串，这里按真实形状给（名字里带 - 、路径是绝对路径）。
   const SKILLS = [
-    { provider: 'claude', source: 'agents', name: 'code-review', description: '审查代码改动', path: '/Users/me/.agents/skills/code-review' },
-    { provider: 'claude', source: 'plugin', name: 'doc-writer', description: '', path: '/Users/me/.claude/plugins/doc-writer' },
+    { provider: 'claude', source: 'agents', layer: 'bundled', name: 'code-review', description: '审查代码改动', path: '/Users/me/.agents/skills/code-review' },
+    { provider: 'claude', source: 'plugin', layer: 'plugin', name: 'doc-writer', description: '', path: '/Users/me/.claude/plugins/doc-writer' },
     { provider: 'codex', source: 'agents', name: 'prompt-tuner', description: '调提示词', path: '/Users/me/.agents/skills/prompt-tuner' },
   ];
   // 会话夹具：一条 linked（受保护，不许删）、一条可删。
@@ -128,6 +128,10 @@ test('the Air agent-resources panel is native: skill list, history list, guarded
       '每行都标出「哪来的 · 装在哪」');
     assert.deepEqual(await listText('#air-resources-skills-list .air-resources-badge'), ['claude', 'claude', 'codex']);
     assert.equal(await text('#air-resources-skills-count'), await i18n('airResourcesSkillsCount', { claude: 2, codex: 1 }));
+    // 分层：内置在最前、插件默认收起、没带 layer 的老数据归「我的技能」。
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#air-resources-skills-list .air-resources-group')].map(g => g.dataset.layer + ':' + g.open + ':' + g.querySelector('.air-resources-group-count').textContent)`),
+      ['bundled:true:1', 'plugin:false:1', 'user:true:1'], '技能按来源分层，插件组默认收起');
+    assert.equal(await text('#air-resources-skills-list .air-resources-group-head'), (await i18n('airResourcesLayerBundled')) + '1');
     assert.equal(await page.evaluate(`document.getElementById('air-resources-skills-filter').placeholder`),
       await i18n('airResourcesSkillsFilter'), '过滤框的问法是 i18n 的，不是写死的英文');
 

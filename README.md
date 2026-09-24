@@ -101,7 +101,7 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 
 `/air` is MultiCC's home screen — both `/` and the old `/manage` now redirect there. Tasks, not roles, are the unit of work: you describe what you want done, and each task carries its own bound session, worktree, and transcript.
 
-![The Air console: directories and tasks at a glance](docs/images/air-tasks.png)
+![The Air console: directories and tasks at a glance](docs/images/en/air-tasks.png)
 
 - **Directory home** — every registered repo with its tasks and sessions in one list
 - **New-task composer** — describe a goal, pick a CLI / line / model (it remembers your last choice), and the task spins up a bound session
@@ -246,17 +246,17 @@ Open **<http://localhost:3000>** — you land on the **Air console** (`/air`). I
 1. On `/air`, **add a directory** — point it at any git repo.
 2. First run: the **setup card** walks you through preparing a model (import a provider from `cc-switch`, or just use a CLI's own login) and configuring the **AI Assistant** — a lightweight flash-tier model is enough.
 
-   ![The first-run setup card on /air](docs/images/air-first-run.png)
+   ![The first-run setup card on /air](docs/images/en/air-first-run.png)
 3. Describe a goal in the **new-task composer** — *"summarise what this project does and list the three riskiest files."* — and create the task. The composer remembers your most recent CLI, line, and model.
 
-   ![The new-task composer with the AI configuration pill](docs/images/air-new-task.png)
+   ![The new-task composer with the AI configuration pill](docs/images/en/air-new-task.png)
 4. The task binds a chat session and gets to work. Open it to watch the transcript; when it answers, click the **CLI badge in the chat header** and pick a different CLI, then send a follow-up: *"you're a different model now — do you agree with the previous assessment?"*
 
 The second CLI answers with full awareness of the conversation, on the same branch and worktree, and tells you it is working from a handoff checkpoint. Switch back and the first CLI resumes its own session.
 
 Then open the same URL on your phone, or install the [Flutter app](docs/installation.md#build-the-flutter-app) — the task is right there, mid-conversation.
 
-![MultiCC on a phone-width screen](docs/images/air-mobile.png)
+![MultiCC on a phone-width screen](docs/images/en/air-mobile.png)
 
 ### 4. Keep it up to date
 
@@ -362,9 +362,9 @@ keeps the full output and offers a force retry.
 </td></tr>
 </table>
 
-![CLI and provider settings in the Air console](docs/images/air-provider.png)
+![CLI and provider settings in the Air console](docs/images/en/air-provider.png)
 
-![The AI Assistant page in the Air console](docs/images/aux-console.png)
+![The AI Assistant page in the Air console](docs/images/en/aux-console.png)
 
 **→ Every feature in detail: [Features](docs/features.md)**
 
