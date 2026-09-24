@@ -86,6 +86,8 @@ test('More menu: every row is an icon column plus a name column, names share one
     await openMenuOnPhone(page);
     const rows = await page.evaluate(menuProbe);
     assert.ok(rows.length >= 10, `手机上这批动作都在浮层里：${rows.length}`);
+    assert.equal(rows.some(row => row.id === 'lang-btn'), false,
+      '语言切换是页面级入口，不应在对话更多菜单里重复出现');
     for (const row of rows) {
       assert.equal(row.display, 'grid', `${row.id} 该是「图标 + 名字」两列`);
       assert.ok(row.icon && row.icon !== 'none', `${row.id} 该画出图标`);

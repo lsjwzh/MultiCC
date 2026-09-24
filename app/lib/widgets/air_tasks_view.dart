@@ -1335,6 +1335,10 @@ class _AirTasksViewState extends State<AirTasksView>
         },
         onOpenDestination: _openDestination,
         ops: _ops,
+        language: widget.settings.lang,
+        onLanguage: () => widget.settings.setLanguage(
+          widget.settings.lang == 'zh' ? 'en' : 'zh',
+        ),
         onOpenPush: () =>
             _push((_) => PushSettingsScreen(settings: widget.settings)),
         onLogout: () => unawaited(

@@ -77,19 +77,21 @@
          偶尔点的（常用设置、全局工具、任务看板、TERMINAL、主机运维）折进「更多」。
          版本行留在外面：它是更新提示的落点，藏起来就没人知道有新版本。 -->
     <div class="side-bottom">
-      <div id="air-ver-row" class="ops-version" role="button" tabindex="0" title="点击检查并安装更新" data-i18n-title="airCheckUpdate">
-        <span id="air-ver-icon" class="ops-icon" aria-hidden="true">📦</span>
-        <span class="ops-version-text">
-          <span id="air-ver-current">v—</span>
-          <span id="air-ver-hint" data-i18n="airOpsChecking">检查中…</span>
-        </span>
-        <span id="air-ver-badge" class="ops-badge" hidden>NEW</span>
+      <div class="side-version-line">
+        <div id="air-ver-row" class="ops-version" role="button" tabindex="0" title="点击检查并安装更新" data-i18n-title="airCheckUpdate">
+          <span id="air-ver-icon" class="ops-icon" aria-hidden="true">📦</span>
+          <span class="ops-version-text">
+            <span id="air-ver-current">v—</span>
+            <span id="air-ver-hint" data-i18n="airOpsChecking">检查中…</span>
+          </span>
+          <span id="air-ver-badge" class="ops-badge" hidden>NEW</span>
+        </div>
+        <!-- 语言是整套 Air 的全局偏好，跟版本检查同属侧栏底部工具；压成右侧一颗
+             小按钮，不再为两个字母独占整行。stopPropagation 防止点语言时误触更新。 -->
+        <button id="air-lang-btn" class="lang-toggle side-lang" type="button"
+                onclick="event.stopPropagation(); toggleLang()"
+                title="切换语言：中文 / English" data-i18n-title="languageToggle">中/EN</button>
       </div>
-      <!-- 语言切换就落在版本行下面：和它同属「偶尔点一次」的那条底栏，不占
-           任务清单的位置。文案由 i18n.js 统一接管（.lang-toggle → t('language')），
-           点一下走 setLang()，和其它页面是同一套（写 localStorage + reload）。 -->
-      <button id="air-lang-btn" class="lang-toggle side-lang" type="button" onclick="toggleLang()"
-              title="切换语言：中文 / English" data-i18n-title="languageToggle">中/EN</button>
       <details id="side-more" class="side-more">
         <summary data-i18n="airMoreSystem">更多与系统</summary>
         <div class="side-more-body">

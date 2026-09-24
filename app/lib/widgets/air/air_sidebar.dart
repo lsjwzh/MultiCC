@@ -45,6 +45,8 @@ class AirSidebar extends StatelessWidget {
     required this.onOpenAllDestinations,
     required this.onOpenDestination,
     required this.ops,
+    required this.language,
+    required this.onLanguage,
     required this.onOpenPush,
     required this.onLogout,
     this.onOpenVoiceCall,
@@ -94,6 +96,8 @@ class AirSidebar extends StatelessWidget {
   /// 主机运维那几行字的同一份状态：版本行、开机时间、回执各在一处，说的却是
   /// 同一件事（见 [AirOpsStore]）。
   final AirOpsStore ops;
+  final String language;
+  final VoidCallback onLanguage;
 
   /// 「推送通知」在原生侧落到设置中心的那一页（本机通知通道，不是浏览器订阅）。
   final VoidCallback onOpenPush;
@@ -279,7 +283,11 @@ class AirSidebar extends StatelessWidget {
             // 清单和底下这组之间的留白。
             const SizedBox(height: 8),
             // 版本行留在折叠区外：它是「有新版本」唯一的落点，折起来就没人知道。
-            AirVersionRow(store: ops),
+            AirVersionRow(
+              store: ops,
+              language: language,
+              onLanguage: onLanguage,
+            ),
             _MoreSection(
               advancedMode: advancedMode,
               onAdvancedModeChanged: onAdvancedModeChanged,
