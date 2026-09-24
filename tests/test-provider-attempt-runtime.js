@@ -1069,3 +1069,64 @@ test('forceReleaseProducers releases main producers immediately and is idempoten
   assert.equal(runtime.forceReleaseProducers('session-1').code, 'no_producers');
   assert.equal(runtime.forceReleaseProducers('').code, 'invalid_session');
 });
+
+test('a resident lane keeps admitting background sub requests after its turn succeeds', () => {
+  const { runtime } = harness();
+  const residentRoute = {
+    cli: 'claude-exp', protocol: 'anthropic', providerRevision: 'claude-revision',
+    subagentProviderId: 'provider-sub', spawnKey: 'argv-model-a',
+  };
+  const attempt = runtime.beginAttempt(route(residentRoute));
+  const capability = runtime.proxySessionId(attempt);
+  runtime.finishAttempt(attempt, { outcome: 'succeeded' });
+
+  const sub = runtime.authorizeProxyRequest({
+    sessionId: capability, role: 'sub', providerId: 'provider-sub',
+  });
+  assert.equal(sub.ok, true, 'a run_in_background subagent outlives the main result');
+  assert.equal(sub.background, true);
+  assert.equal(runtime.authorizeProxyRequest({
+    sessionId: capability, role: 'sub', providerId: 'provider-other',
+  }).code, 'provider_subroute_not_allowed');
+  assert.equal(runtime.authorizeProxyRequest({
+    sessionId: capability, role: 'main', providerId: 'provider-a',
+  }).code, 'proxy_attempt_not_running', 'the main route stays closed between turns');
+  assert.equal(runtime.authorizeProxyRequest({
+    sessionId: capability, role: 'main', providerId: 'provider-a',
+    protocol: 'claude', stage: 'http_guard',
+  }).ok, true, 'claude\'s outer guard cannot see sub vs main yet and admits provisionally');
+  assert.equal(runtime.snapshot('session-1').outcome, 'succeeded',
+    'background admission never reopens the attempt');
+
+  // The background producer never gates the next turn.
+  runtime.onProxyActivity({ sessionId: capability, role: 'sub', providerId: 'provider-sub', phase: 'request' });
+  const next = runtime.beginAttempt(route({ ...residentRoute, turnId: 'turn-2' }));
+  assert.equal(runtime.proxySessionId(next), capability);
+});
+
+test('background admission ends with a cancelled turn, a moved spawn contract or a per-turn lane', () => {
+  const { runtime } = harness();
+  const residentRoute = {
+    cli: 'claude-exp', protocol: 'anthropic', providerRevision: 'claude-revision',
+    subagentProviderId: 'provider-sub', spawnKey: 'argv-model-a',
+  };
+  const sub = capability => runtime.authorizeProxyRequest({
+    sessionId: capability, role: 'sub', providerId: 'provider-sub',
+  }).code;
+  const cancelled = runtime.beginAttempt(route(residentRoute));
+  const warm = runtime.proxySessionId(cancelled);
+  runtime.finishAttempt(cancelled, { outcome: 'released' });
+  assert.equal(sub(warm), 'proxy_attempt_not_running');
+
+  const second = runtime.beginAttempt(route({ ...residentRoute, turnId: 'turn-2' }));
+  runtime.finishAttempt(second, { outcome: 'succeeded' });
+  runtime.beginAttempt(route({ ...residentRoute, turnId: 'turn-3', spawnKey: 'argv-model-b' }));
+  assert.equal(sub(warm), 'proxy_route_capability_mismatch', 'a respawned child revokes the old one');
+
+  const perTurn = runtime.beginAttempt(route({
+    sessionId: 'session-2', subagentProviderId: 'provider-sub', spawnKey: 'argv-model-a',
+  }));
+  const perTurnCapability = runtime.proxySessionId(perTurn);
+  runtime.finishAttempt(perTurn, { outcome: 'succeeded' });
+  assert.equal(sub(perTurnCapability), 'proxy_attempt_not_running');
+});

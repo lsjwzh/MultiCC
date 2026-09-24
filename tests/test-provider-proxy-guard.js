@@ -33,7 +33,7 @@ test('attempt proxy guard authorizes the exact URL route before CPR sees a reque
   assert.equal(nextCalls, 1);
   assert.deepEqual(calls, [{
     protocol: 'claude', providerId: 'provider-a', sessionId: 'pr1.session.token',
-    role: 'main', method: 'POST',
+    role: 'main', method: 'POST', stage: 'http_guard',
   }]);
 });
 
@@ -160,7 +160,7 @@ test('attempt-scoped Codex Official routes require the exact active capability',
   assert.equal(nextCalls, 1);
   assert.deepEqual(calls, [{
     protocol: 'codex', providerId: 'official-provider',
-    sessionId: 'pr1.session.capability', role: 'main', method: 'POST',
+    sessionId: 'pr1.session.capability', role: 'main', method: 'POST', stage: 'http_guard',
   }]);
 });
 
