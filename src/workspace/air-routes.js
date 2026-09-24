@@ -171,7 +171,7 @@ function mountAirRoutes(app, deps) {
         // 客户端只读它，不推断它。
         // 自愈：证明这一轮从没被受理过的卡片按空闲投影，而不是永久「执行中」。
         runState: core.deadDispatchClaim(t, core.taskRunSessionIds(t).some(hasTurnState), projectNow)
-          ? 'idle' : (t.runState || null),
+          ? 'idle' : (core.staleWorkerClaim(t, deps.getSessionRunState, projectNow) || t.runState || null),
         resource: resource(sessionId, admission) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({

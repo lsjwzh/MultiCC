@@ -6,6 +6,9 @@ const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
 const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
 
+// Outbox id of a dispatch result (operation-service completeOperationDraft).
+const DISPATCH_RESULT_ENTRY = /^operation:[^:]+:result(?::\d+)?$/;
+
 function requireFunction(deps, name) {
   if (typeof deps?.[name] !== 'function') {
     throw new TypeError(`[session-work-host] ${name} port is required`);
@@ -389,6 +392,12 @@ function createSessionWorkHost(deps = {}) {
       const closing = turnClosures.get(sessionId);
       if (closing) await closing;
       let current = await target.status(sessionId);
+      // Slots claimed before dispatch.result stopped lending its payload as
+      // lineage still carry the DISPATCHED task's id (persisted across
+      // restarts). That id is not an owner of this session's turn, so the
+      // session's own verdict must still be able to close it — otherwise the
+      // slot stays 'assessing' forever and keeps the worker's card 「执行中」.
+      if (DISPATCH_RESULT_ENTRY.test(String(current?.active?.entryId || ''))) taskId = null;
       const currentTaskId = current?.active?.taskId || null;
       if (taskId && currentTaskId && taskId !== currentTaskId) {
         return { ok: false, code: 'active_task_mismatch' };

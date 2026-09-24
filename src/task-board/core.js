@@ -72,6 +72,8 @@ module.exports = {
   buildBoardDto: view.buildBoardDto,
   taskRunSessionIds: view.taskRunSessionIds,
   deadDispatchClaim: view.deadDispatchClaim,
+  foreignRunSession: view.foreignRunSession,
+  staleWorkerClaim: view.staleWorkerClaim,
   sessionHasTurn: view.sessionHasTurn,
   normalizeTaskRouting: normalize.normalizeTaskRouting,
   setTaskRouting: normalize.setTaskRouting,
