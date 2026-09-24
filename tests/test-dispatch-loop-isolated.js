@@ -19,6 +19,7 @@ const { _loadDatabaseState } = require('../src/orchestration/sqlite-store');
 
 const ROOT = path.join(__dirname, '..');
 const TOKEN = 'dispatch-loop-isolated';
+const NEW_TASK = process.argv.includes('--new-task');
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-dispatch-loop-'));
 const dataRoot = path.join(testRoot, 'data');
 const project = path.join(testRoot, 'project');
@@ -66,17 +67,18 @@ async function main() {
         item: { type: 'agent_message', text: 'BACKFLOW_RECEIVED:' + prompt },
       }) + '\\n');
     } else {
-      // The slave is an ordinary fleet session: foreign dispatch must never
-      // target another task's dedicated room, which is 1:1-owned by its task and
-      // only accepts that task's own deliveries.
-      const fleetRes = await fetch(base + '/api/sessions', { headers });
-      const fleet = await fleetRes.json();
-      const slave = fleet.find(s => s.dirId === me.dirId && String(s.label||'').includes('slave'));
-      if (!slave) throw new Error('no slave found');
+      const createTask = ${NEW_TASK};
+      let slave = null;
+      if (!createTask) {
+        const fleetRes = await fetch(base + '/api/sessions', { headers });
+        const fleet = await fleetRes.json();
+        slave = fleet.find(s => s.dirId === me.dirId && String(s.label||'').includes('slave'));
+        if (!slave) throw new Error('no slave found');
+      }
       const mode = prompt.includes('FAIL_MODE') ? 'failed' : 'completed';
       const body = {
         arguments: {
-          target_session_id: slave.id,
+          ...(createTask ? { new_task: { title: 'slave-created-by-mcp', cli: 'codex' } } : { target_session_id: slave.id }),
           message: 'do the work: ' + mode,
           mode: 'async',
         },
@@ -260,17 +262,17 @@ function sendWsMessage(port, sessionId, text) {
     const master = await api('POST', `/api/directories/${directory.id}/sessions`, {
       cli: 'codex', kind: 'chat', label: 'master-session',
     });
-    // A directory-created chat is a task-bound hidden room owned 1:1 by a board
-    // task. Foreign dispatch must not target another task's room, and a room's
-    // task identity can never be inherited by an unrelated router operation, so
-    // the dispatchable slave is an ordinary fleet session — here the fork of the
-    // master — exactly like the addressable workers the router targets list.
-    const fork = await api('POST', `/api/sessions/${master.id}/fork`, {
-      label: 'slave-session', includeMemory: false,
-    });
-    const slave = { id: fork.sessionId };
+    // Existing-worker mode exercises adoption; new-task mode must create its
+    // dedicated task/session through MCP with no REST precreation.
+    const slave = { id: null };
+    if (!NEW_TASK) {
+      const fork = await api('POST', `/api/sessions/${master.id}/fork`, {
+        label: 'slave-session', includeMemory: false,
+      });
+      slave.id = fork.sessionId;
+      assert.ok(slave.id, 'slave session created');
+    }
     assert.ok(master.id, 'master session created');
-    assert.ok(slave.id, 'slave session created');
 
     // ── D1 + S3: master dispatches → slave returns completed → master gets result
     const d1 = await sendWsMessage(port, master.id, 'dispatch a task to the slave');
@@ -280,6 +282,15 @@ function sendWsMessage(port, sessionId, text) {
       const lines = fs.readFileSync(slaveLog, 'utf8').trim().split(/\n/).filter(Boolean).map(JSON.parse);
       return lines.length > 0 ? lines[0] : null;
     }, 'D1: slave did not receive the dispatched message');
+
+    if (NEW_TASK) {
+      slave.id = slaveEntry.sessionId;
+      const record = await api('GET', `/api/sessions/${slave.id}`);
+      assert.match(record.taskBoundTaskId, /^tsk_[a-f0-9]{32}$/);
+      const task = await api('GET', `/api/air/tasks/${record.taskBoundTaskId}`);
+      assert.equal(task.task.title, 'slave-created-by-mcp');
+      assert.equal(task.sessionId, slave.id);
+    }
 
     // S3: verify callback instruction present in slave prompt
     assert.match(slaveEntry.prompt, /dispatch_slave/, 'S3: slave prompt must mention dispatch_slave');
@@ -329,7 +340,7 @@ function sendWsMessage(port, sessionId, text) {
       'D1: master consumed the worker result in a follow-up turn');
 
     await stop();
-    console.log('Bidirectional dispatch closed-loop integration: ALL PASSED');
+    console.log(`Bidirectional dispatch closed-loop integration (${NEW_TASK ? 'new_task' : 'existing target'}): ALL PASSED`);
     console.log('  D1: master dispatches → admitted receipt + backflow outbox emitted ✓');
     console.log('  S3: slave prompt contains dispatch_slave callback instruction ✓');
   } catch (error) {

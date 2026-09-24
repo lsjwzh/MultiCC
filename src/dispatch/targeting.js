@@ -197,6 +197,7 @@ function buildDispatchContextPrompt(sessionId) {
   return [
     ...intro,
     '工具格式：route_task({"target_session_id":"multicc-claude-chat-05","message":"完整、自包含的任务说明"})（把示例 id 换成下方「可用目标 sessions」列表中逐字复制的 id）',
+    '独立新任务使用 new_task:{title,cli?,model?,provider?,effort?} 替代 target_session_id，由 MCP 统一创建任务和执行会话后派发。指定 target_session_id 表示补充该会话已有任务。禁止通过 curl/Bash/Python 调管理 API 预先创建任务或会话，也不要自行生成任务编号。',
     'target 必须逐字复制下面列表中某个对象的 id 字段值（如 multicc-claude-chat-05）；绝对不要使用 xxx、...、SID、SESSION_ID、worker-1 等占位符，否则派发必定失败。',
     '必须优先复用列表中的已有匹配会话；不得因为会话当前活跃、任务名称提到某种 CLI/终端，或为了“更合适”就新建会话。只有确实没有可胜任的现有 worker 时才报告缺少目标。',
       '候选字段含 role（稳定职责摘要）、recentTasks（最近任务，按新到旧）、load（进程负载）和 routingState（工作流状态）。这些是服务端提供的有界事实；候选列表顺序不表示优先级，不要根据 id、CLI 名称或最近活跃时间猜职责。',

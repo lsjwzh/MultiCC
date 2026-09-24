@@ -820,7 +820,9 @@ function createOrchestrationRuntime({
         originDispatchId: payload.operationId,
         originContinue: false,
         deliveryId: item.id,
-        clientMsgId: item.id,
+        clientMsgId: payload.clientMsgId || item.id,
+        taskShellReceiptId: payload.taskShellReceiptId || undefined,
+        receivedAt: payload.receivedAt,
         taskId: payload.taskId || undefined,
         taskRunId: payload.taskRunId || undefined,
         leaseEpoch: itemLeaseEpoch(item) || undefined,
@@ -947,7 +949,7 @@ function createOrchestrationRuntime({
           try {
             probe = await Promise.resolve(runnerDeliveryProbe(
               item.sessionId,
-              item.payload?.options?.clientMsgId || deliveryId,
+              item.payload?.options?.clientMsgId || item.payload?.clientMsgId || deliveryId,
             ));
           } catch (_) { probe = null; }
         }
@@ -1005,12 +1007,17 @@ function createOrchestrationRuntime({
       try {
         settled = error.backpressure === true
           ? await outbox.defer(item.id, item.leaseToken, error.code || error.message, { delayMs: 1000 })
-          : await outbox.fail(item.id, item.leaseToken, error, { retryable: true });
+          : await outbox.fail(item.id, item.leaseToken, error, { retryable: error.retryable !== false });
       } catch (settleError) {
         log(`[orchestration] delivery ${item.id} outbox settle failed: ${settleError.message}`);
       }
       if (schedulerClaimed) {
         await sessionScheduler.releaseClaim(item, 'delivery_error').catch(() => {});
+      }
+      if (settled?.deadLetter && item.payload?.type === 'dispatch.request') {
+        await operations.completeDispatch(item.payload.operationId, {
+          status: 'failed', error: error.code || 'delivery_failed', retryable: false,
+        });
       }
       if (settled) return settled;
       throw error;

@@ -549,7 +549,15 @@ function createOrchestrationRoutes(rawDeps) {
               }
             }
             result.schedule = schedule;
-            result.started = !entryHeld(schedule);
+            const delivery = await deps.runtime.outbox?.get?.(body.entryId);
+            result.started = delivery?.state === 'delivered'
+              || (schedule?.active?.entryId === body.entryId && !!schedule.active.startedAt);
+            if (delivery?.state === 'dead-letter' || delivery?.state === 'cancelled') {
+              result.ok = false;
+              result.code = 'queue_delivery_failed';
+              result.error = delivery.lastError || delivery.state;
+              result.retryable = false;
+            }
             if (!result.started) {
               result.holdReasons = typeof deps.busyReasons === 'function'
                 ? deps.busyReasons(session.id) : [];

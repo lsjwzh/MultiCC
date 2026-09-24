@@ -46,6 +46,8 @@ function createTaskContextHost(options = {}) {
       taskSource: opts.taskSource || null,
       taskText: opts.taskStart === true ? String(opts.taskText || '') : null,
       resultMode: opts.resultMode || null,
+      ...(opts.taskShellReceiptId ? { taskShellReceiptId: opts.taskShellReceiptId,
+        clientMsgId: opts.clientMsgId, receivedAt: opts.receivedAt } : {}),
     };
   }
 
@@ -290,6 +292,7 @@ function createTaskContextHost(options = {}) {
     guardAdmission: (...args) => getTaskShells()?.guardAdmission(...args),
     ownsTaskShell: id => getTaskShells()?.owns(id),
     requiresTaskShell: id => getTaskShells()?.accepts(id),
+    dispatchTaskShell: (...args) => getTaskShells().dispatchFromSession(...args),
     sendTaskShellInput: (id, message, shellId) => getTaskShells().sendClientInput(id, message, shellId),
     taskShellChatScope: (id, sessionId) => getTaskShells().chatScope(id, sessionId),
     taskShellChatHistory: (id, options) => getTaskShells().chatHistory(id, options),

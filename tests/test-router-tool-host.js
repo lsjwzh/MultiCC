@@ -274,7 +274,9 @@ test('spawnProcess injects vault entries into the child env (set-if-absent)', ()
   };
   // Fresh child env: injectable entry lands, routing namespace never does, and
   // the MULTICC_* host marker set by processContext stays authoritative.
-  const fresh = spawnProbe({ PATH: process.env.PATH });
+  const fresh = spawnProbe({ PATH: process.env.PATH, ACCESS_TOKEN: 'host-secret', MULTICC_ACCESS_TOKEN: 'host-secret' });
+  assert.equal(fresh.ACCESS_TOKEN, undefined);
+  assert.equal(fresh.MULTICC_ACCESS_TOKEN, undefined);
   assert.equal(fresh.RTH_SMOKE_TOKEN, 'smoke-1');
   assert.equal('ANTHROPIC_API_KEY' in fresh, false);
   assert.equal(fresh.MULTICC_SESSION_ID, 's1', 'processContext MULTICC_* markers stay authoritative');

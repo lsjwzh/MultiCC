@@ -179,6 +179,11 @@ function createOperationService({
             taskText: operation.spec.taskText || null,
             taskRunId: operation.spec.taskRunId || null,
             leaseEpoch: operation.spec.leaseEpoch || null,
+            ...(operation.spec.taskShellReceiptId ? {
+              taskShellReceiptId: operation.spec.taskShellReceiptId,
+              clientMsgId: operation.spec.clientMsgId,
+              receivedAt: operation.spec.receivedAt,
+            } : {}),
           },
           source: { type: 'operation', kind: 'dispatch', operationId: operation.id },
           now: Number(now()),

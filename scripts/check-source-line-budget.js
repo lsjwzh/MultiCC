@@ -151,9 +151,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 入口，那条边界不能跟着旧页一起消失）：键数不变、只是变长，字节抬到 410097。
   // CLI 更新浮层给未安装的行加「安装」（4 键）+ 目录拖拽排序 / 目录卡侧拉（3 键），
   // 中英各 7 行 = +14 行，抬到 6646/410852。
+  // 插入队列增加“尚未启动”提示，中英各一行。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6646,
-    maxBytes: 410852,
+    maxLines: 6648,
+    maxBytes: 411100,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

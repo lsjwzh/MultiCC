@@ -186,6 +186,7 @@ function createTaskShellHost(deps) {
       indexTask: task => deps.getTaskBoard().registerShellTask(task),
       taskGraphContext: deps.taskGraphContext,
       send: (...args) => deps.deliver(...args),
+      dispatch: (...args) => deps.dispatch(...args),
       cancel: (id, turnId) => {
         if (currentTurn(id) !== turnId) throw failure('stale_control');
         return deps.getWorkHost().cancelActiveTurn(id, { source: 'task-shell', reason: 'user_cancelled' });
@@ -445,6 +446,10 @@ function createTaskShellHost(deps) {
       return owner?.owns(id) ? owner.guardAdmission(id, text, options) : { ok: false, code: 'task_shell_state_unavailable' };
     },
     accepts, open, owns, sendFromSession, sendClientInput, sendTaskMessage, taskSummary,
+    dispatchFromSession: (id, ...args) => {
+      if (owns(id)?.unavailable) throw failure('task_shell_state_unavailable');
+      return getRuntime().dispatchFromSession(id, ...args);
+    },
     migrateTaskSessions: async () => {
       const rt = getRuntime(), result = await rt.migrateTaskSessions([...deps.records.values()]);
       const ready = new Set(result.migrated);
