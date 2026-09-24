@@ -52,9 +52,9 @@ function fixture(t, overrides = {}) {
         gateway: false,
         oneWay: opts.oneWay,
         resultMode: opts.resultMode,
-        taskId: opts.taskId,
-        taskStart: opts.taskStart,
-        taskSource: opts.taskSource,
+        taskId: 'tsk-worker-a',
+        taskStart: false,
+        taskSource: 'task-shell',
         taskText: opts.taskText || null,
       },
     });
@@ -64,6 +64,7 @@ function fixture(t, overrides = {}) {
       status: admitted.status,
       duplicate: admitted.idempotent,
       chatId: targetId,
+      taskId: 'tsk-worker-a',
     };
   };
   const runtime = createRouterToolRuntime({
@@ -477,7 +478,7 @@ test('route_task durably admits one-way work and is turn-idempotent', async t =>
   assert.equal(duplicate.duplicate, true);
   assert.equal(admissions[0].opts.oneWay, true);
   assert.equal(admissions[0].opts.replyTo, null);
-  assert.equal(admissions[0].opts.taskSource, 'router-tool');
+  assert.equal(admissions[0].opts.taskId, undefined, 'router delegates identity selection to the canonical task service');
   const operation = await operations.get(first.operation_id);
   assert.equal(operation.spec.resultMode, 'none');
   assert.equal(operation.spec.taskId, first.task_id);
@@ -500,7 +501,7 @@ test('route_task attributes the sender so the recipient can trace who dispatched
   assert.equal(admissions[0].opts.ownerSessionId, 'caller');
 });
 
-test('route_task preserves an inherited logical task across follow-up turns', async t => {
+test('route_task preserves the recipient task across turns without inheriting caller identity', async t => {
   let active = {
     turnId: 'turn-task-start',
     taskId: 'tsk-canonical-upstream',
@@ -525,16 +526,16 @@ test('route_task preserves an inherited logical task across follow-up turns', as
     target_session_id: 'worker-a',
     message: 'follow-up details',
   });
-  assert.equal(first.task_id, 'tsk-canonical-upstream');
+  assert.equal(first.task_id, 'tsk-worker-a');
   assert.equal(followup.task_id, first.task_id);
   assert.notEqual(followup.operation_id, first.operation_id);
   assert.equal(admissions.length, 2);
-  assert.deepEqual(admissions.map(item => item.opts.taskStart), [true, false]);
-  assert.deepEqual(admissions.map(item => item.opts.taskSource), ['task-board', 'task-board']);
+  assert.deepEqual(admissions.map(item => item.opts.taskId), [undefined, undefined]);
+  assert.deepEqual(admissions.map(item => item.opts.taskSource), [undefined, undefined]);
   assert.equal((await operations.list({ kind: 'dispatch' })).length, 2);
 });
 
-test('ordinary route_task mints a candidate instead of inheriting an unfinished task', async t => {
+test('ordinary route_task uses the recipient canonical identity', async t => {
   const { admissions, runtime } = fixture(t, {
     resolveContext: () => ({
       turnId: 'turn-unrelated',
@@ -546,12 +547,12 @@ test('ordinary route_task mints a candidate instead of inheriting an unfinished 
   const capability = runtime.issueContext({ sessionId: 'caller', dynamic: true });
   const result = await runtime.execute(capability, 'route_task', {
     target_session_id: 'worker-a',
-    message: 'completely unrelated work',
+    message: 'supplement this worker task',
   });
   assert.notEqual(result.task_id, 'tsk-unfinished-prior');
-  assert.match(result.task_id, /^tsk-router-/);
-  assert.equal(admissions[0].opts.taskStart, true);
-  assert.equal(admissions[0].opts.taskSource, 'router-tool');
+  assert.equal(result.task_id, 'tsk-worker-a');
+  assert.equal(admissions[0].opts.taskStart, undefined);
+  assert.equal(admissions[0].opts.taskId, undefined, 'router delegates identity selection to the canonical task service');
 });
 
 test('explicit idempotency survives a fresh turn without creating a second logical task', async t => {

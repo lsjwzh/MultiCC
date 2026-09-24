@@ -1036,7 +1036,7 @@ test('queue immediate insert handler executes the selected entry now', async () 
   const handler = global.MultiCCChatSessionQueue.createInsertHandler({
     fetch: async (url, options) => {
       requests.push({ url, options });
-      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, started: true }) };
     },
     withToken: url => `/tokenized${url}`,
     getSessionName: () => 'session/1',

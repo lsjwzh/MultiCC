@@ -479,3 +479,35 @@ test('download-ticket rejects missing paths and unauthenticated exchange', async
 test('createAuthRuntime rejects missing dependencies', () => {
   assert.throws(() => createAuthRuntime({}), /express/);
 });
+
+test('task creation requires a user credential even on loopback; MCP capability cannot grant management access', async t => {
+  const h = await buildHarness({ accessToken: 'sekret', local: true });
+  t.after(h.close);
+  for (const route of ['/api/air/tasks', '/api/directories/d1/sessions', '/api/task-board/tasks',
+    '/api/task-shells/shell/messages', '/api/sessions/s1/fork', '/api/settings/access-token']) {
+    for (const headers of [{}, { 'x-multicc-router-capability': 'model-cap' },
+      { 'x-multicc-router-capability': 'model-cap', 'x-access-token': 'sekret' },
+      { origin: h.base, 'user-agent': 'browser', 'x-multicc-role': 'user' }]) {
+      const res = await raw(h.base, route, { method: 'POST', headers });
+      assert.equal(res.status, 403, route);
+      assert.equal((await res.json()).error.retryable, false);
+    }
+    for (const headers of [{ 'x-access-token': 'sekret' }, { cookie: 'multicc_auth=GOODCOOKIE' }]) {
+      assert.equal((await raw(h.base, route, { method: 'POST', headers })).status, 200, route);
+    }
+  }
+  assert.equal((await raw(h.base, '/api/air/tasks?token=sekret', { method: 'POST' })).status, 403);
+  assert.equal((await raw(h.base, '/api/air/tasks')).status, 200, 'local reads are unchanged');
+});
+
+test('no-token creation explains setup; authenticated scoped clients retain their grant', async t => {
+  const h = await buildHarness({ accessToken: '', local: true });
+  t.after(h.close);
+  const res = await raw(h.base, '/api/air/tasks', { method: 'POST' });
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).error.code, 'TASK_CREATION_AUTH_SETUP_REQUIRED');
+  assert.equal((await raw(h.base, '/api/settings/access-token', { method: 'POST' })).status, 200, 'initial local password setup remains reachable');
+  h.state.scopedRequest = true;
+  assert.equal((await raw(h.base, '/api/air/tasks', { method: 'POST' })).status, 200);
+  assert.equal((await raw(h.base, '/api/air/tasks', { method: 'POST', headers: { 'x-multicc-router-capability': 'model' } })).status, 403);
+});

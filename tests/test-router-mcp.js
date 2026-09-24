@@ -172,7 +172,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
     message: 'do it',
   });
   const masterTool = listed.result.tools.find(tool => tool.name === 'dispatch_master');
-  assert.deepEqual(masterTool.inputSchema.required, ['target_session_id', 'message', 'mode']);
+  assert.deepEqual(masterTool.inputSchema.required, ['message', 'mode']);
   assert.deepEqual(masterTool.inputSchema.properties.mode.enum, ['sync', 'async']);
   assert.match(masterTool.description, /do not poll/i);
   assert.match(masterTool.description, /dispatch_status/);
@@ -262,4 +262,32 @@ test('host prompt prefers scoped durable wait tools and keeps raw polling privil
   assert.match(source, /cancel_external_wait/);
   assert.match(source, /只有必须由宿主机执行命令或查询 URL 时/);
   assert.doesNotMatch(source, /-d '\{\"mode\":\"callback\"\}'/);
+});
+
+test('permanent admission failures retain retryable:false through JSON and streamed MCP responses', async t => {
+  let stream = false;
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      const error = { code: 'task_identity_mismatch', retryable: false };
+      if (stream) {
+        res.setHeader('content-type', 'application/x-ndjson');
+        res.end(JSON.stringify({ type: 'error', ...error }) + '\n');
+      } else {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(error));
+      }
+    });
+  });
+  const client = clientFor(await listen(server));
+  t.after(async () => { await client.stop(); await close(server); });
+  for (const mode of ['async', 'sync']) {
+    stream = mode === 'sync';
+    const response = await client.call('tools/call', {
+      name: 'dispatch_master', arguments: { target_session_id: 'worker', message: 'work', mode },
+    });
+    assert.equal(response.result.isError, true);
+    assert.equal(response.result.structuredContent.code, 'task_identity_mismatch');
+    assert.equal(response.result.structuredContent.retryable, false);
+  }
 });

@@ -46,6 +46,7 @@ async function main() {
     env: {
       ...process.env,
       PORT: String(port),
+      ACCESS_TOKEN: 'liveness-isolated-test',
       MULTICC_DATA_DIR: dataDir,
       MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '60000',
     },
@@ -73,7 +74,7 @@ async function main() {
       + '&& echo x > README.md && git add -A && git commit -qm init', { cwd: repoDir });
 
     const dirRes = await fetch(`${base}/api/directories`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', 'X-Access-Token': 'liveness-isolated-test' },
       body: JSON.stringify({ name: 'liveness-test', path: repoDir }),
     });
     const dir = await dirRes.json();
@@ -81,7 +82,7 @@ async function main() {
     assert.ok(dirId, `directory create returned an id (got ${JSON.stringify(dir).slice(0, 200)})`);
 
     const sessRes = await fetch(`${base}/api/directories/${dirId}/sessions`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', 'X-Access-Token': 'liveness-isolated-test' },
       body: JSON.stringify({ cli: 'claude', kind: 'chat', label: 'liveness-probe-target' }),
     });
     const sess = await sessRes.json();

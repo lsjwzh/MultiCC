@@ -63,6 +63,10 @@
         notify(message, 'error');
         throw new Error(message);
       }
+      if (action === 'insert_queued' && data.started !== true) {
+        notify('已优先排队，尚未开始执行', 'info');
+        return false;
+      }
       notify(ACTION_DONE[action] || '已更新暂存消息', 'completed');
       return true;
     };
@@ -292,7 +296,7 @@
           const insert = documentRef.createElement('button');
           insert.type = 'button';
           insert.className = 'session-queue-insert';
-          insert.textContent = item.priority ? '执行中' : '立刻插入';
+          insert.textContent = item.priority ? '等待插入' : '立刻插入';
           insert.title = item.priority
             ? '这条消息已被选中立即执行'
             : '停止当前回复并立即执行这条消息';

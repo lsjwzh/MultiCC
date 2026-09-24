@@ -1197,3 +1197,24 @@ test('hibernation activity view grants amnesty to stale durable rows via staleMs
   assert.equal(await h.runtime.hasSessionActivity('bound-stale', { staleMs: 60_000 }), false, 'stale row earns amnesty');
   await h.runtime.stop();
 });
+
+test('permanent dispatch identity failures settle once and return a durable failure to the owner', async t => {
+  let attempts = 0;
+  const f = fixture(t, { runChatTurn: () => {
+    attempts += 1;
+    throw Object.assign(new Error('task_identity_mismatch'), { code: 'task_identity_mismatch', retryable: false });
+  } });
+  const op = await f.runtime.admitDispatch({ ownerSessionId: 'master', idempotencyKey: 'wrong-identity',
+    spec: { targetId: 'worker', chatId: 'worker', message: 'review', resultMode: 'async' } });
+  await f.runtime.tick();
+  const request = await f.runtime.outbox.get(op.requestOutboxId);
+  assert.equal(request.state, 'dead-letter');
+  const failed = await f.runtime.operations.get(op.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.result.error, 'task_identity_mismatch');
+  assert.equal(failed.result.retryable, false);
+  assert.equal(attempts, 1);
+  const schedule = await f.runtime.sessionScheduler.status('worker');
+  assert.equal(schedule.active, null);
+  assert.equal(schedule.queued.length, 0);
+});
