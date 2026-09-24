@@ -192,9 +192,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 补第 8 条键 autoEditorRoutingKeyMissing（路由已勾但保险箱缺 vercel-api-key 的提示），
   // 中英各 1 行 = +2 行，抬到 6698/414487（这次是重跑生成器后的真实行数，用
   // split(/\n/).length 量的，比 wc -l 多 1）。
+  // 难度路由改成「一看就会」的向导（方式单选 / ① 连接 Jev：粘 key、测试、判断不了时
+  // / ② 负责列 + 效果预览 / 各类失败的白话解释），净增 44 键（新 47、删 3 条旧提示），
+  // 中英各 44 行 = +88 行，重跑生成器后抬到 6786/420551。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6698,
-    maxBytes: 414487,
+    maxLines: 6786,
+    maxBytes: 420551,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
