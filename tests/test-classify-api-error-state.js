@@ -11,6 +11,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
+const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
+const { EventEmitter } = require('events');
 
 const FAIL_FAST = Object.freeze({
   category: 'unknown', provider: 'qoder', code: 'error_during_execution',
@@ -28,6 +30,7 @@ function fixture({
   auxReply = '定位 codex 冷启瓶颈\n规划中\nP',
   auxUnhealthy = false,
   backgroundPending = false,
+  hasBackgroundPending = () => backgroundPending,
 } = {}) {
   const record = {
     id: 's1', kind: 'chat', cli: 'qoder',
@@ -124,10 +127,104 @@ function fixture({
     getAuxRunLog: () => ({
       record: (_sessionId, run) => { observed.auxRuns.push(run); return run; },
     }),
-    hasBackgroundPending: () => backgroundPending,
+    hasBackgroundPending,
   });
   return { machine, record, chatState, history, observed, releaseAux: () => releaseAux() };
 }
+
+// Builds a real background-task-runtime instance (not a stubbed boolean) so the
+// gate tests below wire hasBackgroundPending exactly like server.js does:
+// `sessionName => backgroundTaskRuntime.hasProcessBackgroundTasks(sessionName)`.
+// This is what actually caught production bug tsk_d1cfdfd2da8fdeb85c33ed43b0eec714 —
+// a persistent Monitor task was still running when the turn ended, but classify
+// published D anyway because the wiring used to call the narrower
+// hasLiveBackgroundTasks, which only inspects tail-shadowed tasks and never sees
+// Monitor-tool watches.
+function makeBackgroundRuntime() {
+  const spawned = [];
+  function spawn() {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.kill = () => {};
+    spawned.push(child);
+    return child;
+  }
+  const runtime = createBackgroundTaskRuntime({
+    broadcast() {},
+    observeTask() {},
+    noteBgResultInjected() {},
+    deliverSystem() {},
+    createCoalescer: () => ({ add() {}, flush() {}, clear() {} }),
+    buildNudge: () => '',
+    classifyCompletion: () => ({ kind: 'unknown' }),
+    spawn,
+    readFile: () => { throw new Error('ENOENT'); },
+    realpath: value => value,
+    tmpdir: () => '/tmp',
+    getuid: () => 501,
+    setTimer: () => ({}),
+    clearTimer() {},
+    now: () => Date.now(),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  return { runtime, spawned };
+}
+
+test('a turn ending while a persistent Monitor is still live must not be classified D', () => {
+  const { runtime } = makeBackgroundRuntime();
+  // Mirrors the real SDK event: the Agent tool started a persistent Monitor
+  // watch and it has not reported completion yet when the main turn's result
+  // event arrives.
+  runtime.handleEvent('s1', {
+    cwd: '/repo',
+    currentToolCalls: [{ id: 'mon-tool', name: 'Monitor', input: { pattern: 'DONE', persistent: true } }],
+  }, {
+    subtype: 'task_started', task_id: 'mon-task', tool_use_id: 'mon-tool',
+    session_id: 'native', description: 'full flutter test result',
+  });
+
+  // The bug: hasLiveBackgroundTasks only checks tail-shadowed tasks, and
+  // persistent Monitor tasks deliberately skip the shadow (they have their own
+  // hook-based delivery). So the narrow function is blind to this live task.
+  assert.equal(runtime.hasLiveBackgroundTasks('s1'), false,
+    'documents the exact gap: the narrow function cannot see a live Monitor');
+  // The fix: hasProcessBackgroundTasks additionally checks monitorWatches.
+  assert.equal(runtime.hasProcessBackgroundTasks('s1'), true,
+    'the broad function must see the still-running Monitor');
+
+  const h = fixture({ hasBackgroundPending: sessionName => runtime.hasProcessBackgroundTasks(sessionName) });
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(h.record.taskState.classifyState, 'B',
+    'classify must not drain the FIFO while the Monitor the turn started is still running');
+  assert.equal(h.record.taskState.classifyHistory.at(-1).evidence, 'background_pending');
+
+  // Regression pin: if classify were wired back to the narrow function (the
+  // actual production bug), this same still-running Monitor would be invisible
+  // and the turn would wrongly reach D.
+  const regressed = fixture({ hasBackgroundPending: sessionName => runtime.hasLiveBackgroundTasks(sessionName) });
+  regressed.machine.classifyTurnEnd(regressed.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(regressed.record.taskState.classifyState, 'D',
+    'proves the narrow wiring is the exact production bug this test guards against');
+});
+
+test('a turn ending while a background sub-agent (Agent tool) is still live must not be classified D', () => {
+  const { runtime } = makeBackgroundRuntime();
+  // A background Agent-tool task: tool_use_id present but no matching entry in
+  // currentToolCalls (the sub-agent's own tool call, not a Bash/Monitor call on
+  // the main turn) — this is how background-task-runtime recognizes a subagent.
+  runtime.handleEvent('s1', { cwd: '/repo', currentToolCalls: [] }, {
+    subtype: 'task_started', task_id: 'sub-task', tool_use_id: 'sub-tool',
+    session_id: 'native', description: 'background research agent',
+  });
+
+  assert.equal(runtime.hasProcessBackgroundTasks('s1'), true,
+    'a live sub-agent shadow must be visible to the classify gate');
+
+  const h = fixture({ hasBackgroundPending: sessionName => runtime.hasProcessBackgroundTasks(sessionName) });
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'succeeded' });
+  assert.equal(h.record.taskState.classifyState, 'B',
+    'classify must not drain the FIFO while the sub-agent the turn started is still running');
+});
 
 test('an exhausted API failure publishes E from rules before best-effort Aux naming', () => {
   const h = fixture();
