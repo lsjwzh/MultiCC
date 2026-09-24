@@ -23,6 +23,7 @@ const {
 const { taskShortCode } = require('./task-short-code');
 const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board/core');
 const {
+  attributionQueryText,
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,
   parseTaskAttribution,
@@ -86,6 +87,13 @@ function createClassifyStateMachine(rawDeps) {
     // server wires the JSONL-backed log in explicitly. Recording is diagnostic,
     // so a missing sink degrades observability and nothing else.
     getAuxRunLog = () => ({ record: () => null }),
+    // Message-level retrieval (src/search/runtime.js), optional. Absent — or
+    // present but unavailable, which is what a missing FTS5 looks like — means
+    // attribution retrieves from the board's own corpus only, exactly as it did
+    // before the message index existed. Deliberately not defaulted to the shared
+    // runtime: an implicit default would let any test that forgets to inject one
+    // start indexing the real data directory.
+    getMessageSearch = null,
     // Structured background-task ownership. Optional for older hosts/tests;
     // production wires the authoritative background runtime.
     hasBackgroundPending = () => false,
@@ -371,6 +379,11 @@ function createClassifyStateMachine(rawDeps) {
   const SCAN_INTERVAL_MS = 60 * 1000;
   const SCAN_MAX_QUEUE = 20;        // skip the whole sweep if the queue is already this long
   const SCAN_RETHROTTLE_MS = 2 * 60 * 1000;  // skip a session judged < 2min ago
+  // Message chunks to retrieve per turn. Chunks, not tasks: one conversation
+  // usually matches in several places, and the merge keeps the best per task — so
+  // this has to clear the few tasks it is meant to propose (attribution shows at
+  // most RETRIEVAL_MESSAGE_LIMIT of them) with room for the duplicates.
+  const MESSAGE_HIT_LIMIT = 12;
   // Bounded in-memory ring of recent scanAndReclassify passes, for debugging
   // "when did a scan run, what did it see, and which sessions did it enqueue vs
   // skip (and why)". Queryable via GET /api/scan/history. Never persisted — no fs
@@ -755,7 +768,7 @@ function createClassifyStateMachine(rawDeps) {
       const provisionalTaskId = stateAtStart.taskIdentityPending === true ? taskId : null;
       const recentTasks = recentTaskContext(history);
       const relatedTasks = relatedTasksForTurn({
-        userText: lastUserText(history), replyText: reply,
+        userText: lastUserText(history), replyText: reply, sessionId: sid,
         excludeTaskIds: recentTasks.map(task => task.taskId),
       });
       const systemPrompt = buildTaskAttributionSystemPrompt({
@@ -834,10 +847,40 @@ function createClassifyStateMachine(rawDeps) {
     return '';
   }
 
+  // Message-level hits for one turn: the same bounded query, asked of the whole
+  // conversation corpus instead of the board's excerpts. Deliberately best-effort
+  // at every step (port missing, index unavailable, query throws) because these are
+  // candidate evidence for a judgement, never the judgement itself.
+  function messageHitsForTurn({ sessionId = '', userText = '', replyText = '' } = {}) {
+    const port = typeof getMessageSearch === 'function' ? getMessageSearch() : null;
+    const query = attributionQueryText({ userText, replyText });
+    if (!port || !query || typeof port.findMessages !== 'function') return [];
+    try {
+      return port.findMessages({
+        text: query,
+        limit: MESSAGE_HIT_LIMIT,
+        // The turn being judged is itself in this session's history, so this
+        // session's messages match its own query by construction. Self-retrieval is
+        // not evidence — left in, it would just re-propose the task the session is
+        // already on and crowd out the sessions that actually carry the answer.
+        excludeRefIds: sessionId ? [String(sessionId)] : [],
+      });
+    } catch (error) {
+      logger.warn?.('message_search_failed', { sessionId, error: error.message });
+      return [];
+    }
+  }
+
   // 「内容相关任务」候选：拿最新一轮的内容去搜整个任务板，补上最近任务列表看不到的
   // 历史任务（本次会话从没提过的那些）。检索只是给归因多一份证据，不参与判定成败，
   // 因此任何异常都降级成空数组。
-  function relatedTasksForTurn({ userText = '', replyText = '', excludeTaskIds = [] } = {}) {
+  //
+  // 两个语料都问：任务板自己的语料（标题/规划/每轮摘录），以及消息索引里的完整对话
+  // 正文（后者只在宿主接了这个 port 时才存在）。摘录很短，一个只在对话里被描述过、
+  // 从没沉淀成标题或摘录的任务只有消息索引能找回来。
+  function relatedTasksForTurn({
+    userText = '', replyText = '', excludeTaskIds = [], sessionId = '',
+  } = {}) {
     let board = null;
     try {
       const runtime = getTaskBoardRuntime();
@@ -845,7 +888,12 @@ function createClassifyStateMachine(rawDeps) {
     } catch (_) {
       return [];
     }
-    return retrieveRelatedTasks(board, { userText, replyText, excludeTaskIds });
+    return retrieveRelatedTasks(board, {
+      userText,
+      replyText,
+      excludeTaskIds,
+      messageHits: messageHitsForTurn({ sessionId, userText, replyText }),
+    });
   }
 
   // Compatibility name retained for route composition; the content is now the
@@ -922,7 +970,7 @@ function createClassifyStateMachine(rawDeps) {
       if (!recentTasks.some(value => value.taskId === task.taskId)) recentTasks.push(task);
     }
     const relatedTasks = relatedTasksForTurn({
-      userText: userMsg, replyText: reply,
+      userText: userMsg, replyText: reply, sessionId,
       excludeTaskIds: recentTasks.map(task => task.taskId),
     });
     const identityState = getTaskState(persistedSessions.get(sessionName));
@@ -1212,6 +1260,20 @@ function createClassifyStateMachine(rawDeps) {
       });
     }
     getTaskBoardRuntime().onTurnEnd(cs, sessionName);
+    // The turn that just ended becomes searchable now instead of at the next 60s
+    // sweep: the conversation that just spoke is the one the next turn is most
+    // likely to be about, and the per-session sync is incremental — it re-parses
+    // this session's file and rewrites only the chunks this turn added (measured
+    // ~7ms for a live session). After the verdict above has committed, so a broken
+    // index can only cost candidates, never the verdict itself.
+    try {
+      const messageSearch = typeof getMessageSearch === 'function' ? getMessageSearch() : null;
+      if (messageSearch && typeof messageSearch.syncSession === 'function') {
+        messageSearch.syncSession(sessionId);
+      }
+    } catch (error) {
+      logger.warn?.('message_search_sync_failed', { sessionId, error: error.message });
+    }
   }
 
   // to know "what task is running" and "what's the current status" WHILE the

@@ -141,6 +141,14 @@ function createMessageCorpus({ index, history, fsImpl = fs, logger = console, no
     return index.listMarkers(MESSAGE_SCOPE).filter(refId => !live.has(refId));
   }
 
+  // The sessions this corpus is willing to index, in history order. Exposed
+  // because a caller that syncs in slices (so a cold build does not block the
+  // event loop for seconds) must enumerate exactly the same set a sweep would.
+  function listSessions() {
+    return (typeof history.listSessionIds === 'function' ? history.listSessionIds() : [])
+      .filter(isSearchableSession);
+  }
+
   // `refs` lets a sweep hand in the ref list it already read: without it every
   // session in the sweep re-queries the whole ref table, which is O(sessions²).
   function syncSession(sessionId, { force = false, refs = null } = {}) {
@@ -192,8 +200,7 @@ function createMessageCorpus({ index, history, fsImpl = fs, logger = console, no
   // dropped, so a deleted conversation stops being searchable.
   function syncAll({ force = false } = {}) {
     const started = now();
-    const ids = (typeof history.listSessionIds === 'function' ? history.listSessionIds() : [])
-      .filter(isSearchableSession);
+    const ids = listSessions();
     const live = new Set(ids);
     let synced = 0;
     let skipped = 0;
@@ -226,6 +233,7 @@ function createMessageCorpus({ index, history, fsImpl = fs, logger = console, no
   }
 
   return Object.freeze({
+    listSessions,
     syncAll,
     syncSession,
     search: options => index.search({ ...options, scope: MESSAGE_SCOPE }),
