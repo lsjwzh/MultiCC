@@ -2170,11 +2170,11 @@ require('./src/routes/workspaces').mountWorkspaceRoutes(app, {
 providerRoutes.mountManagementRoutes(app);
 
 // GET /api/providers/:appType/:id/balance + GET /api/providers/balances —
-// explicit per-provider and all-at-once quota/balance queries for the manage
-// page, reusing the usage-limit poller's vendor adapters. Each query outcome is
-// mirrored into the persistent provider-limit cache (onResult), so an on-demand
-// balance check also refreshes the pickers' last-known summaries.
-mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider });
+// per-provider and all-at-once quota/balance queries for the manage page, reusing
+// the usage-limit poller's adapters. Outcomes mirror into the provider-limit cache
+// (onResult); lookupCached reads it back so a transient failure answers last-known-
+// good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
+mountProviderBalanceRoutes(app, { ...providers, onResult: limitRecorder.recordProvider, lookupCached: (appType, id) => providerLimitCache.get(appType, id) });
 
 // ZCode auth management (L1-L4: desktop key sync, manual key, OAuth login,
 // pre-turn auth check). Mounted after provider routes for logical grouping.
