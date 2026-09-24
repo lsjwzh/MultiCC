@@ -4,6 +4,7 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), os = requ
 const { spawn, execFileSync } = require('node:child_process');
 const { createPaths, assertTestDir } = require('../src/paths');
 const { writeJsonAtomic, readJson } = require('../src/state/store');
+const accessToken = process.argv.includes('--no-token') ? '' : 'isolated-only';
 const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-task-first-isolated-')));
 const data = path.join(root, 'data'), home = path.join(root, 'home'), project = path.join(root, 'project');
 for (const dir of [data, home, project]) fs.mkdirSync(dir);
@@ -36,7 +37,7 @@ async function wait(fn, label) {
 }
 async function api(route, body, status = 200, method) {
   const response = await fetch(base + route, { method: method || (body === undefined ? 'GET' : 'POST'),
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer isolated-only' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    headers: { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const text = await response.text(); assert.equal(response.status, status, route + ': ' + text); return JSON.parse(text);
 }
 (async () => {
@@ -47,11 +48,12 @@ async function api(route, body, status = 200, method) {
     const missing = path.join(root, 'missing'), commands = {};
     for (const name of ['CLAUDE_CMD','OPENCODE_CMD','ZCODE_CMD','ZCODE_ENGINE','QODER_CMD','QODERCN_CMD','KIMI_CMD','CODEBUDDY_CMD','WORKBUDDY_CMD','DSH_CMD']) commands[name] = missing;
     server = spawn(process.execPath, ['server.js'], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, ...commands,
-      NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: 'isolated-only',
+      NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', ACCESS_TOKEN: accessToken,
       NODE_OPTIONS: '--require ' + preload, MULTICC_DATA_DIR: data, MULTICC_MEMORY_ROOT: path.join(data, 'memories'), CODEX_CMD: fake,
       MULTICC_CODEX_ROLLOUT_ARCHIVE_TTL_DAYS: '0', MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS: '100' }, stdio: ['ignore', 'pipe', 'pipe'] });
     server.stdout.on('data', b => { logs = (logs + b).slice(-30000); }); server.stderr.on('data', b => { logs = (logs + b).slice(-30000); });
     await wait(async () => { try { return (await fetch(base + '/readyz')).ok; } catch (_) { return false; } }, 'readiness');
+    assert.equal((await api('/api/settings/access-token')).hasToken, !!accessToken);
     const air = await api('/api/air'); assert.equal(air.migration.ok, true); assert.equal(air.sessions.length, 0);
     const old = air.tasks.find(t => t.sessionId === 'legacy'); assert.ok(old); assert.equal(old.readOnly, false);
     assert.equal(fs.readFileSync(path.join(worktree, 'dirty.txt'), 'utf8'), 'KEEP UNMERGED');
@@ -69,6 +71,7 @@ async function api(route, body, status = 200, method) {
     const input = { dirId: 'd1', title: 'Independent task', cli: 'codex', clientMsgId: 'new-task' };
     const task = await api('/api/air/tasks', input); assert.deepEqual(await api('/api/air/tasks', input), task);
     let record = persisted().find(s => s.id === task.sessionId); assert.equal(record.workspaceState, 'planned');
+    assert.equal(record.taskBoundTaskId, task.taskId, 'REST creation binds the canonical task identity');
     assert.equal(fs.existsSync(record.worktreePath), false); assert.equal(rows().length, 0);
     const config = await api('/api/air/tasks/' + task.taskId);
     const beforeCount = persisted().length;
@@ -88,7 +91,7 @@ async function api(route, body, status = 200, method) {
     assert.match(rows()[1].prompt, /DYNAMIC_ROLE_TWO/); assert.doesNotMatch(rows()[1].prompt, /DYNAMIC_ROLE_ONE/);
     assert.equal(rows()[1].cwd, rows()[0].cwd); assert.equal(persisted().length, beforeCount);
     assert.equal(fs.readFileSync(path.join(worktree, 'dirty.txt'), 'utf8'), 'KEEP UNMERGED');
-    console.log('PASS task-only host: legacy adoption, retained dirty worktree, no role seeding, planned task, first-run materialization, role change retains workspace');
+    console.log(`PASS task-only host (local without credentials, configured token=${!!accessToken}): canonical REST creation, idempotency, first execution, continuation and retained workspace`);
   } catch (error) { console.error(error); console.error(logs); process.exitCode = 1; }
   finally {
     if (server && server.exitCode === null) { const exited = new Promise(r => server.once('exit', r)); server.kill('SIGTERM'); const timer = setTimeout(() => server.kill('SIGKILL'), 10000); await exited; clearTimeout(timer); }

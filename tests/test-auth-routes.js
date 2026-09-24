@@ -480,34 +480,31 @@ test('createAuthRuntime rejects missing dependencies', () => {
   assert.throws(() => createAuthRuntime({}), /express/);
 });
 
-test('task creation requires a user credential even on loopback; MCP capability cannot grant management access', async t => {
-  const h = await buildHarness({ accessToken: 'sekret', local: true });
+test('creation and message APIs retain the normal local, remote and Fleet authentication contract', async t => {
+  const h = await buildHarness();
   t.after(h.close);
-  for (const route of ['/api/air/tasks', '/api/directories/d1/sessions', '/api/task-board/tasks',
-    '/api/task-shells/shell/messages', '/api/sessions/s1/fork', '/api/settings/access-token']) {
-    for (const headers of [{}, { 'x-multicc-router-capability': 'model-cap' },
-      { 'x-multicc-router-capability': 'model-cap', 'x-access-token': 'sekret' },
-      { origin: h.base, 'user-agent': 'browser', 'x-multicc-role': 'user' }]) {
-      const res = await raw(h.base, route, { method: 'POST', headers });
-      assert.equal(res.status, 403, route);
-      assert.equal((await res.json()).error.retryable, false);
+  const routes = ['/api/air/tasks', '/api/directories/d1/sessions', '/api/task-board/tasks',
+    '/api/task-shells/shell/messages', '/api/task-shell-tasks/task/messages',
+    '/api/sessions/s1/fork', '/api/settings/access-token'];
+  for (const accessToken of ['', 'sekret']) {
+    h.state.accessToken = accessToken;
+    h.state.local = true;
+    for (const route of routes) {
+      assert.equal((await raw(h.base, route, { method: 'POST' })).status, 200,
+        `normal local UI needs no extra login: ${route}`);
     }
-    for (const headers of [{ 'x-access-token': 'sekret' }, { cookie: 'multicc_auth=GOODCOOKIE' }]) {
-      assert.equal((await raw(h.base, route, { method: 'POST', headers })).status, 200, route);
+    h.state.local = false;
+    for (const route of routes) {
+      const response = await raw(h.base, route, { method: 'POST', headers: {
+        origin: h.base, 'x-multicc-router-capability': 'model-cap',
+      } });
+      assert.equal(response.status, 403, `model instructions do not change remote auth: ${route}`);
+      assert.equal((await response.json()).error.code, 'AUTH_REQUIRED');
     }
   }
-  assert.equal((await raw(h.base, '/api/air/tasks?token=sekret', { method: 'POST' })).status, 403);
-  assert.equal((await raw(h.base, '/api/air/tasks')).status, 200, 'local reads are unchanged');
-});
-
-test('no-token creation explains setup; authenticated scoped clients retain their grant', async t => {
-  const h = await buildHarness({ accessToken: '', local: true });
-  t.after(h.close);
-  const res = await raw(h.base, '/api/air/tasks', { method: 'POST' });
-  assert.equal(res.status, 403);
-  assert.equal((await res.json()).error.code, 'TASK_CREATION_AUTH_SETUP_REQUIRED');
-  assert.equal((await raw(h.base, '/api/settings/access-token', { method: 'POST' })).status, 200, 'initial local password setup remains reachable');
+  for (const headers of [{ 'x-access-token': 'sekret' }, { cookie: 'multicc_auth=GOODCOOKIE' }]) {
+    assert.equal((await raw(h.base, '/api/air/tasks', { method: 'POST', headers })).status, 200);
+  }
   h.state.scopedRequest = true;
   assert.equal((await raw(h.base, '/api/air/tasks', { method: 'POST' })).status, 200);
-  assert.equal((await raw(h.base, '/api/air/tasks', { method: 'POST', headers: { 'x-multicc-router-capability': 'model' } })).status, 403);
 });

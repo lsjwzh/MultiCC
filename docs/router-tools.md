@@ -103,21 +103,10 @@ delivery and records a failed operation instead of retrying indefinitely.
 Queue insertion is reported as started only with durable delivery or scheduler
 start evidence; `ok:true, started:false` means prioritized but still waiting.
 
-HTTP commands that create tasks/sessions now require a signed user cookie,
-the access token (`X-Access-Token` or `Authorization: Bearer`), or an applicable
-authenticated Fleet grant. Loopback alone does not authorize these writes.
-Router capability headers are explicitly rejected on these management routes.
-Existing token changes also require the current user credential. Installations
-without an access token must set one through local settings and log in before
-using these commands; initial password setup remains local. MCP task creation
-continues through its separate session-scoped capability.
-
-The host removes `ACCESS_TOKEN` and `MULTICC_ACCESS_TOKEN` from the CLI spawn
-environment. This separates normal model routing from management access; it
-is not an OS sandbox. A model with unrestricted same-user shell/filesystem
-access could obtain user credentials, access other local interfaces, or modify
-the service. Preventing that requires separate OS/network and credential
-isolation. Origin or user-agent headers are not treated as proof of a human.
+The MCP-only task creation rule is a model instruction, not an HTTP access
+restriction. Management APIs retain their existing authentication and local
+access behavior; API clients may still create valid tasks through the canonical
+service. No additional login requirement or model-specific HTTP gate is imposed.
 
 Process-presence fields such as `active`, `streaming`, clients, recent task
 labels, and repository status are not dispatch completion evidence. Humans can
