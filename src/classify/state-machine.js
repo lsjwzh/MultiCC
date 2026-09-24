@@ -27,6 +27,7 @@ const {
   buildTaskAttributionSystemPrompt,
   parseTaskAttribution,
   recentTaskContext,
+  retrieveRelatedTasks,
 } = require('./task-attribution');
 const { resolveTurnState } = require('./turn-state');
 
@@ -753,8 +754,12 @@ function createClassifyStateMachine(rawDeps) {
       const stateAtStart = getTaskState(persistedSessions.get(sid));
       const provisionalTaskId = stateAtStart.taskIdentityPending === true ? taskId : null;
       const recentTasks = recentTaskContext(history);
+      const relatedTasks = relatedTasksForTurn({
+        userText: lastUserText(history), replyText: reply,
+        excludeTaskIds: recentTasks.map(task => task.taskId),
+      });
       const systemPrompt = buildTaskAttributionSystemPrompt({
-        recentTasks, currentTaskId: taskId, provisionalTaskId,
+        recentTasks, relatedTasks, currentTaskId: taskId, provisionalTaskId,
       });
       const prompt = buildClassifyConversation(sid, reply);
       const anchorMessageId = classifyAnchorMessageId(sid);
@@ -774,7 +779,8 @@ function createClassifyStateMachine(rawDeps) {
         }
         const res = parseTaskAttribution(result.text, {
           fallbackTaskId: taskId,
-          allowedTaskIds: recentTasks.map(task => task.taskId),
+          // 内容相关候选和最近任务一样是「模型见过的既有 ID」，同样是合法答案。
+          allowedTaskIds: [...recentTasks, ...relatedTasks].map(task => task.taskId),
         });
         const boundTaskId = persistedSessions.get(sid)?.taskBoundTaskId || null;
         const resolvedTaskId = boundTaskId || (res.relation === 'same'
@@ -814,6 +820,32 @@ function createClassifyStateMachine(rawDeps) {
     if (cs._classifyTimer) { clearTimeout(cs._classifyTimer); cs._classifyTimer = null; }
     // In-flight work may still finish for audit/provenance. Its captured message
     // anchor is checked before any live task identity can be changed.
+  }
+
+  // 最新一条真实用户消息：全文检索要用「用户这次说了什么」当查询，助手回复只是补充。
+  function lastUserText(history) {
+    const source = Array.isArray(history) ? history : [];
+    for (let index = source.length - 1; index >= 0; index -= 1) {
+      const message = source[index];
+      if (message?.role !== 'user' || typeof message.content !== 'string') continue;
+      if (!message.content.trim() || isSystemInjectedMsg(message.content)) continue;
+      return message.content;
+    }
+    return '';
+  }
+
+  // 「内容相关任务」候选：拿最新一轮的内容去搜整个任务板，补上最近任务列表看不到的
+  // 历史任务（本次会话从没提过的那些）。检索只是给归因多一份证据，不参与判定成败，
+  // 因此任何异常都降级成空数组。
+  function relatedTasksForTurn({ userText = '', replyText = '', excludeTaskIds = [] } = {}) {
+    let board = null;
+    try {
+      const runtime = getTaskBoardRuntime();
+      board = typeof runtime?.getBoard === 'function' ? runtime.getBoard() : runtime;
+    } catch (_) {
+      return [];
+    }
+    return retrieveRelatedTasks(board, { userText, replyText, excludeTaskIds });
   }
 
   // Compatibility name retained for route composition; the content is now the
@@ -889,6 +921,10 @@ function createClassifyStateMachine(rawDeps) {
     for (const task of shellOwned ? getTaskContextHost().taskShellRecentTasks(sessionName, shellReceiptId) : []) {
       if (!recentTasks.some(value => value.taskId === task.taskId)) recentTasks.push(task);
     }
+    const relatedTasks = relatedTasksForTurn({
+      userText: userMsg, replyText: reply,
+      excludeTaskIds: recentTasks.map(task => task.taskId),
+    });
     const identityState = getTaskState(persistedSessions.get(sessionName));
     const provisionalTaskId = !shellOwned && identityState.taskIdentityPending === true
       ? currentTaskId : null;
@@ -897,7 +933,7 @@ function createClassifyStateMachine(rawDeps) {
     const runId = requestId;
     const runSource = source || (manual ? 'manual' : 'turn-end');
     const systemPrompt = buildTaskAttributionSystemPrompt({
-      recentTasks, currentTaskId, provisionalTaskId, identityLocked,
+      recentTasks, relatedTasks, currentTaskId, provisionalTaskId, identityLocked,
     });
     const prompt = buildClassifyConversation(sessionName, reply);
     const anchorMessageId = classifyAnchorMessageId(sessionName);
@@ -937,7 +973,8 @@ function createClassifyStateMachine(rawDeps) {
       }
       const parsedAttribution = parseTaskAttribution(result.text, {
         fallbackTaskId: currentTaskId,
-        allowedTaskIds: recentTasks.map(task => task.taskId),
+        // 内容相关候选和最近任务一样是「模型见过的既有 ID」，同样是合法答案。
+        allowedTaskIds: [...recentTasks, ...relatedTasks].map(task => task.taskId),
       });
       // Explicit task-card/#CODE continuations are stronger than a probabilistic
       // model answer. A malformed `new` verdict must not split or group that
