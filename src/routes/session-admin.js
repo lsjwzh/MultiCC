@@ -190,7 +190,7 @@ function createSessionAdminRuntime(rawDeps) {
       providerSelection: providerSelectionDto(record.providerSelection),
       experimentalMode: record.experimentalMode || null,
       subagent: runtime.subagent,
-      autoCommit: !!record.autoCommit,
+      autoCommit: record.autoCommit !== false,
       cliStates: deps.cliStateSummary(record),
       pendingCliHandoff: deps.cliHandoffSummary(record),
       pendingConfiguration: record.pendingConfiguration || null,
@@ -322,7 +322,7 @@ function createSessionAdminRuntime(rawDeps) {
       pendingConfiguration: record.pendingConfiguration || null,
       streaming: isClaudeChat,
       autoContinue: record.autoContinue !== false,
-      autoCommit: !!record.autoCommit,
+      autoCommit: record.autoCommit !== false,
       // P1/P3: task-bound chat sessions are fleet-hidden but directly
       // addressable — the marker (plus identity fields) lets a client that
       // already holds the id open the session without a fleet-list entry.
