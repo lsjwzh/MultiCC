@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const DEFAULT_MAX_CHARS = 12_000;
 const MAX_TASK_ID_CHARS = 200;
 const MAX_TASK_TITLE_CHARS = 240;
-const REDACTED = '[已脱敏]';
+const REDACTED = '[redacted]';
 
 function digest(value) {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
@@ -39,9 +39,9 @@ function redactText(value) {
   // Native provider session identities must never cross a TaskRun boundary.
   text = text.replace(
     /(["']?)(?:nativeSessionId|cliSessionId)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;，；}]+)/gi,
-    '[已脱敏会话标识]',
+    '[redacted session id]',
   );
-  text = text.replace(/\b(?:nativeSessionId|cliSessionId)\b/gi, '[已脱敏会话字段]');
+  text = text.replace(/\b(?:nativeSessionId|cliSessionId)\b/gi, '[redacted session field]');
 
   // HTTP authorization schemes and common standalone provider credentials.
   text = text.replace(/\bAuthorization\s*:\s*[^\n]+/gi, `Authorization: ${REDACTED}`);
@@ -100,9 +100,9 @@ function forbiddenSessionKeyName(key) {
 function sanitizeStructured(value, seen = new WeakSet()) {
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') return redactText(value);
-  if (Buffer.isBuffer(value)) return `[二进制内容 ${value.length} 字节]`;
+  if (Buffer.isBuffer(value)) return `[binary content, ${value.length} bytes]`;
   if (typeof value !== 'object') return redactText(String(value));
-  if (seen.has(value)) return '[循环引用]';
+  if (seen.has(value)) return '[circular reference]';
   seen.add(value);
   if (Array.isArray(value)) {
     const result = value.map(item => sanitizeStructured(item, seen));
@@ -154,11 +154,11 @@ function normalizeRole(value) {
 
 function roleLabel(role) {
   return {
-    user: '用户',
-    assistant: '助手',
-    system: '系统',
-    tool: '工具',
-    unknown: '消息',
+    user: 'User',
+    assistant: 'Assistant',
+    system: 'System',
+    tool: 'Tool',
+    unknown: 'Message',
   }[role];
 }
 
@@ -229,7 +229,7 @@ function normalizeArtifacts(artifacts) {
     const content = artifactContent(source);
     const ref = {
       id: normalizeString(source.id ?? source.artifactId ?? '', 200),
-      name: normalizeString(source.name ?? source.label ?? '未命名产物', 240),
+      name: normalizeString(source.name ?? source.label ?? 'unnamed artifact', 240),
       hash: artifactDigest(source),
     };
     const mimeType = normalizeString(source.mimeType ?? source.type ?? '', 120);
@@ -259,10 +259,10 @@ function renderHistory(messages, budget) {
     truncated: messages.length > 0,
   };
   if (!messages.length || budget < 24) return empty;
-  const heading = '历史对话（按时间，较早内容可能省略）：';
+  const heading = 'Conversation history (chronological; earlier content may be omitted):';
   const render = (selected, omitted) => {
     const lines = [heading];
-    if (omitted > 0) lines.push(`- …已省略 ${omitted} 条较早消息`);
+    if (omitted > 0) lines.push(`- ...${omitted} earlier messages omitted`);
     lines.push(...selected.map(item => renderMessage(item.message, item.text)));
     return lines.join('\n');
   };
@@ -296,21 +296,21 @@ function renderHistory(messages, budget) {
 
 function renderArtifacts(artifacts, budget) {
   if (!artifacts.length || budget < 40) return { text: '', displayed: 0 };
-  const heading = '相关产物（仅列引用，不包含正文）：';
+  const heading = 'Related artifacts (references only, no content):';
   const lines = [heading];
   let displayed = 0;
   for (const artifact of artifacts) {
-    const size = artifact.size == null ? '' : `，${artifact.size} 字节`;
-    const line = `- ${artifact.name}（${artifact.hash}${size}）`;
+    const size = artifact.size == null ? '' : `, ${artifact.size} bytes`;
+    const line = `- ${artifact.name} (${artifact.hash}${size})`;
     const omitted = artifacts.length - displayed - 1;
-    const suffix = omitted > 0 ? `\n- …另有 ${omitted} 个产物引用` : '';
+    const suffix = omitted > 0 ? `\n- ...${omitted} more artifact references` : '';
     if (`${lines.join('\n')}\n${line}${suffix}`.length > budget) break;
     lines.push(line);
     displayed += 1;
   }
   if (!displayed) return { text: '', displayed: 0 };
   const omitted = artifacts.length - displayed;
-  if (omitted > 0) lines.push(`- …另有 ${omitted} 个产物引用`);
+  if (omitted > 0) lines.push(`- ...${omitted} more artifact references`);
   return { text: lines.join('\n'), displayed };
 }
 
@@ -340,7 +340,7 @@ function buildTaskRunContext({
 } = {}) {
   if (!task || typeof task !== 'object') throw new TypeError('task must be an object');
   const taskId = normalizeString(task.id ?? task.taskId ?? '', MAX_TASK_ID_CHARS);
-  const title = normalizeString(task.title ?? task.name ?? '未命名任务', MAX_TASK_TITLE_CHARS);
+  const title = normalizeString(task.title ?? task.name ?? 'untitled task', MAX_TASK_TITLE_CHARS);
   if (!taskId) throw new TypeError('task.id must be a non-empty string');
   const normalizedCurrent = normalizeString(currentText);
   if (includeCurrent && !normalizedCurrent) throw new TypeError('currentText must be a non-empty string');
@@ -355,22 +355,22 @@ function buildTaskRunContext({
     ? [...new Set(task.areas.map(area => normalizeString(area, 100)).filter(Boolean))].sort()
     : [];
 
-  const header = `[MultiCC 任务运行上下文 v${normalizedVersion}]`;
-  const essentialTaskLines = [`任务：${title}`, `任务 ID：${taskId}`];
-  if (status) essentialTaskLines.push(`状态：${status}`);
+  const header = `[MultiCC task run context v${normalizedVersion}]`;
+  const essentialTaskLines = [`Task: ${title}`, `Task ID: ${taskId}`];
+  if (status) essentialTaskLines.push(`Status: ${status}`);
   let taskSection = essentialTaskLines.join('\n');
-  const currentSection = includeCurrent ? `当前要求：\n${normalizedCurrent}` : '';
+  const currentSection = includeCurrent ? `Current request:\n${normalizedCurrent}` : '';
   const essentialText = [header, taskSection, currentSection].filter(Boolean).join('\n\n');
   let remaining = Math.max(0, budget - essentialText.length);
 
   const optionalTaskLines = [];
   if (summary && remaining > 16) {
     const allowance = Math.min(1_600, Math.floor(remaining * 0.3));
-    if (allowance > 8) optionalTaskLines.push(`摘要：${truncate(summary, allowance - 3)}`);
+    if (allowance > 8) optionalTaskLines.push(`Summary: ${truncate(summary, allowance - 3)}`);
   }
   if (areas.length && remaining > 16) {
     const allowance = Math.min(500, Math.floor(remaining * 0.1));
-    if (allowance > 8) optionalTaskLines.push(`领域：${truncate(areas.join('、'), allowance - 3)}`);
+    if (allowance > 8) optionalTaskLines.push(`Areas: ${truncate(areas.join(', '), allowance - 3)}`);
   }
   if (optionalTaskLines.length) taskSection += `\n${optionalTaskLines.join('\n')}`;
 
@@ -432,16 +432,20 @@ function buildTaskRunContext({
 // writer (marks metadata.wrapper), the board message projection, and the
 // next-turn compile input — so the scaffold can never leak into the
 // conversation view or be replayed as something the user said.
-const CONTEXT_HEADER_MARK = '[MultiCC 任务运行上下文';
-const COMMANDER_WRAPPER_MARK = '【Commander 单向路由任务】';
+const CONTEXT_HEADER_MARK = '[MultiCC task run context';
+const COMMANDER_WRAPPER_MARK = '[Commander one-way routed task]';
 const ROUTED_WRAPPER_PREFIX = '【任务：';
+// Wrappers persisted before the 2026-09-24 English rewrite still carry the
+// Chinese marks; recognising them keeps old scaffold out of the conversation view.
+const LEGACY_CONTEXT_HEADER_MARK = '[MultiCC 任务运行上下文';
+const LEGACY_COMMANDER_WRAPPER_MARK = '【Commander 单向路由任务】';
 
 function isTaskRunWrapperText(text) {
   const value = String(text == null ? '' : text);
   if (!value.trim()) return false;
   // Mid-string matches survive a goal-note prefix glued ahead of the wrapper.
-  if (value.includes(CONTEXT_HEADER_MARK)) return true;
-  if (value.includes(COMMANDER_WRAPPER_MARK)) return true;
+  if (value.includes(CONTEXT_HEADER_MARK) || value.includes(LEGACY_CONTEXT_HEADER_MARK)) return true;
+  if (value.includes(COMMANDER_WRAPPER_MARK) || value.includes(LEGACY_COMMANDER_WRAPPER_MARK)) return true;
   return value.trimStart().startsWith(ROUTED_WRAPPER_PREFIX);
 }
 

@@ -592,7 +592,7 @@ function deriveTaskTitle(value) {
       .replace(/^["'“”‘’]+|["'“”‘’]+$/gu, '')
       .trim();
     if (!line || /^【[^】]+】$/u.test(line)) continue;
-    if (/^(?:这是宿主路由器|请在当前 worker 会话|结果保留在当前 worker|不会自动回灌 Commander)/u.test(line)) continue;
+    if (/^(?:这是宿主路由器|请在当前 worker 会话|结果保留在当前 worker|不会自动回灌 Commander|This execution task was delivered directly by the host router|The result stays in the current worker)/u.test(line)) continue;
     if (/^(?:任务|新任务)\s*[:：]?\s*$/u.test(line)) continue;
     return line.slice(0, MAX_TITLE_LEN);
   }

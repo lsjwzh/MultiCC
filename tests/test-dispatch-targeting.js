@@ -87,10 +87,10 @@ test('caps the target list at 30 peers', () => {
 
 test('dispatchTargetHintFor renders the target list or a no-target message', () => {
   const t = makeFactory(BASE, {});
-  assert.match(t.dispatchTargetHintFor('me'), /可用目标 sessions: \[/);
+  assert.match(t.dispatchTargetHintFor('me'), /Available target sessions: \[/);
   assert.doesNotMatch(t.dispatchTargetHintFor('me'), /task-slot|Internal Task Slot/);
   const alone = makeFactory([{ id: 'solo', dirId: 'd9', type: 'chat' }], {});
-  assert.equal(alone.dispatchTargetHintFor('solo'), '当前同目录没有可分发的目标 session');
+  assert.equal(alone.dispatchTargetHintFor('solo'), 'No dispatchable target session in the current directory');
 });
 
 test('buildDispatchContextPrompt is empty for non-commander sessions and when there are no targets', () => {
@@ -225,32 +225,32 @@ test('commander gets the dispatch prompt', () => {
   const t = makeFactory(COMMANDER_BASE, {});
   const p = t.buildDispatchContextPrompt('cmd');
   assert.match(p, /\[MultiCC Commander routing\]/);
-  assert.match(p, /route-first|不是强制 route-only|优先 route_task|优先判断/);
+  assert.match(p, /route-first|not strictly route-only|dispatched with route_task|first decide/);
   assert.match(p, /route_task/);
-  assert.match(p, /优先复用/);
-  assert.match(p, /role（稳定职责摘要）/);
+  assert.match(p, /prefer reusing/);
+  assert.match(p, /role \(stable responsibility summary\)/);
   assert.match(p, /recentTasks/);
-  assert.match(p, /上下文连续性/);
+  assert.match(p, /context continuity/);
   assert.match(p, /load="running"/);
   assert.match(p, /routingState="waiting_user"/);
-  assert.match(p, /关联会话.*available.*优先/);
-  assert.match(p, /关联会话.*running.*其他.*available/);
-  assert.match(p, /全部.*忙.*FIFO/);
-  assert.match(p, /用户明确点名.*不得改派/);
+  assert.match(p, /prefer it when its load="available"/);
+  assert.match(p, /related session has load="running".*prefer another load="available"/);
+  assert.match(p, /every qualified session is busy.*FIFO/);
+  assert.match(p, /explicitly named by the user must be chosen as-is, never redirected/);
   assert.match(p, /waiting_user.*background.*error/);
-  assert.match(p, /目标.*已知事实.*约束.*验收标准/);
-  assert.match(p, /不要.*完整对话.*秘密/);
+  assert.match(p, /goal, known facts, constraints.*acceptance criteria/);
+  assert.match(p, /never a full conversation or secrets/);
   assert.doesNotMatch(p, /不要仅因最相关会话正在运行就改投/);
-  assert.match(p, /候选列表顺序不表示优先级/);
-  assert.match(p, /不要根据 id、CLI 名称或最近活跃时间猜职责/);
-  assert.match(p, /用户原话点名/);
+  assert.match(p, /list order carries no priority/);
+  assert.match(p, /must not guess responsibilities from the id, CLI name, or recent activity time/);
+  assert.match(p, /user's own words name/);
   assert.match(p, /dispatch_status/);
-  assert.match(p, /timeout、terminated/);
+  assert.match(p, /timeout, terminated stream/);
   assert.match(p, /session\.active\/streaming/);
   assert.match(p, /\/api\/sessions\/:id\/dispatches/);
   assert.doesNotMatch(p, /<<route target=/);
   assert.doesNotMatch(p, /\[MultiCC Ultracode workflow\]/);
-  assert.match(p, /可用目标 sessions: \[/);
+  assert.match(p, /Available target sessions: \[/);
 });
 
 test('commander sees waiting-user workflow state as a soft routing signal', () => {
@@ -302,10 +302,10 @@ test('commander with ultracode stays on route-first route_task surface', () => {
   const t = makeFactory(records, {}, () => 'ultracode');
   const p = t.buildDispatchContextPrompt('cmd');
   assert.match(p, /\[MultiCC Commander routing\]/);
-  assert.match(p, /具备 Ultracode 能力/);
-  assert.match(p, /可以在当前会话完成/);
+  assert.match(p, /has Ultracode capability/);
+  assert.match(p, /may be done in the current session/);
   assert.match(p, /route_task/);
-  assert.match(p, /跨 session 派发仍只使用 MCP route_task \/ dispatch_master/);
+  assert.match(p, /cross-session dispatch still uses only the MCP tools route_task \/ dispatch_master/);
   assert.doesNotMatch(p, /\[MultiCC Ultracode workflow\]/);
   assert.doesNotMatch(p, /Task\/Agent\/Workflow/);
   assert.doesNotMatch(p, /<<dispatch target=/);
@@ -393,11 +393,11 @@ test('commander routing prompt states the task-bound rule', () => {
   const t = makeFactory(records, {}, () => 'normal', () => false,
     () => 'App UI 适配');
   const p = t.buildDispatchContextPrompt('cmd');
-  assert.match(p, /带 taskBoundTaskId 的候选是任务绑定会话/);
-  assert.match(p, /仅当新任务是其绑定任务的后续时才可选/);
-  assert.match(p, /无关任务一律派给不带该字段的会话/);
-  assert.match(p, /用户显式点名任务绑定会话时照选/);
-  assert.match(p, /注明它是任务绑定会话/);
+  assert.match(p, /A candidate with taskBoundTaskId is a task-bound session/);
+  assert.match(p, /choose it only when the new task is a follow-up of its bound task/);
+  assert.match(p, /unrelated tasks always go to sessions without that field/);
+  assert.match(p, /explicitly names a task-bound session, choose it/);
+  assert.match(p, /state in the dispatch message that it is a task-bound session/);
   // The candidate JSON in the same prompt carries the marker + title.
   assert.match(p, /"taskBoundTaskId":"#A1N3"/);
   assert.match(p, /"boundTaskTitle":"App UI 适配"/);

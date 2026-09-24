@@ -345,11 +345,11 @@ test('S1: dispatch_master message to slave contains dispatch_slave callback inst
   const delivered = admissions[0].message;
   assert.match(delivered, /implement feature X/, 'original message preserved');
   assert.match(delivered, /dispatch_slave/, 'must mention dispatch_slave tool');
-  assert.match(delivered, /回传/, 'must contain callback instruction keyword');
+  assert.match(delivered, /Receipt required/, 'must contain callback instruction keyword');
   assert.match(delivered, /operation_id:"op_/, 'must print the receipt operation id');
   assert.match(delivered, /status:"completed"/, 'must show completed status example');
   assert.match(delivered, /status:"failed"/, 'must show failed status example');
-  assert.match(delivered, /不要轮询/, 'must forbid polling the master');
+  assert.match(delivered, /do not poll/, 'must forbid polling the master');
   // Resolve to avoid dangling promise
   const ops = await operations.list({ kind: 'dispatch' });
   const slaveCap = runtime.issueContext({
@@ -370,8 +370,8 @@ test('S2: route_task (one-way) message does NOT contain dispatch_slave callback 
   });
   assert.equal(admissions.length, 1);
   const delivered = admissions[0].message;
-  assert.match(delivered, /【任务派发方：master · master】/);
+  assert.match(delivered, /\[Dispatched by: master · master\]/);
   assert.match(delivered, /one-way work/, 'route_task preserves the original message');
   assert.doesNotMatch(delivered, /dispatch_slave/);
-  assert.doesNotMatch(delivered, /回传要求/);
+  assert.doesNotMatch(delivered, /Receipt required/);
 });

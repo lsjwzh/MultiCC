@@ -356,16 +356,16 @@ test('server composition uses canonical adapters and retires legacy dispatch end
 
 test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {
   const source = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'host-prompts.js'), 'utf8');
-  assert.ok(source.includes('`/sync` 主要供用户/UI 手动同步'));
-  assert.ok(source.includes('Agent 自同步：在自己的 worktree 内直接用 Git'));
-  assert.ok(source.includes('不调用“当前会话自己的 sync”接口'));
-  assert.ok(source.includes('禁止直接丢弃无法证明已入基线的提交'));
-  assert.ok(source.includes('behind 必须为 0；`0 0` 才是完全一致'));
+  assert.ok(source.includes('The /sync endpoint is mainly for manual sync by the user/UI'));
+  assert.ok(source.includes('Self-sync: align with the local base branch directly with Git inside your own worktree'));
+  assert.ok(source.includes('it is not the required path for an agent to sync itself'));
+  assert.ok(source.includes('never discard commits that cannot be proven to be in the baseline'));
+  assert.ok(source.includes('the behind count of `HEAD...main` must be 0; only `0 0` means fully aligned'));
   assert.doesNotMatch(source, /先由派活方直接调用目标会话的 sync 接口/);
   assert.doesNotMatch(source, /只有未同步时才调用自己的 sync/);
   const { multiccImgHint } = require('../src/chat/host-prompts').createHostPrompts({});
-  assert.match(multiccImgHint, /提交和合并由 MultiCC 在本轮成功后统一执行/);
-  assert.match(multiccImgHint, /只有用户在任务中明确要求提交\/合并时/);
+  assert.match(multiccImgHint, /Commit and merge under AutoCommit .* are performed by MultiCC after a successful turn/);
+  assert.match(multiccImgHint, /Only when the user explicitly asks for commit\/merge in the task/);
   assert.doesNotMatch(multiccImgHint, /目标完成后仍须 commit|都只在自己当前 worktree 里改并 commit/);
   // Sub-agent steering is per-session, never part of the global host hint.
   assert.doesNotMatch(multiccImgHint, /Sub-agent provider configured/);

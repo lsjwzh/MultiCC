@@ -405,20 +405,20 @@ function createRouterToolRuntime({
     return [
       '',
       '---',
-      '【回传要求】完成本任务后，你必须调用 dispatch_slave 工具回传结果：',
-      `dispatch_slave({operation_id:"${operationId}", result:"<结论/改动/证据/风险摘要>", status:"completed"})；`,
-      '若失败用 status:"failed"。若一直不回执，master 无法收到结果：派生轮一结束系统即把该操作自动判失败，',
-      '之后你随时可凭上方 operation_id 补交回执，系统会自动校正。operation_id 跨轮次不变，',
-      '任务中途被打断/续接多少轮都照样可用。',
-      '这是 async 回执；不要轮询、读取或等待 master 会话。',
+      '[Receipt required] When this task is done, you must call the dispatch_slave tool to return the result:',
+      `dispatch_slave({operation_id:"${operationId}", result:"<summary of conclusion / changes / evidence / risks>", status:"completed"})`,
+      'Use status:"failed" on failure. Without a receipt the master never receives the result: as soon as the dispatched turn ends, the system marks the operation failed automatically;',
+      'you can still submit a late receipt any time with the operation_id above and the system corrects the record. The operation_id is stable across turns',
+      'and remains valid no matter how many times the task is interrupted or continued.',
+      'This is an async receipt: do not poll, read, or wait on the master session.',
     ].join('\n');
   }
 
   const SYNC_DISPATCH_INSTRUCTION = [
     '',
     '---',
-    '【同步回传】宿主正在把本轮模型明确输出的 reasoning/thinking 与可公开对话进度直接回传给派发方。',
-    '正常完成任务并给出最终答复即可；无需调用任何回执工具。',
+    '[Sync relay] The host is streaming the reasoning/thinking this turn emits explicitly, plus safe dialogue progress, straight back to the dispatcher.',
+    'Just complete the task normally and give your final answer; no receipt tool call is needed.',
   ].join('\n');
 
   // A short attribution line prepended to every router-tool dispatch. Without it
@@ -427,8 +427,8 @@ function createRouterToolRuntime({
   // made "who dispatched this to me?" unanswerable from the artifacts.
   function senderAttribution(caller, sessionId, tool) {
     const label = (caller && (caller.label || caller.name)) || sessionId || 'unknown';
-    const verb = tool === 'dispatch_master' ? '双向派发方' : '任务派发方';
-    return `【${verb}：${label} · ${sessionId}】\n\n`;
+    const verb = tool === 'dispatch_master' ? 'Dispatched (two-way) by' : 'Dispatched by';
+    return `[${verb}: ${label} · ${sessionId}]\n\n`;
   }
 
   async function admit(context, tool, args, resultMode) {
@@ -833,7 +833,7 @@ function createRouterToolRuntime({
     if (!operationId) {
       throw new RouterToolError(
         'invalid_arguments',
-        'operation_id is required: it is printed in the dispatched task text (【回传要求】 dispatch_slave({operation_id:...})) and is returned to the dispatcher as operation_id',
+        'operation_id is required: it is printed in the dispatched task text ([Receipt required] dispatch_slave({operation_id:...})) and is returned to the dispatcher as operation_id',
         400,
       );
     }

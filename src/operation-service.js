@@ -312,14 +312,14 @@ function createOperationService({
       const label = operation.spec.targetLabel
         ? `${targetId}（${operation.spec.targetLabel}）`
         : targetId;
-      const resultBody = String(result.text || '').trim() || '（本次运行没有产生文本输出）';
+      const resultBody = String(result.text || '').trim() || '(this run produced no text output)';
       const corrected = opts.resettle === true;
       const text = operation.spec.resultMode === 'async' || operation.spec.resultMode === 'tool'
         ? (status === 'completed'
           ? `${corrected ? '📜 dispatch 迟到回执（已校正此前的自动判失败） [' + label + ']: ' : ''}📜 dispatch 结果回流 [${label}]: ${resultBody}`
           : `📜 dispatch 结果回流 [${label}]: ❌ ${result.error || resultBody}`)
         : (status === 'completed'
-          ? `【${label} 回复】\n${resultBody}`
+          ? `[Reply from ${label}]\n${resultBody}`
           : `🔇【分发任务已中断】发往 ${label} 的任务在 MultiCC 服务重启时未找到可恢复的完成结果。请检查目标会话后决定是否重试。`);
       return completeOperationDraft(draft, operation, result, {
         status,

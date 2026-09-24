@@ -660,26 +660,26 @@ test('a voice turn with no MCP admission emits no_dispatch, while WeChat needs n
 test('the voice router prompt routes by Fleet and asks instead of guessing', () => {
   const fixture = gatewayHostFixture();
   const voice = fixture.host.buildGatewayPrompt('把这个交给一号项目', VOICE_ROUTER_ID);
-  assert.match(voice, /实时语音 Router/);
-  assert.match(voice, /调用 dispatch_master，mode 必须是 async/);
-  assert.match(voice, /就只用一句话反问，不要自己挑一个 id 投出去/);
-  assert.match(voice, /关联会话.*忙.*其他.*空闲/);
-  assert.match(voice, /用户明确点名.*不得改派/);
+  assert.match(voice, /realtime voice router/);
+  assert.match(voice, /call dispatch_master with mode set to async/);
+  assert.match(voice, /ask back in a single sentence instead of picking an id yourself/);
+  assert.match(voice, /related session is busy.*prefer another qualified idle chat/);
+  assert.match(voice, /explicitly named by the user must be chosen as-is, never redirected/);
   assert.match(voice, /waiting_user.*background.*error/);
-  assert.match(voice, /目标.*已知事实.*约束.*验收标准/);
+  assert.match(voice, /goal, known facts, constraints.*acceptance criteria/);
   assert.doesNotMatch(voice, /<<dispatch target=/);
   assert.doesNotMatch(voice, /"type":"commander"/, 'Commander sessions are not worker targets');
   assert.match(voice, /"dirId":"dir-1"/, 'the router needs the Fleet id to resolve 这个项目');
   assert.equal(voice.includes(VOICE_ROUTER_ID), false, 'system sessions are not dispatch targets');
 
   const wechat = fixture.host.buildGatewayPrompt('把这个交给一号项目');
-  assert.equal(wechat.includes('实时语音 Router'), false, 'the WeChat prompt is untouched');
-  assert.match(wechat, /等待用户明确回复「确认」/);
-  assert.match(wechat, /dispatch_master，mode 必须是 async/);
-  assert.match(wechat, /关联会话.*忙.*其他.*空闲/);
-  assert.match(wechat, /用户明确点名.*不得改派/);
+  assert.equal(wechat.includes('realtime voice router'), false, 'the WeChat prompt is untouched');
+  assert.match(wechat, /wait for the user to reply with an explicit confirmation/);
+  assert.match(wechat, /dispatch_master, with mode set to async/);
+  assert.match(wechat, /related session is busy.*prefer another qualified idle chat/);
+  assert.match(wechat, /explicitly named by the user must be chosen as-is, never redirected/);
   assert.match(wechat, /waiting_user.*background.*error/);
-  assert.match(wechat, /目标.*已知事实.*约束.*验收标准/);
+  assert.match(wechat, /goal, known facts, constraints.*acceptance criteria/);
   assert.match(wechat, /"routingState":"processing"/);
   assert.match(wechat, /修复登录页样式/);
 });
@@ -707,7 +707,7 @@ test('an explicitly named worker is visible even beyond the bounded snapshot win
     '把“构建已经完成”发给 multicc-codex-chat-08 会话',
     VOICE_ROUTER_ID,
   );
-  const match = voice.match(/当前可见 sessions 实时快照: (.+)\n\[Voice router system prompt end\]/);
+  const match = voice.match(/Realtime snapshot of currently visible sessions: (.+)\n\[Voice router system prompt end\]/);
   assert.ok(match, 'voice snapshot must remain machine-readable JSON');
   const snapshot = JSON.parse(match[1]);
   assert.equal(snapshot.length, 30, 'the prompt budget remains bounded');
@@ -721,8 +721,8 @@ test('the voice router snapshot carries live status so spoken status questions a
   const fixture = gatewayHostFixture();
   const voice = fixture.host.buildGatewayPrompt('各个会话执行情况如何', VOICE_ROUTER_ID);
   // Status questions are answered from the snapshot, never dispatched.
-  assert.match(voice, /直接依据下方快照中的 routingState 与 recentTasks 如实回答/);
-  assert.match(voice, /不要编造/);
+  assert.match(voice, /answer truthfully from the routingState and recentTasks in the snapshot below/);
+  assert.match(voice, /Do not invent details/);
   // The digest mirrors the Commander routing preamble's bounded facts.
   assert.match(voice, /"fleet":"Fleet 一"/, 'directory label resolves a spoken fleet name');
   assert.match(voice, /"routingState":"processing"/, 'chat-1 classify P maps to processing');
@@ -761,7 +761,7 @@ test('dispatch finalization keeps sync inline and requires dispatch_slave for as
   const missing = fixture.completions.at(-1);
   assert.equal(missing.id, 'op-async-missing');
   assert.equal(missing.result.status, 'failed');
-  assert.match(missing.result.error, /没有调用 dispatch_slave/);
+  assert.match(missing.result.error, /without calling dispatch_slave/);
   assert.equal(missing.result.source, 'missing_dispatch_slave');
 
   fixture.operations.set('op-async-done', {

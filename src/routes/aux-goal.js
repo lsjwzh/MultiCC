@@ -95,12 +95,12 @@ function resolveGoalLimits(override) {
 function buildGoalLimitNote(limits) {
   const parts = [];
   if (limits.maxRounds > 0) {
-    parts.push(`本次为 Goal 模式自主任务，自主执行的轮次（agent turns）上限为 ${limits.maxRounds} 轮，请在该轮次内完成；接近上限时先收敛、给出当前结论与未尽事项，不要无限发散。`);
+    parts.push(`This is an autonomous Goal-mode task with a cap of ${limits.maxRounds} agent turns; finish within that limit. As you approach it, converge first and report your current conclusions and open items instead of expanding indefinitely.`);
   }
   if (limits.maxBudget > 0) {
-    parts.push(`本次输出 token 预算上限约为 ${limits.maxBudget}，请在预算内完成；接近上限时停止并总结已完成的部分与剩余工作。`);
+    parts.push(`The output token budget for this task is about ${limits.maxBudget}; finish within it. As you approach the budget, stop and summarize what is done and what remains.`);
   }
-  return parts.length ? `[Goal 模式限制]\n${parts.join('\n')}\n[限制结束]\n\n` : '';
+  return parts.length ? `[Goal-mode limits]\n${parts.join('\n')}\n[End of limits]\n\n` : '';
 }
 
 function buildGoalPrecheckPrompt(task, dimensions) {

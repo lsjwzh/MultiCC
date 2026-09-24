@@ -131,18 +131,18 @@ function createGatewayHost(rawDeps) {
       };
     }));
     return [
-      '[MultiCC 实时语音 Router system prompt]',
-      '你是 MultiCC 的全局实时语音 Router 会话。用户通过实时语音发起、且没有指定来源会话的请求都进入这里。',
-      '你负责判断如何回应：可以直接回答、追问澄清，或把任务投给某个具体 session。',
-      '当用户确实要求执行、修改、检查或推进某项工作时，调用 dispatch_master，mode 必须是 async；target_session_id 必须逐字使用下面列表里的真实 id，message 必须完整、自包含。',
-      '用户明确点名合法 chat session 时必须照选、不得改派；否则关联会话忙（active=true，或 routingState 为 waiting_user、background、error、processing）时，优先选择同 Fleet 其他能胜任的空闲 chat，只有全部合适会话都忙时才排入 FIFO。',
-      '改投其他会话时，message 必须写清目标、已知事实、约束、相关文件/标识、验收标准和交付方式；只带必要且已脱敏的上下文。',
-      '不要输出 <<dispatch>> 或 <<route>> 文本；文本不会触发任何投递。不要调用旧 HTTP dispatch 接口。',
-      '语音场景没有二次确认，所以只有用户确实要求干活时才调用工具。工具返回 admitted 后才可声称已提交。',
-      '如果用户没说清是哪个项目或哪个会话，而请求又必须落到某一个上，就只用一句话反问，不要自己挑一个 id 投出去。',
-      '纯聊天、答疑、澄清类回复不要调用分派工具。',
-      '用户询问某个或全部会话的状态、进度、执行情况、在做什么时，直接依据下方快照中的 routingState 与 recentTasks 如实回答，不要为此调用 dispatch_master。快照没有的细节（如具体输出内容）不要编造，可以说明快照粒度有限。',
-      `当前可见 sessions 实时快照: ${context}`,
+      '[MultiCC realtime voice router system prompt]',
+      'You are the global realtime voice Router session of MultiCC. Every request that arrives by realtime voice without a specified source session lands here.',
+      'You decide how to respond: answer directly, ask a clarifying question, or hand the task to a specific session.',
+      'When the user genuinely asks to execute, modify, check, or advance some piece of work, call dispatch_master with mode set to async; target_session_id must be a real id copied verbatim from the list below, and message must be complete and self-contained.',
+      'A valid chat session explicitly named by the user must be chosen as-is, never redirected; otherwise, when the related session is busy (active=true, or routingState is waiting_user, background, error, or processing), prefer another qualified idle chat in the same fleet, and only queue into the FIFO when every suitable session is busy.',
+      'When redirecting to another session, message must state the goal, known facts, constraints, relevant files/identifiers, acceptance criteria, and how to deliver; carry only necessary, redacted context.',
+      'Do not output <<dispatch>> or <<route>> text; text never triggers a delivery. Do not call the old HTTP dispatch endpoint.',
+      'Voice has no second confirmation step, so call the tool only when the user genuinely asks for work to be done. Claim the task is submitted only after the tool returns admitted.',
+      'If the user did not say which project or session and the request must land on one, ask back in a single sentence instead of picking an id yourself.',
+      'Pure chat, Q&A, and clarification replies must not call the dispatch tool.',
+      'When the user asks about the status, progress, execution, or current activity of one or all sessions, answer truthfully from the routingState and recentTasks in the snapshot below without calling dispatch_master. Do not invent details the snapshot lacks (such as concrete output); you may say the snapshot is coarse-grained.',
+      `Realtime snapshot of currently visible sessions: ${context}`,
       '[Voice router system prompt end]',
       '',
       userText,
@@ -171,16 +171,16 @@ function createGatewayHost(rawDeps) {
     const context = JSON.stringify(sessionsForPrompt);
     return [
       '[MultiCC Gateway system prompt]',
-      '你是 MultiCC 的微信 Gateway 会话。所有微信消息都统一进入这个会话。',
-      '你负责基于用户消息和可用 session 上下文判断如何回应：可以直接回答、追问澄清，或把任务分发给某个具体 session。',
-      '需要 session 执行任务时，先用自然语言复述目标与任务并等待用户明确回复「确认」；确认后的下一轮才调用 dispatch_master，mode 必须是 async。',
-      'target_session_id 必须逐字使用下面列表里的真实 id，message 必须完整、自包含；工具返回 admitted 后才可声称已投递。',
-      '用户明确点名合法 chat session 时必须照选、不得改派；否则关联会话忙（active=true，或 routingState 为 waiting_user、background、error、processing）时，优先选择同项目其他能胜任的空闲 chat，只有全部合适会话都忙时才排入 FIFO。',
-      '改投其他会话时，message 必须写清目标、已知事实、约束、相关文件/标识、验收标准和交付方式；只带必要且已脱敏的上下文。',
-      '不要输出 <<dispatch>> 或 <<route>> 文本；文本不会触发任何投递。不要调用旧 HTTP dispatch 接口。',
-      '纯聊天、答疑、澄清类回复不要调用分派工具。',
-      '当用户问 Gateway/Router/会话管理相关问题时，直接以 Gateway 身份回答，不要输出标记。',
-      `当前可见 sessions: ${context}`,
+      'You are the WeChat Gateway session of MultiCC. Every WeChat message enters through this session.',
+      'Based on the user message and the available session context, you decide how to respond: answer directly, ask a clarifying question, or dispatch the task to a specific session.',
+      'When a session needs to execute a task, first restate the goal and the task in natural language and wait for the user to reply with an explicit confirmation; only in the next turn after confirmation do you call dispatch_master, with mode set to async.',
+      'target_session_id must be a real id copied verbatim from the list below, and message must be complete and self-contained; claim the task is delivered only after the tool returns admitted.',
+      'A valid chat session explicitly named by the user must be chosen as-is, never redirected; otherwise, when the related session is busy (active=true, or routingState is waiting_user, background, error, or processing), prefer another qualified idle chat in the same project, and only queue into the FIFO when every suitable session is busy.',
+      'When redirecting to another session, message must state the goal, known facts, constraints, relevant files/identifiers, acceptance criteria, and how to deliver; carry only necessary, redacted context.',
+      'Do not output <<dispatch>> or <<route>> text; text never triggers a delivery. Do not call the old HTTP dispatch endpoint.',
+      'Pure chat, Q&A, and clarification replies must not call the dispatch tool.',
+      'When the user asks about the Gateway/Router or session management, answer as the Gateway directly without emitting markers.',
+      `Currently visible sessions: ${context}`,
       '[Gateway system prompt end]',
       '',
       userText,
@@ -223,14 +223,14 @@ function createGatewayHost(rawDeps) {
 
   // A dispatch target must be a real, non-system session.
   function validateDispatchTarget(targetId, fromSessionId = null, allowCommander = false) {
-    const hint = fromSessionId ? `；${dispatchTargetHintFor(fromSessionId)}` : '';
+    const hint = fromSessionId ? `; ${dispatchTargetHintFor(fromSessionId)}` : '';
     if (isPlaceholderTarget(targetId)) {
-      return { ok: false, error: `「${targetId}」是占位符，不是真实 session id；请从可用目标 sessions 中选择一个真实 id${hint}` };
+      return { ok: false, error: `"${targetId}" is a placeholder, not a real session id; pick a real id from the available target sessions${hint}` };
     }
     const rec = persistedSessions.get(targetId);
-    if (!rec) return { ok: false, error: `目标 session「${targetId}」不存在${hint}` };
-    if (rec.type === 'aux' || rec.type === 'gateway') return { ok: false, error: `不能把任务分发给系统会话「${targetId}」` };
-    if (rec.type === 'commander' && !allowCommander) return { ok: false, error: `不能把任务分发给指挥官会话「${targetId}」；只有任务面板自动路由可进入指挥队列` };
+    if (!rec) return { ok: false, error: `Target session "${targetId}" does not exist${hint}` };
+    if (rec.type === 'aux' || rec.type === 'gateway') return { ok: false, error: `Cannot dispatch a task to the system session "${targetId}"` };
+    if (rec.type === 'commander' && !allowCommander) return { ok: false, error: `Cannot dispatch a task to the Commander session "${targetId}"; only task-board auto-routing may enter the command queue` };
     return { ok: true, rec };
   }
 
@@ -391,7 +391,7 @@ function createGatewayHost(rawDeps) {
               model: dispatcher.model || null,
               provider: dispatcher.provider || '',
               effort: 'xhigh',
-              rolePrompt: '你是 MultiCC Ultracode worker。只执行派给你的自包含子任务；先同步 worktree，完成后验证、提交并尽量合并回基分支，最后用精简结构汇报改动、验证结果和风险。',
+              rolePrompt: 'You are a MultiCC Ultracode worker. Execute only the self-contained subtask dispatched to you: sync the worktree first, then verify, commit, and merge back to the base branch where possible, and finish with a concise structured report of the changes, verification results, and risks.',
               persistence: 'bestEffort', persistenceSource: 'runtime.dispatch-worker-create',
             });
             if (created.ok) {
@@ -599,8 +599,8 @@ function createGatewayHost(rawDeps) {
       await getOrchestrationRuntime().completeDispatch(dispatchId, {
         status: 'failed',
         sessionName,
-        text: 'worker 已结束，但没有调用 dispatch_slave 提交 async 回执。',
-        error: 'worker 已结束，但没有调用 dispatch_slave 提交 async 回执。',
+        text: 'The worker finished without calling dispatch_slave to submit the async receipt.',
+        error: 'The worker finished without calling dispatch_slave to submit the async receipt.',
         source: 'missing_dispatch_slave',
       });
       return;
@@ -608,19 +608,19 @@ function createGatewayHost(rawDeps) {
     const completed = await getOrchestrationRuntime().completeDispatch(dispatchId, {
       status: 'completed',
       sessionName,
-      text: (finalText || '').trim() || '（本次运行没有产生文本输出）',
+      text: (finalText || '').trim() || '(this run produced no text output)',
       source: resultMode === 'sync' ? 'sync_final_output' : 'turn_final_output',
     });
     // Compatibility fallback for a dispatch that began before this deployment
     // and therefore has no durable operation record.
     if (!completed.ok && completed.code === 'not_found') {
-      const text = (finalText || '').trim() || '（本次运行没有产生文本输出）';
+      const text = (finalText || '').trim() || '(this run produced no text output)';
       if (replyTo && persistedSessions.get(replyTo)) {
-        getSessionDelivery().deliverContinuation(replyTo, `【${targetId} 回复】\n${text}`);
+        getSessionDelivery().deliverContinuation(replyTo, `[Reply from ${targetId}]\n${text}`);
       } else {
         // Route the legacy fallback back to whichever gateway owns this
         // dispatch, so a voice result never surfaces in the WeChat thread.
-        pushToGateway(`【${targetId} 回复】\n${text}`, { sessionId: operation?.resultSessionId || GATEWAY_ID });
+        pushToGateway(`[Reply from ${targetId}]\n${text}`, { sessionId: operation?.resultSessionId || GATEWAY_ID });
       }
     }
   }
