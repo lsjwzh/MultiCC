@@ -142,6 +142,9 @@ function createAutoProviderRuntime(options = {}) {
         providerId: candidate && candidate.providerId || null,
         providerName: candidate && candidate.providerName || null,
         model: candidate && candidate.model || null,
+        // The picked line's own tier: it differs from preferredTier when every
+        // line of the preferred tier is exhausted or already attempted.
+        tier: candidate && candidate.tier || null,
         trustDomain: candidate && candidate.trustDomain || null,
         fromTrustDomain: null,
         toTrustDomain: candidate && candidate.trustDomain || null,

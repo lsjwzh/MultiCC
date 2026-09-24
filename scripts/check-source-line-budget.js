@@ -93,9 +93,11 @@ const MIGRATION_DEBT = Object.freeze({
   // vendor-quota cluster (the ark/kimi/qoder fetchers, their in-flight/backoff
   // state and their *QuotaView getters) into its own collaborator — that is one
   // cohesive ~200-line unit, and dropping back to <= 3000 retires this entry.
+  // The Jev routing note moved the admission-progress helpers out to
+  // app/lib/providers/admission_notes.dart, ratcheting this down to 3032.
   'app/lib/providers/chat_provider.dart': Object.freeze({
-    ceiling: 3048,
-    byteCeiling: 122316,
+    ceiling: 3032,
+    byteCeiling: 122073,
     target: 3000,
   }),
 });
@@ -197,9 +199,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 中英各 44 行 = +88 行，重跑生成器后抬到 6786/420551。
   // 按原型重做成紧凑卡片（按顺序|按难度 分段、Jev 状态卡、↑↓✕ 行、添加线路、
   // 更多设置折叠），净增 22 键（新 32、删 10），中英各 +22 行 → 6826/422294。
+  // 聊天窗口里的 Jev 判定小字（正在判断 → 判定为某档 · 选用某线路，以及判断不了
+  // 时的白话原因），新增 21 键，中英各 +21 行 → 6868/424618。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6826,
-    maxBytes: 422294,
+    maxLines: 6868,
+    maxBytes: 424618,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

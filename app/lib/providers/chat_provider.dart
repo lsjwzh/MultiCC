@@ -18,12 +18,14 @@ import '../services/quota_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/transcript_live_folder.dart';
+import 'admission_notes.dart';
 
 // Re-exported so existing tests keep importing the sidecar helpers from the
 // provider (their pre-extraction home); the implementation now lives with the
 // shared folder.
 export '../services/transcript_live_folder.dart'
     show toolCallById, applyReasoningDelta, applyToolArgsDelta;
+export 'admission_notes.dart';
 
 part 'chat_provider_history.dart';
 
@@ -33,40 +35,6 @@ bool _isRecoverableCodexReconnectErrorText(String text) {
       ).hasMatch(text) &&
       (text.contains('stream disconnected before completion') ||
           text.contains('response.completed'));
-}
-
-@visibleForTesting
-String? admissionProgressI18nKey(Map<String, dynamic> payload) {
-  switch (payload['state']?.toString()) {
-    case 'waiting':
-      return 'admissionMemoryWaiting';
-    case 'ready':
-      return 'admissionMemoryReady';
-    case 'skipped':
-      return payload['reason'] == 'memory_distill_failed'
-          ? 'admissionMemoryFailed'
-          : 'admissionMemorySkipped';
-    default:
-      return null;
-  }
-}
-
-@visibleForTesting
-String? admissionProgressDetail(Map<String, dynamic> payload) {
-  for (final key in const ['rootCause', 'code']) {
-    final value = payload[key];
-    if (value is! String) continue;
-    final normalized = value
-        .replaceAll(RegExp(r'[\r\n\t]+'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (normalized.isNotEmpty) {
-      return normalized.length > 240
-          ? normalized.substring(0, 240)
-          : normalized;
-    }
-  }
-  return null;
 }
 
 // ── Staged user sends: a sent message waiting for the server's FIFO verdict ─
@@ -417,6 +385,7 @@ class ChatProvider extends ChangeNotifier {
   String get statusText => _statusText;
 
   String? _admissionProgressText;
+  final _autoRouteLine = AutoRouteLine();
   String? _admissionProgressClientMsgId;
   String? get admissionProgressText => _admissionProgressText;
 
@@ -1617,6 +1586,7 @@ class ChatProvider extends ChangeNotifier {
               _admissionProgressText = null;
               _admissionProgressClientMsgId = null;
             }
+            _autoRouteLine.drop(_messages);
             _statusText = t('admissionDeliveryFailedShort');
             final detail = admissionProgressDetail(p);
             _addSystemMsg(
@@ -1625,6 +1595,16 @@ class ChatProvider extends ChangeNotifier {
                   : t('admissionDeliveryFailedWithCause', {'cause': detail}),
             );
             break;
+          }
+          if (p['stage'] == 'auto_provider_routing' &&
+              p['state'] == 'waiting') {
+            // A message queued behind a running answer gets its line when its
+            // own turn starts, not drawn into the middle of that answer.
+            if (isStreaming) {
+              notifyListeners();
+              break;
+            }
+            _autoRouteLine.judging(_messages);
           }
           final key = admissionProgressI18nKey(p);
           if (key == null) break;
@@ -1950,6 +1930,10 @@ class ChatProvider extends ChangeNotifier {
   /// event is allowed to establish the displayed actual provider.
   @visibleForTesting
   void applyProviderRoutingEvent(String type, Map<dynamic, dynamic> source) {
+    if (type == 'provider_auto_route') {
+      if (_autoRouteLine.settle(_messages, source)) notifyListeners();
+      return;
+    }
     if (type != 'provider_route_event') return;
     _applyActualProviderRoute(source);
     notifyListeners();
