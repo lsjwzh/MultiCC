@@ -50,15 +50,41 @@ test('the task board and the message index tokenize identically', () => {
   }
 });
 
-test('every token is quoted, and the expression ORs them', () => {
-  assert.equal(tokenizeModule.matchExpression('缓存层'), '"缓存" OR "存层"');
+test('every token is quoted, and a term-shaped run is required whole', () => {
+  assert.equal(tokenizeModule.matchExpression('缓存层'), '("缓存" AND "存层")');
   assert.equal(tokenizeModule.matchExpression('air.js'), '"air.js"');
   // A lone CJK character has no index term at all — the caller must use LIKE.
   assert.equal(tokenizeModule.matchExpression('索'), null);
   assert.equal(tokenizeModule.matchExpression('，。'), null);
   // Unquoted, FTS5 would read these as syntax and as `provider NOT router`.
-  assert.match(tokenizeModule.matchExpression('provider-router 缓存'), /"provider-router"/);
+  assert.equal(tokenizeModule.matchExpression('provider-router 缓存'), '"provider-router" OR "缓存"');
   assert.ok(!tokenizeModule.matchExpression('a 缓存').includes('"a"'));
+});
+
+test('a run longer than a term is a bag of words, not a required phrase', () => {
+  // Requiring every bigram of a sentence asks for the sentence verbatim: measured on
+  // the real corpus, 任务关联与搜索支持全文检索 and 怎么让新任务的关联加上全文搜索 both fell to
+  // 0 hits that way, and 记忆图谱体系 to 4. Past a term-shaped run the bigrams are
+  // alternatives again and bm25 sorts the chunks that cover more of them.
+  const groups = tokenizeModule.matchGroups('记忆图谱体系');
+  assert.equal(groups.length, 5, 'a 6-character run is five alternative bigrams');
+  assert.deepEqual(groups[0], ['记忆']);
+  assert.equal(tokenizeModule.matchExpression('记忆图谱体系'), groups.map(group => `"${group[0]}"`).join(' OR '));
+  // Word-shaped runs in the same query keep their phrase requirement.
+  assert.equal(tokenizeModule.matchExpression('记忆图谱体系 缓存层'),
+    '"记忆" OR "忆图" OR "图谱" OR "谱体" OR "体系" OR ("缓存" AND "存层")');
+  // The phrase requirement is a bound, not a rule about length alone: 3 bigrams (a
+  // 4-character term) is the last length that is still one term.
+  assert.equal(tokenizeModule.MAX_PHRASE_BIGRAMS, 3);
+  assert.equal(tokenizeModule.matchGroups('全文检索').length, 1);
+});
+
+test('the expression stops growing at MAX_MATCH_TERMS', () => {
+  // Thirty distinct characters, so the run really does carry 29 bigrams.
+  const long = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉';
+  assert.equal(tokenizeModule.matchGroups(long).length, 29);
+  const expression = tokenizeModule.matchExpression(long);
+  assert.equal((expression.match(/"/g) || []).length / 2, tokenizeModule.MAX_MATCH_TERMS);
 });
 
 test('a 2-character Chinese query is not blind', () => {

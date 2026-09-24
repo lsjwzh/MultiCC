@@ -1,6 +1,6 @@
 'use strict';
 
-// Full-text task search over HTTP.
+// Full-text search over HTTP: the task board, and the conversation behind it.
 //
 // The board itself is already fully downloaded by every client (Air snapshot /
 // console), but the *searchable* corpus is not: turn excerpts live only in the
@@ -8,7 +8,15 @@
 // module the attribution path uses (src/task-board/search.js), and the client
 // gets ranked ids plus the matched snippet — never the whole corpus.
 //
-// Read-only: nothing here mutates the board or touches disk.
+//   GET /api/task-board/search   ranked task ids (src/task-board/search.js)
+//   GET /api/search/messages     ranked message chunks (src/search/runtime.js)
+//
+// Both live in this module because both are the same search box asking two
+// corpora, and because the host mounts this module once — a second route module
+// would cost server.js a line it does not have (see scripts/check-source-line-budget.js).
+//
+// Read-only: nothing here mutates the board or touches disk. The message route
+// does hand work to the index runtime, but only reads: it never triggers a sweep.
 
 const search = require('../task-board/search');
 
@@ -28,7 +36,7 @@ function clampLimit(value) {
   return Math.min(MAX_LIMIT, parsed);
 }
 
-function createTaskSearchRoutes({ getBoard, logger = console } = {}) {
+function createTaskSearchRoutes({ getBoard, messages = null, logger = console } = {}) {
   if (typeof getBoard !== 'function') {
     throw new TypeError('task-search routes require a getBoard() port');
   }
@@ -59,14 +67,81 @@ function createTaskSearchRoutes({ getBoard, logger = console } = {}) {
     return res.json({ ok: true, query, count: results.length, results });
   }
 
+  // The message corpus is the whole conversation, so a result is a *session* plus
+  // a chunk — not a task. The client resolves the session to whatever it shows
+  // (a task via the board's refs, a chat window, a date), which is knowledge this
+  // route deliberately does not have.
+  //
+  // `warming` is reported rather than hidden: while the first sweep is still
+  // walking the corpus a short result list is a partial answer, and a client that
+  // cannot tell the two apart would cache "no hits" for a query that has them.
+  function handleMessageSearch(req, res) {
+    const query = String(req.query?.q ?? req.query?.query ?? '').trim();
+    // Resolving the runtime is itself a step that can fail (it opens the index),
+    // and a route that cannot reach its index is "unavailable", not "broken": the
+    // caller gets the same 503 as an unwired host rather than an Express 500.
+    let runtime = null;
+    try {
+      runtime = typeof messages === 'function' ? messages() : messages;
+    } catch (error) {
+      logger.warn?.(`message_search_unavailable: ${error.message}`);
+    }
+    if (!runtime || typeof runtime.findMessages !== 'function') {
+      return res.status(503).json({ error: 'message_search_unavailable' });
+    }
+    const warming = !!runtime.status?.().warming;
+    if (!query) return res.json({ ok: true, query: '', count: 0, results: [], warming });
+    if (query.length > MAX_QUERY_CHARS) {
+      return res.status(400).json({ error: 'query_too_long', maxLength: MAX_QUERY_CHARS });
+    }
+    try {
+      // Only the two conversation roles are indexed, so the filter is expressed in
+      // the caller's words and unknown ones are dropped by the index's own filter.
+      const kinds = csv(req.query?.role) || csv(req.query?.kinds);
+      const refIds = csv(req.query?.session) || csv(req.query?.sessions);
+      const found = runtime.findMessages({
+        text: query,
+        limit: clampLimit(req.query?.limit),
+        ...(kinds ? { kinds } : {}),
+        ...(refIds ? { refIds } : {}),
+      });
+      return res.json({
+        ok: true,
+        query,
+        count: found.length,
+        mode: 'message',
+        warming,
+        results: found.map(hit => ({
+          sessionId: hit.sessionId,
+          messageId: hit.messageId,
+          kind: hit.kind,
+          updatedAt: hit.updatedAt,
+          score: hit.score,
+          // Same shape the board route returns — a window plus highlight ranges — so
+          // a client renders message hits with the snippet renderer it already has.
+          snippet: hit.snippet,
+        })),
+      });
+    } catch (error) {
+      logger.warn?.(`message_search_failed: ${error.message}`);
+      return res.status(503).json({ error: 'message_search_unavailable' });
+    }
+  }
+
   function mountRoutes(app) {
     if (!app || typeof app.get !== 'function') {
       throw new TypeError('task-search routes require Express app.get');
     }
     app.get('/api/task-board/search', handleSearch);
+    app.get('/api/search/messages', handleMessageSearch);
   }
 
-  return { mountRoutes, handleSearch };
+  return { mountRoutes, handleSearch, handleMessageSearch };
 }
 
-module.exports = { createTaskSearchRoutes, MAX_QUERY_CHARS, DEFAULT_LIMIT, MAX_LIMIT };
+module.exports = {
+  createTaskSearchRoutes,
+  MAX_QUERY_CHARS,
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+};
