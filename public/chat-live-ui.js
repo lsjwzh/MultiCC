@@ -216,84 +216,81 @@
       return span;
     }
 
+    // Every per-message token line uses one format: a 主 row (fresh ↑入 / ↓出 plus
+    // ♻读 / ♻写 cache), and a 辅 row in the same shape only when the sub-agents
+    // ran on a separately configured provider/model. Sub-agent work on the main
+    // model is the main model's usage and folds into 主. Plain `usage` (history
+    // turns without a split) is the 主 row.
+    function tokenBucket(value) {
+      return value ? {
+        input: value.inputTokens || 0, output: value.outputTokens || 0,
+        cacheRead: value.cacheRead || 0, cacheWrite: value.cacheWrite || 0,
+      } : null;
+    }
+    function bucketTotal(part) { return part ? part.input + part.output + part.cacheRead + part.cacheWrite : 0; }
+    function hasSeparateSubModel(roleBreakdown) {
+      const subs = roleBreakdown.subByProvider || [];
+      const mains = roleBreakdown.mainByProvider || [];
+      if (!subs.length || !mains.length) return true;
+      const key = entry => `${entry.providerId || ''}|${entry.model || ''}`;
+      const mainKeys = new Set(mains.map(key));
+      return subs.some(entry => !mainKeys.has(key(entry)));
+    }
+    function splitUsageRoles(usage, roleBreakdown) {
+      let main = roleBreakdown ? tokenBucket(roleBreakdown.main) : null;
+      let sub = roleBreakdown ? tokenBucket(roleBreakdown.sub) : null;
+      if (!bucketTotal(main) && usage) {
+        main = {
+          input: usage.input_tokens || 0, output: usage.output_tokens || 0,
+          cacheRead: usage.cache_read_input_tokens || 0, cacheWrite: usage.cache_creation_input_tokens || 0,
+        };
+      }
+      if (!bucketTotal(sub)) sub = null;
+      if (sub && !hasSeparateSubModel(roleBreakdown)) {
+        main = main || tokenBucket({});
+        for (const field of ['input', 'output', 'cacheRead', 'cacheWrite']) main[field] += sub[field];
+        sub = null;
+      }
+      return { main: bucketTotal(main) ? main : null, sub };
+    }
+
     function buildUsageLine(usage, roleBreakdown) {
-      if (!usage && !roleBreakdown) return null;
-      const input = (usage && usage.input_tokens) || 0;
-      const output = (usage && usage.output_tokens) || 0;
-      const cacheRead = (usage && usage.cache_read_input_tokens) || 0;
-      const cacheWrite = (usage && usage.cache_creation_input_tokens) || 0;
+      const { main, sub } = splitUsageRoles(usage, roleBreakdown);
+      if (!main && !sub) return null;
       const number = value => Number(value || 0).toLocaleString('en-US');
       const short = value => value > 1e6
         ? `${(value / 1e6).toFixed(2)}M`
-        : value > 1e3 ? `${(value / 1e3).toFixed(1)}k` : Number(value || 0).toLocaleString('en-US');
-
-      if (roleBreakdown && (roleBreakdown.main || roleBreakdown.sub)) {
-        const summarize = value => value ? {
-          input: value.inputTokens || 0,
-          output: value.outputTokens || 0,
-          cacheRead: value.cacheRead || 0,
-          cacheWrite: value.cacheWrite || 0,
-          total: (value.inputTokens || 0) + (value.outputTokens || 0)
-            + (value.cacheRead || 0) + (value.cacheWrite || 0),
-        } : null;
-        const main = summarize(roleBreakdown.main);
-        const sub = summarize(roleBreakdown.sub);
-        const totals = {
-          input: (main?.input || 0) + (sub?.input || 0),
-          output: (main?.output || 0) + (sub?.output || 0),
-          cacheRead: (main?.cacheRead || 0) + (sub?.cacheRead || 0),
-          cacheWrite: (main?.cacheWrite || 0) + (sub?.cacheWrite || 0),
-        };
-        const total = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
-        if (!total) return null;
-        const line = doc.createElement('div');
-        line.className = 'msg-usage';
-        const tokenLine = (key, fallback, part) => tt(key, fallback, {
-          input: number(part.input), output: number(part.output),
-          read: number(part.cacheRead), write: number(part.cacheWrite),
-        });
-        let tooltip = tt('usageMsgTokenTitle', '本条消息 token 用量（非会话累计）') + '\n';
-        if (main) {
-          tooltip += tokenLine('usageMsgTokenMainLine', '— 主 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', main) + '\n';
-        }
-        if (sub) {
-          tooltip += tokenLine('usageMsgTokenSubLine', '— 辅 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', sub) + '\n';
-          for (const provider of (roleBreakdown.subByProvider || [])) {
-            tooltip += `    · ${tt('usageMsgTokenProviderLine', '{name} / {model}: ↑入 {input} ↓出 {output}', {
-              name: provider.name || provider.providerId, model: provider.model || '?',
-              input: number(provider.inputTokens), output: number(provider.outputTokens),
-            })}\n`;
-          }
-        }
-        line.title = tooltip.trim();
-        metric(line, 'u-in', tt('usageBadgeIn', '↑入 {n}', { n: number(totals.input) }));
-        metric(line, 'u-out', tt('usageBadgeOut', '↓出 {n}', { n: number(totals.output) }));
-        if (totals.cacheRead) metric(line, 'u-cache', tt('usageBadgeCacheRead', '♻读 {n}', { n: number(totals.cacheRead) }));
-        if (totals.cacheWrite) metric(line, 'u-cache', tt('usageBadgeCacheWrite', '♻写 {n}', { n: number(totals.cacheWrite) }));
-        const roleBadge = (key, fallback, part) => tt(key, fallback, { input: short(part.input), output: short(part.output) });
-        if (main) metric(
-          line, 'u-role', roleBadge('usageBadgeMain', '主 ↑{input} ↓{output}', main),
-          tt('usageMsgTokenMainTooltip', '本条消息主循环：输入 {input} / 输出 {output}',
-            { input: number(main.input), output: number(main.output) }),
-        );
-        if (sub) metric(
-          line, 'u-role', roleBadge('usageBadgeSub', '辅 ↑{input} ↓{output}', sub),
-          tt('usageMsgTokenSubTooltip', '本条消息子任务：输入 {input} / 输出 {output}',
-            { input: number(sub.input), output: number(sub.output) }),
-        );
-        return line;
-      }
-
-      if (input + output + cacheRead + cacheWrite === 0) return null;
+        : value > 1e3 ? `${(value / 1e3).toFixed(1)}k` : number(value);
       const line = doc.createElement('div');
       line.className = 'msg-usage';
-      line.title = tt('usageMsgTokenTitle', '本条消息 token 用量（非会话累计）') + '\n' +
-        tt('usageMsgTokenSimple', '输入 {input}\n输出 {output}\n缓存读 {read}\n缓存写 {write}',
-          { input: number(input), output: number(output), read: number(cacheRead), write: number(cacheWrite) });
-      metric(line, 'u-in', tt('usageBadgeIn', '↑入 {n}', { n: number(input) }));
-      metric(line, 'u-out', tt('usageBadgeOut', '↓出 {n}', { n: number(output) }));
-      if (cacheRead) metric(line, 'u-cache', tt('usageBadgeCacheRead', '♻读 {n}', { n: number(cacheRead) }));
-      if (cacheWrite) metric(line, 'u-cache', tt('usageBadgeCacheWrite', '♻写 {n}', { n: number(cacheWrite) }));
+      const tokenLine = (key, fallback, part) => tt(key, fallback, {
+        input: number(part.input), output: number(part.output),
+        read: number(part.cacheRead), write: number(part.cacheWrite),
+      });
+      let tooltip = tt('usageMsgTokenTitle', '本条消息 token 用量（非会话累计）') + '\n';
+      if (main) tooltip += tokenLine('usageMsgTokenMainLine', '— 主 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', main) + '\n';
+      if (sub) {
+        tooltip += tokenLine('usageMsgTokenSubLine', '— 辅 — 输入 {input} 输出 {output} 缓存读 {read} 缓存写 {write}', sub) + '\n';
+        for (const provider of (roleBreakdown.subByProvider || [])) {
+          tooltip += `    · ${tt('usageMsgTokenProviderLine', '{name} / {model}: ↑入 {input} ↓出 {output}', {
+            name: provider.name || provider.providerId, model: provider.model || '?',
+            input: number(provider.inputTokens), output: number(provider.outputTokens),
+          })}\n`;
+        }
+      }
+      line.title = tooltip.trim();
+      const row = (labelKey, fallback, part) => {
+        const group = doc.createElement('span');
+        group.className = 'u-row';
+        metric(group, 'u-role', tt(labelKey, fallback));
+        metric(group, 'u-in', tt('usageBadgeIn', '↑入 {n}', { n: short(part.input) }));
+        metric(group, 'u-out', tt('usageBadgeOut', '↓出 {n}', { n: short(part.output) }));
+        metric(group, 'u-cache', tt('usageBadgeCacheRead', '♻读 {n}', { n: short(part.cacheRead) }));
+        metric(group, 'u-cache', tt('usageBadgeCacheWrite', '♻写 {n}', { n: short(part.cacheWrite) }));
+        line.appendChild(group);
+      };
+      if (main) row('usageRoleMain', '主', main);
+      if (sub) row('usageRoleSub', '辅', sub);
       return line;
     }
 

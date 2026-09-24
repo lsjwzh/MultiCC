@@ -1275,8 +1275,10 @@ test('live UI renders token and timing nodes through textContent only', () => {
     subByProvider: [{ name: '<img onerror=boom>', model: 'm', inputTokens: 5, outputTokens: 1 }],
   });
   assert.equal(line.className, 'msg-usage');
-  assert.ok(line.children.some(child => child.textContent === '主 ↑10 ↓2'));
-  assert.ok(line.children.some(child => child.textContent === '辅 ↑5 ↓1'));
+  assert.deepEqual(line.children.map(row => row.children.map(cell => cell.textContent).join(' ')), [
+    '主 ↑入 10 ↓出 2 ♻读 1 ♻写 0',
+    '辅 ↑入 5 ↓出 1 ♻读 0 ♻写 0',
+  ]);
   assert.doesNotMatch(line.title, /合计/);
   assert.match(line.title, /非会话累计/);
   assert.match(line.title, /<img onerror=boom>/, 'tooltip remains inert text');

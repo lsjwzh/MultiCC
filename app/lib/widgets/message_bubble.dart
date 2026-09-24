@@ -740,11 +740,6 @@ class _TokenUsageLine extends StatelessWidget {
   final MessageUsage usage;
   const _TokenUsageLine({required this.usage});
 
-  static String _fmt(int n) {
-    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
-    return n.toString();
-  }
-
   /// Format a token count for display: >1e6 → X.XXM, >1e3 → X.Xk,
   /// else thousand-separated raw number.
   static String _fmtSaved(int n) {
@@ -762,57 +757,69 @@ class _TokenUsageLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final i = usage.inputTokens;
-    final o = usage.outputTokens;
-    final cr = usage.cacheReadTokens;
-    final cw = usage.cacheCreationTokens;
-    final saved = usage.savedMainTokens;
+    // One format for every message (mirrors the web .msg-usage u-row): a 主
+    // row, plus a 辅 row only for a separately configured sub model — each
+    // with fresh ↑入/↓出 and ♻读/♻写 cache.
+    final roles = usage.displayRoles;
     final breakdown = usage.roleBreakdown;
-
+    Widget row(String label, RoleTokenBucket b, {Widget? trailing}) => Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: Color(0xFF6f8096),
+            fontSize: 10.5,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        _UsageBadge(
+          label: '↑入',
+          value: _fmtSaved(b.inputTokens),
+          color: const Color(0xFF1267b5),
+        ),
+        _UsageBadge(
+          label: '↓出',
+          value: _fmtSaved(b.outputTokens),
+          color: const Color(0xFF2ba67a),
+        ),
+        _UsageBadge(
+          label: '♻读',
+          value: _fmtSaved(b.cacheRead),
+          color: const Color(0xFFa85a25),
+        ),
+        _UsageBadge(
+          label: '♻写',
+          value: _fmtSaved(b.cacheWrite),
+          color: const Color(0xFF6d4fd1),
+        ),
+        ?trailing,
+      ],
+    );
+    final detail = breakdown != null && !breakdown.isEmpty
+        ? _RoleDetailChip(breakdown: breakdown)
+        : null;
+    final main = roles.main;
+    final sub = roles.sub;
     return Padding(
       padding: const EdgeInsets.only(top: 6),
-      // Wrap, not Row: with cache/saved badges plus the role chip, realistic
-      // token counts overflow a 320dp lane by 250px+ inside a Row (clipped
-      // badges read as "token stats vanished"). The web line (.msg-usage) is
-      // flex-wrap:wrap; this mirrors it - badges flow onto the next line
-      // instead of past the bubble edge.
-      child: Wrap(
-        spacing: 6,
-        runSpacing: 4,
+      // Wrap per row, not Row: realistic token counts overflow a 320dp lane
+      // inside a Row. Badges flow onto the next line instead of past the edge.
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _UsageBadge(
-            label: '↑入',
-            value: _fmt(i),
-            color: const Color(0xFF1267b5),
-          ),
-          _UsageBadge(
-            label: '↓出',
-            value: _fmt(o),
-            color: const Color(0xFF2ba67a),
-          ),
-          if (cr > 0)
-            _UsageBadge(
-              label: '⏱读',
-              value: _fmt(cr),
-              color: const Color(0xFFa85a25),
+          if (main != null)
+            row(
+              t('usageRoleMain'),
+              main,
+              trailing: sub == null ? detail : null,
             ),
-          if (cw > 0)
-            _UsageBadge(
-              label: '⏱写',
-              value: _fmt(cw),
-              color: const Color(0xFF6d4fd1),
-            ),
-          if (saved != null && saved > 0)
-            _UsageBadge(
-              label: '省主≈',
-              value: _fmtSaved(saved),
-              color: const Color(0xFF2ba67a),
-            ),
-          // Per-role detail (main / sub / by-provider) - the mobile counterpart
-          // of the web usage-line tooltip. Only present for live turns that
-          // received a role_token_stats event; history replay has no split.
-          if (breakdown != null && !breakdown.isEmpty)
-            _RoleDetailChip(breakdown: breakdown),
+          if (sub != null) ...[
+            const SizedBox(height: 4),
+            row(t('usageRoleSub'), sub, trailing: detail),
+          ],
         ],
       ),
     );

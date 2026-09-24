@@ -455,8 +455,8 @@
         tag.textContent = '(cancelled)';
         contentEl.appendChild(tag);
       }
-      if (message.usage) {
-        const usage = buildUsageLine(message.usage);
+      if (message.usage || message.roleUsage) {
+        const usage = buildUsageLine(message.usage, message.roleUsage);
         if (usage) contentEl.appendChild(usage);
       }
       const timing = buildTimingLine(message);

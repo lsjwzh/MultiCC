@@ -490,6 +490,7 @@
               main: message.role.main || null,
               sub: message.role.sub || null,
               subByProvider: message.role.subByProvider || [],
+              mainByProvider: message.role.mainByProvider || [],
             };
             if (state.currentMsgEl && state.isStreaming) {
               liveUi.attachUsageLine(state.currentMsgEl, null, state.roleTokens);
