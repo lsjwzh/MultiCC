@@ -413,11 +413,11 @@ function createTaskShellRuntime(ports) {
       messages: displayMessages(messages, task, { getTask: id => store.get('task', id) || getTask(id), codeFor: ports.taskShortCode }),
       snapshots: task.snapshotIds.map(id => store.get('snapshot', id)) };
   }
-  function normalize(raw = {}) {
+  function normalize(raw = {}, internalDispatch = false) {
     const clientMsgId = identifier(raw.clientMsgId, 'clientMsgId');
     const intent = raw.intent || 'work';
     if (!['work', 'steer', 'answer', 'cancel'].includes(intent)) throw failure('invalid_intent', 'invalid_intent', 400);
-    if (typeof raw.text !== 'string' || (intent !== 'cancel' && !raw.text.trim()) || raw.text.length > 32000) throw failure('invalid_text', 'invalid_text', 400);
+    if (typeof raw.text !== 'string' || (intent !== 'cancel' && !raw.text.trim()) || raw.text.length > (internalDispatch ? 270000 : 32000)) throw failure('invalid_text', 'invalid_text', 400);
     const list = field => {
       if (raw[field] == null) return [];
       if (!Array.isArray(raw[field]) || raw[field].length > 3) throw failure('invalid_input', `invalid ${field}`, 400);
@@ -507,6 +507,7 @@ function createTaskShellRuntime(ports) {
         roleSnapshotId: payload.intent === 'work' ? roles.snapshot(task.id) : controlRole || queuedRole || roles.snapshot(task.id),
         taskIdentityLocked: delivery.taskIdentityLocked === true,
         taskMetadata: delivery.taskMetadata || null,
+        dispatch: delivery.dispatch || null,
         cursorVersion: payload.intent === 'work' ? (currentShell.cursorVersion || 0) + 1 : currentShell.cursorVersion || 0,
         status: 'reserved', decision: target ? payload.intent === 'work' ? (busy ? 'queued' : 'continue') : payload.intent : 'new',
         contextSavings: payload.intent === 'work' ? {
@@ -525,7 +526,12 @@ function createTaskShellRuntime(ports) {
     });
   }
   async function deliver(receipt) {
-    if (receipt.status === 'accepted') return receipt.result;
+    if (receipt.status === 'accepted') {
+      // Re-read the durable operation through its idempotent admission: cached
+      // queue/status from the original receipt may be days out of date.
+      if (receipt.dispatch) return { ...receipt.result, ...await dispatchReceipt(receipt), duplicate: true };
+      return receipt.result;
+    }
     const task = store.get('task', receipt.taskId);
     if (!task.ownerShellId) { task.ownerShellId = taskActions.ownerOf(task)?.id || receipt.shellId; store.set('task', task.id, task); }
     const needsCapacity = receipt.payload.intent === 'work';
@@ -548,6 +554,9 @@ function createTaskShellRuntime(ports) {
         const state = await getExecution(task.sessionId);
         checkControl(p, state);
         result = await cancel(task.sessionId, p.turnId);
+      } else if (receipt.dispatch) {
+        receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
+        result = await dispatchReceipt(receipt);
       } else {
         const metadata = receipt.taskMetadata || {};
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
@@ -568,7 +577,7 @@ function createTaskShellRuntime(ports) {
       if (!result?.ok) throw failure(result?.code || 'delivery_failed', result?.error || result?.code || 'delivery_failed');
       receipt = { ...receipt, ...store.get('receipt', receipt.id) };
       receipt.status = 'accepted'; receipt.error = null;
-      receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, receiptId: receipt.id, decision: receipt.decision };
+      receipt.result = { ...(receipt.dispatch ? result : {}), ok: true, taskId: task.id, sessionId: task.sessionId, receiptId: receipt.id, decision: receipt.decision };
       store.set('receipt', receipt.id, receipt);
       if (receipt.payload.intent === 'work') store.transaction(() => {
         const owner = shell(receipt.shellId);
@@ -584,12 +593,12 @@ function createTaskShellRuntime(ports) {
       const notDelivered = error.code === 'stale_control';
       receipt.status = notDelivered ? 'rejected' : 'failed'; receipt.error = cleanError(error);
       store.set('receipt', receipt.id, receipt);
-      throw Object.assign(failure(receipt.error.code, receipt.error.message, error.status || 500), { receiptId: receipt.id, taskId: task.id, notDelivered });
+      throw Object.assign(failure(receipt.error.code, receipt.error.message, error.status || error.statusCode || 500), { receiptId: receipt.id, taskId: task.id, notDelivered });
     } finally { if (needsCapacity) launching.delete(task.id); }
   }
   async function sendInput(shellId, raw, delivery = {}) {
-    const s = shell(shellId), payload = normalize(raw);
-    const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`, fingerprint = hash(payload);
+    const s = shell(shellId), payload = normalize(raw, !!delivery.dispatch);
+    const id = `sr_${hash([s.id, payload.clientMsgId]).slice(0, 40)}`, fingerprint = hash(delivery.dispatch ? [payload, delivery.dispatch] : payload);
     let receipt = store.get('receipt', id);
     if (receipt && receipt.fingerprint !== fingerprint) throw failure('idempotency_conflict');
     if (flights.has(id)) return flights.get(id);
@@ -599,6 +608,30 @@ function createTaskShellRuntime(ports) {
     })();
     flights.set(id, operation);
     try { return await operation; } finally { flights.delete(id); }
+  }
+  function dispatchReceipt(receipt) {
+    const task = store.get('task', receipt.taskId);
+    assertWritable(task.id);
+    return ports.dispatch(task.sessionId, receipt.payload.text, {
+      ...receipt.dispatch, taskId: task.id, taskStart: false, taskSource: 'task-shell',
+      clientMsgId: receipt.id, idempotencyKey: receipt.dispatch.idempotencyKey || receipt.id,
+      taskShellReceiptId: receipt.id, receivedAt: receipt.createdAt,
+    });
+  }
+  function dispatchFromSession(sessionId, text, options = {}) {
+    if (typeof ports.dispatch !== 'function') throw failure('dispatch_unavailable');
+    // Address the exact execution's owner, never the shell's mutable cursor.
+    const s = open(sessionId);
+    const task = owns(sessionId) || adopt(s.id, sessionId);
+    if (!task?.id || task.unavailable) throw failure('task_shell_state_unavailable');
+    if (options.taskId && options.taskId !== task.id) throw failure('task_identity_mismatch');
+    const dispatch = Object.fromEntries(['ownerSessionId', 'replyTo', 'oneWay', 'resultMode',
+      'requireIdle', 'operationId', 'idempotencyKey', 'allowCommander', 'queueIfBusy']
+      .filter(key => options[key] !== undefined).map(key => [key, options[key]]));
+    return sendInput(taskActions.ownerOf(task).id, {
+      text, intent: 'work', taskId: task.id,
+      clientMsgId: `dispatch_${hash([options.ownerSessionId, options.idempotencyKey || options.operationId || randomUUID()]).slice(0, 40)}`,
+    }, { taskIdentityLocked: true, dispatch });
   }
   function sendExplicit(shellId, raw, identity = {}) {
     const task = locateOrCreate(shellId, identity);
@@ -712,7 +745,8 @@ function createTaskShellRuntime(ports) {
     const s = shell(shellId);
     const receipt = store.get('receipt', identifier(receiptId, 'receiptId'));
     if (!receipt || receipt.shellId !== s.id) throw failure('receipt_not_found', 'receipt_not_found', 404);
-    return sendInput(s.id, receipt.payload);
+    return sendInput(s.id, receipt.payload, { taskIdentityLocked: receipt.taskIdentityLocked,
+      taskMetadata: receipt.taskMetadata, dispatch: receipt.dispatch });
   }
   // Undoing an accepted identity change puts the shell cursor back where it
   // was. It refuses once another turn has moved the cursor: that turn was
@@ -815,7 +849,7 @@ function createTaskShellRuntime(ports) {
     getSnapshot: id => { try { return store.get('snapshot', id); } catch (_) { return null; } },
     ...taskActions, purgeTasks, stateTarget, stateSources, open, adopt, link, remove, view, detail, chatScope, send: sendInput, retry, owns,
     guardAdmission, recentTasks, refillContext, contextTrace, settleAttribution, restoreSettledCursor, locateOrCreate,
-    resolveTask, selectTarget, sendExplicit, relocateTask, independent, relations,
+    resolveTask, selectTarget, sendExplicit, dispatchFromSession, relocateTask, independent, relations,
   };
 }
 

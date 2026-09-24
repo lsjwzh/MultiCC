@@ -1161,19 +1161,19 @@ function createChatTurnEngine(deps) {
     getWorkspaceAdmission?.()?.assertPermit(sessionName, opts);
     const admissionGate = admitRunChatTurn(sessionName, text, opts);
     if (admissionGate.blocked) {
-      // Silent rejections are undebuggable wedges: the outbox keeps retrying,
-      // the queue keeps parking, and neither side leaves a trace. Log every
-      // guard refusal with the code that produced it.
       logger.warn('chat_turn_rejected_guard', {
         sessionId: sessionName,
         code: admissionGate.code || null,
         deliveryClass: opts.deliveryClass || null,
       });
+      if (opts.deliveryId && ['task_identity_mismatch', 'task_shell_route_required',
+        'task_deleted', 'task_archived', 'task_board_read_only'].includes(admissionGate.code)) {
+        throw Object.assign(new Error(admissionGate.code), { code: admissionGate.code, retryable: false });
+      }
       return false;
     }
     if ('delegated' in admissionGate) return admissionGate.delegated;
     const { persisted, existingCs, initialHistory, turnRequest } = admissionGate;
-
     text = turnRequest.text;
     const clientMsgId = turnRequest.identity.clientMsgId || '';
     const deliveryId = turnRequest.identity.deliveryId || '';

@@ -26,6 +26,7 @@ function createRouterToolHost({
   function configure({
     records,
     dispatchToSession,
+    createTask,
     orchestrationRuntime,
     resolveContext,
     taskBoard,
@@ -43,6 +44,7 @@ function createRouterToolHost({
     runtime = createRouterToolRuntime({
       records,
       dispatchToSession,
+      createTask,
       operations: orchestrationRuntime?.operations,
       completeDispatch: (id, result) => orchestrationRuntime.completeDispatch(id, result),
       schedulerStatus: id => orchestrationRuntime.sessionScheduler.status(id),
@@ -160,6 +162,7 @@ function createRouterToolHost({
         } catch (error) {
           const status = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
           const code = status >= 500 ? 'router_internal_error' : (error?.code || 'router_error');
+          const retry = typeof error?.retryable === 'boolean' ? { retryable: error.retryable } : {};
           if (status >= 500) logger.error('router_tool_failure', {
             requestId,
             tool: String(req.params.tool || ''),
@@ -168,12 +171,12 @@ function createRouterToolHost({
           });
           if (streaming) {
             writeFrame({
-              type: 'error', code, requestId,
+              type: 'error', code, requestId, ...retry,
               message: status >= 500 ? 'router_internal_error' : (error?.message || code),
             });
             return res.end();
           }
-          return res.status(status).json({ ok: false, code, requestId });
+          return res.status(status).json({ ok: false, code, requestId, ...retry });
         } finally {
           req.removeListener('aborted', abort);
           res.removeListener('close', abort);
@@ -233,6 +236,8 @@ function createRouterToolHost({
     releasePersistentProcess(holder);
     const processCapability = processContext({ ...context, dynamic: true });
     Object.assign(env, processCapability.env);
+    delete env.ACCESS_TOKEN;
+    delete env.MULTICC_ACCESS_TOKEN;
     holder._routerToolProcess = processCapability;
   }
 
@@ -269,6 +274,8 @@ function createRouterToolHost({
     // (src/secrets-vault.js envOverlay) keep provider routing authoritative —
     // this runs AFTER the provider env, MCP env and MULTICC_* markers are set.
     secretsVault.applyEnvOverlay(env);
+    delete env.ACCESS_TOKEN;
+    delete env.MULTICC_ACCESS_TOKEN;
     let proc;
     try {
       proc = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });

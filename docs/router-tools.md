@@ -14,10 +14,10 @@ queuing, idempotency, and result completion remain server-side.
 - `request_user_input(...)` is a backward-compatible alias. New prompts and
   agents should prefer `wait_for_user_answer` to avoid collisions with vendor
   built-in tools that are unavailable in non-interactive execution.
-- `route_task(target_session_id, message, idempotency_key?)` admits a durable
+- `route_task(target_session_id | new_task, message, idempotency_key?)` admits a durable
   one-way dispatch and returns immediately. The target result is retained on
   the operation but is not returned to the caller.
-- `dispatch_master(target_session_id, message, idempotency_key?, mode,
+- `dispatch_master(target_session_id | new_task, message, idempotency_key?, mode,
   timeout_seconds?)` admits the same durable request. Sync keeps the original
   MCP call open; async returns after admission and wakes the caller later. A
   timeout or interrupted transport does not cancel the operation.
@@ -31,6 +31,29 @@ queuing, idempotency, and result completion remain server-side.
 - `dispatch_slave(result, status?)` may complete only the dispatch that created
   the current turn. Natural post-turn completion remains the fallback when a
   model does not explicitly call the slave tool.
+
+Supply exactly one of `target_session_id` and `new_task`. An explicit target
+receives work under its existing canonical task identity. For an independent
+task, use `new_task: {title, cli?, model?, provider?, effort?}`. The host creates
+the task and its matching execution session in the caller's directory through
+the same task-shell service used by the UI, then admits the message. Agents
+must not pre-create sessions/tasks with curl, Python, or management REST APIs.
+
+```json
+{
+  "new_task": {"title": "Review the plan", "cli": "codex", "effort": "high"},
+  "message": "Review the proposed changes and report findings with evidence.",
+  "mode": "async",
+  "idempotency_key": "review-plan-1"
+}
+```
+
+Keep the same explicit retry key and arguments after an incomplete receipt,
+including across caller turns. The creation receipt and dispatch receipt are
+durable: failure between creating metadata and admitting delivery is retryable
+without creating another task. Changing configuration, content, or target
+under that key is a conflict. Creation metadata may remain if delivery fails;
+it is not proof that the task executed.
 
 Busy targets are handled by the existing durable outbox. A routed request never
 interrupts an active worker turn. Every target must exist, be a non-system
@@ -72,6 +95,29 @@ state and outbox items use the existing atomic orchestration store; no token is
 persisted. Restart recovery can deliver or complete admitted work independently
 of the MCP process. MCP cancellation aborts only the waiting tool request and
 does not discard the durable operation.
+
+Dispatch carries the canonical task-shell receipt, client message ID, and
+admission timestamp through the durable outbox. Task identity conflicts are
+rejected before admission. A permanent identity refusal at execution terminates
+delivery and records a failed operation instead of retrying indefinitely.
+Queue insertion is reported as started only with durable delivery or scheduler
+start evidence; `ok:true, started:false` means prioritized but still waiting.
+
+HTTP commands that create tasks/sessions now require a signed user cookie,
+the access token (`X-Access-Token` or `Authorization: Bearer`), or an applicable
+authenticated Fleet grant. Loopback alone does not authorize these writes.
+Router capability headers are explicitly rejected on these management routes.
+Existing token changes also require the current user credential. Installations
+without an access token must set one through local settings and log in before
+using these commands; initial password setup remains local. MCP task creation
+continues through its separate session-scoped capability.
+
+The host removes `ACCESS_TOKEN` and `MULTICC_ACCESS_TOKEN` from the CLI spawn
+environment. This separates normal model routing from management access; it
+is not an OS sandbox. A model with unrestricted same-user shell/filesystem
+access could obtain user credentials, access other local interfaces, or modify
+the service. Preventing that requires separate OS/network and credential
+isolation. Origin or user-agent headers are not treated as proof of a human.
 
 Process-presence fields such as `active`, `streaming`, clients, recent task
 labels, and repository status are not dispatch completion evidence. Humans can

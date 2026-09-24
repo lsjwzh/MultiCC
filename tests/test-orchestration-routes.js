@@ -943,3 +943,26 @@ test('manual question dismissal validates identity and never calls queue retry o
   assert.deepEqual(received, [['s1', 'old']]);
   assert.equal(h.calls.length, 0);
 });
+
+test('insert_queued requires start evidence and reports terminal delivery failure', async () => {
+  for (const [delivery, active, started, status] of [
+    [null, null, false, 200],
+    [null, { entryId: 'entry-x' }, false, 200],
+    [null, { entryId: 'entry-x', startedAt: 123 }, true, 200],
+    [{ state: 'delivered' }, null, true, 200],
+    [{ state: 'dead-letter', lastError: 'task_identity_mismatch' }, null, false, 409],
+  ]) {
+    const f = fixture({ scheduler: true, queueStatus: { active, queued: [] } });
+    f.runtime.outbox = { get: async () => delivery };
+    const result = await invoke(f.app, 'POST', '/api/sessions/:id/queue/action', {
+      params: { id: 's1' }, body: { action: 'insert_queued', entryId: 'entry-x', confirm: true },
+    });
+    assert.equal(result.response.statusCode, status);
+    assert.equal(result.response.body.started, started);
+    if (status === 409) {
+      assert.equal(result.response.body.ok, false);
+      assert.equal(result.response.body.code, 'queue_delivery_failed');
+      assert.equal(result.response.body.retryable, false);
+    }
+  }
+});

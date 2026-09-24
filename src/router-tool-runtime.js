@@ -39,6 +39,8 @@ class RouterToolError extends Error {
     this.code = code;
     this.statusCode = statusCode;
     this.safe = true;
+    if (['task_identity_mismatch', 'task_shell_route_required', 'idempotency_conflict',
+      'OPERATION_CONFLICT', 'invalid_arguments', 'task_deleted', 'task_archived'].includes(code)) this.retryable = false;
   }
 }
 
@@ -169,6 +171,7 @@ function sleep(ms, signal, setTimeoutFn = setTimeout, clearTimeoutFn = clearTime
 function createRouterToolRuntime({
   records,
   dispatchToSession,
+  createTask,
   operations,
   completeDispatch,
   now = Date.now,
@@ -354,24 +357,42 @@ function createRouterToolRuntime({
     const key = !hasExplicitKey
       ? `router:${stableSuffix([tool, context.sessionId, context.turnId, targetId, message], cryptoImpl)}`
       : `router:${tool}:${cleanId(explicitKey, 'idempotency_key')}`;
-    // Only an explicit board/Commander task owns enough evidence to carry a
-    // canonical identity through a route. An ordinary router invocation is a
-    // new candidate even if the caller's previous task is unfinished; otherwise
-    // unrelated work lands with that previous task's code and title until Aux
-    // eventually runs. The idempotency key still deduplicates execution retries.
-    const explicitContinuation = ['task-board', 'commander', 'code-reference']
-      .includes(String(context.taskSource || ''));
-    const inheritedTaskId = explicitContinuation && context.taskId
-      ? cleanId(context.taskId, 'taskId') : null;
-    const suffix = stableSuffix(hasExplicitKey
-      ? [tool, context.sessionId, targetId, key]
-      : [tool, context.sessionId, context.turnId, targetId, message, key], cryptoImpl);
-    return {
-      idempotencyKey: key,
-      taskId: inheritedTaskId || `tsk-router-${suffix}`,
-      taskStart: inheritedTaskId ? context.taskStart === true : true,
-      taskSource: inheritedTaskId ? context.taskSource : 'router-tool',
-    };
+    return { idempotencyKey: key };
+  }
+
+  async function resolveAdmissionTarget(context, tool, args, message) {
+    const hasTarget = args.target_session_id != null;
+    const hasNew = args.new_task != null;
+    if (hasTarget === hasNew) throw new RouterToolError('invalid_arguments', 'Provide exactly one of target_session_id or new_task');
+    if (hasTarget) {
+      const { targetId } = targetFor(context, args.target_session_id, args.allow_terminal === true);
+      return { targetId, identity: admissionIdentity(context, tool, targetId, message, args.idempotency_key) };
+    }
+    if (args.allow_terminal === true || typeof args.new_task !== 'object' || Array.isArray(args.new_task)) {
+      throw new RouterToolError('invalid_arguments', 'new_task must be a chat task configuration');
+    }
+    const input = args.new_task;
+    rejectUnknownArguments(input, new Set(['title', 'cli', 'model', 'provider', 'effort']));
+    const title = cleanText(input.title, 'new_task.title', 120);
+    const config = { title };
+    for (const key of ['cli', 'model', 'provider', 'effort']) {
+      if (input[key] != null) config[key] = cleanText(input[key], `new_task.${key}`, 256);
+    }
+    const identity = admissionIdentity(context, tool, JSON.stringify(config), message, args.idempotency_key);
+    if (typeof createTask !== 'function') throw new RouterToolError('task_creation_unavailable', 'canonical task creation is unavailable', 503);
+    const created = await canonicalCall(() => createTask({ ...config, dirId: records.get(context.sessionId).dirId,
+      clientMsgId: `router_${stableSuffix([context.sessionId, tool, identity.idempotencyKey], cryptoImpl)}` }));
+    if (!created?.ok) throw new RouterToolError(created?.code || 'task_creation_failed', created?.error || 'task creation failed', 409);
+    const { targetId } = targetFor(context, created.sessionId);
+    return { targetId, identity };
+  }
+  async function canonicalCall(run) {
+    try { return await run(); } catch (error) {
+      if ([400, 403, 404, 409, 429].includes(error?.status)) {
+        throw new RouterToolError(error.code || 'dispatch_rejected', error.code || 'dispatch_rejected', error.status);
+      }
+      throw error;
+    }
   }
 
   // The receipt address travels WITH the task: the operation id is printed in
@@ -411,13 +432,8 @@ function createRouterToolRuntime({
   }
 
   async function admit(context, tool, args, resultMode) {
-    const { targetId } = targetFor(
-      context, args.target_session_id, args.allow_terminal === true,
-    );
     let message = cleanText(args.message, 'message', MAX_MESSAGE_LENGTH);
-    const identity = admissionIdentity(
-      context, tool, targetId, message, args.idempotency_key,
-    );
+    const { targetId, identity } = await resolveAdmissionTarget(context, tool, args, message);
     // The operation id is derived from the admission identity, so a client
     // retry (same idempotency key) recomputes the SAME id and lands in the
     // idempotent early-return of admitDispatch, while any different content
@@ -426,7 +442,7 @@ function createRouterToolRuntime({
     let slaveOperationId;
     if (resultMode === 'async') {
       slaveOperationId = `op_${stableSuffix([
-        'dispatch-slave', tool, context.sessionId, context.turnId, targetId, identity.idempotencyKey,
+        'dispatch-slave', tool, context.sessionId, targetId, identity.idempotencyKey,
       ], cryptoImpl)}`;
       message += slaveCallbackInstruction(slaveOperationId);
     } else if (resultMode === 'sync') {
@@ -436,7 +452,7 @@ function createRouterToolRuntime({
     // can all trace who dispatched this. Prepended AFTER admissionIdentity so
     // dedup still keys on the caller's own content, not on the attribution line.
     const delivered = senderAttribution(records.get(context.sessionId), context.sessionId, tool) + message;
-    const result = await dispatchToSession(targetId, delivered, {
+    const result = await canonicalCall(() => dispatchToSession(targetId, delivered, {
       ownerSessionId: context.sessionId,
       replyTo: resultMode === 'sync' || resultMode === 'async' ? context.sessionId : null,
       oneWay: resultMode !== 'sync' && resultMode !== 'async',
@@ -446,11 +462,7 @@ function createRouterToolRuntime({
       // Precomputed above so the id printed in the task text is the id the
       // store actually admits - the worker's receipt address can never drift.
       operationId: slaveOperationId,
-      taskId: identity.taskId,
-      taskStart: identity.taskStart,
-      taskSource: identity.taskSource,
-      taskText: identity.taskStart ? delivered : undefined,
-    });
+    }));
     if (!result || result.ok !== true) {
       throw new RouterToolError(
         result?.code || 'dispatch_rejected',
@@ -467,20 +479,20 @@ function createRouterToolRuntime({
         callerTurnId: context.turnId || '',
         callerRequestId: context.requestId || '',
         targetSessionId: targetId,
-        taskId: identity.taskId,
+        taskId: result.taskId || null,
         operationId: result.operationId,
         status: result.status || 'admitted',
         duplicate: result.duplicate === true,
         resultMode,
-        taskStart: identity.taskStart,
-        taskSource: identity.taskSource,
-        taskText: identity.taskStart ? message : '',
+        taskStart: false,
+        taskSource: 'task-shell',
+        taskText: '',
       });
     } catch (_) {}
     return {
       ...result,
       targetSessionId: targetId,
-      taskId: identity.taskId,
+      taskId: result.taskId || null,
       idempotencyKey: identity.idempotencyKey,
     };
   }
@@ -523,6 +535,7 @@ function createRouterToolRuntime({
   }
 
   async function routeTask(context, args) {
+    rejectUnknownArguments(args, new Set(['target_session_id', 'new_task', 'message', 'idempotency_key', 'allow_terminal']));
     const admitted = await admit(context, 'route_task', args, 'none');
     return {
       ok: true,
@@ -656,7 +669,7 @@ function createRouterToolRuntime({
 
   async function dispatchMaster(context, args, options = {}) {
     rejectUnknownArguments(args, new Set([
-      'target_session_id', 'message', 'idempotency_key', 'allow_terminal',
+      'target_session_id', 'new_task', 'message', 'idempotency_key', 'allow_terminal',
       'mode', 'timeout_seconds',
     ]));
     const mode = String(args.mode || '');
@@ -669,6 +682,7 @@ function createRouterToolRuntime({
         'timeout_seconds is only valid when mode is sync',
       );
     }
+    if (mode === 'sync') boundedTimeout(args.timeout_seconds);
     let admitted;
     try {
       admitted = await admit(context, 'dispatch_master', args, mode);
@@ -690,7 +704,7 @@ function createRouterToolRuntime({
         ok: true,
         mode,
         admitted: true,
-        status: 'admitted',
+        status: admitted.status,
         operation_id: admitted.operationId,
         target_session_id: admitted.targetSessionId,
         execution_session_id: admitted.chatId || admitted.targetSessionId,

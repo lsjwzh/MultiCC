@@ -288,3 +288,17 @@ test('the queue dock keeps its textContent-only rendering', () => {
   // The handle must be a button so the same move is reachable without a drag.
   assert.match(source, /handle\.type = 'button'/);
 });
+
+test('insert receipt never claims execution without started proof', async () => {
+  const queue = queueApi;
+  for (const started of [false, undefined, true]) {
+    const notices = [];
+    const run = queue.createInsertHandler({
+      fetch: async () => ({ ok: true, json: async () => ({ ok: true, started }) }),
+      withToken: x => x, getSessionName: () => 's1', notify: (...args) => notices.push(args),
+    });
+    assert.equal(await run('entry-1'), started === true);
+    assert.equal(notices[0][1], started === true ? 'completed' : 'info');
+    if (started !== true) assert.match(notices[0][0], /尚未开始/);
+  }
+});
