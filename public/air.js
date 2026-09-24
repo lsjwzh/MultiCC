@@ -577,6 +577,8 @@
       const copy = node('span');
       const meta = node('small', null, 'task-meta');
       meta.append(statusBadge(task));
+      const worktreeBadge = window.MultiCCAirAdmin?.worktreeChangeBadge?.(task);
+      if (worktreeBadge) meta.append(worktreeBadge);
       // 阶段只有计划记录才有（`workflowStage` 是计划看板那一列，记录类型由行首那个
       // ◇ 标着）：观察型记录这个字段恒为 null，拿 `status` 兜底写出来的「进行中」是
       // 生命周期词，跟徽标说的不是一回事 —— 徽标「空闲」「执行成功」，旁边一行「进行
@@ -1410,6 +1412,8 @@
       // 读的人得先知道哪一半是什么规则。
       const meta = node('small', null, 'task-meta');
       meta.append(statusBadge(task));
+      const worktreeBadge = window.MultiCCAirAdmin?.worktreeChangeBadge?.(task);
+      if (worktreeBadge) meta.append(worktreeBadge);
       meta.append(node('em', directoryName(task.dirId), 'task-dir'));
       // 手机上 pin 住的那几条就排在这份列表的最上面，标记说明它们为什么在那儿。
       if (isPinned(task.id)) meta.append(node('span', '📌', 'task-pin'));

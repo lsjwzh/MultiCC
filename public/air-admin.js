@@ -189,6 +189,32 @@
     return badge;
   }
 
+  /**
+   * 外层任务卡只标「还有改动没交付」：dirty 是未提交文件，ahead 是已经提交但尚未
+   * 合回基分支。behind 代表需要同步基分支，不属于这枚图标的语义，客户端不推断它。
+   */
+  function worktreeChangeLabel(task) {
+    const changes = task?.worktreeChanges;
+    if (!changes || typeof changes !== 'object') return '';
+    const dirty = changes.dirty === true;
+    const ahead = Math.max(0, Number.parseInt(changes.ahead, 10) || 0);
+    if (dirty && ahead) return t('airWorktreePendingBoth', { n: ahead });
+    if (dirty) return t('airWorktreePendingDirty');
+    if (ahead) return t('airWorktreePendingAhead', { n: ahead });
+    return '';
+  }
+
+  /** 静态的 worktree 待交付图标；tooltip 与无障碍名说清是哪一种改动。 */
+  function worktreeChangeBadge(task) {
+    const label = worktreeChangeLabel(task);
+    if (!label) return null;
+    const badge = make('span', '⎇', 'worktree-change-badge');
+    badge.title = label;
+    badge.setAttribute('role', 'img');
+    badge.setAttribute('aria-label', label);
+    return badge;
+  }
+
   /** 行的第二层信息：徽标已经说了「在不在跑」，这里补记录类型、阶段和资源去向。 */
   //
   // 阶段只有计划记录才有：`workflowStage` 是计划看板的那一列，观察型记录（从对话
@@ -268,6 +294,8 @@
     // 对齐（App 的任务行同一天也照这个改了）。
     const meta = make('small', null, 'task-meta');
     meta.append(statusBadge(task, options.badge || {}));
+    const worktreeBadge = worktreeChangeBadge(task);
+    if (worktreeBadge) meta.append(worktreeBadge);
     const where = options.dir === false ? '' : context.directoryName(task.dirId);
     const note = [where, taskDetail(task, context)].filter(Boolean).join(' · ');
     if (note) meta.append(make('em', note, 'task-note'));
@@ -1091,6 +1119,8 @@
     isRunning,
     runningDirectories,
     statusBadge,
+    worktreeChangeLabel,
+    worktreeChangeBadge,
     applyRing,
     filterTasks,
     rankedRows,

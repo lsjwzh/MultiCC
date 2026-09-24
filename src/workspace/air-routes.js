@@ -153,7 +153,23 @@ function mountAirRoutes(app, deps) {
     })();
     const tasks = boardTasks().map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
+      const record = deps.records.get(sessionId);
       const access = deps.shell.taskAccess(t);
+      const taskResource = resource(sessionId, admission);
+      // 外层卡片只需要回答「这份 worktree 还有东西没交付吗」，不要把完整 merge
+      // 状态（冲突文件、分支细节等）复制进 4 秒一轮的 Air 快照。状态来自和任务页头
+      // 同一份缓存；首次读取触发后台刷新，下一轮快照自然带上结果。只触发磁盘上真实
+      // 驻留的 worktree：hibernated / planned 没有 checkout，逐条跑 Git 既没意义，
+      // 也会让上千张历史卡片排进状态队列。
+      let worktreeChanges = null;
+      if (record && ['resident', 'retained'].includes(taskResource.residency)
+          && typeof deps.mergeStateCached === 'function') {
+        const mergeState = deps.mergeStateCached(deps.directories.get(record.dirId), record);
+        if (mergeState && mergeState.reason !== 'loading' && mergeState.worktreeMissing !== true) {
+          const ahead = Math.max(0, Number.parseInt(mergeState.ahead, 10) || 0);
+          worktreeChanges = { dirty: mergeState.dirty === true, ahead };
+        }
+      }
       // `updatedAt` is task-metadata time: renaming, changing lifecycle/status,
       // classification and new messages can all move it.  The Air task list
       // needs a separate conversation clock so a housekeeping edit cannot jump
@@ -172,7 +188,7 @@ function mountAirRoutes(app, deps) {
         // 自愈：证明这一轮从没被受理过的卡片按空闲投影，而不是永久「执行中」。
         runState: core.deadDispatchClaim(t, core.taskRunSessionIds(t).some(hasTurnState), projectNow)
           ? 'idle' : (core.staleWorkerClaim(t, deps.getSessionRunState, projectNow) || t.runState || null),
-        resource: resource(sessionId, admission) };
+        resource: taskResource, worktreeChanges };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({
       id: d.id, name: d.name, path: d.path,

@@ -12,6 +12,7 @@ AirTask _task({
   String? workflowStage,
   String recordType = '',
   Map<String, dynamic> resource = const {},
+  AirWorktreeChanges? worktreeChanges,
   int updatedAt = 0,
 }) => AirTask(
   id: id,
@@ -24,6 +25,7 @@ AirTask _task({
   workflowStage: workflowStage,
   runState: runState,
   resource: resource,
+  worktreeChanges: worktreeChanges,
 );
 
 void main() {
@@ -173,6 +175,23 @@ void main() {
       final running = _task(runState: 'running', resource: const {'lease': 'running'});
       expect(airStatusLabel(airTaskStatus(running)), '执行中');
       expect(airTaskDetail(running), '');
+    });
+  });
+
+  group('worktree 待交付图标', () {
+    test('未提交、未合并和两者同时存在时，提示各说各的', () {
+      expect(airWorktreeChangeLabel(_task(
+        worktreeChanges: const AirWorktreeChanges(dirty: true),
+      )), 'Worktree 有未提交改动');
+      expect(airWorktreeChangeLabel(_task(
+        worktreeChanges: const AirWorktreeChanges(ahead: 3),
+      )), 'Worktree 有 3 个提交尚未合并');
+      expect(airWorktreeChangeLabel(_task(
+        worktreeChanges: const AirWorktreeChanges(dirty: true, ahead: 2),
+      )), 'Worktree 有未提交改动，另有 2 个提交尚未合并');
+      expect(airWorktreeChangeLabel(_task(
+        worktreeChanges: const AirWorktreeChanges(),
+      )), '');
     });
   });
 
