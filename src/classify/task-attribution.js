@@ -15,6 +15,14 @@ const RETRIEVAL_LIMIT = 5;
 // hits — they invite a wrong `relation=same`.
 const RETRIEVAL_RELATIVE_FLOOR = 0.35;
 const RETRIEVAL_SNIPPET_CHARS = 90;
+// Message-level candidates get their own slots rather than competing with the
+// board's. They answer a different question ("is this what the turn is talking
+// about" from the conversation itself, not from a per-turn excerpt), their scores
+// come from a different index and cannot be ranked against the board's, and
+// sharing the board's slots would starve them exactly when the board is chatty —
+// which is when a second corpus is worth having. Same relative floor, applied
+// inside their own list.
+const RETRIEVAL_MESSAGE_LIMIT = 3;
 
 const PHASE_ALIASES = Object.freeze({
   planning: 'planning', '规划中': 'planning',
@@ -139,25 +147,96 @@ function attributionQueryText({ userText = '', replyText = '' } = {}) {
   return [user, reply].filter(Boolean).join('\n');
 }
 
+// Which task a chat session belongs to, according to the board itself. Every ref
+// a task accumulates names the session it came from, so the board is a complete
+// session → task map for work it has already tagged — no session store, no
+// in-memory state, and only tasks the board still considers searchable (merged
+// aliases and tombstones are absent from `docs` by construction).
+//
+// A session retagged from one task to another appears under both; the candidate
+// that is still being updated wins, which is the same tiebreak the board uses for
+// its own ranking.
+function sessionTaskMap(board, index) {
+  const bySession = new Map();
+  const taskMap = board && typeof board.tasks === 'object' ? board.tasks : {};
+  const ranked = [...index.docs.values()].sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+  for (const doc of ranked) {
+    for (const ref of Array.isArray(taskMap[doc.taskId]?.refs) ? taskMap[doc.taskId].refs : []) {
+      const sessionId = String(ref?.sessionId || '').trim();
+      if (sessionId && !bySession.has(sessionId)) bySession.set(sessionId, doc);
+    }
+  }
+  return bySession;
+}
+
+// Tasks proposed by *message* content rather than by the board's own excerpts.
+//
+// The board keeps one short excerpt per tagged turn, so a task whose work was
+// described in a conversation but never distilled into a title or an excerpt is
+// invisible to it. The message index holds the whole conversation, so this is the
+// half that can still find it. `hits` arrives already ranked (see
+// src/search/runtime.js findMessages); this function only decides which of them
+// the model is allowed to see.
+function messageRelatedTasks(board, index, { hits = [], exclusions = new Set(), limit = RETRIEVAL_MESSAGE_LIMIT } = {}) {
+  if (!Array.isArray(hits) || !hits.length || limit <= 0) return [];
+  const bySession = sessionTaskMap(board, index);
+  // Best hit per task: several messages of the same conversation usually match,
+  // and the model needs the task once, with its strongest evidence.
+  const byTask = new Map();
+  for (const hit of hits) {
+    const doc = bySession.get(String(hit?.sessionId || '').trim());
+    if (!doc) continue;
+    const score = Number(hit?.score) || 0;
+    if (score <= 0) continue;
+    const current = byTask.get(doc.taskId);
+    if (current && current.score >= score) continue;
+    byTask.set(doc.taskId, {
+      taskId: doc.taskId,
+      taskName: cleanName(doc.title),
+      score,
+      snippet: String(hit?.snippet?.text || hit?.text || '').replace(/\s+/g, ' ').trim().slice(0, RETRIEVAL_SNIPPET_CHARS),
+    });
+  }
+  // The floor is measured before exclusions, for the same reason the board's is:
+  // dropping the best hit must not lower the bar for the rest.
+  const top = [...byTask.values()].reduce((best, task) => Math.max(best, task.score), 0);
+  if (top <= 0) return [];
+  return [...byTask.values()]
+    .filter(task => !exclusions.has(String(task.taskId)))
+    .filter(task => task.score >= top * RETRIEVAL_RELATIVE_FLOOR)
+    .sort((a, b) => b.score - a.score || String(a.taskId).localeCompare(String(b.taskId)))
+    .slice(0, limit);
+}
+
 // Tasks whose *content* matches this turn, retrieved from the whole board rather
 // than from the session's own recent history. This is what lets a turn be
 // attributed to a task this session never mentioned: "把上次那个搜索再改一下"
 // carries no title to match, only content.
+//
+// Two corpora answer that question and both are asked: the board's own corpus
+// (titles, planning text, per-turn excerpts) and — when the caller supplies them —
+// hits from the message index over full conversation text. Board hits fill the
+// list first because they are evidence about the task as a task; message hits then
+// bring up to RETRIEVAL_MESSAGE_LIMIT further candidates, which is where a task
+// that never got a searchable excerpt can still be found.
 //
 // Pure and best-effort by construction: no board, no real word in the query, or a
 // throwing index all degrade to "no candidates" — never to a failed attribution,
 // and never to a wrong identity.
 function retrieveRelatedTasks(board, {
   userText = '', replyText = '', excludeTaskIds = [], limit = RETRIEVAL_LIMIT,
+  messageHits = [], messageLimit = RETRIEVAL_MESSAGE_LIMIT,
 } = {}) {
   const query = attributionQueryText({ userText, replyText });
   if (!board || !query) return [];
   const exclusions = new Set((Array.isArray(excludeTaskIds) ? excludeTaskIds : []).map(String));
+  let index = null;
   let hits = [];
   try {
     // A query made only of lone CJK characters is far too common to be evidence.
     if (!taskSearch.analyzeQuery(query).strong.length) return [];
-    hits = taskSearch.searchBoard(board, query, { limit: Math.max(1, limit) * 3 + exclusions.size });
+    index = taskSearch.buildTaskSearchIndex(board);
+    hits = taskSearch.searchTaskIndex(index, query, { limit: Math.max(1, limit) * 3 + exclusions.size });
   } catch (_) {
     return [];
   }
@@ -165,8 +244,7 @@ function retrieveRelatedTasks(board, {
   // *before* the session's own recent tasks are removed. Otherwise excluding the
   // best match would lower the bar and promote a coincidence into the prompt.
   const top = Number(hits[0]?.score) || 0;
-  if (top <= 0) return [];
-  return hits
+  const boardTasks = top > 0 ? hits
     .filter(hit => !exclusions.has(String(hit.taskId)))
     .filter(hit => Number(hit.score) >= top * RETRIEVAL_RELATIVE_FLOOR)
     .slice(0, Math.max(1, limit))
@@ -178,7 +256,20 @@ function retrieveRelatedTasks(board, {
       // quoted under the candidate so a title-only coincidence cannot be mistaken
       // for the same work.
       snippet: String(hit.snippet?.text || '').replace(/\s+/g, ' ').trim().slice(0, RETRIEVAL_SNIPPET_CHARS),
-    }));
+    })) : [];
+  let extra = [];
+  try {
+    extra = messageRelatedTasks(board, index, {
+      hits: messageHits,
+      // A task already proposed from the board is not proposed twice; the message
+      // hit adds nothing the model has not already seen.
+      exclusions: new Set([...exclusions, ...boardTasks.map(task => String(task.taskId))]),
+      limit: messageLimit,
+    });
+  } catch (_) {
+    extra = [];
+  }
+  return [...boardTasks, ...extra];
 }
 
 function buildTaskAttributionSystemPrompt({
@@ -191,7 +282,7 @@ function buildTaskAttributionSystemPrompt({
   // Retrieval by content, shown apart from the recency list precisely because it
   // means something weaker: same material, not necessarily the same deliverable.
   const related = relatedTasks.length
-    ? `\n\n内容相关任务（按最新一轮内容从整个任务板检索出来的历史任务；括号里是命中的原文片段，只说明内容相关，不证明是同一个任务）：\n${
+    ? `\n\n内容相关任务（按最新一轮内容从整个任务板和全部历史对话里检索出来的历史任务；括号里是命中的原文片段，只说明内容相关，不证明是同一个任务）：\n${
       relatedTasks.map(task => `- ${task.taskId}: ${task.taskName || '（名称待提取）'}${task.snippet ? `（${task.snippet}）` : ''}`).join('\n')}`
     : '';
   const identityRule = identityLocked
@@ -201,7 +292,7 @@ function buildTaskAttributionSystemPrompt({
       : '';
   const relevanceRule = '另外独立判断最新一轮与当前聊天窗口前序工作的关联度 contextRelevance（high|medium|low）。即使任务身份锁定，也必须判断关联度；锁定只约束 taskId/relation。最新一轮明确转向与前序不同的交付目标时判 low——同一仓库、同一产品内的不同功能或问题也算不同交付目标；只有同一交付目标的继续/追问/纠正/状态询问，或首轮无前序工作，才不判 low；拿不准时用 medium。low 时 splitTaskName 给出新目标的简短名称，relevanceReason 用一句话说明区别，taskName 保留原任务名称；其余两字段填 null。这只是建议，只有用户确认才会分离。';
   const relatedRule = relatedTasks.length
-    ? `\n\n「内容相关任务」是按最新一轮内容从整个任务板检索出来的，可能包含本次会话从没提过的任务。命中只说明材料/主题相关：若最新一轮确实是其中某个任务的继续、追问或修订，可以 relation=same 并填它的 id；若它与最新一轮属于同一工作主题但交付物不同，relation=new 并把它的 id 填进 relatedTaskId；判定不了就忽略它。不要仅因命中就复用它的 taskId。`
+    ? `\n\n「内容相关任务」是按最新一轮内容从整个任务板和全部历史对话里检索出来的，可能包含本次会话从没提过的任务。命中只说明材料/主题相关：若最新一轮确实是其中某个任务的继续、追问或修订，可以 relation=same 并填它的 id；若它与最新一轮属于同一工作主题但交付物不同，relation=new 并把它的 id 填进 relatedTaskId；判定不了就忽略它。不要仅因命中就复用它的 taskId。`
     : '';
   return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n最近任务：\n${known}${related}${relatedRule}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问或修订。同一交付目标的继续才复用原任务名和 taskId。产生独立交付物、子任务或衍生任务时 relation=new，保留新任务身份；若它与某个旧任务属于同一工作主题，用 relatedTaskId 指向该旧任务，仅供任务面板归组。relation=same 时也可填 relatedTaskId 表示弱关联（同主题分组），但不能指向当前任务自己。\n\n${relevanceRule}\n\n同时提炼 memory_candidate：本轮对话中值得沉淀进任务长期记忆的稳定事实、决策或结论（接口约定、踩坑、方案取舍），一句话、不含过程描述；没有值得记的就填 null。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null","relatedTaskId":"相关时填写既有 ID；否则 null","contextRelevance":"high|medium|low","splitTaskName":null,"relevanceReason":null,"memory_candidate":"值得记的一条结论，或 null"}\n不要输出状态字母、解释或 Markdown。`;
 }
@@ -228,9 +319,12 @@ module.exports = {
   attributionQueryText,
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,
+  messageRelatedTasks,
   parseTaskAttribution,
   recentTaskContext,
   retrieveRelatedTasks,
+  sessionTaskMap,
   RETRIEVAL_LIMIT,
+  RETRIEVAL_MESSAGE_LIMIT,
   RETRIEVAL_RELATIVE_FLOOR,
 };

@@ -114,7 +114,7 @@ const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
-const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs'); const { createTaskSearchRoutes } = require('./src/routes/task-search');
+const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
 const { createTaskRunStore } = require('./src/task-run/store'); const { createProductionTaskRunHost } = require('./src/task-run/production'); const { reconcileTaskRunSlotLeases } = require('./src/task-run/recovery');
 const { createTaskRunProviderBridge } = require('./src/task-run/provider-bridge'); const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
@@ -258,7 +258,7 @@ let chatHistoryService = null;
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
 let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null; let worktreeOrphanScanner = null;
 const observability = createObservability({ service: 'multicc' });
-const { logger, metrics } = observability;
+const { logger, metrics } = observability; const messageSearchRuntime = () => getSharedSearchRuntime({ dataDir: MULTICC_PATHS.root, logger }); // 消息全文索引（src/search/runtime.js）：进程内单例、按数据目录记忆化，首个 message-search 请求或启动时那次 .start() 才真正建库开扫
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
 const routerToolHost = createRouterToolHost({
   express, isLocalRequest, logger,
@@ -1396,7 +1396,7 @@ const classifyStateMachine = createClassifyStateMachine({
   getSessionWorkHost: () => sessionWorkHost,
   getLivenessRuntime: () => livenessRuntime,
   getTaskContextHost: () => taskContextHost,
-  getTaskBoardRuntime: () => taskBoardRuntime,
+  getTaskBoardRuntime: () => taskBoardRuntime, getMessageSearch: () => messageSearchRuntime(),
   getUserInputSignalHost: () => userInputSignalHost,
   getApiErrorHost: () => apiErrorHost,
   getWaitInjector: () => waitInjector,
@@ -2046,7 +2046,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   relocateShellTask: (taskId, dirId, opts) => taskShellHost.relocateTask(taskId, dirId, opts),
   logger: console,
 });
-taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app); createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), logger }).mountRoutes(app);
+taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app); createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), messages: messageSearchRuntime, logger }).mountRoutes(app); messageSearchRuntime().start();
 const taskContextHost = createTaskContextHost({
   getState: sessionId => chatSessions.get(sessionId), emitClients: createTaskRunStreamEmitter(broadcastTo, chatSessions, persistedSessions, workspaceBroadcast),
   append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),

@@ -131,3 +131,64 @@ test('a retrieved id is usable only because it was offered to the parser', () =>
   assert.equal(derived.relation, 'new');
   assert.equal(derived.relatedTaskId, 'tsk-search', 'same material, different deliverable groups instead');
 });
+
+// ── 消息级候选：第二份语料 ────────────────────────────────────────────────────
+// 任务板只留每轮一段摘录，所以「对话里说过、但没沉淀成标题或摘录」的任务它看不见；
+// 消息索引有整段正文。两个语料各自算自己的相对门槛并按自己的顺序排（分数来自两套
+// 不同的索引，互相不可比），合并时任务板在前、消息候选随后补位。
+
+// tsk-silent 的标题与摘录都搜不到「全文检索」，只有它的会话正文里有；sess-unknown
+// 不属于任何任务，任何命中都换不成候选。
+const MESSAGE_FIXTURE = board([
+  task('tsk-search', { title: '全文检索：任务搜索的排序', refs: [{ sessionId: 'sess-search' }] }),
+  task('tsk-silent', { title: '收尾', refs: [{ sessionId: 'sess-silent' }] }),
+]);
+
+test('message hits propose the task the board corpus cannot see', () => {
+  const merged = retrieveRelatedTasks(MESSAGE_FIXTURE, {
+    userText: '全文检索',
+    messageHits: [
+      { sessionId: 'sess-silent', score: 2.5, snippet: { text: '当时在讨论检索命中的排序' } },
+      { sessionId: 'sess-unknown', score: 9, snippet: { text: '这个会话不属于任何任务' } },
+    ],
+  });
+  assert.deepEqual(merged.map(hit => hit.taskId), ['tsk-search', 'tsk-silent'],
+    'board hits stay first, message-only candidates come after');
+  const extra = merged[1];
+  assert.equal(extra.taskName, '收尾', 'the name comes from the board, not from the message');
+  assert.ok(extra.snippet.includes('检索命中的排序'), 'the matched window is the evidence the model judges with');
+  assert.ok(!merged.some(hit => hit.snippet.includes('不属于任何任务')),
+    'a session no task claims cannot become a candidate');
+});
+
+test('message candidates are deduplicated against the board and floored inside their own list', () => {
+  const merge = hits => retrieveRelatedTasks(MESSAGE_FIXTURE, { userText: '全文检索', messageHits: hits })
+    .map(hit => hit.taskId);
+  // 任务板已经提过 tsk-search（它自己的标题命中），消息再命中一次不算新候选。
+  assert.deepEqual(merge([{ sessionId: 'sess-search', score: 5, snippet: { text: '全文检索' } }]),
+    ['tsk-search']);
+  // 门槛相对本次消息检索的最好命中：2.5 * 0.35 = 0.875，弱命中被丢掉。
+  const floored = retrieveRelatedTasks(MESSAGE_FIXTURE, {
+    userText: '全文检索',
+    messageHits: [
+      { sessionId: 'sess-search', score: 2.5, snippet: { text: 'a' } },
+      { sessionId: 'sess-silent', score: 0.4, snippet: { text: 'b' } },
+    ],
+  });
+  assert.deepEqual(floored.map(hit => hit.taskId), ['tsk-search']);
+  // 门槛在排除之前算，和任务板同理：被排除的是最近任务，不因此抬高其余候选。
+  const excluded = retrieveRelatedTasks(MESSAGE_FIXTURE, {
+    userText: '全文检索',
+    excludeTaskIds: ['tsk-silent'],
+    messageHits: [{ sessionId: 'sess-silent', score: 6, snippet: { text: 'c' } }],
+  });
+  assert.ok(!excluded.some(hit => hit.taskId === 'tsk-silent'), 'the session’s own recent task is not a candidate');
+});
+
+test('message hits never satisfy a query that carries no real word', () => {
+  const merged = retrieveRelatedTasks(MESSAGE_FIXTURE, {
+    userText: '索',
+    messageHits: [{ sessionId: 'sess-silent', score: 9, snippet: { text: '索' } }],
+  });
+  assert.deepEqual(merged, [], 'a lone CJK character is not evidence in either corpus');
+});
