@@ -1,15 +1,19 @@
 'use strict';
 
-// ── Jev（TypeSafe 决策模型）· Vercel AI Gateway 评估接口 ─────────────────────
+// ── Jev（TypeSafe 决策模型）· 评估接口 ───────────────────────────────────────
 //
 // Jev is not a chat model: it accepts one `state` and a set of typed `questions`
 // and answers them in a single parallel-batched call (choice / score). It never
 // generates prose, so it cannot be reached through the OpenAI-compatible chat
 // endpoints — the evaluation API is its own route.
 //
-//   POST https://ai-gateway.vercel.sh/v1/evaluate
-//   Authorization: Bearer <AI Gateway key>          (vault entry `vercel-api-key`)
-//   { model, state, questions }                     (the gateway ignores `model`)
+// Three hosted gateways resell that same evaluation call (see JEV_GATEWAYS), and
+// a pool may also point at its own deployment, so only the endpoint, the model
+// id and the vault entry holding the key ever differ:
+//
+//   POST <endpoint>                                 (JEV_GATEWAYS[gateway].endpoint)
+//   Authorization: Bearer <gateway key>             (vault entry <apiKeyName>)
+//   { model, state, questions }                     (Vercel ignores `model`)
 //
 // This module owns the wire contract and the *escalation policy*: which tier the
 // pool should use for one user request. It deliberately owns no session state,
@@ -24,6 +28,39 @@
 
 const DEFAULT_ENDPOINT = 'https://ai-gateway.vercel.sh/v1/evaluate';
 const DEFAULT_MODEL = 'typesafe-ai/jev';
+
+// The same `{ model, state, questions }` + Bearer call, sold by three gateways.
+// Each one only has its own host, its own model id and its own vault entry, so
+// this table is the single source every layer reads: the pool config resolves a
+// gateway name through it, the runtime hands the endpoint to classify(), and the
+// editor's "test" route uses the same names.
+const JEV_GATEWAYS = Object.freeze({
+  vercel: Object.freeze({
+    endpoint: DEFAULT_ENDPOINT,
+    model: DEFAULT_MODEL,
+    apiKeyName: 'vercel-api-key',
+  }),
+  openrouter: Object.freeze({
+    endpoint: 'https://openrouter.ai/api/alpha/decisions',
+    // OpenRouter namespaces community models with `~`; the id is opaque here.
+    model: '~typesafe/jev-latest',
+    apiKeyName: 'openrouter-api-key',
+  }),
+  typesafe: Object.freeze({
+    endpoint: 'https://api.typesafe.ai/v1/systemone',
+    model: 'jev-latest',
+    apiKeyName: 'typesafe-api-key',
+  }),
+});
+const GATEWAY_NAMES = Object.freeze(Object.keys(JEV_GATEWAYS));
+const DEFAULT_GATEWAY = 'vercel';
+// A pool may also point at its own deployment ("自定义"). Its key is read from a
+// `jev-`-prefixed vault entry only: the endpoint is user-supplied, so the entry
+// name must not be able to name an unrelated secret (a GitHub token, say).
+const CUSTOM_GATEWAY = 'custom';
+const CUSTOM_API_KEY_NAME = 'jev-custom-api-key';
+const CUSTOM_MODEL = 'jev-latest';
+const MAX_ENDPOINT_CHARS = 300;
 const DEFAULT_TIMEOUT_MS = 2_500;
 const MIN_TIMEOUT_MS = 250;
 const MAX_TIMEOUT_MS = 10_000;
@@ -161,11 +198,22 @@ function readAnswers(payload) {
   return null;
 }
 
+// Three envelopes carry the same number. An answer-scoped
+// `answers.<id>.confidence` describes that one answer, so it wins; the two
+// response-wide maps (`providerMetadata.typesafe.confidence`, then the plain
+// `confidence` map) are the older Vercel shapes and stay as fallbacks. Reading
+// only the maps — as this did before OpenRouter/TypeSafe were supported — made
+// every verdict look confidence-less, and a missing confidence escalates to the
+// pool's strongest tier, so a working gateway routed every request to the most
+// expensive line.
 function readConfidence(payload, questionId) {
   const nested = payload && payload.providerMetadata && payload.providerMetadata.typesafe
     && payload.providerMetadata.typesafe.confidence;
   const direct = payload && payload.confidence;
+  const answers = readAnswers(payload);
+  const scoped = answers && answers[questionId];
   return clamp01(firstDefined(
+    scoped && typeof scoped === 'object' ? scoped.confidence : null,
     nested && typeof nested === 'object' ? nested[questionId] : null,
     direct && typeof direct === 'object' ? direct[questionId] : null,
   ));
@@ -275,14 +323,14 @@ function stateFor(text, context) {
 
 // ── per-call overrides ──────────────────────────────────────────────────────
 //
-// A pool may tune the timeout, the model and the escalation thresholds in its own
-// config (see auto-provider-config → validateRouting), and it validates them
-// because they are supposed to have an effect: a knob that is accepted and then
-// ignored is worse than one that is rejected, since the pool believes it is
-// tuned. The store therefore hands each evaluation its session's values, and
-// these readers fold them over this client's own defaults. Every one degrades to
-// the default rather than throwing, because a malformed override must not cost
-// the turn its verdict.
+// A pool may tune the endpoint (which gateway), the timeout, the model and the
+// escalation thresholds in its own config (see auto-provider-config →
+// validateRouting), and it validates them because they are supposed to have an
+// effect: a knob that is accepted and then ignored is worse than one that is
+// rejected, since the pool believes it is tuned. The store therefore hands each
+// evaluation its session's values, and these readers fold them over this
+// client's own defaults. Every one degrades to the default rather than throwing,
+// because a malformed override must not cost the turn its verdict.
 function clampTimeout(value) {
   const number = numberOrNull(value);
   if (number === null) return null;
@@ -293,6 +341,12 @@ function usableModel(value) {
   if (typeof value !== 'string') return null;
   const clean = value.trim();
   return clean ? clean.slice(0, 100) : null;
+}
+
+function usableEndpoint(value) {
+  if (typeof value !== 'string') return null;
+  const clean = value.trim();
+  return clean ? clean.slice(0, MAX_ENDPOINT_CHARS) : null;
 }
 
 // Only the two signals the policy actually reads may be overridden; anything
@@ -334,6 +388,7 @@ function createJevClient(options = {}) {
   async function classify({
     text, tiers, apiKeyName, context,
     escalation: escalationOverride, timeoutMs: timeoutOverride, model: modelOverride,
+    endpoint: endpointOverride,
   } = {}) {
     const startedAt = now();
     const elapsed = () => Math.max(0, Number(now()) - startedAt);
@@ -344,11 +399,12 @@ function createJevClient(options = {}) {
     const budget = clampTimeout(timeoutOverride) ?? timeoutMs;
     const effectiveEscalation = escalationWith(escalation, escalationOverride);
     const effectiveModel = usableModel(modelOverride) || model;
+    const effectiveEndpoint = usableEndpoint(endpointOverride) || endpoint;
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), budget) : null;
     let response;
     try {
-      response = await fetchImpl(endpoint, {
+      response = await fetchImpl(effectiveEndpoint, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${key}`,
@@ -401,7 +457,9 @@ function createJevClient(options = {}) {
         ...verdict,
         ok: true,
         source: 'jev',
-        model,
+        // What was actually asked, which is the pool's model when it set one:
+        // the verdict is audited against the model it came from.
+        model: effectiveModel,
         latencyMs: elapsed(),
       });
       logger.info?.('jev_verdict', {
@@ -419,10 +477,17 @@ function createJevClient(options = {}) {
 }
 
 module.exports = {
+  CUSTOM_API_KEY_NAME,
+  CUSTOM_GATEWAY,
+  CUSTOM_MODEL,
   DEFAULT_ENDPOINT,
   DEFAULT_ESCALATION,
+  DEFAULT_GATEWAY,
   DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
+  GATEWAY_NAMES,
+  JEV_GATEWAYS,
+  MAX_ENDPOINT_CHARS,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
   MAX_TIERS,

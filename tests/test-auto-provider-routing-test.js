@@ -3,8 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createRoutingTest, SAMPLE_TEXT, MAX_TEXT_LENGTH } = require('../src/routes/auto-provider-routing-test');
+const { createRoutingTest, SAMPLE_TEXT, MAX_TEXT_LENGTH, INVALID_TARGET_CODE } = require('../src/routes/auto-provider-routing-test');
 const { NAME_RE } = require('../src/secrets-vault');
+const { JEV_GATEWAYS } = require('../src/providers/jev-client');
 
 const KEY = 'vck_route_test_value_should_never_leak';
 
@@ -69,13 +70,67 @@ test('failures come back as codes the editor can explain, with scrubbed details'
   assert.equal(offline.body.code, 'jev_network');
 });
 
-test('a malformed vault name is refused before anything is read', async () => {
+test('an unusable target is refused before anything is read', async () => {
   let revealed = false;
   const vault = { NAME_RE, reveal() { revealed = true; return {}; } };
-  const result = await createRoutingTest({ vault, fetchImpl: fetchReturning() }).run({ apiKeyName: '../etc/passwd' });
-  assert.equal(result.status, 400);
-  assert.equal(result.body.code, 'invalid_api_key_name');
+  const routingTest = createRoutingTest({ vault, fetchImpl: fetchReturning() });
+  // One code for "what you sent cannot be used" — the editor only needs to know
+  // that, and `detail` says which field was wrong. The name is still checked by
+  // the same reader that validates a saved pool, so the route cannot accept a
+  // target a pool would refuse.
+  for (const body of [
+    { apiKeyName: '../etc/passwd' },
+    { gateway: 'anthropic' },
+    { gateway: 'openrouter', endpoint: 'https://evil.example/v1/evaluate' },
+    { gateway: 'custom' },
+    { gateway: 'custom', endpoint: 'http://jev.example/v1' },
+    { gateway: 'custom', endpoint: 'https://jev.example/v1', apiKeyName: 'github_token' },
+  ]) {
+    const result = await routingTest.run(body);
+    assert.equal(result.status, 400, JSON.stringify(body));
+    assert.equal(result.body.code, INVALID_TARGET_CODE, JSON.stringify(body));
+    // Scrub-safe: a reason is public text, the entry name is not echoed.
+    assert.equal(JSON.stringify(result.body).includes('github_token'), false);
+  }
   assert.equal(revealed, false);
+});
+
+test('the body picks the gateway, and the table supplies its host and model', async () => {
+  const entries = {
+    'vercel-api-key': KEY,
+    'openrouter-api-key': 'sk-or-route_test_never_leak',
+    'jev-custom-api-key': 'jev-custom-route_test_never_leak',
+  };
+  const calls = [];
+  const routingTest = createRoutingTest({
+    vault: fakeVault(entries),
+    fetchImpl: fetchReturning({ payload: simpleVerdict }, calls),
+  });
+  const result = await routingTest.run({ gateway: 'openrouter' });
+  assert.equal(result.status, 200);
+  assert.equal(calls[0].url, JEV_GATEWAYS.openrouter.endpoint);
+  assert.equal(calls[0].body.model, JEV_GATEWAYS.openrouter.model);
+  assert.equal(calls[0].init.headers.Authorization, `Bearer ${entries['openrouter-api-key']}`);
+
+  // A custom gateway sends the address the page typed, to its own vault entry.
+  await routingTest.run({
+    gateway: 'custom', endpoint: 'http://127.0.0.1:8080/v1/evaluate', model: 'my-jev',
+  });
+  assert.equal(calls[1].url, 'http://127.0.0.1:8080/v1/evaluate');
+  assert.equal(calls[1].body.model, 'my-jev');
+  assert.equal(calls[1].init.headers.Authorization, `Bearer ${entries['jev-custom-api-key']}`);
+  assert.equal(JSON.stringify(result.body).includes(entries['openrouter-api-key']), false);
+});
+
+test('a body without a gateway keeps testing the Vercel default', async () => {
+  const calls = [];
+  const routingTest = createRoutingTest({ vault: fakeVault(), fetchImpl: fetchReturning({ payload: simpleVerdict }, calls) });
+  await routingTest.run({ text: 'hi' });
+  // The editor's older build sends only { apiKeyName } — still the Vercel host.
+  await routingTest.run({ apiKeyName: 'vercel-api-key', text: 'hi' });
+  assert.equal(calls[0].url, JEV_GATEWAYS.vercel.endpoint);
+  assert.equal(calls[1].url, JEV_GATEWAYS.vercel.endpoint);
+  assert.equal(calls[1].body.model, JEV_GATEWAYS.vercel.model);
 });
 
 test('the route answers over HTTP through the express-style mount', async () => {
