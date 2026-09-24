@@ -245,10 +245,13 @@ const airChatMode = document.body.classList.contains('air-chat');
 const airHostMode = new URLSearchParams(location.search).get('air') === '1'
   && !window.MultiCCShareMode?.active?.();
 const airOwnedById = new Set(['model-btn', 'effort-btn', 'provider-btn', 'role-btn', 'cli-btn']);
-// Removed from Air's More menu entirely: the voice-call entry is not part of
-// the Air surface, and reconnect duplicates the host header's refresh button.
+// Language stays a direct page control where the standalone Chat needs it, but
+// never occupies a duplicate row in More. Air owns that global control beside
+// the sidebar version check; it also omits voice-call and duplicate reconnect.
+const chatHiddenMenuId = new Set(['lang-btn']);
 const airHiddenMenuId = new Set(['s2s-btn', 'reconnect-btn']);
-const headerMenuId = id => !airChatMode || (!airOwnedById.has(id) && !airHiddenMenuId.has(id));
+const headerMenuId = id => !chatHiddenMenuId.has(id)
+  && (!airChatMode || (!airOwnedById.has(id) && !airHiddenMenuId.has(id)));
 const airDeleteTaskBtn = document.getElementById('air-delete-task-btn');
 if (airHostMode && airDeleteTaskBtn) {
   airDeleteTaskBtn.hidden = false;
