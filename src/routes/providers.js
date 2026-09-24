@@ -9,6 +9,7 @@ const MAX_PROBE_CANDIDATE_LENGTH = 200;
 const { runSpeedtestRequest } = require('../providers/speedtest-request');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
 const { officialAccountIdFromProvider } = require('../official-accounts');
+const { createRoutingTest } = require('./auto-provider-routing-test');
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
@@ -543,6 +544,10 @@ function createProviderRoutes(rawDeps) {
       saveProviderDefaults();
       res.json({ ok: true, defaults: providerDefaults });
     });
+
+    // Lives here rather than in server.js (at its line budget): the Auto
+    // Provider editor's "测试一下" for difficulty routing.
+    (deps.autoProviderRoutingTest || createRoutingTest()).mount(app);
   }
 
   return Object.freeze({
