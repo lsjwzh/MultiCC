@@ -55,6 +55,7 @@ const { createWsEnvelope } = require('../api-contract');
 const { taskIdForShortCode } = require('../classify/task-short-code');
 const { taskStateSeed } = require('./task-state-seed');
 const { composeMessage, renderPrompt } = require('../message-composer');
+const { buildSubagentProviderHint } = require('./host-prompts');
 const managedContext = require('./managed-context');
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
@@ -1455,7 +1456,7 @@ function createChatTurnEngine(deps) {
           mode: isResidentSession(cs.cli, persisted) ? 'streaming' : 'per-turn',
         },
         deps: {
-          resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT,
+          resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT, buildSubagentProviderHint,
           buildCliHandoffPrompt: (session) => managed ? '' : renderHandoffPrompt(session && session.pendingCliHandoff),
           buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
           pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
