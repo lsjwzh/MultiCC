@@ -334,9 +334,8 @@ function createOperationService({
           operationId: operation.id,
           targetId,
           gateway: operation.spec.gateway === true,
-          taskId: operation.spec.taskId || null,
-          taskRunId: operation.spec.taskRunId || null,
-          leaseEpoch: operation.spec.leaseEpoch || null,
+          // No taskId/taskRunId/leaseEpoch: those name the DISPATCHED task, and
+          // this item runs as an ordinary turn of the dispatcher's own task.
           deliveryText: text,
           result,
         },

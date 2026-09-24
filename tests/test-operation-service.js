@@ -186,9 +186,11 @@ test('async dispatch completes durably and emits a backflow outbox entry', async
   const outboxEntry = snapshot.outbox[`operation:${admitted.id}:result`];
   assert.ok(outboxEntry, 'backflow outbox entry must exist for resultMode=async');
   assert.equal(outboxEntry.payload.type, 'dispatch.result');
-  assert.equal(outboxEntry.payload.taskId, 'task-1');
-  assert.equal(outboxEntry.payload.taskRunId, 'run-1');
-  assert.equal(outboxEntry.payload.leaseEpoch, 8);
+  // The result runs as the dispatcher's own turn; carrying the worker task's
+  // identity here pinned the worker card to 执行中 and wedged the dispatcher.
+  assert.equal(outboxEntry.payload.taskId, undefined);
+  assert.equal(outboxEntry.payload.taskRunId, undefined);
+  assert.equal(outboxEntry.payload.leaseEpoch, undefined);
   assert.match(outboxEntry.payload.deliveryText, /📜 dispatch 结果回流/);
   assert.match(outboxEntry.payload.deliveryText, /done/);
 });
