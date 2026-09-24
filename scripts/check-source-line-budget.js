@@ -195,9 +195,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 难度路由改成「一看就会」的向导（方式单选 / ① 连接 Jev：粘 key、测试、判断不了时
   // / ② 负责列 + 效果预览 / 各类失败的白话解释），净增 44 键（新 47、删 3 条旧提示），
   // 中英各 44 行 = +88 行，重跑生成器后抬到 6786/420551。
+  // 按原型重做成紧凑卡片（按顺序|按难度 分段、Jev 状态卡、↑↓✕ 行、添加线路、
+  // 更多设置折叠），净增 22 键（新 32、删 10），中英各 +22 行 → 6826/422294。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6786,
-    maxBytes: 420551,
+    maxLines: 6826,
+    maxBytes: 422294,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
