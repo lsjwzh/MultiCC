@@ -1004,10 +1004,12 @@
   function renderQuickPills() {
     const ai = $('quick-ai-pill'), role = $('quick-role-pill');
     if (!ai || !role) return;
-    const route = quickRuntime.providerSelection?.mode === 'auto'
+    const cli = quickCli();
+    const nativeRoute = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' }[cli];
+    const route = nativeRoute || (quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
-      : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute');
-    setPillText(ai, [quickCli(), route, quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
+      : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute'));
+    setPillText(ai, [cli, route, quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
     ai.title = t('airQuickAiTitle');
     role.textContent = quickRoles.length ? t('airQuickRoleCount', { n: quickRoles.length }) : t('airQuickAddRole');
     role.title = t('airQuickRoleTitle');
@@ -2574,9 +2576,10 @@
     // 待生效那份配置里的 provider 是 id；服务端随 pending 下发了解析好的
     // providerName（见 src/workspace/air-routes.js），名字就在这儿用，没有名字
     // 才退回 id —— 不然下一轮生效的那条线路在药丸上是一串 UUID。
-    const routeName = shown?.providerSelection?.mode === 'auto'
+    const nativeRoute = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' }[shown?.cli];
+    const routeName = nativeRoute || (shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
-      : providerDisplayName((pending?.providerName || shown?.providerName || shown?.provider) || '') || t('airQuickDefaultRoute');
+      : providerDisplayName((pending?.providerName || shown?.providerName || shown?.provider) || '') || t('airQuickDefaultRoute'));
     ai.hidden = !configEntry?.sessionId;
     ai.disabled = !configEntry || configEntry.readOnly;
     ai.title = t('airTaskAiTitle');
