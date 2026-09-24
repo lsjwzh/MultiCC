@@ -574,6 +574,12 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务线路"]').value`), 'codex-lab');
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务模型"]').value`), 'gpt-5.5');
     await page.evaluate(`document.querySelector('dialog[open] .air-config-close').click()`);
+    // WorkBuddy 的待生效配置不能沿用当前 Codex 的线路名。
+    entry.configuration.pendingConfiguration = { cli: 'codebuddy', providerName: null,
+      profile: { provider: null, model: null, effort: null } };
+    await reloadConversation();
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('codebuddy · WorkBuddy · 默认模型 · 下轮生效')`));
+    assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('Lab Responses')`), false);
     entry.configuration.pendingConfiguration = null;
     await page.evaluate(`${frame}.defaultView.MultiCCTaskArtifacts.setScope({shellId:'shell-a'})`);
     assert.ok(await page.waitFor(`${frame}?.getElementById('task-artifacts-toggle')?.textContent==='产物 2'`));
