@@ -18,7 +18,7 @@ const {
   pollRelayQuota,
 } = require('../usage-limit-poller');
 const { fetchKimiBalance } = require('./kimi-quota');
-const { balanceBar, renderQuotaBar } = require('../quota/quota-bar-view');
+const { balanceBar, renderQuotaBar, COLOR } = require('../quota/quota-bar-view');
 
 function quotaBarFor(strategy, dto, fetchedAt) {
   if (!dto) return null;
@@ -82,6 +82,71 @@ const DEFAULT_ADAPTERS = Object.freeze({
   'relay-quota': pollRelayQuota,
 });
 
+// The bar a last-known-good entry can still paint. The stored barText already
+// carries its own {cd:}/{ago:} tokens (clients resolve them, so the deadlines
+// stay real); what it cannot say is that it is no longer live — that is the
+// muted color and the title's job.
+function staleBar(entry, fetchedAt, detail) {
+  const text = typeof entry.barText === 'string' ? entry.barText.trim() : '';
+  if (!text) return null;
+  // Renders that end with their own sync timestamp keep it (it is the same
+  // time); only a text without one gets ours, so a stale bar never shows two
+  // "X 前" segments.
+  const stamp = fetchedAt !== null && !/\{ago:\d+\}/.test(text)
+    ? ` · 上次同步 {ago:${fetchedAt}}`
+    : '';
+  return {
+    text: `${text}${stamp}`,
+    color: COLOR.gray,
+    title: `实时查询失败，这是最近一次成功同步的余量，点击重试${detail ? `（${detail}）` : ''}`,
+    action: null,
+  };
+}
+
+// Last-known-good fallback for the TRANSIENT failure path (see queryOne).
+//
+// The provider-limit cache is built so a failed fetch never overwrites a good
+// entry, so when the live query dies (lender offline, 403, Connect Timeout) that
+// cache still holds the last window/balance that actually answered. Serving it
+// is the difference between "the bar is gone" and "the bar with an honest
+// 上次同步" on a freshly loaded page — the borrowed-provider (借道) case above
+// all, where every query crosses the network to the lender.
+//
+// Deliberately NOT used for reason:'unsupported': that is a permanent answer
+// ("this provider exposes no quota surface"), not a transient one, and reviving
+// a stale bar under a provider that can never refresh it would be a lie. A
+// provider that never answered has no entry either, so this cannot invent one.
+function staleFallback(lookupCached, provider, target, id, failure) {
+  if (!lookupCached) return null;
+  let entry = null;
+  try { entry = lookupCached(provider.appType, id); } catch (_) { return null; }
+  if (!entry || typeof entry !== 'object') return null;
+  const summary = entry.summary;
+  if (!summary || typeof summary !== 'object') return null;
+  // Only the two species the balance endpoints own. 'claude' / 'quota' /
+  // 'availability' summaries are other producers' business and have no dto the
+  // clients could dispatch on.
+  if (summary.kind !== 'window' && summary.kind !== 'balance') return null;
+  const fetchedAt = Number.isFinite(Number(entry.fetchedAt)) ? Number(entry.fetchedAt) : null;
+  const bar = staleBar(entry, fetchedAt, failure.detail);
+  if (!bar) return null;
+  return {
+    ok: true,
+    // `dto.kind` is what both clients dispatch on (window bar vs balance chip),
+    // so the fallback keeps the species of the value it stands in for. The dto
+    // is the stored summary, not the failed live one — it is what the bar shows.
+    dto: summary,
+    bar,
+    fetchedAt,
+    cached: true,
+    stale: true,
+    providerId: id,
+    appType: provider.appType,
+    strategy: target.strategy,
+    ...(failure.detail ? { detail: failure.detail } : {}),
+  };
+}
+
 function createProviderBalanceRuntime(options = {}) {
   const { getProvider, listProviders, getProviderLimitTarget } = options;
   if (typeof getProvider !== 'function') throw new TypeError('getProvider required');
@@ -93,6 +158,11 @@ function createProviderBalanceRuntime(options = {}) {
   // outcome (successful DTO or ok:false) so the provider-limit cache stays warm
   // from on-demand queries, not just the background poller. Best-effort.
   const onResult = typeof options.onResult === 'function' ? options.onResult : null;
+  // Optional (appType, id) => entry|null last-known-good lookup, backed by
+  // provider-limit-cache. Only the balance routes get one: the 借道 lender
+  // routes (mountProviderRelayQuotaRoutes) must keep answering with a REAL
+  // query result, never a stash of their own.
+  const lookupCached = typeof options.lookupCached === 'function' ? options.lookupCached : null;
 
   // One provider → one result. Providers without a pollable surface resolve to
   // ok:false reason:'unsupported' rather than an HTTP error: "no balance API"
@@ -121,8 +191,10 @@ function createProviderBalanceRuntime(options = {}) {
         ok: false, reason: 'fetch_failed', providerId: id, appType: provider.appType, strategy: target.strategy,
         ...(failureDetail ? { detail: failureDetail } : {}),
       };
+      // The failure is still recorded as a failure (diagnostics only — the
+      // cache's last good data survives), then the stale stand-in goes out.
       if (onResult) { try { onResult(provider.appType, id, failure); } catch (_) {} }
-      return failure;
+      return staleFallback(lookupCached, provider, target, id, failure) || failure;
     }
     const fetchedAt = now();
     const success = { ok: true, providerId: id, appType: provider.appType, strategy: target.strategy, dto,
@@ -193,7 +265,11 @@ const RELAY_QUOTA_ROUTES = Object.freeze([
 
 function mountProviderRelayQuotaRoutes(app, options = {}) {
   if (!app || typeof app.get !== 'function') return null;
-  const runtime = options.runtime || createProviderBalanceRuntime(options);
+  // lookupCached is blanked out on purpose: the lender side must answer with a
+  // real query result or an explicit ok:false, so the "never fabricate" contract
+  // is enforced here rather than left to how the caller wires the options.
+  const runtime = options.runtime
+    || createProviderBalanceRuntime({ ...options, lookupCached: null });
   const inflight = new Map();
   const relayQuotaResult = (appType, id) => {
     const key = `${appType}:${id}`;
