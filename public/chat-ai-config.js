@@ -93,6 +93,18 @@
     return _autoProviderEditorApi;
   }
 
+  // Difficulty routing needs the vault's `vercel-api-key` entry, but this editor
+  // never touches the vault itself — only /manage's secrets panel and the vault
+  // module do. This just checks whether that name is present (never its value)
+  // so the routing checkbox can warn instead of silently failing every turn.
+  function checkRoutingKeyConfigured() {
+    if (typeof fetch !== 'function') return Promise.resolve(null);
+    const keyName = autoProviderEditorApi().ROUTING_API_KEY_NAME;
+    return fetch('/api/secrets').then(response => (response.ok ? response.json() : []))
+      .then(list => Array.isArray(list) && list.some(entry => entry && entry.name === keyName))
+      .catch(() => null);
+  }
+
   function defaultEffort(cli) {
     if (isCodexCli(cli)) return 'xhigh';
     if (isClaudeCli(cli)) return 'medium';
@@ -854,6 +866,7 @@
       });
       autoEditorRef = autoEditor;
       refreshSubUi();
+      checkRoutingKeyConfigured().then(routingKeyConfigured => autoEditor.setContext({ routingKeyConfigured }));
 
       function syncAutoEditor() {
         const protocol = autoProtocolFromValue(providerSelect.value);
@@ -1073,5 +1086,6 @@
     refreshQoderModels,
     refreshCodebuddyModels,
     refreshClaudeModels,
+    checkRoutingKeyConfigured,
   };
 });

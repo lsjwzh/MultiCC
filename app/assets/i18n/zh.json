@@ -2679,6 +2679,7 @@
   "autoEditorRoutingNeedsTwo": "按难度路由至少需要两个候选 Provider。",
   "autoEditorRoutingNeedsTwoTiers": "按难度路由至少需要两个不同档位（简单任务与复杂任务各一档）。",
   "autoEditorRoutingTooManyTiers": "最多 {max} 个档位。",
+  "autoEditorRoutingKeyMissing": "尚未配置 {key}：按难度路由会一直请求失败，全部回退到最保守档位。",
   "autoEditorStickySuffix": " 成功后优先沿用",
   "autoEditorPresetPlaceholder": "套用已保存的预设…",
   "autoEditorPresetEmpty": "还没有保存过预设",

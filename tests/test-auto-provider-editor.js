@@ -397,3 +397,72 @@ test('reading a valid pool records it as a recent preset, deduplicated and cappe
   editor.mount({ document: doc2, container: box, providers: providers(), protocol: 'anthropic', presetStore: other });
   assert.equal(box.querySelector('.multicc-auto-editor-preset-select').options.length, 1);
 });
+
+test('a user-edited tier survives its own change event and an unrelated row toggling afterward', () => {
+  const document = fakeDocument();
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  editor.mount({ document, container, providers: providers(), protocol: 'anthropic' });
+  const row = id => container.querySelectorAll('.multicc-auto-editor-row')
+    .find(candidate => candidate.dataset.providerId === id);
+
+  // A third enabled candidate widens the ladder to three rungs, so there is
+  // an alternative tier value that is neither the row's fixed creation seed
+  // nor whatever syncRungs happened to compute for it.
+  row('managed-c').querySelector('.multicc-auto-editor-enabled').checked = true;
+  row('managed-c').querySelector('.multicc-auto-editor-enabled').emit('change');
+  const routingEnabled = container.querySelector('.multicc-auto-editor-routing');
+  routingEnabled.checked = true;
+  routingEnabled.emit('change');
+
+  const tier = row('managed-a').querySelector('.multicc-auto-editor-tier');
+  const seed = tier.dataset.rung; // the one-time creation-time seed; must never win again
+  const alternative = tier.options.map(option => option.value).find(value => value !== seed);
+  assert.ok(alternative, 'the three-rung ladder must offer a value other than the seed');
+
+  tier.value = alternative;
+  tier.emit('change');
+  assert.equal(tier.value, alternative,
+    'the tier the user just picked must stick through its own change notification');
+
+  // Toggling an unrelated row is exactly the trigger that used to silently
+  // snap every other row's tier back to its stale dataset.rung seed.
+  row('official').querySelector('.multicc-auto-editor-enabled').checked = true;
+  row('official').querySelector('.multicc-auto-editor-enabled').emit('change');
+  assert.equal(tier.value, alternative,
+    'an unrelated row change must not revert a previously edited tier');
+});
+
+test('a difficulty-routing warning appears only when routing is on and the vault key is confirmed missing', () => {
+  const document = fakeDocument();
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const control = editor.mount({ document, container, providers: providers(), protocol: 'anthropic' });
+  const warning = () => container.querySelector('.multicc-auto-editor-routing-key-warning');
+  const routingEnabled = () => container.querySelector('.multicc-auto-editor-routing');
+
+  assert.equal(warning().style.display, 'none', 'hidden before routing is ever touched');
+
+  routingEnabled().checked = true;
+  routingEnabled().emit('change');
+  assert.equal(warning().style.display, 'none',
+    'an unknown (null) key status must not be reported as missing');
+
+  control.setContext({ routingKeyConfigured: false });
+  routingEnabled().checked = true;
+  routingEnabled().emit('change');
+  assert.equal(warning().style.display, '', 'shown once routing is on and the key is confirmed absent');
+
+  routingEnabled().checked = false;
+  routingEnabled().emit('change');
+  assert.equal(warning().style.display, 'none', 'hidden again as soon as routing is turned off');
+
+  routingEnabled().checked = true;
+  routingEnabled().emit('change');
+  assert.equal(warning().style.display, '', 'reappears while routing is on and the key is still missing');
+
+  control.setContext({ routingKeyConfigured: true });
+  routingEnabled().checked = true;
+  routingEnabled().emit('change');
+  assert.equal(warning().style.display, 'none', 'hidden once the key is confirmed present');
+});
