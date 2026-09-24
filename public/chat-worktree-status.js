@@ -217,14 +217,17 @@
       }
     }
 
-    async function refreshMergeStatus() {
+    async function refreshMergeStatus({ fresh = false } = {}) {
       const session = sessionId();
       if (!session) return;
       try {
-        const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(session)}/merge-status`));
-        if (!res.ok) return;
-        applyMergeStatus(await res.json());
-      } catch (_) {}
+        const suffix = fresh ? '?refresh=1' : '';
+        const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(session)}/merge-status${suffix}`));
+        if (!res.ok) return null;
+        const state = await res.json();
+        applyMergeStatus(state);
+        return state;
+      } catch (_) { return null; }
     }
 
     function startMergeStatusPolling() {
