@@ -3310,5 +3310,12 @@
   "airTaskGraphSectionOut": "Outgoing",
   "airTaskGraphSectionIn": "Incoming",
   "airTaskGraphManualSuffix": " (manual)",
-  "airTaskGraphNoLinks": "(No relations — isolated node)"
+  "airTaskGraphNoLinks": "(No relations — isolated node)",
+  "airCliUpdateInstall": "Install",
+  "airCliUpdateInstalling": "Installing…",
+  "airCliUpdateInstallDone": "Installed",
+  "airCliUpdateInstallFailed": "Install failed: {error}",
+  "airDirDragHint": "Drag to reorder directories (saved on the server)",
+  "airDirReorderFailed": "Could not save directory order: {error}",
+  "airDirSwitchHeading": "Switch directory"
 }

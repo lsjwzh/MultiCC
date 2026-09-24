@@ -438,6 +438,7 @@
       const unfinished = directoryTasks.filter(task => !['done', 'archived'].includes(task.status));
       const executingCount = unfinished.filter(isRunning).length;
       const row = action('', () => navigate(directory.id), 'admin-directory-row');
+      row.dataset.dirId = directory.id;
       // 任务对应的目录也要带圈：一个「有活在跑」的目录不该等到点进去才发现。
       applyRing(row, running.has(directory.id), directory.id);
       const copy = make('span');
@@ -448,6 +449,8 @@
       workspaceList.append(row);
     }
     if (!directories.length) workspaceList.append(make('p', t('airAdminNoDirectories'), 'admin-empty'));
+    // 拖着换顺序，顺序存服务端（air-directory-nav.js）。
+    window.MultiCCAirDirectoryNav?.sortable(workspaceList, context);
     workspacePanel.append(workspaceHead, workspaceList);
 
     const tools = make('section', null, 'admin-panel');

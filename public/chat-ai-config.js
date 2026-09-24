@@ -243,14 +243,26 @@
     return model;
   }
 
+  // Every model dropdown builds its list through buildModelChoices, so this is
+  // the "picker opened" hook: keep the live catalogs from going stale without a
+  // manual /model. Both calls are throttled and never block the render.
+  function nudgeModelCatalog(state) {
+    const cli = state && state.cli;
+    try {
+      if (isCodexCli(cli) && typeof window.syncCodexModelsIfDue === 'function') window.syncCodexModelsIfDue();
+      else if (isClaudeCli(cli) && typeof loadClaudeModels === 'function') void loadClaudeModels();
+    } catch (_) { /* best-effort */ }
+  }
+
   function buildModelChoices(providerId, state) {
+    nudgeModelCatalog(state);
     const tiers = providerAliasTiers(providerId, state);
     if (tiers.length) return [...tiers.map(([tier]) => tier), '__custom__'];
     const options = providerModelOptions(providerId, state);
     if (options.length) return [...options, '__custom__'];
     if (state && isClaudeCli(state.cli)) {
       // Prefer the live list extracted from the installed claude CLI's bundle
-      // (1-day localStorage cache filled by loadClaudeModels(); see
+      // (localStorage cache filled by loadClaudeModels(); see
       // public/shared/models.js) so new Anthropic releases appear without a
       // multicc update. Falls back to the static table on old servers and on
       // the first picker open before refreshClaudeModels() lands.
