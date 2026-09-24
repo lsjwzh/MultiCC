@@ -43,7 +43,8 @@
   // 一长串且不归用户管，默认收起；展开/收起的选择跟过滤条件一样存在模块上。
   const SKILL_LAYERS = ['bundled', 'cli', 'plugin', 'user', 'project'];
   const LAYER_KEYS = { bundled: 'airResourcesLayerBundled', cli: 'airResourcesLayerCli', plugin: 'airResourcesLayerPlugin', user: 'airResourcesLayerUser', project: 'airResourcesLayerProject' };
-  const openLayers = { bundled: true, cli: false, plugin: false, user: true, project: true };
+  // 默认全收起：几百个技能摊开时，分组抬头会被第一组淹没，看不出「分了层」。
+  const openLayers = { bundled: false, cli: false, plugin: false, user: false, project: false };
   let olderThanDays = 30;
   // 样式只建一次：它是这一页的私有词汇（air-resources-*），跟着面板节点走，
   // 不进 air.css —— 一格一份，删掉这一格就是删掉这个文件加这一行。
@@ -75,9 +76,17 @@
 .air-resources-danger:hover:not(:disabled) { border-color: #eed9d1; background: #fdf4f1; }
 .air-resources-danger:disabled { cursor: not-allowed; color: var(--faint); }
 .air-resources-group { display: grid; gap: 8px; }
-.air-resources-group + .air-resources-group { margin-top: 6px; }
-.air-resources-group-head { display: flex; align-items: center; gap: 8px; cursor: pointer; color: #2f536f; font-size: 11px; font-weight: 650; list-style-position: inside; }
-.air-resources-group-count { padding: 1px 7px; color: var(--muted); border-radius: 999px; background: #eef3f8; font-size: 9.5px; font-weight: 600; }
+.air-resources-group + .air-resources-group { margin-top: 8px; }
+.air-resources-group-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; color: #2f536f; border: 1px solid var(--hairline); border-left: 4px solid #8fb3d3; border-radius: 12px; background: #f6f9fc; font-size: 12.5px; font-weight: 700; list-style: none; }
+.air-resources-group-head::-webkit-details-marker { display: none; }
+.air-resources-group-head::before { content: '▸'; color: #7d97ae; font-size: 11px; transition: transform .15s; }
+.air-resources-group[open] > .air-resources-group-head::before { transform: rotate(90deg); }
+.air-resources-group[data-layer="bundled"] > .air-resources-group-head { border-left-color: #3d8bd8; background: #eef5fd; }
+.air-resources-group[data-layer="cli"] > .air-resources-group-head { border-left-color: #a6533c; }
+.air-resources-group[data-layer="plugin"] > .air-resources-group-head { border-left-color: #8a6bc2; }
+.air-resources-group[data-layer="project"] > .air-resources-group-head { border-left-color: #2f7a54; }
+.air-resources-group-count { padding: 1px 8px; color: #2f536f; border-radius: 999px; background: #fff; font-size: 10.5px; font-weight: 650; }
+.air-resources-group-hint { overflow: hidden; margin-left: auto; color: var(--muted); font-size: 10.5px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
 .air-resources-status { margin-top: 10px; color: var(--muted); font-size: 10px; }
 `;
     return styleNode;
@@ -176,7 +185,8 @@
     // 有过滤词时全部摊开：命中藏在收起的组里等于没命中。
     group.open = !!String(filters.skills || '').trim() || openLayers[layer];
     const summary = make('summary', null, 'air-resources-group-head');
-    summary.append(make('span', t(LAYER_KEYS[layer])), make('span', String(members.length), 'air-resources-group-count'));
+    summary.append(make('span', t(LAYER_KEYS[layer])), make('span', String(members.length), 'air-resources-group-count'),
+      make('span', t(LAYER_KEYS[layer] + 'Hint'), 'air-resources-group-hint'));
     group.append(summary, ...members.map(skillRow));
     group.addEventListener('toggle', () => { if (!String(filters.skills || '').trim()) openLayers[layer] = group.open; });
     return group;

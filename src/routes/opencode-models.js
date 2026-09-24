@@ -142,7 +142,9 @@ function mergeOpenCodeModels(configured, cliModels, authProviders = new Set()) {
   const configuredProviders = new Set(configured.map(m => m.provider));
   const extra = cliModels.filter(m => !seen.has(`${m.provider}/${m.model}`)
     && !configuredProviders.has(m.provider)
-    && (PRESET_PROVIDERS.has(m.provider) || authProviders.has(m.provider)));
+    && (PRESET_PROVIDERS.has(m.provider) || authProviders.has(m.provider)))
+    .map(m => (m.provider === 'opencode' && m.label === `${m.provider}/${m.model}`
+      ? { ...m, label: `${m.label} (OpenCode Zen)` } : m));
   return [...configured, ...extra].slice(0, MAX_MODELS);
 }
 
