@@ -340,13 +340,18 @@
     });
   }
 
-  function recentTasks({ tasks, directoryId, recentTaskIds, limit, isUnseen, statusOf }) {
+  // 侧栏「最近任务」只有两个来源，都跨目录、都不随当前目录变：
+  //   ① 有未读结果的任务（按最后一条消息时间）；
+  //   ② 在这个浏览器里打开过的任务（按最近打开顺序，rememberTask 记最多 12 条）。
+  // 不再拿当前目录的任务来填空位：那样切目录时侧栏会整片换掉，看着像「任务跟着
+  // 目录变」。某个目录的完整任务在目录首页和控制台里。
+  function recentTasks({ tasks, recentTaskIds, limit, isUnseen, statusOf }) {
     const messageAt = task => Number(task?.lastMessageAt || task?.updatedAt || 0);
     const byId = new Map(tasks.map(task => [task.id, task]));
     const pool = [];
     const seen = new Set();
-    // Unread outcomes must remain reachable even outside the current directory
-    // or when all recent slots are already occupied by opened tasks.
+    // Unread outcomes must remain reachable even when all recent slots are
+    // already occupied by opened tasks.
     for (const task of tasks.filter(t => isUnseen(t.id) && !['archived', 'cancelled'].includes(statusOf(t)))
       .sort((a, b) => messageAt(b) - messageAt(a))) {
       seen.add(task.id);
@@ -355,13 +360,6 @@
     for (const id of recentTaskIds) {
       const task = byId.get(id);
       if (!task || seen.has(task.id)) continue;
-      seen.add(task.id);
-      pool.push(task);
-    }
-    const settled = task => (['done', 'archived'].includes(task.status) ? 1 : 0);
-    for (const task of tasks.filter(t => t.dirId === directoryId)
-      .sort((a, b) => settled(a) - settled(b) || messageAt(b) - messageAt(a))) {
-      if (seen.has(task.id)) continue;
       seen.add(task.id);
       pool.push(task);
     }

@@ -33,7 +33,8 @@ const publicDir = path.resolve(__dirname, '../public');
 const DIRECTORY = { id: 'd1', name: 'MultiCC 主仓', path: '/projects/multicc' };
 // 足够多的一列：任务带自己吃掉侧栏剩下的高度并在内部滚动。条数少了就滚不动，
 // 「滚动位置不许被顶回去」那一条也就无从谈起。
-const TASKS = Array.from({ length: 18 }, (_, index) => ({
+// 最多 12 条：「打开过」的记录本身就封顶 12 条（air.js 的 rememberTask）。
+const TASKS = Array.from({ length: 12 }, (_, index) => ({
   id: `t${index + 1}`, session: `task-${index + 1}`, shell: `shell-${index + 1}`, title: `任务 ${index + 1}`,
 }));
 
@@ -157,8 +158,11 @@ test('点击侧栏任务：先抬起、隔一拍再动画换位；列表滚到�
 
   await withCdpHarness({ routes, screenshotDir }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    // 侧栏「最近任务」只列未读 + 打开过的（不再拿当前目录的任务填空位）：把这些任务
+    // 预先记成「打开过」，顺序就是 TASKS 的顺序。只在还没记过时写，后面的点击照常改它。
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.getItem('air:recent-tasks')||localStorage.setItem('air:recent-tasks',${JSON.stringify(JSON.stringify(TASKS.map(task => task.id)))})` });
     await page.navigate('/air?dir=d1');
-    assert.ok(await page.waitFor(`document.querySelectorAll('#tasks > button[data-task]').length === ${TASKS.length}`), '侧栏把目录里的任务列出来');
+    assert.ok(await page.waitFor(`document.querySelectorAll('#tasks > button[data-task]').length === ${TASKS.length}`), '侧栏把打开过的任务列出来');
     const start = await page.evaluate(SNAPSHOT);
     assert.ok(start.order.length === TASKS.length && start.order[0] === 't1', `起点顺序要可预期：${JSON.stringify(start.order)}`);
     assert.ok(start.rows[0].top >= start.bandTop, '起点没滚动，第一条在带子里');
