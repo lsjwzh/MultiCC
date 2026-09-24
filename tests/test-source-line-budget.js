@@ -81,6 +81,9 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // manage.js entry was retired by the manage-aux-history.js split.
   // main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台); same rule.
   // air.js crossed 3000 in 0f276ebc; turn-engine.js is now below 3000 again.
+  // chat_provider.dart crossed 3000 (from exactly 3000) in the limit-bar
+  // structural review — see the debt comment in scripts/check-source-line-budget.js
+  // for the split that retires it.
   assert.deepEqual(result.debts.map(entry => entry.file),
-    ['app/lib/screens/main_shell.dart', 'public/air.js']);
+    ['app/lib/providers/chat_provider.dart', 'app/lib/screens/main_shell.dart', 'public/air.js']);
 });

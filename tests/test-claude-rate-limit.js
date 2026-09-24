@@ -117,10 +117,16 @@ test('the resolver expands {cd:} and {ago:} at paint time and never lies about a
   const bar = { text: '{cd:' + (NOW + 3_600_000) + '} · {ago:' + (NOW - 57_000) + '}', color: '#58a6ff', title: '' };
   const v = resolveQuotaBar(bar, { now: NOW });
   assert.equal(v.text, '1h · 57s 前');
-  // A deadline already past reads as "1m", never '' — so separators baked into
-  // the server string can never collapse.
+  // A deadline already past is not "1 minute left": the window has rolled, so
+  // the segment says so instead of printing a countdown next to a percentage
+  // that belongs to the window that just ended. Still non-empty, so separators
+  // baked into the server string can never collapse.
   const past = resolveQuotaBar({ text: 'x {cd:' + (NOW - 1_000) + '}', color: '#58a6ff', title: '' }, { now: NOW });
-  assert.equal(past.text, 'x 1m');
+  assert.equal(past.text, 'x 已重置');
+  // Exactly at the deadline counts as rolled: a window that resets now has no
+  // "0m" left to report.
+  const exactly = resolveQuotaBar({ text: 'x {cd:' + NOW + '}', color: '#58a6ff', title: '' }, { now: NOW });
+  assert.equal(exactly.text, 'x 已重置');
 });
 
 // ── Client plumbing: consume → gate → persist → restore ────────────────────
@@ -398,6 +404,35 @@ test('the first provider report is not a switch; a real one still wipes', () => 
     f.C.setProviderBaseUrl('', '', { appType: 'codex' });
     assert.equal(f.values.has(key), false, 'a switch clears the session cache');
     assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
+  } finally { f.cleanup(); }
+});
+
+// The identity is (baseUrl, providerId, appType). `pending` is routing state —
+// "auto has not picked a route yet" — and folding it into the identity made a
+// pending flip destroy the bars of the identity that never changed, which is the
+// same vanishing-bar failure the neighbouring tests exist for.
+test('a pending flip alone is not a provider switch', () => {
+  const f = freshClient(null, { providerReport: false });
+  try {
+    const relay = 'https://relay.example:3000/claude-proxy/official/remote';
+    const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'claude' };
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    f.C.setCli('claude-exp');
+    f.C.setProviderBaseUrl(relay, 'borrowed-1', { appType: 'claude' });
+    f.C.consumeRateLimitEvent(info, 'borrowed-1', bar);
+    const key = 'multicc:claude-rate-limit:v1:borrowed-1';
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+
+    // Auto-selection reports the same identity it already had, plus pending.
+    f.C.setProviderBaseUrl(relay, 'borrowed-1', { appType: 'claude', pending: true });
+    assert.ok(f.values.has(key), 'a pending flip keeps the session cache');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block',
+      'the borrowed window stays on screen while the route is being re-decided');
+
+    // And back: the flag clearing is not a switch either.
+    f.C.setProviderBaseUrl(relay, 'borrowed-1', { appType: 'claude' });
+    assert.ok(f.values.has(key));
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
   } finally { f.cleanup(); }
 });
 
@@ -690,6 +725,37 @@ test('late vendor responses cannot repaint, cache into the new plan, or block it
       assert.equal(JSON.parse(f.values.get('multicc.ark.quota.v1:coding-plan')).bar.text, 'New plan');
     } finally { f.cleanup(); }
   }
+});
+
+test('a provider switch during an in-flight balance query still queries the new provider', async () => {
+  // Same rule as the Ark plans above, for the Provider balance query: the guard
+  // is keyed on the provider identity, so a query still open for the previous
+  // provider cannot suppress the new provider's query. A bare flag did suppress
+  // it, and since the switch had already wiped the bars, both bars stayed blank
+  // until some unrelated event happened to fetch again.
+  const f = freshClient();
+  try {
+    await flushClient();
+    const pending = [];
+    global.fetch = (url) => {
+      if (!String(url).includes('/api/providers/')) {
+        return Promise.resolve({ json: async () => ({ bars: {} }) });
+      }
+      return new Promise((resolve) => pending.push({ url: String(url), resolve }));
+    };
+    f.C.setCli('codex');
+    f.C.setProviderBaseUrl('', 'official', { appType: 'codex' });
+    f.C.setProviderBaseUrl('https://relay.example/codex-proxy/official', 'borrowed', { appType: 'codex' });
+    assert.equal(pending.length, 2, 'the old in-flight query does not suppress the new provider query');
+    assert.ok(pending[1].url.includes('/api/providers/codex/borrowed/balance'));
+    // The late answer for the previous provider is dropped by the revision check.
+    pending[0].resolve({ json: async () => ({ ok: true, dto: { kind: 'window', provider: 'codex' }, bar: { text: 'Host account', color: '#58a6ff' } }) });
+    await flushClient();
+    assert.notEqual(f.element('claude-rate-limit-bar').textContent, 'Host account');
+    pending[1].resolve({ json: async () => ({ ok: true, dto: { kind: 'window', provider: 'codex' }, bar: { text: 'Lender account', color: '#58a6ff' } }) });
+    await flushClient();
+    assert.equal(f.element('claude-rate-limit-bar').textContent, 'Lender account');
+  } finally { f.cleanup(); }
 });
 
 test('late server snapshots and Claude scrapes cannot restore the previous account', async () => {
