@@ -14,6 +14,7 @@ const {
   providerSelectionDto,
   validateProviderSelection,
 } = require('../src/providers/auto-provider-config');
+const { JEV_GATEWAYS } = require('../src/providers/jev-client');
 
 const NOW = 2_000_000;
 
@@ -170,6 +171,123 @@ test('routing rejects unsupported knobs instead of ignoring them', () => {
   }
 });
 
+// ── picking the gateway ──────────────────────────────────────────────────────
+//
+// The same evaluation is sold by three gateways and self-hosted behind a fourth
+// ("custom"). Only the host, the model id and the vault entry differ, so the
+// pool stores a gateway *name* — never a copy of the table — and a name the
+// table does not know is refused rather than silently treated as Vercel.
+
+function gatewayPool(routing) {
+  return {
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2,
+    candidates: [
+      { providerId: 'weakp', priority: 1, tier: 'weak' },
+      { providerId: 'strongp', priority: 2, tier: 'strong' },
+    ],
+    routing: { provider: 'jev', ...routing },
+  };
+}
+
+function validatedRouting(routing) {
+  const result = validateProviderSelection(gatewayPool(routing), { cli: 'claude', providers: catalog() });
+  return result.ok ? result.value.routing : result;
+}
+
+test('a pool without a gateway is a Vercel pool, and the table supplies its model', () => {
+  const routing = validatedRouting({});
+  assert.equal(routing.gateway, 'vercel');
+  assert.equal(routing.model, JEV_GATEWAYS.vercel.model);
+  assert.equal(routing.apiKeyName, JEV_GATEWAYS.vercel.apiKeyName);
+  // A preset's endpoint is never written down: a persisted copy would outlive a
+  // table update and quietly keep calling the old host.
+  assert.equal('endpoint' in routing, false);
+});
+
+test('a preset gateway brings its own model and vault entry', () => {
+  for (const gateway of ['openrouter', 'typesafe']) {
+    const routing = validatedRouting({ gateway });
+    assert.equal(routing.gateway, gateway);
+    assert.equal(routing.model, JEV_GATEWAYS[gateway].model, gateway);
+    assert.equal(routing.apiKeyName, JEV_GATEWAYS[gateway].apiKeyName, gateway);
+    assert.equal('endpoint' in routing, false, gateway);
+  }
+  // `~typesafe/jev-latest` is why a routing model id may carry a tilde.
+  assert.equal(validatedRouting({ gateway: 'openrouter' }).model, '~typesafe/jev-latest');
+});
+
+test('a preset gateway may not carry an endpoint of its own', () => {
+  const result = validateProviderSelection(gatewayPool({
+    gateway: 'openrouter', endpoint: 'https://evil.example/v1/evaluate',
+  }), { cli: 'claude', providers: catalog() });
+  // Refused, not ignored: a caller that attached a URL to a preset would
+  // otherwise believe its key was being sent there. `custom` says that out loud.
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'invalid_provider_routing');
+});
+
+test('the custom gateway owns its address, and only under the documented rules', () => {
+  const valid = validatedRouting({
+    gateway: 'custom', endpoint: 'https://jev.example/v1/evaluate', model: 'my-jev',
+  });
+  assert.equal(valid.gateway, 'custom');
+  assert.equal(valid.endpoint, 'https://jev.example/v1/evaluate');
+  assert.equal(valid.model, 'my-jev');
+  // No model named: the endpoint is the user's, the model id is a guess they
+  // cannot act on, so the documented default is used instead of a save error.
+  assert.equal(validatedRouting({ gateway: 'custom', endpoint: 'https://jev.example/x' }).model, 'jev-latest');
+  const rejects = [
+    ['missing address', { gateway: 'custom' }],
+    ['not a URL', { gateway: 'custom', endpoint: 'jev.example/v1' }],
+    ['plain http off-loopback', { gateway: 'custom', endpoint: 'http://jev.example/v1' }],
+    ['credentials in the address', { gateway: 'custom', endpoint: 'https://user:pw@jev.example/v1' }],
+    ['an unknown gateway', { gateway: 'anthropic' }],
+    ['an over-long address', { gateway: 'custom', endpoint: `https://jev.example/${'x'.repeat(400)}` }],
+  ];
+  for (const [label, routing] of rejects) {
+    const result = validateProviderSelection(gatewayPool(routing), { cli: 'claude', providers: catalog() });
+    assert.equal(result.ok, false, label);
+    assert.equal(result.code, 'invalid_provider_routing', label);
+  }
+  // A local deployment is reachable over plain http on purpose.
+  assert.equal(validatedRouting({
+    gateway: 'custom', endpoint: 'http://127.0.0.1:8080/v1/evaluate', model: 'jev-latest',
+  }).endpoint, 'http://127.0.0.1:8080/v1/evaluate');
+});
+
+// The endpoint of a custom gateway is whatever the config says, and configs can
+// be written through the API. The key, though, is read by entry NAME, so without
+// this rule a config could name `github_token` and have its value posted to a
+// host of its choosing.
+test('a custom gateway can only read keys from its own vault namespace', () => {
+  const base = { gateway: 'custom', endpoint: 'https://jev.example/v1', model: 'jev-latest' };
+  assert.equal(validatedRouting({ ...base, apiKeyName: 'jev-mine' }).apiKeyName, 'jev-mine');
+  assert.equal(validatedRouting(base).apiKeyName, 'jev-custom-api-key');
+  for (const apiKeyName of ['github_token', 'vercel-api-key', 'my-key']) {
+    const result = validateProviderSelection(gatewayPool({ ...base, apiKeyName }),
+      { cli: 'claude', providers: catalog() });
+    assert.equal(result.ok, false, apiKeyName);
+    assert.equal(result.code, 'invalid_provider_routing', apiKeyName);
+  }
+  // The presets keep the older, laxer rule: they are not config-supplied hosts.
+  assert.equal(validatedRouting({ apiKeyName: 'my-key' }).apiKeyName, 'my-key');
+});
+
+test('the DTO carries the gateway through a round-trip', () => {
+  const value = validateProviderSelection(gatewayPool({
+    gateway: 'custom', endpoint: 'https://jev.example/v1', model: 'my-jev',
+  }), { cli: 'claude', providers: catalog() }).value;
+  const dto = providerSelectionDto(value);
+  assert.equal(dto.routing.gateway, 'custom');
+  assert.equal(dto.routing.endpoint, 'https://jev.example/v1');
+  assert.equal(dto.routing.model, 'my-jev');
+  // Re-validating what the DTO handed out is how the editor saves: it must be a
+  // fixed point, or saving an unchanged panel would reshuffle the config.
+  const again = validateProviderSelection(dto, { cli: 'claude', providers: catalog() });
+  assert.equal(again.ok, true, again.error);
+  assert.deepEqual(again.value.routing, value.routing);
+});
+
 test('the DTO round-trips tiers and routing, and an unrouted pool is unchanged', () => {
   const routed = providerSelectionDto({
     version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2,
@@ -284,6 +402,40 @@ test('the pool\'s tuned knobs are handed to the evaluation it triggers', async (
   assert.deepEqual(seen[0].escalation, { minTierProbability: 0.7 });
   assert.deepEqual(seen[0].tiers, ['weak', 'strong']);
   assert.equal(seen[0].apiKeyName, 'vercel-api-key');
+});
+
+test('prepareTurn evaluates through the gateway the pool picked', async () => {
+  const seen = [];
+  const routing = createAutoProviderRouting({
+    now: () => NOW,
+    jev: { classify: async args => { seen.push(args); return { ok: true, tier: 'weak' }; } },
+  });
+  const session = pool().session;
+  await routing.prepareTurn({ session, text: '改个 typo', providers: catalog() });
+  // No gateway in the config: the Vercel host and model, exactly as before the
+  // table existed — a pool that never heard of gateways must not change host.
+  assert.equal(seen[0].endpoint, JEV_GATEWAYS.vercel.endpoint);
+  assert.equal(seen[0].model, JEV_GATEWAYS.vercel.model);
+  assert.equal(seen[0].apiKeyName, 'vercel-api-key');
+
+  seen.length = 0;
+  session.providerSelection.routing.gateway = 'openrouter';
+  session.providerSelection.routing.model = '~typesafe/jev-latest';
+  delete session.providerSelection.routing.apiKeyName;
+  await routing.prepareTurn({ session, text: '重构整个 provider 层', providers: catalog() });
+  assert.equal(seen[0].endpoint, JEV_GATEWAYS.openrouter.endpoint);
+  assert.equal(seen[0].model, '~typesafe/jev-latest');
+  assert.equal(seen[0].apiKeyName, 'openrouter-api-key');
+
+  seen.length = 0;
+  session.providerSelection.routing.gateway = 'custom';
+  session.providerSelection.routing.endpoint = 'http://127.0.0.1:8080/v1/evaluate';
+  session.providerSelection.routing.model = 'my-jev';
+  session.providerSelection.routing.apiKeyName = 'jev-mine';
+  await routing.prepareTurn({ session, text: '再改一个 typo', providers: catalog() });
+  assert.equal(seen[0].endpoint, 'http://127.0.0.1:8080/v1/evaluate');
+  assert.equal(seen[0].model, 'my-jev');
+  assert.equal(seen[0].apiKeyName, 'jev-mine');
 });
 
 test('sessions without routing pay nothing', async () => {

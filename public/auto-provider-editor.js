@@ -21,10 +21,67 @@
   const PRESET_KEY = 'multicc.autoProvider.presets.v1';
   const MAX_NAMED_PRESETS = 20;
   const MAX_RECENT_PRESETS = 5;
-  // Difficulty routing talks to Jev through the Vercel AI Gateway; the key lives
-  // in the local vault under this name and never reaches the browser.
+  // Difficulty routing talks to Jev through a gateway; the key lives in the
+  // local vault under that gateway's own entry name and never reaches the
+  // browser.
   const ROUTING_PROVIDER = 'jev';
-  const ROUTING_API_KEY_NAME = 'vercel-api-key';
+  // Which gateway the evaluation goes to. Mirrors JEV_GATEWAYS in
+  // src/providers/jev-client.js (endpoints, default models) and the per-gateway
+  // key defaults in auto-provider-config.js — the editor only needs the entry
+  // name and the copy, because the endpoint is the server's business.
+  const ROUTING_GATEWAYS = Object.freeze(['vercel', 'openrouter', 'typesafe', 'custom']);
+  const DEFAULT_ROUTING_GATEWAY = 'vercel';
+  const CUSTOM_ROUTING_GATEWAY = 'custom';
+  // What a custom endpoint's model defaults to, and the longest address the
+  // server accepts — both mirrored from auto-provider-config.js.
+  const CUSTOM_ROUTING_MODEL = 'jev-latest';
+  const MAX_ROUTING_ENDPOINT_CHARS = 300;
+  const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+  const ROUTING_GATEWAY_INFO = Object.freeze({
+    vercel: Object.freeze({
+      keyName: 'vercel-api-key',
+      labelKey: 'autoEditorJevGatewayVercel', label: 'Vercel',
+      stepKey: 'autoEditorJevStepCreateVercel',
+      step: '打开 Vercel 控制台 → AI Gateway → API Keys，新建一个 key',
+      placeholderKey: 'autoEditorJevKeyPlaceholderVercel',
+      placeholder: '粘贴 key（vck_ 开头）',
+    }),
+    openrouter: Object.freeze({
+      keyName: 'openrouter-api-key',
+      labelKey: 'autoEditorJevGatewayOpenRouter', label: 'OpenRouter',
+      stepKey: 'autoEditorJevStepCreateOpenRouter',
+      step: '打开 openrouter.ai/keys，新建一个 key',
+      placeholderKey: 'autoEditorJevKeyPlaceholderOpenRouter',
+      placeholder: '粘贴 key（sk-or- 开头）',
+    }),
+    typesafe: Object.freeze({
+      keyName: 'typesafe-api-key',
+      labelKey: 'autoEditorJevGatewayTypeSafe', label: 'TypeSafe',
+      stepKey: 'autoEditorJevStepCreateTypeSafe',
+      step: '打开 TypeSafe 控制台，新建一个 API key',
+      placeholderKey: 'autoEditorJevKeyPlaceholderTypeSafe',
+      placeholder: '粘贴 key',
+    }),
+    custom: Object.freeze({
+      keyName: 'jev-custom-api-key',
+      labelKey: 'autoEditorJevGatewayCustom', label: '自定义',
+      stepKey: 'autoEditorJevStepCreateCustom',
+      step: '填好接口地址和模型名，再粘贴它的 key',
+      placeholderKey: 'autoEditorJevKeyPlaceholderCustom',
+      placeholder: '粘贴 key',
+    }),
+  });
+  // The vault entry a routed pool used before it could pick a gateway — still the
+  // Vercel default, and the contract the server calls DEFAULT_ROUTING_API_KEY.
+  const ROUTING_API_KEY_NAME = ROUTING_GATEWAY_INFO.vercel.keyName;
+  // The vault description is stored data (the Secrets panel shows it), not UI
+  // copy, so it is one neutral sentence per gateway rather than a translated one.
+  const ROUTING_GATEWAY_DESCRIPTIONS = Object.freeze({
+    vercel: 'Vercel AI Gateway（Jev 难度路由）',
+    openrouter: 'OpenRouter（Jev 难度路由）',
+    typesafe: 'TypeSafe（Jev 难度路由）',
+    custom: '自定义网关（Jev 难度路由）',
+  });
 
   // 文案走页面上的全局 t()（i18n.js）：这个编辑器同时挂在 chat 的 AI 配置弹窗、
   // manage 任务板和 Air 的任务配置里，语言得跟着页面走。没有 t()（Node 单测、
@@ -36,6 +93,52 @@
     return Object.keys(params || {}).reduce((text, name) => (
       text.split(`{${name}}`).join(String(params[name]))
     ), fallback);
+  }
+
+  function routingGatewayOf(value) {
+    const gateway = String(value == null ? '' : value).trim();
+    return ROUTING_GATEWAYS.includes(gateway) ? gateway : DEFAULT_ROUTING_GATEWAY;
+  }
+
+  function routingGatewayInfo(gateway) {
+    return ROUTING_GATEWAY_INFO[routingGatewayOf(gateway)];
+  }
+
+  // Display copy for a gateway name — the brand in its own script, 自定义 in the
+  // page's language.
+  function routingGatewayLabel(gateway) {
+    const info = routingGatewayInfo(gateway);
+    return tt(info.labelKey, info.label);
+  }
+
+  // The vault description the host writes when it stores this gateway's key.
+  function routingGatewayDescription(gateway) {
+    return ROUTING_GATEWAY_DESCRIPTIONS[routingGatewayOf(gateway)] || ROUTING_GATEWAY_DESCRIPTIONS.vercel;
+  }
+
+  // Custom endpoint rule, mirrored from auto-provider-config.js so the reason is
+  // visible while the address is typed. The server re-checks it on every save,
+  // and this copy must never be the weaker one: https, or http only to a
+  // loopback host, no credentials in the URL, and a bounded length.
+  function customEndpointError(raw) {
+    const endpoint = String(raw == null ? '' : raw).trim();
+    if (!endpoint) return tt('autoEditorJevEndpointRequired', '填上自定义网关的接口地址。');
+    if (endpoint.length > MAX_ROUTING_ENDPOINT_CHARS) {
+      return tt('autoEditorJevEndpointTooLong', '接口地址太长（最多 {max} 个字符）。',
+        { max: MAX_ROUTING_ENDPOINT_CHARS });
+    }
+    let url = null;
+    try {
+      url = new URL(endpoint);
+    } catch (_) {
+      return tt('autoEditorJevEndpointInvalid', '接口地址要是一个完整的 URL，比如 https://…/v1/evaluate。');
+    }
+    if (url.username || url.password) {
+      return tt('autoEditorJevEndpointCredentials', '接口地址里不要带用户名或密码。');
+    }
+    if (url.protocol === 'https:') return '';
+    if (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname)) return '';
+    return tt('autoEditorJevEndpointHttps', '接口地址必须是 https（只有本机地址可以用 http）。');
   }
 
   function protocolOf(provider) {
@@ -225,6 +328,17 @@
     const previous = draft.initialRouting && typeof draft.initialRouting === 'object'
       ? draft.initialRouting : null;
     if (draft.routingEnabled !== true) return null;
+    const gateway = routingGatewayOf(draft.routingGateway);
+    const previousGateway = routingGatewayOf(previous && previous.gateway);
+    const endpoint = gateway === CUSTOM_ROUTING_GATEWAY
+      ? String(draft.routingEndpoint == null ? '' : draft.routingEndpoint).trim() : '';
+    // The address travels to arbitrary hosts, so it is checked here too — this is
+    // the value that is actually saved, and a save the server will reject must
+    // fail before the pool is written.
+    if (gateway === CUSTOM_ROUTING_GATEWAY) {
+      const problem = customEndpointError(endpoint);
+      if (problem) return fail(problem, 'invalid_provider_routing');
+    }
     // 'strong' is the server default: only written when chosen, or when the pool
     // already carried it, so a plain routed pool keeps its minimal wire shape.
     const onUnknown = draft.routingOnUnknown || (previous && previous.onUnknown) || null;
@@ -244,6 +358,7 @@
         'invalid_provider_routing');
     }
     const keyByRung = new Map(rungs.map((rung, index) => [rung, `t${index + 1}`]));
+    const model = modelOf(gateway, previousGateway, draft, previous);
     return Object.freeze({
       ok: true,
       // `rung` is the editor's own control value and never travels on the wire.
@@ -254,16 +369,38 @@
       value: Object.freeze({
         version: 1,
         provider: ROUTING_PROVIDER,
-        apiKeyName: previous && previous.apiKeyName ? String(previous.apiKeyName) : ROUTING_API_KEY_NAME,
+        gateway,
+        // Only a custom gateway owns its address; a preset's endpoint stays on the
+        // server, where a table update reaches it (see validateRoutingTarget).
+        ...(endpoint ? { endpoint } : {}),
+        // Each gateway has its own vault entry, so a key saved for another one is
+        // not this one's key: an apiKeyName carried over from a different gateway
+        // would point this pool at an entry the user never intended.
+        apiKeyName: previousGateway === gateway && previous && previous.apiKeyName
+          ? String(previous.apiKeyName)
+          : ROUTING_GATEWAY_INFO[gateway].keyName,
         // Never silently reset a knob the editor does not expose: the API can set
-        // onUnknown/timeoutMs/model, and re-saving the pool must not undo it.
-        ...(previous && previous.model ? { model: String(previous.model) } : {}),
+        // onUnknown/timeoutMs/model, and re-saving the pool must not undo it. A
+        // gateway change is the one case where the model cannot be carried: the
+        // model id belongs to the endpoint it is asked of.
+        ...(model ? { model } : {}),
         ...(writeOnUnknown ? { onUnknown: String(onUnknown) } : {}),
         ...(previous && previous.timeoutMs != null ? { timeoutMs: Number(previous.timeoutMs) } : {}),
         ...(previous && previous.escalation ? { escalation: { ...previous.escalation } } : {}),
         tiers: Object.freeze(rungs.map(rung => keyByRung.get(rung))),
       }),
     });
+  }
+
+  // The model a routing block is saved with. A custom gateway asks whatever the
+  // user typed (blank means the contract's own default), a preset keeps the
+  // pool's pinned model only while the gateway has not changed under it.
+  function modelOf(gateway, previousGateway, draft, previous) {
+    if (gateway === CUSTOM_ROUTING_GATEWAY) {
+      return String(draft.routingModel == null ? '' : draft.routingModel).trim() || CUSTOM_ROUTING_MODEL;
+    }
+    if (previousGateway === gateway && previous && previous.model) return String(previous.model);
+    return '';
   }
 
   function serializeDraft(draft = {}) {
@@ -441,6 +578,10 @@ ${P}-jev.ok ${P}-dot{background:var(--ape-ok)}
 ${P}-jev.missing ${P}-dot{background:var(--ape-warn)}
 ${P}-jev-actions{display:flex;gap:12px;margin-left:auto}
 ${P} ${P}-steps{padding-left:18px;color:var(--ape-muted)}
+${P}-jev-custom{display:grid;gap:6px}
+${P} ${P}-jev-custom label{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:center}
+${P} ${P}-jev-custom input{width:100%;min-width:0}
+${P}-jev-endpoint-error{color:var(--ape-danger);font-size:12px}
 ${P}-jev-form{display:flex;gap:6px}
 ${P} ${P}-jev-form input{flex:1 1 auto;min-width:0}
 ${P}-fine{color:var(--ape-muted);font-size:11px}
@@ -514,6 +655,9 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     let keyGeneration = 0;
     let destroyed = false;
     let routingOn = false;
+    let routingGateway = DEFAULT_ROUTING_GATEWAY;
+    // The gateway the key steps and the input placeholder were last built for.
+    let gatewayRendered = null;
     // Every provider row of the protocol pool, in pool order; `order` holds the
     // rows in use, first = tried first. Unused rows wait in the "添加线路" list.
     let allRows = [];
@@ -583,6 +727,20 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     const modeHint = make('p', 'multicc-auto-editor-mode-hint');
 
     const jevBox = make('div', 'multicc-auto-editor-jev');
+    // Which gateway every Jev call goes to — the first thing to decide about the
+    // connection, so it sits above the key it belongs to.
+    const gatewayRow = make('div', 'multicc-auto-editor-mode');
+    const gatewayLabel = tt('autoEditorJevGatewayLabel', 'Jev 通过');
+    const gatewaySeg = segment('multicc-auto-editor-gateways', gatewayLabel);
+    const gatewayButtons = new Map();
+    for (const name of ROUTING_GATEWAYS) {
+      const node = segButton(gatewaySeg, `multicc-auto-editor-gateway multicc-auto-editor-gateway-${name}`,
+        routingGatewayLabel(name));
+      node.dataset.gateway = name;
+      node.addEventListener('click', () => chooseGateway(name));
+      gatewayButtons.set(name, node);
+    }
+    gatewayRow.append(make('span', '', gatewayLabel), gatewaySeg);
     const jevLine = make('div', 'multicc-auto-editor-jev-line');
     const keyStatus = make('b', 'multicc-auto-editor-jev-status');
     const keyDetail = make('span', 'multicc-auto-editor-muted');
@@ -592,15 +750,33 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       tt('autoEditorJevKeyChange', '更换 key'));
     jevActions.append(testButton, keyChange);
     jevLine.append(make('span', 'multicc-auto-editor-dot'), keyStatus, keyDetail, jevActions);
+    // A custom gateway is the only one whose address and model id the user owns;
+    // the presets come with both.
+    const customBox = make('div', 'multicc-auto-editor-jev-custom');
+    const endpointField = make('label', '', tt('autoEditorJevEndpointLabel', '接口地址'));
+    const endpointInput = make('input', 'multicc-auto-editor-jev-endpoint');
+    endpointInput.type = 'text';
+    endpointInput.maxLength = MAX_ROUTING_ENDPOINT_CHARS;
+    endpointInput.placeholder = 'https://…/v1/evaluate';
+    endpointField.appendChild(endpointInput);
+    // The address's own verdict sits right under it, not at the foot of the
+    // editor: the field is the only thing the user can change to clear it.
+    const endpointError = make('div', 'multicc-auto-editor-jev-endpoint-error');
+    endpointError.setAttribute('aria-live', 'polite');
+    endpointError.style.display = 'none';
+    const modelField = make('label', '', tt('autoEditorJevModelLabel', '模型名'));
+    const gatewayModel = make('input', 'multicc-auto-editor-jev-model');
+    gatewayModel.type = 'text';
+    gatewayModel.placeholder = CUSTOM_ROUTING_MODEL;
+    modelField.appendChild(gatewayModel);
+    const customHint = make('div', 'multicc-auto-editor-fine',
+      tt('autoEditorJevCustomHint', '需兼容 Jev 评估接口：POST {model, state, questions}，Bearer 鉴权'));
+    customBox.append(endpointField, endpointError, modelField, customHint);
     const keySteps = make('ol', 'multicc-auto-editor-steps');
-    keySteps.append(
-      make('li', '', tt('autoEditorJevStepCreate', '打开 Vercel 控制台 → AI Gateway → API Keys，新建一个 key')),
-      make('li', '', tt('autoEditorJevStepPaste', '粘贴到下面，点「保存并测试」')));
     const keyForm = make('div', 'multicc-auto-editor-jev-form');
     const keyInput = make('input', 'multicc-auto-editor-jev-key-input');
     keyInput.type = 'password';
     keyInput.autocomplete = 'off';
-    keyInput.placeholder = tt('autoEditorJevKeyPlaceholder', '粘贴 key（vck_ 开头）');
     const keySave = button('multicc-auto-editor-jev-key-save multicc-auto-editor-primary',
       tt('autoEditorJevKeySave', '保存并测试'));
     keyForm.append(keyInput, keySave);
@@ -608,7 +784,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     const testResult = make('div', 'multicc-auto-editor-result multicc-auto-editor-jev-test-result');
     testResult.setAttribute('aria-live', 'polite');
     testResult.style.display = 'none';
-    jevBox.append(jevLine, keySteps, keyForm, keyHelp, testResult);
+    jevBox.append(gatewayRow, jevLine, customBox, keySteps, keyForm, keyHelp, testResult);
 
     const listHead = make('div', 'multicc-auto-editor-list-head');
     const listHint = make('small', '');
@@ -851,9 +1027,58 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
           tt('autoEditorMoreDetail', '（{detail}）', { detail: parts.join(' · ') })));
     }
 
+    function configuredRouting() {
+      return initialSelection && initialSelection.mode === 'auto' ? initialSelection.routing : null;
+    }
+
+    // The vault entry this gateway's key lives in: its own default, unless the
+    // configured pool already used this same gateway and pinned a name (it may
+    // have been set through the API). A key saved for another gateway is not this
+    // one's key, so a stored name only ever follows its own gateway.
     function keyName() {
-      const routing = initialSelection && initialSelection.mode === 'auto' ? initialSelection.routing : null;
-      return routing && routing.apiKeyName ? String(routing.apiKeyName) : ROUTING_API_KEY_NAME;
+      const previous = configuredRouting();
+      const previousGateway = routingGatewayOf(previous && previous.gateway);
+      if (previous && previousGateway === routingGateway && previous.apiKeyName) {
+        return String(previous.apiKeyName);
+      }
+      return ROUTING_GATEWAY_INFO[routingGateway].keyName;
+    }
+
+    function endpointProblem() {
+      if (!routingOn || routingGateway !== CUSTOM_ROUTING_GATEWAY) return '';
+      return customEndpointError(endpointInput.value);
+    }
+
+    // The per-gateway copy: which console to open and what a key looks like. Only
+    // rebuilt when the gateway actually changes, because notify() runs on every
+    // keystroke of an unrelated field.
+    function syncGatewayCopy() {
+      for (const [name, node] of gatewayButtons) setChecked(node, name === routingGateway);
+      show(customBox, routingGateway === CUSTOM_ROUTING_GATEWAY);
+      if (gatewayRendered === routingGateway) return;
+      gatewayRendered = routingGateway;
+      const info = ROUTING_GATEWAY_INFO[routingGateway];
+      keyInput.placeholder = tt(info.placeholderKey, info.placeholder);
+      keySteps.replaceChildren(
+        make('li', '', tt(info.stepKey, info.step)),
+        make('li', '', tt('autoEditorJevStepPaste', '粘贴到下面，点「保存并测试」')));
+    }
+
+    // Switching gateway re-checks that gateway's entry from scratch: the key, the
+    // test verdict and anything typed for the previous one belong to the previous
+    // entry, and carrying a pasted Vercel key over to OpenRouter's entry would
+    // store it in the wrong place.
+    function chooseGateway(name) {
+      if (!ROUTING_GATEWAYS.includes(name) || name === routingGateway) return;
+      routingGateway = name;
+      keyFormOpen = false;
+      keyInput.value = '';
+      keyState = 'unknown';
+      setTestResult('', '');
+      syncGatewayCopy();
+      // Consumes the in-flight check of the previous gateway through keyGeneration.
+      checkKey();
+      notify();
     }
 
     function setTestResult(text, tone) {
@@ -877,7 +1102,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         status = tt('autoEditorJevKeyChecking', '正在检查 Jev key…');
       } else if (keyState === 'present') {
         status = tt('autoEditorJevKeyPresent', 'Jev 已连接');
-        detail = tt('autoEditorJevKeyPresentDetail', 'key 在本机保险箱 · {name}', { name });
+        detail = tt('autoEditorJevKeyPresentDetail', 'key 在本机保险箱 · {gateway} · {name}',
+          { gateway: routingGatewayLabel(routingGateway), name });
         jevBox.classList.add('ok');
       } else if (keyState === 'missing') {
         status = tt('autoEditorJevKeyMissing', '还差一步：连接 Jev');
@@ -922,6 +1148,19 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       });
     }
 
+    // What the host's test endpoint is asked to evaluate: the same four fields a
+    // pool persists, read once so a gateway switch mid-request cannot mix them.
+    function testRequest() {
+      return {
+        apiKeyName: keyName(),
+        gateway: routingGateway,
+        ...(routingGateway === CUSTOM_ROUTING_GATEWAY ? {
+          endpoint: endpointInput.value.trim(),
+          model: gatewayModel.value.trim(),
+        } : {}),
+      };
+    }
+
     function saveKey() {
       if (!routingKey || typeof routingKey.save !== 'function') return Promise.resolve();
       // Read once and clear at once: the pasted key never lingers in the form.
@@ -932,20 +1171,26 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         return Promise.resolve();
       }
       const generation = ++keyGeneration;
+      // Both read once, before the request is built: a gateway switch can land
+      // while a save is in flight, and the key must go to the entry it came from.
+      const name = keyName();
+      const gateway = routingGateway;
       keySave.disabled = true;
       setTestResult(tt('autoEditorJevKeySaving', '正在保存…'), '');
-      return Promise.resolve().then(() => routingKey.save(keyName(), value)).then(() => {
-        if (destroyed || generation !== keyGeneration) return null;
-        keyState = 'present';
-        keyFormOpen = false;
-        setTestResult('', '');
-        renderJev();
-        return runTest();
-      }, err => {
-        if (destroyed || generation !== keyGeneration) return;
-        setTestResult(tt('autoEditorJevKeySaveFailed', '保存失败：{reason}',
-          { reason: (err && err.message) || String(err || '') }), 'bad');
-      }).finally(() => { keySave.disabled = false; });
+      return Promise.resolve()
+        .then(() => routingKey.save(name, value, { gateway }))
+        .then(() => {
+          if (destroyed || generation !== keyGeneration) return null;
+          keyState = 'present';
+          keyFormOpen = false;
+          setTestResult('', '');
+          renderJev();
+          return runTest();
+        }, err => {
+          if (destroyed || generation !== keyGeneration) return;
+          setTestResult(tt('autoEditorJevKeySaveFailed', '保存失败：{reason}',
+            { reason: (err && err.message) || String(err || '') }), 'bad');
+        }).finally(() => { keySave.disabled = false; });
     }
 
     function describeJevFailure(result) {
@@ -956,7 +1201,10 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         return tt('autoEditorJevErrKeyInvalid', 'key 无效或没有权限（HTTP {status}），请检查后更换。', { status: status || code.slice(-3) });
       }
       if (code === 'jev_timeout') return tt('autoEditorJevErrTimeout', 'Jev 超时没有回应，稍后再试。');
-      if (code === 'jev_network') return tt('autoEditorJevErrNetwork', '连不上 Vercel AI Gateway，检查网络或代理。');
+      if (code === 'jev_network') {
+        return tt('autoEditorJevErrNetwork', '连不上 {gateway}，检查网络或代理。',
+          { gateway: routingGatewayLabel(routingGateway) });
+      }
       if (code === 'test_unavailable') return tt('autoEditorJevErrUnavailable', '服务端还没有测试接口：重启 multicc 后再试。');
       const detail = result && result.detail ? ` · ${String(result.detail).slice(0, 160)}` : '';
       return tt('autoEditorJevErrOther', '测试失败：{code}', { code: code || 'unknown' }) + detail;
@@ -964,12 +1212,20 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
 
     function runTest() {
       if (!routingKey || typeof routingKey.test !== 'function') return Promise.resolve();
+      // A bad address is refused here as well as on save: the request would fail
+      // anyway, and the reason is more useful than the upstream's 404.
+      const problem = endpointProblem();
+      if (problem) {
+        setTestResult(problem, 'bad');
+        return Promise.resolve();
+      }
       const generation = keyGeneration;
+      const request = testRequest();
       const sample = tt('autoEditorJevSample', '把 README 里的一个错别字改掉');
       testButton.disabled = true;
       setTestResult(tt('autoEditorJevTesting', '正在请 Jev 判断…'), '');
       return Promise.resolve()
-        .then(() => routingKey.test({ apiKeyName: keyName(), text: sample }))
+        .then(() => routingKey.test({ ...request, text: sample }))
         .then(result => {
           if (destroyed || generation !== keyGeneration) return;
           if (result && result.ok) {
@@ -1019,8 +1275,15 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
 
     function notify() {
       showError('');
+      // A custom address is validated as it is typed: it is the one part of the
+      // routing config the server cannot describe for the user, and an address it
+      // would reject must not look accepted while the pool is being edited.
+      const problem = endpointProblem();
+      endpointError.textContent = problem;
+      show(endpointError, !!problem);
       syncAttemptLimit();
       syncCandidateLimit();
+      syncGatewayCopy();
       const crossesTrust = syncTrustWarning();
       if (routingOn) syncRungs();
       modeHint.textContent = routingOn
@@ -1245,6 +1508,17 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         || Math.max(2, Math.min(3, order.length)));
       sticky.checked = configuredSelection ? configuredSelection.sticky !== false : true;
       confirm.checked = configuredSelection?.allowCrossTrust === true;
+      // The gateway belongs to the routing config, not to the session: seed it
+      // from the configured pool so re-saving keeps the same one. A pool that
+      // predates the field has none, and it was always evaluated through Vercel.
+      const configuredRouting = configuredSelection?.routing || null;
+      routingGateway = routingGatewayOf(configuredRouting && configuredRouting.gateway);
+      const custom = routingGateway === CUSTOM_ROUTING_GATEWAY;
+      endpointInput.value = custom && configuredRouting.endpoint ? String(configuredRouting.endpoint) : '';
+      gatewayModel.value = custom && configuredRouting.model ? String(configuredRouting.model) : '';
+      // The per-gateway copy is rebuilt on the next notify(), even when the
+      // gateway itself did not change: the language may have.
+      gatewayRendered = null;
       setRouting(!!configuredSelection?.routing);
       onUnknownSelect.value = String(configuredSelection?.routing?.onUnknown || 'strong');
       syncRungs();
@@ -1281,6 +1555,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       if (keyFormOpen && typeof keyInput.focus === 'function') keyInput.focus();
     });
     testButton.addEventListener('click', runTest);
+    endpointInput.addEventListener('input', notify);
+    gatewayModel.addEventListener('input', notify);
 
     const controller = Object.freeze({
       setContext(next = {}) {
@@ -1306,6 +1582,9 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
           sticky: sticky.checked,
           crossTrustConfirmed: confirm.checked,
           routingEnabled: routingOn,
+          routingGateway,
+          routingEndpoint: endpointInput.value.trim(),
+          routingModel: gatewayModel.value.trim(),
           routingOnUnknown: onUnknownSelect.value,
           initialRouting: (initialSelection && initialSelection.mode === 'auto'
             && initialSelection.routing) || null,
@@ -1334,15 +1613,22 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
 
   return Object.freeze({
     AUTO_PREFIX,
+    CUSTOM_ROUTING_GATEWAY,
+    CUSTOM_ROUTING_MODEL,
+    DEFAULT_ROUTING_GATEWAY,
     MAX_ATTEMPTS,
     MAX_CANDIDATES,
+    MAX_ROUTING_ENDPOINT_CHARS,
     MAX_TIERS,
     PROTOCOLS,
     ROUTING_API_KEY_NAME,
+    ROUTING_GATEWAYS,
+    ROUTING_GATEWAY_INFO,
     ROUTING_PROVIDER,
     availableProtocols,
     candidateModel,
     candidateModelChoices,
+    customEndpointError,
     defaultSelection,
     mount,
     optionValue,
@@ -1351,6 +1637,9 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     protocolOf,
     providersForProtocol,
     rememberPreset,
+    routingGatewayDescription,
+    routingGatewayLabel,
+    routingGatewayOf,
     selectionCrossesTrust,
     serializeDraft,
   });

@@ -4,9 +4,27 @@
 // session.provider: every physical invocation still resolves to one concrete
 // provider id before the spawn proof is issued.
 
+// The client owns the wire facts these come from, so they are read from it
+// rather than restated here: the gateway table itself, its default gateway, the
+// custom deployment's entry name and model id, and the endpoint length both
+// layers cap.
+const {
+  CUSTOM_API_KEY_NAME,
+  CUSTOM_GATEWAY,
+  CUSTOM_MODEL,
+  DEFAULT_GATEWAY,
+  GATEWAY_NAMES,
+  JEV_GATEWAYS,
+  MAX_ENDPOINT_CHARS,
+} = require('./jev-client');
+
 const PROTOCOLS = new Set(['anthropic', 'openai_responses']);
 const PROVIDER_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const MODEL_ID = /^[A-Za-z0-9._:/\[\]-]{1,100}$/;
+// The evaluation model id of the OpenRouter gateway starts with `~` (community
+// namespace), which the candidate model pattern above does not allow, so routing
+// carries its own — a superset of it, and only for routing.model.
+const ROUTING_MODEL_ID = /^[A-Za-z0-9._:/[\]~-]{1,100}$/;
 const MAX_CANDIDATES = 12;
 const MAX_ATTEMPTS = 4;
 // Difficulty routing (Jev): a candidate may declare which tier of the pool it
@@ -22,7 +40,29 @@ const ROUTING_ON_UNKNOWN = new Set(['strong', 'weak', 'priority']);
 // The escalation signals a pool may tune. Kept here rather than derived from the
 // client so a knob that stops being read fails validation (see validateRouting).
 const ROUTING_ESCALATION_KEYS = new Set(['minConfidence', 'minTierProbability']);
-const DEFAULT_ROUTING_API_KEY = 'vercel-api-key';
+// Which gateway the evaluation call goes to: three hosted ones (JEV_GATEWAYS in
+// jev-client.js) plus `custom` for the pool's own deployment. An unrouted pool
+// has no gateway at all, and an existing routed config has none either — that is
+// the Vercel gateway, which is where it was always sent.
+const DEFAULT_ROUTING_GATEWAY = DEFAULT_GATEWAY;
+const CUSTOM_ROUTING_GATEWAY = CUSTOM_GATEWAY;
+const ROUTING_GATEWAYS = new Set([...GATEWAY_NAMES, CUSTOM_ROUTING_GATEWAY]);
+// Prefixed so that a config — which agents can write through the API — cannot
+// name an unrelated vault entry (a GitHub token, say) and have it sent to an
+// arbitrary URL. The presets only ever ship their key to their own fixed host,
+// so their names stay free-form.
+const CUSTOM_ROUTING_API_KEY_PREFIX = 'jev-';
+const DEFAULT_ROUTING_API_KEY = JEV_GATEWAYS[DEFAULT_ROUTING_GATEWAY].apiKeyName;
+const DEFAULT_CUSTOM_ROUTING_API_KEY = CUSTOM_API_KEY_NAME;
+// A custom endpoint speaks the same evaluation contract as the hosted gateways,
+// whose default model id is this. Requiring one would only produce a save error
+// the user cannot act on, so a blank model resolves to it instead.
+const DEFAULT_CUSTOM_ROUTING_MODEL = CUSTOM_MODEL;
+const MAX_ROUTING_ENDPOINT_CHARS = MAX_ENDPOINT_CHARS;
+// http is a plaintext Bearer request, so it is confined to the machine the
+// server itself runs on — where there is no network to intercept.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const VAULT_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const DEFAULT_ROUTING_TIMEOUT_MS = 2_500;
 const MIN_ROUTING_TIMEOUT_MS = 250;
 const MAX_ROUTING_TIMEOUT_MS = 10_000;
@@ -161,6 +201,104 @@ function routingRatio(value, fallback, label) {
   return number;
 }
 
+// Where a custom endpoint may point. Returns the reason it is unusable, or null.
+function customEndpointError(raw) {
+  const endpoint = String(raw == null ? '' : raw).trim();
+  if (!endpoint) return 'routing.endpoint is required for the custom gateway';
+  if (endpoint.length > MAX_ROUTING_ENDPOINT_CHARS) {
+    return `routing.endpoint must be at most ${MAX_ROUTING_ENDPOINT_CHARS} characters`;
+  }
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch (_) {
+    return 'routing.endpoint must be a URL';
+  }
+  // The whole URL is handed to fetch, so userinfo would travel as part of the
+  // request line; a key belongs in the vault, not in an address people paste.
+  if (url.username || url.password) return 'routing.endpoint must not carry credentials';
+  if (url.protocol === 'https:') return null;
+  if (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname)) return null;
+  return 'routing.endpoint must use https (http only for a loopback host)';
+}
+
+// The gateway half of a routing config: which host the call goes to, which model
+// it asks for and which vault entry holds the key. Shared verbatim by
+// validateRouting (the persisted config) and by the editor's "test" route, so
+// the two can never disagree about what a gateway name means. The endpoint of a
+// preset is *not* configurable — see the error below.
+function validateRoutingTarget(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const gateway = source.gateway == null || source.gateway === ''
+    ? DEFAULT_ROUTING_GATEWAY : String(source.gateway).trim().toLowerCase();
+  if (!ROUTING_GATEWAYS.has(gateway)) {
+    return fail(`unsupported routing gateway ${gateway}`, 'invalid_provider_routing');
+  }
+  const preset = JEV_GATEWAYS[gateway] || null;
+  // Rejected rather than ignored: a caller that attached its own URL to a preset
+  // would otherwise believe the key was being sent there. `custom` is the
+  // supported way to point at another host, and it has its own key rule.
+  if (preset && source.endpoint != null && String(source.endpoint).trim() !== '') {
+    return fail('routing.endpoint is only allowed for the custom gateway',
+      'invalid_provider_routing');
+  }
+  const endpoint = gateway === CUSTOM_GATEWAY ? String(source.endpoint || '').trim() : preset.endpoint;
+  if (gateway === CUSTOM_GATEWAY) {
+    const problem = customEndpointError(endpoint);
+    if (problem) return fail(problem, 'invalid_provider_routing');
+  }
+  const apiKeyName = source.apiKeyName == null || String(source.apiKeyName).trim() === ''
+    ? (preset ? preset.apiKeyName : DEFAULT_CUSTOM_ROUTING_API_KEY)
+    : String(source.apiKeyName).trim();
+  if (!VAULT_NAME_RE.test(apiKeyName)) {
+    return fail('routing.apiKeyName must be a vault entry name', 'invalid_provider_routing');
+  }
+  if (gateway === CUSTOM_GATEWAY && !apiKeyName.startsWith(CUSTOM_ROUTING_API_KEY_PREFIX)) {
+    return fail(`a custom gateway key must live in a ${CUSTOM_ROUTING_API_KEY_PREFIX}* vault entry`,
+      'invalid_provider_routing');
+  }
+  const model = source.model == null || String(source.model).trim() === ''
+    ? (preset ? preset.model : DEFAULT_CUSTOM_ROUTING_MODEL)
+    : String(source.model).trim();
+  if (!ROUTING_MODEL_ID.test(model)) {
+    return fail('routing.model is invalid', 'invalid_provider_routing');
+  }
+  return Object.freeze({
+    ok: true,
+    value: Object.freeze({
+      gateway,
+      // Absent for a preset: its endpoint is the table's, and persisting a copy
+      // would let a stale one survive a table update.
+      ...(gateway === CUSTOM_GATEWAY ? { endpoint } : {}),
+      model,
+      apiKeyName,
+    }),
+  });
+}
+
+// The call target of a validated routing block. Callers that hold a routing
+// config (the chat runtime) and callers that hold only a gateway name (the
+// editor's test route) both come through here, so there is exactly one answer to
+// "which URL, which model, which vault entry". Tolerant like the client's own
+// override readers: an unusable field degrades to the gateway's default.
+function jevTarget(routing) {
+  const source = routing && typeof routing === 'object' ? routing : {};
+  const named = String(source.gateway || '').trim().toLowerCase();
+  const gateway = ROUTING_GATEWAYS.has(named) ? named : DEFAULT_ROUTING_GATEWAY;
+  const preset = JEV_GATEWAYS[gateway] || null;
+  const model = String(source.model || '').trim();
+  const apiKeyName = String(source.apiKeyName || '').trim();
+  const endpoint = String(source.endpoint || '').trim();
+  return Object.freeze({
+    gateway,
+    endpoint: gateway === CUSTOM_GATEWAY
+      ? (endpoint || null)
+      : preset.endpoint,
+    model: model || (preset ? preset.model : DEFAULT_CUSTOM_ROUTING_MODEL),
+    apiKeyName: apiKeyName || (preset ? preset.apiKeyName : DEFAULT_CUSTOM_ROUTING_API_KEY),
+  });
+}
+
 function validateRouting(input, candidates) {
   if (input == null) return null;
   if (typeof input !== 'object' || Array.isArray(input)) {
@@ -173,15 +311,9 @@ function validateRouting(input, candidates) {
   if (!ROUTING_PROVIDERS.has(provider)) {
     return fail(`unsupported routing provider ${provider}`, 'invalid_provider_routing');
   }
-  const model = input.model == null ? null : String(input.model).trim() || null;
-  if (model && !MODEL_ID.test(model)) {
-    return fail('routing.model is invalid', 'invalid_provider_routing');
-  }
-  const apiKeyName = input.apiKeyName == null
-    ? DEFAULT_ROUTING_API_KEY : String(input.apiKeyName).trim();
-  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(apiKeyName)) {
-    return fail('routing.apiKeyName must be a vault entry name', 'invalid_provider_routing');
-  }
+  const target = validateRoutingTarget(input);
+  if (target.ok === false) return target;
+  const { gateway, endpoint, model, apiKeyName } = target.value;
   const timeoutMs = input.timeoutMs == null
     ? DEFAULT_ROUTING_TIMEOUT_MS : Number(input.timeoutMs);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < MIN_ROUTING_TIMEOUT_MS
@@ -221,6 +353,11 @@ function validateRouting(input, candidates) {
     value: Object.freeze({
       version: 1,
       provider,
+      // Always written, resolved: a routed pool that predates the gateway field
+      // is a Vercel pool, and saying so explicitly is what lets the editor show
+      // the right vault entry. `endpoint` travels only for a custom gateway.
+      gateway,
+      ...(endpoint ? { endpoint } : {}),
       model,
       apiKeyName,
       timeoutMs,
@@ -320,15 +457,24 @@ function providerSelectionDto(input) {
 }
 
 module.exports = {
+  CUSTOM_ROUTING_GATEWAY,
+  DEFAULT_CUSTOM_ROUTING_API_KEY,
+  DEFAULT_CUSTOM_ROUTING_MODEL,
   DEFAULT_ROUTING_API_KEY,
+  DEFAULT_ROUTING_GATEWAY,
   MAX_ATTEMPTS,
   MAX_CANDIDATES,
+  MAX_ROUTING_ENDPOINT_CHARS,
   MAX_TIERS,
   PROTOCOLS,
+  ROUTING_GATEWAYS,
+  customEndpointError,
+  jevTarget,
   normalizeStoredProviderSelection,
   primaryProviderCandidate,
   protocolOf,
   providerSelectionDto,
   trustDomainOf,
   validateProviderSelection,
+  validateRoutingTarget,
 };
