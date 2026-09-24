@@ -248,7 +248,7 @@ const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const taskRunStore = createTaskRunStore({ file: MULTICC_PATHS.taskRunDbFile }); const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
-const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS);
+const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS); const turnLedgerRuntime = require('./src/turn-ledger/runtime').createTurnLedgerRuntime({ dataDir: MULTICC_PATHS.root, codexCmd: () => cliCommands.codex }).start(); // 终端轮次账本：hook→spool→TurnLedger，影子模式只观测不接管状态
 const auxRunLog = createAuxRunLog({ dir: MULTICC_PATHS.auxRunsDir, log: (event, detail) => console.warn(`[multicc/aux-run-log] ${event}`, detail) });
 const chatSessions = new Map();
 let chatHistoryRuntime = null;
@@ -1116,7 +1116,7 @@ async function createSession(id) {
     // Login flows run the CLI's own interactive login command, not the TUI.
     const loginCmd = persisted.loginFlow === 'codex-login' ? `${cliCommands.codex} login`
       : persisted.loginFlow === 'claude-auth-login' ? `${cliCommands.claude} auth login` : vendorLoginTerminalCmd(persisted.loginFlow, cliCommands);
-    const terminalCmd = loginCmd || provider.buildTerminalCmd(launchSession || {});
+    const terminalCmd = loginCmd || provider.buildTerminalCmd(turnLedgerRuntime.prepareTerminal(launchSession || {}, termEnv));
     await tmuxCreateSession(id, cwd, 80, 24, terminalCmd, termEnv);
   } else {
     console.log(`[multicc] Attaching to existing tmux session: ${tmuxSessionName(id)}`);
@@ -2238,7 +2238,7 @@ taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATH
   prepareTaskWorktree: i => taskBoardRuntime.taskWorktree?.prepareForRun(i) || { ok: false, code: 'worktree_service_unavailable' },
   releaseTaskWorktree: i => taskBoardRuntime.taskWorktree?.releaseSlot(i),
   providerSnapshot: id => { const record = persistedSessions.get(id) || {}; return { providerId: record.provider || '_default_', providerName: record.provider || '_default_', cli: record.cli || '', model: effectiveSessionModel(record) || '' }; }, logger });
-createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app);
+createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app); turnLedgerRuntime.mountRoutes(app);
 
 // Compatibility wrappers preserve the earlier host composition point.
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }

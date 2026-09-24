@@ -160,7 +160,8 @@ function createCodexAdapter(deps) {
     cmd,
     buildTerminalCmd(session) {
       const baseArgs = args.length ? ' ' + args.join(' ') : '';
-      const configArgs = configArgsFor(session).map(arg => ` -c '${arg}'`).join('');
+      const configArgs = [...configArgsFor(session), ...(session.turnHookConfigArgs || [])]
+        .map(arg => ` -c '${arg}'`).join('');
       if (session.cliSessionId) return `${cmd}${baseArgs}${configArgs} resume ${session.cliSessionId}`;
       return `${cmd}${baseArgs}${configArgs}`;
     },
