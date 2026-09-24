@@ -147,6 +147,11 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
   assert.deepEqual(requests[0].body.arguments.options, ['测试环境', '生产环境']);
   const routeSchema = listed.result.tools.find(tool => tool.name === 'route_task').inputSchema;
   const routeTool = listed.result.tools.find(tool => tool.name === 'route_task');
+  for (const name of ['route_task', 'dispatch_master']) {
+    const tool = listed.result.tools.find(item => item.name === name);
+    assert.match(tool.description, /Never pre-create tasks through management HTTP APIs/);
+    assert.match(tool.description, /new_task/);
+  }
   assert.match(routeTool.description, /busy.*available|available.*busy/i);
   assert.match(routeSchema.properties.target_session_id.description, /busy.*available|available.*busy/i);
   assert.match(routeSchema.properties.message.description, /objective/i);

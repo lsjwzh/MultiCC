@@ -109,7 +109,6 @@ async function main() {
     env: {
       ...process.env,
       PORT: String(port),
-      ACCESS_TOKEN: 'recovery-isolated-test',
       HOME: homeDir, // guard walks $HOME/.codex — never the real one
       MULTICC_DATA_DIR: dataDir,
       // Task-shell turns are scheduler-mediated: a queued user message whose
@@ -140,7 +139,7 @@ async function main() {
       + '&& echo x > README.md && git add -A && git commit -qm init', { cwd: repoDir });
 
     const dirRes = await fetch(`${base}/api/directories`, {
-      method: 'POST', headers: { 'content-type': 'application/json', 'X-Access-Token': 'recovery-isolated-test' },
+      method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'rollout-guard-test', path: repoDir }),
     });
     const dir = await dirRes.json();
@@ -148,7 +147,7 @@ async function main() {
     assert.ok(dirId, `directory create returned an id (got ${JSON.stringify(dir).slice(0, 200)})`);
 
     const sessRes = await fetch(`${base}/api/directories/${dirId}/sessions`, {
-      method: 'POST', headers: { 'content-type': 'application/json', 'X-Access-Token': 'recovery-isolated-test' },
+      method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ cli: 'codex', kind: 'chat', label: 'rollout-guard-target' }),
     });
     const sess = await sessRes.json();
