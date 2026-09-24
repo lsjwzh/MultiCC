@@ -50,6 +50,8 @@ class FakeNode {
   get options() { return this.children.filter(child => child.tagName === 'OPTION'); }
 
   appendChild(node) {
+    // Like the DOM: a node lives in one place, so appending moves it.
+    if (node.parentNode) node.parentNode.children = node.parentNode.children.filter(child => child !== node);
     this.children.push(node);
     node.parentNode = this;
     return node;
@@ -67,6 +69,10 @@ class FakeNode {
   }
 
   setAttribute(name, value) { this.attributes[name] = String(value); }
+
+  getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null; }
+
+  get innerText() { return this.textContent + this.children.map(child => child.innerText).join(''); }
 
   addEventListener(type, listener) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
@@ -283,32 +289,38 @@ test('mixed Official and user-managed candidates require explicit confirmation',
   assert.equal(confirmed.value.allowCrossTrust, true);
 });
 
-test('mounted controller renders conservative defaults and gates mixed trust', () => {
+function mountEditor(options = {}) {
   const document = fakeDocument();
   const container = document.createElement('div');
   document.body.appendChild(container);
-  const control = editor.mount({
-    document,
-    container,
-    providers: providers(),
-    protocol: 'anthropic',
+  const control = editor.mount({ document, container, providers: providers(), protocol: 'anthropic', presetStore: null, ...options });
+  const $ = className => container.querySelector(`.multicc-auto-editor-${className}`);
+  const row = id => container.querySelectorAll('.multicc-auto-editor-row')
+    .find(candidate => candidate.dataset.providerId === id);
+  const inList = () => $('list').children.map(child => child.dataset.providerId);
+  const inPool = () => $('pool').children.map(child => child.dataset.providerId);
+  const click = (id, action) => row(id).querySelector(`.multicc-auto-editor-${action}`).emit('click');
+  const tier = id => row(id).querySelector('.multicc-auto-editor-tier');
+  const pickTier = (id, rung) => tier(id).children.find(option => option.dataset.rung === String(rung)).emit('click');
+  const routeOn = () => $('routing').emit('click');
+  return { document, container, control, $, row, inList, inPool, click, tier, pickTier, routeOn };
+}
+
+test('mounted controller shows the lines in use in order and keeps the rest one click away', () => {
+  const { document, container, control, $, row, inList, inPool, click } = mountEditor({
     formatProvider: provider => `Provider ${provider.name}`,
   });
-  const rows = container.querySelectorAll('.multicc-auto-editor-row');
-  assert.equal(rows.length, 4);
-  const checkedIds = rows.filter(row => row.querySelector('.multicc-auto-editor-enabled').checked)
-    .map(row => row.dataset.providerId);
-  assert.deepEqual(checkedIds, ['managed-a', 'managed-b']);
-  assert.deepEqual(rows.map(row => [
-    row.dataset.providerId,
-    Number(row.querySelector('.multicc-auto-editor-priority').value),
-  ]), [
-    ['official', 3], ['managed-a', 1], ['managed-b', 2], ['managed-c', 4],
-  ]);
+  assert.equal(container.querySelectorAll('.multicc-auto-editor-row').length, 4);
+  assert.deepEqual(inList(), ['managed-a', 'managed-b']);
+  assert.deepEqual(inPool(), ['official', 'managed-c']);
+  assert.deepEqual(inList().map(id => row(id).querySelector('.multicc-auto-editor-rank').textContent), ['1', '2']);
+  assert.match($('add').children[0].textContent, /还有 2 条可用/);
+  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-move-up').disabled, true);
+  assert.equal(row('managed-b').querySelector('.multicc-auto-editor-move-down').disabled, true);
   assert.equal(control.read().ok, true);
 
-  rows[0].querySelector('.multicc-auto-editor-enabled').checked = true;
-  rows[0].querySelector('.multicc-auto-editor-enabled').emit('change');
+  click('official', 'add-one');
+  assert.deepEqual(inList(), ['managed-a', 'managed-b', 'official']);
   const blocked = control.read();
   assert.equal(blocked.code, 'cross_trust_confirmation_required');
   const confirm = container.querySelector('.multicc-auto-editor-cross-trust-confirm');
@@ -318,16 +330,45 @@ test('mounted controller renders conservative defaults and gates mixed trust', (
   const allowed = control.read();
   assert.equal(allowed.ok, true);
   assert.equal(allowed.value.allowCrossTrust, true);
-  assert.deepEqual(allowed.value.candidates.map(candidate => candidate.providerId),
-    ['managed-a', 'managed-b', 'official']);
+  assert.deepEqual(allowed.value.candidates.map(candidate => [candidate.providerId, candidate.priority]),
+    [['managed-a', 1], ['managed-b', 2], ['official', 3]], 'priority is simply the position in the list');
+
+  click('official', 'remove');
+  assert.deepEqual(inPool(), ['official', 'managed-c'], 'a removed line goes back to the add list');
+  assert.equal(confirm.checked, false, 'leaving the mixed pool drops the confirmation');
 
   const style = document.getElementById('multicc-auto-provider-editor-style');
-  assert.match(style.textContent, /@media \(max-width:640px\)/);
+  assert.match(style.textContent, /@container \(max-width:520px\)/);
   assert.match(style.textContent, /grid-template-columns:22px minmax\(0,1fr\)/);
   control.setContext({ protocol: null, initialSelection: null });
   assert.deepEqual(control.read(), { ok: true, value: null, error: null, code: null });
   control.destroy();
   assert.equal(control.read().code, 'editor_destroyed');
+});
+
+test('arrows reorder the lines and the new order is what gets saved', () => {
+  const { control, inList, click, $ } = mountEditor();
+  click('managed-c', 'add-one');
+  click('managed-c', 'move-up');
+  click('managed-c', 'move-up');
+  click('managed-c', 'move-up');
+  assert.deepEqual(inList(), ['managed-c', 'managed-a', 'managed-b'], 'the first line cannot move further up');
+  click('managed-a', 'move-down');
+  assert.deepEqual(control.read({ remember: false }).value.candidates.map(candidate => candidate.providerId),
+    ['managed-c', 'managed-b', 'managed-a']);
+  assert.match($('summary').textContent, /^效果：先用 Managed C（model-c），不行再换 Managed B/);
+});
+
+test('a pool with fewer than two lines says so and opens the add list', () => {
+  const { control, click, $ } = mountEditor();
+  click('managed-b', 'remove');
+  assert.equal($('summary').classList.contains('bad'), true);
+  assert.match($('summary').textContent, /至少要用两条线路/);
+  assert.equal(control.read({ remember: false }).code, 'insufficient_candidates');
+  const fresh = mountEditor({ initialSelection: { mode: 'auto', protocol: 'anthropic', candidates: [
+    { providerId: 'managed-a', priority: 1, enabled: true },
+  ] } });
+  assert.equal(fresh.$('add').open, true);
 });
 
 function memoryPresetStore(initial = []) {
@@ -337,46 +378,43 @@ function memoryPresetStore(initial = []) {
 
 test('a configured pool can be saved as a named preset and applied to a fresh editor', () => {
   const store = memoryPresetStore();
-  const mountOne = () => {
-    const document = fakeDocument();
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    return { container, control: editor.mount({ document, container, providers: providers(), protocol: 'anthropic', presetStore: store }) };
-  };
-  const first = mountOne();
-  const rows = first.container.querySelectorAll('.multicc-auto-editor-row');
-  rows[3].querySelector('.multicc-auto-editor-enabled').checked = true; // managed-c
-  rows[3].querySelector('.multicc-auto-editor-priority').value = '1';
-  rows[1].querySelector('.multicc-auto-editor-priority').value = '5';
-  first.container.querySelector('.multicc-auto-editor-preset-name').value = '便宜优先';
-  first.container.querySelector('.multicc-auto-editor-preset-save').emit('click');
+  const first = mountEditor({ presetStore: store });
+  first.click('managed-c', 'add-one');
+  first.click('managed-c', 'move-up');
+  first.click('managed-c', 'move-up');
+  first.click('managed-a', 'move-down');
+  assert.equal(first.$('preset-form').style.display, 'none', 'the name field waits behind 存为预设');
+  first.$('preset-open').emit('click');
+  assert.equal(first.$('preset-form').style.display, '');
+  first.$('preset-name').value = '便宜优先';
+  first.$('preset-save').emit('click');
   assert.equal(store.data.length, 1);
   assert.equal(store.data[0].name, '便宜优先');
   assert.equal(store.data[0].recent, false);
   assert.deepEqual(store.data[0].candidates.map(c => c.providerId), ['managed-c', 'managed-b', 'managed-a']);
 
-  const second = mountOne();
-  const select = second.container.querySelector('.multicc-auto-editor-preset-select');
+  const second = mountEditor({ presetStore: store });
+  const select = second.$('preset-select');
   assert.equal(select.options.length, 2, '占位 + 一份预设');
   assert.match(select.options[1].textContent, /^便宜优先 · Managed C → Managed B → Managed A$/);
+  assert.equal(second.$('preset-delete').style.display, 'none', 'nothing to delete before a preset is picked');
   select.value = store.data[0].id;
   select.emit('change');
+  assert.equal(second.$('preset-delete').style.display, '');
+  assert.deepEqual(second.inList(), ['managed-c', 'managed-b', 'managed-a']);
   const applied = second.control.read({ remember: false });
   assert.equal(applied.ok, true);
-  assert.deepEqual(applied.value.candidates.map(c => c.providerId), ['managed-c', 'managed-b', 'managed-a']);
   assert.equal(store.data.length, 1, 'remember:false 不记最近使用');
 
   second.control.read();
   assert.equal(store.data.length, 1, '与已有预设同一份池子只顶到前面，不重复存');
-  second.container.querySelector('.multicc-auto-editor-preset-delete').emit('click');
+  second.$('preset-delete').emit('click');
   assert.equal(store.data.length, 0);
 });
 
 test('reading a valid pool records it as a recent preset, deduplicated and capped', () => {
   const store = memoryPresetStore();
-  const document = fakeDocument();
-  const container = document.createElement('div');
-  const control = editor.mount({ document, container, providers: providers(), protocol: 'anthropic', presetStore: store });
+  const { control } = mountEditor({ presetStore: store });
   control.read();
   control.read();
   assert.equal(store.data.length, 1);
@@ -392,40 +430,29 @@ test('reading a valid pool records it as a recent preset, deduplicated and cappe
   // 协议不同或候选已失效（池里不足两个）的预设不出现在下拉里。
   const other = memoryPresetStore([{ id: 'x', name: 'gone', recent: false, protocol: 'anthropic', maxAttempts: 2, sticky: true,
     candidates: [{ providerId: 'managed-a', priority: 1 }, { providerId: 'deleted', priority: 2 }] }]);
-  const doc2 = fakeDocument();
-  const box = doc2.createElement('div');
-  editor.mount({ document: doc2, container: box, providers: providers(), protocol: 'anthropic', presetStore: other });
-  assert.equal(box.querySelector('.multicc-auto-editor-preset-select').options.length, 1);
+  const { $ } = mountEditor({ presetStore: other });
+  assert.equal($('preset-select').options.length, 1);
 });
-
-function mountRouted(options = {}) {
-  const document = fakeDocument();
-  const container = document.createElement('div');
-  document.body.appendChild(container);
-  const control = editor.mount({ document, container, providers: providers(), protocol: 'anthropic', presetStore: null, ...options });
-  const $ = className => container.querySelector(`.multicc-auto-editor-${className}`);
-  const row = id => container.querySelectorAll('.multicc-auto-editor-row')
-    .find(candidate => candidate.dataset.providerId === id);
-  const toggle = (input, checked) => { input.checked = checked; input.emit('change'); };
-  const routeOn = () => toggle($('routing'), true);
-  return { document, container, control, $, row, toggle, routeOn };
-}
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test('turning routing on gives a valid simple/complex split straight away, guessed from model names', () => {
   const pool = providers();
   pool[2] = { ...pool[2], model: 'deepseek-v4-flash' };
-  const { control, $, row, routeOn } = mountRouted({ providers: pool });
+  const { control, container, $, tier, routeOn } = mountEditor({ providers: pool });
   assert.equal($('jev').style.display, 'none', 'the Jev step stays out of the way in order mode');
-  assert.equal($('mode-order').checked, true);
+  assert.equal($('mode-order').getAttribute('aria-checked'), 'true');
+  assert.equal(container.classList.contains('is-order'), true, 'task chips are hidden in order mode');
   routeOn();
-  assert.equal($('mode-order').checked, false, 'the two modes are one choice');
+  assert.equal($('mode-order').getAttribute('aria-checked'), 'false', 'the two modes are one choice');
+  assert.equal($('routing').getAttribute('aria-checked'), 'true');
+  assert.equal(container.classList.contains('is-order'), false);
   assert.equal($('jev').style.display, '');
-  assert.equal(row('managed-b').querySelector('.multicc-auto-editor-tier').value, '1', 'a flash model takes simple tasks');
-  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-tier').value, '2');
-  assert.deepEqual(row('managed-a').querySelector('.multicc-auto-editor-tier').options.map(option => option.textContent),
-    ['简单任务', '复杂任务'], 'two lines read as words, not numbers');
+  assert.equal(tier('managed-b').dataset.value, '1', 'a flash model takes simple tasks');
+  assert.equal(tier('managed-a').dataset.value, '2');
+  assert.deepEqual(tier('managed-a').children.map(option => option.textContent), ['简单', '复杂'],
+    'two lines read as words, not numbers');
+  assert.equal(tier('managed-b').children[0].getAttribute('aria-checked'), 'true');
   assert.equal($('summary').classList.contains('bad'), false);
   assert.match($('summary').textContent, /简单任务 → Managed B（deepseek-v4-flash）；复杂任务 → Managed A/);
   const result = control.read({ remember: false });
@@ -437,43 +464,40 @@ test('turning routing on gives a valid simple/complex split straight away, guess
 test('when names give no hint the first line in order takes simple tasks; a model switch re-files an untouched row', () => {
   const pool = providers();
   pool[2] = { ...pool[2], modelOptions: ['model-b', 'model-b-mini'] };
-  const { control, $, row, routeOn } = mountRouted({ providers: pool });
+  const { control, $, row, tier, routeOn } = mountEditor({ providers: pool });
   routeOn();
-  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-tier').value, '1');
-  assert.equal(row('managed-b').querySelector('.multicc-auto-editor-tier').value, '2');
+  assert.equal(tier('managed-a').dataset.value, '1');
+  assert.equal(tier('managed-b').dataset.value, '2');
   assert.equal(control.read({ remember: false }).ok, true);
   const model = row('managed-b').querySelector('.multicc-auto-editor-model');
   model.value = 'model-b-mini';
   model.emit('change');
-  assert.equal(row('managed-b').querySelector('.multicc-auto-editor-tier').value, '1', 'a mini model moves to simple tasks');
-  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-tier').value, '2');
+  assert.equal(tier('managed-b').dataset.value, '1', 'a mini model moves to simple tasks');
+  assert.equal(tier('managed-a').dataset.value, '2');
   assert.equal($('summary').classList.contains('bad'), false);
 });
 
-test('a user-edited tier survives its own change event and an unrelated row toggling afterward', () => {
-  const { row, routeOn, toggle } = mountRouted();
-  toggle(row('managed-c').querySelector('.multicc-auto-editor-enabled'), true);
+test('a user-picked tier survives an unrelated row being added and its own model switch', () => {
+  const { row, tier, pickTier, click, routeOn } = mountEditor();
+  click('managed-c', 'add-one');
   routeOn();
-  const tier = row('managed-a').querySelector('.multicc-auto-editor-tier');
-  assert.deepEqual(tier.options.map(option => option.textContent), ['简单任务', '中等任务', '复杂任务']);
-  const alternative = tier.options.map(option => option.value).find(value => value !== tier.value);
-  tier.value = alternative;
-  tier.emit('change');
-  assert.equal(tier.value, alternative, 'the pick sticks through its own change notification');
-  toggle(row('official').querySelector('.multicc-auto-editor-enabled'), true);
-  assert.equal(tier.value, alternative, 'an unrelated row change must not revert it');
+  assert.deepEqual(tier('managed-a').children.map(option => option.textContent), ['简单', '复杂'],
+    'three lines still get the two plain choices');
+  const alternative = ['1', '2'].find(value => value !== tier('managed-a').dataset.value);
+  pickTier('managed-a', alternative);
+  assert.equal(tier('managed-a').dataset.value, alternative, 'the pick sticks through its own notification');
+  click('official', 'add-one');
+  assert.equal(tier('managed-a').dataset.value, alternative, 'an unrelated row change must not revert it');
   const model = row('managed-a').querySelector('.multicc-auto-editor-model');
   model.value = 'model-a-fast';
   model.emit('change');
-  assert.equal(tier.value, alternative, 'a hand-picked tier is no longer re-guessed');
+  assert.equal(tier('managed-a').dataset.value, alternative, 'a hand-picked tier is no longer re-guessed');
 });
 
 test('putting every line on the same task type is flagged in the preview and refused on save', () => {
-  const { control, $, row, routeOn } = mountRouted();
+  const { control, $, pickTier, routeOn } = mountEditor();
   routeOn();
-  const tier = row('managed-a').querySelector('.multicc-auto-editor-tier');
-  tier.value = '2';
-  tier.emit('change');
+  pickTier('managed-a', 2);
   assert.equal($('summary').classList.contains('bad'), true);
   assert.match($('summary').textContent, /简单任务/);
   const result = control.read({ remember: false });
@@ -481,25 +505,40 @@ test('putting every line on the same task type is flagged in the preview and ref
   assert.equal(result.code, 'provider_routing_requires_tiers');
 });
 
+test('a configured three-tier ladder keeps its middle chip', () => {
+  const { tier } = mountEditor({ initialSelection: {
+    mode: 'auto', protocol: 'anthropic', maxAttempts: 3, sticky: true,
+    routing: { version: 1, provider: 'jev', tiers: ['t1', 't2', 't3'] },
+    candidates: [
+      { providerId: 'managed-a', priority: 1, enabled: true, tier: 't1' },
+      { providerId: 'managed-b', priority: 2, enabled: true, tier: 't2' },
+      { providerId: 'managed-c', priority: 3, enabled: true, tier: 't3' },
+    ] } });
+  assert.deepEqual(tier('managed-b').children.map(option => option.textContent), ['简单', '中等', '复杂']);
+  assert.equal(tier('managed-b').dataset.value, '2');
+});
+
 test('the fallback choice for an unjudged message is written only when it differs from the server default', () => {
-  const { control, $, routeOn } = mountRouted();
+  const { control, $, routeOn } = mountEditor();
+  assert.equal($('more').children[0].innerText.includes('判断不了'), false, 'the fallback only matters when routing');
   routeOn();
   assert.equal($('jev-unknown').value, 'strong');
+  assert.match($('more').children[0].innerText, /最多试 2 条 · 沿用成功的线路 · 判断不了按复杂/);
   assert.equal('onUnknown' in control.read({ remember: false }).value.routing, false);
   $('jev-unknown').value = 'weak';
   $('jev-unknown').emit('change');
   assert.equal(control.read({ remember: false }).value.routing.onUnknown, 'weak');
-  const again = mountRouted({ initialSelection: control.read({ remember: false }).value });
-  assert.equal(again.$('routing').checked, true);
+  const again = mountEditor({ initialSelection: control.read({ remember: false }).value });
+  assert.equal(again.$('routing').getAttribute('aria-checked'), 'true');
   assert.equal(again.$('jev-unknown').value, 'weak');
 });
 
 test('without a host key API the Jev step names the vault entry and offers no form', () => {
-  const { $, routeOn } = mountRouted();
+  const { $, routeOn } = mountEditor();
   routeOn();
-  assert.match($('jev-status').textContent, /vercel-api-key/);
-  assert.equal($('jev-key-input').parentNode.style.display, 'none');
-  assert.equal($('jev-test').parentNode.style.display, 'none');
+  assert.match($('jev').innerText, /vercel-api-key/);
+  assert.equal($('jev-form').style.display, 'none');
+  assert.equal($('jev-test').style.display, 'none');
 });
 
 function fakeKeyApi({ present = false, test = { ok: true, tier: 't1', latencyMs: 412 } } = {}) {
@@ -512,23 +551,25 @@ function fakeKeyApi({ present = false, test = { ok: true, tier: 't1', latencyMs:
   };
 }
 
-test('the key is checked only once routing is chosen, and a missing key opens the paste form', async () => {
+test('the key is checked only once routing is chosen, and a missing key walks through the steps', async () => {
   const api = fakeKeyApi();
-  const { $, routeOn } = mountRouted({ routingKey: api });
+  const { $, routeOn } = mountEditor({ routingKey: api });
   await flush();
   assert.deepEqual(api.calls.check, [], 'a plain pool never touches the vault');
   routeOn();
   assert.match($('jev-status').textContent, /正在检查/);
   await flush();
   assert.deepEqual(api.calls.check, ['vercel-api-key']);
-  assert.equal($('jev-status').classList.contains('missing'), true);
-  assert.equal($('jev-key-input').parentNode.style.display, '');
-  assert.equal($('jev-test').parentNode.style.display, 'none', 'nothing to test before a key exists');
+  assert.equal($('jev').classList.contains('missing'), true);
+  assert.match($('jev-status').textContent, /还差一步/);
+  assert.equal($('steps').style.display, '');
+  assert.equal($('jev-form').style.display, '');
+  assert.equal($('jev-test').style.display, 'none', 'nothing to test before a key exists');
 });
 
 test('saving a pasted key clears the field at once, stores it under the vault name and runs a test', async () => {
   const api = fakeKeyApi();
-  const { $, routeOn } = mountRouted({ routingKey: api });
+  const { $, routeOn } = mountEditor({ routingKey: api });
   routeOn();
   await flush();
   $('jev-key-input').value = '  vck_example  ';
@@ -538,24 +579,37 @@ test('saving a pasted key clears the field at once, stores it under the vault na
   await flush();
   assert.deepEqual(api.calls.save, [['vercel-api-key', 'vck_example']]);
   assert.equal(api.calls.test.length, 1);
-  assert.equal($('jev-status').classList.contains('ok'), true);
-  assert.equal($('jev-key-input').parentNode.style.display, 'none');
+  assert.equal($('jev').classList.contains('ok'), true);
+  assert.equal($('jev-form').style.display, 'none');
+  assert.equal($('steps').style.display, 'none');
   assert.equal($('jev-test-result').classList.contains('good'), true);
-  assert.match($('jev-test-result').textContent, /412 ms.*简单任务/);
+  assert.match($('jev-test-result').textContent, /412 ms.*错别字.*简单任务/);
 });
 
 test('a rejected key is explained in plain words and the form comes back to replace it', async () => {
   const api = fakeKeyApi({ present: true, test: { ok: false, code: 'jev_http_401', status: 401 } });
-  const { $, routeOn } = mountRouted({ routingKey: api });
+  const { $, routeOn } = mountEditor({ routingKey: api });
   routeOn();
   await flush();
-  assert.equal($('jev-key-input').parentNode.style.display, 'none', 'a stored key needs no form');
-  $('jev-test-input').value = '重构整个鉴权模块';
+  assert.equal($('jev-form').style.display, 'none', 'a stored key needs no form');
+  assert.equal($('jev-key-change').style.display, '');
   $('jev-test').emit('click');
   await flush();
   await flush();
-  assert.deepEqual(api.calls.test, [{ apiKeyName: 'vercel-api-key', text: '重构整个鉴权模块' }]);
+  assert.deepEqual(api.calls.test, [{ apiKeyName: 'vercel-api-key', text: '把 README 里的一个错别字改掉' }]);
   assert.equal($('jev-test-result').classList.contains('bad'), true);
   assert.match($('jev-test-result').textContent, /key 无效.*401/);
-  assert.equal($('jev-key-input').parentNode.style.display, '');
+  assert.equal($('jev-form').style.display, '');
+});
+
+test('更换 key opens the form on a connected key and closes it again', async () => {
+  const api = fakeKeyApi({ present: true });
+  const { $, routeOn } = mountEditor({ routingKey: api });
+  routeOn();
+  await flush();
+  $('jev-key-change').emit('click');
+  assert.equal($('jev-form').style.display, '');
+  assert.equal($('jev-key-change').textContent, '取消');
+  $('jev-key-change').emit('click');
+  assert.equal($('jev-form').style.display, 'none');
 });

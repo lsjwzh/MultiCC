@@ -1330,10 +1330,8 @@ dialog [role="alert"] { margin: 10px 0; color: #b34128; line-height: 1.6; white-
 .air-sub-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 .air-sub-hint { margin-top: 7px; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .air-auto-host { margin-top: 11px; }
-.air-auto-host.multicc-auto-editor { margin-bottom: 0; border-color: #d8e6f4; border-radius: 12px; background: #f8fbff; }
-dialog .air-auto-host label { margin-top: 0; }
-.air-auto-host .multicc-auto-editor-row { border-color: #e1eaf3; }
-.air-auto-host .multicc-auto-editor input[type="number"], .air-auto-host .multicc-auto-editor select { margin-top: 0; background: #fff; border-color: #d5e2ef; }
+/* The editor scopes and themes itself from Air's variables; only spacing is Air's call. */
+.air-auto-host.multicc-auto-editor { margin-bottom: 0; }
 .air-runtime-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(170px, .8fr); gap: 12px; }
 dialog .air-config-field { min-width: 0; margin: 0; color: #5f7286; font-size: 10px; }
 .air-config-field > span { display: block; margin-bottom: 5px; }
