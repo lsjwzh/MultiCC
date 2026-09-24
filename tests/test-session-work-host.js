@@ -19,7 +19,7 @@ function fixture(options = {}) {
       active: schedulerState === 'idle'
         ? null
         : {
-          entryId: 'entry-1',
+          entryId: options.activeEntryId || 'entry-1',
           ...(options.activeTaskId ? { taskId: options.activeTaskId } : {}),
           ...(options.activeOriginDispatchId
             ? { originDispatchId: options.activeOriginDispatchId }
@@ -547,6 +547,26 @@ test('turn boundary parks FIFO until classify D is the sole completion verdict',
   ]);
   assert.equal(h.calls.some(call => call[0] === 'tick'), true);
   assert.equal(h.calls.some(call => call[0] === 'freeze'), false);
+});
+
+test('a slot claimed by a dispatch result closes on the owner session\'s own verdict', async () => {
+  // Legacy persisted slot: the dispatch.result lent the DISPATCHED task's id as
+  // lineage. The owner's turn-end verdict names its own task; rejecting it as
+  // active_task_mismatch left the slot 'assessing' forever (dispatcher wedged,
+  // worker card stuck 「执行中」).
+  const h = fixture({ activeEntryId: 'operation:op-1:result', activeTaskId: 'tsk-worker' });
+  await h.host.turnSucceeded('s1');
+  const classification = await h.host.classifyTransition('s1', 'tsk-owner', { state: 'D' });
+  assert.equal(classification.ok, true);
+  assert.deepEqual(h.calls.find(call => call[0] === 'complete'), [
+    'complete', { expectedTaskId: 'tsk-worker', reason: 'classified_D', classifyState: 'D' },
+  ]);
+
+  // Ordinary entries keep the mismatch guard.
+  const guarded = fixture({ activeTaskId: 'tsk-worker' });
+  await guarded.host.turnSucceeded('s1');
+  const rejected = await guarded.host.classifyTransition('s1', 'tsk-owner', { state: 'D' });
+  assert.equal(rejected.code, 'active_task_mismatch');
 });
 
 test('inactive classify scan repairs a missing turn boundary before applying its verdict', async () => {

@@ -445,6 +445,27 @@ test('async dispatch result waits during P then wakes D/W/E without manufacturin
   }
 });
 
+test('a dispatch result never lends the dispatched task identity to the owner turn', async t => {
+  const h = fixture(t);
+  await h.outbox.enqueue({
+    id: 'operation:dispatch-2:result',
+    sessionId: 's1',
+    payload: {
+      type: 'dispatch.result', operationId: 'dispatch-2',
+      taskId: 'tsk-worker', taskRunId: 'run-worker', leaseEpoch: 3,
+      deliveryText: 'worker result', result: { status: 'completed', text: 'done' },
+    },
+    source: { type: 'operation', kind: 'dispatch', operationId: 'dispatch-2' },
+  });
+  const claim = await claimOne(h);
+  assert.equal(claim.id, 'operation:dispatch-2:result');
+  const active = (await h.scheduler.status('s1')).active;
+  assert.equal(active.taskId, null, 'owner turn must not run as the worker task');
+  assert.equal(active.taskRunId, null);
+  assert.equal(active.leaseEpoch, null);
+  assert.ok(h.events.filter(e => e.entryId === claim.id).every(e => !e.taskId), 'no claimed/started event may mark the worker card');
+});
+
 test('an early structured answer stays off the public FIFO then runs first after the asking turn releases', async t => {
   const h = fixture(t);
   const asking = await h.scheduler.admit({
