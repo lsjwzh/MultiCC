@@ -191,6 +191,21 @@ test('the Air host-ops region renders, reads light, and drives the update flow',
     assert.ok(qr.dark > 50 && qr.white > 50, `an unscannable code would be blank or inverted: ${JSON.stringify(qr)}`);
     t.diagnostic('qr: ' + await page.screenshot('air-ops-qr'));
 
+    // ── A laptop at 100% zoom: the opened region must still reach restart ──
+    // 780px 是 1440×900 笔记本去掉浏览器栏后的视口。展开「更多与系统」后底栏比
+    // 剩下的高度还高；侧栏曾经不滚、body 又 overflow:hidden，重启按钮直接被裁掉。
+    await page.evaluate('document.getElementById("ops-dialog").close()');
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 780, deviceScaleFactor: 1, mobile: false });
+    await page.evaluate('document.getElementById("side-more").open = true');
+    assert.ok(await page.waitFor(`(() => {
+      const box = document.getElementById('air-restart-btn').getBoundingClientRect();
+      return box.height > 0 && box.top >= 0 && box.bottom <= innerHeight + 1;
+    })()`), 'opening 更多与系统 must bring the restart button on screen');
+    assert.ok(await page.evaluate(`document.getElementById('tasks').getBoundingClientRect().height >= 100`),
+      'the task list keeps a usable height instead of collapsing to nothing');
+    t.diagnostic('laptop: ' + await page.screenshot('air-ops-laptop-780'));
+    await page.evaluate('document.getElementById("side-more").open = false; document.getElementById("sidebar").scrollTop = 0');
+
     // ── The region holds up on a phone, where the sidebar is a drawer ──────
     await page.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 900, deviceScaleFactor: 1, mobile: true });
     await page.evaluate('document.getElementById("ops-dialog").close();document.body.classList.add("nav-open");document.getElementById("sidebar").scrollTop = 1e6');

@@ -138,6 +138,7 @@
     const translate = opts.translate || (key => key);
     const maybeScroll = opts.maybeScrollToBottom || (() => {});
     const retryTransport = opts.retryTransport || (() => {});
+    const onManualRetry = typeof opts.onManualRetry === 'function' ? opts.onManualRetry : null;
     const isRestarting = opts.isRestarting || (() => false);
     const debug = opts.debug || (() => {});
     const setTimer = opts.setTimeout || global.setTimeout.bind(global);
@@ -1011,8 +1012,42 @@
         if (details) bar.appendChild(details);
       }
       bar.title = envelope ? errorModel.diagnosticText(envelope) : String(message.message || '');
+      if (onManualRetry) bar.appendChild(manualRetryButton());
       bar.style.color = retryScheduled ? 'var(--chat-warning, #e3b341)' : 'var(--chat-danger, #ff9b9b)';
       bar.style.display = '';
+    }
+
+    // 异常对话的手动重试：断掉当前这一轮 → 等几秒 → 把原数据重新提交。按钮只负责
+    // 表态和倒计时，真正的断开/重发在 composer（它手里有最后一次发出的原始负载）。
+    function lastUserText() {
+      const nodes = messagesEl ? messagesEl.querySelectorAll('.msg.user') : [];
+      const node = nodes.length ? nodes[nodes.length - 1] : null;
+      const first = node && node.firstChild;
+      return first && first.nodeType === 3 ? String(first.nodeValue || '').trim() : '';
+    }
+
+    function manualRetryButton() {
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.className = 'api-error-retry';
+      button.textContent = '↻ 重试';
+      button.title = '断开当前这一轮，等 3 秒后把原消息重新提交给接口';
+      button.style.cssText = 'margin-left:8px;padding:2px 10px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;font-size:12px;cursor:pointer;';
+      button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled) return;
+        button.disabled = true;
+        const result = await Promise.resolve(onManualRetry({
+          fallbackText: lastUserText(),
+          onTick: seconds => { button.textContent = `${seconds}s 后重新提交…`; },
+        })).catch(() => ({ ok: false, reason: 'error' }));
+        if (result && result.ok) { button.textContent = '已重新提交'; return; }
+        button.disabled = false;
+        button.textContent = result && result.reason === 'nothing_to_retry' ? '没有可重发的消息'
+          : result && result.reason === 'disconnected' ? '连接未恢复，再试一次' : '↻ 重试';
+      });
+      return button;
     }
 
     function clearApiError() {
