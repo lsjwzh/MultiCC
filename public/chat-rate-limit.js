@@ -149,14 +149,21 @@
     return null;
   }
   // A window limit shows only under a CLI that could have produced it: Claude 5h
-  // under claude/opencode, GLM 5h under codex/opencode (and the claude CLI when
-  // pointed at a Zhipu endpoint), Codex weekly under codex/opencode, and
-  // OpenCode Go's own window only under opencode.
+  // under the Claude family (claude / claude-exp) or opencode, GLM 5h under
+  // codex/opencode (and the claude CLI when pointed at a Zhipu endpoint), Codex
+  // weekly under the Codex family or opencode, and OpenCode Go's own window only
+  // under opencode.
   function providerMatchesCli(provider, cli) {
     if (provider === 'opencode') return cli === 'opencode';
     // 借道 provider：窗口余量经 relay 透传到达，协议对上 CLI 即属于当前会话。
+    // 协议按 CLI 家族判，不按字面 id：claude-exp / codex-exp 与各自的正式 CLI
+    // 共用同一个账号、同一个 provider 池，说的也是同一个 relay 协议面，所以
+    // 借道窗口必须在 -exp 会话里显示（此前 `cli === relayProtocol` 把它们全挡了）。
     const relayProtocol = relayProtocolFromBaseUrl(currentProviderBaseUrl);
-    if (relayProtocol) return cli === relayProtocol || cli === 'opencode';
+    if (relayProtocol) {
+      const familyMatches = relayProtocol === 'codex' ? isCodexCli(cli) : isClaudeCli(cli);
+      return familyMatches || cli === 'opencode';
+    }
     if (provider === 'glm' || provider === 'codex') {
       if (isCodexCli(cli) || cli === 'opencode') return true;
       return provider === 'glm' && isZhipuBaseUrl(currentProviderBaseUrl);
@@ -359,6 +366,7 @@
   let currentProviderAppType = '';
   let currentProviderPending = false;
   let providerRevision = 0;
+  let providerIdentityKnown = false;
   let currentSession = '';
   let cliInitialized = false;
   let currentLimitInfo = null;   // raw rate_limit_info (provider/resetsAt for gating + timer)
@@ -373,13 +381,28 @@
   let expiryTimer = null;
 
   function limitStorageKey(session) { const s = String(session || '').trim(); return s ? `multicc:claude-rate-limit:v1:${s}` : ''; }
-  function saveLimitBar(session, bar) {
+  // The window bar is stored WITH the provider identity that produced it. The
+  // display gate is providerMatchesCli(info.provider, cli) — a bar restored
+  // without its info could only ever paint through the exact-Provider branch,
+  // so a borrowed (借道) window vanished on every page load even though its text
+  // was sitting in localStorage.
+  function saveLimitBar(session, bar, info) {
     const k = limitStorageKey(session), s = browserStorage(); if (!s || !k || !bar) return;
-    try { s.setItem(k, JSON.stringify(bar)); } catch (_) {}
+    try { s.setItem(k, JSON.stringify({ bar, info: info || null })); } catch (_) {}
   }
+  // Returns { bar, info } for both the current record and the legacy bare-bar
+  // shape written before the identity was persisted (a bar has no `bar` field,
+  // so the two are unambiguous).
   function loadLimitBar(session) {
     const k = limitStorageKey(session), s = browserStorage(); if (!s || !k) return null;
-    try { return JSON.parse(s.getItem(k) || 'null'); } catch (_) { return null; }
+    let raw = null;
+    try { raw = JSON.parse(s.getItem(k) || 'null'); } catch (_) { return null; }
+    if (!raw || typeof raw !== 'object') return null;
+    if (raw.bar && typeof raw.bar === 'object') {
+      return { bar: raw.bar, info: raw.info && typeof raw.info === 'object' ? raw.info : null };
+    }
+    if (!raw.text) return null;
+    return { bar: raw, info: null };
   }
   function limitProvider() {
     if (!currentLimitInfo) return null;
@@ -462,7 +485,7 @@
     currentSession = String(sessionName || currentSession || '').trim();
     currentLimitInfo = info || null;
     currentLimitBar = bar || null;
-    if (currentLimitBar && currentSession) saveLimitBar(currentSession, currentLimitBar);
+    if (currentLimitBar && currentSession) saveLimitBar(currentSession, currentLimitBar, currentLimitInfo);
     renderCurrent();
     return currentLimitBar ? { provider: limitProvider(), bar: currentLimitBar } : null;
   }
@@ -488,7 +511,11 @@
   }
   function restoreFiveHourRateLimit(sessionName) {
     currentSession = String(sessionName || '').trim();
-    currentLimitBar = loadLimitBar(currentSession);
+    const record = loadLimitBar(currentSession);
+    currentLimitBar = record ? record.bar : null;
+    // Only fill in the identity — a live event that already landed is fresher
+    // than anything on disk, and its info drives scheduleExpiry().
+    if (record && record.info && !currentLimitInfo) currentLimitInfo = record.info;
     renderCurrent();
     return currentLimitBar;
   }
@@ -595,16 +622,27 @@
     const nextAppType = String(meta.appType || relayProtocolFromBaseUrl(next)
       || (nextId ? (isCodexCli(currentCli) ? 'codex' : 'claude') : ''));
     const nextPending = meta.pending === true;
-    const changed = next !== currentProviderBaseUrl || nextId !== currentProviderId
-      || nextAppType !== currentProviderAppType || nextPending !== currentProviderPending;
+    // Like setCli, the FIRST call is the page reporting which provider its
+    // session runs on, not a switch — and the restored window bar on screen
+    // belongs to exactly that provider. Treating it as a switch deleted the
+    // session's persisted passive bar on every page load (借道 providers have no
+    // other source before the first turn). A real switch still wipes.
+    const firstReport = !providerIdentityKnown;
+    providerIdentityKnown = true;
+    const changed = !firstReport && (next !== currentProviderBaseUrl || nextId !== currentProviderId
+      || nextAppType !== currentProviderAppType || nextPending !== currentProviderPending);
     currentProviderBaseUrl = next;
     currentProviderId = nextId;
     currentProviderAppType = nextAppType;
     currentProviderPending = nextPending;
+    // Both a first report and a real switch invalidate whatever is in flight
+    // for the identity that was current a moment ago (the restore at load time
+    // already fired its own queries); only a switch may discard what is on
+    // screen.
+    if (firstReport || changed) providerRevision += 1;
     if (changed) {
       // Different accounts can share a baseUrl. Drop every provider-owned
-      // display and invalidate old requests before fetching the new selection.
-      providerRevision += 1;
+      // display before fetching the new selection.
       currentLimitInfo = null; currentLimitBar = null; currentProviderWindowBar = null; currentBalanceBar = null;
       currentClaudeUsage = null; claudeUsageFetchInFlight = false;
       claudeLoginPending = false; claudeLastErrorAt = 0;
@@ -623,8 +661,10 @@
     // A provider switch must immediately reflect the new provider's quota: pull
     // fresh data for whichever vendor the new baseUrl points at. The error
     // backoff is cleared first — it exists to stop a broken endpoint from being
-    // hammered, not to stall an explicit user action.
-    if (changed) {
+    // hammered, not to stall an explicit user action. The first report fetches
+    // too (it used to, as a "change" from the empty default): the identity is
+    // only known now, so this is the page's first chance to query it.
+    if (firstReport || changed) {
       arkSlot.clearBackoff(); kimiSlot.clearBackoff();
       restoreServerQuotaBars();
       refreshProviderLimit();

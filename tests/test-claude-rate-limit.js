@@ -136,12 +136,19 @@ const IDLE_BARS = JSON.parse(JSON.stringify({
   codex: Renderer.renderQuotaBar('codex', null),
 }));
 
-function freshClient() {
+// `providerReport: false` leaves the client exactly as the module booted it, so
+// the FIRST setProviderBaseUrl a test makes is the page's identity report —
+// which is how the real page loads (chat.js reports the session's provider once,
+// after the module already restored its localStorage bars).
+function freshClient(seed, { providerReport = true } = {}) {
   const modPath = require.resolve('../public/chat-rate-limit');
   delete require.cache[modPath];
   const elements = {};
   const values = new Map();
   values.set('multicc.quota.idleBars.v1', JSON.stringify(IDLE_BARS));
+  // A reloaded page: the previous page's persisted session bars are in storage
+  // before the module loads (that is what "reload" means here).
+  for (const [key, value] of Object.entries(seed || {})) values.set(key, value);
   global.document = {
     getElementById: (id) => (elements[id] = elements[id] || { style: {}, textContent: '', title: '', onclick: null }),
   };
@@ -154,7 +161,7 @@ function freshClient() {
   global.fetch = async () => ({ json: async () => ({ status: 'ok', bars: IDLE_BARS }) });
   const C = require('../public/chat-rate-limit');
   C.setCli('claude');
-  C.setProviderBaseUrl('');
+  if (providerReport) C.setProviderBaseUrl('');
   return {
     C, values,
     element: (id) => elements[id],
@@ -255,6 +262,41 @@ test('providerMatchesCli treats the Claude family as one CLI', () => {
   assert.equal(Client.providerMatchesCli('codex', 'claude-exp'), false);
 });
 
+// Regression (2026-09-24 user report: 借道 provider 的 limitbar 在 web 上不见了):
+// the relay branch compared the CLI to the relay PROTOCOL by literal id, so a
+// claude-exp session on a borrowed claude provider dropped every passed-through
+// window bar — and claude-exp / codex-exp are the CLIs actually used with
+// borrowed providers. The protocol must be judged by CLI family.
+test('a borrowed provider gate follows the CLI family, not the literal cli id', () => {
+  const f = freshClient();
+  try {
+    f.C.setProviderBaseUrl('https://relay.example:3000/claude-proxy/glm/remote');
+    assert.equal(f.C.providerMatchesCli('claude', 'claude'), true);
+    assert.equal(f.C.providerMatchesCli('claude', 'claude-exp'), true);
+    assert.equal(f.C.providerMatchesCli('glm', 'claude-exp'), true);
+    assert.equal(f.C.providerMatchesCli('claude', 'codex'), false);
+    assert.equal(f.C.providerMatchesCli('claude', 'codex-exp'), false);
+    f.C.setProviderBaseUrl('https://relay.example:3000/codex-proxy/official');
+    assert.equal(f.C.providerMatchesCli('codex', 'codex-exp'), true);
+    assert.equal(f.C.providerMatchesCli('codex', 'claude-exp'), false);
+  } finally { f.cleanup(); }
+});
+
+test('a borrowed window bar paints in a claude-exp session', () => {
+  const f = freshClient();
+  try {
+    f.C.setCli('claude-exp');
+    // A claude-protocol relay whose lender is a Claude 官方 subscription
+    // provider — the shape every 借用 claude provider has.
+    f.C.setProviderBaseUrl('https://relay.example:3000/claude-proxy/official/remote');
+    const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'claude' };
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    f.C.consumeRateLimitEvent(info, 'borrowed-exp', bar);
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    assert.match(f.element('claude-rate-limit-bar').textContent, /^5h 70%/);
+  } finally { f.cleanup(); }
+});
+
 test('consumeBalanceEvent renders, gates (codex shows, claude hides), and persists', () => {
   const f = freshClient();
   try {
@@ -268,7 +310,7 @@ test('consumeBalanceEvent renders, gates (codex shows, claude hides), and persis
   } finally { f.cleanup(); }
 });
 
-test('restoreFiveHourRateLimit replays the persisted bar for the session', () => {
+test('restoreFiveHourRateLimit replays the persisted bar AND its provider identity', () => {
   const f = freshClient();
   try {
     const info = { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.5, resetsAt: (NOW + 3_600_000) / 1000 };
@@ -277,9 +319,85 @@ test('restoreFiveHourRateLimit replays the persisted bar for the session', () =>
     const key = 'multicc:claude-rate-limit:v1:chat-1';
     const raw = f.values.get(key);
     assert.ok(raw, 'the bar is persisted under its session key');
-    // Re-load the same session: the persisted bar replays at the right percentage.
+    // The record carries the identity WITH the bar: the display gate dispatches
+    // on info.provider, so a bar stored on its own could never repaint.
     const cached = JSON.parse(raw);
-    assert.match(resolveQuotaBar(cached, { now: NOW }).text, /^5h 50%/);
+    assert.equal(cached.info.rateLimitType, 'five_hour');
+    assert.match(resolveQuotaBar(cached.bar, { now: NOW }).text, /^5h 50%/);
+  } finally { f.cleanup(); }
+});
+
+test('a legacy bare persisted bar still replays (no identity, no crash)', () => {
+  const info = { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.5, resetsAt: (NOW + 3_600_000) / 1000 };
+  const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+  // The shape written before the identity was persisted: the bare server bar.
+  const f = freshClient({ 'multicc:claude-rate-limit:v1:old-1': JSON.stringify(bar) });
+  try {
+    f.C.restoreFiveHourRateLimit('old-1');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+    assert.match(f.element('claude-rate-limit-bar').textContent, /^5h 50%/);
+  } finally { f.cleanup(); }
+});
+
+// Regression (2026-09-24 user report: 借道 provider 的 limitbar 在 web 上不见了,
+// 手机上还有): two page-load defects stacked here. The persisted window bar was
+// stored WITHOUT the provider identity its gate dispatches on, and the page's
+// first setProviderBaseUrl (a report, not a switch) deleted both it and its
+// localStorage key before anything could repaint it. A borrowed provider has no
+// other source until a turn runs, so the bar simply never came back.
+test('a borrowed window bar survives a page reload', () => {
+  const relay = 'https://relay.example:3000/claude-proxy/official/remote';
+  const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'claude' };
+
+  // Page 1: the borrowed window arrives as a live event and is persisted.
+  const p1 = freshClient(null, { providerReport: false });
+  let persisted;
+  try {
+    p1.C.setCli('claude-exp');
+    p1.C.setProviderBaseUrl(relay);
+    const bar = Renderer.claudeBar(null, Renderer.normalizeWindowEvent(info, NOW));
+    p1.C.consumeRateLimitEvent(info, 'borrowed-1', bar);
+    persisted = p1.values.get('multicc:claude-rate-limit:v1:borrowed-1');
+    assert.ok(persisted);
+  } finally { p1.cleanup(); }
+
+  // Page 2: reload with the same storage and no live event yet.
+  const p2 = freshClient(
+    { 'multicc:claude-rate-limit:v1:borrowed-1': persisted },
+    { providerReport: false },
+  );
+  try {
+    p2.C.restoreFiveHourRateLimit('borrowed-1');
+    p2.C.setCli('claude-exp');
+    p2.C.setProviderBaseUrl(relay);
+    assert.equal(p2.element('claude-rate-limit-bar').style.display, 'block',
+      'the borrowed window is still on screen after the reload');
+    assert.match(p2.element('claude-rate-limit-bar').textContent, /^5h 70%/);
+    assert.ok(p2.values.has('multicc:claude-rate-limit:v1:borrowed-1'),
+      'the identity report did not delete the session cache');
+  } finally { p2.cleanup(); }
+});
+
+test('the first provider report is not a switch; a real one still wipes', () => {
+  const f = freshClient(null, { providerReport: false });
+  try {
+    const info = { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.3, resetsAt: (NOW + 3_600_000) / 1000, provider: 'glm' };
+    const bar = Renderer.windowEventBar(Renderer.normalizeWindowEvent(info, NOW));
+    f.C.setCli('codex');
+    f.C.consumeRateLimitEvent(info, 'codex-1', bar);
+    const key = 'multicc:claude-rate-limit:v1:codex-1';
+    assert.ok(f.values.has(key));
+
+    // First report: the page saying which provider it loaded. The window bar on
+    // screen belongs to that provider, so nothing is dropped.
+    f.C.setProviderBaseUrl('https://open.bigmodel.cn/api/paas/v4', 'glm-1', { appType: 'codex' });
+    assert.ok(f.values.has(key), 'the report keeps the session cache');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'block');
+
+    // A later call that really changes the provider still drops it.
+    f.C.setProviderBaseUrl('', '', { appType: 'codex' });
+    assert.equal(f.values.has(key), false, 'a switch clears the session cache');
+    assert.equal(f.element('claude-rate-limit-bar').style.display, 'none');
   } finally { f.cleanup(); }
 });
 
