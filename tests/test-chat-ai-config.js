@@ -390,3 +390,32 @@ test("subagent routing policy is one shared rule for chat and Air", () => {
   );
   assert.deepEqual(ai.resolveSubagent({ cli: "claude" }), null);
 });
+
+test('opencode native providers (Zen / Go) become Provider rows that filter the model list', () => {
+  // The module binds `window` at load time, so load a private copy under a fake window.
+  const modulePath = require.resolve('../public/chat-ai-config');
+  const store = { 'multicc.opencode.models.v2': JSON.stringify({ at: Date.now(), models: [
+    { provider: 'opencodego', model: 'kimi-k2', label: 'opencodego/kimi-k2' },
+    { provider: 'opencode', model: 'big-pickle', label: 'opencode/big-pickle (OpenCode Zen)' },
+    { provider: 'opencodego', model: 'glm-5', label: 'opencodego/glm-5' },
+  ] }) };
+  delete require.cache[modulePath];
+  globalThis.window = { localStorage: { getItem: key => store[key] || null } };
+  const ai = require(modulePath);
+  try {
+    assert.deepEqual(ai.openCodeNativeProviders().map(p => [p.value, p.label]), [
+      ['opencode-native:opencodego', 'OpenCode 原生 · OpenCode Go'],
+      ['opencode-native:opencode', 'OpenCode 原生 · OpenCode Zen'],
+    ]);
+    assert.equal(ai.openCodeNativeProviderOf('opencode-native:opencode'), 'opencode');
+    assert.equal(ai.openCodeNativeProviderOf('prov-1'), '');
+    const state = { cli: 'opencode', providers: [] };
+    assert.deepEqual(ai.buildModelChoices('opencode-native:opencode', state), ['opencode/big-pickle', '__custom__']);
+    assert.deepEqual(ai.buildModelChoices('opencode-native:opencodego', state),
+      ['opencodego/kimi-k2', 'opencodego/glm-5', '__custom__']);
+    assert.equal(ai.buildModelChoices('', state).length, 5);
+  } finally {
+    delete globalThis.window;
+    delete require.cache[modulePath];
+  }
+});
