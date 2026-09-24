@@ -18,6 +18,9 @@ const {
   TIER_BANDS,
   DEFAULT_ENDPOINT,
   DEFAULT_MODEL,
+  DEFAULT_GATEWAY,
+  GATEWAY_NAMES,
+  JEV_GATEWAYS,
 } = require('../src/providers/jev-client');
 
 const TIERS = Object.freeze([
@@ -334,4 +337,111 @@ test('state carries the request and only scalar host hints', async () => {
   assert.equal(body.state.taskBound, true);
   assert.equal(body.state.nested, undefined);
   assert.equal(body.state.big.length, 500);
+});
+
+// The gateway table is the single source every layer reads: the pool config
+// resolves a name through it, the runtime hands the endpoint to classify() and
+// the editor's test route spells the same three names. A drifting copy here
+// would send a key to the wrong host silently.
+test('the gateway table pins each hosted deployment to its host, model and vault entry', () => {
+  assert.deepEqual(GATEWAY_NAMES, ['vercel', 'openrouter', 'typesafe']);
+  assert.equal(DEFAULT_GATEWAY, 'vercel');
+  assert.deepEqual(JEV_GATEWAYS.vercel, {
+    endpoint: DEFAULT_ENDPOINT,
+    model: DEFAULT_MODEL,
+    apiKeyName: 'vercel-api-key',
+  });
+  assert.equal(JEV_GATEWAYS.openrouter.endpoint, 'https://openrouter.ai/api/alpha/decisions');
+  assert.equal(JEV_GATEWAYS.openrouter.model, '~typesafe/jev-latest');
+  assert.equal(JEV_GATEWAYS.openrouter.apiKeyName, 'openrouter-api-key');
+  assert.equal(JEV_GATEWAYS.typesafe.endpoint, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(JEV_GATEWAYS.typesafe.model, 'jev-latest');
+  assert.equal(JEV_GATEWAYS.typesafe.apiKeyName, 'typesafe-api-key');
+  // Frozen: a caller that mutated the table would re-point every later call.
+  assert.ok(Object.isFrozen(JEV_GATEWAYS) && Object.isFrozen(JEV_GATEWAYS.openrouter));
+});
+
+// A per-call endpoint is how a pool reaches the gateway it picked; the model
+// travels with it, because the three gateways name the same model differently.
+test('a per-call endpoint and model override reach that host with the same auth', async () => {
+  let seen = null;
+  const { instance } = client({
+    payload: answerPayload({ choice: 'weak', probabilities: { weak: 0.9 }, score: 0, confidence: 0.9 }),
+    onCall: (url, init) => { seen = { url, init }; },
+  });
+  const verdict = await instance.classify({
+    text: 'hi', tiers: TIERS,
+    endpoint: JEV_GATEWAYS.openrouter.endpoint,
+    model: JEV_GATEWAYS.openrouter.model,
+  });
+  assert.equal(seen.url, JEV_GATEWAYS.openrouter.endpoint);
+  assert.equal(seen.init.headers.Authorization, 'Bearer vck_test_key_value');
+  assert.equal(JSON.parse(seen.init.body).model, '~typesafe/jev-latest');
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.tier, 'weak');
+});
+
+test('a blank endpoint override keeps this client\'s own endpoint', async () => {
+  let url = null;
+  const { instance } = client({
+    payload: answerPayload({ choice: 'weak', probabilities: { weak: 0.9 }, score: 0, confidence: 0.9 }),
+    onCall: (target) => { url = target; },
+  });
+  // Same tolerance as the model override: an unusable value degrades to the
+  // construction-time one rather than sending the request to "undefined".
+  for (const endpoint of [null, '', '   ']) {
+    url = null;
+    await instance.classify({ text: 'hi', tiers: TIERS, endpoint });
+    assert.equal(url, DEFAULT_ENDPOINT);
+  }
+});
+
+// OpenRouter and TypeSafe put the verdict's confidence inside the answer itself
+// (`answers.<id>.confidence`), where the older Vercel shape puts it in a
+// response-wide map. Reading only the maps made every OpenRouter verdict look
+// confidence-less, which escalated every turn to the strongest tier.
+test('confidence is read from the answer itself, so a clear verdict stays put', async () => {
+  const payload = {
+    model: '~typesafe/jev-latest',
+    answers: {
+      tier: { type: 'choice', choice: 'weak', probabilities: { weak: 0.9, strong: 0.1 }, confidence: 0.9 },
+      complexity: { type: 'score', score: 0, confidence: 0.9 },
+    },
+  };
+  let body = null;
+  const { instance } = client({ payload, onCall: (_url, init) => { body = JSON.parse(init.body); } });
+  const verdict = await instance.classify({ text: '改个 typo', tiers: TIERS });
+  assert.equal(verdict.confidence, 0.9);
+  assert.equal(verdict.tier, 'weak');
+  assert.equal(verdict.reasonCode, 'jev_choice');
+  assert.equal(verdict.escalated, false);
+});
+
+test('a genuinely absent confidence still escalates conservatively', async () => {
+  // No confidence anywhere: the answer is a choice and nothing else. The old
+  // conservative rule must survive the new reader.
+  const { instance } = client({
+    payload: {
+      answers: {
+        tier: { type: 'choice', choice: 'weak', probabilities: { weak: 0.9, strong: 0.1 } },
+        complexity: { type: 'score', score: 0 },
+      },
+    },
+  });
+  const verdict = await instance.classify({ text: 'hi', tiers: TIERS });
+  assert.equal(verdict.confidence, null);
+  assert.equal(verdict.tier, 'strong');
+  assert.equal(verdict.reasonCode, 'jev_confidence_missing');
+});
+
+test('the answer-scoped confidence wins over the response-wide map', async () => {
+  const payload = answerPayload({ choice: 'weak', probabilities: { weak: 0.9, strong: 0.1 }, score: 0, confidence: 0.1 });
+  payload.answers.tier.confidence = 0.95;
+  const { instance } = client({ payload });
+  const verdict = await instance.classify({ text: 'hi', tiers: TIERS });
+  // The map said 0.1 (escalate); the answer said 0.95 and it is the newer, more
+  // specific reading — the one the answering gateway actually wrote.
+  assert.equal(verdict.confidence, 0.95);
+  assert.equal(verdict.reasonCode, 'jev_choice');
+  assert.equal(verdict.tier, 'weak');
 });
