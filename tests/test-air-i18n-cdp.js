@@ -202,6 +202,15 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
     assert.equal(await page.evaluate('document.documentElement.lang'), 'zh', 'the shell boots in Chinese');
     assert.equal(await page.evaluate('document.getElementById("task-list-title").textContent'), '最近任务');
     assert.equal(await page.evaluate('document.getElementById("air-lang-btn").textContent'), '中/EN');
+    const bottomTools = await page.evaluate(`(() => {
+      const version = document.getElementById('air-ver-row').getBoundingClientRect();
+      const lang = document.getElementById('air-lang-btn').getBoundingClientRect();
+      return { centerGap: Math.abs(version.top + version.height / 2 - lang.top - lang.height / 2),
+        langWidth: lang.width, sameParent: version.parentElement === lang.parentElement };
+    })()`);
+    assert.equal(bottomTools.sameParent, true, '语言与版本检查应在同一行容器');
+    assert.ok(bottomTools.centerGap <= 2, JSON.stringify(bottomTools));
+    assert.ok(bottomTools.langWidth < 64, '中/EN 只占一颗短按钮：' + JSON.stringify(bottomTools));
     const zhDirty = await page.evaluate(SCAN);
     assert.ok(zhDirty.length > 5, `the scanner must actually find Chinese in Chinese mode, got ${JSON.stringify(zhDirty)}`);
     t.diagnostic('zh scan: ' + zhDirty.length + ' nodes');

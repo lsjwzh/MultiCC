@@ -118,9 +118,16 @@ String opsUpdateHint(AirUpdateRun run, {required bool sawUnreachable}) {
 
 /// 折叠区外的那一行：它是更新提示唯一的落点，藏进折叠里就没人知道有新版本。
 class AirVersionRow extends StatelessWidget {
-  const AirVersionRow({super.key, required this.store});
+  const AirVersionRow({
+    super.key,
+    required this.store,
+    this.language,
+    this.onLanguage,
+  });
 
   final AirOpsStore store;
+  final String? language;
+  final VoidCallback? onLanguage;
 
   @override
   Widget build(BuildContext context) {
@@ -131,7 +138,7 @@ class AirVersionRow extends StatelessWidget {
         final current = info?.current ?? '';
         final badge = opsVersionBadge(info);
         final hint = opsUpdateHintFor(store) ?? opsVersionHint(info, checking: store.versionPending);
-        return Semantics(
+        final version = Semantics(
           button: true,
           label: '版本 $hint，点击检查并安装更新',
           child: Material(
@@ -202,6 +209,37 @@ class AirVersionRow extends StatelessWidget {
               ),
             ),
           ),
+        );
+        if (onLanguage == null) return version;
+        final english = language == 'en';
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(child: version),
+            const SizedBox(width: 5),
+            Tooltip(
+              message: english
+                  ? 'Switch language: 中文 / English'
+                  : '切换语言：中文 / English',
+              child: OutlinedButton(
+                key: const ValueKey('air-sidebar-language'),
+                onPressed: onLanguage,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.blue,
+                  minimumSize: const Size(50, 44),
+                  padding: const EdgeInsets.symmetric(horizontal: 7),
+                  side: const BorderSide(color: AppColors.line),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppColors.radiusChip),
+                  ),
+                ),
+                child: Text(
+                  english ? 'EN/中' : '中/EN',
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            ),
+          ],
         );
       },
     );

@@ -364,12 +364,6 @@ class ChatHeader extends StatelessWidget {
               onDebug: onDebug,
               settings: settings,
               sessionId: provider.sessionName,
-              // Web 的 `#lang-btn` 就是 toggleLang()：翻 localStorage 里的
-              // `multicc_lang` 再重载页面。App 侧的等价物是 SettingsService 的
-              // 语言偏好（同一个 'multicc_lang' 键），main() 监听它重建
-              // MaterialApp —— 等价于 Web 的重载，但不用重启 app。
-              onLanguage: () =>
-                  settings.setLanguage(settings.lang == 'zh' ? 'en' : 'zh'),
               artifactsLabel: artifactsLabel,
               onArtifacts: onArtifacts,
               onDeleteTask: onDeleteTask,
@@ -1008,7 +1002,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
   /// 为这一项 setState。
   final SettingsService settings;
   final String sessionId;
-  final VoidCallback onLanguage;
   final String? artifactsLabel;
   final VoidCallback onArtifacts;
   final VoidCallback? onDeleteTask;
@@ -1036,7 +1029,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
     required this.onDebug,
     required this.settings,
     required this.sessionId,
-    required this.onLanguage,
     this.artifactsLabel,
     required this.onArtifacts,
     this.onDeleteTask,
@@ -1092,9 +1084,6 @@ class _HeaderOverflowMenu extends StatelessWidget {
             break;
           case 'debug':
             onDebug();
-            break;
-          case 'language':
-            onLanguage();
             break;
           case 'task-notify':
             // 见 toggleTaskNotifyWithPermission：Web 点 `#notify-btn` 除了落盘
@@ -1153,15 +1142,7 @@ class _HeaderOverflowMenu extends StatelessWidget {
           const Color(0xFF233249),
         ),
         const PopupMenuDivider(),
-        // Web 的 ⋯ 菜单头两项就是语言切换和任务提醒（public/chat.js:257 的 ids
-        // 列表：'lang-btn', 'notify-btn', …），App 也把它们排在最前面。
-        _item(
-          'language',
-          Icons.translate_outlined,
-          t('language'),
-          const Color(0xFF233249),
-          key: const Key('chat-header-language'),
-        ),
+        // 语言切换已经收口到 Air 侧栏版本检查旁边；对话菜单不再重复占一行。
         _item(
           'task-notify',
           // 图标/颜色也跟着三态走：开且已授权=实心通知，开但没授权=空心通知

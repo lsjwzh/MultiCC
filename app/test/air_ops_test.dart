@@ -684,6 +684,39 @@ void main() {
       await _teardown(tester, store, client);
     });
 
+    testWidgets('语言切换压在版本检查同一行，不再单独占一行', (tester) async {
+      final settings = await _settings();
+      final client = MockClient((_) async => _json(const {}));
+      final store = AirOpsStore(settings: settings, httpClient: client);
+      var toggles = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 252,
+              child: AirVersionRow(
+                store: store,
+                language: 'zh',
+                onLanguage: () => toggles++,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final version = tester.getRect(find.byKey(const ValueKey('air-ver-row')));
+      final language = tester.getRect(
+        find.byKey(const ValueKey('air-sidebar-language')),
+      );
+      expect((version.center.dy - language.center.dy).abs(), lessThan(2));
+      expect(language.width, lessThan(64), reason: '中/EN 只占一颗短按钮');
+      await tester.tap(find.byKey(const ValueKey('air-sidebar-language')));
+      expect(toggles, 1);
+      expect(tester.takeException(), isNull);
+      await _teardown(tester, store, client);
+    });
+
     testWidgets('开机行由服务端读数反推，本地时钟说了算', (tester) async {
       final settings = await _settings();
       final client = MockClient(
