@@ -58,9 +58,10 @@ class QuotaBar {
 }
 
 /// Time left, coarsening as it grows: minutes under an hour, one decimal of an
-/// hour under a day, then days. Never returns '' for a real deadline — a
-/// deadline in the past reads as "1m", so a segment's separators are safe to
-/// bake into the server-rendered string.
+/// hour under a day, then days. Never returns '' for a real deadline, so a
+/// segment's separators are safe to bake into the server-rendered string; a
+/// deadline that has already passed is handled by [resolveQuotaText] (已重置),
+/// which is the only caller.
 String humanizeCountdown(num? ms) {
   if (ms == null || !ms.isFinite || ms < 0) return '';
   final totalH = ms / 3600000;
@@ -94,13 +95,23 @@ String relativeAgo(num? tsMs, int nowMs) {
 
 final RegExp _token = RegExp(r'\{(cd|ago):(-?\d+)\}');
 
+/// A deadline that is already past is NOT "one minute left". The window has
+/// rolled, and the percentage printed next to it belongs to the window that
+/// just ended — a bar restored from cache hours later would otherwise read
+/// "5h 93% 1m", i.e. 93% used with a minute to go, which is the most misleading
+/// thing this bar can say. Say what happened instead. The segment stays
+/// non-empty, which is what keeps the separators the server baked in (see
+/// [humanizeCountdown]) safe to expand. Mirrors `ROLLED_WINDOW` in
+/// public/quota-bar-view.js.
+const String rolledWindowText = '已重置';
+
 String resolveQuotaText(String? text, int nowMs) {
   if (text == null || text.isEmpty || !text.contains('{')) return text ?? '';
   return text.replaceAllMapped(_token, (m) {
     final at = int.tryParse(m.group(2) ?? '') ?? 0;
-    return m.group(1) == 'cd'
-        ? humanizeCountdown((at - nowMs) < 0 ? 0 : (at - nowMs))
-        : relativeAgo(at, nowMs);
+    if (m.group(1) != 'cd') return relativeAgo(at, nowMs);
+    final left = at - nowMs;
+    return left > 0 ? humanizeCountdown(left) : rolledWindowText;
   });
 }
 

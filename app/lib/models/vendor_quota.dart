@@ -151,8 +151,13 @@ bool isDeepseekBaseUrl(String? baseUrl) {
 /// through it, or the provider baseUrl points at DeepSeek — mirroring the web
 /// `balanceMatchesCli`. This is the gate that makes the bar swap instantly on a
 /// cli/provider switch instead of lingering from the previous context.
+///
+/// The CLI test is by FAMILY ([isCodexCli]), exactly like the web: a codex-exp
+/// session is the same account against the same provider, and when this was a
+/// literal `== 'codex'` the DeepSeek/借道 balance existed on the phone's web
+/// view and not in the app.
 bool balanceBarVisibleFor(String cliName, String? providerBaseUrl) {
-  if (cliName == 'codex' || cliName == 'opencode') return true;
+  if (isCodexCli(cliName) || cliName == 'opencode') return true;
   return isDeepseekBaseUrl(providerBaseUrl) || isRelayBaseUrl(providerBaseUrl);
 }
 
