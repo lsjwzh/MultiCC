@@ -231,7 +231,7 @@ async function stopServer() {
   const handoffDoc = await fs.promises.readFile(
     path.join(memoryRoot, dirId, 'sessions', importedId, 'HANDOFF.md'), 'utf8');
   assert.match(handoffDoc, /HANDOFF/);
-  assert.match(handoffDoc, /来源仓库/);
+  assert.match(handoffDoc, /Source repository/);
   // The upload rode along: meta counted it, the imported history points at
   // the restored copy (multicc_handoff_*), the bytes match, and the manifest
   // documents the from→to mapping.
@@ -282,7 +282,7 @@ async function stopServer() {
     path.join(sourceMemDir, '.handoff-provider.json'),
   ], 'the source credential exists only in the fixture that planted it');
   assert.ok(!handoffDoc.includes('.handoff-provider.json'), 'HANDOFF.md must not point at a provider file');
-  assert.match(handoffDoc, /Provider 不随包传播/, 'HANDOFF.md must state that provider state does not travel');
+  assert.match(handoffDoc, /Providers do not travel with the bundle/, 'HANDOFF.md must state that provider state does not travel');
 
   // Legacy bundle (exported by a release that still carried provider state, and
   // whose memory folder held the plaintext file): it must still import, must be

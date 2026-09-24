@@ -267,12 +267,12 @@ test('renderHandoffDoc mentions repo, model/provider policy, memory and skills s
   assert.match(doc, /multicc\/s1/);
   // The source model is carried, the provider is not: the doc must say so and
   // must never point at a provider-credential file that no longer exists.
-  assert.match(doc, /源模型：glm-5\.3/);
-  assert.match(doc, /Provider 不随包传播/);
+  assert.match(doc, /Source model: glm-5\.3/);
+  assert.match(doc, /Providers do not travel with the bundle/);
   assert.doesNotMatch(doc, /handoff-provider|ANTHROPIC_|OPENAI_API_KEY/,
     'no provider env key name or credential file may appear in the manifest');
   assert.match(doc, /team-facts\.md/);
-  assert.match(doc, /team-skill：installed/);
+  assert.match(doc, /team-skill: installed/);
   assert.match(doc, /HANDOFF/);
   fs.rmSync(root, { recursive: true, force: true });
 });

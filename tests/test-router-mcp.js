@@ -261,11 +261,11 @@ test('an incomplete sync stream returns an explicit dispatch_status recovery con
 
 test('host prompt prefers scoped durable wait tools and keeps raw polling privileged', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-prompts.js'), 'utf8');
-  assert.match(source, /优先用它登记持久等待/);
+  assert.match(source, /it registers a durable wait/);
   assert.match(source, /wait_for_external_result/);
   assert.match(source, /get_external_wait/);
   assert.match(source, /cancel_external_wait/);
-  assert.match(source, /只有必须由宿主机执行命令或查询 URL 时/);
+  assert.match(source, /Only when the host itself must run a command or query a URL/);
   assert.doesNotMatch(source, /-d '\{\"mode\":\"callback\"\}'/);
 });
 

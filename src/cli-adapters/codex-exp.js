@@ -87,7 +87,7 @@ function createCodexExpAdapter(deps = {}) {
       let prompt = renderPrompt(env);
       if (env.historyHandle.isFirstTurn) {
         const prefixes = [deps.multiccImgHint, deps.envConstraint, env.subagentHint];
-        if (env.rolePrompt) prefixes.push(`[角色设定]\n${env.rolePrompt}\n[角色设定结束]`);
+        if (env.rolePrompt) prefixes.push(`[Role prompt]\n${env.rolePrompt}\n[End of role prompt]`);
         prompt = `${prefixes.filter(Boolean).join('\n\n')}\n\n${prompt}`;
       } else if (deps.envConstraint) {
         prompt = `${deps.envConstraint}\n\n${prompt}`;
