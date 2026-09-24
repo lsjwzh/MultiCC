@@ -1263,7 +1263,7 @@ function createChatTurnEngine(deps) {
       sessionExists: true,
       runningTurn: !!(existingCs && existingCs.claudeProc) || streamBusy,
       backgroundWorkActive: claudeManagedProxy
-        && getBackgroundTaskRuntime().hasLiveBackgroundTasks(sessionName),
+        && getBackgroundTaskRuntime().hasProcessBackgroundTasks(sessionName),
     });
     if (admission.decision === 'duplicate') {
       // An accepted duplicate is a settled delivery (this or an earlier
