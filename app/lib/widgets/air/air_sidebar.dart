@@ -653,6 +653,10 @@ class _TaskRow extends StatelessWidget {
                   Row(
                     children: [
                       AirTaskStatusBadge(task: task, fontSize: 10, dense: true),
+                      if (task.worktreeChanges?.pending == true) ...[
+                        const SizedBox(width: 6),
+                        AirWorktreeChangeBadge(task: task),
+                      ],
                       // 阶段/资源去向跟在徽标后面（Web 侧栏那行 `.task-note`）。
                       // 原来这里写的是 `airLabel(task.workflowStage ?? task.status)`：
                       // 观察型记录没有阶段、`status` 只有 active/done/archived，于是

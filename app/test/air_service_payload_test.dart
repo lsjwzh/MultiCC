@@ -151,6 +151,39 @@ void main() {
     });
   });
 
+  group('任务 worktree 待交付状态', () {
+    test('dirty 与 ahead 分开读取；behind 不会被客户端猜成待交付', () {
+      final dirty = AirTask.fromJson({
+        'id': 'dirty',
+        'dirId': 'd1',
+        'title': '脏工作区',
+        'status': 'active',
+        'recordType': '',
+        'updatedAt': 1,
+        'worktreeChanges': {'dirty': true, 'ahead': 2, 'behind': 9},
+      });
+      expect(dirty.worktreeChanges?.dirty, isTrue);
+      expect(dirty.worktreeChanges?.ahead, 2);
+      expect(dirty.worktreeChanges?.pending, isTrue);
+
+      final clean = AirTask.fromJson({
+        'id': 'clean',
+        'dirId': 'd1',
+        'title': '只落后',
+        'status': 'active',
+        'recordType': '',
+        'updatedAt': 1,
+        'worktreeChanges': {'dirty': false, 'ahead': 0, 'behind': 9},
+      });
+      expect(clean.worktreeChanges?.pending, isFalse);
+      expect(
+        AirTask.fromJson(const {'id': 'old'}).worktreeChanges,
+        isNull,
+        reason: '旧服务没给字段时是未知，不伪装成已确认干净',
+      );
+    });
+  });
+
   group('createTask', () {
     test('只给必填项时，可选字段一个都不出现', () async {
       final settings = await _settings();

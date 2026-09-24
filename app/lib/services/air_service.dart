@@ -344,6 +344,26 @@ class ExternalFleet {
 
 /// `/api/air` 的一行任务。字段跟着 Air 的任务行走：状态、工作流阶段、资源占用
 /// 三样是行上唯一要看的东西（见 `public/air.js` 的 `renderOverview`）。
+class AirWorktreeChanges {
+  const AirWorktreeChanges({this.dirty = false, this.ahead = 0});
+
+  /// 工作区里尚未提交的文件（包含未跟踪文件）。
+  final bool dirty;
+
+  /// 当前任务分支领先基分支、尚未合回去的提交数。
+  final int ahead;
+
+  bool get pending => dirty || ahead > 0;
+
+  static AirWorktreeChanges? fromJson(Map<String, dynamic>? json) {
+    if (json == null) return null;
+    return AirWorktreeChanges(
+      dirty: json['dirty'] == true,
+      ahead: ((json['ahead'] as num?)?.toInt() ?? 0).clamp(0, 1 << 31).toInt(),
+    );
+  }
+}
+
 class AirTask {
   const AirTask({
     required this.id,
@@ -359,6 +379,7 @@ class AirTask {
     this.sourceSessionId,
     this.runState,
     this.resource = const {},
+    this.worktreeChanges,
   });
 
   final String id;
@@ -384,6 +405,10 @@ class AirTask {
   final String? runState;
   final Map<String, dynamic> resource;
 
+  /// 外层卡片的待交付提示。服务端从 merge-state 缓存投影；null 表示尚未取到，
+  /// 不是「已确认干净」。behind 不在这里，它是同步状态而不是未交付改动。
+  final AirWorktreeChanges? worktreeChanges;
+
   static AirTask fromJson(Map<String, dynamic> json) => AirTask(
     id: '${json['id']}',
     dirId: '${json['dirId']}',
@@ -401,6 +426,9 @@ class AirTask {
     sourceSessionId: json['sourceSessionId'] as String?,
     runState: json['runState'] as String?,
     resource: (json['resource'] as Map?)?.cast<String, dynamic>() ?? const {},
+    worktreeChanges: AirWorktreeChanges.fromJson(
+      (json['worktreeChanges'] as Map?)?.cast<String, dynamic>(),
+    ),
   );
 
   /// 「完成」在 Air 里有两个词：工作流阶段走 done，归档走 archived。

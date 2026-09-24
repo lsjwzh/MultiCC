@@ -43,7 +43,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     worktreeLifecycle: { resident: 2, retained: 1, hibernated: 2, planned: 1, leased: 1, onDisk: 3, total: 6 } };
   const otherDirectory = { id: 'd2', name: 'Design Lab', path: '/projects/design-lab', worktreeCount: 0,
     worktreeLifecycle: { resident: 0, retained: 0, hibernated: 0, planned: 0, leased: 0, onDisk: 0, total: 0 } };
-  const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource },
+  const airTasks = [{ ...entry.task, dirId: 'd1', status: 'doing', updatedAt: Date.now(), resource: entry.resource,
+    worktreeChanges: { dirty: true, ahead: 2 } },
     // 另一个目录里、这次会话从没打开过的一条：用来证明「pin 会把它拉到侧栏最
     // 上面」—— 它本来既不在最近记录里，也不在当前目录里。
     { id: 'tsk_far', dirId: 'd2', title: '远端目录里的任务', status: 'active', recordType: 'planned',
@@ -639,6 +640,10 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===4`));
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent.includes('MultiCC') && document.getElementById('task-state').textContent.includes('/projects/multicc')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.directory-task-row').length`), 1);
+    assert.equal(await page.evaluate(`document.querySelector('.directory-task-row .worktree-change-badge')?.title`),
+      'Worktree 有未提交改动，另有 2 个提交尚未合并');
+    assert.equal(await page.evaluate(`document.querySelector('#tasks .worktree-change-badge')?.getAttribute('aria-label')`),
+      'Worktree 有未提交改动，另有 2 个提交尚未合并');
     // Worktree 生命周期：只报「几个」看不出这个数是怎么长的，所以本地 / 休眠 / 计划
     // 分开摆（口径来自服务端 registry 的 residency），右边跟一颗「现在回收」。
     assert.ok(await page.waitFor(`document.getElementById('directory-worktrees').hidden===false`));
