@@ -97,6 +97,10 @@
   // flow (check → paste → test) but every request goes through here: the list
   // call returns names only, a pasted key goes straight into the vault, and the
   // test route reads it in-process — the value never comes back to the page.
+  //
+  // Every call carries the selected gateway: the same three fields reach the
+  // vault description and the test route, so the verdict the user sees was made
+  // by the host they actually picked.
   function routingKeyApi() {
     const json = response => response.json().catch(() => ({}));
     return {
@@ -104,18 +108,19 @@
         return fetch('/api/secrets').then(response => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
           .then(list => Array.isArray(list) && list.some(entry => entry && entry.name === name));
       },
-      save(name, value) {
+      save(name, value, { gateway } = {}) {
+        const description = autoProviderEditorApi().routingGatewayDescription(gateway);
         return fetch('/api/secrets', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, value, description: 'Vercel AI Gateway（Jev 难度路由）', source: 'user' }),
+          body: JSON.stringify({ name, value, description, source: 'user' }),
         }).then(response => (response.ok ? null : json(response).then(body => Promise.reject(new Error(body.error || String(response.status))))));
       },
-      test({ apiKeyName, text }) {
+      test({ apiKeyName, gateway, endpoint, model, text }) {
         return fetch('/api/auto-provider/routing/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ apiKeyName, text }),
+          body: JSON.stringify({ apiKeyName, gateway, endpoint, model, text }),
         }).then(response => (response.status === 404 ? { ok: false, code: 'test_unavailable' } : json(response)));
       },
     };

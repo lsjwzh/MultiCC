@@ -24,7 +24,7 @@
 //     one's. Verdicts are kept per message, not per session: a message queued
 //     behind a busy turn keeps its verdict when the next one is judged.
 
-const { validateProviderSelection } = require('../providers/auto-provider-config');
+const { jevTarget, validateProviderSelection } = require('../providers/auto-provider-config');
 const { createJevClient } = require('../providers/jev-client');
 
 const DEFAULT_TTL_MS = 10 * 60_000;
@@ -109,16 +109,20 @@ function createAutoProviderRouting(options = {}) {
     const existing = inflight.get(sessionId);
     if (existing && existing.hash === hash) return existing.promise;
     const { routing } = scope;
+    // Which gateway this pool evaluates through — resolved in one place, shared
+    // with the editor's "test" route so both reach the same host and model.
+    const target = jevTarget(routing);
     const promise = jev.classify({
       text,
       tiers: routing.tiers,
-      apiKeyName: routing.apiKeyName,
+      apiKeyName: target.apiKeyName,
+      endpoint: target.endpoint,
       // The pool's own tuned knobs travel with the call: they were validated as
       // meaningful (see validateRouting), so an ignored one would silently route
       // by defaults the user never chose.
       escalation: routing.escalation,
       timeoutMs: routing.timeoutMs,
-      model: routing.model,
+      model: target.model,
       context,
     }).then((verdict) => {
       remember(sessionId, hash, verdict);

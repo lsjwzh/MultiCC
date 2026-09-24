@@ -201,9 +201,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 更多设置折叠），净增 22 键（新 32、删 10），中英各 +22 行 → 6826/422294。
   // 聊天窗口里的 Jev 判定小字（正在判断 → 判定为某档 · 选用某线路，以及判断不了
   // 时的白话原因），新增 21 键，中英各 +21 行 → 6868/424618。
+  // Jev 网关可选（Vercel / OpenRouter / TypeSafe / 自定义）——每家的建 key 步骤和
+  // key 前缀各写各的、自定义那栏的地址/模型/格式说明、以及 5 条地址校验白话，
+  // 新 21 键、删 2 条旧的 Vercel 专属文案，净增 19 键，中英各 +19 行 → 6906/427403。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6868,
-    maxBytes: 424618,
+    maxLines: 6906,
+    maxBytes: 427403,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

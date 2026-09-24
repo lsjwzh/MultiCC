@@ -136,6 +136,27 @@ test('browser Auto Provider constants stay aligned with the server contract', ()
   assert.equal(editor.MAX_TIERS, serverContract.MAX_TIERS);
   assert.equal(editor.ROUTING_API_KEY_NAME, serverContract.DEFAULT_ROUTING_API_KEY);
   assert.deepEqual(editor.PROTOCOLS, [...serverContract.PROTOCOLS]);
+  // The gateway names and the custom rules are mirrored, not shared: the page
+  // must offer exactly the names the server accepts, and must not be the weaker
+  // of the two readers when it rejects an address.
+  assert.deepEqual(editor.ROUTING_GATEWAYS, [...serverContract.ROUTING_GATEWAYS]);
+  assert.deepEqual(Object.keys(editor.ROUTING_GATEWAY_INFO), [...serverContract.ROUTING_GATEWAYS]);
+  assert.equal(editor.CUSTOM_ROUTING_MODEL, serverContract.DEFAULT_CUSTOM_ROUTING_MODEL);
+  assert.equal(editor.MAX_ROUTING_ENDPOINT_CHARS, serverContract.MAX_ROUTING_ENDPOINT_CHARS);
+  assert.equal(editor.CUSTOM_ROUTING_GATEWAY, serverContract.CUSTOM_ROUTING_GATEWAY);
+  assert.equal(editor.DEFAULT_ROUTING_GATEWAY, serverContract.DEFAULT_ROUTING_GATEWAY);
+  // The per-gateway vault entries are the server's own defaults.
+  assert.equal(editor.ROUTING_GATEWAY_INFO.custom.keyName, serverContract.DEFAULT_CUSTOM_ROUTING_API_KEY);
+  assert.equal(editor.routingGatewayOf('nope'), serverContract.DEFAULT_ROUTING_GATEWAY);
+  // Same address rule, same verdicts — an address this page accepts is one the
+  // server would too, and vice versa.
+  for (const endpoint of [
+    'https://jev.example/v1/evaluate', 'http://127.0.0.1:8080/e', 'http://localhost/e', 'http://[::1]/e',
+    '', 'not a url', 'http://jev.example/e', 'https://user:pw@jev.example/e', `https://x.example/${'y'.repeat(400)}`,
+  ]) {
+    assert.equal(editor.customEndpointError(endpoint) === '', serverContract.customEndpointError(endpoint) === null,
+      endpoint);
+  }
 });
 
 test('protocol helpers expose only concrete same-protocol pools', () => {
@@ -236,6 +257,7 @@ test('difficulty routing compacts rungs into a ladder the server accepts', () =>
   assert.deepEqual(result.value.routing, {
     version: 1,
     provider: 'jev',
+    gateway: 'vercel',
     apiKeyName: editor.ROUTING_API_KEY_NAME,
     tiers: ['t1', 't2'],
   });
@@ -596,7 +618,9 @@ test('a rejected key is explained in plain words and the form comes back to repl
   $('jev-test').emit('click');
   await flush();
   await flush();
-  assert.deepEqual(api.calls.test, [{ apiKeyName: 'vercel-api-key', text: '把 README 里的一个错别字改掉' }]);
+  assert.deepEqual(api.calls.test, [{
+    apiKeyName: 'vercel-api-key', gateway: 'vercel', text: '把 README 里的一个错别字改掉',
+  }]);
   assert.equal($('jev-test-result').classList.contains('bad'), true);
   assert.match($('jev-test-result').textContent, /key 无效.*401/);
   assert.equal($('jev-form').style.display, '');
@@ -659,4 +683,173 @@ test('a borrowed line with no catalog of its own offers models instead of a dead
   assert.equal(written.ok, true);
   assert.equal(written.value.candidates.find(candidate => candidate.providerId === 'relay').model,
     'claude-opus-5-20260101');
+});
+
+// ── picking the Jev gateway ──────────────────────────────────────────────────
+//
+// The same evaluation is sold by three gateways and self-hosted behind a fourth
+// ("自定义"). Which one is a property of the pool, like the tier ladder: it has to
+// survive a save/reopen, and switching it means the key, the steps and the
+// console are all somebody else's.
+
+function gatewayButton(container, name) {
+  return container.querySelector(`.multicc-auto-editor-gateway-${name}`);
+}
+
+function pickGateway(container, name) {
+  gatewayButton(container, name).emit('click');
+}
+
+test('the Jev box leads with the gateway, defaulting to the saved one', () => {
+  const { container, $ } = mountEditor({
+    initialSelection: {
+      mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+      routing: { version: 1, provider: 'jev', gateway: 'openrouter', tiers: ['t1', 't2'] },
+      candidates: [
+        { providerId: 'managed-a', priority: 1, enabled: true, tier: 't1' },
+        { providerId: 'managed-b', priority: 2, enabled: true, tier: 't2' },
+      ],
+    },
+  });
+  const seg = $('gateways');
+  assert.deepEqual(seg.children.map(node => node.dataset.gateway),
+    ['vercel', 'openrouter', 'typesafe', 'custom']);
+  assert.equal(gatewayButton(container, 'openrouter').getAttribute('aria-checked'), 'true');
+  assert.equal(gatewayButton(container, 'vercel').getAttribute('aria-checked'), 'false');
+  // The per-gateway copy follows: OpenRouter's console, and the entry it reads.
+  assert.match(container.querySelector('.multicc-auto-editor-steps').innerText, /openrouter\.ai\/keys/);
+});
+
+test('a pool stored before gateways existed opens on Vercel, and re-saves unchanged', () => {
+  const { container, control, $ } = mountEditor({
+    initialSelection: {
+      mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+      routing: { version: 1, provider: 'jev', apiKeyName: 'vercel-api-key', tiers: ['t1', 't2'] },
+      candidates: [
+        { providerId: 'managed-a', priority: 1, enabled: true, tier: 't1' },
+        { providerId: 'managed-b', priority: 2, enabled: true, tier: 't2' },
+      ],
+    },
+  });
+  assert.equal(gatewayButton(container, 'vercel').getAttribute('aria-checked'), 'true');
+  assert.equal($('jev-custom').style.display, 'none', 'the custom fields stay out of the way');
+  const routing = control.read({ remember: false }).value.routing;
+  assert.equal(routing.gateway, 'vercel');
+  assert.equal(routing.apiKeyName, 'vercel-api-key');
+  // A preset's host and model come from the server table, so the page writes
+  // neither: a persisted copy would outlive a table update.
+  assert.equal('endpoint' in routing, false);
+  assert.equal('model' in routing, false);
+});
+
+test('switching gateway moves the key, the copy and the custom fields', async () => {
+  const api = fakeKeyApi({ present: true });
+  const { container, control, $, routeOn } = mountEditor({ routingKey: api });
+  routeOn();
+  await flush();
+  assert.deepEqual(api.calls.check, ['vercel-api-key']);
+
+  pickGateway(container, 'typesafe');
+  await flush();
+  // The previous gateway's verdict is gone, and the new entry is what is checked.
+  assert.deepEqual(api.calls.check, ['vercel-api-key', 'typesafe-api-key']);
+  assert.equal($('jev-test-result').style.display, 'none', 'a stale verdict never describes another host');
+  assert.match(container.querySelector('.multicc-auto-editor-steps').innerText, /TypeSafe 控制台/);
+  assert.equal(control.read({ remember: false }).value.routing.apiKeyName, 'typesafe-api-key');
+
+  pickGateway(container, 'custom');
+  await flush();
+  assert.equal($('jev-custom').style.display, '', 'only the custom gateway shows an address and a model');
+  assert.deepEqual(api.calls.check, ['vercel-api-key', 'typesafe-api-key', 'jev-custom-api-key']);
+  // Nothing typed yet, so there is no address to save and the panel says why.
+  const refused = control.read({ remember: false });
+  assert.equal(refused.code, 'invalid_provider_routing');
+  assert.equal($('error').style.display, '', 'the reason is shown, not just refused');
+  assert.match($('error').textContent, /接口地址/);
+});
+
+test('a custom gateway writes its address, model and key entry, and a bad address blocks the save', () => {
+  const { container, control, $, routeOn } = mountEditor();
+  routeOn();
+  pickGateway(container, 'custom');
+  const endpoint = $('jev-endpoint');
+  const model = $('jev-model');
+
+  endpoint.value = 'http://jev.example/v1/evaluate';
+  endpoint.emit('input');
+  model.value = 'my-jev';
+  model.emit('input');
+  // The reason shows under the address while it is typed, before any save.
+  assert.match($('jev-endpoint-error').textContent, /https/);
+  assert.equal($('error').style.display, 'none');
+  assert.equal(control.read({ remember: false }).code, 'invalid_provider_routing');
+  assert.match($('error').textContent, /https/);
+
+  endpoint.value = 'https://jev.example/v1/evaluate';
+  endpoint.emit('input');
+  const routing = control.read({ remember: false }).value.routing;
+  assert.deepEqual(routing, {
+    version: 1,
+    provider: 'jev',
+    gateway: 'custom',
+    endpoint: 'https://jev.example/v1/evaluate',
+    model: 'my-jev',
+    apiKeyName: 'jev-custom-api-key',
+    tiers: ['t1', 't2'],
+  });
+  // The rule the server enforces on the entry name is the one the page writes:
+  // a config can never point the custom host at an unrelated vault secret.
+  assert.equal(editor.customEndpointError('https://jev.example/v1'), '');
+});
+
+test('a gateway switch drops knobs that belonged to the other gateway', () => {
+  const { container, control, routeOn } = mountEditor({
+    initialSelection: {
+      mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: true,
+      routing: {
+        version: 1, provider: 'jev', gateway: 'vercel',
+        apiKeyName: 'my-key', model: 'typesafe-ai/jev-preview', onUnknown: 'weak', timeoutMs: 4_000,
+        tiers: ['t1', 't2'],
+      },
+      candidates: [
+        { providerId: 'managed-a', priority: 1, enabled: true, tier: 't1' },
+        { providerId: 'managed-b', priority: 2, enabled: true, tier: 't2' },
+      ],
+    },
+  });
+  routeOn();
+  // Same gateway: the pinned entry, the tuned model and the knobs survive.
+  const kept = control.read({ remember: false }).value.routing;
+  assert.equal(kept.apiKeyName, 'my-key');
+  assert.equal(kept.model, 'typesafe-ai/jev-preview');
+  assert.equal(kept.onUnknown, 'weak');
+  assert.equal(kept.timeoutMs, 4_000);
+
+  pickGateway(container, 'openrouter');
+  const moved = control.read({ remember: false }).value.routing;
+  assert.equal(moved.apiKeyName, 'openrouter-api-key', 'another gateway\'s entry is not this one\'s key');
+  assert.equal('model' in moved, false, 'the old model id belonged to the old gateway');
+  assert.equal(moved.onUnknown, 'weak', 'the fallback is not a gateway property');
+  assert.equal(moved.timeoutMs, 4_000, 'neither is the timeout');
+});
+
+test('a custom gateway carries the address and model to the test route', async () => {
+  const api = fakeKeyApi({ present: true });
+  const { container, $, routeOn } = mountEditor({ routingKey: api });
+  routeOn();
+  await flush();
+  pickGateway(container, 'custom');
+  $('jev-endpoint').value = 'https://jev.example/v1/evaluate';
+  $('jev-endpoint').emit('input');
+  $('jev-model').value = 'my-jev';
+  $('jev-model').emit('input');
+  await flush();
+  $('jev-test').emit('click');
+  await flush();
+  await flush();
+  assert.deepEqual(api.calls.test, [{
+    apiKeyName: 'jev-custom-api-key', gateway: 'custom',
+    endpoint: 'https://jev.example/v1/evaluate', model: 'my-jev',
+    text: '把 README 里的一个错别字改掉',
+  }]);
 });
