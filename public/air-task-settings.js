@@ -400,11 +400,9 @@
         formatProvider: provider => `${provider.name || provider.id}${provider.model ? ` · ${provider.model}` : ''}`,
         // 池子里换人会让「随主」的模型候选跟着换 —— 尾巴得重算。
         onChange: () => refreshSubLine(),
+        routingKey: typeof fetch === 'function' ? aiApi.routingKeyApi() : null,
       });
       autoEditor = mounted;
-      aiApi.checkRoutingKeyConfigured().then(routingKeyConfigured => {
-        if (autoEditor === mounted) mounted.setContext({ routingKeyConfigured });
-      });
     }
 
     function chooseProvider(value, preferredModel = '') {

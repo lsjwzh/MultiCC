@@ -221,6 +221,7 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     'DELETE /api/provider-relay-shares/:id',
     'GET /api/provider-defaults',
     'PUT /api/provider-defaults',
+    'POST /api/auto-provider/routing/test',
   ]);
 
   let response = await invoke(harness.app, 'GET', '/api/providers', {
