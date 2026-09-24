@@ -1292,7 +1292,7 @@ const worktreeStatus = window.MultiCCWorktreeStatus.create({ document, tt, withT
   isActive: () => _chatFrameActive,
 });
 function applyMergeStatus(st) { return worktreeStatus.apply(st); }
-function refreshMergeStatus() { return worktreeStatus.refresh(); }
+function refreshMergeStatus(options) { return worktreeStatus.refresh(options); }
 function startMergeStatusPolling() { return worktreeStatus.startPolling(); }
 
 /* ── Liveness pill: is this session working / idle / stalled right now ── */
@@ -1394,11 +1394,19 @@ async function autoCommitIfNeeded(bubbleEl) {
   const row = bubbleEl.querySelector('.msg-auto-commit');
   if (!row || row.classList.contains('done')) return;
   const cb = row.querySelector('input[type="checkbox"]');
-  if (!cb || !cb.checked) return;
-  // Check if there's actually something to merge
-  if (!worktreeStatus.mergeReady) return;
+  if (!cb) return;
+  // The header is the session default; execution is per-turn. Reconcile an
+  // untouched row immediately before reading it so a result that races
+  // loadSessionModel cannot observe the old false initializer. A manually
+  // toggled row remains the explicit opt-out/opt-in for this turn.
+  if (!row.dataset.userTouched) cb.checked = _sessionAutoCommit;
+  if (!cb.checked) return;
+  // The normal poll is intentionally cached. A turn just wrote the worktree,
+  // so force one authoritative Git read before deciding whether to merge.
   _autoCommitPending = true;
   try {
+    const mergeState = await refreshMergeStatus({ fresh: true });
+    if (!mergeState?.mergeReady) return;
     addSystemMsg('🚀 自动提交合并中（此轮开启了自动提交）...');
     const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge`), { method: 'POST' });
     const data = await res.json();

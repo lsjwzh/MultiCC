@@ -185,6 +185,30 @@ test('merge-state cache is single-flight, bounded, and fresh refreshes immediate
   assert.equal(fixture.runtime.mergeStateCached(dir, session).ahead, 3);
 });
 
+test('merge-status?refresh=1 bypasses the cached state', async () => {
+  let calls = 0;
+  const fixture = createFixture({
+    implementations: {
+      gitWorktreeMergeState: async () => {
+        calls += 1;
+        return { mergeReady: calls > 1, dirty: calls > 1, ahead: calls - 1, behind: 0 };
+      },
+    },
+  });
+  const dir = fixture.directories.get('d1');
+  const session = fixture.records.get('s1');
+  assert.deepEqual(fixture.runtime.mergeStateCached(dir, session), LOADING_MERGE_STATE);
+  await tick();
+  assert.equal(calls, 1);
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/merge-status'), {
+    params: { id: 's1' }, query: { refresh: '1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(calls, 2);
+  assert.equal(response.body.mergeReady, true);
+  assert.equal(fixture.runtime.mergeStateCached(dir, session).mergeReady, true);
+});
+
 test('diff preserves missing-worktree errors, truncation and best-effort stat', async () => {
   const missing = createFixture({ existsSync: () => false });
   const missingResponse = await invoke(missing.app.routes.get('GET /api/sessions/:id/diff'), {
