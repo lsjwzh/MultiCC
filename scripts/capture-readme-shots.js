@@ -9,7 +9,7 @@
 // ones live under docs/images/en/. Both are the same screens, so this script
 // renders the Air console against a fixture server (tests/helpers/cdp-harness)
 // that mocks every API the page reads, forces the English dictionary, seeds
-// English demo data, and captures at 1280x720 @2x (or 390x844 @2x for the
+// English demo data, and captures at 1280x840 @2x (a little taller than the Chinese originals so the sticky composer does not cover the task stats) (or 390x844 @2x for the
 // phone shot) — the same geometry as the Chinese originals.
 //
 // Nothing here talks to a live MultiCC host: no token, no real path, no
@@ -22,7 +22,7 @@ const { createCdpHarness, findChromeBinary } = require('../tests/helpers/cdp-har
 const OUT_DIR = path.resolve(__dirname, '..', 'docs', 'images', 'en');
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 
-const DESKTOP = { width: 1280, height: 720, deviceScaleFactor: 2, mobile: false };
+const DESKTOP = { width: 1280, height: 840, deviceScaleFactor: 2, mobile: false };
 const PHONE = { width: 390, height: 844, deviceScaleFactor: 2, mobile: true };
 
 // ── fixture plumbing ──────────────────────────────────────────────────────
@@ -241,6 +241,18 @@ function apiRoutes(options = {}) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// harness 的 waitFor 超时只回 null；截图场景里那等于悄悄拍下一张错的画面。
+// 这里统一包一层：等不到就带着表达式报错。
+function strict(page) {
+  const waitFor = page.waitFor.bind(page);
+  page.waitFor = async (expression, options) => {
+    const value = await waitFor(expression, { timeoutMs: 10000, ...(options || {}) });
+    if (!value) throw new Error(`timed out waiting for: ${expression}`);
+    return value;
+  };
+  return page;
+}
+
 // Demo state that lives in the browser rather than on the host: the language,
 // and the list of tasks this browser has opened (the sidebar's "Recent tasks"
 // is exactly that list plus unread results — see air-task-notify.js).
@@ -249,11 +261,11 @@ const BROWSER_STATE = {
   'air:recent-tasks': DEMO_TASKS.map(task => task.id),
 };
 
-async function openEnglish(page, query = '') {
-  await page.send('Emulation.setDeviceMetricsOverride', DESKTOP);
+async function openEnglish(page, query = '', metrics = DESKTOP) {
+  await page.send('Emulation.setDeviceMetricsOverride', metrics);
   await page.navigate('/__lang');
   await page.evaluate(`(() => {
-    ${Object.entries(BROWSER_STATE).map(([key, value]) => `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(JSON.stringify(value))});`).join('\n    ')}
+    ${Object.entries(BROWSER_STATE).map(([key, value]) => `localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(typeof value === 'string' ? value : JSON.stringify(value))});`).join('\n    ')}
     return document.documentElement.lang;
   })()`);
   await page.navigate(`/air${query}`);
@@ -289,8 +301,10 @@ async function shoot(page, file) {
 const SHOTS = {
   // The workspace home: directory card, three running tasks, task stats and the
   // new-task composer. Same screen as the Chinese air-tasks.png.
+  // The AI Assistant is configured here, so the first-run card is gone and the
+  // shot is about the tasks (air-first-run.png is the unconfigured twin).
   'air-tasks': {
-    routes: () => ({ ...staticRoutes(), ...apiRoutes() }),
+    routes: () => ({ ...staticRoutes(), ...apiRoutes({ auxConfig: auxConfig(true) }) }),
     async capture(page) {
       await page.send('Emulation.setDeviceMetricsOverride', DESKTOP);
       await openEnglish(page, `?dir=${DEMO_DIR.id}`);
@@ -335,7 +349,7 @@ const SHOTS = {
     routes: () => ({ ...staticRoutes(), ...apiRoutes() }),
     async capture(page) {
       await page.send('Emulation.setDeviceMetricsOverride', PHONE);
-      await openEnglish(page, `?dir=${DEMO_DIR.id}`);
+      await openEnglish(page, `?dir=${DEMO_DIR.id}`, PHONE);
       await page.waitFor(`document.querySelector('#task-title').textContent === 'demo-project'`);
       await settle(page);
       // Scroll past the header so the setup card, the task stats and the recent
@@ -402,7 +416,7 @@ async function main() {
       screenshotDir: path.join(require('node:os').tmpdir(), 'multicc-readme-shots'),
     });
     try {
-      const file = await shot.capture(harness);
+      const file = await shot.capture(strict(harness));
       console.log(`${name}: ${file}`);
     } finally {
       await harness.close();
