@@ -388,6 +388,19 @@
           "anchor": "const OVERRIDE_DIR = path.join(os.homedir(), '.multicc', 'claude-settings-overrides');"
         }
       ]
+    },
+    {
+      "id": "turn-hook-wrapper-bin",
+      "classification": "external-owner",
+      "owner": "terminal turn ledger (src/turn-ledger)",
+      "rationale": "Codex trusts a hook by the hash of its command string and persists that trust in the user's CODEX_HOME, so the terminal turn-hook wrapper must live at a fixed per-user path that survives checkout moves and data-root changes.",
+      "migrationStrategy": "Contents are fully derived (wrapper + copy of scripts/multicc-turn-hook.js) and rewritten idempotently on each terminal launch; moving the path would invalidate every granted Codex hook trust, so it stays put and holds nothing else.",
+      "sources": [
+        {
+          "file": "src/turn-ledger/hook-install.js",
+          "anchor": "return path.join(os.homedir(), '.multicc', 'bin');"
+        }
+      ]
     }
   ]
 }
