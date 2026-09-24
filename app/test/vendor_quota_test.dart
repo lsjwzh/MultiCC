@@ -244,6 +244,16 @@ void main() {
       ['claude', 'opencode', '', true],
       ['claude', 'codex', '', false],
       ['claude', 'qoder', '', false],
+      // The -exp builds are the same account/provider pool as their regular
+      // CLI, so they answer every family gate identically.
+      ['claude', 'claude-exp', '', true],
+      // The last branch is provider-agnostic on both ends (the web mirrors this
+      // byte for byte): hiding the Claude window under a Zhipu endpoint is
+      // renderCurrent's job (isClaudeProvider), not this gate's.
+      ['claude', 'claude-exp', zhipu, true],
+      ['codex', 'codex-exp', zhipu, true],
+      ['glm', 'codex-exp', '', true],
+      ['glm', 'claude-exp', zhipu, true],
     ];
     for (final c in cases) {
       test('${c[0]} window under ${c[1]} cli (baseUrl ${c[2] == '' ? "(none)" : c[2]}) → ${c[3]}', () {
@@ -279,6 +289,13 @@ void main() {
       expect(providerMatchesCli('codex', 'claude', relayCodex), isFalse);
       // opencode's own window stays opencode-only even on a relay provider.
       expect(providerMatchesCli('opencode', 'claude', relayClaude), isFalse);
+      // The relay protocol is judged by CLI family: the -exp builds borrow
+      // through exactly these relays (this is the CLI/protocol pair the app
+      // actually runs with a 借道 provider), so they must keep the window bar.
+      expect(providerMatchesCli('claude', 'claude-exp', relayClaude), isTrue);
+      expect(providerMatchesCli('glm', 'claude-exp', relayClaude), isTrue);
+      expect(providerMatchesCli('codex', 'codex-exp', relayCodex), isTrue);
+      expect(providerMatchesCli('claude', 'codex-exp', relayClaude), isFalse);
     });
 
     test('a borrowed prepaid balance chip is visible for relay providers', () {

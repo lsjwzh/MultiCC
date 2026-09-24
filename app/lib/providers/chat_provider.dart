@@ -644,6 +644,7 @@ class ChatProvider extends ChangeNotifier {
   String _providerLimitId = '';
   String _providerLimitAppType = '';
   int _providerLimitRevision = 0;
+  bool _providerIdentityKnown = false;
   Map<String, dynamic>? _activeProviderLimit;
   SessionProviderSelection? _providerSelection;
   SessionProviderSelection? get providerSelection => _providerSelection;
@@ -1870,7 +1871,7 @@ class ChatProvider extends ChangeNotifier {
 
   /// Update the active provider baseUrl and, when it changed, immediately pull
   /// fresh quota for whichever vendor it points at (mirrors the web
-  /// setProviderBaseUrl refresh-on-change behavior).
+  /// setProviderBaseUrl refresh-on-change behavior; the first call is a report).
   void _setProviderBaseUrl(String baseUrl) {
     final next = baseUrl.trim();
     final nextProviderId = (_activeProviderId ?? '').trim();
@@ -1878,9 +1879,10 @@ class ChatProvider extends ChangeNotifier {
         ? ''
         : (_providerCatalogAppTypes[nextProviderId] ?? _cli.appType);
     final changed =
-        next != _providerBaseUrl ||
-        nextProviderId != _providerLimitId ||
-        nextAppType != _providerLimitAppType;
+        _providerIdentityKnown &&
+        (next != _providerBaseUrl ||
+            nextProviderId != _providerLimitId ||
+            nextAppType != _providerLimitAppType);
     _providerBaseUrl = next;
     _providerLimitId = nextProviderId;
     _providerLimitAppType = nextAppType;
@@ -1902,8 +1904,9 @@ class ChatProvider extends ChangeNotifier {
       // setProviderBaseUrl clears backoff the same way).
       _arkErrorAt = 0;
       _kimiErrorAt = 0;
-      refreshVendorQuotas();
     }
+    if (!_providerIdentityKnown || changed) refreshVendorQuotas();
+    _providerIdentityKnown = true;
   }
 
   /// A provider-only switch (PATCH /api/sessions/:id with provider/model while
