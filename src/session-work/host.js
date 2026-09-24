@@ -266,6 +266,43 @@ function createSessionWorkHost(deps = {}) {
     return { ok: true, requestId, resolution: 'dismissed' };
   }
 
+  // recover() parks a restart-orphaned P turn as frozen/classify_running: its
+  // runner died with the old server, so no turn end will ever classify it. If
+  // it had already asked a structured question, the truthful verdict is W —
+  // the session is waiting on the user, not running and not cancelled.
+  async function settleRecoveredQuestion(sessionId) {
+    const record = deps.getRecord(sessionId);
+    if (!record) return { ok: false, code: 'session_not_found' };
+    const queue = await scheduler()?.status(sessionId);
+    if (!queue?.active || queue.state !== 'frozen' || queue.freezeReason !== 'classify_running') {
+      return { ok: false, code: 'not_recovered_turn' };
+    }
+    const pending = deps.pendingUserInput(sessionId);
+    if (!pending || pending.resolved === true) return { ok: false, code: 'no_pending_request' };
+    const taskId = queue.active.taskId || pending.taskId || null;
+    if (queue.active.taskId && pending.taskId && queue.active.taskId !== pending.taskId) {
+      return { ok: false, code: 'active_task_mismatch' };
+    }
+    const state = deps.getTaskState(record) || {};
+    deps.dispatchStateAction({
+      state: 'W', goal: state.goal || '', phase: state.phase || '',
+      evidence: 'request_user_input', requestId: pending.requestId,
+    }, {
+      sessionName: sessionId, sessionId: record.id || sessionId,
+      cs: deps.getChatSession(sessionId) || null, isTerminal: record.kind !== 'chat', taskId,
+      source: 'restart_recovery', liveness: { state: 'inactive', reason: 'recovered_dead_runner' },
+    });
+    const transition = pendingTransitions.get(sessionId);
+    if (transition) {
+      const result = await transition;
+      if (result?.ok === false) return result;
+    }
+    if (taskId) deps.reconcileTaskProjection?.(taskId, {
+      classifyState: 'W', reason: 'recovered_pending_question',
+    });
+    return { ok: true, classifyState: 'W', requestId: pending.requestId };
+  }
+
   async function resolveTask(sessionId, taskId) {
     const runtime = schedulerRuntime();
     if (!runtime?.sessionScheduler) return { ok: false, code: 'scheduler_not_ready' };
@@ -1017,6 +1054,7 @@ function createSessionWorkHost(deps = {}) {
     replayState,
     resolveTask,
     dismissUserInput,
+    settleRecoveredQuestion,
     turnFailed,
     turnSucceeded,
   });

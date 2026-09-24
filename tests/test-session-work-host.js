@@ -16,6 +16,7 @@ function fixture(options = {}) {
   const scheduler = {
     status: async () => ({
       state: schedulerState,
+      freezeReason: schedulerState === 'frozen' ? options.freezeReason || null : null,
       active: schedulerState === 'idle'
         ? null
         : {
@@ -1060,5 +1061,42 @@ test('manual dismissal rejects running turns, uncertain owners, and external wai
     if (options.external) h.setPendingWait(true);
     assert.equal((await h.host.dismissUserInput('s1', 'old')).ok, false);
     assert.equal(h.calls.some(c => c[0] === 'resolve-user-input'), false);
+  }
+});
+
+test('a restart-orphaned P turn with a pending question settles as W on that question', async () => {
+  // recover() leaves the dead turn frozen/classify_running; without this the
+  // card showed 执行中 forever although the session was waiting on the user.
+  const h = fixture({
+    record: { id: 's1', kind: 'chat', taskState: { classifyState: 'P', goal: 'g' } },
+    freezeReason: 'classify_running',
+    activeTaskId: 'task-1',
+  });
+  h.forceState('frozen');
+  h.setPending({ requestId: 'usrq-1', taskId: 'task-1' });
+  const result = await h.host.settleRecoveredQuestion('s1');
+  assert.equal(result.ok, true);
+  const verdict = h.calls.find(c => c[0] === 'dispatch');
+  assert.equal(verdict[1].state, 'W');
+  assert.equal(verdict[1].requestId, 'usrq-1');
+  assert.equal(verdict[2].taskId, 'task-1');
+  assert.equal(verdict[2].liveness.state, 'inactive');
+  assert.equal(h.calls.some(c => c[0] === 'resolve-user-input'), false);
+});
+
+test('recovered-question settlement leaves other turns to the dead-runner path', async () => {
+  const noQuestion = fixture({ freezeReason: 'classify_running' });
+  noQuestion.forceState('frozen');
+  assert.equal((await noQuestion.host.settleRecoveredQuestion('s1')).code, 'no_pending_request');
+  const answered = fixture({ freezeReason: 'classify_running' });
+  answered.forceState('frozen');
+  answered.setPending({ requestId: 'usrq-1', resolved: true });
+  assert.equal((await answered.host.settleRecoveredQuestion('s1')).code, 'no_pending_request');
+  const otherFreeze = fixture({ freezeReason: 'incomplete_requires_resume' });
+  otherFreeze.forceState('frozen');
+  otherFreeze.setPending({ requestId: 'usrq-1' });
+  assert.equal((await otherFreeze.host.settleRecoveredQuestion('s1')).code, 'not_recovered_turn');
+  for (const h of [noQuestion, answered, otherFreeze]) {
+    assert.equal(h.calls.some(c => c[0] === 'dispatch'), false);
   }
 });
