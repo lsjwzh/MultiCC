@@ -2543,7 +2543,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, persistence: sessionPersistence,
   ensureDir: ensureDirGitReady, addWorktree: gitWorktreeAdd, validate: gitWorktreeValidate,
   getState: id => chatSessions.get(id), hibernation: () => sessionHibernationRuntime,
-  hasBackground: id => backgroundTaskRuntime.hasLiveBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
+  hasBackground: id => backgroundTaskRuntime.hasProcessBackgroundTasks(id), streamBusy: id => !!chatStream.status(id)?.busy,
   closePersistent: id => chatStream.closeAndWait(id),
   parkPersistent: (id, workspace) => chatStream.parkWorkspace(id, workspace),
   claimPersistent: (id, workspace, opts) => chatStream.claimWorkspace(id, workspace, opts),
