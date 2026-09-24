@@ -385,9 +385,13 @@ function createSessionGitRuntime(rawDeps) {
   }
 
   function registerReadRoutes(app) {
-    app.get('/api/sessions/:id/merge-status', (req, res) => {
+    app.get('/api/sessions/:id/merge-status', async (req, res) => {
       const found = findSession(req, res);
       if (!found) return;
+      if (req.query?.refresh === '1' || req.query?.fresh === '1') {
+        res.json(await mergeStateFresh(found.dir, found.persisted));
+        return;
+      }
       res.json(mergeStateCached(found.dir, found.persisted, { priority: true }));
     });
 
