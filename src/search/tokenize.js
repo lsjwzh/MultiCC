@@ -83,23 +83,62 @@ function quoteToken(term) {
   return `"${String(term).replace(/"/g, '""')}"`;
 }
 
+// How many bigrams a CJK run may hold and still be required as a phrase. A run of
+// up to 4 characters is a word or a short term — the shape most queries have — and
+// requiring all of its bigrams means "the chunk contains this term", which is what
+// the person typing it means. Past that a run is a clause or a whole sentence, and
+// requiring every bigram would demand the sentence appear verbatim: measured on the
+// real corpus, 任务关联与搜索支持全文检索 and 怎么让新任务的关联加上全文搜索 both drop to
+// 0 hits under a full AND, while 全文检索 254→13 and 任务关联 6013→43 keep only the
+// chunks that genuinely contain the term. Set to Infinity to AND every run.
+const MAX_PHRASE_BIGRAMS = 3;
+
+// The query as groups of terms that must co-occur: each group is ORed with the
+// others, and inside a group every term must be present. One group per latin word
+// (a word is already one token) and one per CJK run, whose bigrams are required
+// together when the run is short enough to be a term and ORed as a bag of words
+// when it is longer (see MAX_PHRASE_BIGRAMS).
+function matchGroups(text) {
+  const normalized = normalizeText(String(text == null ? '' : text).slice(0, 400));
+  const groups = [];
+  for (const match of normalized.match(LATIN_RE) || []) groups.push([match]);
+  for (const run of normalized.match(CJK_RUN_RE) || []) {
+    const bigrams = [];
+    for (let index = 0; index + 1 < run.length; index += 1) {
+      const bigram = run.slice(index, index + 2);
+      if (!bigrams.includes(bigram)) bigrams.push(bigram);
+    }
+    if (!bigrams.length) continue;
+    if (bigrams.length <= MAX_PHRASE_BIGRAMS) groups.push(bigrams);
+    else for (const bigram of bigrams) groups.push([bigram]);
+  }
+  return groups;
+}
+
 // FTS5 MATCH expression for `text`, or null when the text carries no indexable
 // term (all single characters, all punctuation) — the caller falls back to LIKE.
 //
-// Tokens are ORed, not ANDed, to match how the board has always ranked: it accepts
-// a document that holds only some of the query's words and orders by how much of
-// the query it covers. AND here would zero out exactly the queries people actually
-// paste — a full sentence carries a dozen bigrams and no chunk contains them all.
-// bm25 already rewards the chunks that cover more terms, and its IDF keeps a match
-// on one common bigram from outranking a match on the rare ones.
+// The shape is `(a AND b) OR (c)`: a term-shaped CJK run is required whole, and
+// separate words are alternatives. Pure OR is what the board has always done, and
+// it answers a sentence well (bm25 rewards the chunks covering more of it) but
+// answers a two-character term with everything that shares one of its bigrams —
+// measured 254 chunks for 全文检索 where only 13 contain it.
 //
 // Every token is quoted, and that is not cosmetic: bare, FTS5 reads `air.js` as a
 // syntax error and `provider-router` as `provider NOT router`, i.e. the opposite
 // of the query. Verified both ways on this SQLite build.
 function matchExpression(text) {
-  const terms = indexTokens(String(text == null ? '' : text).slice(0, 400));
-  if (!terms.length) return null;
-  return terms.slice(0, MAX_MATCH_TERMS).map(quoteToken).join(' OR ');
+  const groups = matchGroups(text);
+  if (!groups.length) return null;
+  const terms = [];
+  const parts = [];
+  for (const group of groups) {
+    if (terms.length >= MAX_MATCH_TERMS) break;
+    const kept = group.slice(0, MAX_MATCH_TERMS - terms.length);
+    terms.push(...kept);
+    parts.push(kept.length === 1 ? quoteToken(kept[0]) : `(${kept.map(quoteToken).join(' AND ')})`);
+  }
+  return parts.length ? parts.join(' OR ') : null;
 }
 
 module.exports = {
@@ -107,12 +146,14 @@ module.exports = {
   CJK_RUN_RE,
   LATIN_RE,
   MAX_MATCH_TERMS,
+  MAX_PHRASE_BIGRAMS,
   MAX_TERMS_PER_FIELD,
   MAX_TF,
   UNIGRAM_WEIGHT,
   forEachTerm,
   indexTokens,
   matchExpression,
+  matchGroups,
   normalizeText,
   quoteToken,
   tokenize,

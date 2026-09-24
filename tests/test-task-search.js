@@ -164,7 +164,7 @@ test('the task-board search route registers GET and answers with ranked hits', (
     ]),
   });
   routes.mountRoutes({ get: (path, handler) => mounted.push([path, handler]) });
-  assert.deepEqual(mounted.map(([path]) => path), ['/api/task-board/search']);
+  assert.deepEqual(mounted.map(([path]) => path), ['/api/task-board/search', '/api/search/messages']);
 
   const res = fakeRes();
   mounted[0][1]({ query: { q: '全文检索', limit: '1' } }, res);
@@ -222,6 +222,94 @@ test('the route clamps limit and parses the csv filters it forwards', () => {
 
   assert.throws(() => createTaskSearchRoutes({}), /getBoard/);
   assert.throws(() => routes.mountRoutes({}), /Express app\.get/);
+});
+
+// ── 消息级检索（GET /api/search/messages）────────────────────────────────────
+// 结果的主键是 *会话* 而不是任务：任务身份由调用方按自己的任务板解析，这条路由
+// 只回答「哪些对话正文命中了」。所以这里守的是它的契约：命中形状与任务板一致
+// （同一套 snippet 结构）、查询过滤器按调用方的词表达、索引不可用/未接线时明确
+// 报 503 而不是静默返回空数组（空数组会被客户端当成「没有命中」缓存下来）。
+
+function fakeMessages(hits, { warming = false, throws = false } = {}) {
+  const calls = [];
+  return {
+    calls,
+    findMessages(options) {
+      calls.push(options);
+      if (throws) throw new Error('index closed');
+      return hits;
+    },
+    status: () => ({ warming }),
+  };
+}
+
+test('the message search route returns session-level hits with the board snippet shape', () => {
+  const port = fakeMessages([{
+    sessionId: 'sess-1', messageId: 'm-3', kind: 'user', updatedAt: 42, score: 1.5,
+    text: '完整正文', snippet: { text: '命中窗口', ranges: [[0, 2]] },
+  }]);
+  const routes = createTaskSearchRoutes({ getBoard: () => board([]), messages: port });
+  const res = fakeRes();
+  routes.handleMessageSearch({ query: { q: '全文检索', limit: '3' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.count, 1);
+  assert.equal(res.body.warming, false);
+  assert.deepEqual(res.body.results, [{
+    sessionId: 'sess-1', messageId: 'm-3', kind: 'user', updatedAt: 42, score: 1.5,
+    snippet: { text: '命中窗口', ranges: [[0, 2]] },
+  }]);
+  // 正文整块不回传：客户端渲染的是服务端算好的窗口 + 高亮区间。
+  assert.equal('text' in res.body.results[0], false);
+  assert.deepEqual(port.calls[0], { text: '全文检索', limit: 3 });
+});
+
+test('the message search route forwards role/session filters and reports a warming index', () => {
+  const port = fakeMessages([], { warming: true });
+  const routes = createTaskSearchRoutes({ getBoard: () => board([]), messages: port });
+  const res = fakeRes();
+  routes.handleMessageSearch({ query: { q: '缓存', role: 'user', session: 'a, b' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.warming, true, '部分结果必须能自证「还在预热」');
+  assert.deepEqual(port.calls[0], { text: '缓存', limit: 20, kinds: ['user'], refIds: ['a', 'b'] });
+
+  const empty = fakeRes();
+  routes.handleMessageSearch({ query: {} }, empty);
+  assert.deepEqual(empty.body, { ok: true, query: '', count: 0, results: [], warming: true });
+  assert.equal(port.calls.length, 1, '空查询不打扰索引');
+
+  const long = fakeRes();
+  routes.handleMessageSearch({ query: { q: 'x'.repeat(MAX_QUERY_CHARS + 1) } }, long);
+  assert.equal(long.statusCode, 400);
+  assert.equal(long.body.error, 'query_too_long');
+});
+
+test('the message search route fails closed when the index is missing, unwired or throwing', () => {
+  const unwired = fakeRes();
+  createTaskSearchRoutes({ getBoard: () => board([]) }).handleMessageSearch({ query: { q: '检索' } }, unwired);
+  assert.equal(unwired.statusCode, 503);
+  assert.deepEqual(unwired.body, { error: 'message_search_unavailable' });
+
+  // 惰性取用：port 可以是一个每请求现算的函数（server.js 就是这样接的）。
+  const lazy = fakeRes();
+  createTaskSearchRoutes({ getBoard: () => board([]), messages: () => null })
+    .handleMessageSearch({ query: { q: '检索' } }, lazy);
+  assert.equal(lazy.statusCode, 503);
+
+  const throwing = fakeRes();
+  createTaskSearchRoutes({
+    getBoard: () => board([]), messages: fakeMessages([], { throws: true }), logger: { warn() {} },
+  }).handleMessageSearch({ query: { q: '检索' } }, throwing);
+  assert.equal(throwing.statusCode, 503);
+  assert.deepEqual(throwing.body, { error: 'message_search_unavailable' });
+
+  // 取用 port 本身也可能失败（它要打开索引）：同样是「暂时不可用」，不能升级成 500。
+  const unopenable = fakeRes();
+  createTaskSearchRoutes({
+    getBoard: () => board([]), messages: () => { throw new Error('cannot open index'); }, logger: { warn() {} },
+  }).handleMessageSearch({ query: { q: '检索' } }, unopenable);
+  assert.equal(unopenable.statusCode, 503);
+  assert.deepEqual(unopenable.body, { error: 'message_search_unavailable' });
 });
 
 // ── 浏览器侧：搜索框的接线 ──────────────────────────────────────────────────
