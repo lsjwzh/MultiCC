@@ -22,9 +22,9 @@ function buildSubagentProviderHint(subagent) {
   const model = String(subagent.model || '').trim();
   const route = model ? `${providerId} / ${model}` : providerId;
   return [
-    `【子 Agent Provider 已配置：优先把耗 token 的活派给子 Agent】本会话已为子 Agent 单独配置了独立线路（${route}），子 Agent 消耗的 token 走该线路、不占主线路配额；主会话自己直接干耗 token 的活反而更贵。`,
-    '因此默认把以下工作交给子 Agent（Agent/Task 工具，互不依赖的可 run_in_background 并行）：大范围代码搜索与阅读、批量文件扫描/比对、长日志或大输出分析、多文件重构与批量修改、可独立验证的子任务、并行调研与资料整理、跑测试并归纳失败原因。',
-    '主会话只负责拆解任务、给子 Agent 写完整自足的指令（目标/已知事实/约束/验收标准/禁止 grep 改用 Read 或 node fs）、整合结果并与用户对话。只有必须依赖当前对话上下文、必须串行的小改动、或派活开销明显大于活本身时，才自己直接做。派出的子 Agent 仍要遵守前面的轮询保活规则，拿到结果后再收尾。',
+    `[Sub-agent provider configured: delegate token-heavy work to sub-agents] This session routes sub-agents through a dedicated provider (${route}). Tokens spent by sub-agents are billed to that route and do not consume the main route's quota, so doing token-heavy work directly in the main agent is the more expensive choice.`,
+    'By default, hand the following to sub-agents (Agent/Task tools; run independent ones in parallel with run_in_background): broad code search and reading, bulk file scanning or comparison, analysis of long logs or large outputs, multi-file refactors and batch edits, independently verifiable subtasks, parallel research and material gathering, running tests and summarizing failures.',
+    'The main agent owns task decomposition, writing complete self-contained instructions for each sub-agent (goal, known facts, constraints, acceptance criteria, and "no grep - use Read or node fs"), integrating results, and talking to the user. Do the work yourself only when it depends on the live conversation context, is a small strictly sequential change, or the delegation overhead clearly exceeds the work itself. Delegated sub-agents still follow the keep-alive polling rules above; wrap up only after their results are in.',
   ].join('\n');
 }
 
