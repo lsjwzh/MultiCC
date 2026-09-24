@@ -13,6 +13,21 @@ const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint } = require('../
 // are still running. This hint tells it to stay in the loop and poll until done.
 // Both default-on; set CODEX_NO_ASK_TOOL_HINT=0 / CODEX_STAY_ALIVE_HINT=0 to
 // disable.
+// Chat sessions with a dedicated sub-agent provider bill sub-agent tokens to
+// that route, not the main one. Tell the main agent to delegate token-heavy
+// work there. Only injected when the session actually has one configured.
+function buildSubagentProviderHint(subagent) {
+  const providerId = subagent && typeof subagent === 'object' ? String(subagent.providerId || '').trim() : '';
+  if (!providerId) return '';
+  const model = String(subagent.model || '').trim();
+  const route = model ? `${providerId} / ${model}` : providerId;
+  return [
+    `【子 Agent Provider 已配置：优先把耗 token 的活派给子 Agent】本会话已为子 Agent 单独配置了独立线路（${route}），子 Agent 消耗的 token 走该线路、不占主线路配额；主会话自己直接干耗 token 的活反而更贵。`,
+    '因此默认把以下工作交给子 Agent（Agent/Task 工具，互不依赖的可 run_in_background 并行）：大范围代码搜索与阅读、批量文件扫描/比对、长日志或大输出分析、多文件重构与批量修改、可独立验证的子任务、并行调研与资料整理、跑测试并归纳失败原因。',
+    '主会话只负责拆解任务、给子 Agent 写完整自足的指令（目标/已知事实/约束/验收标准/禁止 grep 改用 Read 或 node fs）、整合结果并与用户对话。只有必须依赖当前对话上下文、必须串行的小改动、或派活开销明显大于活本身时，才自己直接做。派出的子 Agent 仍要遵守前面的轮询保活规则，拿到结果后再收尾。',
+  ].join('\n');
+}
+
 function createHostPrompts(env = process.env) {
   const codexNoAskToolHint = env.CODEX_NO_ASK_TOOL_HINT ?? '1';
   const codexEnvConstraint = buildCodexUserInputConstraint(codexNoAskToolHint !== '0');
@@ -100,4 +115,4 @@ function createHostPrompts(env = process.env) {
   };
 }
 
-module.exports = { createHostPrompts };
+module.exports = { createHostPrompts, buildSubagentProviderHint };
