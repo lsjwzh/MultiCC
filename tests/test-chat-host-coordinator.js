@@ -677,3 +677,38 @@ test('host runtime never lets a typed Commander fan out through assistant marker
     'handoff', 'turn-complete', 'return:taskboard-operation',
   ]);
 });
+
+test('host runtime persists the turn role split only when sub-agent usage exists', () => {
+  const saved = [];
+  const snapshots = new Map([
+    ['with-sub', {
+      main: { inputTokens: 5, outputTokens: 6, cacheRead: 7, cacheWrite: 8 },
+      mainByProvider: [{ providerId: 'p-main', model: 'm1' }],
+      sub: { inputTokens: 1, outputTokens: 2, cacheRead: 3, cacheWrite: 4 },
+      subByProvider: [{ providerId: 'p-sub', model: 'm2' }],
+    }],
+    ['main-only', { main: { inputTokens: 5 }, mainByProvider: [], sub: null, subByProvider: [] }],
+  ]);
+  for (const sessionId of snapshots.keys()) {
+    const owned = makeOwned();
+    const state = { _activeTurn: owned.turn, _activeRunner: owned.runner, _resultSaved: false };
+    const runtime = createChatHostRuntime({
+      appendMessage: (_id, message) => { saved.push(message); return true; },
+      persistUsage: () => true,
+      afterUsageCommit() {},
+      getSessionState: () => state,
+      roleUsageSnapshot: id => snapshots.get(id),
+      consumeHandoff() {},
+      emitTurnComplete() {},
+      emitDispatchComplete() {},
+      emitGatewayComplete() {},
+      logSuppressed() {},
+    });
+    runtime.persistFinalAssistantResult(sessionId, state, owned.turn, owned.runner,
+      { role: 'assistant', content: 'done' }, { resultEvent: true });
+  }
+  assert.deepEqual(saved[0].roleUsage.sub, { inputTokens: 1, outputTokens: 2, cacheRead: 3, cacheWrite: 4 });
+  assert.equal(saved[0].roleUsage.subByProvider[0].providerId, 'p-sub');
+  assert.equal(saved[0].roleUsage.mainByProvider[0].providerId, 'p-main');
+  assert.equal('roleUsage' in saved[1], false, 'main-only turns keep the plain history shape');
+});

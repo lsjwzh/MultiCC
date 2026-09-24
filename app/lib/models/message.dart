@@ -17,12 +17,10 @@ class MessageUsage {
   /// result arrives. Null until injected; absent when the turn had no sub-role work.
   int? savedMainTokens;
 
-  /// Main/sub-agent token split from the same `role_token_stats` event — the
-  /// mobile counterpart of the web usage-line tooltip (chat-live-ui.js
-  /// buildUsageLine roleBreakdown branch). Live-updated while a turn streams
-  /// and re-attached to the final usage on result. History replay rebuilds
-  /// messages without it (the server does not persist the split), which is
-  /// the same "totals only" shape history always had.
+  /// Main/sub-agent token split from the same `role_token_stats` event.
+  /// Live-updated while a turn streams and re-attached to the final usage on
+  /// result. History replay restores it from the message's persisted
+  /// `roleUsage` (only turns with sub usage carry one).
   RoleTokenBreakdown? roleBreakdown;
 
   MessageUsage({
@@ -37,6 +35,47 @@ class MessageUsage {
   int get total =>
       inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
   bool get isEmpty => total == 0;
+
+  /// The rows the usage line shows, same rule as the web: 主 is the role
+  /// split's main bucket (or the plain usage when the split has none); 辅 only
+  /// when the sub-agents ran on a separately configured model — otherwise their
+  /// work is the main model's usage and folds into 主.
+  ({RoleTokenBucket? main, RoleTokenBucket? sub}) get displayRoles {
+    final split = roleBreakdown;
+    var main = split?.main;
+    if (main == null || main.isEmpty) {
+      main = RoleTokenBucket(
+        inputTokens: inputTokens,
+        outputTokens: outputTokens,
+        cacheRead: cacheReadTokens,
+        cacheWrite: cacheCreationTokens,
+      );
+    }
+    var sub = split?.sub;
+    if (sub != null && sub.isEmpty) sub = null;
+    if (sub != null && !split!.hasSeparateSubModel) {
+      main = RoleTokenBucket(
+        inputTokens: main.inputTokens + sub.inputTokens,
+        outputTokens: main.outputTokens + sub.outputTokens,
+        cacheRead: main.cacheRead + sub.cacheRead,
+        cacheWrite: main.cacheWrite + sub.cacheWrite,
+      );
+      sub = null;
+    }
+    return (main: main.isEmpty ? null : main, sub: sub);
+  }
+
+  /// A history message's `usage` plus its persisted `roleUsage` split.
+  static MessageUsage? fromHistory(Map<String, dynamic> message) {
+    final raw = message['usage'];
+    final role = message['roleUsage'];
+    if (raw is! Map && role is! Map) return null;
+    final usage = raw is Map
+        ? MessageUsage.fromJson(Map<String, dynamic>.from(raw))
+        : MessageUsage();
+    usage.roleBreakdown = RoleTokenBreakdown.fromRole(role);
+    return usage;
+  }
 
   factory MessageUsage.fromJson(Map<String, dynamic> json) {
     return MessageUsage(
@@ -200,9 +239,7 @@ class ChatMessage {
       isStreaming = json['streaming'] == true,
       isPartial = json['partial'] == true,
       cost = (json['cost'] as num?)?.toDouble(),
-      usage = json['usage'] is Map
-          ? MessageUsage.fromJson(json['usage'] as Map<String, dynamic>)
-          : null,
+      usage = MessageUsage.fromHistory(json),
       contextTrace = json['contextTrace'] is Map
           ? Map<String, dynamic>.from(json['contextTrace'] as Map)
           : null,
@@ -1278,7 +1315,8 @@ class CronTask {
     lastStatus: json['lastStatus']?.toString(),
     lastError: (json['lastError'] ?? '').toString(),
     runCount: (json['runCount'] as num?)?.toInt() ?? 0,
-    runs: (json['recentRuns'] as List?)
+    runs:
+        (json['recentRuns'] as List?)
             ?.whereType<Map>()
             .map((entry) => CronRun.fromJson(Map<String, dynamic>.from(entry)))
             .toList(growable: false) ??

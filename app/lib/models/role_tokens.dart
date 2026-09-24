@@ -7,10 +7,10 @@
 //       subByProvider: [ { providerId, name, model, inputTokens,
 //                          outputTokens, cacheWrite, cacheRead } ] } }
 //
-// The web shows the same data on the message's usage line (chat-live-ui.js ·
-// buildUsageLine roleBreakdown branch). The app keeps its total badges and
-// exposes this breakdown through a tappable detail sheet — main / sub buckets
-// plus the per-provider split of the sub work.
+// Both the web usage line (chat-live-ui.js · buildUsageLine) and the app's
+// _TokenUsageLine render it in one format: a 主 row and, only for a separately
+// configured sub model, a 辅 row (fresh in/out + cache read/write each). The
+// app's detail sheet adds the per-provider split of the sub work.
 
 /// One role's (or one provider's) accumulated token bucket.
 class RoleTokenBucket {
@@ -72,21 +72,34 @@ class SubProviderTokens {
   }
 }
 
-/// The `role` payload of a role_token_stats event.
+/// The `role` payload of a role_token_stats event — also persisted on an
+/// assistant history message as `roleUsage` when the turn had sub usage.
 class RoleTokenBreakdown {
   final RoleTokenBucket main;
   final RoleTokenBucket? sub;
   final List<SubProviderTokens> subByProvider;
+  final List<SubProviderTokens> mainByProvider;
 
   const RoleTokenBreakdown({
     this.main = const RoleTokenBucket(),
     this.sub,
     this.subByProvider = const [],
+    this.mainByProvider = const [],
   });
 
+  /// Whether the sub-agents ran on a separately configured provider/model.
+  /// Same rule as the web usage line (chat-live-ui.js hasSeparateSubModel):
+  /// unknown provider lists count as separate; otherwise any sub
+  /// provider/model pair the main role did not use makes it separate.
+  bool get hasSeparateSubModel {
+    if (subByProvider.isEmpty || mainByProvider.isEmpty) return true;
+    String key(SubProviderTokens p) => '${p.providerId}|${p.model}';
+    final mainKeys = mainByProvider.map(key).toSet();
+    return subByProvider.any((p) => !mainKeys.contains(key(p)));
+  }
+
   /// Grand total across main + sub (the figure the usage line summarises).
-  int get total =>
-      main.total + (sub?.total ?? 0);
+  int get total => main.total + (sub?.total ?? 0);
 
   bool get isEmpty => total == 0;
 
@@ -100,16 +113,20 @@ class RoleTokenBreakdown {
 
   /// Parse a role_token_stats event payload. Returns null when the event has
   /// no `role` object (nothing to show — callers keep the previous state).
-  static RoleTokenBreakdown? fromEvent(Map<String, dynamic> payload) {
-    final role = payload['role'];
+  static RoleTokenBreakdown? fromEvent(Map<String, dynamic> payload) =>
+      fromRole(payload['role']);
+
+  /// Parse a bare role object (event `role` or history `roleUsage`).
+  static RoleTokenBreakdown? fromRole(dynamic role) {
     if (role is! Map) return null;
-    final byProvider = role['subByProvider'];
+    List<SubProviderTokens> providers(dynamic list) => list is List
+        ? list.map(SubProviderTokens.fromJson).toList(growable: false)
+        : const [];
     return RoleTokenBreakdown(
       main: RoleTokenBucket.fromJson(role['main']),
       sub: role['sub'] == null ? null : RoleTokenBucket.fromJson(role['sub']),
-      subByProvider: byProvider is List
-          ? byProvider.map(SubProviderTokens.fromJson).toList(growable: false)
-          : const [],
+      subByProvider: providers(role['subByProvider']),
+      mainByProvider: providers(role['mainByProvider']),
     );
   }
 }

@@ -540,8 +540,8 @@ test('token usage and wall-clock timing render as independent sibling lines', ()
   });
   assert.equal(usageOf(both).length, 1, 'adding wall clock must not drop the token line');
   assert.equal(timingOf(both).length, 1);
-  assert.match(usageOf(both)[0].textContent, /↑入 9,273/);
-  assert.match(usageOf(both)[0].textContent, /♻读 609,536/);
+  assert.match(usageOf(both)[0].textContent, /主↑入 9\.3k↓出 1\.8k♻读 609\.5k♻写 18\.4k/, 'history uses the unified 主 row');
+  assert.match(usageOf(both)[0].title, /缓存读 609,536/, 'tooltip keeps exact counts');
   assert.match(timingOf(both)[0].textContent, /⏱ 1m11s/);
   // Siblings under .msg-content: stacked block lines, so neither can clip or
   // overlay the other however long the numbers get.
@@ -567,6 +567,21 @@ test('token usage and wall-clock timing render as independent sibling lines', ()
   });
   assert.equal(usageOf(zeroUsage).length, 0);
   assert.equal(timingOf(zeroUsage).length, 1);
+});
+
+test('persisted roleUsage replays the 辅 row only for a separately routed sub model', () => {
+  const { view } = usageAwareFixture();
+  const rows = node => node.querySelectorAll('.u-row').map(row => row.textContent);
+  const roleUsage = (subProvider) => ({
+    main: { inputTokens: 56, outputTokens: 5156, cacheRead: 2698338, cacheWrite: 238716 },
+    mainByProvider: [{ providerId: 'glm', model: 'glm-5' }],
+    sub: { inputTokens: 10, outputTokens: 900, cacheRead: 40000, cacheWrite: 0 },
+    subByProvider: [{ providerId: subProvider, model: subProvider === 'glm' ? 'glm-5' : 'ds-4' }],
+  });
+  const routed = view.renderMessage({ id: 'r1', role: 'assistant', content: 'x', usage: { input_tokens: 1 }, roleUsage: roleUsage('ds') });
+  assert.deepEqual(rows(routed), ['主↑入 56↓出 5.2k♻读 2.70M♻写 238.7k', '辅↑入 10↓出 900♻读 40.0k♻写 0']);
+  const sameModel = view.renderMessage({ id: 'r2', role: 'assistant', content: 'x', roleUsage: roleUsage('glm') });
+  assert.deepEqual(rows(sameModel), ['主↑入 66↓出 6.1k♻读 2.74M♻写 238.7k'], 'sub work on the main model folds into 主');
 });
 
 test('both metric lines wrap instead of overflowing a narrow bubble', () => {

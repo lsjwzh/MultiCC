@@ -349,3 +349,21 @@ test('the fab is the unified compact circle: 24px visual inside a 48px hit box',
   assert.match(circle, /rgba\(35, 134, 54/, 'circle carries the green fill');
   assert.match(circle, /pointer-events:\s*none/, 'the box owns the gestures');
 });
+
+// Every message token line is one format: 主 row = fresh in/out + cache read/write;
+// a 辅 row in the same shape appears only when a sub route reported usage.
+test('main/sub rows show fresh and cache tokens for each role', () => {
+  const { liveUi } = dockFixture();
+  const line = liveUi.buildUsageLine(null, {
+    main: { inputTokens: 56, outputTokens: 5156, cacheRead: 2698338, cacheWrite: 238716 },
+    sub: { inputTokens: 10, outputTokens: 900, cacheRead: 40000, cacheWrite: 0 },
+  });
+  const rows = line.children.filter(node => node.className === 'u-row');
+  assert.deepEqual(rows.map(row => row.children.map(cell => cell.textContent)), [
+    ['主', '↑入 56', '↓出 5.2k', '♻读 2.70M', '♻写 238.7k'],
+    ['辅', '↑入 10', '↓出 900', '♻读 40.0k', '♻写 0'],
+  ]);
+  assert.match(line.title, /— 主 — 输入 56 输出 5,156 缓存读 2,698,338 缓存写 238,716/);
+  const mainOnly = liveUi.buildUsageLine({ input_tokens: 5, output_tokens: 2 });
+  assert.deepEqual(mainOnly.children.map(row => row.children[0].textContent), ['主']);
+});
