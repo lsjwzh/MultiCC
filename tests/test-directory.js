@@ -16,7 +16,7 @@ const ROOT = path.join(__dirname, '..');
 const T = Date.now(); const log = (...a) => console.log(`[${((Date.now() - T) / 1000).toFixed(1)}s]`, ...a);
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; log('✅', m); } else { fail++; log('❌', m); } };
-const H = { 'Content-Type': 'application/json', 'X-Access-Token': 'directory-isolated-test' };
+const H = { 'Content-Type': 'application/json' };
 const api = async (m, p, b) => {
   const r = await fetch(base + p, { method: m, headers: H, body: b ? JSON.stringify(b) : undefined });
   const t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = t; }
@@ -49,7 +49,6 @@ fs.mkdirSync(projA, { recursive: true });
     env: {
       ...process.env,
       PORT: String(port),
-      ACCESS_TOKEN: 'directory-isolated-test',
       MULTICC_DATA_DIR: dataRoot,
       // Successful quick-commit must not depend on a developer machine's
       // global Git identity. CI runners commonly have none configured.

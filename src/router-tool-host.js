@@ -236,8 +236,6 @@ function createRouterToolHost({
     releasePersistentProcess(holder);
     const processCapability = processContext({ ...context, dynamic: true });
     Object.assign(env, processCapability.env);
-    delete env.ACCESS_TOKEN;
-    delete env.MULTICC_ACCESS_TOKEN;
     holder._routerToolProcess = processCapability;
   }
 
@@ -274,8 +272,6 @@ function createRouterToolHost({
     // (src/secrets-vault.js envOverlay) keep provider routing authoritative —
     // this runs AFTER the provider env, MCP env and MULTICC_* markers are set.
     secretsVault.applyEnvOverlay(env);
-    delete env.ACCESS_TOKEN;
-    delete env.MULTICC_ACCESS_TOKEN;
     let proc;
     try {
       proc = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
