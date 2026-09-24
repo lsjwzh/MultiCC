@@ -372,6 +372,37 @@ test('a repeat cancel still closes a superseded scheduler entry stuck on running
     'releasing the slot re-drives the FIFO so the priority insert can claim it');
 });
 
+test('a repeat cancel closes a cross-task dispatch entry that supersedes this session\'s own task', async () => {
+  // Production wedge: the active scheduler slot is held by a "回投" delivery
+  // whose taskId belongs to ANOTHER task than the one bound to this session
+  // (_currentTaskId). The repeat-cancel recovery path must close the slot's
+  // ACTUAL owner, not assert the session's own taskId as expected — asserting
+  // the wrong taskId trips active_task_mismatch and silently fails to release
+  // the slot, wedging the FIFO for every subsequent delivery (including a
+  // priority "insert now" message, which is then never claimed).
+  const h = fixture({
+    record: { taskState: { classifyState: 'E', cancelledAt: 1 } },
+    chatState: { _currentTaskId: 'task-own' },
+    activeTaskId: 'task-other',
+  });
+  const result = await h.host.cancelActiveTurn('s1', { source: 'insert_queued' });
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyCancelled, true);
+  assert.equal(h.calls.some(call => call[0] === 'warn'
+    && call[1] === 'session_cancel_repeat_close_failed'), false,
+    'the mismatch guard must not reject closing the slot\'s real owner');
+  const complete = h.calls.find(call => call[0] === 'complete');
+  assert.ok(complete, 'the cross-task active entry must actually be completed, not silently skipped');
+  assert.equal(complete[1].expectedTaskId, 'task-other',
+    'expectedTaskId must target the slot\'s actual owner, not the session\'s own bound task');
+  assert.equal(h.calls.some(call => call[0] === 'tick'), true,
+    'releasing the slot re-drives the FIFO so the priority insert can claim it');
+  // The session's own task projection is still reconciled against its own id.
+  assert.deepEqual(h.calls.find(call => call[0] === 'reconcile'), [
+    'reconcile', 'task-own', { classifyState: 'E', reason: 'cancel_repeat' },
+  ]);
+});
+
 test('a runner that refuses to stop reports an explicit failure instead of pretending it cancelled', async () => {
   const { h } = cancelFixture({}, { runnerStopTimeoutMs: 0, stuckRunner: true });
   const result = await h.host.cancelActiveTurn('s1');

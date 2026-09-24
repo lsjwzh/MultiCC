@@ -951,7 +951,14 @@ function createSessionWorkHost(deps = {}) {
         try {
           const current = await scheduler().status(sessionId);
           if (current?.active) {
-            await classifyTransition(sessionId, taskId, {
+            // The active slot may be held by a cross-task dispatch entry whose
+            // taskId differs from this session's own bound task (a "回投"
+            // delivery). Closing must target the slot's ACTUAL owner, not the
+            // session's task — passing the session's own taskId here would
+            // trip runClassifyTransition's active_task_mismatch guard and
+            // silently fail to release the slot, re-wedging the FIFO.
+            const activeTaskId = current.active?.taskId || null;
+            await classifyTransition(sessionId, activeTaskId, {
               state: 'E',
               cancel: {
                 source: 'cancel_repeat',
