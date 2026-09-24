@@ -39,3 +39,8 @@ test('a configured provider keeps only its configured models', () => {
 test('without configured providers the full CLI listing is used', () => {
   assert.equal(mergeOpenCodeModels([], CLI).length, CLI.length);
 });
+
+test('merged Zen presets are labelled so the picker shows where they come from', () => {
+  const zen = mergeOpenCodeModels(CONFIGURED, CLI).find(m => m.model === 'big-pickle');
+  assert.equal(zen.label, 'opencode/big-pickle (OpenCode Zen)');
+});
