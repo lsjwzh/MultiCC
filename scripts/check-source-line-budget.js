@@ -56,9 +56,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 改成 t()，行数不变、字节 +29；同区一段注释就地压掉抵账，高水位往下走到 165233。
   // 目录侧拉 / 拖拽排序（air-directory-nav.js）在 render 里多递一行上下文，旁边两行
   // 注释并成一行抵账，行数不变，字节降到 165226。
+  // 侧栏「最近任务」不再掺当前目录的任务（只留未读 + 打开过的）；直接 ?task= 打开的任务
+  // 改在 render() 里统一记进最近，refreshEntry 里那段记录连同长注释删掉：降到 3061/164707。
   'public/air.js': Object.freeze({
-    ceiling: 3067,
-    byteCeiling: 165226,
+    ceiling: 3061,
+    byteCeiling: 164707,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.

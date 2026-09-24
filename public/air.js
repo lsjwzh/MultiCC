@@ -200,7 +200,7 @@
   const RECENT_ROWS = 10;
   function recentRowLimit() { return matchMedia('(max-width: 760px)').matches ? 6 : RECENT_ROWS; }
   function recentPool() {
-    return window.MultiCCTaskNotify.recentTasks({ tasks: data?.tasks || [], directoryId, recentTaskIds,
+    return window.MultiCCTaskNotify.recentTasks({ tasks: data?.tasks || [], recentTaskIds,
       limit: RECENT_LIMIT, isUnseen: id => taskNotify?.isUnseen(id), statusOf: taskStatus });
   }
   const urgentTasks = () => window.MultiCCAirAdmin?.urgentTasks?.(data) || [];
@@ -1385,7 +1385,7 @@
       applyRing(button, isRunningTask(task), task.id);
       // 一行三件事实：状态徽标（图标 + 中文，来自注册表）、标题、然后是这条记录
       // 的类型/阶段/资源去向。目录作为标签跟在同一行里 —— 「最近」这条带子本来就
-      // 是跨目录的（我打开过的任务 + 当前目录的几个），所以每一行都自报家门，
+      // 是跨目录的（未读结果 + 我打开过的任务），所以每一行都自报家门，
       // 而不是只给「不在当前目录」的那几行加标记：一份一半带标签一半不带的列表，
       // 读的人得先知道哪一半是什么规则。
       const meta = node('small', null, 'task-meta');
@@ -1942,6 +1942,8 @@
     setTaskHeaderInChat(hasTask);
     renderSetupCard();
     if (!directoryId && taskId) directoryId = data.tasks.find(task => task.id === taskId)?.dirId;
+    // 开着的任务就是「打开过」（直接进 ?task= / 后退回来也算）；侧栏点开的那条让给换位两拍去记。
+    if (taskId && recentTaskIds[0] !== taskId && pendingReorderId !== taskId) rememberTask(taskId);
     if (!directoryId || !data.directories.some(directory => directory.id === directoryId)) directoryId = data.directories[0]?.id || null;
     const dir = data.directories.find(directory => directory.id === directoryId);
     $('directory-name').textContent = dir?.name || t('airHeaderNoDirectory');
@@ -2664,14 +2666,6 @@
       if (result.unchanged) return false;
       if (taskId !== selected) return;
       entry = result;
-      // 直接打开一个任务（书签、通知链接、刷新）和从列表里点进去一样，都是「打开过」。
-      // 不在这儿记一笔，「最近」在刚进页面时就是空的。只有排序真的变了才重画。
-      //
-      // 例外：从侧栏点开的那条，换位已经排进它自己那两拍里了（openSidebarTask 让
-      // navigate 先别记，REORDER_LIFT_MS 之后再记）。详情回来得比那一拍快是常态，
-      // 这里再插一手，等于把它打回「瞬间跳到顶上」——那一拍得让路，谁在等这条
-      // 记录，谁就把它记完。
-      if (recentTaskIds[0] !== selected && pendingReorderId !== selected) { rememberTask(selected); render(); }
       $('task-title').textContent = entry.task.title;
       applyTaskTitleEditing(entry.task);
       $('task-state').textContent = taskStateText(entry);
