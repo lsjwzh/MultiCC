@@ -111,6 +111,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   late String _subModel;
   bool _customSubModel = false;
   late final TextEditingController _subCustomCtrl;
+  // Auto 候选池每行的模型选择状态（与子任务选择器同一套下拉 + 自定义…）。
+  // 自定义文本按 providerId 存 controller，切回候选模型时两边保持同步。
+  final Map<String, bool> _autoCustomModel = {};
+  final Map<String, TextEditingController> _autoModelCtrls = {};
 
   bool get _isClaude => widget.cli.isClaudeFamily;
   bool get _isCodex => widget.cli.isCodexFamily;
@@ -157,6 +161,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     _customCtrl.dispose();
     _agentCtrl.dispose();
     _subCustomCtrl.dispose();
+    for (final controller in _autoModelCtrls.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -361,6 +368,90 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     return _isClaude
         ? ClaudeModelsService.options().map((e) => e.key).toList()
         : [''];
+  }
+
+  // Auto 行的候选：_modelChoices 已含「借道线路落回本机 Claude 目录」的兜底，
+  // 这里只去掉空串（首项「Provider 默认」由下拉自己给）和重复项。
+  List<String> _autoModelChoices(String providerId) {
+    final seen = <String>{};
+    return [
+      for (final choice in _modelChoices(providerId))
+        if (choice.trim().isNotEmpty && seen.add(choice)) choice,
+    ];
+  }
+
+  TextEditingController _autoModelCtrl(_AutoCandidateDraft candidate) =>
+      _autoModelCtrls.putIfAbsent(
+        candidate.providerId,
+        () => TextEditingController(text: candidate.model),
+      );
+
+  // Auto 候选行的模型控件：首项「Provider 默认」（存空串 = 跟随线路默认），
+  // 中间是这条线路的候选，末尾「自定义…」现出文本框 —— 与 Web
+  // auto-provider-editor 同一套语义。配置里已有的、不在候选内的 id 会以
+  // 「自定义…」+ 原值回显，不会被静默丢掉。
+  Widget _buildAutoModelField(_AutoCandidateDraft candidate) {
+    final choices = _autoModelChoices(candidate.providerId);
+    final known = choices.contains(candidate.model);
+    final isCustom =
+        _autoCustomModel[candidate.providerId] ??
+        (candidate.model.isNotEmpty && !known);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DropdownButtonFormField<String>(
+          key: Key('auto-candidate-model-${candidate.providerId}'),
+          value: isCustom ? '__custom__' : (known ? candidate.model : ''),
+          isExpanded: true,
+          dropdownColor: AppColors.panel,
+          style: const TextStyle(
+            color: AppColors.text,
+            fontSize: 12,
+            fontFamily: 'monospace',
+          ),
+          decoration: _sheetInputDecoration(
+            hint: '留空跟随 Provider 默认模型',
+          ).copyWith(labelText: 'Model'),
+          items: [
+            const DropdownMenuItem(value: '', child: Text('Provider 默认')),
+            for (final choice in choices)
+              DropdownMenuItem(
+                value: choice,
+                child: Text(choice, overflow: TextOverflow.ellipsis),
+              ),
+            const DropdownMenuItem(value: '__custom__', child: Text('自定义…')),
+          ],
+          onChanged: (next) => setState(() {
+            final custom = next == '__custom__';
+            _autoCustomModel[candidate.providerId] = custom;
+            final controller = _autoModelCtrl(candidate);
+            if (custom) {
+              // 现出的文本框从当前存值起步，避免看到上一次留下的旧文本。
+              if (controller.text != candidate.model) {
+                controller.text = candidate.model;
+              }
+            } else {
+              candidate.model = next ?? '';
+              controller.text = candidate.model;
+            }
+          }),
+        ),
+        if (isCustom) ...[
+          const SizedBox(height: 6),
+          TextFormField(
+            key: Key('auto-candidate-model-custom-${candidate.providerId}'),
+            controller: _autoModelCtrl(candidate),
+            style: const TextStyle(
+              color: AppColors.text,
+              fontSize: 12,
+              fontFamily: 'monospace',
+            ),
+            decoration: _sheetInputDecoration(hint: '模型 ID'),
+            onChanged: (value) => candidate.model = value.trim(),
+          ),
+        ],
+      ],
+    );
   }
 
   // Map a stored wire model id (e.g. claude-opus-4-8) back to its alias tier so
@@ -676,19 +767,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                     ],
                   ),
                   const SizedBox(height: 6),
-                  TextFormField(
-                    key: Key('auto-candidate-model-${candidate.providerId}'),
-                    initialValue: candidate.model,
-                    style: const TextStyle(
-                      color: AppColors.text,
-                      fontSize: 12,
-                      fontFamily: 'monospace',
-                    ),
-                    decoration: _sheetInputDecoration(
-                      hint: '留空跟随 Provider 默认模型',
-                    ).copyWith(labelText: 'Model'),
-                    onChanged: (value) => candidate.model = value,
-                  ),
+                  _buildAutoModelField(candidate),
                 ],
               ),
             );
