@@ -323,7 +323,7 @@
   }
 
   function readOpenCodeModelsSync() {
-    return readModelCacheSync('multicc.opencode.models.v1');
+    return readModelCacheSync('multicc.opencode.models.v2');
   }
 
   function readQoderModelsSync() {
