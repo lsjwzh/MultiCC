@@ -808,6 +808,24 @@ function createProviderAttemptRuntime(options = {}) {
     });
   }
 
+  // A resident child outlives its turn, and so does the background work it
+  // started: a run_in_background Task/Workflow subagent keeps calling its sub
+  // route after the main result has closed the attempt. While the capability is
+  // still the current one (same spawn contract, no newer attempt, the turn ended
+  // cleanly) such a sub request is the same warm process finishing its own work,
+  // not a replay, so it is admitted without reopening the attempt. The main
+  // route stays closed between turns — a main request there would be an
+  // unattributed turn — and a cancelled or failed turn revokes the background
+  // too. Claude's outer HTTP guard cannot yet tell sub from main (the sub
+  // provider is decoded from the body later), so it admits provisionally and
+  // getProvider makes the authoritative role decision.
+  function backgroundLingers(record, input, role) {
+    if (record.outcome !== 'succeeded' || !record.spawnKey || !isResident(record.cli)) return false;
+    if (role === 'sub') return true;
+    return role === 'main' && clean(input.stage) === 'http_guard'
+      && clean(input.protocol).toLowerCase() === 'claude';
+  }
+
   function authorizeProxyRequest(input = {}) {
     const context = proxyContext(input);
     const { sessionId, record } = context;
@@ -824,8 +842,23 @@ function createProviderAttemptRuntime(options = {}) {
       return Object.freeze({ ok: false, code, sessionId: sessionId || null });
     };
     if (!sessionId || !context.exact) return reject('proxy_route_capability_mismatch');
-    if (!record || record.outcome !== 'running') return reject('proxy_attempt_not_running');
     const role = clean(input.role || input.roleKind || 'main').toLowerCase();
+    if (record && record.outcome !== 'running' && backgroundLingers(record, input, role)) {
+      if (role !== 'main' && clean(input.providerId)
+          && !record.allowedSubProviderIds.includes(clean(input.providerId))) {
+        return reject('provider_subroute_not_allowed');
+      }
+      if (resolveProviderRevision) {
+        let revisionMatches = false;
+        try { revisionMatches = clean(resolveProviderRevision(record, input)) === record.providerRevision; }
+        catch (_) {}
+        if (!revisionMatches) return reject('provider_revision_mismatch');
+      }
+      return Object.freeze({
+        ok: true, code: null, sessionId, attempt: snapshot(record), background: true,
+      });
+    }
+    if (!record || record.outcome !== 'running') return reject('proxy_attempt_not_running');
     if (role === 'main' && clean(input.providerId)
         && clean(input.providerId) !== record.providerId) {
       return reject('provider_route_mismatch', true);
