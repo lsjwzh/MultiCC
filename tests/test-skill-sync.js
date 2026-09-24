@@ -168,7 +168,7 @@ test('bundled artifact rule installs and upgrades with its relative references i
   }
 });
 
-test('bundled browser skill keeps its OpenClaw and Hermes adapters after sync', t => {
+test('bundled browser skill keeps its adapters and local launcher after sync', t => {
   const h = createHarness(t);
   const source = path.join(__dirname, '../skills/multicc-browser');
   fs.cpSync(source, path.join(h.rootDir, 'skills/multicc-browser'), { recursive: true });
@@ -180,6 +180,10 @@ test('bundled browser skill keeps its OpenClaw and Hermes adapters after sync', 
       fs.readFileSync(path.join(source, 'references/openclaw.md'), 'utf8'));
     assert.equal(fs.readFileSync(path.join(installed, 'references/hermes.md'), 'utf8'),
       fs.readFileSync(path.join(source, 'references/hermes.md'), 'utf8'));
+    assert.equal(fs.readFileSync(path.join(installed, 'references/browser-use-local.md'), 'utf8'),
+      fs.readFileSync(path.join(source, 'references/browser-use-local.md'), 'utf8'));
+    assert.equal(fs.readFileSync(path.join(installed, 'scripts/local_browser_use.py'), 'utf8'),
+      fs.readFileSync(path.join(source, 'scripts/local_browser_use.py'), 'utf8'));
   }
 });
 
