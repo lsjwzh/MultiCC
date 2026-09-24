@@ -354,6 +354,17 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
    和「它现在怎么样」是同一个问题的一半。 */
 .task-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
 .task-meta .mc-status { font-size: 11px; }
+.worktree-change-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: #98630c;
+  border: 1px solid #e8c982;
+  border-radius: 6px;
+  background: #fff7df;
+  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .task-note { color: #8b9cad; font-size: 10px; }
 /* 全文检索的命中片段：mark 只染命中的那几个字，片段本身仍是上面那行灰色小字。 */
 .task-snippet mark { color: #0f63c6; border-radius: 3px; background: #dcecfd; }

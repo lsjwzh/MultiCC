@@ -407,6 +407,10 @@ class AirTaskTile extends StatelessWidget {
               Row(
                 children: [
                   AirTaskStatusBadge(task: task, fontSize: 10.5),
+                  if (task.worktreeChanges?.pending == true) ...[
+                    const SizedBox(width: 6),
+                    AirWorktreeChangeBadge(task: task),
+                  ],
                   // 副行自己吃掉剩下的宽度（空着也占着），时间才总在行尾。
                   const SizedBox(width: 8),
                   Expanded(
