@@ -58,9 +58,14 @@ function createProcessingWatchdog(deps = {}) {
       clearSuspect(sessionId);
       return { sessionId, action: 'skip', reason: 'scheduler_unavailable' };
     }
+    // recover() parks a restart-orphaned P turn as frozen/classify_running. No
+    // turn end will ever judge it (its runner died with the old server), so it
+    // takes the dead-runner path below instead of waiting on classify forever.
+    const recoveredOrphan = scheduler?.state === 'frozen'
+      && scheduler.freezeReason === 'classify_running';
     // At a durable turn boundary the process is expected to be gone while Aux
     // decides the final classify letter. That is not a dead P process.
-    if (scheduler && ['assessing', 'frozen'].includes(scheduler.state)) {
+    if (scheduler && ['assessing', 'frozen'].includes(scheduler.state) && !recoveredOrphan) {
       clearSuspect(sessionId);
       return { sessionId, action: 'skip', reason: 'awaiting_classify' };
     }
@@ -95,6 +100,18 @@ function createProcessingWatchdog(deps = {}) {
     }
 
     suspects.delete(sessionId);
+    // An orphan that had already asked the user a question is waiting (W), not
+    // failed: settle it onto that question instead of cancelling.
+    if (recoveredOrphan && typeof deps.settleRecoveredQuestion === 'function') {
+      const settled = await deps.settleRecoveredQuestion(sessionId);
+      if (settled?.ok) {
+        logger.warn?.('processing_watchdog_settled_recovered_question', {
+          sessionId,
+          requestId: settled.requestId || null,
+        });
+        return { sessionId, action: 'settled_waiting', reason: 'recovered_pending_question', result: settled };
+      }
+    }
     const result = await deps.cancelTurn(sessionId, {
       reason: 'process_watchdog',
       killReason: 'process_watchdog',
