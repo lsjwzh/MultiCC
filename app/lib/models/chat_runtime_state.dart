@@ -258,17 +258,13 @@ class UsageWindowLimit {
     this.observedAtMs,
   });
 
-  bool isActiveAt(DateTime now) =>
-      resetsAtMs == null || resetsAtMs! > now.millisecondsSinceEpoch;
-
-  bool matchesCli(String cli) {
-    if (provider == 'opencode') return cli == 'opencode';
-    if (provider == 'glm' || provider == 'codex') {
-      return cli == 'codex' || cli == 'codex-exp' || cli == 'opencode';
-    }
-    return cli == 'claude' || cli == 'claude-exp' || cli == 'opencode';
-  }
-
+  // There used to be a `matchesCli` here as well. It was a FOURTH copy of the
+  // window gate, it had no caller, and it contradicted the real one: it judged
+  // the CLI id without ever looking at the provider baseUrl, so a 借道 or Zhipu
+  // provider was decided by a rule that could not see it. `providerMatchesCli`
+  // / `balanceBarVisibleFor` in models/vendor_quota.dart are the gate (pinned by
+  // tests/test-quota-gating-parity.js + app/test/quota_gating_parity_test.dart);
+  // nothing should re-derive it from a limit record.
   Map<String, dynamic> toJson() => {
     'rateLimitType': rateLimitType,
     'status': status,

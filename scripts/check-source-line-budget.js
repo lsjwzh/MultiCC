@@ -79,6 +79,25 @@ const MIGRATION_DEBT = Object.freeze({
   // tags + the task-mode stylesheet link) after sitting at 2999 for ages. Paid
   // back down to 3000 in M4 when the detail-modal retirement freed enough
   // lines — no chat.html debt entry remains.
+  // app/lib/providers/chat_provider.dart sat at exactly 3000/3000 lines for a
+  // long time, so any addition at all turned this gate red. The limit-bar
+  // structural review (限流条匹配逻辑全链路复查) is what crossed it: the app's
+  // provider-quota slots were brought to parity with the web module's
+  // (keep-last-known-good on a failed balance query, late ark/kimi responses
+  // dropped instead of repainting the previous account, both vendor slots reset
+  // on a provider switch) and the in-flight guards were keyed on the provider
+  // identity instead of a bare boolean — a bare flag suppressed the *new*
+  // provider's query when a switch landed mid-flight, which left the bar blank
+  // after the switch had already wiped it. That is ~48 lines, mostly the
+  // comments recording those invariants. The next split here should be the
+  // vendor-quota cluster (the ark/kimi/qoder fetchers, their in-flight/backoff
+  // state and their *QuotaView getters) into its own collaborator — that is one
+  // cohesive ~200-line unit, and dropping back to <= 3000 retires this entry.
+  'app/lib/providers/chat_provider.dart': Object.freeze({
+    ceiling: 3048,
+    byteCeiling: 122316,
+    target: 3000,
+  }),
 });
 
 // Reviewed third-party/generated assets are not first-party maintainability

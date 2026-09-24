@@ -1,0 +1,1637 @@
+{
+  "description": "借道/供应商窗口与余额条的门禁矩阵：web 是权威实现，Dart 镜像必须逐格一致",
+  "authority": "public/chat-rate-limit.js",
+  "mirror": "app/lib/models/vendor_quota.dart",
+  "generator": "scripts/generate-quota-gating-fixture.js",
+  "clis": [
+    "claude",
+    "claude-exp",
+    "codex",
+    "codex-exp",
+    "opencode",
+    "qoder",
+    "zcode",
+    "kimi",
+    "codebuddy",
+    "dsh",
+    ""
+  ],
+  "windowKinds": [
+    "claude",
+    "glm",
+    "codex",
+    "opencode",
+    "qoder",
+    "kimi",
+    ""
+  ],
+  "baseUrls": [
+    {
+      "label": "official-login",
+      "url": "",
+      "why": "官方登录：没有 baseUrl"
+    },
+    {
+      "label": "blank",
+      "url": "   ",
+      "why": "只有空白，必须和官方登录等价"
+    },
+    {
+      "label": "anthropic",
+      "url": "https://api.anthropic.com/v1",
+      "why": "Claude 官方域名"
+    },
+    {
+      "label": "anthropic-upper-port",
+      "url": "https://API.ANTHROPIC.COM:8443/v1",
+      "why": "大写 host + 端口：host 判定必须小写化并丢掉端口"
+    },
+    {
+      "label": "anthropic-subdomain",
+      "url": "https://eu.api.anthropic.com",
+      "why": "子域也算官方（后缀匹配）"
+    },
+    {
+      "label": "claude-ai",
+      "url": "https://api.claude.ai/api",
+      "why": "claude.ai 与 anthropic.com 同族"
+    },
+    {
+      "label": "anthropic-lookalike",
+      "url": "https://anthropic.com.evil.example/v1",
+      "why": "后缀陷阱：含 anthropic.com 但不是它的域"
+    },
+    {
+      "label": "proxy-host-only",
+      "url": "https://my-claude-proxy.example.com/v1",
+      "why": "host 里有 claude-proxy 但路径不是借道路径 → 不是借道"
+    },
+    {
+      "label": "zhipu-cn",
+      "url": "https://open.bigmodel.cn/api/anthropic",
+      "why": "智谱国内：claude CLI 可以走它，glm 窗口必须能显示"
+    },
+    {
+      "label": "zhipu-intl",
+      "url": "https://api.z.ai/api/paas/v4",
+      "why": "智谱国际站"
+    },
+    {
+      "label": "zhipu-upper",
+      "url": "https://API.Z.AI/api",
+      "why": "大写 host 也要认出智谱"
+    },
+    {
+      "label": "ark-coding",
+      "url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "why": "火山 Coding Plan 路径"
+    },
+    {
+      "label": "ark-agent-plan",
+      "url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+      "why": "火山 Agent Plan 路径（两档窗口不同）"
+    },
+    {
+      "label": "ark-lookalike",
+      "url": "https://notvolces.com/api/coding/v3",
+      "why": "域名后缀陷阱：不得只 contains(\"volces.com\")"
+    },
+    {
+      "label": "deepseek",
+      "url": "https://api.deepseek.com/anthropic",
+      "why": "DeepSeek 预付费余额的唯一宿主"
+    },
+    {
+      "label": "moonshot",
+      "url": "https://api.moonshot.cn/v1",
+      "why": "Kimi 的 moonshot 域"
+    },
+    {
+      "label": "kimi-coding",
+      "url": "https://api.kimi.com/coding/",
+      "why": "Kimi 的 kimi.com 域"
+    },
+    {
+      "label": "relay-claude",
+      "url": "https://relay.example:3000/claude-proxy/glm/remote",
+      "why": "借道 claude 协议（被借的可能是 GLM）"
+    },
+    {
+      "label": "relay-claude-trailing",
+      "url": "https://relay.example/claude-proxy/abc/remote/",
+      "why": "尾斜杠不得改变协议判定"
+    },
+    {
+      "label": "relay-claude-incomplete",
+      "url": "https://relay.example/claude-proxy/abc",
+      "why": "缺 /remote → 不是 claude 协议透传路径"
+    },
+    {
+      "label": "relay-codex-lan",
+      "url": "http://192.168.1.9:3000/codex-proxy/official",
+      "why": "借道 codex 协议（局域网 IP + http）"
+    },
+    {
+      "label": "relay-codex-tailscale",
+      "url": "https://mac.tail94695a.ts.net/codex-proxy/cx",
+      "why": "借道 codex 协议（Tailscale 域名）"
+    },
+    {
+      "label": "relay-codex-empty-id",
+      "url": "https://relay.example/codex-proxy/",
+      "why": "借道路径缺 provider id → 不算借道"
+    },
+    {
+      "label": "relay-loopback-ip",
+      "url": "http://127.0.0.1:3000/claude-proxy/abc/remote",
+      "why": "回环是本机自己的转发管道，永远不是借道"
+    },
+    {
+      "label": "relay-loopback-name",
+      "url": "http://localhost:3000/codex-proxy/abc",
+      "why": "localhost 同上"
+    },
+    {
+      "label": "relay-loopback-ipv6",
+      "url": "http://[::1]:3000/claude-proxy/abc/remote",
+      "why": "IPv6 回环：方括号形式也要认出来"
+    },
+    {
+      "label": "non-http-scheme",
+      "url": "ftp://relay.example/claude-proxy/abc/remote",
+      "why": "非 http(s) 一律不是借道"
+    },
+    {
+      "label": "custom-host",
+      "url": "https://llm.internal.corp/v1",
+      "why": "任意第三方端点：既不是官方也不是借道"
+    },
+    {
+      "label": "malformed",
+      "url": "not a url",
+      "why": "解析失败必须退化成「不是任何东西」，不得抛异常"
+    }
+  ],
+  "providerMatchesCliIn": {
+    "claude@official-login": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@blank": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@anthropic": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@anthropic-upper-port": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@anthropic-subdomain": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@claude-ai": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@anthropic-lookalike": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@proxy-host-only": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@zhipu-cn": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@zhipu-intl": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@zhipu-upper": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@ark-coding": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@ark-agent-plan": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@ark-lookalike": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@deepseek": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@moonshot": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@kimi-coding": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@relay-claude": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@relay-claude-trailing": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@relay-claude-incomplete": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@relay-codex-lan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "claude@relay-codex-tailscale": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "claude@relay-codex-empty-id": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@relay-loopback-ip": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@relay-loopback-name": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@relay-loopback-ipv6": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@non-http-scheme": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@custom-host": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "claude@malformed": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "glm@official-login": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@blank": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@anthropic": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@anthropic-upper-port": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@anthropic-subdomain": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@claude-ai": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@anthropic-lookalike": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@proxy-host-only": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@zhipu-cn": [
+      "claude",
+      "claude-exp",
+      "codex",
+      "codex-exp",
+      "opencode",
+      "qoder",
+      "zcode",
+      "kimi",
+      "codebuddy",
+      "dsh",
+      ""
+    ],
+    "glm@zhipu-intl": [
+      "claude",
+      "claude-exp",
+      "codex",
+      "codex-exp",
+      "opencode",
+      "qoder",
+      "zcode",
+      "kimi",
+      "codebuddy",
+      "dsh",
+      ""
+    ],
+    "glm@zhipu-upper": [
+      "claude",
+      "claude-exp",
+      "codex",
+      "codex-exp",
+      "opencode",
+      "qoder",
+      "zcode",
+      "kimi",
+      "codebuddy",
+      "dsh",
+      ""
+    ],
+    "glm@ark-coding": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@ark-agent-plan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@ark-lookalike": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@deepseek": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@moonshot": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@kimi-coding": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@relay-claude": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "glm@relay-claude-trailing": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "glm@relay-claude-incomplete": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@relay-codex-lan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@relay-codex-tailscale": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@relay-codex-empty-id": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@relay-loopback-ip": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@relay-loopback-name": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@relay-loopback-ipv6": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@non-http-scheme": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@custom-host": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "glm@malformed": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@official-login": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@blank": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@anthropic": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@anthropic-upper-port": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@anthropic-subdomain": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@claude-ai": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@anthropic-lookalike": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@proxy-host-only": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@zhipu-cn": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@zhipu-intl": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@zhipu-upper": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@ark-coding": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@ark-agent-plan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@ark-lookalike": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@deepseek": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@moonshot": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@kimi-coding": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@relay-claude": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "codex@relay-claude-trailing": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "codex@relay-claude-incomplete": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@relay-codex-lan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@relay-codex-tailscale": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@relay-codex-empty-id": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@relay-loopback-ip": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@relay-loopback-name": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@relay-loopback-ipv6": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@non-http-scheme": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@custom-host": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "codex@malformed": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "opencode@official-login": [
+      "opencode"
+    ],
+    "opencode@blank": [
+      "opencode"
+    ],
+    "opencode@anthropic": [
+      "opencode"
+    ],
+    "opencode@anthropic-upper-port": [
+      "opencode"
+    ],
+    "opencode@anthropic-subdomain": [
+      "opencode"
+    ],
+    "opencode@claude-ai": [
+      "opencode"
+    ],
+    "opencode@anthropic-lookalike": [
+      "opencode"
+    ],
+    "opencode@proxy-host-only": [
+      "opencode"
+    ],
+    "opencode@zhipu-cn": [
+      "opencode"
+    ],
+    "opencode@zhipu-intl": [
+      "opencode"
+    ],
+    "opencode@zhipu-upper": [
+      "opencode"
+    ],
+    "opencode@ark-coding": [
+      "opencode"
+    ],
+    "opencode@ark-agent-plan": [
+      "opencode"
+    ],
+    "opencode@ark-lookalike": [
+      "opencode"
+    ],
+    "opencode@deepseek": [
+      "opencode"
+    ],
+    "opencode@moonshot": [
+      "opencode"
+    ],
+    "opencode@kimi-coding": [
+      "opencode"
+    ],
+    "opencode@relay-claude": [
+      "opencode"
+    ],
+    "opencode@relay-claude-trailing": [
+      "opencode"
+    ],
+    "opencode@relay-claude-incomplete": [
+      "opencode"
+    ],
+    "opencode@relay-codex-lan": [
+      "opencode"
+    ],
+    "opencode@relay-codex-tailscale": [
+      "opencode"
+    ],
+    "opencode@relay-codex-empty-id": [
+      "opencode"
+    ],
+    "opencode@relay-loopback-ip": [
+      "opencode"
+    ],
+    "opencode@relay-loopback-name": [
+      "opencode"
+    ],
+    "opencode@relay-loopback-ipv6": [
+      "opencode"
+    ],
+    "opencode@non-http-scheme": [
+      "opencode"
+    ],
+    "opencode@custom-host": [
+      "opencode"
+    ],
+    "opencode@malformed": [
+      "opencode"
+    ],
+    "qoder@official-login": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@blank": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@anthropic": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@anthropic-upper-port": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@anthropic-subdomain": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@claude-ai": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@anthropic-lookalike": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@proxy-host-only": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@zhipu-cn": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@zhipu-intl": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@zhipu-upper": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@ark-coding": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@ark-agent-plan": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@ark-lookalike": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@deepseek": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@moonshot": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@kimi-coding": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@relay-claude": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@relay-claude-trailing": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@relay-claude-incomplete": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@relay-codex-lan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "qoder@relay-codex-tailscale": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "qoder@relay-codex-empty-id": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@relay-loopback-ip": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@relay-loopback-name": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@relay-loopback-ipv6": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@non-http-scheme": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@custom-host": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "qoder@malformed": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@official-login": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@blank": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@anthropic": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@anthropic-upper-port": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@anthropic-subdomain": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@claude-ai": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@anthropic-lookalike": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@proxy-host-only": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@zhipu-cn": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@zhipu-intl": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@zhipu-upper": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@ark-coding": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@ark-agent-plan": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@ark-lookalike": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@deepseek": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@moonshot": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@kimi-coding": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@relay-claude": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@relay-claude-trailing": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@relay-claude-incomplete": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@relay-codex-lan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "kimi@relay-codex-tailscale": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "kimi@relay-codex-empty-id": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@relay-loopback-ip": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@relay-loopback-name": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@relay-loopback-ipv6": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@non-http-scheme": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@custom-host": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "kimi@malformed": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@official-login": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@blank": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@anthropic": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@anthropic-upper-port": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@anthropic-subdomain": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@claude-ai": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@anthropic-lookalike": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@proxy-host-only": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@zhipu-cn": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@zhipu-intl": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@zhipu-upper": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@ark-coding": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@ark-agent-plan": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@ark-lookalike": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@deepseek": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@moonshot": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@kimi-coding": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@relay-claude": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@relay-claude-trailing": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@relay-claude-incomplete": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@relay-codex-lan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "@relay-codex-tailscale": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "@relay-codex-empty-id": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@relay-loopback-ip": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@relay-loopback-name": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@relay-loopback-ipv6": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@non-http-scheme": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@custom-host": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ],
+    "@malformed": [
+      "claude",
+      "claude-exp",
+      "opencode"
+    ]
+  },
+  "balanceBarVisibleFor": {
+    "official-login": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "blank": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "anthropic": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "anthropic-upper-port": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "anthropic-subdomain": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "claude-ai": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "anthropic-lookalike": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "proxy-host-only": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "zhipu-cn": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "zhipu-intl": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "zhipu-upper": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "ark-coding": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "ark-agent-plan": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "ark-lookalike": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "deepseek": [
+      "claude",
+      "claude-exp",
+      "codex",
+      "codex-exp",
+      "opencode",
+      "qoder",
+      "zcode",
+      "kimi",
+      "codebuddy",
+      "dsh",
+      ""
+    ],
+    "moonshot": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "kimi-coding": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "relay-claude": [
+      "claude",
+      "claude-exp",
+      "codex",
+      "codex-exp",
+      "opencode",
+      "qoder",
+      "zcode",
+      "kimi",
+      "codebuddy",
+      "dsh",
+      ""
+    ],
+    "relay-claude-trailing": [
+      "claude",
+      "claude-exp",
+      "codex",
+      "codex-exp",
+      "opencode",
+      "qoder",
+      "zcode",
+      "kimi",
+      "codebuddy",
+      "dsh",
+      ""
+    ],
+    "relay-claude-incomplete": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "relay-codex-lan": [
+      "claude",
+      "claude-exp",
+      "codex",
+      "codex-exp",
+      "opencode",
+      "qoder",
+      "zcode",
+      "kimi",
+      "codebuddy",
+      "dsh",
+      ""
+    ],
+    "relay-codex-tailscale": [
+      "claude",
+      "claude-exp",
+      "codex",
+      "codex-exp",
+      "opencode",
+      "qoder",
+      "zcode",
+      "kimi",
+      "codebuddy",
+      "dsh",
+      ""
+    ],
+    "relay-codex-empty-id": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "relay-loopback-ip": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "relay-loopback-name": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "relay-loopback-ipv6": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "non-http-scheme": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "custom-host": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ],
+    "malformed": [
+      "codex",
+      "codex-exp",
+      "opencode"
+    ]
+  },
+  "baseUrlTraits": {
+    "official-login": {
+      "host": "",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": true,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "blank": {
+      "host": "",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": true,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "anthropic": {
+      "host": "api.anthropic.com",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": true,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "anthropic-upper-port": {
+      "host": "api.anthropic.com",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": true,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "anthropic-subdomain": {
+      "host": "eu.api.anthropic.com",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": true,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "claude-ai": {
+      "host": "api.claude.ai",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": true,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "anthropic-lookalike": {
+      "host": "anthropic.com.evil.example",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "proxy-host-only": {
+      "host": "my-claude-proxy.example.com",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "zhipu-cn": {
+      "host": "open.bigmodel.cn",
+      "ark": false,
+      "zhipu": true,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "zhipu-intl": {
+      "host": "api.z.ai",
+      "ark": false,
+      "zhipu": true,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "zhipu-upper": {
+      "host": "api.z.ai",
+      "ark": false,
+      "zhipu": true,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "ark-coding": {
+      "host": "ark.cn-beijing.volces.com",
+      "ark": true,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": "coding-plan"
+    },
+    "ark-agent-plan": {
+      "host": "ark.cn-beijing.volces.com",
+      "ark": true,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": "agent-plan"
+    },
+    "ark-lookalike": {
+      "host": "notvolces.com",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": "coding-plan"
+    },
+    "deepseek": {
+      "host": "api.deepseek.com",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": true,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "moonshot": {
+      "host": "api.moonshot.cn",
+      "ark": false,
+      "zhipu": false,
+      "kimi": true,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "kimi-coding": {
+      "host": "api.kimi.com",
+      "ark": false,
+      "zhipu": false,
+      "kimi": true,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": "coding-plan"
+    },
+    "relay-claude": {
+      "host": "relay.example",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": "claude",
+      "arkPlan": null
+    },
+    "relay-claude-trailing": {
+      "host": "relay.example",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": "claude",
+      "arkPlan": null
+    },
+    "relay-claude-incomplete": {
+      "host": "relay.example",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "relay-codex-lan": {
+      "host": "192.168.1.9",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": "codex",
+      "arkPlan": null
+    },
+    "relay-codex-tailscale": {
+      "host": "mac.tail94695a.ts.net",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": "codex",
+      "arkPlan": null
+    },
+    "relay-codex-empty-id": {
+      "host": "relay.example",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "relay-loopback-ip": {
+      "host": "127.0.0.1",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "relay-loopback-name": {
+      "host": "localhost",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "relay-loopback-ipv6": {
+      "host": "::1",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "non-http-scheme": {
+      "host": "relay.example",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "custom-host": {
+      "host": "llm.internal.corp",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    },
+    "malformed": {
+      "host": "",
+      "ark": false,
+      "zhipu": false,
+      "kimi": false,
+      "deepseek": false,
+      "claudeProvider": false,
+      "relayProtocol": null,
+      "arkPlan": null
+    }
+  }
+}

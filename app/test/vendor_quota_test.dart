@@ -115,7 +115,7 @@ void main() {
       expect(v.text, '5h 100% 39m · 30s 前 ⟳');
     });
 
-    test('a past deadline reads as "1m", never an empty segment', () {
+    test('a past deadline reads as rolled, never an empty segment', () {
       const now = 1_700_000_000_000;
       final v = vendorViewFromBar(
         const {
@@ -126,9 +126,11 @@ void main() {
         },
         now: now,
       )!;
-      // A deadline already in the past collapses to the 1m floor so the bar's
-      // separators stay well-formed rather than going blank.
-      expect(v.text, '1m 0% 1m');
+      // The window rolled, so the segment says so: a countdown here would read
+      // as "0% used, resets in 1m" next to a percentage from the window that
+      // just ended. The segment stays non-empty so the bar's separators remain
+      // well-formed rather than going blank.
+      expect(v.text, '1m 0% 已重置');
       expect(v.color, VendorQuotaColor.red);
     });
 
