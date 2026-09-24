@@ -3312,7 +3312,14 @@ window.MULTICC_I18N_CATALOG = {
     "airTaskGraphSectionOut": "指向",
     "airTaskGraphSectionIn": "被指向",
     "airTaskGraphManualSuffix": "（手动）",
-    "airTaskGraphNoLinks": "（暂无关联，孤立节点）"
+    "airTaskGraphNoLinks": "（暂无关联，孤立节点）",
+    "airCliUpdateInstall": "安装",
+    "airCliUpdateInstalling": "安装中…",
+    "airCliUpdateInstallDone": "安装完成",
+    "airCliUpdateInstallFailed": "安装失败：{error}",
+    "airDirDragHint": "拖动可调整目录顺序（保存在服务端）",
+    "airDirReorderFailed": "保存目录顺序失败：{error}",
+    "airDirSwitchHeading": "切换目录"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -6626,6 +6633,13 @@ window.MULTICC_I18N_CATALOG = {
     "airTaskGraphSectionOut": "Outgoing",
     "airTaskGraphSectionIn": "Incoming",
     "airTaskGraphManualSuffix": " (manual)",
-    "airTaskGraphNoLinks": "(No relations — isolated node)"
+    "airTaskGraphNoLinks": "(No relations — isolated node)",
+    "airCliUpdateInstall": "Install",
+    "airCliUpdateInstalling": "Installing…",
+    "airCliUpdateInstallDone": "Installed",
+    "airCliUpdateInstallFailed": "Install failed: {error}",
+    "airDirDragHint": "Drag to reorder directories (saved on the server)",
+    "airDirReorderFailed": "Could not save directory order: {error}",
+    "airDirSwitchHeading": "Switch directory"
   }
 };

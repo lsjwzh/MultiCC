@@ -250,3 +250,39 @@ test('Web and App consume the same endpoint and contain no production Astra gues
   const air = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-provider.js'), 'utf8');
   assert.match(air, /'codex-official': \{[^\n]+model: ''/);
 });
+
+test('picker sync nudges one background refresh per hour and skips a fresh catalog', async () => {
+  let clock = 10 * 60 * 60 * 1000;
+  let discoveries = 0;
+  let diskAt = clock - 3 * 60 * 60 * 1000; // Codex last refreshed 3h ago
+  const runtime = createCodexModelsRuntime({
+    now: () => clock,
+    discover: async () => { discoveries += 1; return { models: [model('gpt-6-sol')], catalogFetchedAt: diskAt }; },
+    readDisk: () => ({ models: [], fetchedAt: diskAt, cliVersion: '' }),
+  });
+  const first = runtime.syncIfDue();
+  assert.equal(first.triggered, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(discoveries, 1);
+  assert.equal(runtime.syncIfDue().reason, 'throttled');
+
+  clock += 61 * 60 * 1000;
+  diskAt = clock - 5 * 60 * 1000; // Codex refreshed on its own meanwhile
+  assert.equal(runtime.syncIfDue().reason, 'fresh');
+  assert.equal(discoveries, 1);
+});
+
+test('a model/list answered from an old models_cache.json is reported as stale', async () => {
+  const at = 50 * 60 * 60 * 1000;
+  const runtime = createCodexModelsRuntime({
+    now: () => at,
+    discover: async () => ({ models: [model('gpt-5.5')], catalogFetchedAt: at - 8 * 60 * 60 * 1000 }),
+  });
+  const result = await runtime.list({ forceRefresh: true });
+  assert.equal(result.diagnostic.code, 'catalog_stale');
+  assert.equal(result.stale, true);
+  assert.equal(result.catalogFetchedAt, at - 8 * 60 * 60 * 1000);
+  assert.deepEqual(result.models.map(m => m.model), ['gpt-5.5']);
+  const cached = await runtime.list();
+  assert.equal(cached.diagnostic.code, 'catalog_stale');
+});
