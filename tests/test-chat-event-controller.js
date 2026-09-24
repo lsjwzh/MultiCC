@@ -280,6 +280,29 @@ test('memory admission progress shows the user message immediately and updates o
   );
 });
 
+test('a difficulty-routing wait and a memory wait share one bubble', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  // Auto Provider difficulty routing rides the admission window *before* the
+  // memory distill, so a routed pool emits this stage first and the memory stage
+  // second — two frames, one message, the same clientMsgId. The client keys the
+  // bubble on clientMsgId alone, so the second frame must reuse the first's.
+  const base = { type: 'message_admission_progress', state: 'waiting', message: '重构 provider 层', clientMsgId: 'client-routing-1' };
+  fixture.controller.handleEvent({
+    ...base, stage: 'auto_provider_routing', reason: 'auto_provider_routing_pending',
+  }, generation);
+  fixture.controller.handleEvent({
+    ...base, stage: 'memory_distill', reason: 'memory_distill_pending',
+  }, generation);
+  assert.deepEqual(
+    fixture.calls.filter(call => Array.isArray(call) && call[0] === 'user'),
+    [['user', '重构 provider 层', 'client-routing-1']],
+    'two admission stages for one message never draw two bubbles',
+  );
+  assert.ok(fixture.liveUi.getThinkingElement(),
+    'the loader survives the second stage instead of being torn down');
+});
+
 test('memory failure stays visible while queued admission retires its transient loader', () => {
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
