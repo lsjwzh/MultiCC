@@ -2679,6 +2679,7 @@
   "autoEditorRoutingNeedsTwo": "Difficulty routing needs at least two candidate Providers.",
   "autoEditorRoutingNeedsTwoTiers": "Difficulty routing needs at least two distinct tiers (one for simple tasks, one for complex ones).",
   "autoEditorRoutingTooManyTiers": "At most {max} tiers.",
+  "autoEditorRoutingKeyMissing": "{key} is not configured yet: difficulty routing will keep failing and fall back to the most conservative tier every time.",
   "autoEditorStickySuffix": " keep preferring it after a success",
   "autoEditorPresetPlaceholder": "Apply a saved preset…",
   "autoEditorPresetEmpty": "No saved presets yet",

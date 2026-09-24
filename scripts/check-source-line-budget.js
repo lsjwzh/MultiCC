@@ -189,9 +189,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // title。只在词典源（app/assets/i18n/*.json）里按键名字母序插入，catalog 同步手补
   // ——没有重跑生成器，免得把 main 上已存在的陈旧漂移（usage* 那几条）带进来。
   // 抬到 6696/414195。
+  // 补第 8 条键 autoEditorRoutingKeyMissing（路由已勾但保险箱缺 vercel-api-key 的提示），
+  // 中英各 1 行 = +2 行，抬到 6698/414487（这次是重跑生成器后的真实行数，用
+  // split(/\n/).length 量的，比 wc -l 多 1）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6696,
-    maxBytes: 414195,
+    maxLines: 6698,
+    maxBytes: 414487,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
