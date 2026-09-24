@@ -213,18 +213,34 @@
   /**
    * 控制台与目录面板共用的任务筛选语义。directoryName 只在跨目录搜索时传入；
    * 目录首页已经把 rows 收窄到一个目录，所以搜索标题即可。
+   *
+   * `keepOrder` 给全文检索用：那批任务进来时已经是相关度顺序，时间排序会把服务端
+   * 算出来的名次抹掉。除了不排序，其余筛选一字不差 —— 状态与目录的口径只有这一份。
    */
-  function filterTasks(tasks, filter = {}, directoryName = () => '') {
+  function filterTasks(tasks, filter = {}, directoryName = () => '', { keepOrder = false } = {}) {
     const status = filter.status || 'open';
     const dir = filter.dir || 'all';
     const needle = String(filter.query || '').trim().toLowerCase();
-    return (tasks || [])
+    const rows = (tasks || [])
       .filter(task => status === 'all' ? true
         : status === 'archived' ? task.status === 'archived'
           : !['done', 'archived'].includes(task.status))
-      .filter(task => dir === 'all' || task.dirId === dir)
-      .filter(task => !needle || `${task.title || ''} ${directoryName(task.dirId)}`.toLowerCase().includes(needle))
-      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+      .filter(task => dir === 'all' || task.dirId === dir);
+    if (keepOrder) return rows;
+    // 本地过滤按标题（和目录名）匹配：它仍是即时反馈，也是全文检索不可用时的退路。
+    const matched = !needle ? rows
+      : rows.filter(task => `${task.title || ''} ${directoryName(task.dirId)}`.toLowerCase().includes(needle));
+    return matched.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  }
+
+  /** 全文检索结果 → 相关度顺序的任务数组（服务端顺序，逐条仍是同一份筛选口径）。 */
+  function rankedRows(tasks, filter, directoryName, results) {
+    const ranked = window.MultiCCTaskSearch?.rankedTasks(results, tasks);
+    if (!ranked) return null;
+    const snippets = new Map(ranked.map(({ task, hit }) => [task.id, hit.snippet]));
+    const rows = filterTasks(ranked.map(({ task }) => task), filter, directoryName, { keepOrder: true });
+    // 本地状态/目录筛选可能把命中的前几名滤掉，滤掉的那几条不该继续占位置。
+    return rows.map(task => ({ task, snippet: snippets.get(task.id) || null }));
   }
 
   /** 一条任务行：徽标 + 标题 + 目录/阶段 + 时间；删除是独立按钮，避免按钮嵌套。 */
@@ -256,6 +272,10 @@
     const note = [where, taskDetail(task, context)].filter(Boolean).join(' · ');
     if (note) meta.append(make('em', note, 'task-note'));
     copy.append(make('strong', task.title || t('airAdminUntitledTask')), meta);
+    // 全文检索命中时把命中的那段原文摆出来：标题里没有查询词、却在正文/历史轮次里
+    // 命中时，这一行就是「为什么它被搜出来」的唯一解释。
+    const snippet = window.MultiCCTaskSearch?.snippetNode?.(options.snippet);
+    if (snippet) copy.append(snippet);
     body.append(copy, make('time', task.updatedAt ? new Date(task.updatedAt).toLocaleString(getLocale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''));
     row.append(body);
     if (options.deletable && context.deleteTask) {
@@ -409,11 +429,18 @@
     allList.id = 'console-task-list';
     // 只重画列表，不重画面板：每敲一个字就 replaceChildren 的话，输入框会在第一次
     // 按键后失去焦点。筛选状态存在模块里，所以重开面板还是同一份筛选。
+    // 全文检索控制器。构造时就会跑一次 onChange，所以先声明成 null：那一刻
+    // paintTaskList 只能走本地筛选，等控制器拿到结果再覆盖（见下面的赋值）。
+    let fullText = null;
     function paintTaskList() {
-      const rows = filterTasks(tasks, consoleFilter, context.directoryName);
+      // 有全文结果就按相关度排（标题没命中、正文命中的任务因此能被找到）；没有
+      // （还没回来 / 报错 / 查询为空）就退回原来的本地标题筛选，面板从不空着。
+      const rows = (consoleFilter.query.trim()
+        ? rankedRows(tasks, consoleFilter, context.directoryName, fullText?.results())
+        : null) || filterTasks(tasks, consoleFilter, context.directoryName).map(task => ({ task }));
       const shown = rows.slice(0, TASK_LIST_LIMIT);
-      allList.replaceChildren(...shown.map(task => taskRow(task, context, {
-        onOpen: () => context.closeConsole?.(), deletable: true,
+      allList.replaceChildren(...shown.map(({ task, snippet }) => taskRow(task, context, {
+        onOpen: () => context.closeConsole?.(), deletable: true, snippet,
       })));
       if (!rows.length) allList.append(make('p', t('airAdminNoMatchingTasks'), 'admin-empty'));
       allNote.textContent = rows.length > shown.length
@@ -421,6 +448,14 @@
         : t('airAdminNItems', { n: rows.length });
     }
     search.oninput = () => { consoleFilter.query = search.value; paintTaskList(); };
+    // 搜索框同时挂两条路：本地筛选立刻重画（上面那条），全文结果到了再按相关度覆盖
+    // 一次。过滤条件不发给服务端 —— 「进行中」这类口径只此一份，命中结果回到这里
+    // 再按同一份 filterTasks 收窄，服务端只负责「哪些任务的正文里出现过这些词」。
+    fullText = window.MultiCCTaskSearch?.attach(search, {
+      request: path => context.api(path),
+      limit: TASK_LIST_LIMIT,
+      onChange: () => paintTaskList(),
+    });
     statusPick.onchange = () => { consoleFilter.status = statusPick.value; paintTaskList(); };
     dirPick.onchange = () => { consoleFilter.dir = dirPick.value; paintTaskList(); };
     controls.append(search, statusPick, dirPick);
@@ -1058,5 +1093,6 @@
     statusBadge,
     applyRing,
     filterTasks,
+    rankedRows,
   });
 })(typeof window !== 'undefined' ? window : null);

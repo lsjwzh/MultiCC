@@ -29,6 +29,7 @@
   let consoleOpen = ['overview', 'activity'].includes(initialParams.get('view'));
   let paletteOpen = false;
   let paletteItems = [];
+  let paletteSearch = null;
   let paletteIndex = 0;
   let data = null;
   // Pin 住的任务（服务端 air-pins.json 那份清单，顺序就是页头那排收藏栏从左到右的
@@ -71,6 +72,7 @@
   const POLL_MAX_MS = 30000;
   let quickCreateAttempt = null;
   let directoryTasksExpanded = false;
+  let directorySearch = null;
   const directoryTaskFilter = { query: '', status: 'open' };
 
   // 状态/阶段/阻断原因的文案一律现取 t()：这些表在 render 的每一行上被读，
@@ -325,7 +327,9 @@
   }
 
   // ── ⌘K：目录和任务一起搜 ────────────────────────────────────────────────
-  // 找任务不该先要求你想起来它在哪个目录。两类对象同一次搜索、同一个列表。
+  // 找任务不该先要求你想起来它在哪个目录，也不该要求你记得标题里那几个字：
+  // 有全文结果时任务按内容相关度排（服务端算，命中片段直接当副标题），没有时退回
+  // 「手上的任务在前，然后是当前目录，最后是其余任务」这条时间序。
   function paletteCandidates(query) {
     const needle = query.trim().toLowerCase();
     const matches = text => !needle || text.toLowerCase().includes(needle);
@@ -336,17 +340,20 @@
         kind: 'directory', dirId: directory.id,
         title: directory.name, detail: directory.path || t('airDirectoryFallback'),
       }));
-    // 顺序即相关度：手上的任务在前，然后是当前目录，最后是其余任务。
-    const pool = [...recentPool(), ...data.tasks];
+    const ranked = needle ? window.MultiCCTaskSearch?.rankedTasks(paletteSearch?.results(), data.tasks) : null;
+    const hits = new Map((ranked || []).map(({ task, hit }) => [task.id, hit]));
+    const pool = ranked ? ranked.map(({ task }) => task) : [...recentPool(), ...data.tasks];
     const seen = new Set();
     const tasks = [];
     for (const task of pool) {
-      if (seen.has(task.id) || !matches(task.title || '')) continue;
+      if (seen.has(task.id) || (!ranked && !matches(task.title || ''))) continue;
       seen.add(task.id);
       tasks.push({
         kind: 'task', dirId: task.dirId, id: task.id,
         title: task.title || t('airUntitledTask'),
-        detail: `${directoryName(task.dirId)} · ${label(taskStatus(task))}`,
+        // 命中片段优先：它就答了「为什么搜出这条」。没有片段（本地筛选、目录命中）
+        // 才回到「目录 · 状态」。
+        detail: hits.get(task.id)?.snippet?.text || `${directoryName(task.dirId)} · ${label(taskStatus(task))}`,
       });
       if (tasks.length >= (needle ? 8 : 6)) break;
     }
@@ -385,6 +392,8 @@
     paletteOpen = true;
     paletteIndex = 0;
     $('palette-input').value = '';
+    // 面板每次都是空着打开的，上一次的全文结果不能跟进来（清空输入不会触发 input）。
+    paletteSearch?.refresh();
     $('palette').hidden = false;
     $('palette-scrim').hidden = false;
     renderPalette();
@@ -538,8 +547,14 @@
         worktrees: dir?.worktreeCount || 0,
       })),
     );
-    const filtered = (window.MultiCCAirAdmin?.filterTasks?.(tasks, directoryTaskFilter, () => '') || [...tasks])
-      .sort(compareDirectoryTasks);
+    // 全文命中时保持相关度顺序，没有命中照旧按时间排；两条路的状态/目录筛选同属
+    // filterTasks。「框里现在有没有词」是前提：面板被导航重置成空查询时，上一轮的
+    // 命中结果必须让位给完整列表，否则会继续按旧相关度排、连条数都少一截。
+    const ranked = directoryTaskFilter.query.trim()
+      ? window.MultiCCAirAdmin?.rankedRows?.(tasks, directoryTaskFilter, () => '', directorySearch?.results()) : null;
+    const snippets = new Map((ranked || []).map(({ task, snippet }) => [task.id, snippet]));
+    const filtered = ranked ? ranked.map(({ task }) => task)
+      : (window.MultiCCAirAdmin?.filterTasks?.(tasks, directoryTaskFilter, () => '') || [...tasks]).sort(compareDirectoryTasks);
     const rows = directoryTasksExpanded
       ? filtered
       : [...tasks].sort(compareDirectoryTasks).slice(0, recentRowLimit());
@@ -577,6 +592,9 @@
       if (worktree) meta.title = task.resource.path;
       if (extra) meta.append(node('em', extra, 'task-note'));
       copy.append(node('strong', task.title || t('airUntitledTask')), meta);
+      // 正文/历史轮次里命中时，这一行是「为什么搜出它」的唯一解释（标题里没有查询词）。
+      const snippet = window.MultiCCTaskSearch?.snippetNode?.(snippets.get(task.id));
+      if (snippet) copy.append(snippet);
       const shownAt = taskSortAt(task);
       const time = node('time', shownAt ? new Date(shownAt).toLocaleString(locale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
       time.title = t(directoryTaskSort === 'visit' ? 'airTaskLastVisit' : 'airTaskLastMessage');
@@ -2752,6 +2770,13 @@
     renderDirectoryOverview();
     $('directory-task-search').focus();
   };
+  // 目录内搜索同样接全文：命中范围限定在本目录（服务端 dirId），标题没命中、正文
+  // 命中的任务也能被找回来。结果没回来之前仍是上面那条标题筛选。
+  directorySearch = window.MultiCCTaskSearch?.attach($('directory-task-search'), {
+    request: path => api(path),
+    filters: () => ({ dirId: directoryId }),
+    onChange: () => { if (directoryId) renderDirectoryOverview(); },
+  });
   $('directory-memo').onclick = () => {
     if (directoryId) window.open(`/memo.html?dirId=${encodeURIComponent(directoryId)}`, '_blank', 'noopener');
   };
@@ -2770,6 +2795,11 @@
   $('console-scrim').onclick = () => setConsole(false);
   $('palette-scrim').onclick = () => closePalette();
   $('palette-input').oninput = () => { paletteIndex = 0; renderPalette(); };
+  // 全文结果晚一拍到：到了就重画一次（标题匹配的那版已经在屏幕上，不会有空白期）。
+  paletteSearch = window.MultiCCTaskSearch?.attach($('palette-input'), {
+    request: path => api(path),
+    onChange: () => { if (paletteOpen) { paletteIndex = 0; renderPalette(); } },
+  });
   $('schedules').onclick = () => setMode('schedules');
   document.querySelectorAll('[data-air-view]').forEach(button => { button.onclick = () => setMode(button.dataset.airView); });
 

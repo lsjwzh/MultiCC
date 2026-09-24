@@ -114,7 +114,7 @@ const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
-const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs');
+const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs'); const { createTaskSearchRoutes } = require('./src/routes/task-search');
 const { createTaskRunStore } = require('./src/task-run/store'); const { createProductionTaskRunHost } = require('./src/task-run/production'); const { reconcileTaskRunSlotLeases } = require('./src/task-run/recovery');
 const { createTaskRunProviderBridge } = require('./src/task-run/provider-bridge'); const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
@@ -2046,7 +2046,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   relocateShellTask: (taskId, dirId, opts) => taskShellHost.relocateTask(taskId, dirId, opts),
   logger: console,
 });
-taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app);
+taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app); createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), logger }).mountRoutes(app);
 const taskContextHost = createTaskContextHost({
   getState: sessionId => chatSessions.get(sessionId), emitClients: createTaskRunStreamEmitter(broadcastTo, chatSessions, persistedSessions, workspaceBroadcast),
   append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),
