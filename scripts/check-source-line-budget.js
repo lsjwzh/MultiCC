@@ -182,9 +182,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // = +10 行，抬到 6658/411500。
   // Auto Provider 候选池预设（套用/保存/删除/最近使用等 9 键），中英各 9 行 = +18 行，
   // 抬到 6676/412600。
+  // 技能分层每组加一句来源说明（5 键 Hint），中英各 5 行 = +10 行，抬到 6686/413300。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6676,
-    maxBytes: 412600,
+    maxLines: 6686,
+    maxBytes: 413300,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

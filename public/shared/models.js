@@ -61,7 +61,7 @@
   // browser for 1 day too, so repeated picker opens stay snappy. Returns an
   // array of {provider, model, label} entries; see routes/opencode-models.js.
   const OPENCODE_MODELS_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
-  const OPENCODE_MODELS_KEY = 'multicc.opencode.models.v1';
+  const OPENCODE_MODELS_KEY = 'multicc.opencode.models.v2';
   let opencodeModelsPromise = null;
 
   function readOpenCodeCache() {
