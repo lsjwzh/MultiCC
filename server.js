@@ -2719,7 +2719,7 @@ const processingWatchdog = createProcessingWatchdog({
   isPidAlive(pid) {
     try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
   },
-  cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options),
+  cancelTurn: (id, options) => sessionWorkHost.cancelActiveTurn(id, options), settleRecoveredQuestion: id => sessionWorkHost.settleRecoveredQuestion(id),
   logger,
 });
 // Companion to the dead-runner watchdog: observes the liveness `stalled` verdict.
