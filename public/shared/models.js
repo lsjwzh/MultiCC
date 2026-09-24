@@ -271,6 +271,19 @@
     return codexModelsPromise;
   }
 
+  // Picker-open nudge: ask the server to let Codex re-fetch its account
+  // catalog (~/.codex/models_cache.json, which the provider picker reads). The
+  // server throttles to once an hour; this local gate only stops every render
+  // of the same dropdown from posting.
+  let codexSyncAt = 0;
+  function syncCodexModelsIfDue() {
+    if (Date.now() - codexSyncAt < 5 * 60 * 1000) return;
+    codexSyncAt = Date.now();
+    try {
+      window.fetch('/api/codex/models/sync', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+    } catch (_) { /* best-effort */ }
+  }
+
   function codexModelOptions() {
     return codexCatalog ? codexCatalog.models.slice() : [];
   }
@@ -285,12 +298,16 @@
   // claude CLI's bundle (server-side cache 1 day) — the only local source that
   // tracks Anthropic's releases; a hardcoded table rots between CLI upgrades
   // (claude-opus-5 was missing from the App picker for weeks). Mirrored here
-  // for 1 day too. Entries are {model, label}; the route reports
+  // stale-while-revalidate: a list up to a week old still renders instantly,
+  // but anything older than CLAUDE_MODELS_FRESH_MS is re-fetched on the next
+  // picker open (the server re-extracts as soon as the CLI bundle changes). Entries are {model, label}; the route reports
   // source:'fallback' when the CLI is unreadable, and that variant is never
   // persisted so the next picker open retries.
   const CLAUDE_MODELS_KEY = 'multicc.claude.models.v1';
+  const CLAUDE_MODELS_FRESH_MS = 60 * 60 * 1000;
+  const CLAUDE_MODELS_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
   let claudeModelsPromise = null;
-  let claudeCacheMemo = null; // { raw, models } keyed on the localStorage blob
+  let claudeCacheMemo = null; // { raw, models, at } keyed on the localStorage blob
 
   // Memoized sync read: modelShortName() consults this on every model render,
   // so the JSON must not be re-parsed per call. Returns [] on a miss/stale.
@@ -298,16 +315,25 @@
     let raw = null;
     try { raw = window.localStorage && window.localStorage.getItem(CLAUDE_MODELS_KEY); } catch (_) { return []; }
     if (!raw) return [];
-    if (claudeCacheMemo && claudeCacheMemo.raw === raw) return claudeCacheMemo.models;
+    if (claudeCacheMemo && claudeCacheMemo.raw === raw) {
+      return (Date.now() - claudeCacheMemo.at) < CLAUDE_MODELS_KEEP_MS ? claudeCacheMemo.models : [];
+    }
     let models = [];
+    let at = 0;
     try {
       const obj = JSON.parse(raw);
-      const at = Number(obj && obj.at) || 0;
+      at = Number(obj && obj.at) || 0;
       const list = obj && Array.isArray(obj.models) ? obj.models : [];
-      if (at && (Date.now() - at) < 24 * 60 * 60 * 1000 && list.length) models = list;
+      if (at && list.length) models = list;
     } catch (_) { /* corrupted cache — treat as a miss */ }
-    claudeCacheMemo = { raw, models };
-    return models;
+    claudeCacheMemo = { raw, models, at };
+    return (Date.now() - at) < CLAUDE_MODELS_KEEP_MS ? models : [];
+  }
+
+  function claudeModelsFresh() {
+    readClaudeModelsSync();
+    return !!(claudeCacheMemo && claudeCacheMemo.models.length
+      && (Date.now() - claudeCacheMemo.at) < CLAUDE_MODELS_FRESH_MS);
   }
 
   function writeClaudeCache(models) {
@@ -321,7 +347,7 @@
 
   async function loadClaudeModels() {
     const cached = readClaudeModelsSync();
-    if (cached.length) return cached;
+    if (cached.length && claudeModelsFresh()) return cached;
     if (claudeModelsPromise) return claudeModelsPromise;
     claudeModelsPromise = (async () => {
       try {
@@ -331,8 +357,8 @@
         // Only persist the CLI-derived list: caching the offline fallback for a
         // day would hide the models once the CLI is readable again.
         if (models.length && data.source !== 'fallback') writeClaudeCache(models);
-        return models;
-      } catch (_) { return []; } finally { claudeModelsPromise = null; }
+        return models.length ? models : cached;
+      } catch (_) { return cached; } finally { claudeModelsPromise = null; }
     })();
     return claudeModelsPromise;
   }
@@ -350,6 +376,7 @@
   window.loadCodexModels = loadCodexModels;
   window.readCodexModelCatalogSync = readCodexModelCatalogSync;
   window.codexModelOptions = codexModelOptions;
+  window.syncCodexModelsIfDue = syncCodexModelsIfDue;
   window.codexModelLabel = codexModelLabel;
   window.loadClaudeModels = loadClaudeModels;
   window.readClaudeModelsSync = readClaudeModelsSync;

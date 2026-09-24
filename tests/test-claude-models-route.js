@@ -133,3 +133,19 @@ test('the route reports source and cached, and never 500s', async () => {
   assert.equal(body.cached, true);
   assert.deepEqual(body.models, [{ model: 'claude-opus-5', label: 'Opus 5' }]);
 });
+
+test('an upgraded CLI bundle invalidates the cached list immediately', async () => {
+  mod._resetCacheForTest();
+  const file = fixtureBundle('"claude-opus-5"\n');
+  const first = await list({ bundleFile: file, home: '/nonexistent' });
+  assert.equal(first.source, 'cli');
+  assert.equal((await list({ bundleFile: file, home: '/nonexistent' })).source, 'cache');
+  // Same path, new content + mtime (what an in-place upgrade looks like).
+  fs.writeFileSync(file, '"claude-opus-5" "claude-opus-5-5"\n');
+  fs.utimesSync(file, new Date(), new Date(Date.now() + 5000));
+  const upgraded = await list({ bundleFile: file, home: '/nonexistent' });
+  assert.equal(upgraded.source, 'cli');
+  assert.ok(upgraded.models.some(m => m.model === 'claude-opus-5-5'));
+  assert.equal((await list({ bundleFile: file, home: '/nonexistent', force: true })).source, 'cli');
+  mod._resetCacheForTest();
+});

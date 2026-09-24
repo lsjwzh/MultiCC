@@ -41,6 +41,9 @@ function createDirectoryRouter(service) {
 
   router.post('/api/onboarding/sample-workspace', wrap(async (_req, res) => send(res, await service.createSample())));
 
+  router.put('/api/directories/order', wrap(async (req, res) =>
+    send(res, service.reorder(req.body && req.body.ids))));
+
   router.patch('/api/directories/:id', wrap(async (req, res) => send(res, await service.update(req.params.id, req.body || {}))));
 
   router.delete('/api/directories/:id', wrap(async (req, res) =>

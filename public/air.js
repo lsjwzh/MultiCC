@@ -1953,9 +1953,9 @@
     renderHeader(dir);
     renderDirectories();
     renderDirectoryOverview();
-    // Worktree 生命周期面板：模块自己管 DOM（同 air-directory-mode.js 的契约），
-    // 这里只把快照 / 当前目录 / api / notice / 重拉快照这几件事递进去。
+    // Worktree 面板、目录侧拉/拖排：模块自管 DOM，这里只递上下文。
     window.MultiCCAirWorktrees?.render({ data, directoryId, api, notice, refresh });
+    window.MultiCCAirDirectoryNav?.render({ data, directoryId, api, notice, refresh, navigate });
     const adminMode = adminModes.has(mode);
     $('task-sidebar').hidden = adminMode;
     $('directory-library').hidden = mode !== 'library';
