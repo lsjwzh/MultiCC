@@ -54,9 +54,11 @@ const MIGRATION_DEBT = Object.freeze({
   // 天花板就登记这个实测值（不抬到任何一个分支的旧值上去）。
   // 工作区那一格搬成原生（air-workspaces.js）后，adminHeadings 里那条页头从硬写中文
   // 改成 t()，行数不变、字节 +29；同区一段注释就地压掉抵账，高水位往下走到 165233。
+  // 目录侧拉 / 拖拽排序（air-directory-nav.js）在 render 里多递一行上下文，旁边两行
+  // 注释并成一行抵账，行数不变，字节降到 165226。
   'public/air.js': Object.freeze({
     ceiling: 3067,
-    byteCeiling: 165233,
+    byteCeiling: 165226,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -145,9 +147,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 管了，净 +111 键，中英各 111 行 = +222 行，抬到 6632/409893。删 Provider 的那句
   // 确认词补上「只删本地副本、不动 CC-Switch」这条边界（旧页删掉之后这是唯一的删除
   // 入口，那条边界不能跟着旧页一起消失）：键数不变、只是变长，字节抬到 410097。
+  // CLI 更新浮层给未安装的行加「安装」（4 键）+ 目录拖拽排序 / 目录卡侧拉（3 键），
+  // 中英各 7 行 = +14 行，抬到 6646/410852。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6632,
-    maxBytes: 410097,
+    maxLines: 6646,
+    maxBytes: 410852,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

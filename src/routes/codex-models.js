@@ -13,6 +13,15 @@ const { resolveCliCommands } = require('../cli-adapters/commands');
 
 const CODEX_MODELS_TTL_MS = 60 * 1000;
 const CODEX_MODELS_STALE_MAX_MS = 15 * 60 * 1000;
+// How often a picker open may ask Codex to re-fetch its account catalog. Codex
+// itself only goes online when its models_cache.json is past its own TTL or the
+// CLI version changed, and when that fetch fails it silently serves the old
+// file — which is how new models (gpt-6-sol) stayed invisible until someone ran
+// /model in the TUI. The picker nudges a refresh at most this often.
+const CODEX_MODELS_SYNC_INTERVAL_MS = 60 * 60 * 1000;
+// A catalog Codex has not managed to refresh for this long is reported as
+// stale even when model/list itself succeeded (it succeeded from the file).
+const CODEX_CATALOG_STALE_MS = 60 * 60 * 1000;
 const CODEX_MODELS_TIMEOUT_MS = Number(process.env.CODEX_MODELS_TIMEOUT_MS || 12000);
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const MAX_MODELS = 200;
@@ -143,6 +152,10 @@ function discoverCodexModels(options = {}) {
       finish(null, Object.freeze({
         models: Object.freeze(normalizeModels(rows)),
         cliVersion: versionMatch ? versionMatch[1] : '',
+        // model/list answers from ~/.codex/models_cache.json whenever its own
+        // online fetch fails, so the file's fetched_at is the real age of what
+        // we were just handed.
+        catalogFetchedAt: readCodexDiskCatalog(options).fetchedAt,
       }));
     };
 
@@ -192,6 +205,7 @@ const DIAGNOSTICS = Object.freeze({
   cli_error: 'Codex 模型目录暂不可用；当前仅保留默认/自定义模型。',
   cli_output_too_large: 'Codex 模型目录响应异常；当前仅保留默认/自定义模型。',
   account_no_models: '当前 Codex 账号没有返回可选模型；可能尚未获权或受工作区策略限制。',
+  catalog_stale: 'Codex 在线刷新模型目录失败（多为到 chatgpt.com 的网络不通），当前列表来自较早的本地缓存。',
 });
 
 function diagnostic(code) {
@@ -208,8 +222,11 @@ function createCodexModelsRuntime(options = {}) {
   let cache = null; // last verified account catalog only
   let inFlight = null;
 
-  function response({ models, source, fetchedAt, cliVersion, code, stale = false }) {
+  let lastSyncAt = 0;
+
+  function response({ models, source, fetchedAt, cliVersion, code, stale = false, catalogFetchedAt = 0 }) {
     return Object.freeze({
+      catalogFetchedAt: catalogFetchedAt || null,
       models: Object.freeze(models.map(model => Object.freeze({ ...model }))),
       source,
       cached: source !== 'cli',
@@ -229,10 +246,15 @@ function createCodexModelsRuntime(options = {}) {
       const live = await discover();
       const models = normalizeModels(live && live.models);
       const fetchedAt = now();
+      const catalogFetchedAt = Number(live && live.catalogFetchedAt) || 0;
+      const catalogStale = models.length > 0 && catalogFetchedAt > 0
+        && fetchedAt - catalogFetchedAt > CODEX_CATALOG_STALE_MS;
       const result = response({
         models, source: 'cli', fetchedAt,
         cliVersion: live && live.cliVersion,
-        code: models.length ? 'ok' : 'account_no_models',
+        code: catalogStale ? 'catalog_stale' : (models.length ? 'ok' : 'account_no_models'),
+        stale: catalogStale,
+        catalogFetchedAt,
       });
       // An authoritative empty response invalidates old entitlements too.
       cache = { at: fetchedAt, result };
@@ -269,7 +291,10 @@ function createCodexModelsRuntime(options = {}) {
       return response({
         models: cache.result.models, source: 'memory_cache', fetchedAt: cache.at,
         cliVersion: cache.result.cliVersion,
-        code: cache.result.models.length ? 'ok' : 'account_no_models',
+        code: cache.result.diagnostic.code === 'catalog_stale' ? 'catalog_stale'
+          : (cache.result.models.length ? 'ok' : 'account_no_models'),
+        stale: cache.result.stale,
+        catalogFetchedAt: cache.result.catalogFetchedAt,
       });
     }
     if (inFlight) return inFlight;
@@ -277,13 +302,33 @@ function createCodexModelsRuntime(options = {}) {
     return inFlight;
   }
 
+  // Picker-open hook: kick one background discovery (which makes Codex try its
+  // online catalog fetch and, on success, rewrite models_cache.json — the file
+  // the provider picker reads) at most once per interval. Never awaits the
+  // discovery: opening a dropdown must not wait on a 12s CLI spawn.
+  function syncIfDue({ minIntervalMs = CODEX_MODELS_SYNC_INTERVAL_MS } = {}) {
+    const at = now();
+    const disk = readDisk();
+    const catalogFetchedAt = disk.fetchedAt || 0;
+    if (at - lastSyncAt < minIntervalMs) {
+      return Object.freeze({ triggered: false, reason: 'throttled', lastSyncAt, catalogFetchedAt: catalogFetchedAt || null });
+    }
+    if (catalogFetchedAt && at - catalogFetchedAt >= 0 && at - catalogFetchedAt < minIntervalMs) {
+      return Object.freeze({ triggered: false, reason: 'fresh', lastSyncAt, catalogFetchedAt });
+    }
+    lastSyncAt = at;
+    list({ forceRefresh: true }).catch(() => {});
+    return Object.freeze({ triggered: true, reason: 'due', lastSyncAt, catalogFetchedAt: catalogFetchedAt || null });
+  }
+
   return Object.freeze({
     list,
+    syncIfDue,
     // Last verified account catalog without triggering a discovery. Callers
     // that must stay synchronous (catalog projections) use this; interactive
     // refreshes use list().
     peek() { return cache ? cache.result : null; },
-    _resetForTest() { cache = null; inFlight = null; },
+    _resetForTest() { cache = null; inFlight = null; lastSyncAt = 0; },
   });
 }
 
@@ -296,6 +341,13 @@ function mountCodexModelRoutes(app, runtime = defaultRuntime) {
     const result = await runtime.list({ forceRefresh });
     res.json(result);
   });
+  // POST /api/codex/models/sync — fired by the model pickers on open; the
+  // server throttles to once an hour, so clients can call it freely.
+  if (typeof app.post === 'function') {
+    app.post('/api/codex/models/sync', (req, res) => {
+      res.json({ ok: true, ...runtime.syncIfDue() });
+    });
+  }
 }
 
 module.exports = {
@@ -307,4 +359,5 @@ module.exports = {
   normalizeModels,
   CODEX_MODELS_TTL_MS,
   CODEX_MODELS_STALE_MAX_MS,
+  CODEX_MODELS_SYNC_INTERVAL_MS,
 };

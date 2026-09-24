@@ -251,6 +251,18 @@ function makeFakes({ dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new
       'push: event appended with push summary');
   }
 
+  // ── reorder (console drag-sort; order persisted as registry order) ──
+  {
+    const dirs = ['a', 'b', 'c', 'd'].map(id => ({ id, name: id, path: `/p/${id}` }));
+    const { svc, repo, calls } = makeFakes({ dirs });
+    let r = svc.reorder(['c', 'ghost', 'a', 'c']);
+    ok(r.ok && r.data.ids.join() === 'c,a,b,d', 'reorder: listed ids first, unknown/dup ignored, rest keep order');
+    ok(repo.list().map(d => d.id).join() === 'c,a,b,d' && repo.snapshot()[0].id === 'c', 'reorder: list() and persisted snapshot follow new order');
+    ok(calls.saved === 1, 'reorder: saved once');
+    r = svc.reorder('nope');
+    ok(!r.ok && r.code === 'invalid', 'reorder: non-array rejected');
+  }
+
   // ── friendlyDirReason (real impl) ──
   {
     const { friendlyDirReason } = require('../src/directories');

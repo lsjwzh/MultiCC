@@ -125,18 +125,28 @@
     return `v${entry.version} · ${t('airCliUpdateCurrent')}`;
   }
 
+  // 未安装的行给一颗「安装」按钮：点一下就跑 /api/cli/:cli/install 那条官方安装
+  // 链路（和升级同一套 job/轮询/日志）。需要手动安装的 CLI（zcode 桌面版等）由
+  // 服务端回 manual 文案，原样写进副标题。
+  function rowMode(entry) {
+    if (!entry.available) return 'install';
+    return entry.updateAvailable ? 'upgrade' : null;
+  }
+
   function buildRow(cli, entry) {
-    const row = node('div', `cli-update-row${entry.updateAvailable ? ' is-update' : ' is-current'}`);
+    const mode = rowMode(entry);
+    const row = node('div', `cli-update-row${entry.updateAvailable ? ' is-update' : (mode === 'install' ? ' is-missing' : ' is-current')}`);
     const name = node('span', 'cli-update-name');
     name.append(node('strong', null, CLI_LABELS[cli] || cli));
     const status = node('small', 'cli-update-versions', statusLine(entry));
     name.append(status);
     row.append(name);
-    if (!entry.updateAvailable) return { row, status, button: null };
-    const button = node('button', 'primary', t('airCliUpdateUpgrade'));
+    if (!mode) return { row, status, button: null, mode };
+    const button = node('button', mode === 'install' ? 'secondary' : 'primary',
+      t(mode === 'install' ? 'airCliUpdateInstall' : 'airCliUpdateUpgrade'));
     button.type = 'button';
     row.append(button);
-    return { row, status, button };
+    return { row, status, button, mode };
   }
 
   function render() {
@@ -157,11 +167,13 @@
         ? t('airCliUpdateCount', { count: pending.length })
         : t('airCliUpdateAllCurrent');
     }
-    // 要升级的排最前面：打开浮层就是为了看它们。
-    for (const [cli, entry] of [...pending, ...rows.filter(([, e]) => !e.updateAvailable)]) {
+    // 要升级的排最前面：打开浮层就是为了看它们；未安装的垫底。
+    const installed = rows.filter(([, e]) => !e.updateAvailable && e.available);
+    const missing = rows.filter(([, e]) => !e.updateAvailable && !e.available);
+    for (const [cli, entry] of [...pending, ...installed, ...missing]) {
       const built = buildRow(cli, entry);
       if (built.button) {
-        built.button.onclick = () => { void startUpgrade(cli, built.status, built.button); };
+        built.button.onclick = () => { void startUpgrade(cli, built.status, built.button, built.mode); };
       }
       // 重建 DOM 不能把「正在升级」的那一行擦回原样: 另一个 CLI 升级完成触发的
       // refresh 会走到这里, 若不复原, 用户会以为任务没了。
@@ -250,39 +262,54 @@
     line.scrollTop = line.scrollHeight;
   }
 
-  async function startUpgrade(cli, status, button) {
+  async function startUpgrade(cli, status, button, mode) {
     // 同一行不并行(服务端也会 409)，但别的行不受影响。
     const live = inFlight.get(cli);
     if (live && live.phase === 'running') return;
+    const install = mode === 'install';
+    const labels = install
+      ? { running: 'airCliUpdateInstalling', done: 'airCliUpdateInstallDone', failed: 'airCliUpdateInstallFailed' }
+      : { running: 'airCliUpdateUpgrading', done: 'airCliUpdateDone', failed: 'airCliUpdateFailed' };
     const name = CLI_LABELS[cli] || cli;
     const entry = ((lastState && lastState.versions) || {})[cli] || {};
-    const inUse = Number(entry.inUseCount) || 0;
-    const question = inUse > 0
-      ? t('airCliUpdateConfirmBusy', { cli: name, count: inUse })
-      : t('airCliUpdateConfirm', { cli: name });
-    if (root.confirm && !root.confirm(question)) return;
+    // 安装一个还没有的 CLI 不影响任何现有会话，点了就装，不再多问一次；升级会
+    // 换掉正在用的二进制，所以仍要确认。
+    if (!install) {
+      const inUse = Number(entry.inUseCount) || 0;
+      const question = inUse > 0
+        ? t('airCliUpdateConfirmBusy', { cli: name, count: inUse })
+        : t('airCliUpdateConfirm', { cli: name });
+      if (root.confirm && !root.confirm(question)) return;
+    }
 
     button.disabled = true;
     let started;
     try {
-      started = await raw(`/api/cli/${encodeURIComponent(cli)}/upgrade`, {});
+      started = await raw(`/api/cli/${encodeURIComponent(cli)}/${install ? 'install' : 'upgrade'}`, {});
     } catch (error) {
       button.disabled = false;
       inFlight.delete(cli);
-      paintProgress(cli, status, t('airCliUpdateFailed', { error: error.message }), null);
+      paintProgress(cli, status, t(labels.failed, { error: error.message }), null);
       return;
     }
     const data = started.data || {};
+    // 并发点击时服务端已经装好了：直接当完成处理。
+    if (started.ok && data.alreadyInstalled) {
+      inFlight.delete(cli);
+      paintProgress(cli, status, t(labels.done), null);
+      await refresh(true);
+      return;
+    }
     if (!started.ok || !data.jobId) {
       button.disabled = false;
       inFlight.delete(cli);
-      paintProgress(cli, status, t('airCliUpdateFailed', { error: data.error || `HTTP ${started.status}` }), null);
+      paintProgress(cli, status, t(labels.failed, { error: data.error || `HTTP ${started.status}` }), null);
       return;
     }
 
     button.disabled = false;
-    inFlight.set(cli, { phase: 'running', text: t('airCliUpdateUpgrading') });
-    paintProgress(cli, status, t('airCliUpdateUpgrading'), null);
+    inFlight.set(cli, { phase: 'running', text: t(labels.running) });
+    paintProgress(cli, status, t(labels.running), null);
     const startedAt = Date.now();
     for (;;) {
       let job = null;
@@ -295,7 +322,7 @@
       if (job) {
         if (job.status === 'done') {
           inFlight.delete(cli);
-          paintProgress(cli, status, t('airCliUpdateDone'), job.logTail || '');
+          paintProgress(cli, status, t(labels.done), job.logTail || '');
           await refresh(true);
           return;
         }
@@ -304,11 +331,11 @@
           // hint 是服务端查明的具体原因(网络/证书/新版本装到了别的位置)，比一行
           // 退出码有用得多，必须和日志一起给出来。
           const detail = job.hint ? `${job.logTail || ''}\n\n${job.hint}` : (job.logTail || '');
-          paintProgress(cli, status, t('airCliUpdateFailed', { error: job.error || '' }), detail);
+          paintProgress(cli, status, t(labels.failed, { error: job.error || '' }), detail);
           await refresh(false);
           return;
         }
-        paintProgress(cli, status, t('airCliUpdateUpgrading'), job.logTail || '');
+        paintProgress(cli, status, t(labels.running), job.logTail || '');
       }
       if (Date.now() - startedAt > MAX_WAIT_MS) {
         inFlight.delete(cli);

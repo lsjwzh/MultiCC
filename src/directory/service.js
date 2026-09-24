@@ -291,7 +291,28 @@ function createDirectoryService({ repo, git, sessions, events, fsPort, helpers, 
     }
   }
 
-  return { browseFs, listAnnotated, register, createSample, update, remove, push, uncommitted, commitAll };
+  // User-chosen display order (drag-sort in the console). The order IS the
+  // registry's insertion order: directories.json is an array and every list()
+  // walks the Map, so re-inserting in the requested order persists it without a
+  // separate sort field. Ids the client didn't mention (registered from another
+  // tab meanwhile) keep their relative order at the tail; unknown ids are ignored.
+  function reorder(ids) {
+    if (!Array.isArray(ids)) return err('invalid', 'ids array required');
+    const wanted = [];
+    const seen = new Set();
+    for (const raw of ids) {
+      const id = String(raw || '');
+      if (!id || seen.has(id) || !repo.get(id)) continue;
+      seen.add(id);
+      wanted.push(repo.get(id));
+    }
+    const rest = repo.list().filter(d => !seen.has(d.id));
+    for (const d of [...wanted, ...rest]) { repo.remove(d.id); repo.add(d); }
+    repo.save();
+    return ok({ ok: true, ids: repo.list().map(d => d.id) });
+  }
+
+  return { browseFs, listAnnotated, register, createSample, update, reorder, remove, push, uncommitted, commitAll };
 }
 
 module.exports = { createDirectoryService };

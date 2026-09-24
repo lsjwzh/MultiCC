@@ -1964,3 +1964,23 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   color: var(--text, #233249);
 }
 .task-complete-close:hover { background: #eef3fa; }
+
+/* 目录拖拽排序 + 左上角目录卡的 hover 侧拉（air-directory-nav.js）。 */
+[data-dir-id][draggable="true"] { cursor: grab; }
+.is-sorting [data-dir-id] { cursor: grabbing; }
+[data-dir-id].is-dragging { opacity: .45; outline: 1px dashed #9db5cc; outline-offset: -2px; }
+.directory-flyout {
+  position: fixed; z-index: 70; width: 280px; overflow: auto; padding: 8px;
+  border: 1px solid var(--hairline); border-radius: 14px; background: #fff; box-shadow: 0 18px 40px #2b4c6d24;
+}
+.directory-flyout[hidden] { display: none; }
+.directory-flyout-title { display: block; padding: 4px 8px 6px; color: #7f90a2; font-size: 11px; font-weight: 600; }
+.directory-flyout-list { display: grid; gap: 2px; }
+.directory-flyout-row {
+  min-width: 0; display: grid; gap: 2px; padding: 7px 9px; border: 0; border-radius: 10px;
+  background: transparent; text-align: left;
+}
+.directory-flyout-row:hover { background: #f1f6fb; }
+.directory-flyout-row.is-current { background: #e8f1fb; }
+.directory-flyout-row strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.directory-flyout-row small { overflow: hidden; color: #7f90a2; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
