@@ -103,6 +103,38 @@
     return provider && provider.model ? String(provider.model) : null;
   }
 
+  function candidateModelChoices(provider, configured, fallback = []) {
+    const declared = [provider.model, ...(provider.modelOptions || []),
+      ...Object.values(provider.aliasMap || {}).map(entry => entry && entry.model)]
+      .filter(value => typeof value === 'string' && value.trim());
+    return [...new Set(['', ...declared,
+      ...(declared.length ? [] : fallback), candidateModel(provider, configured)])]
+      .filter(value => typeof value === 'string' && value !== '__custom__');
+  }
+
+  // Empty catalogs (including older imported Claude relays) need the same
+  // suggestions as the manual picker. These are local CLI suggestions, not a
+  // claim about a remote account's entitlements. Never change the selected id.
+  let claudeCatalog = [];
+  let claudeCatalogAt = 0;
+  let claudeCatalogRequest = null;
+  async function loadCandidateModels(protocol) {
+    if (protocol !== 'anthropic' || typeof window === 'undefined') return [];
+    if (claudeCatalog.length && Date.now() - claudeCatalogAt < 3600000) return claudeCatalog;
+    if (claudeCatalogRequest) return claudeCatalogRequest;
+    claudeCatalogRequest = (async () => {
+      try {
+        const rows = typeof window.loadClaudeModels === 'function'
+          ? await window.loadClaudeModels()
+          : (await window.MultiCCApi?.json('/api/claude/models'))?.models;
+        const ids = (Array.isArray(rows) ? rows : []).map(row => row.model).filter(Boolean);
+        if (ids.length) { claudeCatalog = ids; claudeCatalogAt = Date.now(); }
+      } catch (_) { /* Custom input remains available offline. */ }
+      return claudeCatalog;
+    })();
+    try { return await claudeCatalogRequest; } finally { claudeCatalogRequest = null; }
+  }
+
   function candidateForProvider(provider, priority, configured) {
     return {
       providerId: String(provider.id),
@@ -420,13 +452,14 @@ ${P}-list,${P}-pool{display:grid;gap:6px}
 ${P} ${P}-row{display:grid;grid-template-columns:22px minmax(0,1fr) minmax(110px,170px) auto auto;grid-template-areas:"rank name model tier act";align-items:center;gap:8px;padding:6px 6px 6px 8px;border:1px solid var(--ape-line);border-radius:9px;background:var(--ape-field)}
 ${P}-rank{grid-area:rank;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:color-mix(in srgb,var(--ape-accent) 14%,transparent);color:var(--ape-accent);font-size:11px;font-weight:600}
 ${P}-name{grid-area:name;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-${P} ${P}-model{grid-area:model;width:100%;min-width:0}
+${P} ${P}-model-field{grid-area:model;display:grid;gap:0;min-width:0}
+${P} ${P}-model{width:100%;min-width:0}
 ${P} ${P}-tier{grid-area:tier}
 ${P} ${P}-tier button{height:22px;padding:0 9px;font-size:11px}
 ${P}.is-order ${P}-tier{display:none}
 ${P}-act{grid-area:act;display:flex;gap:2px}
 ${P} ${P}-icon{width:24px;height:24px;padding:0;border-color:transparent;background:transparent;color:var(--ape-muted);font-size:13px}
-${P}-list ${P}-add-one,${P}-pool :is(${P}-rank,${P}-model,${P}-tier,${P}-icon){display:none}
+${P}-list ${P}-add-one,${P}-pool :is(${P}-rank,${P}-model-field,${P}-model,${P}-tier,${P}-icon){display:none}
 ${P} ${P}-pool ${P}-row{display:flex;padding:4px 6px 4px 10px;border-style:dashed;background:transparent;color:var(--ape-muted)}
 ${P}-pool ${P}-name{flex:1 1 auto}
 ${P} ${P}-add-one{height:24px;border-color:transparent;background:transparent;color:var(--ape-accent)}
@@ -485,6 +518,11 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     // rows in use, first = tried first. Unused rows wait in the "添加线路" list.
     let allRows = [];
     let order = [];
+    let modelGeneration = 0;
+    // Rows whose line declares no models at all, refilled once the local
+    // catalog arrives (see the tail of render()).
+    let emptyCatalogRows = [];
+    const loadModels = options.loadModels || loadCandidateModels;
     const formatProvider = typeof options.formatProvider === 'function'
       ? options.formatProvider : provider => provider.name || provider.id;
     const onChange = typeof options.onChange === 'function' ? options.onChange : null;
@@ -642,12 +680,32 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         const index = order.indexOf(row);
         return {
           providerId: row.dataset.providerId,
-          model: row.querySelector('.multicc-auto-editor-model').value || null,
+          model: rowModel(row) || null,
           priority: index < 0 ? null : index + 1,
           enabled: index >= 0,
           rung: Number(tierOf(row).dataset.value) || null,
         };
       });
+    }
+
+    function rowModel(row) {
+      const selected = row.querySelector('.multicc-auto-editor-model').value;
+      return selected === '__custom__'
+        ? row.querySelector('.multicc-auto-editor-model-custom').value.trim() : selected;
+    }
+
+    function fillModels(select, provider, configured, fallback = []) {
+      const selected = select.value;
+      select.replaceChildren();
+      for (const id of candidateModelChoices(provider, configured, fallback)) {
+        const option = element(document, 'option', '', id || tt('autoEditorProviderDefault', 'Provider 默认'));
+        option.value = id;
+        select.appendChild(option);
+      }
+      const custom = element(document, 'option', '', tt('custom', '自定义…'));
+      custom.value = '__custom__';
+      select.appendChild(custom);
+      select.value = selected || '';
     }
 
     function enabledCandidates() {
@@ -664,7 +722,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     }
 
     function rowText(row) {
-      const model = row.querySelector('.multicc-auto-editor-model').value;
+      const model = rowModel(row);
       const name = row.querySelector('.multicc-auto-editor-name').textContent;
       return model ? tt('autoEditorLineWithModel', '{name}（{model}）', { name, model }) : name;
     }
@@ -1096,15 +1154,22 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       const model = make('select', 'multicc-auto-editor-model');
       model.setAttribute('aria-label', tt('autoEditorModelAria', '{provider} 模型', { provider: label }));
       const preferredModel = candidateModel(provider, configured);
-      const models = [...new Set([
-        '', provider.model, ...(Array.isArray(provider.modelOptions) ? provider.modelOptions : []), preferredModel,
-      ].filter(value => value != null).map(value => String(value)))];
-      for (const modelId of models) {
-        const option = make('option', '', modelId || tt('autoEditorProviderDefault', 'Provider 默认'));
-        option.value = modelId;
-        model.appendChild(option);
-      }
+      fillModels(model, provider, configured);
       model.value = preferredModel || '';
+      const modelField = make('div', 'multicc-auto-editor-model-field');
+      const custom = make('input', 'multicc-auto-editor-model-custom');
+      custom.type = 'text';
+      custom.maxLength = 200;
+      custom.placeholder = tt('airTaskSettingsCustomModelOption', '自定义模型 ID');
+      custom.setAttribute('aria-label',
+        tt('autoEditorModelAria', '{provider} 模型', { provider: label }));
+      custom.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;margin-top:5px';
+      show(custom, false);
+      modelField.append(model, custom);
+      // A line with no catalog of its own (an imported relay, for one) needs the
+      // same suggestions the manual picker offers; they are resolved after the
+      // rows exist so rendering never waits on a request.
+      if (candidateModelChoices(provider, null).length === 1) emptyCatalogRows.push({ model, provider });
       const tier = segment('multicc-auto-editor-tier',
         tt('autoEditorTierAria', '{provider} 负责的任务', { provider: label }));
       // A pool that already routes keeps its own ladder; every other row is
@@ -1126,17 +1191,24 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       const add = button('multicc-auto-editor-add-one', tt('autoEditorAddOne', '＋ 添加'));
       add.setAttribute('aria-label', tt('autoEditorEnableAria', '使用 {provider}', { provider: label }));
       act.appendChild(add);
-      row.append(make('span', 'multicc-auto-editor-rank'), name, model, tier, act);
+      row.append(make('span', 'multicc-auto-editor-rank'), name, modelField, tier, act);
       up.addEventListener('click', () => moveRow(row, -1));
       down.addEventListener('click', () => moveRow(row, 1));
       remove.addEventListener('click', () => useRow(row, false));
       add.addEventListener('click', () => useRow(row, true));
-      model.addEventListener('change', notify);
+      model.addEventListener('change', () => {
+        show(custom, model.value === '__custom__');
+        if (model.value === '__custom__' && typeof custom.focus === 'function') custom.focus();
+        notify();
+      });
+      custom.addEventListener('input', notify);
       return row;
     }
 
     function render() {
       if (destroyed) return;
+      const generation = ++modelGeneration;
+      emptyCatalogRows = [];
       renderPresets();
       container.style.display = protocol ? '' : 'none';
       allRows = [];
@@ -1177,6 +1249,14 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       onUnknownSelect.value = String(configuredSelection?.routing?.onUnknown || 'strong');
       syncRungs();
       notify();
+      if (emptyCatalogRows.length) {
+        Promise.resolve().then(() => loadModels(protocol)).then(models => {
+          if (destroyed || generation !== modelGeneration || !Array.isArray(models)) return;
+          for (const { model, provider } of emptyCatalogRows) {
+            fillModels(model, provider, { model: model.value }, models);
+          }
+        }).catch(() => {});
+      }
     }
 
     maxAttempts.addEventListener('change', notify);
@@ -1262,6 +1342,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     ROUTING_PROVIDER,
     availableProtocols,
     candidateModel,
+    candidateModelChoices,
     defaultSelection,
     mount,
     optionValue,
