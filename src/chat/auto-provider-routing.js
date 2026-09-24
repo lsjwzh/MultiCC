@@ -19,9 +19,10 @@
 //     gateway, a missing key or a malformed answer must degrade to the
 //     configured onUnknown tier, never to a lost message.
 //   * consume is text-keyed and idempotent. A turn may be replayed or retried;
-//     the verdict stays valid for its own message and self-invalidates the
-//     moment a different message arrives, so a retry cannot inherit a stale
-//     tier and a fresh message cannot inherit the previous one's.
+//     the verdict stays valid for its own message only, so a retry cannot
+//     inherit a stale tier and a fresh message cannot inherit the previous
+//     one's. Verdicts are kept per message, not per session: a message queued
+//     behind a busy turn keeps its verdict when the next one is judged.
 
 const { validateProviderSelection } = require('../providers/auto-provider-config');
 const { createJevClient } = require('../providers/jev-client');
@@ -69,11 +70,13 @@ function createAutoProviderRouting(options = {}) {
     resolveApiKey: options.resolveApiKey || defaultApiKeyResolver,
     logger,
   });
-  const prepared = new Map(); // sessionId -> { hash, verdict, at }
+  const prepared = new Map(); // `${sessionId}\n${hash}` -> { sessionId, verdict, at }
   const inflight = new Map(); // sessionId -> { hash, promise }
 
   function remember(sessionId, hash, verdict) {
-    prepared.set(sessionId, { hash, verdict, at: Number(now()) });
+    const key = `${sessionId}\n${hash}`;
+    prepared.delete(key); // re-insert so eviction stays oldest-first
+    prepared.set(key, { sessionId, verdict, at: Number(now()) });
     while (prepared.size > maxEntries) prepared.delete(prepared.keys().next().value);
   }
 
@@ -141,11 +144,11 @@ function createAutoProviderRouting(options = {}) {
   // Never destructive: a verdict is only reported for the message it was made
   // for, and expiry is the only thing that removes it.
   function consume({ sessionId, text } = {}) {
-    const entry = prepared.get(sessionId);
+    const key = `${sessionId}\n${textHash(text)}`;
+    const entry = prepared.get(key);
     if (!entry) return null;
-    if (entry.hash !== textHash(text)) return null;
     if (Number(now()) - entry.at > ttlMs) {
-      prepared.delete(sessionId);
+      prepared.delete(key);
       return null;
     }
     return entry.verdict;
@@ -157,9 +160,17 @@ function createAutoProviderRouting(options = {}) {
   function resolveTier({ selection, verdict } = {}) {
     const routing = selection && selection.routing;
     if (!routing) return null;
+    // Where the tier sits on the ladder, so a chat note can say "simple" or
+    // "complex" without knowing the pool's tier keys.
+    const ladder = Array.isArray(routing.tiers) ? routing.tiers : [];
+    const position = (tier) => {
+      const at = tier == null ? -1 : ladder.indexOf(tier);
+      return { tierIndex: at >= 0 ? at : null, tierCount: ladder.length };
+    };
     if (verdict && verdict.ok) {
       return Object.freeze({
         tier: verdict.tier,
+        ...position(verdict.tier),
         source: 'jev',
         code: verdict.reasonCode || 'jev_choice',
         escalated: verdict.escalated === true,
@@ -175,6 +186,8 @@ function createAutoProviderRouting(options = {}) {
     const fallback = unknownTier(routing, verdict);
     return Object.freeze({
       tier: fallback.tier,
+      ...position(fallback.tier),
+      onUnknown: routing.onUnknown || 'strong',
       source: fallback.source,
       code: fallback.code,
       escalated: false,
@@ -187,7 +200,7 @@ function createAutoProviderRouting(options = {}) {
   }
 
   function clearSession(sessionId) {
-    prepared.delete(sessionId);
+    for (const [key, entry] of prepared) if (entry.sessionId === sessionId) prepared.delete(key);
     inflight.delete(sessionId);
   }
 

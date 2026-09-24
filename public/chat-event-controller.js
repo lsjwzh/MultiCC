@@ -81,6 +81,54 @@
     return [phase, elapsed, tool].filter(Boolean).join(' · ');
   }
 
+  // Difficulty routing note: the one line a chat shows for "Jev judged this
+  // message, so this line/model answers it". Built from the provider_auto_route
+  // `selected` event alone; '' means there is nothing worth saying.
+  const AUTO_ROUTE_WHY = Object.freeze({
+    jev_key_missing: 'autoRouteWhyKey',
+    jev_timeout: 'autoRouteWhyTimeout',
+    jev_http_401: 'autoRouteWhyAuth',
+    jev_http_403: 'autoRouteWhyAuth',
+    jev_network: 'autoRouteWhyNetwork',
+    jev_not_prepared: 'autoRouteWhyNotJudged',
+  });
+  const AUTO_ROUTE_ACTION = Object.freeze({
+    strong: 'autoRouteUseStrong', weak: 'autoRouteUseWeak', priority: 'autoRouteUsePriority',
+  });
+
+  function formatAutoRouteNote(event, translate) {
+    const tr = typeof translate === 'function' ? translate : (key => key);
+    const routing = event && event.routing;
+    if (!routing || event.phase !== 'selected' || !event.providerName) return '';
+    const tierName = (index, count) => {
+      if (!Number.isInteger(index) || !Number.isInteger(count) || count < 2) return '';
+      if (count > 3) return tr('autoRouteTierNth', { n: index + 1, count });
+      if (index === 0) return tr('autoRouteTierSimple');
+      return tr(index >= count - 1 ? 'autoRouteTierComplex' : 'autoRouteTierMedium');
+    };
+    const name = displayProviderName(event.providerName);
+    const model = visibleProviderModel(event.model);
+    let target = model ? tr('autoRouteTarget', { name, model }) : name;
+    const preferred = tierName(routing.tierIndex, routing.tierCount);
+    // Every line of the judged tier was out of quota or already tried.
+    if (preferred && event.tier && event.preferredTier && event.tier !== event.preferredTier) {
+      target += tr('autoRouteTierBusy', { tier: preferred });
+    }
+    if (routing.source === 'jev') {
+      if (!preferred) return '';
+      const raised = routing.code && routing.code !== 'jev_choice' ? tr('autoRouteRaised') : '';
+      const seconds = Number(routing.latencyMs) > 0
+        ? tr('autoRouteLatency', { sec: (Number(routing.latencyMs) / 1000).toFixed(1) }) : '';
+      return tr('autoRouteDecided', { tier: preferred + raised, target }) + seconds;
+    }
+    if (routing.source !== 'fallback') return '';
+    const code = String(routing.code || '');
+    const whyKey = AUTO_ROUTE_WHY[code] || (/^jev_http_\d+$/.test(code) ? 'autoRouteWhyHttp' : 'autoRouteWhyOther');
+    const reason = tr(whyKey, { status: code.slice('jev_http_'.length) });
+    const action = tr(AUTO_ROUTE_ACTION[routing.onUnknown] || AUTO_ROUTE_ACTION.strong);
+    return tr('autoRouteFallback', { reason, action, target });
+  }
+
   function taskAwareCompletionVoice(message, fallback) {
     const source = message && typeof message === 'object' ? message : {};
     const code = String(source.taskShortCode || '').trim();
@@ -107,6 +155,9 @@
     let activeProviderModelRoute = null;
     let activeProviderModelSource = '';
     const pendingAdmissionIds = new Set();
+    // The "Jev is judging…" line of the message being admitted; the turn's
+    // selected route rewrites it in place into the verdict.
+    let autoRouteNoteEl = null;
 
     function resetProviderRouteGate() {
       providerRouteProtocolVersion = 0;
@@ -442,10 +493,21 @@
           applyProviderRouteModel(message);
           host.updateProviderBtn?.();
           break;
-        case 'provider_auto_route':
+        case 'provider_auto_route': {
           // Policy selection is only a reservation. The attempt-owned route
-          // event above is the authority that a physical provider actually began.
+          // event above is the authority that a physical provider actually began;
+          // this only narrates the difficulty verdict behind the reservation.
+          if (message.phase !== 'selected' || !message.routing) break;
+          const pendingNote = autoRouteNoteEl && autoRouteNoteEl.isConnected ? autoRouteNoteEl : null;
+          autoRouteNoteEl = null;
+          // Turns nobody asked Jev about (continuations, nudges) stay silent.
+          if (!pendingNote && message.routing.code === 'jev_not_prepared') break;
+          const note = formatAutoRouteNote(message, host.translate);
+          if (!note) pendingNote?.remove?.();
+          else if (pendingNote) pendingNote.textContent = note;
+          else host.addSystemMsg?.(note);
           break;
+        }
         case 'system':
           if (message.subtype === 'init') applySystemInit(message);
           else if (message.subtype === 'agent_notes' && Array.isArray(message.notes)) host.addAgentNotes?.(message.notes);
@@ -596,7 +658,18 @@
           if (clientMsgId && text && !historyView.findByClientMsgId?.(clientMsgId)) {
             host.addUserMessage?.(text, clientMsgId);
           }
+          if (message.stage === 'auto_provider_routing' && message.state === 'waiting') {
+            // Behind a live turn the message only queues; its verdict line lands
+            // when its own turn starts instead of inside the running answer.
+            if (!state.isStreaming && !(autoRouteNoteEl && autoRouteNoteEl.isConnected)) {
+              autoRouteNoteEl = host.addSystemMsg?.(host.translate?.('autoRouteJudging')) || null;
+            }
+            if (!state.isStreaming) liveUi.showThinking(host.translate?.('autoRouteJudging'));
+            break;
+          }
           if (message.state === 'failed') {
+            autoRouteNoteEl?.remove?.();
+            autoRouteNoteEl = null;
             if (clientMsgId) pendingAdmissionIds.delete(clientMsgId);
             if (!state.isStreaming) {
               if (pendingAdmissionIds.size) liveUi.showThinking(ADMISSION_PROGRESS_LABELS.waiting);
@@ -1010,6 +1083,7 @@
   const api = Object.freeze({
     createEventController,
     isRecoverableCodexReconnectErrorText,
+    formatAutoRouteNote,
     formatProgressHeartbeat,
     taskAwareCompletionVoice,
   });

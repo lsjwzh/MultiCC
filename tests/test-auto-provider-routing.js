@@ -214,6 +214,34 @@ test('a verdict belongs to its own message and expires', async () => {
   assert.equal(routing.consume({ sessionId: 's1', text: '改个 typo' }), null);
 });
 
+test('a queued message keeps its verdict while the next one is judged', async () => {
+  const routing = createAutoProviderRouting({
+    jev: { classify: async ({ text }) => ({ ok: true, tier: text.includes('重构') ? 'strong' : 'weak' }) },
+    now: () => NOW,
+  });
+  const session = pool().session;
+  await routing.prepareTurn({ session, text: '改个 typo', providers: catalog() });
+  await routing.prepareTurn({ session, text: '重构整个 provider 层', providers: catalog() });
+  assert.equal(routing.consume({ sessionId: 's1', text: '改个 typo' }).tier, 'weak');
+  assert.equal(routing.consume({ sessionId: 's1', text: '重构整个 provider 层' }).tier, 'strong');
+  routing.clearSession('s1');
+  assert.equal(routing.consume({ sessionId: 's1', text: '改个 typo' }), null);
+  assert.equal(routing.size(), 0);
+});
+
+test('a resolved tier reports where it sits on the ladder', () => {
+  const routing = createAutoProviderRouting({ jev: jev(WEAK), now: () => NOW });
+  const selection = { routing: { tiers: ['weak', 'mid', 'strong'], onUnknown: 'weak' } };
+  const judged = routing.resolveTier({ selection, verdict: { ok: true, tier: 'mid' } });
+  assert.deepEqual([judged.tierIndex, judged.tierCount], [1, 3]);
+  const fallback = routing.resolveTier({ selection, verdict: { ok: false, code: 'jev_timeout' } });
+  assert.deepEqual([fallback.tierIndex, fallback.tierCount, fallback.onUnknown], [0, 3, 'weak']);
+  const ordered = routing.resolveTier({
+    selection: { routing: { tiers: ['weak', 'strong'], onUnknown: 'priority' } }, verdict: null,
+  });
+  assert.deepEqual([ordered.tier, ordered.tierIndex, ordered.onUnknown], [null, null, 'priority']);
+});
+
 test('identical in-flight messages share one evaluation', async () => {
   const router = jev(WEAK);
   const routing = createAutoProviderRouting({ jev: router, now: () => NOW });
@@ -295,6 +323,9 @@ test('the tier beats priority, and the decision is auditable on the route event'
   assert.equal(events[0].routing.source, 'jev');
   assert.equal(events[0].routing.code, 'jev_complexity_escalation');
   assert.equal(events[0].routing.escalated, true);
+  // What the chat note needs: the judged tier's rung and the picked line's tier.
+  assert.equal(events[0].tier, 'strong');
+  assert.equal(events[0].routing.tierIndex, events[0].routing.tierCount - 1);
 });
 
 test('a weak verdict sends a trivial request to the cheap candidate', async () => {

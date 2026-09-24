@@ -991,6 +991,7 @@ function addSystemMsg(text) {
   div.textContent = text;
   messagesEl.appendChild(div);
   maybeScrollToBottom();
+  return div;
 }
 const chatAuthAction = window.MultiCCChatAuthAction.create({ document, chatApi, withToken, getSessionName: () => _sessionName, addSystemMsg, getMessagesEl: () => messagesEl, maybeScrollToBottom });
 /* ── Background-task danmaku panel ──
