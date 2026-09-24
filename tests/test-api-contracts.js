@@ -367,4 +367,9 @@ test('chat worktree guidance treats sync API as manual and permits safe Agent se
   assert.match(multiccImgHint, /提交和合并由 MultiCC 在本轮成功后统一执行/);
   assert.match(multiccImgHint, /只有用户在任务中明确要求提交\/合并时/);
   assert.doesNotMatch(multiccImgHint, /目标完成后仍须 commit|都只在自己当前 worktree 里改并 commit/);
+  // Sub-agent steering is per-session, never part of the global host hint.
+  assert.doesNotMatch(multiccImgHint, /子 Agent Provider 已配置/);
+  const { buildSubagentProviderHint } = require('../src/chat/host-prompts');
+  assert.strictEqual(buildSubagentProviderHint(null), '');
+  assert.match(buildSubagentProviderHint({ providerId: 'p', model: 'm' }), /子 Agent Provider 已配置.*p \/ m/);
 });
