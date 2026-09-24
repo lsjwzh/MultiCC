@@ -10,6 +10,8 @@ const {
   failoverSafety,
   limitState,
 } = require('./auto-provider-policy');
+const { createAutoProviderRouting } = require('./auto-provider-routing');
+const { createRoutingAdmissionPhase } = require('./admission-progress');
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
 
 class AutoProviderError extends Error {
@@ -33,6 +35,15 @@ function createAutoProviderRuntime(options = {}) {
   const logger = options.logger || { info() {}, warn() {} };
   const liveBackgroundGate = typeof options.hasLiveBackgroundTasks === 'function'
     ? options.hasLiveBackgroundTasks : null;
+  // Difficulty routing owns its own store; the runtime is the single owner of
+  // both the pool and the tier verdict so a turn cannot be routed by one and
+  // spawned by the other.
+  const routing = options.routing || createAutoProviderRouting({
+    logger,
+    fetchImpl: options.fetchImpl,
+    resolveApiKey: options.resolveApiKey,
+    ttlMs: options.routingTtlMs,
+  });
   const stickyBySession = new Map();
   const currentBySession = new Map();
   const selectionRefBySession = new Map();
@@ -71,12 +82,13 @@ function createAutoProviderRuntime(options = {}) {
     });
   }
 
-  function beginTurn({ session, turnId }) {
+  function beginTurn({ session, turnId, promptText }) {
     const rawSelection = session && session.providerSelection;
     if (!rawSelection || rawSelection.mode !== 'auto') {
       if (session && session.id) clearSession(session.id);
       return Object.freeze({
         enabled: false,
+        routing: null,
         initial: () => Object.freeze({}),
         failover: () => null,
         prepareHandoff: () => null,
@@ -100,6 +112,17 @@ function createAutoProviderRuntime(options = {}) {
     }
     const selection = validated.value;
     const candidates = catalogCandidates(session, selection);
+    // Difficulty routing: one verdict per USER MESSAGE, consumed here and pinned
+    // for the whole turn — failover included — so a provider switch never
+    // silently re-rolls the tier mid-turn. A verdict that never arrived (gateway
+    // down, key missing, routing never prepared) resolves through onUnknown.
+    const routingDecision = selection.routing
+      ? routing.resolveTier({
+        selection,
+        verdict: routing.consume({ sessionId: session.id, text: promptText }),
+      })
+      : null;
+    const preferredTier = routingDecision && routingDecision.tier ? routingDecision.tier : null;
     const attempted = new Set();
     const pending = pendingBySession.get(session.id) || null;
     if (pending?.fromProviderId) attempted.add(pending.fromProviderId);
@@ -124,6 +147,8 @@ function createAutoProviderRuntime(options = {}) {
         toTrustDomain: candidate && candidate.trustDomain || null,
         attemptNo: physicalAttempt,
         maxAttempts: selection.maxAttempts,
+        preferredTier,
+        routing: routingDecision,
         ...details,
       });
       currentBySession.set(session.id, event);
@@ -148,6 +173,7 @@ function createAutoProviderRuntime(options = {}) {
       const picked = chooseCandidate({
         candidates,
         attempted,
+        preferredTier,
         stickyProviderId: pending?.providerId
           || (selection.sticky ? stickyBySession.get(session.id) : null),
       });
@@ -267,7 +293,7 @@ function createAutoProviderRuntime(options = {}) {
       if (backgroundActive) return null;
       const excluded = new Set(attempted);
       if (attempt?.providerId) excluded.add(attempt.providerId);
-      const picked = chooseCandidate({ candidates, attempted: excluded });
+      const picked = chooseCandidate({ candidates, attempted: excluded, preferredTier });
       if (!picked.candidate) return null;
       const reservation = Object.freeze({
         sessionId: session.id,
@@ -300,7 +326,8 @@ function createAutoProviderRuntime(options = {}) {
     }
 
     return Object.freeze({
-      enabled: true, selection, initial, failover, prepareHandoff, recordSuccess,
+      enabled: true, selection, routing: routingDecision,
+      initial, failover, prepareHandoff, recordSuccess,
     });
   }
 
@@ -314,9 +341,23 @@ function createAutoProviderRuntime(options = {}) {
     currentBySession.delete(sessionId);
     selectionRefBySession.delete(sessionId);
     pendingBySession.delete(sessionId);
+    routing.clearSession(sessionId);
   }
 
-  return Object.freeze({ beginTurn, clearSession, snapshot });
+  // Exposed for the chat admission path, which has the one async window before
+  // the synchronous turn resolves its route (see auto-provider-routing.js). The
+  // admission phase broadcasts its own progress frame, next to the wait it
+  // explains.
+  function prepareTurn(args) {
+    return routing.prepareTurn(args);
+  }
+
+  const prepareAdmission = createRoutingAdmissionPhase({
+    prepareTurn: routing.prepareTurn,
+    broadcast: emit,
+  });
+
+  return Object.freeze({ beginTurn, clearSession, prepareAdmission, prepareTurn, snapshot });
 }
 
 module.exports = {

@@ -127,6 +127,8 @@ function fakeDocument() {
 test('browser Auto Provider constants stay aligned with the server contract', () => {
   assert.equal(editor.MAX_CANDIDATES, serverContract.MAX_CANDIDATES);
   assert.equal(editor.MAX_ATTEMPTS, serverContract.MAX_ATTEMPTS);
+  assert.equal(editor.MAX_TIERS, serverContract.MAX_TIERS);
+  assert.equal(editor.ROUTING_API_KEY_NAME, serverContract.DEFAULT_ROUTING_API_KEY);
   assert.deepEqual(editor.PROTOCOLS, [...serverContract.PROTOCOLS]);
 });
 
@@ -198,6 +200,67 @@ test('serializeDraft keeps enabled candidates only, orders priorities and clamps
       providerId: `provider-${index}`, priority: index + 1, enabled: true,
     })),
   }).code, 'too_many_candidates');
+});
+
+test('an unrouted pool serializes exactly as it did before difficulty routing', () => {
+  const candidates = [
+    { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true, rung: 2 },
+    { providerId: 'managed-a', model: 'model-a', priority: 1, enabled: true, rung: 1 },
+  ];
+  const plain = editor.serializeDraft({ protocol: 'anthropic', providers: providers(), candidates });
+  const off = editor.serializeDraft({
+    protocol: 'anthropic', providers: providers(), candidates, routingEnabled: false,
+  });
+  assert.equal('routing' in plain.value, false);
+  assert.equal('tier' in plain.value.candidates[0], false);
+  assert.equal('rung' in plain.value.candidates[0], false);
+  // The editor's own rung control value must never travel on the wire.
+  assert.deepEqual(off.value, plain.value);
+});
+
+test('difficulty routing compacts rungs into a ladder the server accepts', () => {
+  const candidates = [
+    { providerId: 'managed-a', model: 'model-a', priority: 1, enabled: true, rung: 1 },
+    { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true, rung: 3 },
+  ];
+  const result = editor.serializeDraft({
+    protocol: 'anthropic', providers: providers(), candidates, routingEnabled: true,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value.routing, {
+    version: 1,
+    provider: 'jev',
+    apiKeyName: editor.ROUTING_API_KEY_NAME,
+    tiers: ['t1', 't2'],
+  });
+  assert.deepEqual(result.value.candidates.map(candidate => candidate.tier), ['t1', 't2']);
+  // Only the order of the rungs carries meaning, so 1/3 is the same pool as 1/2 —
+  // and the server has to agree with the ladder the editor just wrote.
+  const validated = serverContract.validateProviderSelection(result.value, {
+    cli: 'claude',
+    providers: providers().map(provider => ({ ...provider, appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'] })),
+  });
+  assert.equal(validated.ok, true, validated.error);
+  assert.deepEqual([...validated.value.routing.tiers], ['t1', 't2']);
+});
+
+test('routing keeps knobs the editor cannot express, and refuses one tier', () => {
+  const candidates = [
+    { providerId: 'managed-a', model: 'model-a', priority: 1, enabled: true, rung: 1 },
+    { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true, rung: 2 },
+  ];
+  const preserved = editor.serializeDraft({
+    protocol: 'anthropic', providers: providers(), candidates, routingEnabled: true,
+    initialRouting: { apiKeyName: 'my-key', onUnknown: 'priority', timeoutMs: 4_000, model: 'typesafe-ai/jev' },
+  });
+  assert.equal(preserved.value.routing.apiKeyName, 'my-key');
+  assert.equal(preserved.value.routing.onUnknown, 'priority');
+  assert.equal(preserved.value.routing.timeoutMs, 4_000);
+  // Every candidate on the same rung is one tier: nothing would route.
+  assert.equal(editor.serializeDraft({
+    protocol: 'anthropic', providers: providers(), routingEnabled: true,
+    candidates: candidates.map(candidate => ({ ...candidate, rung: 1 })),
+  }).code, 'provider_routing_requires_tiers');
 });
 
 test('mixed Official and user-managed candidates require explicit confirmation', () => {
