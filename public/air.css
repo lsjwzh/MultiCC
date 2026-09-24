@@ -350,6 +350,8 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 .task-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
 .task-meta .mc-status { font-size: 11px; }
 .task-note { color: #8b9cad; font-size: 10px; }
+/* 全文检索的命中片段：mark 只染命中的那几个字，片段本身仍是上面那行灰色小字。 */
+.task-snippet mark { color: #0f63c6; border-radius: 3px; background: #dcecfd; }
 .sidebar-link { display: flex; justify-content: space-between; padding: 8px 10px; color: #5d7187; font-size: 11px; }
 
 .side-bottom { flex-shrink: 0; display: grid; gap: 5px; padding: 10px 8px 0; border-top: 1px solid rgba(198, 215, 233, .75); }
