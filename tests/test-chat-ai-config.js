@@ -170,10 +170,10 @@ test('Auto Provider picker exposes protocol pools, ordered candidates and the pe
   assert.match(source, /id="ai-auto-section"/);
   assert.match(source, /autoProviderEditorApi\(\)\.mount/);
   assert.match(source, /const result = autoEditor\.read\(\)/);
-  assert.match(shared, /multicc-auto-editor-priority/);
+  assert.match(shared, /multicc-auto-editor-move-up/);
   assert.match(shared, /cross_trust_confirmation_required/);
   assert.match(shared, /同一对话上下文可能在自动切换时发送给多个上游/);
-  assert.match(shared, /@media \(max-width:640px\)/);
+  assert.match(shared, /@container \(max-width:520px\)/);
   assert.equal(autoEditor.defaultSelection([
     { id: 'official', protocol: 'anthropic', isOfficial: true },
     { id: 'relay-a', protocol: 'anthropic' },

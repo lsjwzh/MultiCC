@@ -153,6 +153,21 @@
     return String(rung);
   }
 
+  // The short form sits on the row's chip; tierLabel() is its tooltip.
+  function tierChip(rung, ceiling) {
+    if (ceiling > 3) return String(rung);
+    if (rung <= 1) return tt('autoEditorTierChipSimple', '简单');
+    if (rung >= ceiling) return tt('autoEditorTierChipComplex', '复杂');
+    return tt('autoEditorTierChipMedium', '中等');
+  }
+
+  // [wire value, option key, option text, folded-summary key, folded-summary text]
+  const UNKNOWN_CHOICES = Object.freeze([
+    ['strong', 'autoEditorJevUnknownStrong', '当复杂任务处理（稳妥）', 'autoEditorMoreUnknownStrong', '判断不了按复杂'],
+    ['weak', 'autoEditorJevUnknownWeak', '当简单任务处理（省钱）', 'autoEditorMoreUnknownWeak', '判断不了按简单'],
+    ['priority', 'autoEditorJevUnknownPriority', '不看难度，按顺序用', 'autoEditorMoreUnknownPriority', '判断不了按顺序'],
+  ]);
+
   // Only a first guess the user can override; it just saves most pools from
   // having to be assigned by hand (flash/mini/haiku-class models go simple).
   const LIGHT_MODEL = /(^|[^a-z])(flash|mini|lite|haiku|nano|small|tiny|instant|turbo|air)([^a-z]|$)|(^|[^0-9.])([1-9]|[1-3][0-9])b([^a-z0-9]|$)/i;
@@ -348,48 +363,92 @@
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement('style');
     style.id = STYLE_ID;
-    style.textContent = `
-      .multicc-auto-editor{border:1px solid var(--line-strong,#30363d);border-radius:8px;padding:10px;margin:0 0 12px;color:var(--text,#c9d1d9)}
-      .multicc-auto-editor-title{font-size:12px;font-weight:600;margin-bottom:3px}
-      .multicc-auto-editor-help{font-size:11px;color:var(--muted,#8b949e);line-height:1.45;margin-bottom:8px}
-      .multicc-auto-editor-list{min-width:0}
-      .multicc-auto-editor-row{display:grid;grid-template-columns:22px minmax(150px,1fr) 70px minmax(130px,1fr) 96px;gap:7px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line,#21262d)}
-      .multicc-auto-editor-name{font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .multicc-auto-editor input[type=number],.multicc-auto-editor select{box-sizing:border-box;width:100%;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
-      .multicc-auto-editor-error{color:var(--danger,#f85149);font-size:11px;margin:6px 0}
-      .multicc-auto-editor-warning{color:var(--warning,#d29922);font-size:11px;line-height:1.45;margin:7px 0;padding:7px;border:1px solid color-mix(in srgb,var(--warning,#d29922) 45%,transparent);border-radius:6px}
-      .multicc-auto-editor-warning label{display:flex;align-items:flex-start;gap:6px;margin-top:6px;color:var(--text,#c9d1d9)}
-      .multicc-auto-editor-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--muted,#8b949e)}
-      .multicc-auto-editor-controls select{width:auto;padding:3px 6px}
-      .multicc-auto-editor-presets{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
-      .multicc-auto-editor-presets select{flex:1 1 180px;width:auto}
-      .multicc-auto-editor-presets input[type=text]{box-sizing:border-box;flex:1 1 120px;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
-      .multicc-auto-editor-presets button{border:1px solid var(--line-strong,#30363d);border-radius:5px;background:transparent;color:var(--text,#c9d1d9);padding:4px 9px;font-size:11px;cursor:pointer}
-      .multicc-auto-editor-preset-status{flex-basis:100%;font-size:11px;color:var(--muted,#8b949e)}
-      .multicc-auto-editor-head{display:grid;grid-template-columns:22px minmax(150px,1fr) 70px minmax(130px,1fr) 96px;gap:7px;font-size:10px;color:var(--muted,#8b949e);padding-bottom:3px;border-bottom:1px solid var(--line,#21262d)}
-      .multicc-auto-editor-modes{display:flex;flex-direction:column;gap:5px;margin:0 0 9px;font-size:12px}
-      .multicc-auto-editor-modes label{display:flex;align-items:flex-start;gap:6px;cursor:pointer}
-      .multicc-auto-editor-modes small{color:var(--muted,#8b949e);font-size:11px}
-      .multicc-auto-editor-jev{border:1px solid var(--line-strong,#30363d);border-radius:6px;padding:8px;margin:0 0 9px;font-size:11px;display:flex;flex-direction:column;gap:6px}
-      .multicc-auto-editor-step{font-size:12px;font-weight:600}
-      .multicc-auto-editor-jev-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-      .multicc-auto-editor-jev input{box-sizing:border-box;flex:1 1 160px;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
-      .multicc-auto-editor-jev button{border:1px solid var(--line-strong,#30363d);border-radius:5px;background:transparent;color:var(--text,#c9d1d9);padding:4px 9px;font-size:11px;cursor:pointer}
-      .multicc-auto-editor-jev select{width:auto;padding:3px 6px}
-      .multicc-auto-editor-jev-status.ok{color:var(--success,#3fb950)}
-      .multicc-auto-editor-jev-status.missing,.multicc-auto-editor-jev-test-result.bad{color:var(--warning,#d29922)}
-      .multicc-auto-editor-jev-test-result.good{color:var(--success,#3fb950)}
-      .multicc-auto-editor-muted{color:var(--muted,#8b949e);line-height:1.45}
-      .multicc-auto-editor-summary{font-size:11px;line-height:1.5;margin-top:7px;padding:6px 8px;border-radius:6px;background:color-mix(in srgb,var(--line,#21262d) 55%,transparent)}
-      .multicc-auto-editor-summary.bad{color:var(--warning,#d29922)}
-      @media (max-width:640px){
-        .multicc-auto-editor-head{display:none}
-        .multicc-auto-editor-row{grid-template-columns:22px minmax(0,1fr);gap:6px 8px;padding:9px 0}
-        .multicc-auto-editor-name{white-space:normal;overflow:visible}
-        .multicc-auto-editor-priority,.multicc-auto-editor-model,.multicc-auto-editor-tier{grid-column:2}
-      }
-    `;
+    style.textContent = editorCss('.multicc-auto-editor');
     (document.head || document.body).appendChild(style);
+  }
+
+  // Host pages style bare controls (Air: input{width:100%}, button{min-height:
+  // 38px}, dialog label{display:block}), so every rule here is scoped under the
+  // root class; the resets use :where() to stay weaker than the component rules.
+  // Colours come from host variables — Air, the light chat skin and the dark
+  // chat page each bring their own — with dark fallbacks.
+  function editorCss(P) {
+    return `
+${P}{--ape-fg:var(--chat-text,var(--text,#c9d1d9));--ape-muted:var(--chat-muted,var(--muted,#8b949e));--ape-line:var(--chat-line,var(--line-strong,#30363d));--ape-field:var(--chat-surface,var(--well,#0d1117));--ape-panel:var(--panel-soft,transparent);--ape-accent:var(--chat-blue,var(--accent,#58a6ff));--ape-ok:var(--green,#3fb950);--ape-warn:var(--warning,#d29922);--ape-danger:var(--danger,#f85149);container-type:inline-size;box-sizing:border-box;border:1px solid var(--ape-line);border-radius:12px;padding:12px 14px;margin:0 0 12px;background:var(--ape-panel);color:var(--ape-fg);font-size:12px;line-height:1.45;text-align:left}
+${P} :where(div,span,p,ol,li,label,input,select,button,details,summary,small,b){margin:0;box-sizing:border-box;letter-spacing:normal}
+${P} :where(input,select,button){font:inherit;min-height:0;width:auto;box-shadow:none}
+${P} :is(input,select,button):focus{box-shadow:none}
+${P} :is(input,select,button,summary):focus-visible{outline:2px solid color-mix(in srgb,var(--ape-accent) 55%,transparent);outline-offset:1px}
+${P} :where(label){display:inline-flex;align-items:center;gap:6px;font-size:inherit;color:inherit;cursor:pointer}
+${P} input[type=checkbox]{width:14px;height:14px;padding:0;flex:none;accent-color:var(--ape-accent)}
+${P} :is(select,input[type=text],input[type=password]){height:28px;padding:0 8px;border:1px solid var(--ape-line);border-radius:7px;background-color:var(--ape-field);color:var(--ape-fg);font-size:12px}
+${P} button{height:28px;padding:0 10px;border:1px solid var(--ape-line);border-radius:7px;background:var(--ape-field);color:var(--ape-fg);font-size:12px;line-height:1;cursor:pointer;white-space:nowrap}
+${P} button:hover{border-color:var(--ape-accent);color:var(--ape-accent);background:var(--ape-field)}
+${P} button:disabled{opacity:.45;cursor:default}
+${P} ${P}-link{height:auto;padding:0;border:0;background:none;color:var(--ape-accent)}
+${P} ${P}-link:hover{border:0;background:none;text-decoration:underline}
+${P} ${P}-primary,${P} ${P}-primary:hover{border-color:var(--ape-accent);background:var(--ape-accent);color:#fff}
+${P}-muted{color:var(--ape-muted)}
+${P}-top{display:flex;align-items:center;justify-content:space-between;gap:8px 12px;flex-wrap:wrap;margin-bottom:10px}
+${P}-title{font-size:13px;font-weight:600}
+${P}-presets{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;justify-content:flex-end}
+${P} ${P}-presets select{max-width:200px}
+${P}-preset-form{display:flex;gap:6px;align-items:center}
+${P}-preset-status{flex-basis:100%;text-align:right;color:var(--ape-muted);font-size:11px}
+${P}-mode{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+${P}-mode-hint{margin:6px 0 12px;color:var(--ape-muted)}
+${P} ${P}-seg{display:inline-flex;gap:2px;padding:2px;border:1px solid var(--ape-line);border-radius:9px;background:var(--ape-field)}
+${P} ${P}-seg button{height:26px;padding:0 12px;border:0;border-radius:7px;background:transparent;color:var(--ape-muted)}
+${P} ${P}-seg button[aria-checked=true]{background:var(--ape-accent);color:#fff;font-weight:600}
+${P} ${P}-seg button:hover:not([aria-checked=true]){color:var(--ape-fg)}
+${P} ${P}-jev{display:grid;gap:7px;margin:0 0 12px;padding:9px 11px;border:1px solid var(--ape-line);border-radius:10px;background:var(--ape-field)}
+${P} ${P}-jev.missing{border-color:color-mix(in srgb,var(--ape-warn) 55%,var(--ape-line));background:color-mix(in srgb,var(--ape-warn) 6%,var(--ape-field))}
+${P}-jev-line{display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap}
+${P}-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--ape-muted)}
+${P}-jev.ok ${P}-dot{background:var(--ape-ok)}
+${P}-jev.missing ${P}-dot{background:var(--ape-warn)}
+${P}-jev-actions{display:flex;gap:12px;margin-left:auto}
+${P} ${P}-steps{padding-left:18px;color:var(--ape-muted)}
+${P}-jev-form{display:flex;gap:6px}
+${P} ${P}-jev-form input{flex:1 1 auto;min-width:0}
+${P}-fine{color:var(--ape-muted);font-size:11px}
+${P}-result.good{color:var(--ape-ok)}
+${P}-result.bad{color:var(--ape-warn)}
+${P}-list-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 8px;margin:0 0 6px;font-weight:600}
+${P}-list-head small{font-weight:400;font-size:11px;color:var(--ape-muted)}
+${P}-list,${P}-pool{display:grid;gap:6px}
+${P} ${P}-row{display:grid;grid-template-columns:22px minmax(0,1fr) minmax(110px,170px) auto auto;grid-template-areas:"rank name model tier act";align-items:center;gap:8px;padding:6px 6px 6px 8px;border:1px solid var(--ape-line);border-radius:9px;background:var(--ape-field)}
+${P}-rank{grid-area:rank;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:color-mix(in srgb,var(--ape-accent) 14%,transparent);color:var(--ape-accent);font-size:11px;font-weight:600}
+${P}-name{grid-area:name;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+${P} ${P}-model{grid-area:model;width:100%;min-width:0}
+${P} ${P}-tier{grid-area:tier}
+${P} ${P}-tier button{height:22px;padding:0 9px;font-size:11px}
+${P}.is-order ${P}-tier{display:none}
+${P}-act{grid-area:act;display:flex;gap:2px}
+${P} ${P}-icon{width:24px;height:24px;padding:0;border-color:transparent;background:transparent;color:var(--ape-muted);font-size:13px}
+${P}-list ${P}-add-one,${P}-pool :is(${P}-rank,${P}-model,${P}-tier,${P}-icon){display:none}
+${P} ${P}-pool ${P}-row{display:flex;padding:4px 6px 4px 10px;border-style:dashed;background:transparent;color:var(--ape-muted)}
+${P}-pool ${P}-name{flex:1 1 auto}
+${P} ${P}-add-one{height:24px;border-color:transparent;background:transparent;color:var(--ape-accent)}
+${P} ${P}-add{margin-top:8px}
+${P} ${P}-add>summary{display:inline-block;padding:2px 0;margin-bottom:6px;color:var(--ape-accent);font-size:12px;cursor:pointer;list-style:none}
+${P} ${P}-add>summary::-webkit-details-marker{display:none}
+${P} ${P}-summary{margin-top:10px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb,var(--ape-accent) 8%,transparent)}
+${P} ${P}-summary.bad{background:color-mix(in srgb,var(--ape-warn) 10%,transparent);color:var(--ape-warn)}
+${P}-error{margin-top:8px;color:var(--ape-danger)}
+${P} ${P}-warning{display:grid;gap:6px;margin-top:10px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--ape-warn) 45%,transparent);border-radius:8px;color:var(--ape-warn)}
+${P} ${P}-warning label{align-items:flex-start;color:var(--ape-fg)}
+${P} ${P}-more{margin-top:10px;padding-top:8px;border-top:1px solid var(--ape-line)}
+${P} ${P}-more>summary{padding:2px 0;color:var(--ape-fg);font-size:12px;cursor:pointer}
+${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
+@container (max-width:520px){
+  ${P} ${P}-row{grid-template-columns:22px minmax(0,1fr) auto auto;grid-template-areas:"rank name name act" ". model tier tier"}
+  ${P}.is-order ${P}-row{grid-template-areas:"rank name name act" ". model model model"}
+  ${P}-jev-actions{margin-left:0}
+  ${P}-presets{justify-content:flex-start}
+  ${P}-preset-status{text-align:left}
+}
+`;
   }
 
   function element(document, tag, className, text) {
@@ -421,157 +480,174 @@
     let keyFormOpen = false;
     let keyGeneration = 0;
     let destroyed = false;
-    const modeGroup = `multicc-auto-mode-${Math.random().toString(36).slice(2, 8)}`;
+    let routingOn = false;
+    // Every provider row of the protocol pool, in pool order; `order` holds the
+    // rows in use, first = tried first. Unused rows wait in the "添加线路" list.
+    let allRows = [];
+    let order = [];
     const formatProvider = typeof options.formatProvider === 'function'
       ? options.formatProvider : provider => provider.name || provider.id;
     const onChange = typeof options.onChange === 'function' ? options.onChange : null;
     const presetStore = options.presetStore === undefined ? defaultPresetStore() : options.presetStore;
     const now = typeof options.now === 'function' ? options.now : () => Date.now();
+    const make = (tag, className, text) => element(document, tag, className, text);
+    const button = (className, text) => {
+      const node = make('button', className, text);
+      node.type = 'button';
+      return node;
+    };
+    const setChecked = (node, on) => node.setAttribute('aria-checked', on ? 'true' : 'false');
+    function segment(className, label) {
+      const group = make('div', `multicc-auto-editor-seg ${className}`);
+      group.setAttribute('role', 'radiogroup');
+      if (label) group.setAttribute('aria-label', label);
+      return group;
+    }
+    function segButton(group, className, text) {
+      const node = button(className, text);
+      node.setAttribute('role', 'radio');
+      setChecked(node, false);
+      group.appendChild(node);
+      return node;
+    }
 
     container.classList.add('multicc-auto-editor');
-    const title = element(document, 'div', 'multicc-auto-editor-title',
-      tt('autoEditorTitle', 'Auto Provider 候选池'));
-    const help = element(document, 'div', 'multicc-auto-editor-help',
-      tt('autoEditorHelp', '按优先级尝试；仅在首字节前且没有工具副作用时切换。新鲜额度已耗尽的候选会预先跳过。'));
-    const list = element(document, 'div', 'multicc-auto-editor-list');
-    const error = element(document, 'div', 'multicc-auto-editor-error');
-    error.setAttribute('role', 'alert');
-    error.style.display = 'none';
-    const warning = element(document, 'div', 'multicc-auto-editor-warning');
-    warning.style.display = 'none';
-    const warningText = element(document, 'div', '',
-      tt('autoEditorCrossTrustWarning', '已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。'));
-    const confirmLabel = element(document, 'label');
-    const confirm = document.createElement('input');
-    confirm.type = 'checkbox';
-    confirm.className = 'multicc-auto-editor-cross-trust-confirm';
-    confirmLabel.append(confirm, document.createTextNode(
-      tt('autoEditorCrossTrustConfirm', '我确认允许本候选池跨这些上游发送对话上下文')));
-    warning.append(warningText, confirmLabel);
-    const controls = element(document, 'div', 'multicc-auto-editor-controls');
-    const maxLabel = element(document, 'label', '', tt('autoEditorMaxAttemptsLabel', '最多尝试 '));
-    const maxAttempts = document.createElement('select');
-    maxAttempts.className = 'multicc-auto-editor-max-attempts';
-    for (let value = 2; value <= MAX_ATTEMPTS; value += 1) {
-      const option = document.createElement('option');
-      option.value = String(value);
-      option.textContent = String(value);
-      maxAttempts.appendChild(option);
-    }
-    maxLabel.appendChild(maxAttempts);
-    const stickyLabel = element(document, 'label');
-    const sticky = document.createElement('input');
-    sticky.type = 'checkbox';
-    sticky.className = 'multicc-auto-editor-sticky';
-    stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 成功后优先沿用')));
-    controls.append(maxLabel, stickyLabel);
+    const top = make('div', 'multicc-auto-editor-top');
+    const title = make('div', 'multicc-auto-editor-title', tt('autoEditorTitle', 'Auto 候选池'));
+    const presetBar = make('div', 'multicc-auto-editor-presets');
+    const presetSelect = make('select', 'multicc-auto-editor-preset-select');
+    presetSelect.setAttribute('aria-label', tt('autoEditorPresetPlaceholder', '套用预设…'));
+    const presetDelete = button('multicc-auto-editor-preset-delete multicc-auto-editor-link',
+      tt('autoEditorPresetDelete', '删除预设'));
+    const presetOpen = button('multicc-auto-editor-preset-open multicc-auto-editor-link',
+      tt('autoEditorPresetOpen', '存为预设'));
+    const presetForm = make('div', 'multicc-auto-editor-preset-form');
+    const presetName = make('input', 'multicc-auto-editor-preset-name');
+    presetName.type = 'text';
+    presetName.placeholder = tt('autoEditorPresetNamePlaceholder', '预设名称（可选）');
+    const presetSave = button('multicc-auto-editor-preset-save multicc-auto-editor-primary',
+      tt('autoEditorPresetSave', '保存'));
+    const presetCancel = button('multicc-auto-editor-preset-cancel multicc-auto-editor-link',
+      tt('autoEditorJevKeyCancel', '取消'));
+    presetForm.append(presetName, presetSave, presetCancel);
+    const presetStatus = make('div', 'multicc-auto-editor-preset-status');
+    presetBar.append(presetSelect, presetDelete, presetOpen, presetForm, presetStatus);
+    if (!presetStore) presetBar.style.display = 'none';
+    top.append(title, presetBar);
 
-    // How the pool picks a line — the first decision, so it sits on top and
-    // each choice explains itself instead of relying on a help paragraph.
-    const modes = element(document, 'div', 'multicc-auto-editor-modes');
-    const modeOption = (className, heading, detail) => {
-      const label = element(document, 'label');
-      const input = document.createElement('input');
-      input.type = 'radio';
-      input.name = modeGroup;
-      input.className = className;
-      const text = element(document, 'span', '', heading);
-      text.append(document.createElement('br'), element(document, 'small', '', detail));
-      label.append(input, text);
-      modes.appendChild(label);
-      return input;
-    };
-    const orderMode = modeOption('multicc-auto-editor-mode-order',
-      tt('autoEditorModeOrder', '按顺序使用'),
-      tt('autoEditorModeOrderDetail', '先用「顺序」为 1 的线路，不可用时自动换下一个。'));
-    const routingEnabled = modeOption('multicc-auto-editor-routing',
-      tt('autoEditorModeRouting', '按任务难度分配'),
-      tt('autoEditorModeRoutingDetail', '每条消息先由 Jev 判断难易：简单的交给便宜模型，复杂的交给强模型。'));
+    // How the pool picks a line — the first decision, one click either way.
+    const modeRow = make('div', 'multicc-auto-editor-mode');
+    const modeLabel = tt('autoEditorModeLabel', '怎么选线路');
+    const modeSeg = segment('multicc-auto-editor-modes', modeLabel);
+    const orderMode = segButton(modeSeg, 'multicc-auto-editor-mode-order', tt('autoEditorModeOrder', '按顺序'));
+    const routingEnabled = segButton(modeSeg, 'multicc-auto-editor-routing', tt('autoEditorModeRouting', '按难度'));
+    modeRow.append(make('span', '', modeLabel), modeSeg);
+    const modeHint = make('p', 'multicc-auto-editor-mode-hint');
 
-    const jevBox = element(document, 'div', 'multicc-auto-editor-jev');
-    const jevStep = element(document, 'div', 'multicc-auto-editor-step',
-      tt('autoEditorJevStep', '① 连接 Jev（通过 Vercel AI Gateway 判断难度）'));
-    const keyStatus = element(document, 'div', 'multicc-auto-editor-jev-status');
-    const keyChange = element(document, 'button', 'multicc-auto-editor-jev-key-change', tt('autoEditorJevKeyChange', '更换 key'));
-    keyChange.type = 'button';
-    const statusRow = element(document, 'div', 'multicc-auto-editor-jev-row');
-    statusRow.append(keyStatus, keyChange);
-    const keyForm = element(document, 'div', 'multicc-auto-editor-jev-row');
-    const keyInput = document.createElement('input');
+    const jevBox = make('div', 'multicc-auto-editor-jev');
+    const jevLine = make('div', 'multicc-auto-editor-jev-line');
+    const keyStatus = make('b', 'multicc-auto-editor-jev-status');
+    const keyDetail = make('span', 'multicc-auto-editor-muted');
+    const jevActions = make('span', 'multicc-auto-editor-jev-actions');
+    const testButton = button('multicc-auto-editor-jev-test multicc-auto-editor-link', tt('autoEditorJevTest', '测试'));
+    const keyChange = button('multicc-auto-editor-jev-key-change multicc-auto-editor-link',
+      tt('autoEditorJevKeyChange', '更换 key'));
+    jevActions.append(testButton, keyChange);
+    jevLine.append(make('span', 'multicc-auto-editor-dot'), keyStatus, keyDetail, jevActions);
+    const keySteps = make('ol', 'multicc-auto-editor-steps');
+    keySteps.append(
+      make('li', '', tt('autoEditorJevStepCreate', '打开 Vercel 控制台 → AI Gateway → API Keys，新建一个 key')),
+      make('li', '', tt('autoEditorJevStepPaste', '粘贴到下面，点「保存并测试」')));
+    const keyForm = make('div', 'multicc-auto-editor-jev-form');
+    const keyInput = make('input', 'multicc-auto-editor-jev-key-input');
     keyInput.type = 'password';
     keyInput.autocomplete = 'off';
-    keyInput.className = 'multicc-auto-editor-jev-key-input';
-    keyInput.placeholder = tt('autoEditorJevKeyPlaceholder', '粘贴 Vercel AI Gateway API key（vck_ 开头）');
-    const keySave = element(document, 'button', 'multicc-auto-editor-jev-key-save', tt('autoEditorJevKeySave', '保存并测试'));
-    keySave.type = 'button';
+    keyInput.placeholder = tt('autoEditorJevKeyPlaceholder', '粘贴 key（vck_ 开头）');
+    const keySave = button('multicc-auto-editor-jev-key-save multicc-auto-editor-primary',
+      tt('autoEditorJevKeySave', '保存并测试'));
     keyForm.append(keyInput, keySave);
-    const keyHelp = element(document, 'div', 'multicc-auto-editor-muted');
-    const testRow = element(document, 'div', 'multicc-auto-editor-jev-row');
-    const testInput = document.createElement('input');
-    testInput.type = 'text';
-    testInput.className = 'multicc-auto-editor-jev-test-input';
-    testInput.placeholder = tt('autoEditorJevTestPlaceholder', '试一句任务看看会被判成什么（可留空）');
-    const testButton = element(document, 'button', 'multicc-auto-editor-jev-test', tt('autoEditorJevTest', '测试一下'));
-    testButton.type = 'button';
-    testRow.append(testInput, testButton);
-    const testResult = element(document, 'div', 'multicc-auto-editor-jev-test-result');
+    const keyHelp = make('div', 'multicc-auto-editor-fine');
+    const testResult = make('div', 'multicc-auto-editor-result multicc-auto-editor-jev-test-result');
     testResult.setAttribute('aria-live', 'polite');
     testResult.style.display = 'none';
-    const unknownRow = element(document, 'label', 'multicc-auto-editor-jev-row',
-      tt('autoEditorJevUnknownLabel', 'Jev 判断不了时（没配 key、超时）：'));
-    const onUnknownSelect = document.createElement('select');
-    onUnknownSelect.className = 'multicc-auto-editor-jev-unknown';
-    for (const [value, key, fallback] of [
-      ['strong', 'autoEditorJevUnknownStrong', '当复杂任务处理（稳妥）'],
-      ['weak', 'autoEditorJevUnknownWeak', '当简单任务处理（省钱）'],
-      ['priority', 'autoEditorJevUnknownPriority', '不看难度，按顺序用'],
-    ]) {
-      const option = element(document, 'option', '', tt(key, fallback));
+    jevBox.append(jevLine, keySteps, keyForm, keyHelp, testResult);
+
+    const listHead = make('div', 'multicc-auto-editor-list-head');
+    const listHint = make('small', '');
+    listHead.append(make('span', '', tt('autoEditorListTitle', '使用的线路')), listHint);
+    const list = make('div', 'multicc-auto-editor-list');
+    const addBox = make('details', 'multicc-auto-editor-add');
+    const addSummary = make('summary', '');
+    const poolList = make('div', 'multicc-auto-editor-pool');
+    addBox.append(addSummary, poolList);
+
+    const summary = make('div', 'multicc-auto-editor-summary');
+    summary.setAttribute('aria-live', 'polite');
+    const error = make('div', 'multicc-auto-editor-error');
+    error.setAttribute('role', 'alert');
+    error.style.display = 'none';
+    const warning = make('div', 'multicc-auto-editor-warning');
+    warning.style.display = 'none';
+    const confirmLabel = make('label');
+    const confirm = make('input', 'multicc-auto-editor-cross-trust-confirm');
+    confirm.type = 'checkbox';
+    confirmLabel.append(confirm, document.createTextNode(
+      tt('autoEditorCrossTrustConfirm', '我确认允许本候选池跨这些上游发送对话上下文')));
+    warning.append(make('div', '',
+      tt('autoEditorCrossTrustWarning', '已选择 Official 与自管 Provider：同一对话上下文可能在自动切换时发送给多个上游。')),
+    confirmLabel);
+
+    // Rarely-touched knobs stay folded; the summary line shows their values.
+    const more = make('details', 'multicc-auto-editor-more');
+    const moreSummary = make('summary', '');
+    const moreBody = make('div', 'multicc-auto-editor-more-body');
+    const maxLabel = make('label', '', tt('autoEditorMaxAttemptsLabel', '一条消息最多尝试 '));
+    const maxAttempts = make('select', 'multicc-auto-editor-max-attempts');
+    for (let value = 2; value <= MAX_ATTEMPTS; value += 1) {
+      const option = make('option', '', String(value));
+      option.value = String(value);
+      maxAttempts.appendChild(option);
+    }
+    maxLabel.append(maxAttempts, document.createTextNode(tt('autoEditorMaxAttemptsSuffix', ' 条线路')));
+    const stickyLabel = make('label');
+    const sticky = make('input', 'multicc-auto-editor-sticky');
+    sticky.type = 'checkbox';
+    stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 成功后优先沿用这条线路')));
+    const unknownRow = make('label', '', tt('autoEditorJevUnknownLabel', '判断不了难度时（Jev 超时或没连上） '));
+    const onUnknownSelect = make('select', 'multicc-auto-editor-jev-unknown');
+    for (const [value, key, fallback] of UNKNOWN_CHOICES) {
+      const option = make('option', '', tt(key, fallback));
       option.value = value;
       onUnknownSelect.appendChild(option);
     }
     unknownRow.appendChild(onUnknownSelect);
-    jevBox.append(jevStep, statusRow, keyForm, keyHelp, testRow, testResult, unknownRow);
+    const help = make('div', 'multicc-auto-editor-fine',
+      tt('autoEditorHelp', '只在还没收到回复、也没执行过工具时才会切换线路；额度已用完的线路会被提前跳过。'));
+    moreBody.append(maxLabel, stickyLabel, unknownRow, help);
+    more.append(moreSummary, moreBody);
 
-    const assignStep = element(document, 'div', 'multicc-auto-editor-step',
-      tt('autoEditorAssignStep', '② 在「负责」一列给每条线路选任务类型（已按模型名猜好，可改）'));
-    const head = element(document, 'div', 'multicc-auto-editor-head');
-    const headTier = element(document, 'span', '', tt('autoEditorHeadTier', '负责'));
-    head.append(element(document, 'span', '', ''), element(document, 'span', '', tt('autoEditorHeadProvider', '线路')),
-      element(document, 'span', '', tt('autoEditorHeadOrder', '顺序')),
-      element(document, 'span', '', tt('autoEditorHeadModel', '模型')), headTier);
-    const summary = element(document, 'div', 'multicc-auto-editor-summary');
-    summary.setAttribute('aria-live', 'polite');
-    const presetBar = element(document, 'div', 'multicc-auto-editor-presets');
-    const presetSelect = document.createElement('select');
-    presetSelect.className = 'multicc-auto-editor-preset-select';
-    presetSelect.setAttribute('aria-label', tt('autoEditorPresetPlaceholder', '套用已保存的预设…'));
-    const presetName = document.createElement('input');
-    presetName.type = 'text';
-    presetName.className = 'multicc-auto-editor-preset-name';
-    presetName.placeholder = tt('autoEditorPresetNamePlaceholder', '预设名称（可选）');
-    const presetSave = element(document, 'button', 'multicc-auto-editor-preset-save', tt('autoEditorPresetSave', '保存为预设'));
-    presetSave.type = 'button';
-    const presetDelete = element(document, 'button', 'multicc-auto-editor-preset-delete', tt('autoEditorPresetDelete', '删除预设'));
-    presetDelete.type = 'button';
-    const presetStatus = element(document, 'div', 'multicc-auto-editor-preset-status');
-    presetBar.append(presetSelect, presetDelete, presetName, presetSave, presetStatus);
-    if (!presetStore) presetBar.style.display = 'none';
-    container.replaceChildren(title, presetBar, modes, jevBox, assignStep, head, list, summary,
-      error, warning, controls, help);
+    container.replaceChildren(top, modeRow, modeHint, jevBox, listHead, list, addBox, summary,
+      error, warning, more);
 
     function rows() {
-      return [...list.querySelectorAll('.multicc-auto-editor-row')];
+      return allRows.slice();
+    }
+
+    function tierOf(row) {
+      return row.querySelector('.multicc-auto-editor-tier');
     }
 
     function rawCandidates() {
-      return rows().map(row => ({
-        providerId: row.dataset.providerId,
-        model: row.querySelector('.multicc-auto-editor-model').value || null,
-        priority: Number(row.querySelector('.multicc-auto-editor-priority').value),
-        enabled: row.querySelector('.multicc-auto-editor-enabled').checked,
-        rung: Number(row.querySelector('.multicc-auto-editor-tier').value) || null,
-      }));
+      return allRows.map(row => {
+        const index = order.indexOf(row);
+        return {
+          providerId: row.dataset.providerId,
+          model: row.querySelector('.multicc-auto-editor-model').value || null,
+          priority: index < 0 ? null : index + 1,
+          enabled: index >= 0,
+          rung: Number(tierOf(row).dataset.value) || null,
+        };
+      });
     }
 
     function enabledCandidates() {
@@ -583,63 +659,103 @@
       error.style.display = message ? '' : 'none';
     }
 
-    function isRowEnabled(row) {
-      return row.querySelector('.multicc-auto-editor-enabled').checked;
+    function show(node, visible) {
+      node.style.display = visible ? '' : 'none';
     }
 
     function rowText(row) {
       const model = row.querySelector('.multicc-auto-editor-model').value;
       const name = row.querySelector('.multicc-auto-editor-name').textContent;
-      return model ? `${name}（${model}）` : name;
+      return model ? tt('autoEditorLineWithModel', '{name}（{model}）', { name, model }) : name;
     }
 
-    function byPriority(list) {
-      return list.slice().sort((left, right) =>
-        Number(left.querySelector('.multicc-auto-editor-priority').value)
-        - Number(right.querySelector('.multicc-auto-editor-priority').value));
+    // Rows in use go to the list in order and get their rank; the rest wait in
+    // the add list in pool order.
+    function arrange() {
+      list.replaceChildren(...order);
+      const rest = allRows.filter(row => !order.includes(row));
+      poolList.replaceChildren(...rest);
+      order.forEach((row, index) => {
+        row.querySelector('.multicc-auto-editor-rank').textContent = String(index + 1);
+        row.querySelector('.multicc-auto-editor-move-up').disabled = index === 0;
+        row.querySelector('.multicc-auto-editor-move-down').disabled = index === order.length - 1;
+      });
+      addSummary.textContent = tt('autoEditorAddSummary', '＋ 添加线路（还有 {count} 条可用）', { count: rest.length });
+      show(addBox, rest.length > 0);
     }
 
-    // `dataset.rung` is a row's *chosen* rung — seeded from a configured ladder,
-    // then overwritten by every tier change the user makes. Rows without one are
-    // re-guessed on each pass (flash/mini-class → simple, the rest → complex), so
-    // switching a row's model re-files it until the user picks by hand. When the
-    // names can't tell a fresh pool apart, the first line in order takes the
+    function useRow(row, on) {
+      if (on && !order.includes(row) && order.length < MAX_CANDIDATES) order.push(row);
+      if (!on) order = order.filter(item => item !== row);
+      arrange();
+      if (!selectionCrossesTrust(enabledCandidates(), providers)) confirm.checked = false;
+      notify();
+    }
+
+    function moveRow(row, step) {
+      const index = order.indexOf(row);
+      const target = index + step;
+      if (index < 0 || target < 0 || target >= order.length) return;
+      order.splice(index, 1);
+      order.splice(target, 0, row);
+      arrange();
+      notify();
+    }
+
+    // `dataset.rung` on a row's tier control is its *chosen* rung — seeded from
+    // a configured ladder, then overwritten by every click. Rows without one are
+    // re-guessed on each pass (flash/mini-class → simple, the rest → complex),
+    // so switching a row's model re-files it until the user picks by hand. When
+    // the names can't tell a fresh pool apart, the first line in order takes the
     // simple tasks: a valid split out of the box, never a one-tier ladder.
     let rungCeiling = 2;
     function syncRungs() {
-      const enabled = byPriority(rows().filter(isRowEnabled));
-      const chosen = enabled.map(row => Number(row.querySelector('.multicc-auto-editor-tier').dataset.rung) || 0);
-      const base = enabled.length >= 3 ? 3 : 2;
-      rungCeiling = Math.min(Math.max(2, Math.min(MAX_TIERS, enabled.length)), Math.max(base, ...chosen));
+      const enabled = order.slice();
+      const chosen = enabled.map(row => Number(tierOf(row).dataset.rung) || 0);
+      // Two chips — 简单 | 复杂 — unless a configured ladder already has more.
+      rungCeiling = Math.min(Math.max(2, Math.min(MAX_TIERS, enabled.length)), Math.max(2, ...chosen));
       const light = enabled.map(row => looksLight(rowText(row)));
       const undecided = chosen.every(rung => !rung) && light.every(value => value === light[0]);
-      for (const row of rows()) {
-        const select = row.querySelector('.multicc-auto-editor-tier');
+      for (const row of allRows) {
+        const tier = tierOf(row);
         const index = enabled.indexOf(row);
-        select.replaceChildren();
-        for (let rung = 1; rung <= rungCeiling; rung += 1) {
-          const option = element(document, 'option', '', tierLabel(rung, rungCeiling));
-          option.value = String(rung);
-          select.appendChild(option);
+        if (tier.dataset.ceiling !== String(rungCeiling)) buildTierButtons(tier, row);
+        if (index < 0) {
+          delete tier.dataset.value;
+          continue;
         }
-        select.disabled = index < 0;
-        if (index < 0) continue;
         const guess = undecided ? (index === 0 ? 1 : rungCeiling) : (light[index] ? 1 : rungCeiling);
-        select.value = String(Math.max(1, Math.min(rungCeiling, chosen[index] || guess)));
+        const value = Math.max(1, Math.min(rungCeiling, chosen[index] || guess));
+        tier.dataset.value = String(value);
+        for (const option of tier.children) setChecked(option, Number(option.dataset.rung) === value);
       }
     }
 
-    // One sentence of what the pool will actually do, in both modes — the
-    // preview that makes the columns above readable without a manual.
+    function buildTierButtons(tier) {
+      tier.dataset.ceiling = String(rungCeiling);
+      tier.replaceChildren();
+      for (let rung = 1; rung <= rungCeiling; rung += 1) {
+        const label = tierLabel(rung, rungCeiling);
+        const option = segButton(tier, 'multicc-auto-editor-tier-option', tierChip(rung, rungCeiling));
+        option.dataset.rung = String(rung);
+        option.title = label;
+        option.addEventListener('click', () => {
+          tier.dataset.rung = String(rung);
+          notify();
+        });
+      }
+    }
+
+    // One sentence of what the pool will actually do, in both modes.
     function renderSummary() {
-      const enabled = byPriority(rows().filter(isRowEnabled));
+      const enabled = order.slice();
       summary.classList.remove('bad');
       if (enabled.length < 2) {
-        summary.textContent = tt('autoEditorSummaryNeedTwo', '勾选至少两条线路。');
+        summary.textContent = tt('autoEditorSummaryNeedTwo', '至少要用两条线路：从「添加线路」里再选一条。');
         summary.classList.add('bad');
         return;
       }
-      if (!routingEnabled.checked) {
+      if (!routingOn) {
         summary.textContent = tt('autoEditorSummaryOrder', '效果：先用 {chain}', {
           chain: enabled.map(rowText).join(tt('autoEditorSummaryThen', '，不行再换 ')),
         });
@@ -647,7 +763,7 @@
       }
       const groups = new Map();
       for (const row of enabled) {
-        const rung = Number(row.querySelector('.multicc-auto-editor-tier').value) || 1;
+        const rung = Number(tierOf(row).dataset.value) || 1;
         if (!groups.has(rung)) groups.set(rung, []);
         groups.get(rung).push(rowText(row));
       }
@@ -663,13 +779,23 @@
       });
     }
 
+    function renderMore() {
+      const parts = [
+        tt('autoEditorMoreAttempts', '最多试 {count} 条', { count: maxAttempts.value }),
+        sticky.checked ? tt('autoEditorMoreSticky', '沿用成功的线路') : tt('autoEditorMoreNoSticky', '每次从第 1 条开始'),
+      ];
+      if (routingOn) {
+        const choice = UNKNOWN_CHOICES.find(([value]) => value === onUnknownSelect.value) || UNKNOWN_CHOICES[0];
+        parts.push(tt(choice[3], choice[4]));
+      }
+      moreSummary.replaceChildren(document.createTextNode(tt('autoEditorMoreTitle', '更多设置')),
+        make('span', 'multicc-auto-editor-muted',
+          tt('autoEditorMoreDetail', '（{detail}）', { detail: parts.join(' · ') })));
+    }
+
     function keyName() {
       const routing = initialSelection && initialSelection.mode === 'auto' ? initialSelection.routing : null;
       return routing && routing.apiKeyName ? String(routing.apiKeyName) : ROUTING_API_KEY_NAME;
-    }
-
-    function show(node, visible) {
-      node.style.display = visible ? '' : 'none';
     }
 
     function setTestResult(text, tone) {
@@ -681,36 +807,45 @@
 
     function renderJev() {
       const name = keyName();
-      keyStatus.classList.remove('ok', 'missing');
+      jevBox.classList.remove('ok', 'missing');
       const canSave = !!routingKey && typeof routingKey.save === 'function';
       const canTest = !!routingKey && typeof routingKey.test === 'function';
       let status;
+      let detail = '';
       if (!routingKey) {
-        status = tt('autoEditorJevKeyVaultOnly', 'key 从本机保险箱条目「{name}」读取，可在控制中心 →「敏感信息」里添加。', { name });
+        status = tt('autoEditorJevTitle', 'Jev 判断难度');
+        detail = tt('autoEditorJevKeyVaultOnly', 'key 从本机保险箱条目「{name}」读取，可在控制中心 →「敏感信息」里添加。', { name });
       } else if (keyState === 'checking' || keyState === 'unknown') {
-        status = tt('autoEditorJevKeyChecking', '正在检查 key…');
+        status = tt('autoEditorJevKeyChecking', '正在检查 Jev key…');
       } else if (keyState === 'present') {
-        status = tt('autoEditorJevKeyPresent', '✓ 已配置 key（保险箱条目 {name}）', { name });
-        keyStatus.classList.add('ok');
+        status = tt('autoEditorJevKeyPresent', 'Jev 已连接');
+        detail = tt('autoEditorJevKeyPresentDetail', 'key 在本机保险箱 · {name}', { name });
+        jevBox.classList.add('ok');
       } else if (keyState === 'missing') {
-        status = tt('autoEditorJevKeyMissing', '⚠ 还没有 key：Jev 判断不了难度，所有消息都会按下面「判断不了时」处理。');
-        keyStatus.classList.add('missing');
+        status = tt('autoEditorJevKeyMissing', '还差一步：连接 Jev');
+        detail = tt('autoEditorJevKeyMissingDetail', '它负责判断每条消息是简单还是复杂');
+        jevBox.classList.add('missing');
       } else {
-        status = tt('autoEditorJevKeyCheckFailed', '⚠ 暂时查不到 key 状态，可以直接重新粘贴保存。');
-        keyStatus.classList.add('missing');
+        status = tt('autoEditorJevKeyCheckFailed', '查不到 key 状态');
+        detail = tt('autoEditorJevKeyCheckFailedDetail', '可以直接重新粘贴保存');
+        jevBox.classList.add('missing');
       }
       keyStatus.textContent = status;
+      keyDetail.textContent = detail;
+      show(keyDetail, !!detail);
+      const present = keyState === 'present';
       const formVisible = canSave && (keyFormOpen || keyState === 'missing' || keyState === 'error');
-      show(keyChange, canSave && keyState === 'present');
+      show(keyChange, canSave && present);
       keyChange.textContent = keyFormOpen ? tt('autoEditorJevKeyCancel', '取消') : tt('autoEditorJevKeyChange', '更换 key');
+      show(testButton, canTest && present);
+      show(keySteps, canSave && keyState === 'missing');
       show(keyForm, formVisible);
       keyHelp.textContent = tt('autoEditorJevKeyHelp',
-        '在 Vercel 控制台 → AI Gateway → API Keys 创建。只存进本机保险箱（条目 {name}），不写进配置、不发给模型。', { name });
+        'key 只存进本机保险箱（条目 {name}），不写进配置、不发给模型。', { name });
       show(keyHelp, formVisible);
-      show(testRow, canTest && keyState === 'present');
       // A "connected" verdict stops being true once the key is gone; a failure
       // stays up so the user can still read why.
-      if ((!canTest || keyState !== 'present') && testResult.classList.contains('good')) setTestResult('', '');
+      if ((!canTest || !present) && testResult.classList.contains('good')) setTestResult('', '');
     }
 
     function checkKey() {
@@ -772,15 +907,17 @@
     function runTest() {
       if (!routingKey || typeof routingKey.test !== 'function') return Promise.resolve();
       const generation = keyGeneration;
+      const sample = tt('autoEditorJevSample', '把 README 里的一个错别字改掉');
       testButton.disabled = true;
       setTestResult(tt('autoEditorJevTesting', '正在请 Jev 判断…'), '');
       return Promise.resolve()
-        .then(() => routingKey.test({ apiKeyName: keyName(), text: testInput.value.trim() }))
+        .then(() => routingKey.test({ apiKeyName: keyName(), text: sample }))
         .then(result => {
           if (destroyed || generation !== keyGeneration) return;
           if (result && result.ok) {
-            setTestResult(tt('autoEditorJevTestOk', '✓ 连通了（{ms} ms）：这句会被当作「{tier}」。', {
+            setTestResult(tt('autoEditorJevTestOk', '✓ 连通了（{ms} ms）：「{sample}」→ {tier}', {
               ms: Math.round(Number(result.latencyMs) || 0),
+              sample,
               tier: result.tier === 't1' ? tierLabel(1, 2) : tierLabel(2, 2),
             }), 'good');
             return;
@@ -797,18 +934,14 @@
     }
 
     function syncAttemptLimit() {
-      const enabledCount = enabledCandidates().length;
-      const ceiling = Math.max(2, Math.min(MAX_ATTEMPTS, enabledCount));
+      const ceiling = Math.max(2, Math.min(MAX_ATTEMPTS, order.length));
       for (const option of maxAttempts.options) option.disabled = Number(option.value) > ceiling;
       if (Number(maxAttempts.value) > ceiling) maxAttempts.value = String(ceiling);
     }
 
     function syncCandidateLimit() {
-      const enabledCount = enabledCandidates().length;
-      for (const row of rows()) {
-        const checkbox = row.querySelector('.multicc-auto-editor-enabled');
-        checkbox.disabled = !checkbox.checked && enabledCount >= MAX_CANDIDATES;
-      }
+      const full = order.length >= MAX_CANDIDATES;
+      for (const row of allRows) row.querySelector('.multicc-auto-editor-add-one').disabled = full;
     }
 
     function syncTrustWarning({ preserveConfirmation = true } = {}) {
@@ -818,29 +951,38 @@
       return mixed;
     }
 
+    function setRouting(on) {
+      routingOn = !!on;
+      setChecked(orderMode, !routingOn);
+      setChecked(routingEnabled, routingOn);
+      if (routingOn) container.classList.remove('is-order');
+      else container.classList.add('is-order');
+    }
+
     function notify() {
       showError('');
       syncAttemptLimit();
       syncCandidateLimit();
       const crossesTrust = syncTrustWarning();
-      const routing = routingEnabled.checked;
-      if (routing) syncRungs();
-      for (const row of rows()) {
-        row.querySelector('.multicc-auto-editor-tier').style.visibility =
-          routing && isRowEnabled(row) ? '' : 'hidden';
-      }
-      headTier.style.visibility = routing ? '' : 'hidden';
-      show(jevBox, routing);
-      show(assignStep, routing);
+      if (routingOn) syncRungs();
+      modeHint.textContent = routingOn
+        ? tt('autoEditorModeRoutingDetail', '每条消息先让 Jev 判断难易：简单的交给便宜模型，复杂的交给强模型。')
+        : tt('autoEditorModeOrderDetail', '从第 1 条开始用；它出错或额度用完，就自动换下一条。');
+      listHint.textContent = routingOn
+        ? tt('autoEditorListHintRouting', '给每条选它负责简单还是复杂任务，同类里按顺序尝试')
+        : tt('autoEditorListHintOrder', '从上往下尝试，↑↓ 调整顺序');
+      show(jevBox, routingOn);
+      show(unknownRow, routingOn);
       renderSummary();
+      renderMore();
       // The key is looked up the first time routing is switched on, not on
       // every open of the editor.
-      if (routing && keyState === 'unknown') checkKey();
+      if (routingOn && keyState === 'unknown') checkKey();
       else renderJev();
       if (onChange) {
         onChange(Object.freeze({
           protocol,
-          enabledCount: enabledCandidates().length,
+          enabledCount: order.length,
           crossesTrust,
           crossTrustConfirmed: confirm.checked,
         }));
@@ -870,20 +1012,28 @@
         && preset.candidates.filter(candidate => pool.has(String(candidate.providerId))).length >= 2);
     }
 
+    function showPresetForm(open) {
+      show(presetForm, open);
+      show(presetOpen, !open);
+      if (open && typeof presetName.focus === 'function') presetName.focus();
+    }
+
     function renderPresets() {
       const presets = protocol ? usablePresets() : [];
-      const placeholder = element(document, 'option', '', presets.length
-        ? tt('autoEditorPresetPlaceholder', '套用已保存的预设…')
-        : tt('autoEditorPresetEmpty', '还没有保存过预设'));
+      const placeholder = make('option', '', presets.length
+        ? tt('autoEditorPresetPlaceholder', '套用预设…')
+        : tt('autoEditorPresetEmpty', '还没有预设'));
       placeholder.value = '';
       presetSelect.replaceChildren(placeholder, ...presets.map(preset => {
-        const option = element(document, 'option', '', presetLabel(preset));
+        const option = make('option', '', presetLabel(preset));
         option.value = preset.id;
         return option;
       }));
       presetSelect.value = '';
       presetSelect.disabled = !presets.length;
       presetDelete.disabled = true;
+      show(presetDelete, false);
+      showPresetForm(false);
     }
 
     function applyPreset(id) {
@@ -897,6 +1047,7 @@
       render();
       presetSelect.value = id;
       presetDelete.disabled = false;
+      show(presetDelete, true);
       presetStatus.textContent = tt('autoEditorPresetApplied', '已套用预设，确认无误后保存即可。');
       notify();
       return true;
@@ -916,9 +1067,17 @@
     presetSelect.addEventListener('change', () => {
       presetStatus.textContent = '';
       if (presetSelect.value) applyPreset(presetSelect.value);
-      else presetDelete.disabled = true;
+      else {
+        presetDelete.disabled = true;
+        show(presetDelete, false);
+      }
     });
+    presetOpen.addEventListener('click', () => showPresetForm(true));
+    presetCancel.addEventListener('click', () => showPresetForm(false));
     presetSave.addEventListener('click', savePreset);
+    presetName.addEventListener('keydown', event => {
+      if (event && event.key === 'Enter') savePreset();
+    });
     presetDelete.addEventListener('click', () => {
       const id = presetSelect.value;
       if (!id) return;
@@ -927,11 +1086,63 @@
       presetStatus.textContent = tt('autoEditorPresetDeleted', '预设已删除。');
     });
 
+    function buildRow(provider, configured, configuredSelection) {
+      const providerId = String(provider.id);
+      const label = provider.name || providerId;
+      const row = make('div', 'multicc-auto-editor-row');
+      row.dataset.providerId = providerId;
+      const name = make('span', 'multicc-auto-editor-name', String(formatProvider(provider) || providerId));
+      name.title = name.textContent;
+      const model = make('select', 'multicc-auto-editor-model');
+      model.setAttribute('aria-label', tt('autoEditorModelAria', '{provider} 模型', { provider: label }));
+      const preferredModel = candidateModel(provider, configured);
+      const models = [...new Set([
+        '', provider.model, ...(Array.isArray(provider.modelOptions) ? provider.modelOptions : []), preferredModel,
+      ].filter(value => value != null).map(value => String(value)))];
+      for (const modelId of models) {
+        const option = make('option', '', modelId || tt('autoEditorProviderDefault', 'Provider 默认'));
+        option.value = modelId;
+        model.appendChild(option);
+      }
+      model.value = preferredModel || '';
+      const tier = segment('multicc-auto-editor-tier',
+        tt('autoEditorTierAria', '{provider} 负责的任务', { provider: label }));
+      // A pool that already routes keeps its own ladder; every other row is
+      // left unchosen so syncRungs() can guess it from the model name.
+      const ladder = configuredSelection?.routing?.tiers || [];
+      const seeded = configured && configuredSelection?.routing ? rungFor(configured, ladder, 0) : 0;
+      if (seeded) tier.dataset.rung = String(seeded);
+      const act = make('span', 'multicc-auto-editor-act');
+      const iconButton = (className, glyph, key, fallback) => {
+        const node = button(`multicc-auto-editor-icon ${className}`, glyph);
+        node.title = tt(key, fallback, { provider: label });
+        node.setAttribute('aria-label', node.title);
+        act.appendChild(node);
+        return node;
+      };
+      const up = iconButton('multicc-auto-editor-move-up', '↑', 'autoEditorMoveUpAria', '{provider} 往前移');
+      const down = iconButton('multicc-auto-editor-move-down', '↓', 'autoEditorMoveDownAria', '{provider} 往后移');
+      const remove = iconButton('multicc-auto-editor-remove', '✕', 'autoEditorRemoveAria', '不再使用 {provider}');
+      const add = button('multicc-auto-editor-add-one', tt('autoEditorAddOne', '＋ 添加'));
+      add.setAttribute('aria-label', tt('autoEditorEnableAria', '使用 {provider}', { provider: label }));
+      act.appendChild(add);
+      row.append(make('span', 'multicc-auto-editor-rank'), name, model, tier, act);
+      up.addEventListener('click', () => moveRow(row, -1));
+      down.addEventListener('click', () => moveRow(row, 1));
+      remove.addEventListener('click', () => useRow(row, false));
+      add.addEventListener('click', () => useRow(row, true));
+      model.addEventListener('change', notify);
+      return row;
+    }
+
     function render() {
       if (destroyed) return;
       renderPresets();
       container.style.display = protocol ? '' : 'none';
+      allRows = [];
+      order = [];
       list.replaceChildren();
+      poolList.replaceChildren();
       showError('');
       if (!protocol) return;
       const configuredSelection = initialSelection && initialSelection.mode === 'auto'
@@ -940,96 +1151,43 @@
         .map(candidate => [String(candidate.providerId || ''), candidate]));
       const defaultsById = new Map(defaultCandidates(providers, protocol)
         .map(candidate => [candidate.providerId, candidate]));
-      let nextUnconfiguredPriority = Math.max(0,
-        ...[...configuredById.values(), ...defaultsById.values()]
-          .map(candidate => Number(candidate.priority) || 0));
-      const pool = providersForProtocol(providers, protocol);
-      pool.forEach(provider => {
+      const used = [];
+      providersForProtocol(providers, protocol).forEach((provider, index) => {
         const providerId = String(provider.id);
         const configured = configuredById.get(providerId);
-        const row = element(document, 'div', 'multicc-auto-editor-row');
-        row.dataset.providerId = providerId;
-        const enabled = document.createElement('input');
-        enabled.type = 'checkbox';
-        enabled.className = 'multicc-auto-editor-enabled';
-        enabled.checked = configuredSelection ? !!configured && configured.enabled !== false : defaultsById.has(providerId);
-        enabled.setAttribute('aria-label',
-        tt('autoEditorEnableAria', '启用 {provider}', { provider: provider.name || providerId }));
-        const name = element(document, 'span', 'multicc-auto-editor-name', String(formatProvider(provider) || providerId));
-        name.title = name.textContent;
-        const priority = document.createElement('input');
-        priority.type = 'number';
-        priority.min = '1';
-        priority.max = '100';
-        priority.className = 'multicc-auto-editor-priority';
-        priority.value = String(configured?.priority || defaultsById.get(providerId)?.priority
-          || ++nextUnconfiguredPriority);
-        priority.title = tt('autoEditorPriorityTitle', '优先级（数字越小越优先）');
-        priority.setAttribute('aria-label',
-        tt('autoEditorPriorityAria', '{provider} 优先级', { provider: provider.name || providerId }));
-        const model = document.createElement('select');
-        model.className = 'multicc-auto-editor-model';
-        model.setAttribute('aria-label',
-        tt('autoEditorModelAria', '{provider} 模型', { provider: provider.name || providerId }));
-        const preferredModel = candidateModel(provider, configured);
-        const models = [...new Set([
-          '', provider.model, ...(Array.isArray(provider.modelOptions) ? provider.modelOptions : []), preferredModel,
-        ].filter(value => value != null).map(value => String(value)))];
-        for (const modelId of models) {
-          const option = document.createElement('option');
-          option.value = modelId;
-          option.textContent = modelId || tt('autoEditorProviderDefault', 'Provider 默认');
-          model.appendChild(option);
+        const row = buildRow(provider, configured, configuredSelection);
+        allRows.push(row);
+        const enabled = configuredSelection ? !!configured && configured.enabled !== false : defaultsById.has(providerId);
+        if (enabled) {
+          const priority = Number(configured?.priority || defaultsById.get(providerId)?.priority) || 100 + index;
+          used.push({ row, priority, index });
         }
-        model.value = preferredModel || '';
-        const tier = document.createElement('select');
-        tier.className = 'multicc-auto-editor-tier';
-        tier.title = tt('autoEditorTierTitle', '这条线路负责哪类任务');
-        tier.setAttribute('aria-label',
-        tt('autoEditorTierAria', '{provider} 负责的任务', { provider: provider.name || providerId }));
-        row.append(enabled, name, priority, model, tier);
-        list.appendChild(row);
-        // A pool that already routes keeps its own ladder; every other row is
-        // left unchosen so syncRungs() can guess it from the model name.
-        const ladder = configuredSelection?.routing?.tiers || [];
-        const seeded = configured && configuredSelection?.routing ? rungFor(configured, ladder, 0) : 0;
-        if (seeded) tier.dataset.rung = String(seeded);
-        enabled.addEventListener('change', () => {
-          if (!selectionCrossesTrust(enabledCandidates(), providers)) confirm.checked = false;
-          notify();
-        });
-        priority.addEventListener('input', notify);
-        model.addEventListener('change', notify);
-        tier.addEventListener('change', () => {
-          tier.dataset.rung = tier.value;
-          notify();
-        });
       });
+      order = used.sort((left, right) => left.priority - right.priority || left.index - right.index)
+        .slice(0, MAX_CANDIDATES).map(item => item.row);
+      rungCeiling = 0;
+      arrange();
+      // A pool with fewer than two lines can't run; open the add list for it.
+      addBox.open = order.length < 2;
       maxAttempts.value = String(configuredSelection?.maxAttempts
-        || Math.max(2, Math.min(3, enabledCandidates().length)));
+        || Math.max(2, Math.min(3, order.length)));
       sticky.checked = configuredSelection ? configuredSelection.sticky !== false : true;
       confirm.checked = configuredSelection?.allowCrossTrust === true;
-      routingEnabled.checked = !!configuredSelection?.routing;
-      orderMode.checked = !routingEnabled.checked;
+      setRouting(!!configuredSelection?.routing);
       onUnknownSelect.value = String(configuredSelection?.routing?.onUnknown || 'strong');
-      syncAttemptLimit();
-      syncCandidateLimit();
       syncRungs();
-      syncTrustWarning();
       notify();
     }
 
     maxAttempts.addEventListener('change', notify);
     sticky.addEventListener('change', notify);
     confirm.addEventListener('change', notify);
-    // Radios in one group only report the one that became checked; mirror the
-    // other by hand so either choice fully switches the editor over.
-    orderMode.addEventListener('change', () => {
-      routingEnabled.checked = !orderMode.checked;
+    orderMode.addEventListener('click', () => {
+      setRouting(false);
       notify();
     });
-    routingEnabled.addEventListener('change', () => {
-      orderMode.checked = !routingEnabled.checked;
+    routingEnabled.addEventListener('click', () => {
+      setRouting(true);
       notify();
     });
     onUnknownSelect.addEventListener('change', notify);
@@ -1067,7 +1225,7 @@
           maxAttempts: Number(maxAttempts.value),
           sticky: sticky.checked,
           crossTrustConfirmed: confirm.checked,
-          routingEnabled: routingEnabled.checked,
+          routingEnabled: routingOn,
           routingOnUnknown: onUnknownSelect.value,
           initialRouting: (initialSelection && initialSelection.mode === 'auto'
             && initialSelection.routing) || null,
@@ -1086,7 +1244,7 @@
         if (destroyed) return;
         destroyed = true;
         container.replaceChildren();
-        container.classList.remove('multicc-auto-editor');
+        container.classList.remove('multicc-auto-editor', 'is-order');
         container.style.display = 'none';
       },
     });
