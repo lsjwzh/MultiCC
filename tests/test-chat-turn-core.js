@@ -520,7 +520,7 @@ test('a new Claude attempt is rejected before persistence while background work 
   const admissionStart = source.indexOf('const admission = planTurnAdmission');
   const turnStart = source.indexOf('const turnId =', admissionStart);
   const body = source.slice(admissionStart, turnStart);
-  assert.match(body, /backgroundWorkActive:[\s\S]*hasLiveBackgroundTasks\(sessionName\)/);
+  assert.match(body, /backgroundWorkActive:[\s\S]*hasProcessBackgroundTasks\(sessionName\)/);
   assert.match(body, /background-work-active[\s\S]*本消息尚未执行/);
 });
 

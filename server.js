@@ -1416,7 +1416,7 @@ const classifyStateMachine = createClassifyStateMachine({
   appendChatMessage: (...args) => appendChatMessage(...args),
   annotateChatTurn: (...args) => chatHistoryRuntime?.annotateTurn(...args) || [],
   getAuxRunLog: () => auxRunLog,
-  hasBackgroundPending: sessionName => backgroundTaskRuntime.hasLiveBackgroundTasks(sessionName),
+  hasBackgroundPending: sessionName => backgroundTaskRuntime.hasProcessBackgroundTasks(sessionName),
   // P4 蒸馏：folderMemory 在下方才创建，这里闭包惰性取——写入只发生在 turn
   // 结束后，届时早已初始化完成。
   writeTaskMemoryCandidate: (sessionName, taskId, candidate) => taskMemoryDistiller.record({
