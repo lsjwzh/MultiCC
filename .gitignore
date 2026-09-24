@@ -26,6 +26,9 @@ task-runs.sqlite-shm
 task-shells.sqlite
 task-shells.sqlite-wal
 task-shells.sqlite-shm
+search-index.sqlite
+search-index.sqlite-wal
+search-index.sqlite-shm
 task-run-transcripts/
 task_board.json
 task_board.planning-v2.json
