@@ -371,6 +371,11 @@
     let providers = Array.isArray(options.providers) ? options.providers : [];
     let protocol = PROTOCOL_SET.has(options.protocol) ? options.protocol : null;
     let initialSelection = options.initialSelection || null;
+    // Whether the vault holds the key routing will call Jev with. `null` means
+    // the host hasn't checked yet (e.g. the /api/secrets round trip is still in
+    // flight) — stay silent rather than flash a false warning. The editor never
+    // reads the vault itself; the host resolves this and pushes it in.
+    let routingKeyConfigured = options.routingKeyConfigured ?? null;
     let destroyed = false;
     const formatProvider = typeof options.formatProvider === 'function'
       ? options.formatProvider : provider => provider.name || provider.id;
@@ -424,6 +429,10 @@
     const routingHint = element(document, 'div', 'multicc-auto-editor-routing-hint',
       tt('autoEditorRoutingHint', '档位 1 最弱、数字越大越强：简单任务给最低档，复杂任务给最高档。评估不可用时按最保守的档位兜底。'));
     routingHint.style.display = 'none';
+    const routingKeyWarning = element(document, 'div', 'multicc-auto-editor-warning multicc-auto-editor-routing-key-warning',
+      tt('autoEditorRoutingKeyMissing', '尚未配置 {key}：按难度路由会一直请求失败，全部回退到最保守档位。',
+        { key: ROUTING_API_KEY_NAME }));
+    routingKeyWarning.style.display = 'none';
     const presetBar = element(document, 'div', 'multicc-auto-editor-presets');
     const presetSelect = document.createElement('select');
     presetSelect.className = 'multicc-auto-editor-preset-select';
@@ -439,7 +448,7 @@
     const presetStatus = element(document, 'div', 'multicc-auto-editor-preset-status');
     presetBar.append(presetSelect, presetDelete, presetName, presetSave, presetStatus);
     if (!presetStore) presetBar.style.display = 'none';
-    container.replaceChildren(title, help, presetBar, list, error, warning, controls, routingHint);
+    container.replaceChildren(title, help, presetBar, list, error, warning, controls, routingHint, routingKeyWarning);
 
     function rows() {
       return [...list.querySelectorAll('.multicc-auto-editor-row')];
@@ -467,14 +476,18 @@
     // Rungs are only meaningful for an enabled candidate: a disabled row keeps its
     // number but cannot claim a tier, so the ladder follows the enabled pool.
     // `dataset.rung` is how a configured (or freshly rendered) row states its rung
-    // before the option list exists; it is consumed on the first pass.
+    // before the option list exists; it seeds the very first pass only. Once the
+    // select has real options, its own `.value` is the live, user-editable state —
+    // reading `dataset.rung` first here would re-apply that stale seed on every
+    // notify() (e.g. after any other row's checkbox changes) and silently snap a
+    // user's tier edit back to whatever it started at.
     function syncRungs() {
       const enabled = rows().filter(row => row.querySelector('.multicc-auto-editor-enabled').checked);
       const ceiling = Math.max(2, Math.min(MAX_TIERS, enabled.length));
       for (const row of rows()) {
         const select = row.querySelector('.multicc-auto-editor-tier');
         const isEnabled = row.querySelector('.multicc-auto-editor-enabled').checked;
-        const requested = Number(select.dataset.rung) || Number(select.value) || 0;
+        const requested = Number(select.value) || Number(select.dataset.rung) || 0;
         select.replaceChildren();
         for (let rung = 1; rung <= ceiling; rung += 1) {
           const option = document.createElement('option');
@@ -521,6 +534,7 @@
           routingEnabled.checked ? '' : 'hidden';
       }
       routingHint.style.display = routingEnabled.checked ? '' : 'none';
+      routingKeyWarning.style.display = routingEnabled.checked && routingKeyConfigured === false ? '' : 'none';
       if (onChange) {
         onChange(Object.freeze({
           protocol,
@@ -700,6 +714,10 @@
     maxAttempts.addEventListener('change', notify);
     sticky.addEventListener('change', notify);
     confirm.addEventListener('change', notify);
+    // Without this, checking the box does nothing until some other field is
+    // touched: the tier columns stay hidden, the hint and key warning don't
+    // show, and the ladder never gets its first syncRungs() pass.
+    routingEnabled.addEventListener('change', notify);
 
     const controller = Object.freeze({
       setContext(next = {}) {
@@ -712,6 +730,9 @@
         }
         if (Object.prototype.hasOwnProperty.call(next, 'initialSelection')) {
           initialSelection = next.initialSelection || null;
+        }
+        if (Object.prototype.hasOwnProperty.call(next, 'routingKeyConfigured')) {
+          routingKeyConfigured = next.routingKeyConfigured ?? null;
         }
         render();
       },
