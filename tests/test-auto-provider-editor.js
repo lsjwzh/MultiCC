@@ -398,71 +398,164 @@ test('reading a valid pool records it as a recent preset, deduplicated and cappe
   assert.equal(box.querySelector('.multicc-auto-editor-preset-select').options.length, 1);
 });
 
-test('a user-edited tier survives its own change event and an unrelated row toggling afterward', () => {
+function mountRouted(options = {}) {
   const document = fakeDocument();
   const container = document.createElement('div');
   document.body.appendChild(container);
-  editor.mount({ document, container, providers: providers(), protocol: 'anthropic' });
+  const control = editor.mount({ document, container, providers: providers(), protocol: 'anthropic', presetStore: null, ...options });
+  const $ = className => container.querySelector(`.multicc-auto-editor-${className}`);
   const row = id => container.querySelectorAll('.multicc-auto-editor-row')
     .find(candidate => candidate.dataset.providerId === id);
+  const toggle = (input, checked) => { input.checked = checked; input.emit('change'); };
+  const routeOn = () => toggle($('routing'), true);
+  return { document, container, control, $, row, toggle, routeOn };
+}
 
-  // A third enabled candidate widens the ladder to three rungs, so there is
-  // an alternative tier value that is neither the row's fixed creation seed
-  // nor whatever syncRungs happened to compute for it.
-  row('managed-c').querySelector('.multicc-auto-editor-enabled').checked = true;
-  row('managed-c').querySelector('.multicc-auto-editor-enabled').emit('change');
-  const routingEnabled = container.querySelector('.multicc-auto-editor-routing');
-  routingEnabled.checked = true;
-  routingEnabled.emit('change');
+const flush = () => new Promise(resolve => setImmediate(resolve));
 
-  const tier = row('managed-a').querySelector('.multicc-auto-editor-tier');
-  const seed = tier.dataset.rung; // the one-time creation-time seed; must never win again
-  const alternative = tier.options.map(option => option.value).find(value => value !== seed);
-  assert.ok(alternative, 'the three-rung ladder must offer a value other than the seed');
-
-  tier.value = alternative;
-  tier.emit('change');
-  assert.equal(tier.value, alternative,
-    'the tier the user just picked must stick through its own change notification');
-
-  // Toggling an unrelated row is exactly the trigger that used to silently
-  // snap every other row's tier back to its stale dataset.rung seed.
-  row('official').querySelector('.multicc-auto-editor-enabled').checked = true;
-  row('official').querySelector('.multicc-auto-editor-enabled').emit('change');
-  assert.equal(tier.value, alternative,
-    'an unrelated row change must not revert a previously edited tier');
+test('turning routing on gives a valid simple/complex split straight away, guessed from model names', () => {
+  const pool = providers();
+  pool[2] = { ...pool[2], model: 'deepseek-v4-flash' };
+  const { control, $, row, routeOn } = mountRouted({ providers: pool });
+  assert.equal($('jev').style.display, 'none', 'the Jev step stays out of the way in order mode');
+  assert.equal($('mode-order').checked, true);
+  routeOn();
+  assert.equal($('mode-order').checked, false, 'the two modes are one choice');
+  assert.equal($('jev').style.display, '');
+  assert.equal(row('managed-b').querySelector('.multicc-auto-editor-tier').value, '1', 'a flash model takes simple tasks');
+  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-tier').value, '2');
+  assert.deepEqual(row('managed-a').querySelector('.multicc-auto-editor-tier').options.map(option => option.textContent),
+    ['简单任务', '复杂任务'], 'two lines read as words, not numbers');
+  assert.equal($('summary').classList.contains('bad'), false);
+  assert.match($('summary').textContent, /简单任务 → Managed B（deepseek-v4-flash）；复杂任务 → Managed A/);
+  const result = control.read({ remember: false });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(result.value.candidates.map(candidate => [candidate.providerId, candidate.tier]),
+    [['managed-a', 't2'], ['managed-b', 't1']]);
 });
 
-test('a difficulty-routing warning appears only when routing is on and the vault key is confirmed missing', () => {
-  const document = fakeDocument();
-  const container = document.createElement('div');
-  document.body.appendChild(container);
-  const control = editor.mount({ document, container, providers: providers(), protocol: 'anthropic' });
-  const warning = () => container.querySelector('.multicc-auto-editor-routing-key-warning');
-  const routingEnabled = () => container.querySelector('.multicc-auto-editor-routing');
+test('when names give no hint the first line in order takes simple tasks; a model switch re-files an untouched row', () => {
+  const pool = providers();
+  pool[2] = { ...pool[2], modelOptions: ['model-b', 'model-b-mini'] };
+  const { control, $, row, routeOn } = mountRouted({ providers: pool });
+  routeOn();
+  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-tier').value, '1');
+  assert.equal(row('managed-b').querySelector('.multicc-auto-editor-tier').value, '2');
+  assert.equal(control.read({ remember: false }).ok, true);
+  const model = row('managed-b').querySelector('.multicc-auto-editor-model');
+  model.value = 'model-b-mini';
+  model.emit('change');
+  assert.equal(row('managed-b').querySelector('.multicc-auto-editor-tier').value, '1', 'a mini model moves to simple tasks');
+  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-tier').value, '2');
+  assert.equal($('summary').classList.contains('bad'), false);
+});
 
-  assert.equal(warning().style.display, 'none', 'hidden before routing is ever touched');
+test('a user-edited tier survives its own change event and an unrelated row toggling afterward', () => {
+  const { row, routeOn, toggle } = mountRouted();
+  toggle(row('managed-c').querySelector('.multicc-auto-editor-enabled'), true);
+  routeOn();
+  const tier = row('managed-a').querySelector('.multicc-auto-editor-tier');
+  assert.deepEqual(tier.options.map(option => option.textContent), ['简单任务', '中等任务', '复杂任务']);
+  const alternative = tier.options.map(option => option.value).find(value => value !== tier.value);
+  tier.value = alternative;
+  tier.emit('change');
+  assert.equal(tier.value, alternative, 'the pick sticks through its own change notification');
+  toggle(row('official').querySelector('.multicc-auto-editor-enabled'), true);
+  assert.equal(tier.value, alternative, 'an unrelated row change must not revert it');
+  const model = row('managed-a').querySelector('.multicc-auto-editor-model');
+  model.value = 'model-a-fast';
+  model.emit('change');
+  assert.equal(tier.value, alternative, 'a hand-picked tier is no longer re-guessed');
+});
 
-  routingEnabled().checked = true;
-  routingEnabled().emit('change');
-  assert.equal(warning().style.display, 'none',
-    'an unknown (null) key status must not be reported as missing');
+test('putting every line on the same task type is flagged in the preview and refused on save', () => {
+  const { control, $, row, routeOn } = mountRouted();
+  routeOn();
+  const tier = row('managed-a').querySelector('.multicc-auto-editor-tier');
+  tier.value = '2';
+  tier.emit('change');
+  assert.equal($('summary').classList.contains('bad'), true);
+  assert.match($('summary').textContent, /简单任务/);
+  const result = control.read({ remember: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'provider_routing_requires_tiers');
+});
 
-  control.setContext({ routingKeyConfigured: false });
-  routingEnabled().checked = true;
-  routingEnabled().emit('change');
-  assert.equal(warning().style.display, '', 'shown once routing is on and the key is confirmed absent');
+test('the fallback choice for an unjudged message is written only when it differs from the server default', () => {
+  const { control, $, routeOn } = mountRouted();
+  routeOn();
+  assert.equal($('jev-unknown').value, 'strong');
+  assert.equal('onUnknown' in control.read({ remember: false }).value.routing, false);
+  $('jev-unknown').value = 'weak';
+  $('jev-unknown').emit('change');
+  assert.equal(control.read({ remember: false }).value.routing.onUnknown, 'weak');
+  const again = mountRouted({ initialSelection: control.read({ remember: false }).value });
+  assert.equal(again.$('routing').checked, true);
+  assert.equal(again.$('jev-unknown').value, 'weak');
+});
 
-  routingEnabled().checked = false;
-  routingEnabled().emit('change');
-  assert.equal(warning().style.display, 'none', 'hidden again as soon as routing is turned off');
+test('without a host key API the Jev step names the vault entry and offers no form', () => {
+  const { $, routeOn } = mountRouted();
+  routeOn();
+  assert.match($('jev-status').textContent, /vercel-api-key/);
+  assert.equal($('jev-key-input').parentNode.style.display, 'none');
+  assert.equal($('jev-test').parentNode.style.display, 'none');
+});
 
-  routingEnabled().checked = true;
-  routingEnabled().emit('change');
-  assert.equal(warning().style.display, '', 'reappears while routing is on and the key is still missing');
+function fakeKeyApi({ present = false, test = { ok: true, tier: 't1', latencyMs: 412 } } = {}) {
+  const calls = { check: [], save: [], test: [] };
+  return {
+    calls,
+    check(name) { calls.check.push(name); return Promise.resolve(present); },
+    save(name, value) { calls.save.push([name, value]); present = true; return Promise.resolve(); },
+    test(request) { calls.test.push(request); return Promise.resolve(typeof test === 'function' ? test(request) : test); },
+  };
+}
 
-  control.setContext({ routingKeyConfigured: true });
-  routingEnabled().checked = true;
-  routingEnabled().emit('change');
-  assert.equal(warning().style.display, 'none', 'hidden once the key is confirmed present');
+test('the key is checked only once routing is chosen, and a missing key opens the paste form', async () => {
+  const api = fakeKeyApi();
+  const { $, routeOn } = mountRouted({ routingKey: api });
+  await flush();
+  assert.deepEqual(api.calls.check, [], 'a plain pool never touches the vault');
+  routeOn();
+  assert.match($('jev-status').textContent, /正在检查/);
+  await flush();
+  assert.deepEqual(api.calls.check, ['vercel-api-key']);
+  assert.equal($('jev-status').classList.contains('missing'), true);
+  assert.equal($('jev-key-input').parentNode.style.display, '');
+  assert.equal($('jev-test').parentNode.style.display, 'none', 'nothing to test before a key exists');
+});
+
+test('saving a pasted key clears the field at once, stores it under the vault name and runs a test', async () => {
+  const api = fakeKeyApi();
+  const { $, routeOn } = mountRouted({ routingKey: api });
+  routeOn();
+  await flush();
+  $('jev-key-input').value = '  vck_example  ';
+  $('jev-key-save').emit('click');
+  assert.equal($('jev-key-input').value, '', 'the secret does not linger in the form');
+  await flush();
+  await flush();
+  assert.deepEqual(api.calls.save, [['vercel-api-key', 'vck_example']]);
+  assert.equal(api.calls.test.length, 1);
+  assert.equal($('jev-status').classList.contains('ok'), true);
+  assert.equal($('jev-key-input').parentNode.style.display, 'none');
+  assert.equal($('jev-test-result').classList.contains('good'), true);
+  assert.match($('jev-test-result').textContent, /412 ms.*简单任务/);
+});
+
+test('a rejected key is explained in plain words and the form comes back to replace it', async () => {
+  const api = fakeKeyApi({ present: true, test: { ok: false, code: 'jev_http_401', status: 401 } });
+  const { $, routeOn } = mountRouted({ routingKey: api });
+  routeOn();
+  await flush();
+  assert.equal($('jev-key-input').parentNode.style.display, 'none', 'a stored key needs no form');
+  $('jev-test-input').value = '重构整个鉴权模块';
+  $('jev-test').emit('click');
+  await flush();
+  await flush();
+  assert.deepEqual(api.calls.test, [{ apiKeyName: 'vercel-api-key', text: '重构整个鉴权模块' }]);
+  assert.equal($('jev-test-result').classList.contains('bad'), true);
+  assert.match($('jev-test-result').textContent, /key 无效.*401/);
+  assert.equal($('jev-key-input').parentNode.style.display, '');
 });

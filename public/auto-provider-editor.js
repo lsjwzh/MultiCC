@@ -141,9 +141,28 @@
     return Object.freeze({ ok: false, value: null, error, code });
   }
 
+  // 两档/三档用「简单/中等/复杂」就说得清；更多档只能经 API 配出来，退回编号。
+  function tierLabel(rung, ceiling) {
+    if (ceiling <= 3) {
+      if (rung <= 1) return tt('autoEditorTierSimple', '简单任务');
+      if (rung >= ceiling) return tt('autoEditorTierComplex', '复杂任务');
+      return tt('autoEditorTierMedium', '中等任务');
+    }
+    if (rung <= 1) return `${rung} · ${tt('autoEditorTierSimplest', '最简单')}`;
+    if (rung >= ceiling) return `${rung} · ${tt('autoEditorTierHardest', '最复杂')}`;
+    return String(rung);
+  }
+
+  // Only a first guess the user can override; it just saves most pools from
+  // having to be assigned by hand (flash/mini/haiku-class models go simple).
+  const LIGHT_MODEL = /(^|[^a-z])(flash|mini|lite|haiku|nano|small|tiny|instant|turbo|air)([^a-z]|$)|(^|[^0-9.])([1-9]|[1-3][0-9])b([^a-z0-9]|$)/i;
+  function looksLight(text) {
+    return LIGHT_MODEL.test(String(text || ''));
+  }
+
   // Rung of a configured candidate in a declared ladder: the editor shows rungs
   // (1 = weakest) while the wire carries tier keys, so this is the one place the
-  // two have to agree. `fallback` is the row's own priority rank.
+  // two have to agree. `fallback` is used when the ladder does not name the row.
   function rungFor(configured, ladder, fallback) {
     if (configured && configured.rung != null) return Number(configured.rung) || fallback;
     const tier = configured && configured.tier ? String(configured.tier) : '';
@@ -159,6 +178,10 @@
     const previous = draft.initialRouting && typeof draft.initialRouting === 'object'
       ? draft.initialRouting : null;
     if (draft.routingEnabled !== true) return null;
+    // 'strong' is the server default: only written when chosen, or when the pool
+    // already carried it, so a plain routed pool keeps its minimal wire shape.
+    const onUnknown = draft.routingOnUnknown || (previous && previous.onUnknown) || null;
+    const writeOnUnknown = onUnknown && (onUnknown !== 'strong' || (previous && previous.onUnknown));
     if (candidates.length < 2) {
       return fail(tt('autoEditorRoutingNeedsTwo', '按难度路由至少需要两个候选 Provider。'),
         'insufficient_candidates');
@@ -166,7 +189,7 @@
     const rungs = [...new Set(candidates.map(candidate => Number(candidate.rung) || 0))]
       .filter(rung => rung > 0).sort((left, right) => left - right);
     if (rungs.length < 2) {
-      return fail(tt('autoEditorRoutingNeedsTwoTiers', '按难度路由至少需要两个不同档位（简单任务与复杂任务各一档）。'),
+      return fail(tt('autoEditorRoutingNeedsTwoTiers', '按难度分配时，至少要一条线路负责简单任务、另一条负责复杂任务。'),
         'provider_routing_requires_tiers');
     }
     if (rungs.length > MAX_TIERS) {
@@ -188,7 +211,7 @@
         // Never silently reset a knob the editor does not expose: the API can set
         // onUnknown/timeoutMs/model, and re-saving the pool must not undo it.
         ...(previous && previous.model ? { model: String(previous.model) } : {}),
-        ...(previous && previous.onUnknown ? { onUnknown: String(previous.onUnknown) } : {}),
+        ...(writeOnUnknown ? { onUnknown: String(onUnknown) } : {}),
         ...(previous && previous.timeoutMs != null ? { timeoutMs: Number(previous.timeoutMs) } : {}),
         ...(previous && previous.escalation ? { escalation: { ...previous.escalation } } : {}),
         tiers: Object.freeze(rungs.map(rung => keyByRung.get(rung))),
@@ -330,7 +353,7 @@
       .multicc-auto-editor-title{font-size:12px;font-weight:600;margin-bottom:3px}
       .multicc-auto-editor-help{font-size:11px;color:var(--muted,#8b949e);line-height:1.45;margin-bottom:8px}
       .multicc-auto-editor-list{min-width:0}
-      .multicc-auto-editor-row{display:grid;grid-template-columns:22px minmax(150px,1fr) 70px minmax(130px,1fr) 58px;gap:7px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line,#21262d)}
+      .multicc-auto-editor-row{display:grid;grid-template-columns:22px minmax(150px,1fr) 70px minmax(130px,1fr) 96px;gap:7px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line,#21262d)}
       .multicc-auto-editor-name{font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .multicc-auto-editor input[type=number],.multicc-auto-editor select{box-sizing:border-box;width:100%;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
       .multicc-auto-editor-error{color:var(--danger,#f85149);font-size:11px;margin:6px 0}
@@ -343,8 +366,24 @@
       .multicc-auto-editor-presets input[type=text]{box-sizing:border-box;flex:1 1 120px;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
       .multicc-auto-editor-presets button{border:1px solid var(--line-strong,#30363d);border-radius:5px;background:transparent;color:var(--text,#c9d1d9);padding:4px 9px;font-size:11px;cursor:pointer}
       .multicc-auto-editor-preset-status{flex-basis:100%;font-size:11px;color:var(--muted,#8b949e)}
-      .multicc-auto-editor-routing-hint{font-size:11px;color:var(--muted,#8b949e);line-height:1.45;margin-top:6px}
+      .multicc-auto-editor-head{display:grid;grid-template-columns:22px minmax(150px,1fr) 70px minmax(130px,1fr) 96px;gap:7px;font-size:10px;color:var(--muted,#8b949e);padding-bottom:3px;border-bottom:1px solid var(--line,#21262d)}
+      .multicc-auto-editor-modes{display:flex;flex-direction:column;gap:5px;margin:0 0 9px;font-size:12px}
+      .multicc-auto-editor-modes label{display:flex;align-items:flex-start;gap:6px;cursor:pointer}
+      .multicc-auto-editor-modes small{color:var(--muted,#8b949e);font-size:11px}
+      .multicc-auto-editor-jev{border:1px solid var(--line-strong,#30363d);border-radius:6px;padding:8px;margin:0 0 9px;font-size:11px;display:flex;flex-direction:column;gap:6px}
+      .multicc-auto-editor-step{font-size:12px;font-weight:600}
+      .multicc-auto-editor-jev-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+      .multicc-auto-editor-jev input{box-sizing:border-box;flex:1 1 160px;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
+      .multicc-auto-editor-jev button{border:1px solid var(--line-strong,#30363d);border-radius:5px;background:transparent;color:var(--text,#c9d1d9);padding:4px 9px;font-size:11px;cursor:pointer}
+      .multicc-auto-editor-jev select{width:auto;padding:3px 6px}
+      .multicc-auto-editor-jev-status.ok{color:var(--success,#3fb950)}
+      .multicc-auto-editor-jev-status.missing,.multicc-auto-editor-jev-test-result.bad{color:var(--warning,#d29922)}
+      .multicc-auto-editor-jev-test-result.good{color:var(--success,#3fb950)}
+      .multicc-auto-editor-muted{color:var(--muted,#8b949e);line-height:1.45}
+      .multicc-auto-editor-summary{font-size:11px;line-height:1.5;margin-top:7px;padding:6px 8px;border-radius:6px;background:color-mix(in srgb,var(--line,#21262d) 55%,transparent)}
+      .multicc-auto-editor-summary.bad{color:var(--warning,#d29922)}
       @media (max-width:640px){
+        .multicc-auto-editor-head{display:none}
         .multicc-auto-editor-row{grid-template-columns:22px minmax(0,1fr);gap:6px 8px;padding:9px 0}
         .multicc-auto-editor-name{white-space:normal;overflow:visible}
         .multicc-auto-editor-priority,.multicc-auto-editor-model,.multicc-auto-editor-tier{grid-column:2}
@@ -371,12 +410,18 @@
     let providers = Array.isArray(options.providers) ? options.providers : [];
     let protocol = PROTOCOL_SET.has(options.protocol) ? options.protocol : null;
     let initialSelection = options.initialSelection || null;
-    // Whether the vault holds the key routing will call Jev with. `null` means
-    // the host hasn't checked yet (e.g. the /api/secrets round trip is still in
-    // flight) — stay silent rather than flash a false warning. The editor never
-    // reads the vault itself; the host resolves this and pushes it in.
-    let routingKeyConfigured = options.routingKeyConfigured ?? null;
+    // The host owns every vault/network touch: { check(name), save(name, value),
+    // test({ apiKeyName, text }) }, all promise-returning. Without it the panel
+    // only names the vault entry.
+    const routingKey = options.routingKey && typeof options.routingKey.check === 'function'
+      ? options.routingKey : null;
+    // 'unknown' until routing is first switched on, so opening the editor for a
+    // plain pool costs no request.
+    let keyState = 'unknown';
+    let keyFormOpen = false;
+    let keyGeneration = 0;
     let destroyed = false;
+    const modeGroup = `multicc-auto-mode-${Math.random().toString(36).slice(2, 8)}`;
     const formatProvider = typeof options.formatProvider === 'function'
       ? options.formatProvider : provider => provider.name || provider.id;
     const onChange = typeof options.onChange === 'function' ? options.onChange : null;
@@ -419,20 +464,84 @@
     sticky.type = 'checkbox';
     sticky.className = 'multicc-auto-editor-sticky';
     stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 成功后优先沿用')));
-    const routingLabel = element(document, 'label');
-    const routingEnabled = document.createElement('input');
-    routingEnabled.type = 'checkbox';
-    routingEnabled.className = 'multicc-auto-editor-routing';
-    routingLabel.append(routingEnabled, document.createTextNode(
-      tt('autoEditorRoutingSuffix', ' 按难度自动选档（Jev 逐条评估）')));
-    controls.append(maxLabel, stickyLabel, routingLabel);
-    const routingHint = element(document, 'div', 'multicc-auto-editor-routing-hint',
-      tt('autoEditorRoutingHint', '档位 1 最弱、数字越大越强：简单任务给最低档，复杂任务给最高档。评估不可用时按最保守的档位兜底。'));
-    routingHint.style.display = 'none';
-    const routingKeyWarning = element(document, 'div', 'multicc-auto-editor-warning multicc-auto-editor-routing-key-warning',
-      tt('autoEditorRoutingKeyMissing', '尚未配置 {key}：按难度路由会一直请求失败，全部回退到最保守档位。',
-        { key: ROUTING_API_KEY_NAME }));
-    routingKeyWarning.style.display = 'none';
+    controls.append(maxLabel, stickyLabel);
+
+    // How the pool picks a line — the first decision, so it sits on top and
+    // each choice explains itself instead of relying on a help paragraph.
+    const modes = element(document, 'div', 'multicc-auto-editor-modes');
+    const modeOption = (className, heading, detail) => {
+      const label = element(document, 'label');
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = modeGroup;
+      input.className = className;
+      const text = element(document, 'span', '', heading);
+      text.append(document.createElement('br'), element(document, 'small', '', detail));
+      label.append(input, text);
+      modes.appendChild(label);
+      return input;
+    };
+    const orderMode = modeOption('multicc-auto-editor-mode-order',
+      tt('autoEditorModeOrder', '按顺序使用'),
+      tt('autoEditorModeOrderDetail', '先用「顺序」为 1 的线路，不可用时自动换下一个。'));
+    const routingEnabled = modeOption('multicc-auto-editor-routing',
+      tt('autoEditorModeRouting', '按任务难度分配'),
+      tt('autoEditorModeRoutingDetail', '每条消息先由 Jev 判断难易：简单的交给便宜模型，复杂的交给强模型。'));
+
+    const jevBox = element(document, 'div', 'multicc-auto-editor-jev');
+    const jevStep = element(document, 'div', 'multicc-auto-editor-step',
+      tt('autoEditorJevStep', '① 连接 Jev（通过 Vercel AI Gateway 判断难度）'));
+    const keyStatus = element(document, 'div', 'multicc-auto-editor-jev-status');
+    const keyChange = element(document, 'button', 'multicc-auto-editor-jev-key-change', tt('autoEditorJevKeyChange', '更换 key'));
+    keyChange.type = 'button';
+    const statusRow = element(document, 'div', 'multicc-auto-editor-jev-row');
+    statusRow.append(keyStatus, keyChange);
+    const keyForm = element(document, 'div', 'multicc-auto-editor-jev-row');
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.autocomplete = 'off';
+    keyInput.className = 'multicc-auto-editor-jev-key-input';
+    keyInput.placeholder = tt('autoEditorJevKeyPlaceholder', '粘贴 Vercel AI Gateway API key（vck_ 开头）');
+    const keySave = element(document, 'button', 'multicc-auto-editor-jev-key-save', tt('autoEditorJevKeySave', '保存并测试'));
+    keySave.type = 'button';
+    keyForm.append(keyInput, keySave);
+    const keyHelp = element(document, 'div', 'multicc-auto-editor-muted');
+    const testRow = element(document, 'div', 'multicc-auto-editor-jev-row');
+    const testInput = document.createElement('input');
+    testInput.type = 'text';
+    testInput.className = 'multicc-auto-editor-jev-test-input';
+    testInput.placeholder = tt('autoEditorJevTestPlaceholder', '试一句任务看看会被判成什么（可留空）');
+    const testButton = element(document, 'button', 'multicc-auto-editor-jev-test', tt('autoEditorJevTest', '测试一下'));
+    testButton.type = 'button';
+    testRow.append(testInput, testButton);
+    const testResult = element(document, 'div', 'multicc-auto-editor-jev-test-result');
+    testResult.setAttribute('aria-live', 'polite');
+    testResult.style.display = 'none';
+    const unknownRow = element(document, 'label', 'multicc-auto-editor-jev-row',
+      tt('autoEditorJevUnknownLabel', 'Jev 判断不了时（没配 key、超时）：'));
+    const onUnknownSelect = document.createElement('select');
+    onUnknownSelect.className = 'multicc-auto-editor-jev-unknown';
+    for (const [value, key, fallback] of [
+      ['strong', 'autoEditorJevUnknownStrong', '当复杂任务处理（稳妥）'],
+      ['weak', 'autoEditorJevUnknownWeak', '当简单任务处理（省钱）'],
+      ['priority', 'autoEditorJevUnknownPriority', '不看难度，按顺序用'],
+    ]) {
+      const option = element(document, 'option', '', tt(key, fallback));
+      option.value = value;
+      onUnknownSelect.appendChild(option);
+    }
+    unknownRow.appendChild(onUnknownSelect);
+    jevBox.append(jevStep, statusRow, keyForm, keyHelp, testRow, testResult, unknownRow);
+
+    const assignStep = element(document, 'div', 'multicc-auto-editor-step',
+      tt('autoEditorAssignStep', '② 在「负责」一列给每条线路选任务类型（已按模型名猜好，可改）'));
+    const head = element(document, 'div', 'multicc-auto-editor-head');
+    const headTier = element(document, 'span', '', tt('autoEditorHeadTier', '负责'));
+    head.append(element(document, 'span', '', ''), element(document, 'span', '', tt('autoEditorHeadProvider', '线路')),
+      element(document, 'span', '', tt('autoEditorHeadOrder', '顺序')),
+      element(document, 'span', '', tt('autoEditorHeadModel', '模型')), headTier);
+    const summary = element(document, 'div', 'multicc-auto-editor-summary');
+    summary.setAttribute('aria-live', 'polite');
     const presetBar = element(document, 'div', 'multicc-auto-editor-presets');
     const presetSelect = document.createElement('select');
     presetSelect.className = 'multicc-auto-editor-preset-select';
@@ -448,7 +557,8 @@
     const presetStatus = element(document, 'div', 'multicc-auto-editor-preset-status');
     presetBar.append(presetSelect, presetDelete, presetName, presetSave, presetStatus);
     if (!presetStore) presetBar.style.display = 'none';
-    container.replaceChildren(title, help, presetBar, list, error, warning, controls, routingHint, routingKeyWarning);
+    container.replaceChildren(title, presetBar, modes, jevBox, assignStep, head, list, summary,
+      error, warning, controls, help);
 
     function rows() {
       return [...list.querySelectorAll('.multicc-auto-editor-row')];
@@ -473,32 +583,217 @@
       error.style.display = message ? '' : 'none';
     }
 
-    // Rungs are only meaningful for an enabled candidate: a disabled row keeps its
-    // number but cannot claim a tier, so the ladder follows the enabled pool.
-    // `dataset.rung` is how a configured (or freshly rendered) row states its rung
-    // before the option list exists; it seeds the very first pass only. Once the
-    // select has real options, its own `.value` is the live, user-editable state —
-    // reading `dataset.rung` first here would re-apply that stale seed on every
-    // notify() (e.g. after any other row's checkbox changes) and silently snap a
-    // user's tier edit back to whatever it started at.
+    function isRowEnabled(row) {
+      return row.querySelector('.multicc-auto-editor-enabled').checked;
+    }
+
+    function rowText(row) {
+      const model = row.querySelector('.multicc-auto-editor-model').value;
+      const name = row.querySelector('.multicc-auto-editor-name').textContent;
+      return model ? `${name}（${model}）` : name;
+    }
+
+    function byPriority(list) {
+      return list.slice().sort((left, right) =>
+        Number(left.querySelector('.multicc-auto-editor-priority').value)
+        - Number(right.querySelector('.multicc-auto-editor-priority').value));
+    }
+
+    // `dataset.rung` is a row's *chosen* rung — seeded from a configured ladder,
+    // then overwritten by every tier change the user makes. Rows without one are
+    // re-guessed on each pass (flash/mini-class → simple, the rest → complex), so
+    // switching a row's model re-files it until the user picks by hand. When the
+    // names can't tell a fresh pool apart, the first line in order takes the
+    // simple tasks: a valid split out of the box, never a one-tier ladder.
+    let rungCeiling = 2;
     function syncRungs() {
-      const enabled = rows().filter(row => row.querySelector('.multicc-auto-editor-enabled').checked);
-      const ceiling = Math.max(2, Math.min(MAX_TIERS, enabled.length));
+      const enabled = byPriority(rows().filter(isRowEnabled));
+      const chosen = enabled.map(row => Number(row.querySelector('.multicc-auto-editor-tier').dataset.rung) || 0);
+      const base = enabled.length >= 3 ? 3 : 2;
+      rungCeiling = Math.min(Math.max(2, Math.min(MAX_TIERS, enabled.length)), Math.max(base, ...chosen));
+      const light = enabled.map(row => looksLight(rowText(row)));
+      const undecided = chosen.every(rung => !rung) && light.every(value => value === light[0]);
       for (const row of rows()) {
         const select = row.querySelector('.multicc-auto-editor-tier');
-        const isEnabled = row.querySelector('.multicc-auto-editor-enabled').checked;
-        const requested = Number(select.value) || Number(select.dataset.rung) || 0;
+        const index = enabled.indexOf(row);
         select.replaceChildren();
-        for (let rung = 1; rung <= ceiling; rung += 1) {
-          const option = document.createElement('option');
+        for (let rung = 1; rung <= rungCeiling; rung += 1) {
+          const option = element(document, 'option', '', tierLabel(rung, rungCeiling));
           option.value = String(rung);
-          option.textContent = String(rung);
           select.appendChild(option);
         }
-        select.value = String(isEnabled
-          ? Math.max(1, Math.min(ceiling, requested || enabled.indexOf(row) + 1)) : 1);
-        select.disabled = !isEnabled;
+        select.disabled = index < 0;
+        if (index < 0) continue;
+        const guess = undecided ? (index === 0 ? 1 : rungCeiling) : (light[index] ? 1 : rungCeiling);
+        select.value = String(Math.max(1, Math.min(rungCeiling, chosen[index] || guess)));
       }
+    }
+
+    // One sentence of what the pool will actually do, in both modes — the
+    // preview that makes the columns above readable without a manual.
+    function renderSummary() {
+      const enabled = byPriority(rows().filter(isRowEnabled));
+      summary.classList.remove('bad');
+      if (enabled.length < 2) {
+        summary.textContent = tt('autoEditorSummaryNeedTwo', '勾选至少两条线路。');
+        summary.classList.add('bad');
+        return;
+      }
+      if (!routingEnabled.checked) {
+        summary.textContent = tt('autoEditorSummaryOrder', '效果：先用 {chain}', {
+          chain: enabled.map(rowText).join(tt('autoEditorSummaryThen', '，不行再换 ')),
+        });
+        return;
+      }
+      const groups = new Map();
+      for (const row of enabled) {
+        const rung = Number(row.querySelector('.multicc-auto-editor-tier').value) || 1;
+        if (!groups.has(rung)) groups.set(rung, []);
+        groups.get(rung).push(rowText(row));
+      }
+      if (groups.size < 2) {
+        summary.textContent = tt('autoEditorSummaryNeedSplit',
+          '还差一步：至少让一条线路负责「简单任务」、另一条负责「复杂任务」。');
+        summary.classList.add('bad');
+        return;
+      }
+      summary.textContent = tt('autoEditorSummaryRouting', '效果：{routes}', {
+        routes: [...groups.keys()].sort((left, right) => left - right)
+          .map(rung => `${tierLabel(rung, rungCeiling)} → ${groups.get(rung).join('、')}`).join('；'),
+      });
+    }
+
+    function keyName() {
+      const routing = initialSelection && initialSelection.mode === 'auto' ? initialSelection.routing : null;
+      return routing && routing.apiKeyName ? String(routing.apiKeyName) : ROUTING_API_KEY_NAME;
+    }
+
+    function show(node, visible) {
+      node.style.display = visible ? '' : 'none';
+    }
+
+    function setTestResult(text, tone) {
+      testResult.textContent = text || '';
+      testResult.classList.remove('good', 'bad');
+      if (tone) testResult.classList.add(tone);
+      show(testResult, !!text);
+    }
+
+    function renderJev() {
+      const name = keyName();
+      keyStatus.classList.remove('ok', 'missing');
+      const canSave = !!routingKey && typeof routingKey.save === 'function';
+      const canTest = !!routingKey && typeof routingKey.test === 'function';
+      let status;
+      if (!routingKey) {
+        status = tt('autoEditorJevKeyVaultOnly', 'key 从本机保险箱条目「{name}」读取，可在控制中心 →「敏感信息」里添加。', { name });
+      } else if (keyState === 'checking' || keyState === 'unknown') {
+        status = tt('autoEditorJevKeyChecking', '正在检查 key…');
+      } else if (keyState === 'present') {
+        status = tt('autoEditorJevKeyPresent', '✓ 已配置 key（保险箱条目 {name}）', { name });
+        keyStatus.classList.add('ok');
+      } else if (keyState === 'missing') {
+        status = tt('autoEditorJevKeyMissing', '⚠ 还没有 key：Jev 判断不了难度，所有消息都会按下面「判断不了时」处理。');
+        keyStatus.classList.add('missing');
+      } else {
+        status = tt('autoEditorJevKeyCheckFailed', '⚠ 暂时查不到 key 状态，可以直接重新粘贴保存。');
+        keyStatus.classList.add('missing');
+      }
+      keyStatus.textContent = status;
+      const formVisible = canSave && (keyFormOpen || keyState === 'missing' || keyState === 'error');
+      show(keyChange, canSave && keyState === 'present');
+      keyChange.textContent = keyFormOpen ? tt('autoEditorJevKeyCancel', '取消') : tt('autoEditorJevKeyChange', '更换 key');
+      show(keyForm, formVisible);
+      keyHelp.textContent = tt('autoEditorJevKeyHelp',
+        '在 Vercel 控制台 → AI Gateway → API Keys 创建。只存进本机保险箱（条目 {name}），不写进配置、不发给模型。', { name });
+      show(keyHelp, formVisible);
+      show(testRow, canTest && keyState === 'present');
+      // A "connected" verdict stops being true once the key is gone; a failure
+      // stays up so the user can still read why.
+      if ((!canTest || keyState !== 'present') && testResult.classList.contains('good')) setTestResult('', '');
+    }
+
+    function checkKey() {
+      if (!routingKey) return Promise.resolve();
+      const generation = ++keyGeneration;
+      keyState = 'checking';
+      renderJev();
+      return Promise.resolve().then(() => routingKey.check(keyName())).then(present => {
+        if (destroyed || generation !== keyGeneration) return;
+        keyState = present ? 'present' : 'missing';
+        renderJev();
+      }, () => {
+        if (destroyed || generation !== keyGeneration) return;
+        keyState = 'error';
+        renderJev();
+      });
+    }
+
+    function saveKey() {
+      if (!routingKey || typeof routingKey.save !== 'function') return Promise.resolve();
+      // Read once and clear at once: the pasted key never lingers in the form.
+      const value = keyInput.value.trim();
+      keyInput.value = '';
+      if (!value) {
+        setTestResult(tt('autoEditorJevKeyEmpty', '先把 key 粘贴到输入框里。'), 'bad');
+        return Promise.resolve();
+      }
+      const generation = ++keyGeneration;
+      keySave.disabled = true;
+      setTestResult(tt('autoEditorJevKeySaving', '正在保存…'), '');
+      return Promise.resolve().then(() => routingKey.save(keyName(), value)).then(() => {
+        if (destroyed || generation !== keyGeneration) return null;
+        keyState = 'present';
+        keyFormOpen = false;
+        setTestResult('', '');
+        renderJev();
+        return runTest();
+      }, err => {
+        if (destroyed || generation !== keyGeneration) return;
+        setTestResult(tt('autoEditorJevKeySaveFailed', '保存失败：{reason}',
+          { reason: (err && err.message) || String(err || '') }), 'bad');
+      }).finally(() => { keySave.disabled = false; });
+    }
+
+    function describeJevFailure(result) {
+      const code = String((result && result.code) || '');
+      const status = Number(result && result.status) || 0;
+      if (code === 'jev_key_missing') return tt('autoEditorJevErrKeyMissing', '保险箱里没有这个 key，请先粘贴保存。');
+      if (status === 401 || status === 403 || code === 'jev_http_401' || code === 'jev_http_403') {
+        return tt('autoEditorJevErrKeyInvalid', 'key 无效或没有权限（HTTP {status}），请检查后更换。', { status: status || code.slice(-3) });
+      }
+      if (code === 'jev_timeout') return tt('autoEditorJevErrTimeout', 'Jev 超时没有回应，稍后再试。');
+      if (code === 'jev_network') return tt('autoEditorJevErrNetwork', '连不上 Vercel AI Gateway，检查网络或代理。');
+      if (code === 'test_unavailable') return tt('autoEditorJevErrUnavailable', '服务端还没有测试接口：重启 multicc 后再试。');
+      const detail = result && result.detail ? ` · ${String(result.detail).slice(0, 160)}` : '';
+      return tt('autoEditorJevErrOther', '测试失败：{code}', { code: code || 'unknown' }) + detail;
+    }
+
+    function runTest() {
+      if (!routingKey || typeof routingKey.test !== 'function') return Promise.resolve();
+      const generation = keyGeneration;
+      testButton.disabled = true;
+      setTestResult(tt('autoEditorJevTesting', '正在请 Jev 判断…'), '');
+      return Promise.resolve()
+        .then(() => routingKey.test({ apiKeyName: keyName(), text: testInput.value.trim() }))
+        .then(result => {
+          if (destroyed || generation !== keyGeneration) return;
+          if (result && result.ok) {
+            setTestResult(tt('autoEditorJevTestOk', '✓ 连通了（{ms} ms）：这句会被当作「{tier}」。', {
+              ms: Math.round(Number(result.latencyMs) || 0),
+              tier: result.tier === 't1' ? tierLabel(1, 2) : tierLabel(2, 2),
+            }), 'good');
+            return;
+          }
+          if (result && result.code === 'jev_key_missing') keyState = 'missing';
+          if (result && (result.status === 401 || result.status === 403)) keyFormOpen = true;
+          renderJev();
+          setTestResult(describeJevFailure(result), 'bad');
+        }, err => {
+          if (destroyed || generation !== keyGeneration) return;
+          setTestResult(describeJevFailure({ code: 'request_failed', detail: err && err.message }), 'bad');
+        })
+        .finally(() => { testButton.disabled = false; });
     }
 
     function syncAttemptLimit() {
@@ -528,13 +823,20 @@
       syncAttemptLimit();
       syncCandidateLimit();
       const crossesTrust = syncTrustWarning();
-      if (routingEnabled.checked) syncRungs();
+      const routing = routingEnabled.checked;
+      if (routing) syncRungs();
       for (const row of rows()) {
         row.querySelector('.multicc-auto-editor-tier').style.visibility =
-          routingEnabled.checked ? '' : 'hidden';
+          routing && isRowEnabled(row) ? '' : 'hidden';
       }
-      routingHint.style.display = routingEnabled.checked ? '' : 'none';
-      routingKeyWarning.style.display = routingEnabled.checked && routingKeyConfigured === false ? '' : 'none';
+      headTier.style.visibility = routing ? '' : 'hidden';
+      show(jevBox, routing);
+      show(assignStep, routing);
+      renderSummary();
+      // The key is looked up the first time routing is switched on, not on
+      // every open of the editor.
+      if (routing && keyState === 'unknown') checkKey();
+      else renderJev();
       if (onChange) {
         onChange(Object.freeze({
           protocol,
@@ -642,7 +944,7 @@
         ...[...configuredById.values(), ...defaultsById.values()]
           .map(candidate => Number(candidate.priority) || 0));
       const pool = providersForProtocol(providers, protocol);
-      pool.forEach((provider, index) => {
+      pool.forEach(provider => {
         const providerId = String(provider.id);
         const configured = configuredById.get(providerId);
         const row = element(document, 'div', 'multicc-auto-editor-row');
@@ -682,28 +984,34 @@
         model.value = preferredModel || '';
         const tier = document.createElement('select');
         tier.className = 'multicc-auto-editor-tier';
-        tier.title = tt('autoEditorTierTitle', '档位：1 最弱，数字越大越强');
+        tier.title = tt('autoEditorTierTitle', '这条线路负责哪类任务');
         tier.setAttribute('aria-label',
-        tt('autoEditorTierAria', '{provider} 档位', { provider: provider.name || providerId }));
+        tt('autoEditorTierAria', '{provider} 负责的任务', { provider: provider.name || providerId }));
         row.append(enabled, name, priority, model, tier);
         list.appendChild(row);
-        // A pool that already routes keeps its own ladder; a fresh one starts at
-        // priority order, which is what the pool list already means.
+        // A pool that already routes keeps its own ladder; every other row is
+        // left unchosen so syncRungs() can guess it from the model name.
         const ladder = configuredSelection?.routing?.tiers || [];
-        tier.dataset.rung = String(rungFor(configured, ladder, index + 1));
+        const seeded = configured && configuredSelection?.routing ? rungFor(configured, ladder, 0) : 0;
+        if (seeded) tier.dataset.rung = String(seeded);
         enabled.addEventListener('change', () => {
           if (!selectionCrossesTrust(enabledCandidates(), providers)) confirm.checked = false;
           notify();
         });
         priority.addEventListener('input', notify);
         model.addEventListener('change', notify);
-        tier.addEventListener('change', notify);
+        tier.addEventListener('change', () => {
+          tier.dataset.rung = tier.value;
+          notify();
+        });
       });
       maxAttempts.value = String(configuredSelection?.maxAttempts
         || Math.max(2, Math.min(3, enabledCandidates().length)));
       sticky.checked = configuredSelection ? configuredSelection.sticky !== false : true;
       confirm.checked = configuredSelection?.allowCrossTrust === true;
       routingEnabled.checked = !!configuredSelection?.routing;
+      orderMode.checked = !routingEnabled.checked;
+      onUnknownSelect.value = String(configuredSelection?.routing?.onUnknown || 'strong');
       syncAttemptLimit();
       syncCandidateLimit();
       syncRungs();
@@ -714,10 +1022,27 @@
     maxAttempts.addEventListener('change', notify);
     sticky.addEventListener('change', notify);
     confirm.addEventListener('change', notify);
-    // Without this, checking the box does nothing until some other field is
-    // touched: the tier columns stay hidden, the hint and key warning don't
-    // show, and the ladder never gets its first syncRungs() pass.
-    routingEnabled.addEventListener('change', notify);
+    // Radios in one group only report the one that became checked; mirror the
+    // other by hand so either choice fully switches the editor over.
+    orderMode.addEventListener('change', () => {
+      routingEnabled.checked = !orderMode.checked;
+      notify();
+    });
+    routingEnabled.addEventListener('change', () => {
+      orderMode.checked = !routingEnabled.checked;
+      notify();
+    });
+    onUnknownSelect.addEventListener('change', notify);
+    keySave.addEventListener('click', saveKey);
+    keyInput.addEventListener('keydown', event => {
+      if (event && event.key === 'Enter') saveKey();
+    });
+    keyChange.addEventListener('click', () => {
+      keyFormOpen = !keyFormOpen;
+      renderJev();
+      if (keyFormOpen && typeof keyInput.focus === 'function') keyInput.focus();
+    });
+    testButton.addEventListener('click', runTest);
 
     const controller = Object.freeze({
       setContext(next = {}) {
@@ -731,9 +1056,6 @@
         if (Object.prototype.hasOwnProperty.call(next, 'initialSelection')) {
           initialSelection = next.initialSelection || null;
         }
-        if (Object.prototype.hasOwnProperty.call(next, 'routingKeyConfigured')) {
-          routingKeyConfigured = next.routingKeyConfigured ?? null;
-        }
         render();
       },
       read(readOptions = {}) {
@@ -746,6 +1068,7 @@
           sticky: sticky.checked,
           crossTrustConfirmed: confirm.checked,
           routingEnabled: routingEnabled.checked,
+          routingOnUnknown: onUnknownSelect.value,
           initialRouting: (initialSelection && initialSelection.mode === 'auto'
             && initialSelection.routing) || null,
         });

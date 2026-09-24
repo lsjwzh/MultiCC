@@ -93,16 +93,32 @@
     return _autoProviderEditorApi;
   }
 
-  // Difficulty routing needs the vault's `vercel-api-key` entry, but this editor
-  // never touches the vault itself — only /manage's secrets panel and the vault
-  // module do. This just checks whether that name is present (never its value)
-  // so the routing checkbox can warn instead of silently failing every turn.
-  function checkRoutingKeyConfigured() {
-    if (typeof fetch !== 'function') return Promise.resolve(null);
-    const keyName = autoProviderEditorApi().ROUTING_API_KEY_NAME;
-    return fetch('/api/secrets').then(response => (response.ok ? response.json() : []))
-      .then(list => Array.isArray(list) && list.some(entry => entry && entry.name === keyName))
-      .catch(() => null);
+  // Difficulty routing reads its Jev key from the vault. The editor owns the
+  // flow (check → paste → test) but every request goes through here: the list
+  // call returns names only, a pasted key goes straight into the vault, and the
+  // test route reads it in-process — the value never comes back to the page.
+  function routingKeyApi() {
+    const json = response => response.json().catch(() => ({}));
+    return {
+      check(name) {
+        return fetch('/api/secrets').then(response => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
+          .then(list => Array.isArray(list) && list.some(entry => entry && entry.name === name));
+      },
+      save(name, value) {
+        return fetch('/api/secrets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, value, description: 'Vercel AI Gateway（Jev 难度路由）', source: 'user' }),
+        }).then(response => (response.ok ? null : json(response).then(body => Promise.reject(new Error(body.error || String(response.status))))));
+      },
+      test({ apiKeyName, text }) {
+        return fetch('/api/auto-provider/routing/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKeyName, text }),
+        }).then(response => (response.status === 404 ? { ok: false, code: 'test_unavailable' } : json(response)));
+      },
+    };
   }
 
   function defaultEffort(cli) {
@@ -901,10 +917,10 @@
         onChange: () => refreshSubUi(),
         formatProvider: provider => providerLabel(provider, false)
           + providerLimitLabel(provider, state.translate, Date.now()),
+        routingKey: typeof fetch === 'function' ? routingKeyApi() : null,
       });
       autoEditorRef = autoEditor;
       refreshSubUi();
-      checkRoutingKeyConfigured().then(routingKeyConfigured => autoEditor.setContext({ routingKeyConfigured }));
 
       function syncAutoEditor() {
         const protocol = autoProtocolFromValue(providerSelect.value);
@@ -1137,6 +1153,6 @@
     refreshQoderModels,
     refreshCodebuddyModels,
     refreshClaudeModels,
-    checkRoutingKeyConfigured,
+    routingKeyApi,
   };
 });
