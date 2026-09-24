@@ -85,21 +85,30 @@ function workKind(item) {
   return payload.originContinue === true ? 'continuation' : 'task';
 }
 
+// A dispatch.result payload's taskId/taskRunId/leaseEpoch name the DISPATCHED
+// task's run (the worker's), not the turn it wakes in the result session. Read
+// as lineage they pinned the owner's active slot to the worker's task: every
+// owner turn then projected 「执行中」 onto the worker's card, and the owner's
+// own turn-end verdict hit active_task_mismatch and never released the slot.
+function ownPayload(item) {
+  return item?.payload?.type === 'dispatch.result' ? null : item?.payload;
+}
+
 function taskIdForItem(item) {
-  return item?.turnLineage?.taskId || item?.payload?.taskId || null;
+  return item?.turnLineage?.taskId || ownPayload(item)?.taskId || null;
 }
 
 function taskRunIdForItem(item) {
   return item?.turnLineage?.taskRunId
-    || item?.payload?.taskRunId
-    || item?.payload?.options?.taskRunId
+    || ownPayload(item)?.taskRunId
+    || ownPayload(item)?.options?.taskRunId
     || null;
 }
 
 function leaseEpochForItem(item) {
   const value = item?.turnLineage?.leaseEpoch
-    ?? item?.payload?.leaseEpoch
-    ?? item?.payload?.options?.leaseEpoch;
+    ?? ownPayload(item)?.leaseEpoch
+    ?? ownPayload(item)?.options?.leaseEpoch;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
@@ -395,7 +404,7 @@ function createSessionWorkScheduler({
     if (payload.activeEntryId && payload.activeEntryId !== schedule.active.entryId) return false;
     // task.interrupted.taskId names the child Task/Agent, not the parent
     // session task. Its durable same-session origin is the correlation proof.
-    if (payload.type !== 'task.interrupted'
+    if (payload.type !== 'task.interrupted' && payload.type !== 'dispatch.result'
         && payload.taskId && activeTaskId(schedule)
         && payload.taskId !== activeTaskId(schedule)) return false;
     if (workKind(item) === 'answer' && schedule.awaitingRequestId
@@ -819,7 +828,7 @@ function createSessionWorkScheduler({
     if (result.ok) emit('claim_released', {
       sessionId: item.sessionId,
       entryId: item.id,
-      taskId: result.schedule.active?.taskId || item.payload?.taskId || null,
+      taskId: result.schedule.active?.taskId || taskIdForItem(item),
       taskRunId: result.schedule.active?.taskRunId || taskRunIdForItem(item),
       leaseEpoch: result.schedule.active?.leaseEpoch || leaseEpochForItem(item),
       reason,
@@ -986,7 +995,7 @@ function createSessionWorkScheduler({
     }
     if (recoveredSuccessProven(current, recoveredState)) {
       return complete(item.sessionId, {
-        expectedTaskId: item.payload?.taskId || null,
+        expectedTaskId: taskIdForItem(item),
         reason: 'recovered-success',
       });
     }
@@ -997,7 +1006,7 @@ function createSessionWorkScheduler({
     // No classify-driven freeze on restart either.
     if (recoveredClassify) {
       return complete(item.sessionId, {
-        expectedTaskId: item.payload?.taskId || null,
+        expectedTaskId: taskIdForItem(item),
         reason: `recovered_${recoveredClassify}`,
         classifyState: recoveredClassify,
       });

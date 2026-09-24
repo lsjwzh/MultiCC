@@ -718,24 +718,31 @@ function createOrchestrationRuntime({
       ? item.turnLineage : {};
   }
 
+  // dispatch.result carries the dispatched worker's task identity as data; it
+  // is never the lineage of the result session's turn (see session-work
+  // scheduler ownPayload).
+  function ownPayload(item) {
+    return item?.payload?.type === 'dispatch.result' ? null : item?.payload;
+  }
+
   function itemTaskId(item) {
     const lineage = itemTurnLineage(item);
-    return lineage.taskId || item?.payload?.taskId || item?.payload?.options?.taskId || null;
+    return lineage.taskId || ownPayload(item)?.taskId || ownPayload(item)?.options?.taskId || null;
   }
 
   function itemTaskRunId(item) {
     const lineage = itemTurnLineage(item);
     return lineage.taskRunId
-      || item?.payload?.taskRunId
-      || item?.payload?.options?.taskRunId
+      || ownPayload(item)?.taskRunId
+      || ownPayload(item)?.options?.taskRunId
       || null;
   }
 
   function itemLeaseEpoch(item) {
     const lineage = itemTurnLineage(item);
     const parsed = Number(lineage.leaseEpoch
-      ?? item?.payload?.leaseEpoch
-      ?? item?.payload?.options?.leaseEpoch);
+      ?? ownPayload(item)?.leaseEpoch
+      ?? ownPayload(item)?.options?.leaseEpoch);
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
