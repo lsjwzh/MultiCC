@@ -1,5 +1,9 @@
 'use strict';
 
+// The tokenizer is shared with the durable message index (src/search/index-store.js)
+// so that a query means the same thing whichever corpus answers it.
+const { CJK_CHAR_RE, normalizeText, tokenize } = require('../search/tokenize');
+
 // Full-text search over the task board.
 //
 // Pure module, same contract as normalize/classification/routing/view: given a
@@ -15,13 +19,13 @@
 // search must stay cheap enough to run synchronously in that path, and remembering
 // *what a task was about* is exactly what the excerpts already record.
 //
-// Chinese has no spaces, so tokenization is mixed: latin/digit runs become one
-// token, CJK runs become overlapping bigrams *and* their single characters. The
-// bigrams carry the meaning ("搜索" ≠ "搜" + "索"); the single characters exist
-// only so a one-character query can still be answered, and a query made of real
-// words refuses to be satisfied by them alone (see analyzeQuery's strong/weak
-// split). Scoring is BM25 per field, weighted title > body > areas > module, with
-// a bonus when the query appears as one contiguous phrase.
+// Tokenization (bigram + latin-run) lives in src/search/tokenize.js: latin/digit
+// runs become one token, CJK runs become overlapping bigrams *and* their single
+// characters. The bigrams carry the meaning ("搜索" ≠ "搜" + "索"); the single
+// characters exist only so a one-character query can still be answered, and a query
+// made of real words refuses to be satisfied by them alone (see analyzeQuery's
+// strong/weak split). Scoring is BM25 per field, weighted title > body > areas >
+// module, with a bonus when the query appears as one contiguous phrase.
 
 // Field weights are a relevance decision, not a display one: the title is the
 // task's own name, areas its durable scope, an excerpt one turn of work.
@@ -29,40 +33,11 @@ const FIELD_WEIGHTS = { title: 6, module: 2, areas: 3, body: 4 };
 const BM25_K1 = 1.4;
 const BM25_B = 0.6;
 const MAX_QUERY_TERMS = 12;
-// A repeated word stops being evidence after a while, and a pathological excerpt
-// must not be able to dominate its own length normalisation.
-const MAX_TF = 32;
-const MAX_TERMS_PER_FIELD = 8000;
 const SNIPPET_RADIUS = 40;
 const SNIPPET_MAX = 160;
 // A single CJK character is a legal query but weak evidence: it appears inside
 // far too many words to rank on its own.
 const WEAK_QUERY_WEIGHT = 0.34;
-
-const CJK_RE = /[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯]+/g;
-const LATIN_RE = /[a-z0-9][a-z0-9+._-]+/g;
-const CJK_CHAR_RE = /^[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯]$/;
-
-function normalizeText(value) {
-  return String(value == null ? '' : value).normalize('NFKC').toLowerCase();
-}
-
-// term → occurrences in `text`. Latin runs are whole tokens; a CJK run yields
-// every bigram plus every single character, so both query shapes hit.
-function tokenize(text) {
-  const normalized = normalizeText(text);
-  const counts = new Map();
-  const add = (term, weight = 1) => {
-    if (counts.size >= MAX_TERMS_PER_FIELD && !counts.has(term)) return;
-    counts.set(term, Math.min(MAX_TF, (Number(counts.get(term)) || 0) + weight));
-  };
-  for (const match of normalized.match(LATIN_RE) || []) add(match);
-  for (const run of normalized.match(CJK_RE) || []) {
-    for (let index = 0; index + 1 < run.length; index += 1) add(run.slice(index, index + 2));
-    for (const char of run) add(char, 0.5);
-  }
-  return counts;
-}
 
 function taskModuleName(board, task) {
   const module = task?.moduleId ? board?.modules?.[task.moduleId] : null;
