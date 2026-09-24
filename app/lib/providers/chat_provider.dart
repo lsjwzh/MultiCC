@@ -2769,7 +2769,7 @@ class ChatProvider extends ChangeNotifier {
   /// Explicit scheduler control. The APP never mutates or advances the queue
   /// itself; even after a successful POST it only applies the returned server
   /// schedule (and the following WS event will reconcile it again).
-  Future<void> queueAction(
+  Future<bool> queueAction(
     String action, {
     String? entryId,
     int? toIndex,
@@ -2798,10 +2798,12 @@ class ChatProvider extends ChangeNotifier {
         wsSeqAtRequest,
         _sessionQueueEventSeq,
       );
-      if (next == null) return;
-      _sessionQueue = next;
-      notifyListeners();
+      if (next != null) {
+        _sessionQueue = next;
+        notifyListeners();
+      }
     }
+    return action != 'insert_queued' || result['started'] == true;
   }
 
   /// Cancel the in-flight response. Matches the web client's cancelStreaming():

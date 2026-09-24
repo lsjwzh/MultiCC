@@ -2080,7 +2080,7 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
   recentEvents: dirId => recentEvents(dirId),
-  deliver: (...args) => taskContextHost.deliverSessionMessage(...args),
+  deliver: (...args) => taskContextHost.deliverSessionMessage(...args), dispatch: (...args) => dispatchToSession(...args),
   persistRecords: (source, fn) => sessionPersistence.mutate(source, fn), closeExecution: id => chatStream.closeAndWait(id), resetChatState: id => chatSessions.delete(id),
   hasBackground: id => backgroundTaskRuntime.hasProcessBackgroundTasks(id), ensureWorkspaceAwake: id => sessionHibernationRuntime.ensureAwake(id),
   getWorkspaceAdmission: () => workspaceAdmission,
@@ -2739,7 +2739,7 @@ const providerLogWatchdog = createProviderLogWatchdog({ listRecords: () => persi
   recordLimit: limitRecorder.recordSession });
 const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
-routerToolHost.configure({ records: persistedSessions, dispatchToSession, orchestrationRuntime, taskBoard: taskBoardRuntime,
+routerToolHost.configure({ records: persistedSessions, dispatchToSession, createTask: input => taskShellHost.createTask(input), orchestrationRuntime, taskBoard: taskBoardRuntime,
   recordUserInput: signal => sessionWorkHost.recordInput(signal), listSecrets: () => secretsVault.list(), cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts),
   onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission, imageBridge: createOfficialImageBridgeRuntime({ paths: MULTICC_PATHS, resolveSessionCwd: cwdForSession, providers, officialAccounts, registerArtifact: docsRegistry.register, codexCommand: cliCommands.codex }), getTaskContext: (context, query) => taskShellHost.refillContext(context.sessionId, { ...query, receiptId: context.requestId }) });
 

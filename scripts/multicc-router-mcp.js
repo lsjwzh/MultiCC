@@ -11,13 +11,25 @@ const CAPABILITY = String(process.env.MULTICC_ROUTER_CAPABILITY || '');
 const TARGET_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['target_session_id', 'message'],
+  required: ['message'],
+  oneOf: [{ required: ['target_session_id'] }, { required: ['new_task'] }],
   properties: {
+    new_task: {
+      type: 'object', additionalProperties: false, required: ['title'],
+      description: 'Create an independent task and its matching execution session in the caller directory, then dispatch in one call. Use this instead of creating tasks through management HTTP APIs. Mutually exclusive with target_session_id.',
+      properties: {
+        title: { type: 'string', minLength: 1, maxLength: 120 },
+        cli: { type: 'string', minLength: 1, maxLength: 256 },
+        model: { type: 'string', minLength: 1, maxLength: 256 },
+        provider: { type: 'string', minLength: 1, maxLength: 256 },
+        effort: { type: 'string', minLength: 1, maxLength: 256 },
+      },
+    },
     target_session_id: {
       type: 'string',
       minLength: 1,
       maxLength: 256,
-      description: 'Stable same-directory target session id. Unless the user explicitly named a chat, choose an available eligible worker instead of a busy related worker. Terminal targets require allow_terminal=true.',
+      description: 'Stable same-directory session id for work belonging to its existing task. Its bound task identity is preserved. Among suitable targets prefer available over busy unless the user explicitly named a target. For independent work use new_task. Terminal targets require allow_terminal=true.',
     },
     message: {
       type: 'string',
@@ -350,7 +362,7 @@ const TOOLS = [
   {
     name: 'route_task',
     title: 'Route task (one way)',
-    description: 'Durably queue a one-way task for an existing same-directory worker. Unless the user explicitly names the target, prefer another available eligible chat when the related worker is busy, and send complete self-contained context. Terminal sessions require exact user targeting plus allow_terminal=true. Returns after admission and never recollects the result.',
+    description: 'Durably queue one-way work. For a new independent task use new_task (title and optional AI configuration); the host creates the task and execution session together. For work belonging to an existing task use target_session_id. Never pre-create tasks through management HTTP APIs. Unless the user explicitly names the target, prefer available over busy eligible chats and send complete self-contained context. Terminal sessions require exact user targeting plus allow_terminal=true. Returns after admission and never recollects the result.',
     inputSchema: TARGET_SCHEMA,
     annotations: {
       readOnlyHint: false,
@@ -386,7 +398,7 @@ const TOOLS = [
   {
     name: 'dispatch_master',
     title: 'Dispatch to worker',
-    description: 'Durably dispatch to a same-directory worker. Unless the user explicitly names the target, prefer another available eligible chat when the related worker is busy, and send complete self-contained context. mode=sync keeps this call pending, streams safe provider-emitted reasoning and worker dialogue progress, and returns the final worker result inline without dispatch_slave or a new chat message. mode=async returns after admission; do not poll or inspect the worker—continue only independent work and end naturally, then MultiCC wakes this session with the dispatch_slave result as a new message. A selected busy target is queued and never interrupted. A timeout, terminated stream, or transport error never proves that the admitted task stopped: recover with dispatch_status, then wait or cancel before re-routing.',
+    description: 'Use new_task to create an independent task with its execution session, or target_session_id to supplement an existing task. Never pre-create tasks through management HTTP APIs. Durably dispatch to a same-directory worker. Unless the user explicitly names the target, prefer another available eligible chat when the related worker is busy, and send complete self-contained context. mode=sync keeps this call pending, streams safe provider-emitted reasoning and worker dialogue progress, and returns the final worker result inline without dispatch_slave or a new chat message. mode=async returns after admission; do not poll or inspect the worker—continue only independent work and end naturally, then MultiCC wakes this session with the dispatch_slave result as a new message. A selected busy target is queued and never interrupted. A timeout, terminated stream, or transport error never proves that the admitted task stopped: recover with dispatch_status, then wait or cancel before re-routing.',
     inputSchema: DISPATCH_MASTER_SCHEMA,
     annotations: {
       readOnlyHint: false,
@@ -467,6 +479,7 @@ async function readNdjson(response, onProgress) {
       if (frame.type === 'error') {
         const error = new Error(frame.message || frame.code || 'router_error');
         error.code = frame.code || 'router_error';
+        error.retryable = frame.retryable;
         throw error;
       }
     }
@@ -479,6 +492,7 @@ async function readNdjson(response, onProgress) {
     if (frame.type === 'error') {
       const error = new Error(frame.message || frame.code || 'router_error');
       error.code = frame.code || 'router_error';
+      error.retryable = frame.retryable;
       throw error;
     }
   }
@@ -508,6 +522,7 @@ async function callBridge(name, args, signal, onProgress) {
     const detail = payload && (payload.error || payload.message);
     const error = new Error(detail ? `${code}: ${detail}` : code);
     error.code = code;
+    error.retryable = payload?.retryable;
     throw error;
   }
   return payload && Object.prototype.hasOwnProperty.call(payload, 'result')
@@ -588,6 +603,7 @@ async function handle(message) {
         jsonrpc: '2.0', id,
         result: toolContent({
           ok: false, code, message,
+          ...(typeof error.retryable === 'boolean' ? { retryable: error.retryable } : {}),
           ...(interrupted ? { recovery_tool: 'dispatch_status' } : {}),
         }, true),
       });

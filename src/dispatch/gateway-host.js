@@ -412,6 +412,12 @@ function createGatewayHost(rawDeps) {
       error: v.error,
     };
     const rec = v.rec;
+    const taskContext = getTaskContextHost();
+    if (rec.kind === 'chat' && taskContext.requiresTaskShell?.(targetId)) {
+      if (!opts.taskShellReceiptId) return taskContext.dispatchTaskShell(targetId, message, opts);
+      const rejected = taskContext.guardAdmission(targetId, message, opts);
+      if (rejected?.ok === false) return { ...rejected, retryable: false };
+    }
 
     let chatId;
     if (rec.kind === 'chat') {
@@ -510,11 +516,17 @@ function createGatewayHost(rawDeps) {
         queue = { state: 'started' };
       }
     } catch (_) { /* the admission is durable; the hint is best-effort */ }
+    let status = admitted.status;
+    try {
+      status = (await runtime.operations?.get?.(dispatchId))?.status || status;
+      if (TERMINAL_DISPATCH_STATUS.has(status)) queue = { state: 'terminal' };
+    } catch (_) { /* admission remains durable if the status read fails */ }
     return {
       ok: true,
       chatId,
+      taskId: opts.taskId || null,
       operationId: dispatchId,
-      status: admitted.status,
+      status,
       duplicate: !!admitted.idempotent,
       queue,
       ...(wakeupError ? { wakeupError } : {}),

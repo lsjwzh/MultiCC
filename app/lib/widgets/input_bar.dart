@@ -680,13 +680,17 @@ class _InputBarState extends State<InputBar> {
   }) async {
     if (!await _confirmQueueChange(action)) return;
     try {
-      await provider.queueAction(action, entryId: entryId, toIndex: toIndex);
+      final started = await provider.queueAction(
+        action,
+        entryId: entryId,
+        toIndex: toIndex,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             action == 'insert_queued'
-                ? t('queueInsertAccepted')
+                ? (started ? t('queueInsertAccepted') : t('queueInsertPending'))
                 : action == 'reorder_queued'
                 ? t('queueReorderAccepted')
                 : t('queueActionAccepted'),
@@ -749,7 +753,9 @@ class _InputBarState extends State<InputBar> {
           // model its own budget; this waits for that budget plus slack, so the
           // server's explicit AUX_TIMEOUT message wins the race instead of a
           // bare client abort (see services/goal_precheck.dart).
-          .timeout(Duration(milliseconds: goalPrecheckTimeoutMs(_goalPrecheckWaitMs)));
+          .timeout(
+            Duration(milliseconds: goalPrecheckTimeoutMs(_goalPrecheckWaitMs)),
+          );
       if (res.statusCode != 200) {
         // The goal routes answer with JSON on every branch, so prefer the
         // server's own words over a bare status code.
