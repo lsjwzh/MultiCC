@@ -38,6 +38,12 @@
   let sessions = [];
   let totals = { count: 0, totalSize: 0, protectedCount: 0 };
   const filters = { skills: '', sessions: '' };
+  // 技能按「从哪来」分层（服务端 src/skills.js 的 skillLayer 打的 layer）：先摆
+  // MultiCC 内置与 CLI 自带，用户最常问的就是「哪些是预装的」。插件和 CLI 自带通常
+  // 一长串且不归用户管，默认收起；展开/收起的选择跟过滤条件一样存在模块上。
+  const SKILL_LAYERS = ['bundled', 'cli', 'plugin', 'user', 'project'];
+  const LAYER_KEYS = { bundled: 'airResourcesLayerBundled', cli: 'airResourcesLayerCli', plugin: 'airResourcesLayerPlugin', user: 'airResourcesLayerUser', project: 'airResourcesLayerProject' };
+  const openLayers = { bundled: true, cli: false, plugin: false, user: true, project: true };
   let olderThanDays = 30;
   // 样式只建一次：它是这一页的私有词汇（air-resources-*），跟着面板节点走，
   // 不进 air.css —— 一格一份，删掉这一格就是删掉这个文件加这一行。
@@ -68,6 +74,10 @@
 .air-resources-danger { flex: 0 0 auto; min-height: 30px; padding: 4px 10px; color: #a6533c; border: 1px solid transparent; border-radius: 9px; background: transparent; font-size: 9.5px; }
 .air-resources-danger:hover:not(:disabled) { border-color: #eed9d1; background: #fdf4f1; }
 .air-resources-danger:disabled { cursor: not-allowed; color: var(--faint); }
+.air-resources-group { display: grid; gap: 8px; }
+.air-resources-group + .air-resources-group { margin-top: 6px; }
+.air-resources-group-head { display: flex; align-items: center; gap: 8px; cursor: pointer; color: #2f536f; font-size: 11px; font-weight: 650; list-style-position: inside; }
+.air-resources-group-count { padding: 1px 7px; color: var(--muted); border-radius: 999px; background: #eef3f8; font-size: 9.5px; font-weight: 600; }
 .air-resources-status { margin-top: 10px; color: var(--muted); font-size: 10px; }
 `;
     return styleNode;
@@ -103,7 +113,7 @@
 
   function visibleSkills() {
     return skills.filter(skill =>
-      matches(filters.skills, [skill.provider, skill.source, skill.name, skill.description, skill.path]));
+      matches(filters.skills, [skill.provider, skill.source, skill.layer, skill.name, skill.description, skill.path]));
   }
 
   // preview 也进检索：它不进 DOM，但正是「我记得那句开头」时唯一能对上号的东西。
@@ -155,7 +165,21 @@
     if (count) count.textContent = t('airResourcesSkillsCount', { claude: counts.claude || 0, codex: counts.codex || 0 });
     const visible = visibleSkills();
     if (!visible.length) list.replaceChildren(make('p', t('airResourcesSkillsEmpty'), 'admin-empty'));
-    else list.replaceChildren(...visible.map(skillRow));
+    else list.replaceChildren(...SKILL_LAYERS.map(layer => skillGroup(layer, visible)).filter(Boolean));
+  }
+
+  function skillGroup(layer, visible) {
+    const members = visible.filter(skill => (SKILL_LAYERS.includes(skill.layer) ? skill.layer : 'user') === layer);
+    if (!members.length) return null;
+    const group = make('details', null, 'air-resources-group');
+    group.dataset.layer = layer;
+    // 有过滤词时全部摊开：命中藏在收起的组里等于没命中。
+    group.open = !!String(filters.skills || '').trim() || openLayers[layer];
+    const summary = make('summary', null, 'air-resources-group-head');
+    summary.append(make('span', t(LAYER_KEYS[layer])), make('span', String(members.length), 'air-resources-group-count'));
+    group.append(summary, ...members.map(skillRow));
+    group.addEventListener('toggle', () => { if (!String(filters.skills || '').trim()) openLayers[layer] = group.open; });
+    return group;
   }
 
   function paintSessions() {

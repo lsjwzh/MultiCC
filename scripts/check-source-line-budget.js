@@ -178,9 +178,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // CLI 更新浮层给未安装的行加「安装」（4 键）+ 目录拖拽排序 / 目录卡侧拉（3 键），
   // 中英各 7 行 = +14 行，抬到 6646/410852。
   // 插入队列增加“尚未启动”提示，中英各一行。
+  // Agent 资源页技能按来源分层（内置/CLI 自带/插件/我的/项目，5 键），中英各 5 行
+  // = +10 行，抬到 6658/411500。
+  // Auto Provider 候选池预设（套用/保存/删除/最近使用等 9 键），中英各 9 行 = +18 行，
+  // 抬到 6676/412600。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6648,
-    maxBytes: 411100,
+    maxLines: 6676,
+    maxBytes: 412600,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

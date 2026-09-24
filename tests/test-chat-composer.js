@@ -427,3 +427,31 @@ test('chat host loads composer before chat and keeps compatibility/password gate
   assert.ok(host.split('\n').length <= 4100, `chat.js has ${host.split('\n').length} lines`);
   assert.ok(module.split('\n').length < 2000);
 });
+
+test('manual retry cancels the open turn, waits, then resubmits the original payload', async () => {
+  const fixture = composerFixture({ text: '/goal ship it', openTurn: true, streaming: true });
+  fixture.composer.send();
+  const first = fixture.sent[0];
+  const ticks = [];
+  const result = await fixture.composer.manualRetry({ delayMs: 20, onTick: s => ticks.push(s) });
+  assert.equal(result.ok, true);
+  assert.deepEqual(fixture.sent.map(p => p.type), ['user_message', 'cancel', 'user_message']);
+  const again = fixture.sent[2];
+  assert.equal(again.text, first.text, '原数据原样重发（装饰后的文本，不是输入框当前内容）');
+  assert.equal(again.goal, true);
+  assert.notEqual(again.clientMsgId, first.clientMsgId, '重发是一条新消息');
+  assert.deepEqual(ticks, [1]);
+});
+
+test('manual retry falls back to the last user bubble text and refuses when there is nothing', async () => {
+  const empty = composerFixture();
+  assert.equal((await empty.composer.manualRetry({ delayMs: 0 })).reason, 'nothing_to_retry');
+  assert.deepEqual(empty.sent, []);
+  const reloaded = composerFixture();
+  assert.equal((await reloaded.composer.manualRetry({ delayMs: 0, fallbackText: 'hi again' })).ok, true);
+  assert.deepEqual(reloaded.sent.map(p => [p.type, p.text]), [['user_message', 'hi again']]);
+  const offline = composerFixture({ open: false });
+  offline.composer.send();
+  assert.equal((await offline.composer.manualRetry({ delayMs: 0, fallbackText: 'x' })).reason, 'disconnected');
+  assert.ok(offline.retries.length >= 1, '断线时先触发重连');
+});

@@ -146,6 +146,11 @@ small, .caption { color: var(--muted); font-size: 11px; }
   border-right: 1px solid rgba(202, 218, 235, .85);
   background: linear-gradient(145deg, rgba(248, 251, 255, .96), rgba(232, 241, 251, .92));
   box-shadow: inset -1px 0 rgba(255, 255, 255, .7);
+  /* 兜底滚动：展开「更多与系统」后底栏约 500px，加上顶部固定内容，100% 缩放的
+     笔记本（视口 ~780px 高）装不下，body 又是 overflow:hidden —— 重启、退出登录
+     那一栏直接被裁在屏幕外，连滚都滚不到。平时装得下时这条不产生滚动条。 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .brand { display: flex; align-items: center; gap: 10px; margin: 0 4px 16px; color: var(--text); font-size: 18px; font-weight: 680; letter-spacing: -.3px; }
@@ -301,7 +306,7 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
    viewport, and the list band used to paint over the footer instead of giving
    way. `overflow-y: auto` is what makes shrinking legitimate — the band scrolls
    rather than spilling, so the footer keeps the foot of the column. */
-#task-sidebar { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; margin-top: 4px; }
+#task-sidebar { min-height: min(170px, 24vh); flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; margin-top: 4px; }
 /* 抬头和「＋ 新任务」留在滚动区外面：滚一份清单不该把自己的标题滚出屏幕。 */
 .task-heading, .sidebar-create { flex-shrink: 0; }
 .task-heading { margin: 0 5px 8px; }
