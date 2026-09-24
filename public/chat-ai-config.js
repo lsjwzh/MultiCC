@@ -296,11 +296,28 @@
       // populated by loadOpenCodeModels() (see public/shared/models.js); the
       // first picker open may return [] here, then refreshOpenCodeModels()
       // fires a rebuild once the fetch resolves.
-      const cached = readOpenCodeModelsSync();
-      if (cached.length) return ['', ...cached.map(m => `${m.provider}/${m.model}`), '__custom__'];
+      const nativeId = openCodeNativeProviderOf(providerId);
+      const cached = readOpenCodeModelsSync().filter(m => !nativeId || m.provider === nativeId);
+      // A picked native provider pins its own models — no "follow config" row.
+      if (cached.length) return [...(nativeId ? [] : ['']), ...cached.map(m => `${m.provider}/${m.model}`), '__custom__'];
       return ['', '__custom__'];
     }
     return ['', '__custom__'];
+  }
+
+  // OpenCode's own providers (Zen gateway, Go plan, `opencode auth login`
+  // ones) are not MultiCC providers: they appear in the Provider dropdown as
+  // `opencode-native:<id>` rows that only filter the model list, and save as
+  // provider '' (native config) with a `<id>/<model>` model.
+  const OPENCODE_NATIVE_PREFIX = 'opencode-native:';
+  const OPENCODE_NATIVE_NAMES = { opencode: 'OpenCode Zen', opencodego: 'OpenCode Go' };
+  function openCodeNativeProviderOf(value) {
+    const text = String(value || '');
+    return text.startsWith(OPENCODE_NATIVE_PREFIX) ? text.slice(OPENCODE_NATIVE_PREFIX.length) : '';
+  }
+  function openCodeNativeProviders() {
+    const ids = [...new Set(readOpenCodeModelsSync().map(m => m.provider).filter(Boolean))];
+    return ids.map(id => ({ value: OPENCODE_NATIVE_PREFIX + id, label: `OpenCode 原生 · ${OPENCODE_NATIVE_NAMES[id] || id}` }));
   }
 
   // Synchronous read of a CLI model cache populated by shared/models.js
@@ -732,11 +749,26 @@
       defaultProvider.textContent = cli === 'zcode'
         ? 'ZCode 原生 / Coding Plan'
         : cli === 'opencode'
-          ? 'OpenCode 原生配置（OpenCode Go 等）'
+          ? 'OpenCode 原生配置（全部模型）'
           : translate(state, 'providerDefault');
       const providerAppType = isCodexCli(cli) ? 'codex' : cli;
       const officialProvider = providersOf(state).find(p => p.builtinOfficial && p.appType === providerAppType);
       if (!officialProvider) providerSelect.appendChild(defaultProvider);
+      function syncOpenCodeNativeOptions() {
+        if (cli !== 'opencode') return;
+        let anchor = defaultProvider.parentNode ? defaultProvider : null;
+        for (const native of openCodeNativeProviders()) {
+          let option = [...providerSelect.options].find(o => o.value === native.value);
+          if (!option) {
+            option = document.createElement('option');
+            option.value = native.value;
+            option.textContent = native.label;
+            providerSelect.insertBefore(option, anchor ? anchor.nextSibling : providerSelect.firstChild);
+          }
+          anchor = option;
+        }
+      }
+      syncOpenCodeNativeOptions();
       for (const protocol of ['anthropic', 'openai_responses']) {
         if (autoProvidersForProtocol(protocol, providersOf(state)).length < 2) continue;
         const option = document.createElement('option');
@@ -752,6 +784,12 @@
       }
       const configuredAuto = config.providerSelection?.mode === 'auto' ? config.providerSelection : null;
       providerSelect.value = configuredAuto ? autoOptionValue(configuredAuto.protocol) : (config.provider || officialProvider?.id || '');
+      const nativeFromModel = cli === 'opencode' && !config.provider && !configuredAuto
+        && String(config.model || '').split('/')[0];
+      if (nativeFromModel && [...providerSelect.options].some(o => o.value === OPENCODE_NATIVE_PREFIX + nativeFromModel)) {
+        providerSelect.value = OPENCODE_NATIVE_PREFIX + nativeFromModel;
+      }
+      const effectiveProvider = value => (openCodeNativeProviderOf(value) ? '' : value);
       providerSection.style.display = supportsProvider ? '' : 'none';
       if (!supportsProvider) providerSelect.value = '';
 
@@ -796,7 +834,7 @@
           const first = read && read.ok ? read.value.candidates[0] : null;
           if (first && first.providerId) return first.providerId;
         }
-        return providerSelect.value;
+        return effectiveProvider(providerSelect.value);
       }
 
       function syncSubCustom() {
@@ -891,6 +929,17 @@
       }
       rebuildModels(configuredAuto ? (config.provider || '') : providerSelect.value, config.model || '');
       syncAutoEditor();
+      if (cli === 'opencode' && !openCodeNativeProviders().length) {
+        // First open before the catalog landed: add the native rows (and
+        // re-pick the saved one) once the fetch resolves.
+        void refreshOpenCodeModels(() => {
+          syncOpenCodeNativeOptions();
+          const saved = String(config.model || '').split('/')[0];
+          if (!config.provider && saved && [...providerSelect.options].some(o => o.value === OPENCODE_NATIVE_PREFIX + saved)
+            && !providerSelect.value) providerSelect.value = OPENCODE_NATIVE_PREFIX + saved;
+          if (!autoProtocolFromValue(providerSelect.value)) rebuildModels(providerSelect.value, modelSelect.value === '__custom__' ? customModel.value : modelSelect.value);
+        });
+      }
       providerSelect.onchange = () => {
         const autoProtocol = autoProtocolFromValue(providerSelect.value);
         if (!autoProtocol) rebuildModels(providerSelect.value, '');
@@ -917,13 +966,13 @@
           ? subCustomModel.value.trim()
           : subModelSelect.value;
         close({
-          provider: primary ? primary.providerId : providerSelect.value,
+          provider: primary ? primary.providerId : effectiveProvider(providerSelect.value),
           providerSelection,
           model: primary ? primary.model || '' : selectedModel,
           effort: effortSelect.value,
           agent: isClaudeCli(cli) || cli === 'opencode' || cli === 'qoder' || cli === 'codebuddy' ? agentInput.value.trim() : null,
           subagent: resolveSubagent({ cli, providerId: subProviderSelect.value,
-            primaryProviderId: primary ? primary.providerId : providerSelect.value, model: childModel }),
+            primaryProviderId: primary ? primary.providerId : effectiveProvider(providerSelect.value), model: childModel }),
         });
       };
       box.querySelector('#ai-cancel').onclick = () => close(null);
@@ -1052,6 +1101,8 @@
     providerAliasTiers,
     normalizeModel,
     buildModelChoices,
+    openCodeNativeProviders,
+    openCodeNativeProviderOf,
     stripModelSuffix,
     defaultModelChoice,
     modelChoiceLabel,
