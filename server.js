@@ -2270,7 +2270,7 @@ const {
     broadcastProviderTokenStats(sessionId, attribution);
     broadcastRoleTokenStats(sessionId);
   },
-  getSessionState: (sessionId) => chatSessions.get(sessionId),
+  getSessionState: (sessionId) => chatSessions.get(sessionId), roleUsageSnapshot: id => roleTokenTracker.snapshot(id),
   consumeHandoff: consumePendingCliHandoff,
   emitTurnComplete: (sessionId, state, completion) => bus.emit('chat:turn-complete', sessionId, state, completion),
   emitDispatchComplete: (operationId, sessionId, text) => bus.emit('chat:dispatch-complete', operationId, sessionId, text),

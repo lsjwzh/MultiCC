@@ -31,6 +31,23 @@ function assertHostRuntimePorts(ports) {
 
 function clean(value) { return value == null ? '' : String(value).trim(); }
 
+// The turn's main/sub split is otherwise only a live WS event; persisting it on
+// the assistant message lets a reloaded history render the same 主/辅 rows.
+// Only turns with sub-agent usage carry it — a main-only turn's `usage` already
+// is the main row, so plain history stays byte-for-byte what it was.
+function persistedRoleUsage(snapshotFn, sessionId) {
+  if (typeof snapshotFn !== 'function') return null;
+  let snap = null;
+  try { snap = snapshotFn(sessionId); } catch (_) { return null; }
+  if (!snap || !snap.sub) return null;
+  return {
+    main: snap.main || null,
+    mainByProvider: Array.isArray(snap.mainByProvider) ? snap.mainByProvider : [],
+    sub: snap.sub,
+    subByProvider: Array.isArray(snap.subByProvider) ? snap.subByProvider : [],
+  };
+}
+
 function firstDefined(source, keys) {
   for (const key of keys) {
     if (source && source[key] != null) return source[key];
@@ -230,6 +247,8 @@ function createChatHostRuntime(rawPorts) {
   });
 
   function persistFinalAssistantResult(sessionId, state, turn, runner, message, options = {}) {
+    const roleUsage = persistedRoleUsage(ports.roleUsageSnapshot, sessionId);
+    if (roleUsage && message && message.role === 'assistant') message = { ...message, roleUsage };
     const result = coordinator.appendFinal({
       turn,
       runner,
