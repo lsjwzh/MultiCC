@@ -1090,11 +1090,10 @@ test('a resident lane keeps admitting background sub requests after its turn suc
   }).code, 'provider_subroute_not_allowed');
   assert.equal(runtime.authorizeProxyRequest({
     sessionId: capability, role: 'main', providerId: 'provider-a',
-  }).code, 'proxy_attempt_not_running', 'the main route stays closed between turns');
+  }).ok, true, 'without a subagent provider the background agent rides the main route');
   assert.equal(runtime.authorizeProxyRequest({
-    sessionId: capability, role: 'main', providerId: 'provider-a',
-    protocol: 'claude', stage: 'http_guard',
-  }).ok, true, 'claude\'s outer guard cannot see sub vs main yet and admits provisionally');
+    sessionId: capability, role: 'main', providerId: 'provider-sub',
+  }).code, 'provider_route_mismatch');
   assert.equal(runtime.snapshot('session-1').outcome, 'succeeded',
     'background admission never reopens the attempt');
 
@@ -1129,4 +1128,31 @@ test('background admission ends with a cancelled turn, a moved spawn contract or
   const perTurnCapability = runtime.proxySessionId(perTurn);
   runtime.finishAttempt(perTurn, { outcome: 'succeeded' });
   assert.equal(sub(perTurnCapability), 'proxy_attempt_not_running');
+});
+
+test('background traffic on the main route never holds the next turn or binds to an attempt', () => {
+  const { runtime } = harness();
+  const residentRoute = {
+    cli: 'claude', protocol: 'anthropic', providerRevision: 'claude-revision', spawnKey: 'argv-model-a',
+  };
+  const attempt = runtime.beginAttempt(route(residentRoute));
+  const capability = runtime.proxySessionId(attempt);
+  runtime.finishAttempt(attempt, { outcome: 'succeeded' });
+
+  const request = { sessionId: capability, role: 'main', providerId: 'provider-a' };
+  assert.equal(runtime.onProxyActivity({ ...request, phase: 'request' }).sessionId, 'session-1',
+    'the background request is still reported to the TaskRun fence');
+  assert.equal(runtime.snapshot('session-1').outcome, 'succeeded', 'no poisoning, no reopening');
+  const usage = runtime.attributeProxyUsage({ ...request, eventId: 'bg-usage' });
+  assert.equal(usage.routeAttribution, 'ambiguous');
+  assert.equal(usage.routeAttemptId, undefined);
+  assert.equal(usage.producerBound, true);
+
+  const next = runtime.beginAttempt(route({ ...residentRoute, turnId: 'turn-2' }));
+  assert.equal(next.outcome, 'running', 'an in-flight background request does not hold the next turn');
+  assert.equal(runtime.onProxyActivity({ ...request, phase: 'end' }).sessionId, 'session-1',
+    'the late end drains the background ledger, not the new turn');
+  runtime.onProxyActivity({ ...request, phase: 'request' });
+  assert.equal(runtime.onProxyActivity({ ...request, phase: 'end' }).routeAttemptId, next.routeAttemptId,
+    'once a turn runs again, main-route traffic is that turn\'s own');
 });

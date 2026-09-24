@@ -809,21 +809,17 @@ function createProviderAttemptRuntime(options = {}) {
   }
 
   // A resident child outlives its turn, and so does the background work it
-  // started: a run_in_background Task/Workflow subagent keeps calling its sub
-  // route after the main result has closed the attempt. While the capability is
-  // still the current one (same spawn contract, no newer attempt, the turn ended
-  // cleanly) such a sub request is the same warm process finishing its own work,
-  // not a replay, so it is admitted without reopening the attempt. The main
-  // route stays closed between turns — a main request there would be an
-  // unattributed turn — and a cancelled or failed turn revokes the background
-  // too. Claude's outer HTTP guard cannot yet tell sub from main (the sub
-  // provider is decoded from the body later), so it admits provisionally and
-  // getProvider makes the authoritative role decision.
-  function backgroundLingers(record, input, role) {
-    if (record.outcome !== 'succeeded' || !record.spawnKey || !isResident(record.cli)) return false;
-    if (role === 'sub') return true;
-    return role === 'main' && clean(input.stage) === 'http_guard'
-      && clean(input.protocol).toLowerCase() === 'claude';
+  // started: a run_in_background Task/Workflow subagent keeps calling the proxy
+  // after the main result has closed the attempt — on the sub route when a
+  // subagent provider is configured, on the main route when it is not. While
+  // the capability is still the current one (same spawn contract, no newer
+  // attempt, the turn ended cleanly) that traffic is the same warm process
+  // finishing its own work, not a replay, so it is admitted without reopening
+  // the attempt and is accounted as background: it never becomes a main
+  // producer, so it cannot hold the next turn, and its usage is never bound to
+  // an attempt. A cancelled or failed turn revokes the background too.
+  function backgroundLingers(record) {
+    return !!(record && record.outcome === 'succeeded' && record.spawnKey && isResident(record.cli));
   }
 
   function authorizeProxyRequest(input = {}) {
@@ -843,7 +839,11 @@ function createProviderAttemptRuntime(options = {}) {
     };
     if (!sessionId || !context.exact) return reject('proxy_route_capability_mismatch');
     const role = clean(input.role || input.roleKind || 'main').toLowerCase();
-    if (record && record.outcome !== 'running' && backgroundLingers(record, input, role)) {
+    if (backgroundLingers(record)) {
+      if (role === 'main' && clean(input.providerId)
+          && clean(input.providerId) !== record.providerId) {
+        return reject('provider_route_mismatch');
+      }
       if (role !== 'main' && clean(input.providerId)
           && !record.allowedSubProviderIds.includes(clean(input.providerId))) {
         return reject('provider_subroute_not_allowed');
@@ -926,7 +926,8 @@ function createProviderAttemptRuntime(options = {}) {
     const { sessionId, record } = context;
     const key = nonMainProducerKey(context, event, role);
     if (phase === 'request') {
-      if (role !== 'aux' && (!context.exact || !record || record.outcome !== 'running')) return null;
+      if (role !== 'aux' && (!context.exact || !record
+          || (record.outcome !== 'running' && !backgroundLingers(record)))) return null;
       endedNonMainProxyProducers.delete(key);
       const producer = nonMainProxyProducers.get(key);
       if (producer) {
@@ -979,6 +980,13 @@ function createProviderAttemptRuntime(options = {}) {
       return null;
     }
     if (role !== 'main') return record && record.outcome === 'running' ? snapshot(record) : null;
+    // A background request may end after the next turn started; its end still
+    // belongs to the background ledger unless a main request is in flight.
+    const backgroundOpen = nonMainProxyProducers.has(nonMainProducerKey(context, event, 'background'));
+    if (phase === 'request' ? backgroundLingers(record)
+      : backgroundOpen && !(proxyProducers.get(sessionId)?.count > 0)) {
+      return onNonMainProxyActivity(context, event, 'background', phase);
+    }
     if (phase === 'request') {
       endedProxyProducers.delete(sessionId);
       const producer = proxyProducers.get(sessionId);
@@ -1058,7 +1066,9 @@ function createProviderAttemptRuntime(options = {}) {
   function attributeProxyUsage(event = {}) {
     const context = proxyContext(event);
     const sessionId = context.sessionId;
-    const role = clean(event.role || event.roleKind).toLowerCase();
+    let role = clean(event.role || event.roleKind).toLowerCase();
+    if (role === 'main' && context.exact && backgroundLingers(context.record)
+        && !boundProxyAttempt(event) && !endedProxyProducers.has(sessionId)) role = 'background';
     // A warm Claude process may finish its main result while a background/sub
     // request is still pending. The process capability proves the real session,
     // but not which logical turn owns that non-main request, so never fabricate a

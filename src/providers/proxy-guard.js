@@ -88,7 +88,7 @@ function createProviderProxyGuard(options = {}) {
     try {
       decision = authorize({
         protocol, providerId: route.providerId, sessionId: route.sessionId,
-        role: route.role, method: clean(req && req.method).toUpperCase(), stage: 'http_guard',
+        role: route.role, method: clean(req && req.method).toUpperCase(),
       });
     } catch (_) {
       decision = null;
