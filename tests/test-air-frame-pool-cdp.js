@@ -148,6 +148,9 @@ test('Air keeps the recently opened conversations warm instead of reloading them
   const screenshotDir = process.env.MULTICC_AIR_FRAME_POOL_QA_DIR || path.join(os.tmpdir(), 'multicc-air-frame-pool-qa');
   await withCdpHarness({ routes, screenshotDir }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
+    // 侧栏「最近任务」只列未读 + 打开过的（不再拿当前目录的任务填空位）：把这些任务
+    // 预先记成「打开过」，顺序就是 TASKS 的顺序。只在还没记过时写，后面的点击照常改它。
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.getItem('air:recent-tasks')||localStorage.setItem('air:recent-tasks',${JSON.stringify(JSON.stringify(TASKS.map(task => task.id)))})` });
     await page.navigate('/air.html?dir=d1&task=tsk_a');
     assert.ok(await page.waitFor(frameReady('task-a')), '打开 A 时对话帧要立起来');
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent === '任务 A'`), '页头要报出当前任务');
@@ -252,6 +255,9 @@ test('Air mounts a brand new conversation frame inside the content area, never o
 
   await withCdpHarness({ routes, screenshotDir }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 393, height: 852, deviceScaleFactor: 3, mobile: true });
+    // 侧栏「最近任务」只列未读 + 打开过的（不再拿当前目录的任务填空位）：把这些任务
+    // 预先记成「打开过」，顺序就是 TASKS 的顺序。只在还没记过时写，后面的点击照常改它。
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.getItem('air:recent-tasks')||localStorage.setItem('air:recent-tasks',${JSON.stringify(JSON.stringify(TASKS.map(task => task.id)))})` });
     await page.navigate('/air.html?dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('#tasks button').length === ${TASKS.length}`), '侧栏列出任务');
 
