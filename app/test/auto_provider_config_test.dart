@@ -315,4 +315,122 @@ void main() {
       );
     },
   );
+
+  // 借道线路（没有 modelOptions / aliasMap 的中继）以前在 App 里是个空白文本框，
+  // 手打才能填；Web 已改为候选里给本机 Claude 目录。这条锁定 App 的同等行为，
+  // 并确保「自定义…」这条手打路径没被下拉吃掉。
+  testWidgets(
+    'a borrowed Claude line suggests the local catalog and still allows custom ids',
+    (tester) async {
+      AIConfigResult? result;
+      const providers = <Map<String, dynamic>>[
+        {
+          'id': 'relay',
+          'name': 'Leo-Claude 借道',
+          'protocol': 'anthropic',
+          'isOfficial': false,
+        },
+        {
+          'id': 'managed',
+          'name': 'Managed backup',
+          'protocol': 'anthropic',
+          'isOfficial': false,
+          'modelOptions': ['model-a'],
+        },
+      ];
+      const pool = SessionProviderSelection(
+        protocol: 'anthropic',
+        candidates: [
+          SessionProviderCandidate(
+            providerId: 'relay',
+            model: 'relay-model-x1',
+            priority: 1,
+          ),
+          SessionProviderCandidate(
+            providerId: 'managed',
+            model: 'model-a',
+            priority: 2,
+          ),
+        ],
+        maxAttempts: 2,
+        sticky: true,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => ElevatedButton(
+                key: const Key('open-borrowed-auto-config'),
+                onPressed: () async {
+                  result = await showModalBottomSheet<AIConfigResult>(
+                    context: context,
+                    isScrollControlled: true,
+                    builder: (_) => const AIConfigSheet(
+                      cli: SessionCli.claude,
+                      providers: providers,
+                      provider: 'relay',
+                      providerSelection: pool,
+                      model: '',
+                      effort: 'medium',
+                    ),
+                  );
+                },
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('open-borrowed-auto-config')));
+      await tester.pumpAndSettle();
+
+      // 配置里已有的自定义 id 不会丢：落到「自定义…」并回显原值。
+      expect(
+        find.byKey(const Key('auto-candidate-model-custom-relay')),
+        findsOneWidget,
+      );
+      expect(find.text('relay-model-x1'), findsOneWidget);
+
+      final relaySelect = find.byKey(
+        const Key('auto-candidate-model-relay'),
+      );
+      await tester.ensureVisible(relaySelect);
+      await tester.tap(relaySelect);
+      await tester.pumpAndSettle();
+      expect(find.text('claude-opus-5'), findsWidgets);
+      expect(find.text('claude-sonnet-5'), findsWidgets);
+      expect(find.text('自定义…'), findsWidgets);
+
+      await tester.tap(find.text('claude-opus-5').last);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('auto-candidate-model-custom-relay')),
+        findsNothing,
+      );
+
+      // 自带 modelOptions 的行不受影响，菜单里不该混入本机 Claude 目录。
+      final managedSelect = find.byKey(
+        const Key('auto-candidate-model-managed'),
+      );
+      await tester.ensureVisible(managedSelect);
+      await tester.tap(managedSelect);
+      await tester.pumpAndSettle();
+      expect(find.text('model-a'), findsWidgets);
+      expect(find.text('claude-sonnet-5'), findsNothing);
+      await tester.tap(find.text('model-a').last);
+      await tester.pumpAndSettle();
+
+      final save = find.widgetWithText(ElevatedButton, '保存');
+      await tester.ensureVisible(save);
+      await tester.tap(save);
+      await tester.pumpAndSettle();
+
+      String? modelOf(String providerId) => result?.providerSelection?.candidates
+          .firstWhere((candidate) => candidate.providerId == providerId)
+          .model;
+      expect(modelOf('relay'), 'claude-opus-5');
+      expect(modelOf('managed'), 'model-a');
+    },
+  );
 }
