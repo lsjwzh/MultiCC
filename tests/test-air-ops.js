@@ -57,6 +57,7 @@ class FakeNode {
     this._text = '';
     this.onclick = null;
     this.onkeydown = null;
+    this._listeners = new Map();
     this._context = { fillStyle: '', fillRect() {} };
   }
 
@@ -83,6 +84,22 @@ class FakeNode {
     this.children.forEach(child => { child.parentNode = null; });
     this.children = [];
     nodes.forEach(node => this.appendChild(node));
+  }
+
+  addEventListener(type, handler) {
+    const handlers = this._listeners.get(type) || [];
+    handlers.push(handler);
+    this._listeners.set(type, handlers);
+  }
+
+  removeEventListener(type, handler) {
+    const handlers = this._listeners.get(type) || [];
+    this._listeners.set(type, handlers.filter(value => value !== handler));
+  }
+
+  dispatchEvent(event) {
+    for (const handler of this._listeners.get(event?.type) || []) handler.call(this, event);
+    return true;
   }
 
   getContext() { return this._context; }

@@ -380,10 +380,11 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 .side-more > summary { padding: 7px 9px; color: #566d85; border: 1px solid transparent; border-radius: 11px; font-size: 11px; cursor: pointer; }
 .side-more > summary:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .side-more[open] > summary { color: #0f63c6; border-color: #d7e7f8; background: rgba(255, 255, 255, .9); }
-/* 语言切换：贴在版本行下面那条底栏里，样式照着 .side-more > summary 抄 —— 它
-   和「更多与系统」是同一层的入口，长得不该像第五个设置按钮。文案不写死在这里：
-   i18n.js 的 .lang-toggle 规则会把它刷成 t('language')（中/EN ↔ EN/中）。 */
-.side-lang { padding: 7px 9px; color: #566d85; border: 1px solid transparent; border-radius: 11px; font-size: 11px; text-align: left; cursor: pointer; }
+/* 版本检查 + 语言共用一行。版本读数吃剩余宽度，语言只占自己那颗短按钮；文案仍
+   由 i18n.js 的 .lang-toggle 刷成「中/EN ↔ EN/中」。 */
+.side-version-line { min-width: 0; display: flex; align-items: stretch; gap: 5px; margin-top: 4px; }
+.side-version-line .ops-version { min-width: 0; flex: 1; margin-top: 0; }
+.side-lang { flex: 0 0 auto; align-self: stretch; min-width: 50px; padding: 6px 7px; color: #566d85; border: 1px solid transparent; border-radius: 10px; font-size: 11px; text-align: center; cursor: pointer; }
 .side-lang:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .side-more-body { display: grid; gap: 6px; padding: 6px 0 2px; }
 #air-ops-status:empty { display: none; }
