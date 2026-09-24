@@ -393,13 +393,17 @@
       const protocol = autoApi.protocolFromValue(providerValue);
       autoHost.hidden = !protocol;
       if (!protocol) return;
-      autoEditor = autoApi.mount({
+      const mounted = autoApi.mount({
         document, container: autoHost, providers, protocol,
         initialSelection: config.providerSelection?.mode === 'auto' && config.providerSelection.protocol === protocol
           ? config.providerSelection : null,
         formatProvider: provider => `${provider.name || provider.id}${provider.model ? ` · ${provider.model}` : ''}`,
         // 池子里换人会让「随主」的模型候选跟着换 —— 尾巴得重算。
         onChange: () => refreshSubLine(),
+      });
+      autoEditor = mounted;
+      aiApi.checkRoutingKeyConfigured().then(routingKeyConfigured => {
+        if (autoEditor === mounted) mounted.setContext({ routingKeyConfigured });
       });
     }
 
