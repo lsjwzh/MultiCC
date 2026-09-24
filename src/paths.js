@@ -127,6 +127,9 @@ function createPaths({ dataDir } = {}) {
     taskBoardFile: path.join(root, 'task_board.json'),
     taskRunDbFile: path.join(root, 'task-runs.sqlite'),
     taskShellDbFile: path.join(root, 'task-shells.sqlite'),
+    // Full-text index over chat_history (src/search/index-store.js). Derived data:
+    // deleting it only costs the next rebuild.
+    searchIndexDbFile: path.join(root, 'search-index.sqlite'),
     // Outward task short-code registry (taskId→#CODE), guaranteeing the 4-char
     // display handle is unique fleet-wide. See src/classify/task-short-code.js.
     taskShortCodesFile: path.join(root, 'task-short-codes.json'),
