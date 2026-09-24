@@ -107,7 +107,7 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     const paths = createPaths({ dataDir });
     const sessions = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
     const recordA = sessions.find(s => s.id === first.sessionId), recordB = sessions.find(s => s.id === second.sessionId);
-    assert.equal(recordB.autoCommit, false);
+    assert.equal(recordB.autoCommit, true, 'Air 新任务跟普通会话一样默认开自动提交');
     assert.notEqual(recordA.worktreePath, recordB.worktreePath);
     assert.notEqual(recordA.cliSessionId, recordB.cliSessionId);
     assert.equal(recordB.taskBoundTaskId, second.taskId);
