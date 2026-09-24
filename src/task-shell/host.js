@@ -173,12 +173,12 @@ function createTaskShellHost(deps) {
         if (!dir) throw failure('directory_missing');
         const owner = runtime.ownerOf(task);
         const result = await deps.createSessionRecord({ ...source, dir, id: task.sessionId,
-          kind: 'chat', label: task.title, taskBoundTaskId: task.id, autoCommit: false,
+          kind: 'chat', label: task.title, taskBoundTaskId: task.id,
           workspaceOwnerSessionId: owner && !owner.standalone && !task.taskFirst ? owner.sourceSessionId : null, workspaceBaseCommit: task.forkBaseline?.commit || null,
           persistence: 'required', persistenceSource: 'task-shell.create' });
         if (!result.ok) return result;
         const record = deps.records.get(task.sessionId);
-        if (record.taskBoundTaskId !== task.id || record.dirId !== task.dirId || record.autoCommit !== false) throw failure('execution_identity_conflict');
+        if (record.taskBoundTaskId !== task.id || record.dirId !== task.dirId) throw failure('execution_identity_conflict');
         if (record.workspaceState === 'planned') return { ok: true, baseline: null };
         const git = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: record.worktreePath, timeout: 15000 });
         return { ok: true, baseline: { commit: git.stdout.trim(), branch: record.branch, baseBranch: dir.baseBranch, worktreePath: record.worktreePath } };
