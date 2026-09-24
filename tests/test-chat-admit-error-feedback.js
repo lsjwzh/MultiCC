@@ -33,6 +33,27 @@ function makeEngine({ hostAdmit } = {}) {
   return { engine, broadcasts, warns };
 }
 
+test('task-shell admission can prepare Jev with the persisted session before its turn starts', async () => {
+  const session = { id: 's1', kind: 'chat', cli: 'codex', providerSelection: { mode: 'auto' } };
+  const calls = [];
+  const engine = createChatTurnEngine({
+    getExperimentalTuiChatRuntime: () => null,
+    persistedSessions: new Map([['s1', session]]),
+    chatSessions: new Map(),
+    autoProviderRuntime: { prepareAdmission: args => { calls.push(args); return Promise.resolve(); } },
+    logger: { warn: noop, info: noop, error: noop }, chatBroadcast: noop,
+    cancelClassify: noop, emitTurnOutcome: noop, classifyTurnEnd: noop,
+  });
+  await engine.prepareAutoProviderAdmission('s1', 'Fix a typo', 'receipt-1');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].session, session);
+  assert.equal(calls[0].text, 'Fix a typo');
+  assert.equal(calls[0].sessionId, 's1');
+  assert.equal(calls[0].clientMsgId, 'receipt-1');
+  assert.equal(typeof calls[0].providers.listProviders, 'function');
+  assert.equal(engine.prepareAutoProviderAdmission('missing', 'Fix a typo', 'receipt-2'), null);
+});
+
 test('admitChatWork with no work host emits an error frame and returns scheduler_not_ready', async () => {
   const broadcasts = [];
   const engine = createChatTurnEngine({

@@ -44,6 +44,40 @@ test('R01 R02: idle and occupied work both continue the server-authoritative cur
   assert.equal(f.creations.length, 1);
 });
 
+test('task-first work awaits difficulty routing before delivery and fails open on evaluator errors', async t => {
+  let entered, release;
+  const arrived = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  const f = fixture(t, { getDirectory: id => id === 'd1' ? { id } : null,
+    prepareAdmission: async (sessionId, text, clientMsgId) => {
+    calls.push({ sessionId, text, clientMsgId });
+    entered();
+    await gate;
+  } });
+  const created = await f.runtime.createStandalone({ dirId: 'd1', title: 'Simple work', cli: 'codex', clientMsgId: 'create-simple' });
+  const pending = f.runtime.sendExplicit(created.shellId, input('simple-work'), { taskId: created.taskId, taskStart: true });
+  await arrived;
+  assert.equal(f.sends.length, 0, 'the turn must not start before the Jev verdict');
+  release();
+  const delivered = await pending;
+  assert.equal(f.sends.length, 1);
+  assert.deepEqual(calls, [{ sessionId: delivered.sessionId, text: 'simple-work', clientMsgId: delivered.receiptId }]);
+
+  const fallback = fixture(t, { getDirectory: id => id === 'd1' ? { id } : null,
+    prepareAdmission: () => { throw new Error('gateway unavailable'); } });
+  const other = await fallback.runtime.createStandalone({ dirId: 'd1', title: 'Fallback work', cli: 'codex', clientMsgId: 'create-fallback' });
+  const result = await fallback.runtime.sendExplicit(other.shellId, input('still-deliver'), { taskId: other.taskId, taskStart: true });
+  assert.equal(result.ok, true);
+  assert.equal(fallback.sends.length, 1);
+
+  let legacyPrepares = 0;
+  const legacy = fixture(t, { prepareAdmission: () => { legacyPrepares += 1; } });
+  await legacy.runtime.send(legacy.a.id, input('legacy-work'));
+  assert.equal(legacy.sends.length, 1);
+  assert.equal(legacyPrepares, 0, 'legacy chat shells already prepared on their WebSocket path');
+});
+
 test('cross-shell links are read-only references; input remains owned by its source shell', async t => {
   const f = fixture(t);
   const first = await f.runtime.send(f.a.id, input('first'));

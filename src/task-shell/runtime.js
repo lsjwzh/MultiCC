@@ -559,6 +559,16 @@ function createTaskShellRuntime(ports) {
         result = await dispatchReceipt(receipt);
       } else {
         const metadata = receipt.taskMetadata || {};
+        // Task-first HTTP delivery bypasses the chat WebSocket admission path.
+        // Older chat shells already pass through that path before landing here;
+        // preparing those again would make two Jev calls for one message.
+        // Jev must finish before the synchronous turn route is selected, just
+        // as it does for a direct chat message. A failed evaluation is a
+        // fail-open optimisation, never a reason to lose the task message.
+        if (p.intent === 'work' && task.taskFirst === true && typeof ports.prepareAdmission === 'function') {
+          try { await ports.prepareAdmission(task.sessionId, p.text, receipt.id); }
+          catch (_) { /* the routing runtime falls back to onUnknown */ }
+        }
         receipt.status = 'delivering'; store.set('receipt', receipt.id, receipt);
         result = await send(task.sessionId, p.text, {
           taskId: task.id, taskStart: receipt.taskIdentityLocked ? metadata.taskStart !== false : true,
