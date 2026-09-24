@@ -1670,7 +1670,7 @@ async function loadSessionModel() {
   _sessionModel = info.model || ''; _sessionEffectiveModel = info.effectiveModel || info.model || '';
   _sessionEffort = info.effort || ''; _sessionEffectiveEffort = info.effectiveEffort || _sessionEffort || defaultEffortForCurrentCli();
   safe('model-btn', updateModelBtn); safe('effort-btn', updateEffortBtn);
-  _sessionAutoCommit = !!info.autoCommit;
+  _sessionAutoCommit = info.autoCommit !== false; // 缺字段 = 开，和 create-record 同一口径
   safe('auto-commit-btn', updateAutoCommitBtn);
   // History reload attaches the per-turn checkbox before session info lands.
   // Catch it up to the authoritative session default unless the user already
@@ -2234,7 +2234,7 @@ autoCommitBtn?.addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) { addSystemMsg('保存失败：' + chatApi.errorText(chatApi.errorFromPayload(data, { response: res }))); return; }
-    _sessionAutoCommit = !!data.autoCommit;
+    _sessionAutoCommit = data.autoCommit !== false;
     updateAutoCommitBtn();
     syncAutoCommitChoice(true);
     addSystemMsg(_sessionAutoCommit ? '✓ 已开启「本轮执行成功后自动提交合并」，每轮执行成功后将自动 commit 并合并回基分支' : '✓ 已关闭「本轮执行成功后自动提交合并」');
