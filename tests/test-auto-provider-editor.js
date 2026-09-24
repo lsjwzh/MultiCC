@@ -613,3 +613,50 @@ test('更换 key opens the form on a connected key and closes it again', async (
   $('jev-key-change').emit('click');
   assert.equal($('jev-form').style.display, 'none');
 });
+
+test('a borrowed line with no catalog of its own offers models instead of a dead select', async () => {
+  // 借道线路（导入的 Claude 中继）不声明任何模型，它的 Auto 行下拉曾只剩「Provider 默认」，
+  // 于是整条 Auto 选不出模型；候选补的是本机 CLI 目录，不代表对端账号的权限。
+  const catalog = ['claude-opus-5', 'claude-sonnet-5'];
+  const pool = [
+    { id: 'relay', name: 'Leo-Claude', protocol: 'anthropic' },
+    { id: 'managed-a', name: 'Managed A', protocol: 'anthropic', model: 'model-a' },
+  ];
+  const { document, control, row } = mountEditor({ providers: pool, loadModels: async () => catalog });
+  const select = id => row(id).querySelector('.multicc-auto-editor-model');
+  const field = id => row(id).querySelector('.multicc-auto-editor-model-custom');
+  const values = id => select(id).options.map(option => option.value);
+
+  // 目录到达前就是这样，也就是被报告的现象。
+  assert.deepEqual(values('relay'), ['', '__custom__']);
+  assert.deepEqual(values('managed-a'), ['', 'model-a', '__custom__'], '一条自己声明了模型的线路不动它');
+  assert.ok(select('relay').parentNode.classList.contains('multicc-auto-editor-model-field'),
+    '下拉和自定义输入共用同一个栅格单元');
+  const css = document.getElementById('multicc-auto-provider-editor-style').textContent;
+  assert.match(css, /\.multicc-auto-editor \.multicc-auto-editor-model-field\{grid-area:model;/,
+    '栅格单元挂在包装层上');
+  assert.doesNotMatch(css, /\.multicc-auto-editor \.multicc-auto-editor-model\{grid-area:model;/,
+    '下拉自己不再占栅格单元，否则自定义输入会被挤到另一列');
+  assert.match(css, /-pool :is\([^)]*\.multicc-auto-editor-model-field[^)]*\)\{display:none\}/,
+    '未启用线路的池子里，包装层和下拉一起隐藏');
+
+  await flush();
+
+  // 目录到达后候选补上，但已经选中的值不变。
+  assert.deepEqual(values('relay'), ['', 'claude-opus-5', 'claude-sonnet-5', '__custom__']);
+  assert.equal(select('relay').value, '');
+  assert.deepEqual(values('managed-a'), ['', 'model-a', '__custom__'],
+    '有自己目录的线路不会被本机目录覆盖');
+
+  // 「自定义…」露出输入框，手填的 id 进配置。
+  assert.equal(field('relay').style.display, 'none');
+  select('relay').value = '__custom__';
+  select('relay').emit('change');
+  assert.equal(field('relay').style.display, '');
+  field('relay').value = 'claude-opus-5-20260101';
+  field('relay').emit('input');
+  const written = control.read({ remember: false });
+  assert.equal(written.ok, true);
+  assert.equal(written.value.candidates.find(candidate => candidate.providerId === 'relay').model,
+    'claude-opus-5-20260101');
+});
