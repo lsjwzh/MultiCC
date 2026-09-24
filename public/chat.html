@@ -648,13 +648,10 @@
     .msg-usage .u-in { color: var(--chat-blue, #79c0ff); }
     .msg-usage .u-out { color: var(--chat-success, #3fb950); }
     .msg-usage .u-cache { color: var(--chat-warning, #d29922); }
-    /* 主/辅 split badge — separated from in/out/cache by a leading divider. */
-    .msg-usage .u-role {
-      color: var(--chat-muted, #8b949e);
-      padding-left: 10px;
-      border-left: 1px solid var(--chat-soft, #21262d);
-      cursor: help;
-    }
+    /* One row per role (主, and 辅 only for a separately configured sub model):
+       fresh ↑入/↓出 then ♻读/♻写 cache. Each row takes the full width. */
+    .msg-usage .u-row { display: flex; flex-wrap: wrap; gap: 4px 10px; width: 100%; }
+    .msg-usage .u-role { color: var(--chat-muted, #8b949e); font-weight: 600; }
     /* 省主模型 badge — sub-role 替主模型处理的 token 量（四桶总额）。
        深绿 + 浅绿药丸，与 ↓出(var(--chat-success, #3fb950)) 区分，提示这是个正向衍生指标。 */
     .msg-usage .u-saved {
