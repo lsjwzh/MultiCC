@@ -14,6 +14,12 @@
   const MAX_ATTEMPTS = 4;
   const AUTO_PREFIX = '__auto__:';
   const STYLE_ID = 'multicc-auto-provider-editor-style';
+  // 候选池预设：每次新建 Auto Provider 都要重新勾一遍候选、调一遍优先级太费事，
+  // 所以可以把配好的池子存成具名预设，也会自动记住最近真正用过的几份。存在浏览器
+  // localStorage 里 —— 同源的 chat 弹窗、manage 任务板、Air 任务配置共用一份。
+  const PRESET_KEY = 'multicc.autoProvider.presets.v1';
+  const MAX_NAMED_PRESETS = 20;
+  const MAX_RECENT_PRESETS = 5;
 
   // 文案走页面上的全局 t()（i18n.js）：这个编辑器同时挂在 chat 的 AI 配置弹窗、
   // manage 任务板和 Air 的任务配置里，语言得跟着页面走。没有 t()（Node 单测、
@@ -195,6 +201,56 @@
     });
   }
 
+  function defaultPresetStore() {
+    try {
+      const storage = typeof window !== 'undefined' && window.localStorage;
+      if (!storage) return null;
+      return {
+        load() { try { return JSON.parse(storage.getItem(PRESET_KEY) || '[]'); } catch (_) { return []; } },
+        save(list) { try { storage.setItem(PRESET_KEY, JSON.stringify(list)); } catch (_) {} },
+      };
+    } catch (_) { return null; }
+  }
+
+  function presetSignature(value) {
+    return JSON.stringify([value.protocol, (value.candidates || [])
+      .map(candidate => [candidate.providerId, candidate.model || null, candidate.priority])]);
+  }
+
+  // 存进去的只是 serializeDraft 的结果，不含任何密钥；跨上游许可不随预设走 ——
+  // 套用后仍要重新勾确认，风险提示不能被一份旧预设静默跳过。
+  function normalizePresets(raw) {
+    return (Array.isArray(raw) ? raw : []).filter(item => item && typeof item === 'object'
+      && PROTOCOL_SET.has(item.protocol) && Array.isArray(item.candidates) && item.candidates.length >= 2
+      && typeof item.name === 'string');
+  }
+
+  function rememberPreset(list, value, { name = '', recent = false, now = Date.now() } = {}) {
+    const signature = presetSignature(value);
+    const entry = {
+      id: `p${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      name: String(name || '').trim().slice(0, 60),
+      recent,
+      protocol: value.protocol,
+      candidates: value.candidates.map(({ providerId, model, priority }) => ({ providerId, model: model || null, priority })),
+      maxAttempts: value.maxAttempts,
+      sticky: value.sticky !== false,
+      savedAt: now,
+    };
+    const current = normalizePresets(list);
+    if (recent) {
+      // 同一份池子已经有具名预设或最近记录：只把它顶到最前，不再多存一条。
+      const existing = current.find(item => presetSignature(item) === signature);
+      if (existing) return [{ ...existing, savedAt: now }, ...current.filter(item => item !== existing)];
+      const recents = [entry, ...current.filter(item => item.recent)].slice(0, MAX_RECENT_PRESETS);
+      return [...current.filter(item => !item.recent), ...recents];
+    }
+    const others = current.filter(item => presetSignature(item) !== signature
+      && !(item.name && item.name === entry.name && !item.recent));
+    const named = [entry, ...others.filter(item => !item.recent)].slice(0, MAX_NAMED_PRESETS);
+    return [...named, ...others.filter(item => item.recent)];
+  }
+
   function ensureStyles(document) {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement('style');
@@ -212,6 +268,11 @@
       .multicc-auto-editor-warning label{display:flex;align-items:flex-start;gap:6px;margin-top:6px;color:var(--text,#c9d1d9)}
       .multicc-auto-editor-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--muted,#8b949e)}
       .multicc-auto-editor-controls select{width:auto;padding:3px 6px}
+      .multicc-auto-editor-presets{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
+      .multicc-auto-editor-presets select{flex:1 1 180px;width:auto}
+      .multicc-auto-editor-presets input[type=text]{box-sizing:border-box;flex:1 1 120px;min-width:0;background:var(--well,#0d1117);color:var(--text,#c9d1d9);border:1px solid var(--line-strong,#30363d);border-radius:5px;padding:5px}
+      .multicc-auto-editor-presets button{border:1px solid var(--line-strong,#30363d);border-radius:5px;background:transparent;color:var(--text,#c9d1d9);padding:4px 9px;font-size:11px;cursor:pointer}
+      .multicc-auto-editor-preset-status{flex-basis:100%;font-size:11px;color:var(--muted,#8b949e)}
       @media (max-width:640px){
         .multicc-auto-editor-row{grid-template-columns:22px minmax(0,1fr);gap:6px 8px;padding:9px 0}
         .multicc-auto-editor-name{white-space:normal;overflow:visible}
@@ -243,6 +304,8 @@
     const formatProvider = typeof options.formatProvider === 'function'
       ? options.formatProvider : provider => provider.name || provider.id;
     const onChange = typeof options.onChange === 'function' ? options.onChange : null;
+    const presetStore = options.presetStore === undefined ? defaultPresetStore() : options.presetStore;
+    const now = typeof options.now === 'function' ? options.now : () => Date.now();
 
     container.classList.add('multicc-auto-editor');
     const title = element(document, 'div', 'multicc-auto-editor-title',
@@ -281,7 +344,22 @@
     sticky.className = 'multicc-auto-editor-sticky';
     stickyLabel.append(sticky, document.createTextNode(tt('autoEditorStickySuffix', ' 成功后优先沿用')));
     controls.append(maxLabel, stickyLabel);
-    container.replaceChildren(title, help, list, error, warning, controls);
+    const presetBar = element(document, 'div', 'multicc-auto-editor-presets');
+    const presetSelect = document.createElement('select');
+    presetSelect.className = 'multicc-auto-editor-preset-select';
+    presetSelect.setAttribute('aria-label', tt('autoEditorPresetPlaceholder', '套用已保存的预设…'));
+    const presetName = document.createElement('input');
+    presetName.type = 'text';
+    presetName.className = 'multicc-auto-editor-preset-name';
+    presetName.placeholder = tt('autoEditorPresetNamePlaceholder', '预设名称（可选）');
+    const presetSave = element(document, 'button', 'multicc-auto-editor-preset-save', tt('autoEditorPresetSave', '保存为预设'));
+    presetSave.type = 'button';
+    const presetDelete = element(document, 'button', 'multicc-auto-editor-preset-delete', tt('autoEditorPresetDelete', '删除预设'));
+    presetDelete.type = 'button';
+    const presetStatus = element(document, 'div', 'multicc-auto-editor-preset-status');
+    presetBar.append(presetSelect, presetDelete, presetName, presetSave, presetStatus);
+    if (!presetStore) presetBar.style.display = 'none';
+    container.replaceChildren(title, help, presetBar, list, error, warning, controls);
 
     function rows() {
       return [...list.querySelectorAll('.multicc-auto-editor-row')];
@@ -342,8 +420,89 @@
       }
     }
 
+    function loadPresets() {
+      return presetStore ? normalizePresets(presetStore.load()) : [];
+    }
+
+    function storePresets(list) {
+      if (presetStore) presetStore.save(list);
+    }
+
+    function presetLabel(preset) {
+      const byId = new Map(providers.map(provider => [String(provider.id), provider]));
+      const chain = preset.candidates.slice().sort((a, b) => a.priority - b.priority)
+        .map(candidate => byId.get(String(candidate.providerId))?.name || candidate.providerId).join(' → ');
+      const head = preset.recent ? tt('autoEditorPresetRecent', '最近使用') : preset.name || chain;
+      return preset.recent || preset.name ? `${head} · ${chain}` : head;
+    }
+
+    // 只列当前协议、且里面至少还有两个 Provider 仍在本协议池里的预设。
+    function usablePresets() {
+      const pool = new Set(providersForProtocol(providers, protocol).map(provider => String(provider.id)));
+      return loadPresets().filter(preset => preset.protocol === protocol
+        && preset.candidates.filter(candidate => pool.has(String(candidate.providerId))).length >= 2);
+    }
+
+    function renderPresets() {
+      const presets = protocol ? usablePresets() : [];
+      const placeholder = element(document, 'option', '', presets.length
+        ? tt('autoEditorPresetPlaceholder', '套用已保存的预设…')
+        : tt('autoEditorPresetEmpty', '还没有保存过预设'));
+      placeholder.value = '';
+      presetSelect.replaceChildren(placeholder, ...presets.map(preset => {
+        const option = element(document, 'option', '', presetLabel(preset));
+        option.value = preset.id;
+        return option;
+      }));
+      presetSelect.value = '';
+      presetSelect.disabled = !presets.length;
+      presetDelete.disabled = true;
+    }
+
+    function applyPreset(id) {
+      const preset = loadPresets().find(item => item.id === id);
+      if (!preset) return false;
+      initialSelection = {
+        version: 1, mode: 'auto', protocol: preset.protocol,
+        candidates: preset.candidates.map(candidate => ({ ...candidate, enabled: true })),
+        maxAttempts: preset.maxAttempts, sticky: preset.sticky !== false, allowCrossTrust: false,
+      };
+      render();
+      presetSelect.value = id;
+      presetDelete.disabled = false;
+      presetStatus.textContent = tt('autoEditorPresetApplied', '已套用预设，确认无误后保存即可。');
+      notify();
+      return true;
+    }
+
+    function savePreset() {
+      const result = controller.read({ remember: false });
+      if (!result.ok || !result.value) return result;
+      const name = presetName.value.trim();
+      storePresets(rememberPreset(loadPresets(), result.value, { name, now: now() }));
+      presetName.value = '';
+      renderPresets();
+      presetStatus.textContent = tt('autoEditorPresetSaved', '已保存为预设。');
+      return result;
+    }
+
+    presetSelect.addEventListener('change', () => {
+      presetStatus.textContent = '';
+      if (presetSelect.value) applyPreset(presetSelect.value);
+      else presetDelete.disabled = true;
+    });
+    presetSave.addEventListener('click', savePreset);
+    presetDelete.addEventListener('click', () => {
+      const id = presetSelect.value;
+      if (!id) return;
+      storePresets(loadPresets().filter(item => item.id !== id));
+      renderPresets();
+      presetStatus.textContent = tt('autoEditorPresetDeleted', '预设已删除。');
+    });
+
     function render() {
       if (destroyed) return;
+      renderPresets();
       container.style.display = protocol ? '' : 'none';
       list.replaceChildren();
       showError('');
@@ -432,7 +591,7 @@
         }
         render();
       },
-      read() {
+      read(readOptions = {}) {
         if (destroyed) return fail(tt('autoEditorDestroyed', 'Auto Provider 编辑器已关闭。'), 'editor_destroyed');
         const result = serializeDraft({
           protocol,
@@ -444,8 +603,14 @@
         });
         showError(result.ok ? '' : result.error);
         if (!result.ok && result.code === 'cross_trust_confirmation_required') confirm.focus();
+        // 宿主读出一份有效池子就意味着它要被用上了：顺手记进「最近使用」。
+        if (result.ok && result.value && readOptions.remember !== false && presetStore) {
+          storePresets(rememberPreset(loadPresets(), result.value, { recent: true, now: now() }));
+        }
         return result;
       },
+      applyPreset,
+      savePreset,
       destroy() {
         if (destroyed) return;
         destroyed = true;
@@ -472,6 +637,7 @@
     protocolLabel,
     protocolOf,
     providersForProtocol,
+    rememberPreset,
     selectionCrossesTrust,
     serializeDraft,
   });

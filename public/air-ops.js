@@ -640,6 +640,13 @@
     el('air-apk-btn').onclick = () => { void openApkPanel(); };
     el('air-qr-btn').onclick = () => { void showQr(); };
     el('air-restart-btn').onclick = () => { void restartService(); };
+    // 「更多与系统」展开后底栏比一屏还高（100% 缩放的笔记本上很常见），主机操作
+    // 那一栏会落到视口外。侧栏自己会滚（air.css），这里把最后一行带进视野，
+    // 不让用户以为重启按钮不存在。
+    const sideMore = el('side-more');
+    if (sideMore) sideMore.addEventListener('toggle', () => {
+      if (sideMore.open) requestAnimationFrame(() => el('air-restart-btn')?.scrollIntoView({ block: 'nearest' }));
+    });
 
     bindPush();
     void loadBootTime();
