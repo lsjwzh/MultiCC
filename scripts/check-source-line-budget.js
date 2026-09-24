@@ -58,9 +58,16 @@ const MIGRATION_DEBT = Object.freeze({
   // 注释并成一行抵账，行数不变，字节降到 165226。
   // 侧栏「最近任务」不再掺当前目录的任务（只留未读 + 打开过的）；直接 ?task= 打开的任务
   // 改在 render() 里统一记进最近，refreshEntry 里那段记录连同长注释删掉：降到 3061/164707。
+  // 任务全文检索（public/task-search.js + GET /api/task-board/search）在 air.js 里有
+  // 三处接线：⌘K 面板与目录页各持一个控制器（paletteSearch / directorySearch），命中
+  // 时改用服务端算好的相关度顺序，并把命中片段当副标题/解释行摆出来。行数从 3064 长到
+  // 3094：其中 3 行（3061 -> 3064）是本轮之前就漂在 main 上的 —— 上一格的天花板登记在
+  // c22b8d2f，之后 4741474a 又碰了 air.js 却没回来改这里，这道闸在 main 上其实已经是红
+  // 的；剩下 30 行才是这次的接线。按惯例只登记实测高水位，不抬到别处；下一次动目录页或
+  // ⌘K，该拆的仍是 renderSchedules / renderDirectoryOverview，不是这几行接线。
   'public/air.js': Object.freeze({
-    ceiling: 3061,
-    byteCeiling: 164707,
+    ceiling: 3094,
+    byteCeiling: 167388,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
