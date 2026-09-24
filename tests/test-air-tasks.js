@@ -160,6 +160,49 @@ test('Air exposes message time separately from task metadata update time', async
   assert.equal(task.lastMessageAt, 500);
 });
 
+test('Air projects cached worktree delivery state onto task cards without treating behind as pending work', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  const records = new Map([
+    ['dirty-session', { id: 'dirty-session', dirId: 'd1', kind: 'chat', worktreePath: '/repo/wt-dirty' }],
+    ['ahead-session', { id: 'ahead-session', dirId: 'd1', kind: 'chat', worktreePath: '/repo/wt-ahead' }],
+    ['behind-session', { id: 'behind-session', dirId: 'd1', kind: 'chat', worktreePath: '/repo/wt-behind' }],
+    ['planned-session', { id: 'planned-session', dirId: 'd1', kind: 'chat', workspaceState: 'planned' }],
+  ]);
+  const states = {
+    'dirty-session': { dirty: true, ahead: 0, behind: 0 },
+    'ahead-session': { dirty: false, ahead: 3, behind: 0 },
+    'behind-session': { dirty: false, ahead: 0, behind: 7 },
+  };
+  const reads = [];
+  mountAirRoutes(app, {
+    admission: { capacityReason: () => null, snapshot: () => ({ workspaces: [
+      { id: 'w-dirty', ownerId: 'dirty-session', dirId: 'd1', residency: 'resident' },
+      { id: 'w-ahead', ownerId: 'ahead-session', dirId: 'd1', residency: 'retained' },
+      { id: 'w-behind', ownerId: 'behind-session', dirId: 'd1', residency: 'resident' },
+      { id: 'w-planned', ownerId: 'planned-session', dirId: 'd1', residency: 'planned' },
+    ], leases: [], budgets: {} }) },
+    records,
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ modules: {}, tasks: Object.fromEntries([...records].map(([id]) => [id, {
+      id, chatSessionId: id, title: id, status: 'active', refs: [{ sessionId: id, dirId: 'd1' }],
+    }])) }),
+    clis: ['codex'],
+    mergeStateCached: (_dir, record) => { reads.push(record.id); return states[record.id]; },
+    shell: { taskAccess: () => ({ readOnly: false }), listTasks: () => [] },
+  });
+  const res = airResponse();
+  await handlers.get('/api/air')({ headers: {} }, res);
+  const byId = Object.fromEntries(JSON.parse(res.body).tasks.map(task => [task.id, task]));
+  assert.deepEqual(byId['dirty-session'].worktreeChanges, { dirty: true, ahead: 0 });
+  assert.deepEqual(byId['ahead-session'].worktreeChanges, { dirty: false, ahead: 3 });
+  assert.deepEqual(byId['behind-session'].worktreeChanges, { dirty: false, ahead: 0 },
+    'behind only means the worktree needs syncing; it is not unsubmitted/unmerged work');
+  assert.equal(byId['planned-session'].worktreeChanges, null);
+  assert.deepEqual(reads.sort(), ['ahead-session', 'behind-session', 'dirty-session'],
+    'only on-disk resident/retained worktrees enter the Git status cache');
+});
+
 test('Air reports unique worktree counts per directory for manual task cleanup', async () => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };

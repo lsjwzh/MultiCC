@@ -76,6 +76,52 @@ class AirTaskStatusBadge extends StatelessWidget {
   }
 }
 
+String airWorktreeChangeLabel(AirTask task) {
+  final changes = task.worktreeChanges;
+  if (changes == null || !changes.pending) return '';
+  if (changes.dirty && changes.ahead > 0) {
+    return 'Worktree 有未提交改动，另有 ${changes.ahead} 个提交尚未合并';
+  }
+  if (changes.dirty) return 'Worktree 有未提交改动';
+  return 'Worktree 有 ${changes.ahead} 个提交尚未合并';
+}
+
+/// Web `.worktree-change-badge` 的 App 对位件：静态琥珀色分支图标，tooltip 与
+/// 无障碍名区分「未提交」和「已提交但未合回」。不做常驻动画。
+class AirWorktreeChangeBadge extends StatelessWidget {
+  const AirWorktreeChangeBadge({super.key, required this.task});
+
+  final AirTask task;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = airWorktreeChangeLabel(task);
+    if (label.isEmpty) return const SizedBox.shrink();
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        label: label,
+        image: true,
+        child: Container(
+          key: ValueKey('air-worktree-change-${task.id}'),
+          width: 18,
+          height: 18,
+          decoration: BoxDecoration(
+            color: const Color(0xfffff7df),
+            border: Border.all(color: const Color(0xffe8c982)),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Icon(
+            Icons.merge_type_rounded,
+            size: 13,
+            color: Color(0xff98630c),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 只有注册表说 spinner 的状态才配转圈 —— 「在跑」全局只有这一个定义，所以这
 /// 里不写 `runState == 'running'`。
 bool airTaskRunning(AirTask task) => airTaskSpec(task).spinner;
@@ -143,9 +189,7 @@ String airTaskDetail(AirTask task) {
   final stage = task.recordType == 'planned'
       ? airLabel(task.workflowStage ?? task.status)
       : '';
-  final bits = <String>[
-    if (stage.isNotEmpty) '计划 · $stage',
-  ];
+  final bits = <String>[if (stage.isNotEmpty) '计划 · $stage'];
   final held = task.resourceText;
   // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）——
   // 同 Web 侧栏那句 `!badgeText.includes(part)`。比的是徽标上那个词（[airStatusCopy]），

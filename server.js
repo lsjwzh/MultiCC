@@ -2584,6 +2584,7 @@ require('./src/workspace/air-routes').mountAirRoutes(app, {
   providerName: sessionProviderName,
   effectiveModel: effectiveSessionModel,
   effectiveEffort: effectiveSessionEffort,
+  mergeStateCached,
   serializeSubagent, getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle',
 });
 
