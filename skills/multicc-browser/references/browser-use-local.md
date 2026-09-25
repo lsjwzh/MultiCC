@@ -58,6 +58,14 @@ python3.12 skills/multicc-browser/scripts/local_browser_use.py start \
 
 如果刻意改成接管个人 Chrome，Harness 的 `mac-approve` 可在弹窗出现时定向点击一次，但首次启用远程调试和授予 macOS 辅助功能权限仍需人工完成。不要运行常驻自动点击授权脚本；它可能批准不属于本次任务的连接。
 
+## 新版 MultiCC Agent 与本路径的关系
+
+仓库的 `scripts/macos-agent/MultiCCAgent.swift` 是登录用户会话内的独立 LaunchAgent：用户授予辅助功能和屏幕录制后，它能执行坐标点击/输入/截图；还可按配置守护**一个**本机 Chrome CDP 端口。它不提供页面 DOM、标题或元素定位，不包含浏览器内核，也不代替 Browser Harness。因此本路径仍以专用 Profile + Harness 为主，**不自动安装 Agent，也不把 Agent 当作 CDP 失败时的静默回退**。坐标点击会影响用户当前桌面，与本技能默认的后台浏览器操作边界不同。
+
+如果另行选择使用 Agent 的 Chrome watchdog，先核对端口、Profile 和浏览器进程归属；默认 `9222` 不得直接占用其它业务已有的端口。Agent 同步等待其 `--chrome-launch` 脚本退出，而本脚本的 `start` 模式会一直等待浏览器退出，所以**不能直接将 `start` 命令写进 `--chrome-launch` 脚本**。需要单独的短时、幂等、启动浏览器后立即返回的脚本；后台浏览器也必须把 stdout/stderr 重定向，避免继承 Agent 的等待管道，并在同一端口上完成探活。本仓库尚未为 Browser Use 配置这条接线。
+
+当前新 Mac 上 Agent 已通过独立的安装/协议/单端口 watchdog 测试。Agent 源码还可用当前 SDK 编译为 `x86_64-apple-macosx11.0`，产物显示最低 macOS 11.0，且在当前 macOS 15 的 Rosetta 环境能查询运行中的 Agent。**这些结果不能替代 macOS 11 Intel 上安装、授权、启动与浏览器操作的真机测试**；也不能把当前新 Mac 构建/安装的 Agent.app 直接当作旧机已验收版本。即便 Agent 在旧机可用，Chrome 内核与 Harness 的 CDP 兼容性仍须单独验收。
+
 ## macOS 11 边界与回退
 
 本仓库当前没有 Intel/macOS 11 运行机，也没有等效的可启动 GUI 浏览器 CI；在新 Mac 上的 smoke 只证明流程通顺，不证明目标环境兼容。目标机须额外完成两账号不同 Profile/端口、重启后登录仍在、无反复授权弹框的验收。若浏览器不能启动或 Harness 的 CDP 命令与旧 Chromium 不兼容，停止在此，不自动降级到个人 Chrome 或云端。可选回退是另行评估 Firefox/Selenium 本地后端，或在受支持机器上运行浏览器并通过受保护的连接使用；二者都不是本脚本已验证的能力。
@@ -77,3 +85,10 @@ python3.12 skills/multicc-browser/scripts/local_browser_use.py start \
 - `seed` 的测试用虚构源目录核对仅复制指定 Profile、`Local State` 与 Cookie 文件，跳过缓存，且源文件不变；验证目标已存在时拒绝覆盖、运行中 Chrome 锁和目录穿越会被拒绝。测试没有读取或复制真实个人 Chrome 数据。
 - `python3 -m unittest discover -s tests -p 'test_local_browser_use.py' -v`：5/5 通过；`node --test tests/test-skill-sync.js`：12/12 通过；技能格式、Python 编译和 `git diff --check` 通过。
 - 当前 macOS 15.3/arm64 上使用 Chrome 153 + Browser Harness 0.1.13 对修改后的启动参数实跑 `smoke` 成功，输出 `PASS title=MultiCC Browser Use Smoke`、PNG 和 Harness 日志；测试端口 9339 在结束后关闭。这只验证专用浏览器流程，**尚未证明个人登录态在副本里仍有效，也不证明 macOS 11 Intel 可运行**。
+
+## 同步新版 Agent 后的核查（2026-09-25）
+
+- 当前会话分支 rebase 到本地 `main` 的 `71f47b57`；该本地基分支比刷新后的 `origin/main` 超前 40 个提交，包含 MultiCC Agent。两份不入 Git 的浏览器调研文件按原 hash 恢复，最终 `HEAD...main` behind 为 0。
+- `node --test tests/test-macos-agent.js`：1/1 通过（当前 macOS 15；测试使用独立临时 app/目录，不改已安装 Agent）。已安装 Agent 的只读 `status` 显示辅助功能、屏幕录制已授权，单端口 watchdog 在 `9222` 探活成功；这只代表当前机器。
+- `xcrun swiftc -target x86_64-apple-macosx11.0 -O` 编译成功，`file` 显示 x86_64，`otool` 显示 `minos 11.0`；该产物在当前 macOS 15/Rosetta 上能执行 `status`。目标 Intel/macOS 11 真机运行及授权仍未验证。
+- rebase 后回归：Browser Use Python 测试 5/5、技能同步与 Agent 测试 13/13、技能格式检查通过；当前机器再次用 Chrome 153 + Harness 0.1.13 实跑 `smoke`，打开页面、核对标题并生成 PNG，输出 `PASS title=MultiCC Browser Use Smoke`（端口 9341）。这仍不是旧 Mac 运行证明。
