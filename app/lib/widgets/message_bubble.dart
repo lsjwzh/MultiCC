@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n.dart';
 import '../theme.dart';
+import '../utils/format.dart';
 import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../providers/chat_provider.dart';
@@ -751,19 +752,9 @@ class _TokenUsageLine extends StatelessWidget {
   const _TokenUsageLine({required this.usage});
 
   /// Format a token count for display: >1e6 → X.XXM, >1e3 → X.Xk,
-  /// else thousand-separated raw number.
-  static String _fmtSaved(int n) {
-    if (n >= 1000000) {
-      return '${(n / 1000000).toStringAsFixed(2)}M';
-    }
-    if (n >= 1000) {
-      return '${(n / 1000).toStringAsFixed(1)}k';
-    }
-    return n.toString().replaceAllMapped(
-      RegExp(r'\B(?=(\d{3})+(?!\d))'),
-      (m) => ',',
-    );
-  }
+  /// else thousand-separated raw number. The rules live in utils/format.dart
+  /// (`formatTokenCount`), which the web's chat-live-ui .msg-usage row shares.
+  static String _fmtSaved(int n) => formatTokenCount(n);
 
   @override
   Widget build(BuildContext context) {
@@ -1052,13 +1043,9 @@ class _TimingLine extends StatelessWidget {
   final int? durationMs;
   const _TimingLine({this.timestamp, this.durationMs});
 
-  static String _fmtDuration(int ms) {
-    if (ms < 1000) return '${ms}ms';
-    final s = ms / 1000;
-    if (s < 60) return '${s.toStringAsFixed(1)}s';
-    final m = (s / 60).floor();
-    return '${m}m${(s % 60).round()}s';
-  }
+  /// 一段测出来的墙钟时间：走 utils/format.dart 的 [formatDuration]（web 那侧
+  /// chat-live-ui / chat-history-view 同一份）。
+  static String _fmtDuration(int ms) => formatDuration(ms);
 
   @override
   Widget build(BuildContext context) {

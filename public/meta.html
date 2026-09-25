@@ -218,6 +218,7 @@
 <script src="i18n-catalog.js"></script>
 <script src="i18n.js"></script>
 <script src="shared/dom-helpers.js"></script>
+<script src="shared/format.js"></script>
 <script src="status-presentation.js"></script>
 <script src="task-board-ui.js"></script>
 <script>
@@ -423,13 +424,11 @@ function exitTaskMergeMode() {
   selectedMergeTaskIds.clear();
 }
 
+// 相对时间走全站唯一那份（shared/format.js，页头已加载）：档位和措辞都在那一张表里，
+// 这一页原来自己抄了一份（一分钟内一律「刚刚」，一小时以上才「N小时前」），而且是硬写
+// 的中文 —— 本页有 i18n.js，英文界面里这一格却是中文。
 function timeAgo(ts) {
-  if (!ts) return '';
-  const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return '刚刚';
-  if (s < 3600) return `${Math.floor(s/60)}分钟前`;
-  if (s < 86400) return `${Math.floor(s/3600)}小时前`;
-  return `${Math.floor(s/86400)}天前`;
+  return window.MultiCCFormat.formatRelativeTime(ts);
 }
 
 async function fetchTaskBoard() {

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/quota_bar_view.dart';
 
 /// The golden parity contract: the server renders a quota bar once (words,
@@ -24,6 +25,14 @@ Map<String, dynamic> _loadFixture() {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  // The {ago:} token is resolved with the shared relative-time table, whose words
+  // come from the zh catalog (the same words public/shared/format.js carries as a
+  // literal fallback for the pages and node tests that have no catalog at all —
+  // the parity test pins the two together). Without this the resolver would hand
+  // back the raw key.
+  setUpAll(() => I18n.init('zh'));
+
   final fixture = _loadFixture();
   final now = (fixture['now'] as num).toInt();
   final cases = (fixture['cases'] as List).cast<Map<String, dynamic>>();

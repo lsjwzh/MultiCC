@@ -350,6 +350,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/format_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/git_log_sheet_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -2525,6 +2530,33 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-format-guard.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-format-parity.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-format.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
       ]
     },
     {

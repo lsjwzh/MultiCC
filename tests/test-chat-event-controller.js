@@ -229,11 +229,14 @@ test('event module exports a frozen narrow API and codex reconnect classifier', 
 });
 
 test('progress heartbeat formatter exposes only safe bounded status fields', () => {
+  // 时长由 shared/format.js 的 formatDuration 出：150.9 秒进到「分」那一档时秒数按
+  // 四舍五入（2m 31s），而不是先把总秒数截断再取模（2m 30s）。
   assert.equal(eventApi.formatProgressHeartbeat({
     phase: 'tool', elapsedMs: 150_900, toolKind: 'subagent',
     prompt: 'secret prompt', output: 'secret output', token: 'sk-secret',
-  }), '正在调用工具 · 2m 30s · 子 Agent');
-  assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }), '仍在执行 · 0s');
+  }), '正在调用工具 · 2m 31s · 子 Agent');
+  // 负数不是一个「零秒」的读数，是垃圾值 —— 那一格直接不画，不编一个 0s 出来。
+  assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }), '仍在执行');
 });
 
 test('memory admission progress shows the user message immediately and updates one loading bubble', () => {

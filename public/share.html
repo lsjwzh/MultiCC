@@ -67,6 +67,7 @@
      path on purpose: this document carries no <base href>, so a relative one would
      resolve against whatever deep address it was opened under. -->
 <script src="/shared/dom-helpers.js"></script>
+<script src="/shared/format.js"></script>
 <script>
 const TOKEN = decodeURIComponent(location.pathname.replace(/^\/share\//, '').replace(/\/$/, ''));
 const $ = (id) => document.getElementById(id);

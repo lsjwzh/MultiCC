@@ -6,7 +6,12 @@
   const document = root.document;
   const model = root.MultiCCMemoryModel;
   const escapeHtml = model.escapeHtml;
-  const formatSize = model.formatSize;
+  // 字节数走全站唯一那份（shared/format.js，页面里先于本文件加载；Node 沙箱里由
+  // 测试注入 MultiCCFormat）。本页只保留「没有大小就画一个 –，不画 0 B」这个取舍。
+  const FMT = (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (root && root.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
+  const nodeSize = bytes => FMT.formatBytes(bytes, { placeholder: '–' });
   // 文案走全局 t()（i18n.js 在 manage.html 里晚于本文件加载、在 Air 里是懒重放，所以
   // 一律在渲染期取值，不在模块常量里冻结译文；取不到就退回 key）。
   const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
@@ -455,7 +460,7 @@
     const pathEl = el('mem-node-path'), copyBtn = el('mem-node-copy'), editBtn = el('mem-node-edit');
     if (pathEl) pathEl.textContent = nd.path || (nd.missing ? t('memoryNodeFileMissing') : (nd.rel || '—'));
     if (el('mem-node-tokens')) el('mem-node-tokens').textContent = nd.missing ? '–' : ('~' + (nd.tokens || 0));
-    if (el('mem-node-size')) el('mem-node-size').textContent = nd.missing ? '–' : formatSize(nd.size);
+    if (el('mem-node-size')) el('mem-node-size').textContent = nd.missing ? '–' : nodeSize(nd.size);
     if (copyBtn) copyBtn.onclick = () => { if (nd.path && root.copyText) root.copyText(nd.path); };
     if (editBtn) {
       if (nd.rel && !nd.missing) { editBtn.style.display = ''; editBtn.onclick = () => root.openMemFileEditor && root.openMemFileEditor(nd.rel); }

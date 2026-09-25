@@ -112,9 +112,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-09-24 Codex 车道改名：重连抑制的判定要同时认旧名与新名（"Codex" /
   // "Codex Exp" / "Codex Exec"），那 3 行注释解释了为什么不能只认一种拼法，
   // 按实测高水位抬到 3020/121909。
+  // 2026-09-25 数字口径统一（shared/format.js ↔ utils/format.dart）：本文件的
+  // `_fmtDuration` 换成对 format.dart 的调用，短了 8 行，按棘轮规则把天花板
+  // 压回实测高水位 3012/121741（缩小同样是违约，不能只往下不改这里）。
   'app/lib/providers/chat_provider.dart': Object.freeze({
-    ceiling: 3020,
-    byteCeiling: 121988,
+    ceiling: 3012,
+    byteCeiling: 121741,
     target: 3000,
   }),
 });
@@ -237,9 +240,14 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // （6899 是 wc -l，这里的量法是 split('\n').length，多一格行尾换行）。
   // 2026-09-24 Codex 车道改名：新增 cliLaneDeprecatedNote（选择器里那句「兜底
   // 线路，计划淘汰」）中英各 1 行 = +2，按本树重跑生成器后的实测值抬到 6902。
+  // 格式化归一（public/shared/format.js + app/lib/utils/format.dart）：相对时间
+  // 多一档「紧凑秒」——配额条那一条挤着三个窗口段，说 `57s 前` 而不是 `57 秒前`。
+  // 新增 secondsAgoCompact 中英各 1 行 = +2，重跑生成器后按
+  // split(/\n/).length 量到 6904 行 / 428203 字节（生成器输出与提交版本逐字一致，
+  // 没有带进别的漂移）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6902,
-    maxBytes: 428129,
+    maxLines: 6904,
+    maxBytes: 428203,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

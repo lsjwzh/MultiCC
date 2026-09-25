@@ -23,6 +23,7 @@ const { t, getLocale } = require('./helpers/i18n-translator');
 
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public/air-ops.js'), 'utf8');
+const FORMAT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/shared/format.js'), 'utf8');
 const AIR_HTML = fs.readFileSync(path.join(ROOT, 'public/air.html'), 'utf8');
 
 // ── Minimal DOM ────────────────────────────────────────────────────────────
@@ -210,6 +211,10 @@ function buildContext({ fetchImpl, confirmResult = true, pushInfo = null, qrcode
   };
   context.window = context;
   vm.createContext(context);
+  // air.html carries shared/format.js as a <script> ahead of air-ops.js (the
+  // order tests/test-format-guard.js pins); a sandbox runs no script tags and
+  // has no require, so the two files are run in the same order by hand.
+  vm.runInContext(FORMAT_SOURCE, context, { filename: 'shared/format.js' });
   vm.runInContext(SOURCE, context, { filename: 'air-ops.js' });
   return { context, registry, document, reloads, timers, listeners, advance: clock.advance };
 }

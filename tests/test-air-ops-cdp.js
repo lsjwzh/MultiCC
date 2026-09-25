@@ -33,12 +33,18 @@ test('the Air host-ops region renders, reads light, and drives the update flow',
       headers: { 'content-type': CONTENT_TYPE[extension] || 'application/octet-stream' },
     };
   }
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
+    routes[`/shared/${file}`] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
+  }
   // 只留 air-ops.js 是这个用例的本意（别的一起跑会把无关请求搅进来），但 i18n 现在是
   // 页面骨架的一部分：空中文的 t() 由 /i18n.js 提供，不装它模块一取文案就 ReferenceError。
+  // shared/format.js 同理 —— air.html 里它在 air-ops.js 前面（tests/test-format-guard.js
+  // 钉住这个顺序），剪掉它模块取不到数字格式化，下载那两行就画不出来。
   const html = fs.readFileSync(path.join(publicDir, 'air.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
     .replace('</body>', '<script src="/i18n-catalog.js"></script><script src="/i18n.js"></script>'
-      + '<script src="/qrcode.min.js"></script><script src="/air-ops.js"></script></body>');
+      + '<script src="/qrcode.min.js"></script><script src="/shared/format.js"></script>'
+      + '<script src="/air-ops.js"></script></body>');
   routes['/'] = { body: html, headers: { 'content-type': 'text/html; charset=utf-8' } };
 
   routes['/api/version-check'] = json({ current: '1.6.10', channel: 'dev', latest: 'v1.7.0', latestVersion: '1.7.0', updateAvailable: true });

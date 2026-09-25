@@ -19,6 +19,12 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.MultiCCChatUsageReadout = api;
 })(typeof window !== 'undefined' ? window : globalThis, function createApi() {
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   function tokenReadout() {
     const scope = typeof window !== 'undefined' ? window : globalThis;
     if (scope && scope.MultiCCChatTokenReadout) return scope.MultiCCChatTokenReadout;
@@ -50,22 +56,13 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  function compactTokens(value) {
-    const n = count(value);
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-    if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K`;
-    return String(n);
-  }
-
-  function k(value) {
-    return `${(count(value) / 1000).toFixed(1)}k`;
-  }
-
-  function pctColor(pct) {
-    if (pct > 80) return '#f85149';
-    if (pct > 50) return '#d29922';
-    return '#3fb950';
-  }
+  // token 数、百分比颜色全部走全站唯一那份（shared/format.js）：
+  //   · 紧凑 token 数（窗口大小、估算量）—— 两位有效数字，去尾零
+  //   · 计费口径的 token 数（入/出/缓存）—— 百万两位小数，千位一位小数
+  //   · 「窗口占了多少」的颜色 —— 门限表按 kind 取，上下文那条 80/50
+  const compactTokens = value => FMT.formatCompactTokens(value);
+  const k = value => FMT.formatTokenCount(value, { dropZeroDecimal: true });
+  const pctColor = pct => FMT.usageColor(pct, 'context');
 
   /**
    * How much of the window this conversation is using, and how sure we are.
@@ -114,7 +111,7 @@
       };
     }
     const pct = Math.min(100, (ctx.tokens / ctx.window) * 100);
-    const window = `${(ctx.window / 1000).toFixed(0)}k`;
+    const window = FMT.formatTokenCount(ctx.window, { dropZeroDecimal: true });
     return {
       text: ctx.exact
         ? tt('usageContextLine', '上下文 {used} / {window} · {pct}%',

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../utils/format.dart';
 
 /// AI 助手 (aux) 任务历史。镜像网页管理台的 aux-history 弹窗：拉取
 /// /api/aux/history，把相邻的 user/assistant 配对成一条任务（输入/输出），
@@ -170,8 +171,10 @@ class _AuxTaskCardState extends State<_AuxTaskCard> {
       if (enqueuedAt != null) '入队 ${fmtTime(enqueuedAt)}',
       if (startedAt != null) '开始 ${fmtTime(startedAt)}',
       if (completedTs != null) '完成 ${fmtTime(completedTs)}',
-      if (queueMs != null && queueMs > 0) '排队 ${(queueMs / 1000).toStringAsFixed(1)}s',
-      if (durationMs != null && durationMs > 0) '执行 ${(durationMs / 1000).toStringAsFixed(1)}s',
+      // 时长走 utils/format.dart 的 [formatDuration]：一个 90 秒的辅助任务现在说
+      // 「1m 30s」而不是「90.0s」。
+      if (queueMs != null && queueMs > 0) '排队 ${formatDuration(queueMs)}',
+      if (durationMs != null && durationMs > 0) '执行 ${formatDuration(durationMs)}',
     ];
     final timelineStr = timelineParts.join(' · ');
 
@@ -264,8 +267,8 @@ class _AuxTaskCardState extends State<_AuxTaskCard> {
                           padding: const EdgeInsets.only(top: 2),
                           child: Text(
                               queueMs != null && queueMs > 0
-                                  ? '⏳${(queueMs / 1000).toStringAsFixed(1)}s · ⚡${(durationMs / 1000).toStringAsFixed(1)}s'
-                                  : '${(durationMs / 1000).toStringAsFixed(1)}s',
+                                  ? '⏳${formatDuration(queueMs)} · ⚡${formatDuration(durationMs)}'
+                                  : formatDuration(durationMs),
                               style: const TextStyle(color: AppColors.faint, fontSize: 10)),
                         ),
                     ],

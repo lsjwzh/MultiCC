@@ -13,6 +13,8 @@
 
 import 'dart:convert' show JsonEncoder;
 
+import '../utils/format.dart';
+
 /// Coerce any JSON field to a display string, like the web's asText.
 String _s(dynamic v) => v == null ? '' : v.toString();
 
@@ -85,12 +87,4 @@ String renderToolInput(String? name, Map<String, dynamic>? parsed) {
 /// Mirrors the web humanizeDuration: <1s shows ms, <60s shows seconds (one
 /// decimal under 10s), >=60s shows "1m 5s". Returns '' for anything
 /// unmeasurable (null / negative / NaN) — we never fabricate "0ms".
-String humanizeToolDuration(int? ms) {
-  if (ms == null || ms.isNaN || ms < 0) return '';
-  if (ms < 1000) return '${ms}ms';
-  final s = ms / 1000;
-  if (s < 60) return s < 10 ? '${s.toStringAsFixed(1)}s' : '${s.round()}s';
-  final m = s ~/ 60;
-  final rs = (s - m * 60).round();
-  return rs > 0 ? '${m}m ${rs}s' : '${m}m';
-}
+String humanizeToolDuration(int? ms) => formatDuration(ms);

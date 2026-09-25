@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/vendor_quota.dart';
 
 // The app no longer formats vendor bars — the server renders them once and the
@@ -10,6 +11,12 @@ import 'package:multicc_app/models/vendor_quota.dart';
 // turns a server bar into a paintable [VendorQuotaView].
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  // The bar's {ago:} token is resolved by the shared relative-time table, so the
+  // zh catalog has to be loaded the way main() loads it; otherwise the resolver
+  // hands back the raw i18n key instead of 中文.
+  setUpAll(() => I18n.init('zh'));
+
   group('baseUrl gating', () {
     test('ark matches *.volces.com only', () {
       expect(isArkBaseUrl('https://ark.cn-beijing.volces.com/api/coding/v3'), true);

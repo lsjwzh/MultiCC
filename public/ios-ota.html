@@ -54,6 +54,7 @@
 </div>
 
 <script src="qrcode.min.js"></script>
+<script src="shared/format.js"></script>
 <script>
 (function () {
   'use strict';
@@ -72,10 +73,9 @@
     errorBanner.classList.add('err');
   }
 
-  function fmtSize(bytes) {
-    if (!bytes) return '';
-    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
-  }
+  // 字节数走全站唯一那份（shared/format.js，页头已加载）。本页只保留自己的取舍：
+  // 没给大小就不画这一格（返回空串），而不是画一个「0 B」。
+  var pkgSize = function (bytes) { return window.MultiCCFormat.formatBytes(bytes, { placeholder: '' }); };
 
   function fmtTime(iso) {
     if (!iso) return '';
@@ -121,7 +121,7 @@
       }
       var version = info.versionName ? ('v' + info.versionName + (info.versionCode ? ' (' + info.versionCode + ')' : '')) : '未知版本';
       metaEl.innerHTML =
-        '<b>' + version + '</b>' + (fmtSize(info.size) ? ' · ' + fmtSize(info.size) : '') + '<br>' +
+        '<b>' + version + '</b>' + (pkgSize(info.size) ? ' · ' + pkgSize(info.size) : '') + '<br>' +
         (info.bundleId ? info.bundleId + '<br>' : '') +
         (info.mtime ? '发布于 ' + fmtTime(info.mtime) : '');
       if (!info.installable) {

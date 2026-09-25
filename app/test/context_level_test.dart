@@ -84,7 +84,10 @@ void main() {
           },
         ),
       )!;
-      expect(msg, contains('0.50 MB'));
+      // 524288 B 走共用格式化后进位成 KB（MB 仍固定两位小数，见上一例），所以一个
+      // 半兆的整理结果读作「512.0 KB」而不是「0.50 MB」。
+      expect(msg, contains('512.0 KB'));
+      expect(msg, isNot(contains('0.50 MB')));
       expect(msg, contains('6 轮对话'));
       expect(msg, contains('2 轮有实质内容'));
     });

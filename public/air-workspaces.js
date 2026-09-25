@@ -19,6 +19,12 @@
   if (!root || !root.document) return;
   const document = root.document;
   const el = id => document.getElementById(id);
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   const make = (tag, text, className) => {
     const value = document.createElement(tag);
     if (text != null) value.textContent = text;
@@ -79,12 +85,6 @@
       + ` ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 
-  function fmtBytes(n) {
-    if (!Number.isFinite(n)) return '';
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  }
 
   // 阈值是给人判断「我的会话大概还能活多久」用的，所以跨过一小时就换成小时 ——
   // 「90 分钟」不如「1.5 小时」好估。0 / 负数在后端表示这条闸门关掉了。
@@ -207,7 +207,7 @@
             ? t('airWorkspacesAuditDirCut', { n: String(entry.files) })
             : t('airWorkspacesAuditDir', { n: String(entry.files) }));
         }
-        if (entry.bytes != null) bits.push(fmtBytes(entry.bytes));
+        if (entry.bytes != null) bits.push(FMT.formatBytes(entry.bytes));
         item.append(make('div', bits.join(' · '), 'air-ws-entry'));
       }
       return item;

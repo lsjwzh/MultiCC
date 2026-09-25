@@ -5,6 +5,12 @@
   if (typeof module === 'object' && module.exports) module.exports = catalog;
   if (root) root.MultiCCProviderCatalog = catalog;
 })(typeof window !== 'undefined' ? window : null, function createProviderCatalog() {
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   const APP_TYPES = new Set(['claude', 'codex']);
   const API_FORMATS = new Set(['anthropic', 'openai_responses']);
   const ALIAS_TIERS = ['opus', 'sonnet', 'haiku', 'fable'];
@@ -19,12 +25,9 @@
     return Number.isFinite(result) && result >= 0 ? result : 0;
   }
 
-  function formatCompactTokens(value) {
-    const count = number(value);
-    if (count >= 1000000) return `${(count / 1000000).toFixed(1).replace(/\.0$/, '')}M`;
-    if (count >= 1000) return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}K`;
-    return String(count);
-  }
+  // 紧凑 token 数走全站唯一那份（shared/format.js）。原来这里抄了同一份（百万一位小数
+  // 去尾零、千位一位小数去尾零），聊天的用量面板里还有第三份。
+  const formatCompactTokens = value => FMT.formatCompactTokens(value);
 
   // 字段名走 i18n：浏览器里用 i18n.js 的 t()，Node 测试或还在用旧目录时回落到
   // 中文默认值——断言正是按中文写的。（工厂函数拿不到包装层的 root，自己找 window。）
@@ -507,10 +510,11 @@
   const QUOTA_REFETCH_MS = 60000;
   const quotaLastFetch = {};
 
+  // 余量百分比的三个门限也只有一张表（shared/format.js 的 USAGE_THRESHOLDS.quota，
+  // 90/70/平常），与聊天页那条上下文条同一套 tone 名；具体色值由 USAGE_COLORS 定，
+  // QUOTA_AMBER 这个别名留着是因为下面十几处状态色（需登录 / 暂不可用）也在用它。
   function quotaPctColor(pct) {
-    if (pct >= 90) return '#f85149';
-    if (pct >= 70) return QUOTA_AMBER;
-    return '#58a6ff';
+    return FMT.usageColor(pct, 'quota');
   }
   function quotaMoneyColor(v) {
     if (v <= 0) return '#f85149';

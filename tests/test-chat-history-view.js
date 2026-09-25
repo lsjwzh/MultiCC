@@ -542,7 +542,9 @@ test('token usage and wall-clock timing render as independent sibling lines', ()
   assert.equal(timingOf(both).length, 1);
   assert.match(usageOf(both)[0].textContent, /主↑入 9\.3k↓出 1\.8k♻读 609\.5k♻写 18\.4k/, 'history uses the unified 主 row');
   assert.match(usageOf(both)[0].title, /缓存读 609,536/, 'tooltip keeps exact counts');
-  assert.match(timingOf(both)[0].textContent, /⏱ 1m11s/);
+  // 分与秒之间有一个空格 —— 与 web 另一处（chat-live-ui 的 fmtDuration）以及 App
+  // 里同一个 formatDuration 输出一致（原来这一处是「1m11s」）。
+  assert.match(timingOf(both)[0].textContent, /⏱ 1m 11s/);
   // Siblings under .msg-content: stacked block lines, so neither can clip or
   // overlay the other however long the numbers get.
   assert.equal(usageOf(both)[0].parentNode, timingOf(both)[0].parentNode);

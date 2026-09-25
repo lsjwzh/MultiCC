@@ -47,6 +47,11 @@ function assetRoutes(publicDir) {
     const type = types[file.slice(file.lastIndexOf('.') + 1)];
     routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': `${type}; charset=utf-8` } };
   }
+  // 帧里的对话页会带 shared/ 下的公共模块（chat.html 自己的 script 标签），真服务端
+  // 是当静态文件发的；夹具少发一个，帧里那几个渲染器取数字时就会拿到 null。
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(name => name.endsWith('.js'))) {
+    routes['/shared/' + file] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript; charset=utf-8' } };
+  }
   return routes;
 }
 

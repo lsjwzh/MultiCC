@@ -6,8 +6,14 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../services/workspace_service.dart';
+import 'format.dart';
 import 'manual_order.dart';
 import 'status_presentation.dart';
+
+// formatRunDuration 现在住在 utils/format.dart（全站唯一一份时长格式），这里只把
+// 名字转出去：本文件的老调用方（含 app/test/i18n_test.dart）不必改 import。
+export 'format.dart' show formatRunDuration;
+
 
 /// Prefix a task text with its stable short-code handle: `#CODE · text`.
 /// The code (derived server-side from the taskId) stays put while the title
@@ -445,25 +451,6 @@ Duration? runDuration(SessionStatus? live) {
   return Duration(milliseconds: ms < 0 ? 0 : ms);
 }
 
-String formatRunDuration(Duration d) {
-  final totalSec = d.inSeconds;
-  final h = totalSec ~/ 3600;
-  final m = (totalSec % 3600) ~/ 60;
-  final sec = totalSec % 60;
-  if (h > 0) {
-    return t('durationHoursMinutes', {
-      'h': '$h',
-      'm': m.toString().padLeft(2, '0'),
-    });
-  }
-  if (m > 0) {
-    return t('durationMinutesSeconds', {
-      'm': '$m',
-      's': sec.toString().padLeft(2, '0'),
-    });
-  }
-  return t('durationSeconds', {'s': '$sec'});
-}
 
 // 运行时长短语（带 ⏱），无数据返回空串。
 String runTimeText(SessionStatus? live) {

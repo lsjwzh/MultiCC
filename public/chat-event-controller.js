@@ -1,6 +1,13 @@
 (function attachMultiCCChatEventController(global) {
   'use strict';
 
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
+
   function isRecoverableCodexReconnectErrorText(text) {
     const value = String(text || '');
     // 前缀是车道的展示名（turn-engine 用 `${label} 出错：…` 拼），而 2026-09-24 给
@@ -77,10 +84,9 @@
   function formatProgressHeartbeat(message) {
     const source = message && typeof message === 'object' ? message : {};
     const phase = PROGRESS_PHASES[source.phase] || '仍在执行';
-    const elapsedSeconds = Math.max(0, Math.floor((Number(source.elapsedMs) || 0) / 1000));
-    const elapsed = elapsedSeconds >= 60
-      ? `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`
-      : `${elapsedSeconds}s`;
+    // 一段测出来的时间走全站唯一那份（shared/format.js）。原来这里把秒以下抹掉、
+    // 又把零秒说成「0s」—— 一个 900ms 的工具调用会被记成 0。
+    const elapsed = FMT.formatDuration(Number(source.elapsedMs) || 0);
     const tool = PROGRESS_TOOLS[source.toolKind];
     return [phase, elapsed, tool].filter(Boolean).join(' · ');
   }

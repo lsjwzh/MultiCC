@@ -33,25 +33,16 @@
     });
   }
 
+  // 活动时间走全站唯一那份（shared/format.js，dashboard.html 里先于本文件加载）：
+  // 档位和措辞都在那一张表里，这里只补一个本页的老规矩 —— 超过一个月的活动时间
+  // 直接给绝对时刻，「37 天前」在这一页没有意义。原来这一份的「刚刚」档是 10 秒，
+  // 别处是 5 秒，同一句话在两个页面上不一样。
   function formatRelative(ts) {
     if (!ts) return '-';
-    var then;
-    if (typeof ts === 'number') then = new Date(ts);
-    else then = new Date(ts);
+    var then = new Date(ts);
     if (isNaN(then.getTime())) return '-';
-
-    var diffMs = Date.now() - then.getTime();
-    var diffSec = Math.floor(diffMs / 1000);
-    var diffMin = Math.floor(diffSec / 60);
-    var diffHr = Math.floor(diffMin / 60);
-    var diffDay = Math.floor(diffHr / 24);
-
-    if (diffSec < 10) return '刚刚';
-    if (diffSec < 60) return diffSec + ' 秒前';
-    if (diffMin < 60) return diffMin + ' 分钟前';
-    if (diffHr < 24) return diffHr + ' 小时前';
-    if (diffDay < 30) return diffDay + ' 天前';
-    return formatAbsolute(ts);
+    if (Date.now() - then.getTime() >= 30 * 86400000) return formatAbsolute(ts);
+    return window.MultiCCFormat.formatRelativeTime(then.getTime(), { placeholder: '-' });
   }
 
   // ── API calls ────────────────────────────────────────────────

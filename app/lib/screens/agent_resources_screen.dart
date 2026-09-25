@@ -4,6 +4,7 @@ import '../i18n.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../utils/format.dart';
 
 enum AgentResourcesInitialSection { resources, skillSync, storage }
 
@@ -108,7 +109,7 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
     setState(() => _busy = true);
     try {
       final r = await _manage.cleanupClaudeHistory(days);
-      _snack('已清理 ${r['deleted'] ?? 0} 个会话，释放 ${_fmtBytes((r['freed'] as num?)?.toInt() ?? 0)}');
+      _snack('已清理 ${r['deleted'] ?? 0} 个会话，释放 ${formatBytes((r['freed'] as num?)?.toInt() ?? 0, placeholder: '0 B')}');
       await _refresh();
     } catch (e) {
       _snack('清理失败：$e');
@@ -177,7 +178,7 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
       builder: (_) => AlertDialog(
         title: const Text('清理临时上传'),
         content: Text('删除服务器上全部临时上传文件（${_uploads?['count'] ?? 0} 个，'
-            '${_fmtBytes((_uploads?['totalSize'] as num?)?.toInt() ?? 0)}）？'),
+            '${formatBytes((_uploads?['totalSize'] as num?)?.toInt() ?? 0, placeholder: '0 B')}）？'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -192,7 +193,7 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
     setState(() => _busy = true);
     try {
       final r = await _manage.cleanupUploads();
-      _snack('已删除 ${r['deleted'] ?? 0} 个文件，释放 ${_fmtBytes((r['freed'] as num?)?.toInt() ?? 0)}');
+      _snack('已删除 ${r['deleted'] ?? 0} 个文件，释放 ${formatBytes((r['freed'] as num?)?.toInt() ?? 0, placeholder: '0 B')}');
       await _refresh();
     } catch (e) {
       _snack('清理失败：$e');
@@ -318,7 +319,7 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
     final protectedCount = _history?['protectedCount'] ?? 0;
     return _Card(
       title: 'Claude 历史会话',
-      subtitle: '${_history?['count'] ?? 0} 个 · ${_fmtBytes(total)} · 受保护 $protectedCount',
+      subtitle: '${_history?['count'] ?? 0} 个 · ${formatBytes(total, placeholder: '0 B')} · 受保护 $protectedCount',
       trailing: TextButton.icon(
         onPressed: _busy ? null : _cleanupHistory,
         icon: const Icon(Icons.cleaning_services_outlined, size: 16, color: AppColors.danger),
@@ -345,7 +346,7 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
                             style: const TextStyle(color: AppColors.text, fontSize: 12.5)),
                       ),
                       const SizedBox(width: 8),
-                      Text(_fmtBytes((m['size'] as num?)?.toInt() ?? 0),
+                      Text(formatBytes((m['size'] as num?)?.toInt() ?? 0, placeholder: '0 B'),
                           style: const TextStyle(color: AppColors.faint, fontSize: 11)),
                     ],
                   ),
@@ -397,7 +398,7 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
     final total = (_uploads?['totalSize'] as num?)?.toInt() ?? 0;
     return _Card(
       title: '临时上传缓存',
-      subtitle: '${_uploads?['count'] ?? 0} 个文件 · ${_fmtBytes(total)}',
+      subtitle: '${_uploads?['count'] ?? 0} 个文件 · ${formatBytes(total, placeholder: '0 B')}',
       trailing: TextButton.icon(
         onPressed: _busy || ((_uploads?['count'] ?? 0) == 0) ? null : _cleanupUploads,
         icon: const Icon(Icons.delete_sweep_outlined, size: 17, color: AppColors.danger),
@@ -406,18 +407,6 @@ class _AgentResourcesScreenState extends State<AgentResourcesScreen> {
       child: _Muted((_uploads?['dir'] ?? '').toString()),
     );
   }
-}
-
-String _fmtBytes(int bytes) {
-  if (bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  double v = bytes.toDouble();
-  int u = 0;
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024;
-    u++;
-  }
-  return '${v.toStringAsFixed(u == 0 ? 0 : 1)} ${units[u]}';
 }
 
 String _formatSyncTime(dynamic raw) {

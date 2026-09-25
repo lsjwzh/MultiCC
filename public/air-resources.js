@@ -19,6 +19,12 @@
   if (!root || !root.document) return;
   const document = root.document;
   const el = id => document.getElementById(id);
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   const make = (tag, text, className) => {
     const value = document.createElement(tag);
     if (text != null) value.textContent = text;
@@ -99,14 +105,10 @@
     return node;
   }
 
-  // 显示口径照搬 manage.js 的 fmtSize，故意不本地化：单位是 B/KB/MB，与界面语言无关，
-  // 而且读这个数是为了跟磁盘上的目录对账 —— 换个语言不该换个进制。
-  function fmtSize(bytes) {
-    const size = Number(bytes) || 0;
-    if (size < 1024) return size + ' B';
-    if (size < 1048576) return (size / 1024).toFixed(1) + ' KB';
-    return (size / 1048576).toFixed(2) + ' MB';
-  }
+  // 字节数走全站唯一那份（shared/format.js），本页只留自己的两处取舍：KB 一位小数、
+  // MB 两位小数（MB 那个数是为了跟 du 出来的目录大小对账，少一位就对不上），以及
+  // 没有值时画 0 B 而不是空白。故意不本地化：单位是符号，与界面语言无关。
+  const RES_SIZE = Object.freeze({ unitDecimals: { MB: 2 }, placeholder: '0 B' });
 
   // 时间跟保险箱那页同一条口径：给了 getLocale()，英文界面里才不会冒出中文月日。
   function fmtWhen(value) {
@@ -150,7 +152,7 @@
     copy.append(make('div', session.title || '', 'air-resources-title'));
     copy.append(make('div', session.cwd || session.project || '', 'air-resources-desc'));
     const when = fmtWhen(session.updatedAt);
-    copy.append(make('div', [session.id, when, fmtSize(session.size)].filter(Boolean).join(' · '), 'air-resources-meta'));
+    copy.append(make('div', [session.id, when, FMT.formatBytes(session.size, RES_SIZE)].filter(Boolean).join(' · '), 'air-resources-meta'));
     row.append(
       make('span', linked ? t('airResourcesBadgeProtected') : t('airResourcesBadgeHistory'),
         'air-resources-badge ' + (linked ? 'is-protected' : 'is-history')),
@@ -199,7 +201,7 @@
     if (count) {
       count.textContent = t('airResourcesHistorySummary', {
         n: totals.count || 0,
-        size: fmtSize(totals.totalSize),
+        size: FMT.formatBytes(totals.totalSize, RES_SIZE),
         protected: totals.protectedCount || 0,
       });
     }
@@ -266,7 +268,7 @@
       await load();
       // 释放量用服务端回来的 freed，不用列表里那个 size：列表是删之前读的，
       // 而这句状态说的是「刚才那一下动了多少磁盘」。
-      const message = t('airResourcesDeletedOne', { id: session.id, size: fmtSize(result && result.freed) });
+      const message = t('airResourcesDeletedOne', { id: session.id, size: FMT.formatBytes(result && result.freed, RES_SIZE) });
       setStatus(message);
       context.notice(message);
     } catch (error) {
@@ -285,7 +287,7 @@
       await load();
       const message = t('airResourcesCleanDone', {
         n: (result && result.deleted) || 0,
-        size: fmtSize(result && result.freed),
+        size: FMT.formatBytes(result && result.freed, RES_SIZE),
       });
       setStatus(message);
       context.notice(message);

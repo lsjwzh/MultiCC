@@ -8,6 +8,12 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.MultiCCChatHistoryView = api;
 })(typeof window !== 'undefined' ? window : globalThis, function createApi() {
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   const TOOL_ICONS = Object.freeze({
     Bash: '>', Read: '📄', Edit: '✎', Write: '💾',
     Glob: '🔍', Grep: '🔎', Agent: '🤖',
@@ -47,16 +53,11 @@
 
   // Render a wall-clock span as the short suffix shown after "done"/"failed".
   // Mirrors DSH's measured-state tag — the real elapsed time of a tool call,
-  // never a fabricated 0ms. <1s shows ms, <60s shows seconds (1 decimal under
-  // 10s), ≥60s shows "1m 5s". Returns '' for anything unmeasurable.
+  // never a fabricated 0ms. The rules live in shared/format.js (the one span
+  // formatter); this name is kept because every caller here reads it as
+  // "how long did that tool take".
   function humanizeDuration(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return '';
-    if (ms < 1000) return ms + 'ms';
-    const s = ms / 1000;
-    if (s < 60) return (s < 10 ? s.toFixed(1) : String(Math.round(s))) + 's';
-    const m = Math.floor(s / 60);
-    const rs = Math.round(s - m * 60);
-    return rs > 0 ? m + 'm ' + rs + 's' : m + 'm';
+    return FMT.formatDuration(ms);
   }
 
   // Render a tool's input as a typed, human-readable preview instead of a raw

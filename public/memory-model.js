@@ -230,14 +230,6 @@
     return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
-  function formatSize(bytes) {
-    const n = Number(bytes);
-    if (!Number.isFinite(n) || n < 0) return '–';
-    if (n < 1024) return n + ' B';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    return (n / (1024 * 1024)).toFixed(1) + ' MB';
-  }
-
   async function loadGraph() {
     return normalizeGraphPayload(await apiJson('/api/memory/graph'));
   }
@@ -275,7 +267,6 @@
     deleteFile,
     errorMessage: apiMessage,
     escapeHtml,
-    formatSize,
     MAX_FILE_CONTENT,
   });
 })(typeof window !== 'undefined' ? window : null);
