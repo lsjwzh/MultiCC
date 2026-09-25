@@ -416,14 +416,90 @@ async function latestRelease({ fetchImpl = fetch, logger: log } = {}) {
   }
 }
 
-async function downloadTo(url, dest, { fetchImpl = fetch, logger: log } = {}) {
+// ── Update progress ─────────────────────────────────────────────────────────
+// The web UI runs `update` detached and reads its output back from a log file
+// (src/update-runner.js). With MULTICC_UPDATE_MARKERS=1 every step boundary is
+// printed as a marker line it turns into the dialog's step list; the marker
+// format is the one the git checkout's `./multicc update` prints.
+const UPDATE_STEP_MARKER = '__MULTICC_UPDATE_STEP__';
+const UPDATE_PLAN_MARKER = '__MULTICC_UPDATE_PLAN__';
+const STANDALONE_UPDATE_STEPS = ['check', 'download', 'checksum', 'extract', 'restart', 'ready'];
+
+function updateMarkersOn(env = process.env) {
+  return env.MULTICC_UPDATE_MARKERS === '1';
+}
+
+function updateStep(env, id, action, note = '') {
+  if (!updateMarkersOn(env)) return;
+  const at = Math.floor(Date.now() / 1000);
+  process.stdout.write(`${UPDATE_STEP_MARKER} ${id} ${action} ${at}${note ? ` ${note}` : ''}\n`);
+}
+
+// The swap helper outlives the CLI and has no stdout; it appends straight to
+// the log the web UI is reading (MULTICC_UPDATE_LOG, set by the runner).
+function appendUpdateLog(env, lines) {
+  if (!env.MULTICC_UPDATE_LOG) return;
+  try { fs.appendFileSync(env.MULTICC_UPDATE_LOG, lines.map(line => `${line}\n`).join('')); } catch (_) {}
+}
+
+function formatMB(bytes) {
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+// "12.3 / 48.0 MB · 25% · 3.1 MB/s" — total is unknown when the server sends
+// no Content-Length, and then only the received size and speed are shown.
+function downloadProgressText({ received, total, elapsedMs }) {
+  const speed = elapsedMs > 0 ? `${formatMB(received / (elapsedMs / 1000))}/s` : null;
+  const parts = total > 0
+    ? [`${(received / 1048576).toFixed(1)} / ${formatMB(total)}`, `${Math.min(100, Math.floor((received / total) * 100))}%`]
+    : [formatMB(received)];
+  if (speed) parts.push(speed);
+  return parts.join(' · ');
+}
+
+// Streams the body to disk instead of buffering it, so progress can be shown
+// while it arrives and a 60 MB archive never sits in memory twice. `onProgress`
+// is throttled to one call per `progressEveryMs` plus a final one.
+async function downloadTo(url, dest, {
+  fetchImpl = fetch, logger: log, onProgress = null, progressEveryMs = 1000, now = Date.now,
+} = {}) {
   const res = await fetchImpl(url, { redirect: 'follow', signal: AbortSignal.timeout(30 * 60_000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  const buffer = Buffer.from(await res.arrayBuffer());
-  if (!buffer.length) throw new Error(`empty download from ${url}`);
+  const total = Number(res.headers && typeof res.headers.get === 'function' ? res.headers.get('content-length') : 0) || 0;
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, buffer);
-  log.log(`downloaded ${path.basename(dest)} (${(buffer.length / 1048576).toFixed(1)} MB)`);
+  const startedAt = now();
+  let received = 0;
+  let lastReport = 0;
+  const report = (force) => {
+    if (!onProgress) return;
+    const at = now();
+    if (!force && at - lastReport < progressEveryMs) return;
+    lastReport = at;
+    onProgress({ received, total, elapsedMs: at - startedAt });
+  };
+  const fd = fs.openSync(dest, 'w');
+  try {
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        fs.writeSync(fd, value);
+        received += value.length;
+        report(false);
+      }
+    } else {
+      const buffer = Buffer.from(await res.arrayBuffer());
+      fs.writeSync(fd, buffer);
+      received = buffer.length;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (!received) throw new Error(`empty download from ${url}`);
+  if (total && received !== total) throw new Error(`incomplete download from ${url}: ${received} of ${total} bytes`);
+  report(true);
+  log.log(`downloaded ${path.basename(dest)} (${formatMB(received)})`);
   return dest;
 }
 
@@ -559,13 +635,18 @@ async function cmdSwap(layout, env, args) {
     fs.rmSync(retired, { recursive: true, force: true });
   } catch (error) {
     log.error(`swap failed: ${error.message}`);
+    // The CLI already wrote its exit marker; a newer one makes the web UI
+    // report this failure instead of waiting for a server that never returns.
+    appendUpdateLog(env, [`swap failed: ${error.message} — the previous version stays installed; start it with: multicc start`, '__MULTICC_UPDATE_EXIT__ 1']);
     // Never leave the user without an install: put the old tree back.
     if (!fs.existsSync(root) && fs.existsSync(retired)) {
       try { fs.renameSync(retired, root); log.log('restored the previous bundle'); } catch (_) {}
     }
     return 1;
   }
+  appendUpdateLog(env, [`${UPDATE_STEP_MARKER} restart done ${Math.floor(Date.now() / 1000)}`]);
   if (args.restart) {
+    appendUpdateLog(env, [`${UPDATE_STEP_MARKER} ready start ${Math.floor(Date.now() / 1000)}`]);
     const installedResources = bundleResources(root, layout.platform);
     const target = path.join(installedResources, 'launcher', 'standalone-cli.js');
     const runtime = runtimeNodeIn(installedResources, layout.platform);
@@ -580,6 +661,8 @@ async function cmdSwap(layout, env, args) {
 async function cmdUpdate(layout, env, args) {
   const log = logger(layout, env);
   const current = layout.manifest.version;
+  if (!args.check && updateMarkersOn(env)) process.stdout.write(`${UPDATE_PLAN_MARKER} ${STANDALONE_UPDATE_STEPS.join(' ')}\n`);
+  if (!args.check) updateStep(env, 'check', 'start');
   if (layout.platform === 'darwin' && process.platform !== 'darwin') {
     process.stderr.write('[multicc] this bundle belongs to another platform; update it there.\n');
     return 1;
@@ -606,26 +689,45 @@ async function cmdUpdate(layout, env, args) {
     return 1;
   }
   if (comparison === 0) {
+    updateStep(env, 'check', 'done', 'up to date');
     process.stdout.write(`MultiCC ${current} is already the latest release.\n`);
     return 0;
   }
   if (comparison < 0) {
+    updateStep(env, 'check', 'done', 'no downgrade');
     process.stdout.write(`MultiCC ${current} is newer than the latest published release (${release.tag}); no downgrade was performed.\n`);
     return 0;
   }
+  updateStep(env, 'check', 'done', `v${release.tag}`);
   const asset = archiveName(release.tag, layout.platform, layout.arch);
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-update-'));
   const archive = path.join(workDir, asset);
   process.stdout.write(`Updating ${current} → ${release.tag}...\n`);
+  // Web: one progress marker per second. Terminal: one self-rewriting line.
+  const interactive = !updateMarkersOn(env) && process.stdout.isTTY;
+  const onProgress = progress => {
+    const text = downloadProgressText(progress);
+    if (updateMarkersOn(env)) updateStep(env, 'download', 'progress', text);
+    else if (interactive) process.stdout.write(`\r  ${text}\u001b[K`);
+  };
   try {
-    await downloadTo(assetUrl(release.tag, asset), archive, { logger: log });
+    updateStep(env, 'download', 'start', asset);
+    process.stdout.write(`  downloading ${asset}\n`);
+    await downloadTo(assetUrl(release.tag, asset), archive, { logger: log, onProgress });
+    if (interactive) process.stdout.write('\n');
     const checksumFile = `${archive}.sha256`;
     await downloadTo(assetUrl(release.tag, `${asset}.sha256`), checksumFile, { logger: log });
+    updateStep(env, 'download', 'done', formatMB(fs.statSync(archive).size));
+    updateStep(env, 'checksum', 'start');
     verifyChecksum(archive, fs.readFileSync(checksumFile, 'utf8'));
+    updateStep(env, 'checksum', 'done');
     process.stdout.write('  checksum verified\n');
+    updateStep(env, 'extract', 'start');
     const staged = extractArchive({ archive, dest: path.join(workDir, 'staged'), platform: layout.platform, logger: log });
+    updateStep(env, 'extract', 'done');
     const state = await currentState(layout, env);
     const restart = Boolean(state.running) || args.restart;
+    updateStep(env, 'restart', 'start');
     if (state.running) {
       process.stdout.write('  stopping MultiCC...\n');
       await cmdStop(layout, env);
@@ -874,6 +976,8 @@ module.exports = {
   bundleResources,
   compareVersions,
   configGet,
+  downloadProgressText,
+  downloadTo,
   configSet,
   envFilePath,
   extractArchive,

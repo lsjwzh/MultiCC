@@ -13,7 +13,13 @@ const {
   UPDATE_LOG_RELATIVE,
   buildUpdateShellCommand,
   preflightUpdate,
+  STEP_MARKER,
+  PLAN_MARKER,
+  UPDATE_STEPS,
+  detectStandaloneUpdate,
+  shellQuote,
   parseUpdateLog,
+  parseUpdateSteps,
   readUpdateStatus,
   startDetachedUpdate,
 } = require('../src/update-runner');
@@ -154,6 +160,182 @@ test('the log parser takes the newest exit marker and never a truncated number',
   assert.equal(parsed.force, false);
   assert.equal(parseUpdateLog('').exitCode, null);
   assert.equal(parseUpdateLog(null).exitCode, null);
+});
+
+test('step markers become a per-step checklist and never leak into the visible tail', () => {
+  const log = [
+    `${START_MARKER} 2026-08-03T10:00:00Z force=0`,
+    `${STEP_MARKER} deps start 1000`,
+    `${STEP_MARKER} deps done 1002`,
+    `${STEP_MARKER} check start 1002`,
+    'Checking for updates...',
+    `${STEP_MARKER} check done 1005 v2.1.0`,
+    `${STEP_MARKER} fetch start 1005`,
+    'Receiving objects:  10% (1/10)\rReceiving objects: 100% (10/10), done.',
+    '',
+  ].join('\n');
+  const steps = parseUpdateSteps(log);
+  assert.deepEqual(steps.map(step => step.id), UPDATE_STEPS);
+  const byId = Object.fromEntries(steps.map(step => [step.id, step]));
+  assert.equal(byId.deps.state, 'done');
+  assert.equal(byId.deps.startedAt, new Date(1000 * 1000).toISOString());
+  assert.equal(byId.deps.endedAt, new Date(1002 * 1000).toISOString());
+  assert.equal(byId.check.note, 'v2.1.0');
+  assert.equal(byId.fetch.state, 'running');
+  assert.equal(byId.install.state, 'pending');
+
+  const parsed = parseUpdateLog(log);
+  assert.doesNotMatch(parsed.tail, new RegExp(STEP_MARKER));
+  assert.doesNotMatch(parsed.tail, /10% \(1\/10\)/, 'git progress frames collapse to the last one');
+  assert.match(parsed.tail, /100% \(10\/10\)/);
+
+  const skipped = parseUpdateSteps(`${STEP_MARKER} install skip 1010 unchanged\n`);
+  assert.equal(skipped.find(step => step.id === 'install').state, 'skipped');
+});
+
+test('steps are read from the whole log, not just the tail window', () => {
+  const root = createFixture();
+  fs.mkdirSync(path.join(root, 'logs'), { recursive: true });
+  const noise = 'x'.repeat(200) + '\n';
+  fs.writeFileSync(path.join(root, UPDATE_LOG_RELATIVE), [
+    `${START_MARKER} 2026-08-03T10:00:00Z force=0\n`,
+    `${STEP_MARKER} deps start 1000\n`,
+    `${STEP_MARKER} deps done 1001\n`,
+    `${STEP_MARKER} install start 1001\n`,
+    noise.repeat(400),
+  ].join(''));
+  const status = readUpdateStatus({ rootDir: root });
+  assert.equal(status.state, 'running');
+  const byId = Object.fromEntries(status.steps.map(step => [step.id, step]));
+  assert.equal(byId.deps.state, 'done');
+  assert.equal(byId.install.state, 'running');
+  assert.deepEqual(readUpdateStatus({ rootDir: createFixture() }).steps, []);
+});
+
+test('the manager emits a marker for every step the UI knows about', () => {
+  const manager = fs.readFileSync(path.join(__dirname, '..', 'multicc'), 'utf8');
+  const declared = /UPDATE_STEPS="([^"]+)"/.exec(manager);
+  assert.ok(declared, 'multicc declares UPDATE_STEPS');
+  assert.deepEqual(declared[1].split(' '), UPDATE_STEPS);
+  assert.ok(manager.includes(`UPDATE_STEP_MARKER="${STEP_MARKER}"`));
+  for (const id of UPDATE_STEPS) {
+    assert.match(manager, new RegExp(`update_step ${id} (start|skip)`), `${id} is started somewhere`);
+  }
+});
+
+// ── Standalone package ──
+function createStandaloneFixture() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "multicc standalone'-"));
+  const resources = path.join(base, 'MultiCC.app', 'Contents', 'Resources');
+  const rootDir = path.join(resources, 'app-server');
+  const dataDir = path.join(base, 'data');
+  fs.mkdirSync(rootDir, { recursive: true });
+  fs.mkdirSync(path.join(resources, 'launcher'), { recursive: true });
+  fs.mkdirSync(path.join(resources, 'runtime', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(resources, 'launcher', 'standalone-cli.js'), '');
+  fs.writeFileSync(path.join(resources, 'runtime', 'bin', 'node'), '', { mode: 0o755 });
+  const env = { MULTICC_DESKTOP: '1', MULTICC_DATA_DIR: dataDir, PATH: process.env.PATH };
+  return { base, resources, rootDir, dataDir, env };
+}
+
+test('a standalone install is recognised, and its log lives outside the bundle it replaces', () => {
+  const fixture = createStandaloneFixture();
+  const standalone = detectStandaloneUpdate({ rootDir: fixture.rootDir, env: fixture.env, platform: 'darwin' });
+  assert.ok(standalone);
+  assert.equal(standalone.logPath, path.join(fixture.dataDir, UPDATE_LOG_RELATIVE));
+  assert.ok(!standalone.logPath.startsWith(fixture.resources), 'the swap would take the log with it');
+
+  // The Electron desktop app and a plain checkout are not standalone installs.
+  assert.equal(detectStandaloneUpdate({ rootDir: fixture.rootDir, env: { ...fixture.env, ELECTRON_RUN_AS_NODE: '1' } }), null);
+  assert.equal(detectStandaloneUpdate({ rootDir: fixture.rootDir, env: { MULTICC_DATA_DIR: fixture.dataDir } }), null);
+  assert.equal(detectStandaloneUpdate({ rootDir: createFixture(), env: fixture.env }), null);
+});
+
+test('a standalone update runs the bundled CLI with markers on and is admitted in desktop mode', () => {
+  const fixture = createStandaloneFixture();
+  const spawned = [];
+  const spawn = (command, args, options) => { spawned.push({ command, args, options }); return createChild(); };
+  const app = createFakeApp();
+  createUpdateRoute({
+    chatSessions: new Map(), spawn, rootDir: fixture.rootDir, log: { log() {}, error() {} },
+    isDesktopMode: () => true,
+    isStandalone: () => Boolean(detectStandaloneUpdate({ rootDir: fixture.rootDir, env: fixture.env })),
+  }).mountRoutes(app);
+
+  const status = createRes();
+  app.routes.get.get('/api/update/status')({}, status);
+  assert.equal(status.body.kind, 'standalone');
+
+  const previousEnv = { ...process.env };
+  Object.assign(process.env, fixture.env);
+  try {
+    const res = createRes();
+    app.routes.post.get('/api/update')({ body: {} }, res);
+    assert.equal(res.statusCode, 202, JSON.stringify(res.body));
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in previousEnv)) delete process.env[key];
+    Object.assign(process.env, previousEnv);
+  }
+  assert.equal(spawned.length, 1);
+  const script = spawned[0].args[1];
+  assert.match(script, /runtime\/bin\/node' '.*launcher\/standalone-cli\.js' update --restart/);
+  assert.ok(script.includes(shellQuote(path.join(fixture.dataDir, 'logs', 'update.log'))), 'the log path survives shell quoting');
+  assert.equal(spawned[0].options.env.MULTICC_UPDATE_MARKERS, '1');
+  assert.equal(spawned[0].options.env.MULTICC_UPDATE_LOG, path.join(fixture.dataDir, 'logs', 'update.log'));
+  assert.equal(spawned[0].options.detached, true);
+});
+
+test('a declared plan replaces the default steps and download progress rides on the running step', () => {
+  const log = [
+    `${PLAN_MARKER} check download checksum extract restart ready`,
+    `${STEP_MARKER} check start 1000`,
+    `${STEP_MARKER} check done 1001 v2.2.0`,
+    `${STEP_MARKER} download start 1001 multicc-standalone.tar.gz`,
+    `${STEP_MARKER} download progress 1002 3.0 / 48.0 MB · 6% · 3.0 MB/s`,
+    `${STEP_MARKER} download progress 1004 12.0 / 48.0 MB · 25% · 4.5 MB/s`,
+    '',
+  ].join('\n');
+  const steps = parseUpdateSteps(log);
+  assert.deepEqual(steps.map(step => step.id), ['check', 'download', 'checksum', 'extract', 'restart', 'ready']);
+  const download = steps.find(step => step.id === 'download');
+  assert.equal(download.state, 'running');
+  assert.equal(download.progress.percent, 25);
+  assert.match(download.progress.text, /12\.0 \/ 48\.0 MB/);
+  assert.equal(parseUpdateLog(log).tail, '', 'plan and progress markers never reach the visible log');
+
+  const finished = parseUpdateSteps(`${log}${STEP_MARKER} download done 1010 48.0 MB\n`);
+  assert.equal(finished.find(step => step.id === 'download').progress, null);
+});
+
+test('the standalone CLI streams a download and reports its progress', async () => {
+  const cli = require('../scripts/standalone-cli.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-download-'));
+  const chunks = [Buffer.alloc(1024, 1), Buffer.alloc(1024, 2), Buffer.alloc(512, 3)];
+  const fakeFetch = (declared) => async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: name => (name === 'content-length' ? String(declared) : null) },
+    body: new ReadableStream({
+      start(controller) { chunks.forEach(chunk => controller.enqueue(new Uint8Array(chunk))); controller.close(); },
+    }),
+  });
+  const reports = [];
+  let clock = 0;
+  const dest = path.join(dir, 'pkg.tar.gz');
+  await cli.downloadTo('https://example.invalid/pkg', dest, {
+    fetchImpl: fakeFetch(2560), logger: { log() {} }, progressEveryMs: 0,
+    now: () => (clock += 250), onProgress: progress => reports.push(progress),
+  });
+  assert.equal(fs.statSync(dest).size, 2560);
+  assert.deepEqual(reports.map(report => report.received), [1024, 2048, 2560, 2560]);
+  assert.equal(reports.at(-1).total, 2560);
+  assert.match(cli.downloadProgressText({ received: 1310720, total: 2621440, elapsedMs: 1000 }), /^1\.3 \/ 2\.5 MB · 50% · 1\.3 MB\/s$/);
+
+  await assert.rejects(
+    cli.downloadTo('https://example.invalid/pkg', path.join(dir, 'short.tar.gz'), { fetchImpl: fakeFetch(4096), logger: { log() {} } }),
+    /incomplete download/,
+    'a connection cut short must not be treated as a complete package',
+  );
 });
 
 test('preflight refuses an install the update cannot possibly work on', () => {

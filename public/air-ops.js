@@ -184,6 +184,145 @@
     return { label, input };
   }
 
+  // ── Update progress panel ──────────────────────────────────────────────
+  // `./multicc update` prints a marker at every step boundary and the status
+  // route returns them as `steps` (src/update-runner.js). The panel turns that
+  // into a checklist, a bar and a ticking clock, so a slow step reads as "this
+  // step is taking 40s", not as a frozen dialog.
+  const UPDATE_STEP_IDS = ['deps', 'check', 'fetch', 'install', 'verify', 'restart', 'ready'];
+  const STEP_LABEL_KEYS = {
+    deps: 'airOpsStepDeps', check: 'airOpsStepCheck', fetch: 'airOpsStepFetch',
+    install: 'airOpsStepInstall', verify: 'airOpsStepVerify', restart: 'airOpsStepRestart', ready: 'airOpsStepReady',
+    // Standalone package (scripts/standalone-cli.js declares its own plan).
+    download: 'airOpsStepDownload', checksum: 'airOpsStepChecksum', extract: 'airOpsStepExtract',
+  };
+  const STEP_ICONS = { done: '✓', running: '⟳', failed: '✗', skipped: '–', pending: '·' };
+
+  function durationText(ms) {
+    const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+    const minutes = Math.floor(total / 60);
+    return minutes ? `${minutes}:${String(total % 60).padStart(2, '0')}` : `${total}s`;
+  }
+
+  // Reconcile what the log says with what the client can see. The log cannot
+  // record the restart while the server is down, nor mark a step failed (the
+  // manager just exits), so both are inferred here.
+  function effectiveSteps(state, { unreachable = false } = {}) {
+    const reported = (state && state.steps) || [];
+    const byId = new Map(reported.map(step => [step.id, step]));
+    // The run's own plan when it reported one; the git manager's otherwise.
+    const ids = reported.length ? reported.map(step => step.id) : UPDATE_STEP_IDS;
+    const steps = ids.map(id => ({ id, state: 'pending', startedAt: null, endedAt: null, note: null, progress: null, ...(byId.get(id) || {}) }));
+    if (unreachable) {
+      const restart = steps.find(step => step.id === 'restart');
+      if (restart.state === 'pending') restart.state = 'running';
+    }
+    const outcome = state && state.state;
+    if (outcome === 'succeeded') {
+      for (const step of steps) {
+        if (step.state === 'running') step.state = 'done';
+        else if (step.state === 'pending') step.state = 'skipped';
+      }
+    } else if (outcome === 'failed' || outcome === 'stale') {
+      const current = steps.find(step => step.state === 'running')
+        || steps.find(step => step.state === 'pending');
+      if (current) current.state = 'failed';
+    }
+    return steps;
+  }
+
+  function createUpdateProgress() {
+    const panel = document.createElement('div');
+    panel.className = 'ops-progress';
+    const summary = document.createElement('div');
+    summary.className = 'ops-progress-summary';
+    const bar = document.createElement('div');
+    bar.className = 'ops-progress-bar';
+    const fill = document.createElement('span');
+    bar.append(fill);
+    const list = document.createElement('ol');
+    list.className = 'ops-steps';
+    panel.append(summary, bar, list);
+
+    let lastState = null;
+    let lastUnreachable = false;
+    let startedAtMs = Date.now();
+    let timer = null;
+
+    function paint() {
+      const now = Date.now();
+      const steps = effectiveSteps(lastState, { unreachable: lastUnreachable });
+      const finished = steps.filter(step => step.state === 'done' || step.state === 'skipped').length;
+      const current = steps.find(step => step.state === 'running');
+      // A download reports its own percentage; any other running step counts half.
+      const share = !current ? 0
+        : (current.progress && current.progress.percent != null ? current.progress.percent / 100 : 0.5);
+      const percent = Math.round(((finished + share) / steps.length) * 100);
+      fill.style.width = `${percent}%`;
+      panel.classList.toggle('is-failed', steps.some(step => step.state === 'failed'));
+      summary.textContent = t('airOpsUpdateProgress', {
+        done: finished, total: steps.length, time: durationText(now - startedAtMs),
+      });
+      list.replaceChildren(...steps.map(step => {
+        const row = document.createElement('li');
+        row.className = `ops-step is-${step.state}`;
+        const icon = document.createElement('span');
+        icon.className = 'ops-step-icon';
+        icon.textContent = STEP_ICONS[step.state] || '·';
+        const name = document.createElement('span');
+        name.className = 'ops-step-name';
+        name.textContent = STEP_LABEL_KEYS[step.id] ? t(STEP_LABEL_KEYS[step.id]) : step.id;
+        const meta = document.createElement('span');
+        meta.className = 'ops-step-meta';
+        const began = Date.parse(step.startedAt || '');
+        const ended = Date.parse(step.endedAt || '');
+        if (step.state === 'skipped') meta.textContent = t('airOpsStepSkipped');
+        else if (step.state === 'running') {
+          meta.textContent = [step.progress && step.progress.text, Number.isFinite(began) ? durationText(now - began) : null]
+            .filter(Boolean).join(' · ');
+        }
+        else if (step.state === 'done' && Number.isFinite(began) && Number.isFinite(ended)) meta.textContent = durationText(ended - began);
+        row.append(icon, name, meta);
+        return row;
+      }));
+    }
+
+    return {
+      node: panel,
+      update(state, { unreachable = false } = {}) {
+        if (state && !unreachable) {
+          lastState = state;
+          const began = Date.parse(state.startedAt || '');
+          if (Number.isFinite(began)) startedAtMs = began;
+        }
+        lastUnreachable = unreachable;
+        paint();
+      },
+      start() {
+        if (timer) return;
+        timer = setInterval(paint, 1000);
+        paint();
+      },
+      stop() {
+        if (timer) { clearInterval(timer); timer = null; }
+        paint();
+      },
+    };
+  }
+
+  // One panel per polling run, re-attached when the update dialog is reopened.
+  // The dialog is shared with the QR/APK panels: never take over an extra
+  // slot that already holds someone else's content.
+  let updateProgress = null;
+  function attachProgress(dialog) {
+    if (!updateProgress) updateProgress = createUpdateProgress();
+    const host = el('ops-extra');
+    const free = host && (!host.firstChild || host.firstChild === updateProgress.node);
+    if (dialog && free && host.firstChild !== updateProgress.node) dialog.setExtra(updateProgress.node);
+    updateProgress.start();
+    return updateProgress;
+  }
+
   // A network failure here is expected — the update restarts the server
   // underneath us — so it is a distinct state, never reported as a failure.
   async function fetchUpdateStatus() {
@@ -209,10 +348,13 @@
     pollingUpdate = true;
     const startedAt = Date.now();
     let sawUnreachable = false;
+    updateProgress = null;
     try {
       for (;;) {
         const state = await fetchUpdateStatus();
         const dialog = activeDialog && activeDialog.isOpen() ? activeDialog : null;
+        const progress = attachProgress(dialog);
+        progress.update(state.unreachable ? null : state, { unreachable: !!state.unreachable });
         if (state.unreachable) {
           sawUnreachable = true;
           setVersionHint(t('airOpsServerRestarting'), true);
@@ -225,6 +367,7 @@
             dialog.setLog(state.tail || '');
             dialog.setButtons([]);
           }
+          progress.stop();
           // Reaching this branch already proves the new server answers (the
           // manager writes its exit marker only after wait_for_ready); the
           // extra probe covers a proxy still holding the old connection.
@@ -233,6 +376,7 @@
           return;
         } else if (state.state === 'failed' || state.state === 'stale') {
           const failed = state.state === 'failed';
+          progress.stop();
           setVersionHint(failed ? t('airOpsUpdateFailed') : t('airOpsUpdateNoResponse'));
           if (dialog) {
             dialog.setTitle(failed ? t('airOpsUpdateFailed') : t('airOpsUpdateLostTitle'));
@@ -256,7 +400,12 @@
           }
           return;
         } else if (state.state === 'running') {
-          const lastLine = String(state.tail || '').trim().split('\n').pop() || t('airOpsUpdating');
+          // The hint beside the version number: the download's own progress
+          // when there is one, else the newest log line.
+          const current = (state.steps || []).find(step => step.state === 'running' && step.progress);
+          const lastLine = current
+            ? `${t(STEP_LABEL_KEYS[current.id] || 'airOpsUpdating')} ${current.progress.percent != null ? `${current.progress.percent}%` : current.progress.text}`
+            : (String(state.tail || '').trim().split('\n').pop() || t('airOpsUpdating'));
           setVersionHint(lastLine.slice(0, 40), true);
           if (dialog) {
             dialog.setBody(sawUnreachable ? t('airOpsServerBackFinishing') : t('airOpsUpdatingBody'));
@@ -269,6 +418,7 @@
         }
 
         if (Date.now() - startedAt > MAX_WAIT_MS) {
+          progress.stop();
           setVersionHint(t('airOpsUpdateTimeout'));
           if (dialog) {
             dialog.setTitle(t('airOpsUpdateTimeout'));
@@ -281,6 +431,7 @@
       }
     } finally {
       pollingUpdate = false;
+      if (updateProgress) updateProgress.stop();
     }
   }
 
@@ -326,7 +477,10 @@
     await pollUntilDone({ force: !!force });
   }
 
-  async function confirmThenUpdate(info) {
+  // kind comes from /api/update/status: 'standalone' downloads a new package
+  // and has no git "force" mode, so the checkbox is left out.
+  async function confirmThenUpdate(info, { kind = 'git' } = {}) {
+    const standalone = kind === 'standalone';
     const dialog = openDialog();
     const updateAvailable = !!(info && info.updateAvailable);
     const currentText = `v${(info && info.current) || '—'}`;
@@ -339,19 +493,19 @@
         ? t('airOpsLatestVersion', { latest: latestText })
         : (info && info.apiError ? t('airOpsLatestOffline') : t('airOpsLatestIsCurrent', { latest: latestText || t('airOpsUnknown') })),
       '',
-      t('airOpsUpdateIntro'),
+      t(standalone ? 'airOpsUpdateIntroStandalone' : 'airOpsUpdateIntro'),
       t('airOpsUpdateSessionsNote'),
     ].join('\n'));
 
     const { label, input } = forceCheckbox();
-    dialog.setExtra(label);
+    dialog.setExtra(standalone ? null : label);
     dialog.setLog('');
     dialog.setButtons([
       { label: t('airOpsCancel'), onClick: () => dialog.close() },
       {
         label: updateAvailable ? t('airOpsUpdateNow') : t('airOpsUpdateAnyway'),
         kind: 'primary',
-        onClick: () => { const force = input.checked; dialog.close(); startUpdate(force); },
+        onClick: () => { const force = !standalone && input.checked; dialog.close(); startUpdate(force); },
       },
     ], () => dialog.close());
   }
@@ -368,12 +522,14 @@
         const dialog = openDialog();
         dialog.setTitle(t('airOpsUpdatingTitle'));
         dialog.setBody(t('airOpsUpdateTakeover'));
+        dialog.setExtra(null);
         dialog.setLog(running.tail || '');
         dialog.setButtons([{ label: t('airOpsRunInBackground'), onClick: () => dialog.close() }], () => dialog.close());
         // Not awaited: the poll can run for many minutes, and holding the
         // guard that long would leave the version row unclickable — exactly
         // when the user who backgrounded the dialog wants it back.
         pollUntilDone({ force: !!running.force });
+        attachProgress(dialog).update(running);
         return;
       }
       const info = await checkVersion();
@@ -381,7 +537,7 @@
         status(t('airOpsCheckFailedRetry'), 'err');
         return;
       }
-      await confirmThenUpdate(info);
+      await confirmThenUpdate(info, { kind: running && running.kind });
     } finally {
       updateFlowOpen = false;
     }

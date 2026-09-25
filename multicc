@@ -116,6 +116,7 @@ wait_for_ready() {
       echo "MultiCC readiness confirmed."
       return 0
     fi
+    [ $((_i % 10)) -eq 0 ] && echo "  still starting… $((_i / 2))s"
     sleep 0.5
   done
   echo "MultiCC restarted but readiness did not become healthy."
@@ -249,6 +250,51 @@ do_log() {
   tail -f "$OUT_LOG" "$ERR_LOG"
 }
 
+# ── Update progress ─────────────────────────────────────────────────────
+# `update` is a sequence of named steps. Each boundary prints one marker line
+# that src/update-runner.js parses into the web dialog's step list; in a
+# terminal it doubles as a readable step header. Only start/done/skip are
+# emitted — a failed run is the step that started and never finished.
+UPDATE_STEP_MARKER="__MULTICC_UPDATE_STEP__"
+UPDATE_STEPS="deps check fetch install verify restart ready"
+update_step() {  # update_step <id> <start|done|skip> [note]
+  echo "$UPDATE_STEP_MARKER $1 $2 $(date +%s)${3:+ $3}"
+}
+
+# Network hygiene for the update's git/curl/npm calls. git has no default
+# timeout, so a stalled TLS connection used to sit silently for minutes; the
+# low-speed guard aborts once a transfer stays under 1KB/s for 30s. A macOS
+# system proxy (Clash & co.) is honoured by browsers but not by git/curl/npm,
+# so it is passed to those three commands explicitly — never exported, or the
+# restarted server would inherit it.
+UPDATE_PROXY=""
+resolve_update_proxy() {
+  UPDATE_PROXY=""
+  [ -n "${HTTPS_PROXY:-}${https_proxy:-}${ALL_PROXY:-}${all_proxy:-}" ] && return 0
+  [ -n "$(git config --get http.proxy 2>/dev/null)" ] && return 0
+  command -v scutil >/dev/null 2>&1 || return 0
+  local info host port
+  info="$(scutil --proxy 2>/dev/null)" || return 0
+  echo "$info" | grep -q 'HTTPSEnable : 1' || return 0
+  host="$(echo "$info" | sed -n 's/^ *HTTPSProxy : //p' | head -1)"
+  port="$(echo "$info" | sed -n 's/^ *HTTPSPort : //p' | head -1)"
+  [ -n "$host" ] && [ -n "$port" ] || return 0
+  UPDATE_PROXY="http://$host:$port"
+  echo "  Using the system HTTPS proxy $host:$port for git/curl/npm."
+}
+update_git() {
+  if [ -n "$UPDATE_PROXY" ]; then
+    git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 -c http.proxy="$UPDATE_PROXY" "$@"
+  else
+    git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 "$@"
+  fi
+}
+update_npm_install() {
+  local proxy_args=()
+  [ -n "$UPDATE_PROXY" ] && proxy_args=(--proxy "$UPDATE_PROXY" --https-proxy "$UPDATE_PROXY")
+  env PATH="$(dirname "$NODE"):$PATH" npm install --no-audit --no-fund "${proxy_args[@]}" 2>&1
+}
+
 do_update() {
   cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; return 1; }
 
@@ -290,14 +336,18 @@ do_update() {
   # Repair incomplete installs even when git is already current. This covers
   # native bindings, cli-provider-router and @homebridge/ciao, so an interrupted
   # upgrade can recover by simply rerunning `./multicc update`.
+  echo "Update steps: $UPDATE_STEPS"
+  update_step deps start
   echo "Verifying current runtime dependencies..."
+  resolve_update_proxy
   if ! check_runtime_dependencies; then
     echo "Runtime dependencies are incomplete or outdated — running npm install..."
-    if ! env PATH="$(dirname "$NODE"):$PATH" npm install 2>&1 || ! check_runtime_dependencies; then
+    if ! update_npm_install || ! check_runtime_dependencies; then
       echo "Runtime dependency repair failed — update was not started."
       return 1
     fi
   fi
+  update_step deps done
   # ── Resolve the release channel ──────────────────────────────────────
   # .multicc_channel is written by install.sh.  If absent we default to "dev"
   # for backwards-compatibility with older installations that pre-date this
@@ -308,9 +358,10 @@ do_update() {
   fi
 
   # ── Fetch remote tags & latest release info ──────────────────────────
+  update_step check start
   echo "Checking for updates..."
 
-  git fetch origin --tags 2>/dev/null || true
+  update_git fetch --progress origin --tags 2>&1 || echo "  (tag fetch failed — falling back to the release API)"
 
   local latest_tag latest_version local_version
   latest_tag=""
@@ -319,7 +370,7 @@ do_update() {
   # Query the GitHub Releases API for the latest release (stable channel).
   # Fall back to the highest semver tag if the API is unreachable.
   local api_resp
-  api_resp="$(curl -sf --connect-timeout 10 --max-time 15 \
+  api_resp="$(curl -sf --connect-timeout 10 --max-time 15 ${UPDATE_PROXY:+-x "$UPDATE_PROXY"} \
     "https://api.github.com/repos/lsjwzh/MultiCC/releases/latest" 2>/dev/null)" || true
   if [ -n "$api_resp" ]; then
     latest_tag="$(echo "$api_resp" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
@@ -368,12 +419,16 @@ do_update() {
     # Stable channel: only update when a newer release tag exists.
     if [ -z "$latest_tag" ]; then
       echo "No release tags found — nothing to update."
+      update_step check done "no release"
       return 0
     fi
     if compare_versions "$local_version" "$latest_version"; then
       echo "Newer release available: ${latest_tag} → updating..."
+      update_step check done "${latest_tag}"
+      update_step fetch start
     else
       echo "Already on the latest release (${latest_tag})."
+      update_step check done "up to date"
       if [ "$force" = 1 ]; then
         # This gate runs before --force is consulted, so -f is a no-op here: there
         # is no newer release to move to. Say so, or a user who ran it to get a
@@ -411,6 +466,7 @@ do_update() {
     fi
     echo "Switched to ${latest_tag}."
     after="$(git rev-parse HEAD 2>/dev/null)"
+    update_step fetch done
   else
     # Dev channel (main): pull the latest main.
     # Warn if a newer release exists that the user might prefer.
@@ -427,6 +483,8 @@ do_update() {
       echo "  Local version (v${local_version}) >= latest release (${latest_tag})"
     fi
 
+    update_step check done "${branch}"
+    update_step fetch start
     # Proceed with the existing git-pull-on-main logic (preserved below).
     # The running server constantly rewrites runtime-state files, so the working
     # tree is almost never clean. Instead of aborting, stash local changes (tracked
@@ -456,7 +514,9 @@ do_update() {
     echo "Updating MultiCC (branch: $branch)..."
 
     # Fetch latest from remote.
-    git fetch origin "$branch" 2>/dev/null
+    if ! update_git fetch --progress origin "$branch" 2>&1; then
+      echo "git fetch failed or stalled (network) — continuing with what is already fetched."
+    fi
 
     # Check if a fast-forward is possible. If the local branch has diverged
     # from origin (e.g. after a server-side history rewrite / force-push),
@@ -485,7 +545,7 @@ do_update() {
       fi
     elif [ "$merge_base" = "$local_tip" ]; then
       # Local is an ancestor of origin — fast-forward is safe.
-      if ! git pull --ff-only origin "$branch"; then
+      if ! update_git pull --ff-only --progress origin "$branch" 2>&1; then
         echo "git pull failed (network issue) — retry later."
         [ "$stashed" = 1 ] && git stash pop >/dev/null 2>&1
         return 1
@@ -525,6 +585,7 @@ do_update() {
     fi
 
     after="$(git rev-parse HEAD 2>/dev/null)"
+    update_step fetch done
     if [ "$before" = "$after" ] && [ "$forced_reset" != 1 ]; then
       echo "Already up to date — nothing to restart."
       return 0
@@ -535,16 +596,24 @@ do_update() {
   fi
 
   # ── Reinstall deps when manifests changed (both channels) ─────────────
-  if [ -n "${after:-}" ] && [ "$before" != "${after:-}" ]; then
-    if git diff --name-only "$before" "${after:-}" | grep -qE '^package(-lock)?\.json$'; then
-      echo "Dependencies changed — running npm install..."
-      if ! env PATH="$(dirname "$NODE"):$PATH" npm install 2>&1; then
-        echo "npm install failed — fix the error above, then re-run './multicc update'."
-        return 1
-      fi
+  local deps_changed=0
+  if [ -n "${after:-}" ] && [ "$before" != "${after:-}" ] \
+     && git diff --name-only "$before" "${after:-}" | grep -qE '^package(-lock)?\.json$'; then
+    deps_changed=1
+  fi
+  if [ "$deps_changed" = 1 ]; then
+    update_step install start
+    echo "Dependencies changed — running npm install..."
+    if ! update_npm_install; then
+      echo "npm install failed — fix the error above, then re-run './multicc update'."
+      return 1
     fi
+    update_step install done
+  else
+    update_step install skip "unchanged"
   fi
 
+  update_step verify start
   echo "Verifying runtime dependencies..."
   if ! check_runtime_dependencies; then
     echo "Runtime dependency verification failed — server was not restarted."
@@ -560,7 +629,10 @@ do_update() {
   # Drop any report a previous boot left behind: only this update's counts count.
   rm -f "$LOG_DIR/cron-fanout-cleanup.log"
 
+  update_step verify done
+  update_step restart start
   echo "Restarting to apply update..."
+  echo "  (sessions that are still streaming get up to 65s to save their output)"
   if [ -f "$PLIST" ]; then
     # Installed as a launchd service — reload so the new server.js is picked up
     launchctl unload "$PLIST" 2>/dev/null
@@ -569,6 +641,8 @@ do_update() {
   else
     do_restart
   fi
+  update_step restart done
+  update_step ready start
   if ! wait_for_ready; then
     echo "Update code was applied, but startup migration/readiness needs operator attention."
     return 1
@@ -586,6 +660,7 @@ do_update() {
       rm -f "$LOG_DIR/cron-fanout-cleanup.log"
     fi
   fi
+  update_step ready done
   echo "Update complete (${before:0:7} → ${after:0:7})."
 }
 
