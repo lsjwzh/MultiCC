@@ -422,6 +422,7 @@ function createSessionWorkScheduler({
       return {
         requestId: String(pending.requestId),
         taskId: pending.taskId ? String(pending.taskId) : null,
+        turnId: pending.turnId ? String(pending.turnId) : null,
         createdAt: Number(pending.createdAt) || null,
       };
     } catch (error) {
@@ -606,7 +607,12 @@ function createSessionWorkScheduler({
         const control = options.taskShellControl;
         if (control) {
           const question = canonicalPendingUserInput(cleanSessionId);
-          if (!control.turnId || getTurnId?.(cleanSessionId) !== control.turnId
+          // An answer belongs to the turn that asked. A background continuation
+          // keeps the open question but advances the signal turn, so the signal
+          // turn alone would reject every answer after one such continuation.
+          const turnMatches = !!control.turnId && (getTurnId?.(cleanSessionId) === control.turnId
+            || (control.intent === 'answer' && !!question?.turnId && question.turnId === control.turnId));
+          if (!turnMatches
             || (control.intent === 'answer' && (!question || question.requestId !== requestId || question.taskId !== options.taskId))) {
             return { ok: false, code: 'stale_control' };
           }

@@ -440,6 +440,12 @@ function createTaskShellRuntime(ports) {
       || state.pending.taskId !== payload.taskId)) throw failure('stale_control', 'The question is no longer pending');
     if (payload.intent === 'steer' && state.pending && !state.pending.resolved) throw failure('answer_required');
   }
+  // A reservation whose receipt never landed (rejected/failed) does not hold
+  // the question; this also heals reservations leaked before release existed.
+  function answerReserved(key) {
+    const held = store.get('answer', key);
+    return !!held && !['rejected', 'failed'].includes(store.get('receipt', held.receiptId)?.status);
+  }
   async function reserve(s, payload, receiptId, fingerprint, delivery = {}) {
     if (s.standalone && payload.newTask) throw failure('standalone_task_identity_locked');
     const selectedTaskId = payload.newTask ? null : payload.taskId || s.currentTaskId || s.defaultTaskId || null;
@@ -448,7 +454,7 @@ function createTaskShellRuntime(ports) {
     const observedClaim = target ? store.get('claim', target.id)?.receiptId : null;
     const state = target ? await getExecution(target.sessionId) : null;
     if (payload.intent !== 'work') {
-      if (payload.intent === 'answer' && store.get('answer', `${target.id}:${payload.requestId}`)) throw failure('answer_already_reserved');
+      if (payload.intent === 'answer' && answerReserved(`${target.id}:${payload.requestId}`)) throw failure('answer_already_reserved');
       checkControl(payload, state);
     }
     const references = [...new Set([...payload.contextTaskIds, ...payload.dependsOn])];
@@ -493,7 +499,7 @@ function createTaskShellRuntime(ports) {
       }
       if (payload.intent === 'answer') {
         const key = `${task.id}:${payload.requestId}`;
-        if (store.get('answer', key)) throw failure('answer_already_reserved');
+        if (answerReserved(key)) throw failure('answer_already_reserved');
         store.set('answer', key, { receiptId });
       }
       const originReceipt = payload.intent !== 'work' && store.get('delivery:run', payload.turnId)?.binding?.receiptId;
@@ -603,6 +609,12 @@ function createTaskShellRuntime(ports) {
       const notDelivered = error.code === 'stale_control';
       receipt.status = notDelivered ? 'rejected' : 'failed'; receipt.error = cleanError(error);
       store.set('receipt', receipt.id, receipt);
+      // The reservation only guards against a second delivered answer. One that
+      // never landed must not lock the question against every later attempt.
+      if (receipt.payload.intent === 'answer') {
+        const key = `${task.id}:${receipt.payload.requestId}`;
+        if (store.get('answer', key)?.receiptId === receipt.id) store.remove('answer', key);
+      }
       throw Object.assign(failure(receipt.error.code, receipt.error.message, error.status || error.statusCode || 500), { receiptId: receipt.id, taskId: task.id, notDelivered });
     } finally { if (needsCapacity) launching.delete(task.id); }
   }
