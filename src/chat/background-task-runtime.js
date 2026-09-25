@@ -423,7 +423,9 @@ function createBackgroundTaskRuntime(deps = {}) {
     return '';
   }
 
-  function outputSnippet(outputFile, result) {
+  // `report` is the final text the notification itself carries: the stream
+  // event can arrive before the transcript's last record is written.
+  function outputSnippet(outputFile, result, report) {
     if (!outputFile && !result) return '';
     try {
       const value = result || readFile(outputFile, 'utf8');
@@ -432,7 +434,10 @@ function createBackgroundTaskRuntime(deps = {}) {
         return '';
       }
       const text = String(value || '');
-      const output = redactProviderRouteCapability(agentReport(text) ?? text);
+      const final = result ? text : agentReport(text);
+      const output = redactProviderRouteCapability(final === '' && report ? String(report) : final ?? text);
+      // A report reads top-down; a log's newest lines matter most.
+      if (final !== null) return output.length > outputCap * 8 ? `${output.slice(0, outputCap * 8)}\n…（报告已截断）` : output;
       return output.length > outputCap ? output.slice(-outputCap) : output;
     } catch (_) {
       return '';
@@ -517,7 +522,9 @@ function createBackgroundTaskRuntime(deps = {}) {
       : [];
     const tool = tools.find(item => item && item.id === toolUseId);
     if (!tool || typeof tool.result !== 'string') return false;
-    if (tool.name === 'Bash' && tool.input && tool.input.run_in_background) {
+    // A background launch (Bash or Agent) returns only a launch stub; its
+    // result has not been seen unless the launching turn is still streaming.
+    if (tool.input && tool.input.run_in_background) {
       const activeTurnId = String(chatState && chatState._activeTurn && chatState._activeTurn.turnId || '').trim();
       return !!(
         chatState && chatState.isStreaming === true
@@ -537,7 +544,7 @@ function createBackgroundTaskRuntime(deps = {}) {
     const outputFile = event.output_file || (taskId && event.session_id
       ? monitorOutputFilePath(event.session_id, taskId, chatState && chatState.cwd)
       : null);
-    const snippet = outputSnippet(outputFile);
+    const snippet = outputSnippet(outputFile, event.result, event.summary);
     const ledgerStatus = statusForCompletion(event.status);
     observe({
       sessionId: sessionName,
@@ -602,6 +609,9 @@ function createBackgroundTaskRuntime(deps = {}) {
     }
     // The native notification query won the race and was already admitted.
     if (owned && owned.delivered) return { handled: true, decision: 'native-prompt' };
+    // Any live turn gets the notification from the CLI itself; if the turn
+    // ends first, the CLI's idle hook reports it (handleTaskPrompt).
+    if (owned && chatState.isStreaming === true) return { handled: true, decision: 'live-turn' };
     const item = {
       desc: owned?.description || safeDescription(event.description || event.summary, '后台任务'),
       status: event.status || 'completed',
@@ -624,14 +634,12 @@ function createBackgroundTaskRuntime(deps = {}) {
   // A native notification query for a main-thread background task. The host
   // owns delivery, so the native query is always swallowed: either the host
   // already queued this result (duplicate), or the hook arrived first and the
-  // host queues it now. The one exception is a completion the originating turn
-  // is still streaming through — the CLI hands that over in-turn.
+  // host queues it now. The one exception is a completion that arrives while
+  // any turn is streaming — the CLI hands that over in-turn.
   function handleTaskPrompt(sessionName, chatState, event) {
     const owned = ownedTask(sessionName, event.task_id);
     if (!owned) return { handled: false };
-    const activeTurnId = String(chatState && chatState._activeTurn && chatState._activeTurn.turnId || '').trim();
-    if (!owned.delivered && owned.originTurnId && chatState && chatState.isStreaming === true
-        && activeTurnId === owned.originTurnId) return { handled: false };
+    if (!owned.delivered && chatState && chatState.isStreaming === true) return { handled: false };
     if (event.probe) return { handled: true, monitorOwned: true };
     if (owned.delivered) return { handled: true, monitorOwned: true, decision: 'duplicate' };
     owned.delivered = true;

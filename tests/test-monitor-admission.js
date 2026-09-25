@@ -223,3 +223,111 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
   assert.ok(hooks.every(verdict => verdict.handled === false));
   assert.deepEqual(shown, ['in-turn Monitor · MONITOR_LINE_A'], 'the page shows the event line once');
 });
+
+// A resident session driven turn by turn against the fake upstream, with the
+// production background runtime deciding every native notification.
+async function residentSession(t, lane, reply) {
+  const injections = [], decisions = [], main = [];
+  const f = await sdkFixture(t, args => {
+    const first = JSON.stringify(args.input.messages[0]?.content || '');
+    if (first.includes('SUBAGENT_JOB')) return reply.sub?.(args);
+    main.push(JSON.stringify(args.input.messages));
+    return reply.main(main.length, main.at(-1));
+  });
+  const stream = lane === 'sdk' ? createStreamRouter({}, createSdkStream()) : require('../src/chat/chat-stream');
+  const name = `resident-${lane}-${randomUUID().slice(0, 8)}`;
+  const state = { cwd: f.cwd, currentToolCalls: [], isStreaming: false };
+  const background = createBackgroundTaskRuntime({
+    broadcast() {}, observeTask() {}, noteBgResultInjected() {},
+    deliverSystem: (id, text) => { injections.push(text); },
+    createCoalescer: coalescing.createCoalescer, buildNudge: coalescing.buildNudge,
+    classifyCompletion: coalescing.classifyBgCompletion,
+    spawn: require('node:child_process').spawn,
+    readFile: fs.readFileSync, realpath: fs.realpathSync, tmpdir: () => f.root,
+    getuid: () => process.getuid?.() || 0, now: Date.now,
+    setTimer: setTimeout, clearTimer: clearTimeout, completionWindowMs: 30,
+  });
+  await stream.claimWorkspace(name, { id: name, path: f.cwd });
+  stream.ensure(name, { cwd: f.cwd, sessionId: randomUUID(), idleMs: 30000, monitorAdmission: true, env: { ...f.env },
+    onBackgroundEvent: event => {
+      const verdict = background.handleEvent(name, state, event);
+      if (!event.probe && ['monitor_prompt', 'task_notification'].includes(event.subtype)) {
+        decisions.push(`${event.subtype}:${verdict.decision || (verdict.handled ? 'handled' : 'native')}`);
+      }
+      return verdict;
+    },
+    isBackgroundActive: () => background.hasProcessBackgroundTasks(name),
+    ...(lane === 'sdk' ? { sdkOptions: { model: 'claude-sonnet-4-6' } } : {
+      cmd: path.join(path.dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), '..',
+        `claude-agent-sdk-${process.platform}-${process.arch}`, 'claude'),
+      baseArgs: ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json',
+        '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6'] }) });
+  f.teardown.tasks.push(async () => {
+    for (const file of ['bg-go', 'agent-go']) fs.writeFileSync(path.join(f.cwd, file), 'go');
+    try { await stream.closeAndWait(name); } finally { background.stopAll(); }
+  });
+  let turns = 0;
+  async function turn(text) {
+    state.isStreaming = true;
+    state._activeTurn = { turnId: `turn-${++turns}` };
+    try {
+      await stream.send(name, text, event => {
+        if (event.type !== 'assistant' || event.parent_tool_use_id) return;
+        for (const block of event.message?.content || []) if (block.type === 'tool_use') {
+          state.currentToolCalls.push(block); background.recordMainToolUseId(name, block.id);
+        }
+      });
+    } finally { state.isStreaming = false; }
+  }
+  return { f, turn, injections, decisions, main, go: file => fs.writeFileSync(path.join(f.cwd, file), 'go') };
+}
+
+const backgroundAgent = { type: 'tool_use', id: 'agent-tool', name: 'Agent', input: {
+  description: 'layout research', subagent_type: 'general-purpose', run_in_background: true,
+  prompt: 'SUBAGENT_JOB: wait for agent-go, then report.' } };
+const subagentReply = ({ input }) => JSON.stringify(input.messages).includes('AGENT_WORK')
+  ? { type: 'text', text: `AGENT_FINAL_REPORT ${'detail '.repeat(600)}END_OF_REPORT` }
+  : { type: 'tool_use', id: `sub-bash-${randomUUID().slice(0, 8)}`, name: 'Bash', input: {
+    command: 'while [ ! -f agent-go ]; do sleep 0.02; done; echo AGENT_$((40+2))_WORK | sed s/_42_/_/', description: 'wait' } };
+
+for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Bash finishing in a later turn reaches that turn natively`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, lane, { main: (n, messages) => {
+    if (n === 1) return { type: 'tool_use', id: 'bg-tool', name: 'Bash', input: { run_in_background: true,
+      command: 'while [ ! -f bg-go ]; do sleep 0.02; done; echo BG_$((40+2))', description: 'slow background job' } };
+    if (n === 3) return { type: 'tool_use', id: 'fg-tool', name: 'Bash', input: {
+      command: 'touch bg-go; sleep 3; echo slept', description: 'let the background job finish' } };
+    return null;
+  } });
+  await s.turn('Start the background job');
+  await s.turn('Do something else meanwhile');
+  await new Promise(resolve => setTimeout(resolve, 800));
+  assert.equal(s.main.length, 4, 'no extra native query after the turn');
+  assert.match(s.main[3], /<task-notification>[\s\S]*slow background job\\" completed/, 'the later live turn receives the completion');
+  assert.deepEqual(s.injections, [], 'no 🔇 for a result a live turn already received');
+});
+
+for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Agent finishing after its turn wakes the session once with its report`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, lane, { main: n => n === 1 ? backgroundAgent : null, sub: subagentReply });
+  await s.turn('Research in the background');
+  assert.equal(s.main.length, 2);
+  s.go('agent-go');
+  const deadline = Date.now() + 15000;
+  while (!s.injections.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  await new Promise(resolve => setTimeout(resolve, 800));
+  assert.equal(s.injections.length, 1, `one wake-up (${s.decisions.join(', ')})`);
+  assert.match(s.injections[0], /后台任务（layout research）/);
+  assert.match(s.injections[0], /AGENT_FINAL_REPORT[\s\S]*END_OF_REPORT/);
+  assert.doesNotMatch(s.injections[0], /isSidechain|"type":"assistant"/);
+  assert.equal(s.main.length, 2, 'the native self-wake never ran outside admission');
+});
+
+for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Agent finishing inside its turn reaches that turn natively`, { timeout: 40000 }, async t => {
+  const s = await residentSession(t, lane, { main: n => n === 1 ? backgroundAgent
+    : n === 2 ? { type: 'tool_use', id: 'fg-tool', name: 'Bash', input: {
+      command: 'touch agent-go; sleep 4; echo slept', description: 'wait for the agent' } }
+      : null, sub: subagentReply });
+  await s.turn('Research and wait');
+  await new Promise(resolve => setTimeout(resolve, 800));
+  assert.ok(s.main.some(messages => messages.includes('AGENT_FINAL_REPORT')), `the turn receives the report (${s.decisions.join(', ')})`);
+  assert.deepEqual(s.injections, [], 'no 🔇 for a report the turn received');
+});
