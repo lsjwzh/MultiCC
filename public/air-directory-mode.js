@@ -93,14 +93,54 @@
     render();
   }
 
-  // 本目录新建终端：POST /api/directories/:id/sessions（kind=terminal），CLI 用
-  // 「最近用过的那套」（外壳那颗新任务输入框的同一个默认）。建好直接去那个终端页，
-  // 回来的路是浏览器后退 —— 和点一行已有终端是同一种跳转。
-  async function create() {
+  // 可选的 CLI：快照里服务端认的那一份（`/api/air` 的 `clis`），实验适配器不出现在
+  // 这里（终端是给人用的交互式会话，不该把 exp 车道当成常规选项），最近用过的那套
+  // 排最前面。
+  //
+  // 关键：这是**选择**，不是默认值。此前「＋ 新终端」直接拿最近用过的那套就建了，
+  // 用户明确说过不对 —— 所以只要有两个以上可选项就先弹一层问。
+  function cliOptions() {
+    const recent = String(ctx?.defaultCli?.() || '');
+    const all = (ctx?.data?.clis || [])
+      .map(cli => String(cli || ''))
+      .filter(cli => cli && cli !== 'codex-exp' && cli !== 'claude-exp');
+    const unique = [...new Set(all)];
+    const ordered = unique.filter(cli => cli !== recent);
+    return recent && unique.includes(recent) ? [recent, ...ordered] : ordered;
+  }
+
+  function openCliPicker() {
+    if (creating || !dirId || !ctx) return;
+    const options = cliOptions();
+    // 没得选就不问（一个都答不出来时退回 CLAUDE，至少让这一下有个结果）。
+    if (options.length <= 1) {
+      void create(options[0] || 'claude');
+      return;
+    }
+    const dialog = el('terminal-cli-dialog');
+    const list = el('terminal-cli-options');
+    if (!dialog || !list) return;
+    list.replaceChildren(...options.map(cli => {
+      const button = node('button', cli, 'terminal-cli-option');
+      button.type = 'button';
+      button.dataset.cli = cli;
+      // 最近用过的那套只是排第一（省一次找），不是替用户选定。
+      if (cli === options[0] && cli === String(ctx?.defaultCli?.() || '')) button.classList.add('is-recent');
+      button.onclick = () => {
+        dialog.close();
+        void create(cli);
+      };
+      return button;
+    }));
+    dialog.showModal();
+  }
+
+  // 本目录新建终端：POST /api/directories/:id/sessions（kind=terminal），CLI 由
+  // [openCliPicker] 问出来。建好直接去那个终端页，回来的路是浏览器后退 —— 和点一行
+  // 已有终端是同一种跳转。
+  async function create(cli) {
     const button = el('directory-terminal-new');
     if (creating || !dirId || !ctx) return;
-    const preferred = ctx.defaultCli?.();
-    const cli = [preferred, ...(ctx.data?.clis || []), 'claude'].find(value => value && value !== 'codex-exp' && value !== 'claude-exp');
     creating = true;
     if (button) button.disabled = true;
     try {
@@ -108,7 +148,7 @@
         { cli, kind: 'terminal', label: cli });
       root.location.assign(`/?id=${encodeURIComponent(session.id)}`);
     } catch (error) {
-      ctx.notice?.(`新建终端失败：${error?.message || error}`);
+      ctx.notice?.(translate('airTerminalCreateFailed', { error: error?.message || error }));
     } finally {
       creating = false;
       if (button) button.disabled = false;
@@ -117,7 +157,9 @@
 
   el('directory-mode-chat')?.addEventListener('click', () => setMode('chat'));
   el('directory-mode-terminal')?.addEventListener('click', () => setMode('terminal'));
-  el('directory-terminal-new')?.addEventListener('click', () => void create());
+  el('directory-terminal-new')?.addEventListener('click', openCliPicker);
+  el('terminal-cli-close')?.addEventListener('click', () => el('terminal-cli-dialog')?.close());
+  el('terminal-cli-cancel')?.addEventListener('click', () => el('terminal-cli-dialog')?.close());
 
   root.MultiCCAirDirectoryMode = { render, setMode, currentMode: () => mode };
 })(typeof window !== 'undefined' ? window : null);

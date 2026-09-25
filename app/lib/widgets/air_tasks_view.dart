@@ -1666,11 +1666,30 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
-  /// 「新建终端」：一个目录下的终端就走这条路（`POST /api/directories/:id/sessions`
-  /// 的 `kind=terminal`）。用哪个 CLI 由快照里服务端认得的清单给（只有一个就不问），
-  /// 建好直接开终端页；下一次 4s 轮询里它就出现在这份列表上。
-  Future<void> _createTerminal(String dirId) async {
+  /// 终端可选的 CLI：快照里那些，去掉这台客户端**认不出**的和实验适配器。
+  ///
+  /// 认不出不是小事：`parseCli` 对未知名字会静默落回 Claude，选「kimi」结果建出
+  /// 一个 Claude 终端，界面上还写着 kimi。Web 那份清单（`air-directory-mode.js`
+  /// 的 `cliOptions`）同样剔掉 exp 车道，两边保持同一套可选集合。
+  List<String> _terminalCliOptions() {
     final clis = _data?.clis ?? const <String>[];
+    return [
+      for (final cli in clis)
+        if (tryParseCli(cli) != null && cli != 'claude-exp' && cli != 'codex-exp')
+          cli,
+    ];
+  }
+
+  /// 「新建终端」：一个目录下的终端就走这条路（`POST /api/directories/:id/sessions`
+  /// 的 `kind=terminal`）。用哪个 CLI 由 [_terminalCliOptions] 问出来（只有一个就不
+  /// 问），建好直接开终端页；下一次 4s 轮询里它就出现在这份列表上。
+  Future<void> _createTerminal(String dirId) async {
+    final clis = _terminalCliOptions();
+    // 一个都没得选时不要假装建得出来：`_pickTerminalCli([])` 只会弹一层空壳。
+    if (clis.isEmpty) {
+      setState(() => _error = t('noCompatibleAi'));
+      return;
+    }
     final cli = clis.length == 1 ? clis.first : await _pickTerminalCli(clis);
     if (cli == null || cli.isEmpty || !mounted) return;
     setState(() => _creatingTerminal = true);

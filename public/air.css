@@ -665,6 +665,18 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-terminal-row strong { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
 .directory-terminal-row small { color: var(--muted); font-size: 11px; }
 .directory-terminal-empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
+/* 「＋ 新终端」先问用哪个 CLI：一层小弹窗，一行一个 CLI，点一行就建那个并打开。
+   最近用过的那套排在第一个（`data-cli` 上带 is-recent 时补一句小字），但选项一个
+   都不少 —— 只默认开最近的那一套是用户明确否掉的行为。 */
+.terminal-cli-dialog { width: min(420px, calc(100vw - 36px)); padding: 18px 20px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: var(--shadow-2); }
+.terminal-cli-dialog::backdrop { background: rgba(11, 26, 42, .32); }
+.terminal-cli-dialog > p { margin: 2px 0 12px; color: var(--muted); font-size: 12.5px; }
+.terminal-cli-options { display: grid; gap: 8px; margin: 0 0 6px; }
+.terminal-cli-option { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 42px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); color: var(--text); font: inherit; font-size: 13.5px; font-weight: 600; text-align: left; cursor: pointer; }
+.terminal-cli-option:hover, .terminal-cli-option:focus-visible { border-color: #9cc4ea; background: var(--blue-soft); }
+/* 最近用过的那套只靠「排在第一 + 一道左侧亮边」标出来：这里没有文案，所以不需要
+   i18n（CSS content 里的中文在英文界面里会照样露出来）。 */
+.terminal-cli-option.is-recent { border-color: #bcd8f2; box-shadow: inset 3px 0 0 var(--accent); }
 #directory-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 /* 统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
    再往下就是任务列表。所以它们按「一行字」而不是「一张卡片」来做 —— 填充、

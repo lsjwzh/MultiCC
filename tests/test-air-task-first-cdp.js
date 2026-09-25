@@ -742,6 +742,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list .directory-terminal-row').length`), 0);
     await page.navigate('/air?dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('.directory-stat').length===4`));
+    // 「＋ 新终端」选 CLI 那一路（弹窗/取消/选中的 CLI 就是建出来的那个）另有一份
+    // 专项 CDP：tests/test-air-directory-terminal-cdp.js —— 它自带最小 fixture，
+    // 不必等这一份长链路跑到目录页。
     // The new-task composer reuses the chat's two composers instead of growing
     // its own CLI/Provider selects: the AI 配置 pill opens the same dialog (with
     // 模型, which the old panel dropped) and hands the runtime back as a draft,

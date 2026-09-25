@@ -249,9 +249,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 共 9 个键，中英各 9 行 = +18，重跑生成器实测 6922 行 / 429053 字节。
   // 同日独立包也能从左下角更新：下载/校验/解压三个步骤名 + 独立包说明共 4 键，
   // 中英各 4 行 = +8，实测 6930 行 / 429730 字节。
+  // 新建终端改成先问用哪个 CLI（airTerminalPickTitle/PickHint/CreateFailed 共 3 键，
+  // 中英各 3 行 = +6），按本树重跑生成器实测 6936 行 / 430180 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6930,
-    maxBytes: 429730,
+    maxLines: 6936,
+    maxBytes: 430180,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
