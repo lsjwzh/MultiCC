@@ -97,14 +97,16 @@ test('core runner covers every selected path and expands declared variants', () 
   // registration of tests/test-auto-route-notes.js adds one more of the same
   // kind, and the format consolidation registers tests/test-format-guard.js —
   // likewise a static Node unit test that reads public/ and the Flutter source
-  // and writes nothing. 297 + 3 = 300.
-  assert.equal(core.length, 300, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 300);
+  // and writes nothing. 297 + 3 = 300. 62119be9 then added
+  // tests/test-proxy-stall-watch.js (pure in-memory unit test, registered as
+  // core on rebase): 301.
+  assert.equal(core.length, 301, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 301);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 257);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 258);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 19,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -114,8 +116,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 284,
-    '281 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 285,
+    '282 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
