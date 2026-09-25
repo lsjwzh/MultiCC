@@ -3,13 +3,13 @@
 
   const CLI_LABELS = Object.freeze({
   claude: 'Claude Code', 'claude-exp': 'Claude Agent SDK', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode',
-    qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', kimi: 'Kimi Code',
+    qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', kimi: 'Kimi Code', gemini: 'Gemini', grok: 'Grok',
   });
   const CLI_MARKS = Object.freeze({
     claude: 'C', 'claude-exp': 'A', codex: 'X', 'codex-exp': 'E', opencode: 'O', zcode: 'Z', qoder: 'Q',
-    codebuddy: 'W', dsh: 'D', kimi: 'K',
+    codebuddy: 'W', dsh: 'D', kimi: 'K', gemini: 'G', grok: 'R',
   });
-  const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
+  const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh', 'gemini', 'grok']);
   const EFFORT_LABELS = Object.freeze({
     claude: t('airTaskSettingsEffortClaude'), 'claude-exp': t('airTaskSettingsEffortClaude'), codex: t('airTaskSettingsEffortCodex'), 'codex-exp': t('airTaskSettingsEffortCodex'), opencode: t('airTaskSettingsEffortOpenCode'),
     qoder: t('airTaskSettingsEffortLabel'), codebuddy: t('airTaskSettingsEffortLabel'),

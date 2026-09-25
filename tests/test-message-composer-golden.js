@@ -284,7 +284,9 @@ const codexAdapter = createCodexAdapter({
   envConstraint: ENV_CONSTRAINT, stayAlivePrompt: STAY_ALIVE,
   multiccImgHint: IMG_HINT,
 });
-const opencodeAdapter = createOpencodeAdapter({ cmd: 'opencode' });
+// Byte-equivalence against the legacy `run --format json` argv; the default ACP
+// lane carries the same payload and is covered by test-acp-adapter.js.
+const opencodeAdapter = createOpencodeAdapter({ cmd: 'opencode', env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } });
 const zcodeAdapter = createZcodeAdapter({ cmd: 'zcode' });
 
 function todayBuildChatArgs(adapter, persisted, promptText, o) {

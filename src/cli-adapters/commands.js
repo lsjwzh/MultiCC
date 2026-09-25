@@ -237,6 +237,21 @@ function resolveDsh(context) {
   return findExecutableOnPath('dsh', context) || (isWindows ? 'dsh.exe' : 'dsh');
 }
 
+// Gemini CLI (@google/gemini-cli) and Grok Build (@xai-official/grok): both
+// are npm globals driven over ACP through acp-bridge.cjs.
+function resolveNpmGlobal(context, binary, envName) {
+  const { isWindows, env, homeDir } = context;
+  if (env[envName]) return env[envName];
+  const directHit = firstRunnable([
+    `/opt/homebrew/bin/${binary}`,
+    `/usr/local/bin/${binary}`,
+    path.join(homeDir, '.local', 'bin', binary),
+    path.join(homeDir, '.npm-global', 'bin', binary),
+  ], context);
+  if (directHit) return directHit;
+  return findExecutableOnPath(binary, context) || (isWindows ? `${binary}.cmd` : binary);
+}
+
 function resolveCliCommands(options = {}) {
   const context = createContext(options);
   return {
@@ -250,6 +265,8 @@ function resolveCliCommands(options = {}) {
     kimi: resolveKimi(context),
     codebuddy: resolveCodebuddy(context),
     dsh: resolveDsh(context),
+    gemini: resolveNpmGlobal(context, 'gemini', 'GEMINI_CMD'),
+    grok: resolveNpmGlobal(context, 'grok', 'GROK_CMD'),
   };
 }
 

@@ -1498,6 +1498,8 @@ class _ChatCliBadge extends StatelessWidget {
       SessionCli.qoder => const Color(0xFFc25e1e),
       SessionCli.codebuddy => const Color(0xFF2a5fd8),
       SessionCli.dsh => const Color(0xFF2b44d6),
+      SessionCli.gemini => const Color(0xFF4285f4),
+      SessionCli.grok => const Color(0xFF8c8f96),
     };
     return Tooltip(
       message: '切换会话 CLI',

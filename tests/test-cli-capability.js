@@ -47,7 +47,7 @@ test('the table places each CLI in exactly one lane', () => {
     assert.equal(isResident(cli), true, `${cli} keeps its child across turns`);
     assert.equal(capabilityOf(cli).lifecycle, 'resident');
   }
-  for (const cli of ['codex', 'opencode', 'zcode', 'dsh', 'qoder', 'kimi', 'codebuddy']) {
+  for (const cli of ['codex', 'opencode', 'zcode', 'dsh', 'qoder', 'kimi', 'codebuddy', 'gemini', 'grok']) {
     assert.equal(isResident(cli), false, `${cli} is spawned per turn`);
     assert.equal(capabilityOf(cli).lifecycle, 'per-turn');
   }
@@ -123,6 +123,13 @@ test('the protocol each lane speaks is described, not inferred from the lane', (
   assert.equal(protocolOf('claude-exp'), 'claude-stream-sdk');
   assert.equal(protocolOf('codex-exp'), 'codex-app-server');
   assert.equal(protocolOf('codex'), 'codex-exec-json');
+  // ACP is a per-turn local agent protocol: the bridge spawns the agent for the
+  // turn and exits with it, so opencode/gemini/grok share one lane.
+  for (const cli of ['opencode', 'gemini', 'grok']) {
+    assert.equal(protocolOf(cli), 'acp', `${cli} rides the ACP bridge`);
+    assert.equal(capabilityOf(cli).cancel, 'process');
+    assert.equal(cancelStopsProcess(cli), true);
+  }
 });
 
 test('protocol family answers both spellings and leaves the fallback to the caller', () => {
@@ -131,6 +138,8 @@ test('protocol family answers both spellings and leaves the fallback to the call
   assert.equal(protocolFamilyOf('codex'), 'openai-responses');
   assert.equal(protocolFamilyOf('codex-exp', 'api'), 'openai_responses');
   assert.equal(protocolFamilyOf('opencode'), null);
+  assert.equal(protocolFamilyOf('gemini'), null);
+  assert.equal(protocolFamilyOf('grok'), null);
   assert.equal(protocolFamilyOf(undefined), null);
 });
 

@@ -217,9 +217,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 任务行的 Worktree 徽标补齐 dirty / ahead / dirty+ahead 三种状态文案；此前
   // air-admin.js 已引用这些 key，但词典缺项会把裸 key 直接渲染出来。中英各 3 行，
   // 按生成器真实高水位抬到 6918/428225。
+  // 新 CLI gemini / grok（两条 providerless 车道）各要一句「默认（跟随 X 配置）」，
+  // 中英各 2 行 = +4 行，重跑生成器后抬到 6922/428499。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6918,
-    maxBytes: 428225,
+    maxLines: 6922,
+    maxBytes: 428499,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

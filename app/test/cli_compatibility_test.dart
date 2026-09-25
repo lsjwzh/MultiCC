@@ -131,6 +131,26 @@ void main() {
       expect(SessionCli.qoder.supportsSubagent, isFalse);
       expect(SessionCli.qoder.effortFieldLabel, 'Reasoning Effort');
       expect(SessionCli.qoder.effortOptions, contains('xhigh'));
+
+      // Gemini / Grok ride the ACP lane like opencode and sign in with their own
+      // vendor account: no MultiCC pool, no effort knob, their own model list.
+      for (final cli in [SessionCli.gemini, SessionCli.grok]) {
+        expect(cli.supportsProvider, isFalse);
+        expect(cli.supportsSubagent, isFalse);
+        expect(cli.supportsEffort, isFalse);
+        expect(cli.effortOptions, isEmpty);
+      }
+      expect(tryParseCli('gemini'), SessionCli.gemini);
+      expect(SessionCli.gemini.displayName, 'Gemini');
+      expect(SessionCli.gemini.name, 'gemini');
+      expect(tryParseCli('grok'), SessionCli.grok);
+      expect(SessionCli.grok.displayName, 'Grok');
+      expect(SessionCli.grok.name, 'grok');
+      expect(kGeminiModelOptions.map((e) => e.key), contains('gemini-2.5-pro'));
+      expect(kGrokModelOptions.map((e) => e.key), contains('grok-4'));
+      expect(modelShortNameForCli(SessionCli.gemini, 'gemini-2.5-flash'),
+        'gemini-2.5-flash');
+      expect(modelShortNameForCli(SessionCli.grok, ''), '默认（跟随 Grok 配置）');
     });
 
     test('parses CLI state, availability and native agent fields', () {

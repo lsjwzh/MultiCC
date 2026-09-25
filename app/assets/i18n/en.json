@@ -1319,6 +1319,8 @@
   "usageContextSelection": "{kept} retained · {omitted} omitted",
   "usageContextRetained": "Previously injected; not resent this turn",
   "aiConfigDefaultFollowDsh": "Default (follows DSH config)",
+  "aiConfigDefaultFollowGemini": "Default (follows Gemini config)",
+  "aiConfigDefaultFollowGrok": "Default (follows Grok config)",
   "aiConfigDefaultFollowProvider": "Default (follows the Provider)",
   "aiConfigDefaultFollowQoder": "Default (follows Qoder CN settings)",
   "aiConfigDefaultFollowWorkBuddy": "Default (follows WorkBuddy settings)",

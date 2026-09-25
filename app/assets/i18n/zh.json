@@ -1319,6 +1319,8 @@
   "usageContextSelection": "沿用 {kept} 项 · 省略 {omitted} 项",
   "usageContextRetained": "此前已注入，本轮未重复发送",
   "aiConfigDefaultFollowDsh": "默认（跟随 DSH 配置）",
+  "aiConfigDefaultFollowGemini": "默认（跟随 Gemini 配置）",
+  "aiConfigDefaultFollowGrok": "默认（跟随 Grok 配置）",
   "aiConfigDefaultFollowProvider": "默认（跟随 Provider）",
   "aiConfigDefaultFollowQoder": "默认（跟随 Qoder CN 设置）",
   "aiConfigDefaultFollowWorkBuddy": "默认（跟随 WorkBuddy 设置）",

@@ -32,6 +32,8 @@ const TRUSTED_TEXT_SOURCES = new Set([
   'kimi_event',
   'codebuddy_result',
   'dsh_event',
+  'gemini_event',
+  'grok_event',
   'process_stderr',
   'aux_http',
   'host_interruption',
@@ -163,7 +165,7 @@ function sanitizeMessage(value, fallback = 'Upstream API request failed', maxLen
 // Provider-owned fallback only: distinguishes a short error envelope rendered
 // as assistant text from meaningful partial output. It is never applied to user
 // input and never decides the category by itself.
-const ERROR_ONLY_PREFIX_RE = /^(?:api\s*error|failed to authenticate|error:|codex\s*(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|kimi\s*(?:error|出错)|codebuddy\s*(?:error|出错)|dsh\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out)/i;
+const ERROR_ONLY_PREFIX_RE = /^(?:api\s*error|failed to authenticate|error:|codex\s*(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|kimi\s*(?:error|出错)|codebuddy\s*(?:error|出错)|dsh\s*(?:error|出错)|gemini\s*(?:error|出错)|grok\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out)/i;
 
 function isErrorOnlyText(value) {
   const text = String(value || '').trim();
@@ -218,6 +220,8 @@ function envelopeSourceFor(provider) {
   if (name === 'kimi') return 'kimi_event';
   if (name === 'codebuddy') return 'codebuddy_result';
   if (name === 'dsh') return 'dsh_event';
+  if (name === 'gemini') return 'gemini_event';
+  if (name === 'grok') return 'grok_event';
   return 'claude_result';
 }
 

@@ -14,6 +14,8 @@
     "kimi",
     "codebuddy",
     "dsh",
+    "gemini",
+    "grok",
     ""
   ],
   "windowKinds": [
@@ -369,6 +371,8 @@
       "kimi",
       "codebuddy",
       "dsh",
+      "gemini",
+      "grok",
       ""
     ],
     "glm@zhipu-intl": [
@@ -382,6 +386,8 @@
       "kimi",
       "codebuddy",
       "dsh",
+      "gemini",
+      "grok",
       ""
     ],
     "glm@zhipu-upper": [
@@ -395,6 +401,8 @@
       "kimi",
       "codebuddy",
       "dsh",
+      "gemini",
+      "grok",
       ""
     ],
     "glm@ark-coding": [
@@ -1237,6 +1245,8 @@
       "kimi",
       "codebuddy",
       "dsh",
+      "gemini",
+      "grok",
       ""
     ],
     "moonshot": [
@@ -1260,6 +1270,8 @@
       "kimi",
       "codebuddy",
       "dsh",
+      "gemini",
+      "grok",
       ""
     ],
     "relay-claude-trailing": [
@@ -1273,6 +1285,8 @@
       "kimi",
       "codebuddy",
       "dsh",
+      "gemini",
+      "grok",
       ""
     ],
     "relay-claude-incomplete": [
@@ -1291,6 +1305,8 @@
       "kimi",
       "codebuddy",
       "dsh",
+      "gemini",
+      "grok",
       ""
     ],
     "relay-codex-tailscale": [
@@ -1304,6 +1320,8 @@
       "kimi",
       "codebuddy",
       "dsh",
+      "gemini",
+      "grok",
       ""
     ],
     "relay-codex-empty-id": [

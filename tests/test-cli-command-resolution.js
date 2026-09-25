@@ -57,6 +57,8 @@ try {
     KIMI_CMD: '/custom/kimi',
     CODEBUDDY_CMD: '/custom/codebuddy',
     DSH_CMD: '/custom/dsh',
+    GEMINI_CMD: '/custom/gemini',
+    GROK_CMD: '/custom/grok',
   };
   assert.deepStrictEqual(resolveCliCommands({
     isWindows: false,
@@ -74,6 +76,8 @@ try {
     kimi: '/custom/kimi',
     codebuddy: '/custom/codebuddy',
     dsh: '/custom/dsh',
+    gemini: '/custom/gemini',
+    grok: '/custom/grok',
   }, 'explicit command overrides are returned verbatim');
 
   const engineOverride = path.join(root, 'custom-zcode.cjs');
@@ -115,7 +119,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude', 'claude-exp': process.execPath, codex: 'codex', 'codex-exp': 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn', kimi: 'kimi', codebuddy: 'codebuddy', dsh: 'dsh',
+    claude: 'claude', 'claude-exp': process.execPath, codex: 'codex', 'codex-exp': 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn', kimi: 'kimi', codebuddy: 'codebuddy', dsh: 'dsh', gemini: 'gemini', grok: 'grok',
   }, 'POSIX fallback names remain stable when no executable exists');
   assert.deepStrictEqual(resolveCliCommands({
     isWindows: true,
@@ -124,7 +128,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude.exe', 'claude-exp': process.execPath, codex: 'codex.exe', 'codex-exp': 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe', kimi: 'kimi.exe', codebuddy: 'codebuddy.exe', dsh: 'dsh.exe',
+    claude: 'claude.exe', 'claude-exp': process.execPath, codex: 'codex.exe', 'codex-exp': 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe', kimi: 'kimi.exe', codebuddy: 'codebuddy.exe', dsh: 'dsh.exe', gemini: 'gemini.cmd', grok: 'grok.cmd',
   }, 'Windows fallback names remain stable when no executable exists');
 
   const source = fs.readFileSync(require.resolve('../src/cli-adapters/commands'), 'utf8');

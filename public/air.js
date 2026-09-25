@@ -1036,7 +1036,7 @@
     const ai = $('quick-ai-pill'), role = $('quick-role-pill');
     if (!ai || !role) return;
     const cli = quickCli();
-    const nativeRoute = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' }[cli];
+    const nativeRoute = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', gemini: 'Gemini', grok: 'Grok' }[cli];
     const route = nativeRoute || (quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
       : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute'));
@@ -2603,13 +2603,13 @@
     const shown = pending
       ? { ...configEntry.configuration, ...(pending.profile || {}), cli: pending.cli || configEntry.configuration.cli }
       : configEntry?.configuration;
-    // `shown` is undefined for a task that carries no configuration at all — a
-    // missing field must not take the whole render down with it, so every read
-    // goes through `?.`.
+    // `shown` may be undefined — every
+    // read goes through `?., so a missing
+    // config cannot break the render.
     // 待生效那份配置里的 provider 是 id；服务端随 pending 下发了解析好的
     // providerName（见 src/workspace/air-routes.js），名字就在这儿用，没有名字
     // 才退回 id —— 不然下一轮生效的那条线路在药丸上是一串 UUID。
-    const nativeRoute = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH' }[shown?.cli];
+    const nativeRoute = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', gemini: 'Gemini', grok: 'Grok' }[shown?.cli];
     const routeName = nativeRoute || (shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
       : providerDisplayName((pending?.providerName || shown?.providerName || shown?.provider) || '') || t('airQuickDefaultRoute'));

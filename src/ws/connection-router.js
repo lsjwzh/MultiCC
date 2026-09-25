@@ -216,7 +216,7 @@ function mountWsConnectionRouter(wss, deps) {
         session = await createSession(sessionId);
       } catch (error) {
         const cliLabel = persisted.cli || 'claude';
-        const BINARY_NAMES = { qoder: 'qoderclicn', codebuddy: 'codebuddy', dsh: 'dsh' };
+        const BINARY_NAMES = { qoder: 'qoderclicn', codebuddy: 'codebuddy', dsh: 'dsh', gemini: 'gemini', grok: 'grok' };
         const binaryName = BINARY_NAMES[cliLabel] || cliLabel;
         const missingTmux = error.code === 'ENOENT' && error.path === 'tmux';
         const missingCli = error.code === 'ENOENT'

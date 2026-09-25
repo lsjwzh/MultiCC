@@ -306,6 +306,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (_isQoder) return 'Qoder CN';
     if (widget.cli == SessionCli.codebuddy) return 'WorkBuddy';
     if (widget.cli == SessionCli.dsh) return 'DSH';
+    if (widget.cli == SessionCli.gemini) return 'Gemini';
+    if (widget.cli == SessionCli.grok) return 'Grok';
     if (id.isEmpty) {
       for (final p in widget.providers) {
         final providerId = p['id']?.toString() ?? '';
@@ -347,6 +349,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     }
     if (widget.cli == SessionCli.dsh) {
       return kDshModelOptions.map((option) => option.key).toList();
+    }
+    if (widget.cli == SessionCli.gemini) {
+      return kGeminiModelOptions.map((option) => option.key).toList();
+    }
+    if (widget.cli == SessionCli.grok) {
+      return kGrokModelOptions.map((option) => option.key).toList();
     }
     final resolvedProvider = _providerMap(provider);
     if (_isCodex &&
@@ -470,6 +478,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       if (_isQoder) return '默认 / 跟随 Qoder CN 设置';
       if (widget.cli == SessionCli.codebuddy) return '默认 / 跟随 WorkBuddy 设置';
       if (widget.cli == SessionCli.dsh) return '默认 / 跟随 DSH 配置';
+      if (widget.cli == SessionCli.gemini) return '默认 / 跟随 Gemini 配置';
+      if (widget.cli == SessionCli.grok) return '默认 / 跟随 Grok 配置';
       return '默认 / 跟随 Provider';
     }
     return modelShortNameForCli(widget.cli, model);

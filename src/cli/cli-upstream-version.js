@@ -34,6 +34,8 @@ const NPM_PACKAGES = Object.freeze({
   kimi: '@moonshot-ai/kimi-code',
   codebuddy: '@tencent-ai/codebuddy-code',
   dsh: '@deepseek-ai/dsh',
+  gemini: '@google/gemini-cli',
+  grok: '@xai-official/grok',
 });
 
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org/';
