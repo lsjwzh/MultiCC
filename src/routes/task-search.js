@@ -36,6 +36,25 @@ function clampLimit(value) {
   return Math.min(MAX_LIMIT, parsed);
 }
 
+// A message hit is a *session*, but every search box in the product lists tasks. The
+// board is the only place that knows which task(s) a conversation belongs to
+// (refs[].sessionId) — the pool a client holds carries no refs at all — so the
+// mapping is resolved here rather than shipped to each client to redo.
+function sessionTaskIds(board) {
+  const bySession = new Map();
+  for (const task of Object.values(board?.tasks || {})) {
+    for (const ref of Array.isArray(task?.refs) ? task.refs : []) {
+      const sessionId = String(ref?.sessionId || '').trim();
+      const taskId = String(task?.id || '');
+      if (!sessionId || !taskId) continue;
+      const list = bySession.get(sessionId);
+      if (!list) bySession.set(sessionId, [taskId]);
+      else if (!list.includes(taskId)) list.push(taskId);
+    }
+  }
+  return bySession;
+}
+
 function createTaskSearchRoutes({ getBoard, messages = null, logger = console } = {}) {
   if (typeof getBoard !== 'function') {
     throw new TypeError('task-search routes require a getBoard() port');
@@ -68,9 +87,9 @@ function createTaskSearchRoutes({ getBoard, messages = null, logger = console } 
   }
 
   // The message corpus is the whole conversation, so a result is a *session* plus
-  // a chunk — not a task. The client resolves the session to whatever it shows
-  // (a task via the board's refs, a chat window, a date), which is knowledge this
-  // route deliberately does not have.
+  // a chunk — not a task. Each hit therefore also carries the task ids that session
+  // belongs to (`taskIds`, resolved from the board's refs, best-effort): that is what
+  // lets a search box list these hits as task rows next to the board's own.
   //
   // `warming` is reported rather than hidden: while the first sweep is still
   // walking the corpus a short result list is a partial answer, and a client that
@@ -105,6 +124,15 @@ function createTaskSearchRoutes({ getBoard, messages = null, logger = console } 
         ...(kinds ? { kinds } : {}),
         ...(refIds ? { refIds } : {}),
       });
+      // Best-effort: a board that cannot be read costs the hits their task ids (the
+      // client then shows fewer rows), never the whole answer.
+      let bySession = null;
+      try {
+        const board = getBoard();
+        if (board && typeof board.tasks === 'object') bySession = sessionTaskIds(board);
+      } catch (error) {
+        logger.warn?.(`message_search_board_failed: ${error.message}`);
+      }
       return res.json({
         ok: true,
         query,
@@ -117,6 +145,7 @@ function createTaskSearchRoutes({ getBoard, messages = null, logger = console } 
           kind: hit.kind,
           updatedAt: hit.updatedAt,
           score: hit.score,
+          taskIds: bySession ? (bySession.get(String(hit.sessionId || '')) || []) : [],
           // Same shape the board route returns — a window plus highlight ranges — so
           // a client renders message hits with the snippet renderer it already has.
           snippet: hit.snippet,

@@ -300,6 +300,10 @@
                 <option value="all" data-i18n="airStatusAllRecords">全部记录</option>
                 <option value="archived" data-i18n="airStatusArchived">已归档</option>
               </select>
+              <select id="directory-task-scope" aria-label="搜索范围" data-i18n-aria-label="airSearchScopeLabel">
+                <option value="full" data-i18n="airSearchScopeFull">全部记录（含对话）</option>
+                <option value="board" data-i18n="airSearchScopeBoard">仅任务标题与摘要</option>
+              </select>
             </div>
             <div id="directory-task-list"></div>
             <!-- 就地展开当前目录的完整清单；固定高度与筛选避免把输入框推到页面之外。 -->

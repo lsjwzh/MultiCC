@@ -73,7 +73,9 @@
   let quickCreateAttempt = null;
   let directoryTasksExpanded = false;
   let directorySearch = null;
-  const directoryTaskFilter = { query: '', status: 'open' };
+  // fullText 默认开：搜索的默认目标是「全部记录（含对话）」，只出现在对话正文里的词
+  // 走不到任务板语料。状态那格管的是不搜索时的列表，搜索另有 searchFilter() 那份口径。
+  const directoryTaskFilter = { query: '', status: 'open', fullText: true };
 
   // 状态/阶段/阻断原因的文案一律现取 t()：这些表在 render 的每一行上被读，
   // 而 t() 查不到 key 只会回显 key 本身，所以漏翻是看得见的（不会静默变成中文）。
@@ -340,8 +342,11 @@
         kind: 'directory', dirId: directory.id,
         title: directory.name, detail: directory.path || t('airDirectoryFallback'),
       }));
-    const ranked = needle ? window.MultiCCTaskSearch?.rankedTasks(paletteSearch?.results(), data.tasks) : null;
-    const hits = new Map((ranked || []).map(({ task, hit }) => [task.id, hit]));
+    // 面板是全局搜索，不套状态筛选：归档的任务照样找得到（口径交给 rankedRows 的
+    // 那一份 filterTasks，「全部」就是不过滤）。
+    const ranked = needle
+      ? window.MultiCCAirAdmin?.rankedRows?.(data.tasks, { status: 'all' }, () => '', paletteSearch?.results()) : null;
+    const hits = new Map((ranked || []).map(({ task, snippet }) => [task.id, snippet]));
     const pool = ranked ? ranked.map(({ task }) => task) : [...recentPool(), ...data.tasks];
     const seen = new Set();
     const tasks = [];
@@ -353,7 +358,7 @@
         title: task.title || t('airUntitledTask'),
         // 命中片段优先：它就答了「为什么搜出这条」。没有片段（本地筛选、目录命中）
         // 才回到「目录 · 状态」。
-        detail: hits.get(task.id)?.snippet?.text || `${directoryName(task.dirId)} · ${label(taskStatus(task))}`,
+        detail: hits.get(task.id)?.text || `${directoryName(task.dirId)} · ${label(taskStatus(task))}`,
       });
       if (tasks.length >= (needle ? 8 : 6)) break;
     }
@@ -443,6 +448,7 @@
       directoryTasksExpanded = false;
       directoryTaskFilter.query = '';
       directoryTaskFilter.status = 'open';
+      directoryTaskFilter.fullText = true;
     }
     directoryId = dir;
     taskId = task;
@@ -550,11 +556,15 @@
     // 全文命中时保持相关度顺序，没有命中照旧按时间排；两条路的状态/目录筛选同属
     // filterTasks。「框里现在有没有词」是前提：面板被导航重置成空查询时，上一轮的
     // 命中结果必须让位给完整列表，否则会继续按旧相关度排、连条数都少一截。
-    const ranked = directoryTaskFilter.query.trim()
-      ? window.MultiCCAirAdmin?.rankedRows?.(tasks, directoryTaskFilter, () => '', directorySearch?.results()) : null;
+    // 搜索口径与状态那格分开：搜索永远搜全部记录（见 air-admin 的 searchFilter），
+    // 服务端那条路和「还没回来」的本地退路共用同一份，别在结果到达前后给出两种条数。
+    const querying = !!directoryTaskFilter.query.trim();
+    const active = querying ? (window.MultiCCAirAdmin?.searchFilter?.(directoryTaskFilter) || directoryTaskFilter)
+      : directoryTaskFilter;
+    const ranked = querying ? window.MultiCCAirAdmin?.rankedRows?.(tasks, active, () => '', directorySearch?.results()) : null;
     const snippets = new Map((ranked || []).map(({ task, snippet }) => [task.id, snippet]));
     const filtered = ranked ? ranked.map(({ task }) => task)
-      : (window.MultiCCAirAdmin?.filterTasks?.(tasks, directoryTaskFilter, () => '') || [...tasks]).sort(compareDirectoryTasks);
+      : (window.MultiCCAirAdmin?.filterTasks?.(tasks, active, () => '') || [...tasks]).sort(compareDirectoryTasks);
     const rows = directoryTasksExpanded
       ? filtered
       : [...tasks].sort(compareDirectoryTasks).slice(0, recentRowLimit());
@@ -568,6 +578,7 @@
     $('directory-task-controls').hidden = !directoryTasksExpanded;
     if ($('directory-task-search').value !== directoryTaskFilter.query) $('directory-task-search').value = directoryTaskFilter.query;
     $('directory-task-status').value = directoryTaskFilter.status;
+    $('directory-task-scope').value = directoryTaskFilter.fullText ? 'full' : 'board';
     document.querySelector('.directory-task-panel')?.classList.toggle('expanded', directoryTasksExpanded);
     $('directory-task-list').replaceChildren(...rows.map(task => {
       const row = node('div', null, 'directory-task-row');
@@ -2779,8 +2790,15 @@
   directorySearch = window.MultiCCTaskSearch?.attach($('directory-task-search'), {
     request: path => api(path),
     filters: () => ({ dirId: directoryId }),
+    fullText: () => directoryTaskFilter.fullText,
     onChange: () => { if (directoryId) renderDirectoryOverview(); },
   });
+  // 换搜索范围要重新问一次服务端（两条语料的召回不同），不能只重画：refresh 会先
+  // 把当前结果作废、退回本地筛选，新结果到了再覆盖。
+  $('directory-task-scope').onchange = event => {
+    directoryTaskFilter.fullText = event.target.value === 'full';
+    directorySearch?.refresh();
+  };
   $('directory-memo').onclick = () => {
     if (directoryId) window.open(`/memo.html?dirId=${encodeURIComponent(directoryId)}`, '_blank', 'noopener');
   };
@@ -2802,6 +2820,8 @@
   // 全文结果晚一拍到：到了就重画一次（标题匹配的那版已经在屏幕上，不会有空白期）。
   paletteSearch = window.MultiCCTaskSearch?.attach($('palette-input'), {
     request: path => api(path),
+    // 面板没有摆开关的地方，就按最宽的来：目录、任务、对话一起搜。
+    fullText: () => true,
     onChange: () => { if (paletteOpen) { paletteIndex = 0; renderPalette(); } },
   });
   $('schedules').onclick = () => setMode('schedules');
