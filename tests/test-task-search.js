@@ -257,11 +257,52 @@ test('the message search route returns session-level hits with the board snippet
   assert.equal(res.body.warming, false);
   assert.deepEqual(res.body.results, [{
     sessionId: 'sess-1', messageId: 'm-3', kind: 'user', updatedAt: 42, score: 1.5,
+    taskIds: [],
     snippet: { text: '命中窗口', ranges: [[0, 2]] },
   }]);
   // 正文整块不回传：客户端渲染的是服务端算好的窗口 + 高亮区间。
   assert.equal('text' in res.body.results[0], false);
   assert.deepEqual(port.calls[0], { text: '全文检索', limit: 3 });
+});
+
+// 命中是 *会话*，而搜索框摆的是任务行。会话 → 任务的映射只有任务板知道
+// （refs[].sessionId；客户端手里的池子根本没有 refs 字段），所以由这条路由补上，
+// 否则这些命中在界面上无处可放。
+test('the message search route resolves each session to the tasks it belongs to', () => {
+  const port = fakeMessages([
+    { sessionId: 'sess-1', messageId: 'm-1', kind: 'user', snippet: { text: 'a', ranges: [] } },
+    { sessionId: 'sess-2', messageId: 'm-2', kind: 'user', snippet: { text: 'b', ranges: [] } },
+    { sessionId: 'sess-orphan', messageId: 'm-3', kind: 'user', snippet: { text: 'c', ranges: [] } },
+  ]);
+  const routes = createTaskSearchRoutes({
+    messages: port,
+    getBoard: () => board([
+      task('tsk-a', { refs: [{ sessionId: 'sess-1' }] }),
+      // 一个会话被两个任务引用（续作/分叉）：两个 id 都留着，由客户端挑池子里有的那个。
+      task('tsk-b', { refs: [{ sessionId: 'sess-1' }, { sessionId: 'sess-2' }] }),
+      // 没有 sessionId 的 ref、以及没有 refs 的任务都不参与映射。
+      task('tsk-c', { refs: [{ sessionId: '  ' }, {}] }),
+    ]),
+  });
+  const res = fakeRes();
+  routes.handleMessageSearch({ query: { q: '缓存' } }, res);
+  assert.deepEqual(res.body.results.map(hit => hit.taskIds), [
+    ['tsk-a', 'tsk-b'], ['tsk-b'], [],
+  ], '不属于任何任务的对话命中留空数组，不编造任务');
+});
+
+test('the message route still answers when the board cannot be read', () => {
+  const warnings = [];
+  const routes = createTaskSearchRoutes({
+    messages: fakeMessages([{ sessionId: 'sess-1', messageId: 'm-1', kind: 'user', snippet: { text: 'a', ranges: [] } }]),
+    getBoard: () => { throw new Error('board file is gone'); },
+    logger: { warn: message => warnings.push(message) },
+  });
+  const res = fakeRes();
+  routes.handleMessageSearch({ query: { q: '缓存' } }, res);
+  assert.equal(res.statusCode, 200, '拿不到任务板只损失 taskIds，不该让整条答案变成 503');
+  assert.deepEqual(res.body.results[0].taskIds, []);
+  assert.deepEqual(warnings, ['message_search_board_failed: board file is gone']);
 });
 
 test('the message search route forwards role/session filters and reports a warming index', () => {
@@ -366,7 +407,7 @@ test('the search box caches hits, drops stale answers and degrades to local filt
   assert.equal(control.results(), null, 'nothing is claimed before the answer arrives');
   deferred.shift()({ results: [{ taskId: 'tsk-a' }] });
   await tick();
-  assert.deepEqual(control.results(), { query: '全文检索', hits: [{ taskId: 'tsk-a' }] });
+  assert.deepEqual(control.results(), { query: '全文检索', hits: [{ taskId: 'tsk-a' }], messageHits: [] });
 
   // 退格回到刚搜过的词：走缓存，立刻生效，不再打一次接口。
   input.type('全');
@@ -396,6 +437,114 @@ test('the search box caches hits, drops stale answers and degrades to local filt
   input.type('全文检索');
   await tick();
   assert.equal(requested.length, beforeDestroy, 'a destroyed control stops listening');
+});
+
+// ── 浏览器侧：两条语料合流 ─────────────────────────────────────────────────
+// 「只出现在对话里的词」唯一的召回路径是 /api/search/messages（任务板一条摘录只有
+// 一句话）。这里守的是合流的两条规矩：① 两条语料各自失败只影响自己那一半；② 会话
+// 命中要落回任务行（一个会话可能挂在多个任务上，池子里找不到就跳过）。
+
+const pool = (...ids) => ids.map(id => ({ id, title: id }));
+
+test('the search box asks the conversation index only when the scope says so', async () => {
+  assert.equal(taskSearchUi.messagePath('全文检索'), '/api/search/messages?q=%E5%85%A8%E6%96%87%E6%A3%80%E7%B4%A2&limit=20');
+  assert.equal(taskSearchUi.messagePath('air', { limit: 5 }), '/api/search/messages?q=air&limit=5');
+
+  const paths = [];
+  const input = fakeInput();
+  let full = false;
+  const control = taskSearchUi.attach(input, {
+    delay: 1, fullText: () => full,
+    request: path => { paths.push(path); return Promise.resolve({ results: [] }); },
+  });
+  input.type('全文检索');
+  await tick();
+  assert.deepEqual(paths, ['/api/task-board/search?q=%E5%85%A8%E6%96%87%E6%A3%80%E7%B4%A2&limit=20'],
+    'scope=board 时不打会话索引');
+
+  paths.length = 0;
+  full = true;
+  input.type('缓存');
+  await tick();
+  assert.deepEqual(paths.sort(), [
+    '/api/search/messages?q=%E7%BC%93%E5%AD%98&limit=20',
+    '/api/task-board/search?q=%E7%BC%93%E5%AD%98&limit=20',
+  ], 'scope=full 时两条语料并行');
+  // 两条都答了「没有命中」：这不是「搜索不可用」，调用方拿到空结果自然回落到本地
+  // 过滤（rankedHits 为空），缓存里也留着这个词 —— 退格回来不必重打接口。
+  assert.deepEqual(control.results(), { query: '缓存', hits: [], messageHits: [] });
+  assert.equal(taskSearchUi.rankedHits(control.results(), pool('tsk-a')).length, 0);
+  const before = paths.length;
+  input.type('全');
+  await tick();
+  assert.equal(paths.length, before + 2, 'a different word asks both corpora');
+  input.type('缓存');
+  assert.equal(paths.length, before + 2, '退格回到刚搜过的词：走缓存，不再打接口');
+  assert.equal(control.results()?.query, '缓存');
+});
+
+test('each corpus fails on its own: half an answer beats an empty panel', async () => {
+  const input = fakeInput();
+  let failBoard = false;
+  let failMessages = false;
+  const control = taskSearchUi.attach(input, {
+    delay: 1, fullText: () => true,
+    request: path => {
+      const isBoard = path.startsWith('/api/task-board/');
+      if (isBoard ? failBoard : failMessages) return Promise.reject(new Error('offline'));
+      return Promise.resolve({ results: isBoard ? [{ taskId: 'tsk-a' }] : [{ sessionId: 'sess-1', taskIds: ['tsk-b'] }] });
+    },
+  });
+
+  failMessages = true;
+  input.type('缓存');
+  await tick();
+  assert.deepEqual(control.results(), { query: '缓存', hits: [{ taskId: 'tsk-a' }], messageHits: [] },
+    '会话索引不可用时，任务板命中照旧');
+
+  failMessages = false;
+  failBoard = true;
+  input.type('检索');
+  await tick();
+  assert.deepEqual(control.results(), { query: '检索', hits: [], messageHits: [{ sessionId: 'sess-1', taskIds: ['tsk-b'] }] },
+    '任务板不可用时仍是「有全文结果」，由会话命中提供');
+
+  failBoard = false;
+  input.type('排序');
+  await tick();
+  assert.deepEqual(control.results()?.hits, [{ taskId: 'tsk-a' }]);
+  assert.equal(control.results()?.messageHits.length, 1);
+
+  // 两条都挂：回到调用方自己的本地过滤，而不是一个空面板。
+  failBoard = true;
+  failMessages = true;
+  input.type('离线');
+  await tick(20);
+  assert.equal(control.results(), null);
+});
+
+test('board hits come first and conversation hits fill in behind them', () => {
+  const full = taskSearchUi.rankedHits({
+    hits: [{ taskId: 'tsk-a', snippet: { text: '板' } }],
+    messageHits: [
+      { sessionId: 'sess-1', taskIds: ['tsk-b', 'tsk-a'], snippet: { text: '对话 b' } },
+      { sessionId: 'sess-2', taskIds: ['tsk-gone'], snippet: { text: '已删任务' } },
+      { sessionId: 'sess-3', taskIds: [], snippet: { text: '不属于任何任务的对话' } },
+    ],
+  }, pool('tsk-a', 'tsk-b'));
+  assert.deepEqual(full.map(row => [row.task.id, row.source || 'board']), [
+    ['tsk-a', 'board'], ['tsk-b', 'message'],
+  ], '任务板命中在前；会话命中里已被板子命中的任务不重复出现');
+  assert.equal(full[1].hit.snippet.text, '对话 b');
+
+  // 一个会话挂在多个任务上：取池子里第一个找得到的（服务端的 refs 顺序）。
+  const shared = taskSearchUi.rankedMessageTasks(
+    { messageHits: [{ sessionId: 'sess-1', taskIds: ['tsk-x', 'tsk-b'], snippet: { text: '共享' } }] }, pool('tsk-b'));
+  assert.deepEqual(shared.map(row => row.task.id), ['tsk-b']);
+  assert.equal(taskSearchUi.rankedMessageTasks({ messageHits: [] }, pool('tsk-b')).length, 0);
+  assert.equal(taskSearchUi.rankedMessageTasks(null, pool('tsk-b')).length, 0);
+  assert.equal(taskSearchUi.rankedHits({ hits: [], messageHits: [] }, pool('tsk-a')).length, 0,
+    '两条语料都空 = 回到本地过滤（调用方看 rankedHits 为空就自己筛）');
 });
 
 test('snippet nodes are built from text nodes, never from HTML', () => {

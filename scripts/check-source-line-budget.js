@@ -65,9 +65,15 @@ const MIGRATION_DEBT = Object.freeze({
   // c22b8d2f，之后 4741474a 又碰了 air.js 却没回来改这里，这道闸在 main 上其实已经是红
   // 的；剩下 30 行才是这次的接线。按惯例只登记实测高水位，不抬到别处；下一次动目录页或
   // ⌘K，该拆的仍是 renderSchedules / renderDirectoryOverview，不是这几行接线。
+  // 搜索框加「搜索范围」开关（全部记录，含对话 / 仅任务标题与摘要）：目录页多一个
+  // select、一行渲染同步、一个 onchange，并默认落到「全部记录（含对话）」——旧默认只搜
+  // 任务标题摘要，只在对话里出现过的词根本搜不到。搜索口径另走 air-admin 的
+  // searchFilter()（永远搜全部记录，不套状态那格），目录页这里多两行算这份口径。
+  // ⌘K 面板没有放开关的位置，直接固定搜全部。行数 3094 -> 3118，其中 4 行仍是上面
+  // 那笔 main 既有漂移（3098），这次一并按实测高水位登记。
   'public/air.js': Object.freeze({
-    ceiling: 3094,
-    byteCeiling: 167388,
+    ceiling: 3118,
+    byteCeiling: 169155,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -204,9 +210,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // Jev 网关可选（Vercel / OpenRouter / TypeSafe / 自定义）——每家的建 key 步骤和
   // key 前缀各写各的、自定义那栏的地址/模型/格式说明、以及 5 条地址校验白话，
   // 新 21 键、删 2 条旧的 Vercel 专属文案，净增 19 键，中英各 +19 行 → 6906/427403。
+  // 搜索范围开关新增 3 键（airSearchScopeFull / airSearchScopeBoard /
+  // airSearchScopeLabel），中英各 +3 行；⌘K 提示那行只改文案不加行。两条改动在
+  // rebase 时合流（这是同一段登记，两边各改各的注释），按合流后重跑生成器的真实
+  // 行数抬到 6912/427748。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6906,
-    maxBytes: 427403,
+    maxLines: 6912,
+    maxBytes: 427748,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
