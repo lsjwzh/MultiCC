@@ -1211,7 +1211,7 @@ async function createSession(id) {
         console.log(`[multicc] Session ${id} exited (tmux session gone)`);
         cleanupPushMonitor(id);
         if (session.captureTimer) { clearInterval(session.captureTimer); session.captureTimer = null; }
-        const cliLabel = session.cli === 'qoder' ? 'Qoder CN' : session.cli === 'codex' ? 'Codex' : session.cli === 'codebuddy' ? 'WorkBuddy' : session.cli === 'dsh' ? 'DSH' : 'Claude Code';
+        const cliLabel = session.cli === 'qoder' ? 'Qoder CN' : session.cli === 'codex' ? 'Codex' : session.cli === 'codebuddy' ? 'WorkBuddy' : session.cli === 'dsh' ? 'DSH' : session.cli === 'gemini' ? 'Gemini' : session.cli === 'grok' ? 'Grok' : 'Claude Code';
         const exitMsg = `\r\n\x1b[33m[${cliLabel} process exited]\x1b[0m\r\n`;
         broadcastTo(session.clients, { type: 'exit', data: exitMsg });
         await stopOutputCapture(session);

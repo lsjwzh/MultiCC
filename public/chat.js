@@ -413,9 +413,11 @@ const CLI_META = {
   kimi: { label: 'Kimi Code', color: '#13c2c2' },
   codebuddy: { label: 'WorkBuddy', color: '#0052d9' },
   dsh: { label: 'DSH', color: '#4d6bfe' },
+  gemini: { label: 'Gemini', color: '#4285f4' },
+  grok: { label: 'Grok', color: '#8c8f96' },
 };
 // Vendor-auth CLIs own their account/model config (no multicc provider).
-const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh']);
+const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh', 'gemini', 'grok']);
 
 function applyCliUi(cli) {
   const next = CLI_META[cli] ? cli : 'claude';
@@ -1622,15 +1624,12 @@ function updateModelBtn() {
   const auto = _sessionProviderSelection?.mode === 'auto' ? _sessionProviderSelection : null;
   const shown = auto ? _activeProviderModel : (_sessionEffectiveModel || _sessionModel);
   const actualProvider = _activeProviderName;
+  // Vendor-auth CLIs show their own product name instead of a multicc provider.
+  const NATIVE_ROUTE_LABELS = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', gemini: 'Gemini', grok: 'Grok' };
   const provider = auto
       ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(auto.protocol)} → ${actualProvider || '待路由'}`
-      : _sessionCli === 'qoder'
-      ? 'Qoder CN'
-      : _sessionCli === 'codebuddy'
-      ? 'WorkBuddy'
-      : _sessionCli === 'dsh'
-      ? 'DSH'
-      : ((_sessionProvider ? providerShortName(_sessionProvider) : '')
+      : (NATIVE_ROUTE_LABELS[_sessionCli]
+      || (_sessionProvider ? providerShortName(_sessionProvider) : '')
       || _sessionProviderDisplayName
       || (_sessionCli === 'zcode' ? 'ZCode 原生' : tt('default')));
   const modelProviderId = auto ? _activeProviderId : _sessionProvider;

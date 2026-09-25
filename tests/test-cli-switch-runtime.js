@@ -174,13 +174,16 @@ test('defaults are CLI-specific and provider defaults are resolved lazily', () =
 // opencode, zcode, qoder, kimi" because the running server predated the
 // whitelist extension. Pins the route-level behaviour: both canonical keys are
 // accepted through SUPPORTED_CHAT_CLIS, and the marketing name "workbuddy" is
-// NOT a valid wire key.
-test('switching to vendor-auth CLIs (codebuddy / dsh) passes the supported whitelist', async () => {
+// NOT a valid wire key. gemini / grok are the same shape of vendor-auth CLI and
+// are pinned here too, so a new CLI cannot be added to the roster alone.
+test('switching to vendor-auth CLIs (codebuddy / dsh / gemini / grok) passes the supported whitelist', async () => {
   const { invoke, session } = createHarness({
     availability: {
       claude: { available: true },
       codebuddy: { available: true },
       dsh: { available: true },
+      gemini: { available: true },
+      grok: { available: true },
     },
   });
   const res1 = await invoke({ body: { cli: 'codebuddy' } });
@@ -194,6 +197,14 @@ test('switching to vendor-auth CLIs (codebuddy / dsh) passes the supported white
   assert.equal(res2.body.changed, true);
   assert.equal(res2.body.cli, 'dsh');
   assert.equal(session.cli, 'dsh');
+  const resGemini = await invoke({ body: { cli: 'gemini' } });
+  assert.equal(resGemini.statusCode, 200);
+  assert.equal(resGemini.body.cli, 'gemini');
+  assert.equal(session.cli, 'gemini');
+  const resGrok = await invoke({ body: { cli: 'grok' } });
+  assert.equal(resGrok.statusCode, 200);
+  assert.equal(resGrok.body.cli, 'grok');
+  assert.equal(session.cli, 'grok');
   const res3 = await invoke({ body: { cli: 'workbuddy' } });
   assert.equal(res3.statusCode, 400);
   assert.equal(res3.body.error, `cli must be one of: ${SUPPORTED_CHAT_CLIS.join(', ')}`);
@@ -401,6 +412,8 @@ test('install-specs returns the static official command table', async () => {
     kimi: { auto: true, command: 'npm install -g @moonshot-ai/kimi-code', display: 'npm install -g @moonshot-ai/kimi-code' },
     codebuddy: { auto: true, command: 'npm install -g @tencent-ai/codebuddy-code', display: 'npm install -g @tencent-ai/codebuddy-code' },
     dsh: { auto: true, command: 'npm install -g @deepseek-ai/dsh', display: 'npm install -g @deepseek-ai/dsh' },
+    gemini: { auto: true, command: 'npm install -g @google/gemini-cli', display: 'npm install -g @google/gemini-cli' },
+    grok: { auto: true, command: 'npm install -g @xai-official/grok', display: 'npm install -g @xai-official/grok' },
   });
   assert.equal(res.body.availability.codex.available, true);
 });

@@ -325,6 +325,8 @@ enum SessionCli {
   qoder,
   codebuddy,
   dsh,
+  gemini,
+  grok,
 }
 
 /// Interactive TUI terminal, or stream-json chat.
@@ -350,6 +352,10 @@ SessionCli? tryParseCli(String? s) {
       return SessionCli.codebuddy;
     case 'dsh':
       return SessionCli.dsh;
+    case 'gemini':
+      return SessionCli.gemini;
+    case 'grok':
+      return SessionCli.grok;
     default:
       return null;
   }
@@ -372,12 +378,16 @@ extension SessionCliX on SessionCli {
     SessionCli.qoder => 'qoder',
     SessionCli.codebuddy => 'codebuddy',
     SessionCli.dsh => 'dsh',
+    SessionCli.gemini => 'gemini',
+    SessionCli.grok => 'grok',
     SessionCli.claude => 'claude',
   };
 
   /// Provider pool this CLI maps to. codex has its own pool;
   /// claude/opencode/zcode share the Anthropic-compatible 'claude' pool.
   /// Qoder CN owns its account/BYOK settings and does not expose a MultiCC pool.
+  /// Gemini / Grok ride the ACP lane like opencode and use their own vendor
+  /// login (gemini login / grok login), so they too expose no pool.
   bool get isCodexFamily =>
       this == SessionCli.codex || this == SessionCli.codexExp;
   bool get isClaudeFamily =>
@@ -402,21 +412,29 @@ extension SessionCliX on SessionCli {
     SessionCli.qoder => 'Qoder CN',
     SessionCli.codebuddy => 'WorkBuddy',
     SessionCli.dsh => 'DSH',
+    SessionCli.gemini => 'Gemini',
+    SessionCli.grok => 'Grok',
   };
 
-  /// Vendor-auth CLIs (qoder / WorkBuddy / DSH) own their account and model
-  /// config; they expose no multicc provider pool.
+  /// Vendor-auth CLIs (qoder / WorkBuddy / DSH / Gemini / Grok) own their
+  /// account and model config; they expose no multicc provider pool.
   bool get supportsProvider =>
       this != SessionCli.qoder &&
       this != SessionCli.codebuddy &&
-      this != SessionCli.dsh;
+      this != SessionCli.dsh &&
+      this != SessionCli.gemini &&
+      this != SessionCli.grok;
   bool get supportsAgent =>
       isClaudeFamily ||
       this == SessionCli.opencode ||
       this == SessionCli.qoder ||
       this == SessionCli.codebuddy;
   bool get supportsSubagent => isClaudeFamily || isCodexFamily;
-  bool get supportsEffort => this != SessionCli.zcode && this != SessionCli.dsh;
+  bool get supportsEffort =>
+      this != SessionCli.zcode &&
+      this != SessionCli.dsh &&
+      this != SessionCli.gemini &&
+      this != SessionCli.grok;
 
   String get effortFieldLabel => switch (this) {
     SessionCli.claude => 'Effort',
@@ -428,6 +446,8 @@ extension SessionCliX on SessionCli {
     SessionCli.qoder => 'Reasoning Effort',
     SessionCli.codebuddy => 'Reasoning Effort',
     SessionCli.dsh => '',
+    SessionCli.gemini => '',
+    SessionCli.grok => '',
   };
 
   String get defaultEffort => switch (this) {
@@ -440,6 +460,8 @@ extension SessionCliX on SessionCli {
     SessionCli.qoder => '',
     SessionCli.codebuddy => '',
     SessionCli.dsh => '',
+    SessionCli.gemini => '',
+    SessionCli.grok => '',
   };
 
   List<String> get effortOptions => switch (this) {
@@ -495,6 +517,8 @@ extension SessionCliX on SessionCli {
       'max',
     ],
     SessionCli.dsh => const [],
+    SessionCli.gemini => const [],
+    SessionCli.grok => const [],
   };
 }
 
@@ -562,6 +586,23 @@ const kDshModelOptions = <MapEntry<String, String>>[
   MapEntry('deepseek-v4-pro', 'deepseek-v4-pro'),
 ];
 
+/// Gemini CLI model suggestions. The CLI accepts any model id its account can
+/// reach, so this is a shortcut list, not a whitelist; mirrors
+/// GEMINI_MODEL_OPTIONS in public/chat-ai-config.js.
+const kGeminiModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（跟随 Gemini 配置）'),
+  MapEntry('gemini-2.5-pro', 'gemini-2.5-pro'),
+  MapEntry('gemini-2.5-flash', 'gemini-2.5-flash'),
+];
+
+/// Grok Build model suggestions (free text in the CLI); mirrors
+/// GROK_MODEL_OPTIONS in public/chat-ai-config.js.
+const kGrokModelOptions = <MapEntry<String, String>>[
+  MapEntry('', '默认（跟随 Grok 配置）'),
+  MapEntry('grok-code-fast-1', 'grok-code-fast-1'),
+  MapEntry('grok-4', 'grok-4'),
+];
+
 String claudeModelShortName(String? model) {
   if (model == null || model.isEmpty) return '默认';
   for (final e in kClaudeModelOptions) {
@@ -584,6 +625,16 @@ String modelShortNameForCli(SessionCli cli, String? model) {
   }
   if (cli == SessionCli.dsh) {
     for (final option in kDshModelOptions) {
+      if (option.key == (model ?? '')) return option.value;
+    }
+  }
+  if (cli == SessionCli.gemini) {
+    for (final option in kGeminiModelOptions) {
+      if (option.key == (model ?? '')) return option.value;
+    }
+  }
+  if (cli == SessionCli.grok) {
+    for (final option in kGrokModelOptions) {
       if (option.key == (model ?? '')) return option.value;
     }
   }

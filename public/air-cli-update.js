@@ -36,6 +36,8 @@
     kimi: 'Kimi Code',
     codebuddy: 'WorkBuddy',
     dsh: 'DSH',
+    gemini: 'Gemini',
+    grok: 'Grok',
   });
 
   let lastState = null;

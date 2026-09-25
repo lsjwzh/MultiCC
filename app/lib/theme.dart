@@ -34,6 +34,8 @@ class AppColors {
   static const qoder = Color(0xFFc25e1e); // Qoder CN brand (orange)
   static const codebuddy = Color(0xFF2a5fd8); // WorkBuddy brand (Tencent blue)
   static const dsh = Color(0xFF2b44d6); // DeepSeek Harness brand (blue)
+  static const gemini = Color(0xFF4285f4); // Gemini brand (Google blue)
+  static const grok = Color(0xFF8c8f96); // Grok brand (graphite)
   static const amber = Color(0xFFa85a25);
   static const warning = Color(0xFFa85a25);
   static const success = Color(0xFF2ba67a);

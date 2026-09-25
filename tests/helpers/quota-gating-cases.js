@@ -27,6 +27,7 @@
 const CLIS = Object.freeze([
   'claude', 'claude-exp', 'codex', 'codex-exp',
   'opencode', 'qoder', 'zcode', 'kimi', 'codebuddy', 'dsh',
+  'gemini', 'grok',
   '',
 ]);
 

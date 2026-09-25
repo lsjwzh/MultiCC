@@ -32,13 +32,26 @@ const CAPABILITIES = Object.freeze({
   // claude. The thread survives a reap, so cancel/recycle re-attach rather than
   // losing the conversation.
   'codex-exp': Object.freeze({ protocol: 'codex-app-server', lifecycle: 'resident', cancel: 'process' }),
+  // ACP is a per-turn local agent protocol: the bridge spawns the agent for the
+  // turn and exits with it, so cancelling reaps the child. opencode was the
+  // first CLI on this lane; gemini and grok ride the same bridge (acp.js).
+  opencode: Object.freeze({ protocol: 'acp', lifecycle: 'per-turn', cancel: 'process' }),
+  gemini: Object.freeze({ protocol: 'acp', lifecycle: 'per-turn', cancel: 'process' }),
+  grok: Object.freeze({ protocol: 'acp', lifecycle: 'per-turn', cancel: 'process' }),
 });
 
+// Which upstream API dialect a CLI's protocol talks. This is deliberately NOT
+// the transport name in CAPABILITIES: `acp` is the local agent protocol, and an
+// ACP agent's upstream dialect is its own business (the agent holds the
+// credential), so protocolFamilyOf answers null for it rather than guessing.
 const FAMILIES = Object.freeze({
   claude: 'anthropic',
   'claude-exp': 'anthropic',
   codex: 'openai',
   'codex-exp': 'openai',
+  opencode: 'acp',
+  gemini: 'acp',
+  grok: 'acp',
 });
 
 function nameOf(cli) {
@@ -105,10 +118,12 @@ function transportOf(cli) {
 
 // Which API dialect the CLI speaks upstream. `format` only picks the spelling:
 // the wire name (`anthropic-messages`) or a provider summary's apiFormat
-// (`anthropic`). Returns null for a CLI this table does not know, so each caller
-// keeps its own fallback rather than inheriting one from here.
+// (`anthropic`). Returns null for a CLI this table does not know — including the
+// ACP family, whose agent holds its own upstream credential and dialect — so
+// each caller keeps its own fallback rather than inheriting one from here.
 function protocolFamilyOf(cli, format = 'wire') {
   const family = FAMILIES[nameOf(cli)];
+  if (family === 'acp') return null;
   if (family === 'anthropic') return format === 'api' ? 'anthropic' : 'anthropic-messages';
   if (family === 'openai') return format === 'api' ? 'openai_responses' : 'openai-responses';
   return null;

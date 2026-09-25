@@ -58,6 +58,16 @@ const OFFICIAL_INSTALL_SPECS = Object.freeze({
     command: 'npm install -g @deepseek-ai/dsh',
     display: 'npm install -g @deepseek-ai/dsh',
   },
+  gemini: {
+    auto: true,
+    command: 'npm install -g @google/gemini-cli',
+    display: 'npm install -g @google/gemini-cli',
+  },
+  grok: {
+    auto: true,
+    command: 'npm install -g @xai-official/grok',
+    display: 'npm install -g @xai-official/grok',
+  },
 });
 
 const INSTALL_TIMEOUT_MS = 8 * 60 * 1000;
@@ -470,6 +480,7 @@ function createCliSwitchRuntime(options) {
     claude: 'CLAUDE_CMD', codex: 'CODEX_CMD', 'codex-exp': 'CODEX_CMD',
     opencode: 'OPENCODE_CMD', zcode: 'ZCODE_CMD', kimi: 'KIMI_CMD',
     qoder: 'QODER_CMD', codebuddy: 'CODEBUDDY_CMD', dsh: 'DSH_CMD',
+    gemini: 'GEMINI_CMD', grok: 'GROK_CMD',
   });
 
   // 「命令成功」不等于「multicc 派生的那个二进制升级了」。实测: 同一台机器上 claude
