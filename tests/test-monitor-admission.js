@@ -46,10 +46,10 @@ async function until(predicate) {
   }
 }
 
-for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor wakes through host admission with no idle inference`, { timeout: 30000 }, async t => {
+for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor reports only its end through host admission, with no idle inference`, { timeout: 30000 }, async t => {
   const attempts = createProviderAttemptRuntime({ runtimeEpoch: `monitor-${lane}` });
   let attempt, admitted = false, turns = 0, queued = Promise.resolve();
-  const requests = [], rejected = [], injections = [], results = [], errors = [];
+  const requests = [], rejected = [], injections = [], results = [], errors = [], decisions = [];
   const f = await sdkFixture(t, ({ index }) => index === 1 ? {
     type: 'tool_use', id: 'monitor-tool', name: 'Monitor', input: {
       description: 'isolated Monitor admission', persistent: true,
@@ -104,7 +104,11 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor wakes through h
     cfg = { cwd: f.cwd, sessionId, idleMs: 30, monitorAdmission: true,
       env: { ...f.env, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: 'isolated-route',
         ANTHROPIC_BASE_URL: `${origin}/claude-proxy/test-provider/${attempts.proxySessionId(attempt)}` },
-      onBackgroundEvent: event => background.handleEvent('monitor', state, event),
+      onBackgroundEvent: event => {
+        const verdict = background.handleEvent('monitor', state, event);
+        if (event.subtype === 'monitor_prompt' && !event.probe) decisions.push(verdict.decision);
+        return verdict;
+      },
       isBackgroundActive: () => background.hasProcessBackgroundTasks('monitor'),
       onExit: () => background.reapSessionShadows('monitor'),
       ...(lane === 'sdk' ? { sdkOptions: { model: 'claude-sonnet-4-6' } } : {
@@ -144,16 +148,20 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor wakes through h
   assert.equal(stream.status('monitor').pid, pid, 'active Monitor survives repeated idle windows');
   await assert.rejects(stream.claimWorkspace('sibling', workspace), { code: 'workspace_busy' });
   fs.writeFileSync(path.join(f.cwd, 'monitor-event'), 'event');
-  await until(() => results.length === 2);
-  assert.equal(stream.status('monitor').pid, pid, 'notification reuses the original native process');
-  assert.match(injections[0], /MONITOR_LINE_A/);
-  assert.match(injections[0], /监听尚未结束/);
-  assert.deepEqual(requests, ['monitor-turn-1', 'monitor-turn-1', 'monitor-turn-2']);
+  // A progress event stays inside the resident process: the native self-wake
+  // is blocked and no host turn is queued for it.
+  await until(() => decisions.includes('progress'));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.deepEqual(injections, [], 'progress never becomes a queued 🔇 turn');
   assert.deepEqual(rejected, [], 'no native Monitor inference ran outside admission');
+  assert.equal(stream.status('monitor').pid, pid);
   fs.writeFileSync(path.join(f.cwd, 'monitor-stop'), 'stop');
-  await until(() => errors.length || (results.length >= 3 && !background.hasProcessBackgroundTasks('monitor')));
+  await until(() => errors.length || (results.length >= 2 && !background.hasProcessBackgroundTasks('monitor')));
   await queued;
   assert.deepEqual(errors, []);
   assert.deepEqual(rejected, []);
+  assert.equal(stream.status('monitor').pid, pid, 'the terminal report reuses the original native process');
+  assert.equal(injections.length, 1, 'the terminal bookend is the one report');
   assert.ok(injections.some(text => /MONITOR_LINE_B/.test(text)));
+  assert.deepEqual(requests, ['monitor-turn-1', 'monitor-turn-1', 'monitor-turn-2']);
 });

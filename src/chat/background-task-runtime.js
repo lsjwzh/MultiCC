@@ -89,10 +89,6 @@ function createBackgroundTaskRuntime(deps = {}) {
       const origin = (bgTaskIds.length || bgToolUseIds.length)
         ? { bgTaskIds, bgToolUseIds }
         : {};
-      // One Monitor's reports supersede each other in the queue: while the
-      // session cannot take a turn only its latest event (or terminal) waits.
-      const monitorIds = new Set(items.map(item => (item.kind === 'monitor' ? String(item.taskId || '') : '')));
-      if (monitorIds.size === 1 && !monitorIds.has('')) origin.supersedeKey = `monitor:${[...monitorIds][0]}`;
       try {
         deliverSystem(sessionName, buildNudge(items), origin);
       } catch (error) {
@@ -655,16 +651,20 @@ function createBackgroundTaskRuntime(deps = {}) {
       if (!watch) return handleTaskPrompt(sessionName, chatState, event);
       if (!watch.live && now() - watch.endedAt > dedupTtlMs) return { handled: false };
       if (event.probe) return { handled: true, monitorOwned: true };
-      if (event.status) {
-        watch.terminalHandled = true;
-        if (watch.terminalQueued) return { handled: true, monitorOwned: true, decision: 'duplicate' };
-        watch.terminalQueued = true;
-      }
+      // A progress event only ever reaches this hook from a resident process
+      // that has no live turn: the watch runs inside the session and its
+      // progress is already on the task ledger. Waking the model (natively or
+      // as a queued 🔇 turn) per event only piles up work; the terminal
+      // bookend below is the one report that continues the task.
+      if (!event.status) return { handled: true, monitorOwned: true, decision: 'progress' };
+      watch.terminalHandled = true;
+      if (watch.terminalQueued) return { handled: true, monitorOwned: true, decision: 'duplicate' };
+      watch.terminalQueued = true;
       if (event.event_id && hasTimed(monitorEvents, sessionName, event.event_id)) {
         return { handled: true, monitorOwned: true, decision: 'duplicate' };
       }
       const item = { kind: 'monitor', desc: event.summary || watch.description || 'Monitor',
-        status: event.status || 'event', snippet: String(event.output || '').slice(0, outputCap),
+        status: event.status, snippet: String(event.output || '').slice(0, outputCap),
         taskId: event.task_id, toolUseId: watch.toolUseId || null };
       noteBgResultInjected(sessionName);
       coalescer.add(sessionName, item);

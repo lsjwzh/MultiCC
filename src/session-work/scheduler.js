@@ -668,21 +668,6 @@ function createSessionWorkScheduler({
           }
         }
       }
-      // A newer report from the same source replaces its still-pending
-      // predecessor (e.g. one Monitor's progress events while the session
-      // cannot take a turn), so a blocked session keeps one entry, not N.
-      const supersedeKey = typeof options.supersedeKey === 'string' ? options.supersedeKey : '';
-      const superseded = [];
-      if (supersedeKey) {
-        for (const item of Object.values(draft.outbox)) {
-          if (item.id === id || item.sessionId !== cleanSessionId || item.state !== 'pending'
-            || item.payload?.options?.supersedeKey !== supersedeKey
-            || [schedule.active?.entryId, schedule.active?.deliveryId].includes(item.id)) continue;
-          Object.assign(item, { state: 'cancelled', cancelledAt: at, updatedAt: at, lastError: 'superseded by a newer report' });
-          if (schedule.priorityEntryId === item.id) schedule.priorityEntryId = null;
-          superseded.push(item.id);
-        }
-      }
       const admitted = admitOutboxItem(draft, {
         id,
         sessionId: cleanSessionId,
@@ -719,14 +704,9 @@ function createSessionWorkScheduler({
         position: specialAnswer
           ? 0
           : queue.findIndex(item => item.id === admitted.item.id) + 1,
-        ...(superseded.length ? { superseded } : {}),
         schedule: publicSchedule(schedule, queue, draft),
       };
     });
-    for (const entryId of result.superseded || []) {
-      emit('queued_cancelled', { sessionId: cleanSessionId, entryId, actor: 'system', schedulerState: result.schedule.state,
-        queued: result.schedule.queued.length, queuedItems: result.schedule.queued, freezeReason: result.schedule.freezeReason, schedule: result.schedule });
-    }
     if (result.ok && !result.shellReplay) {
       const queuedItems = result.queued
         ? result.schedule.queued
