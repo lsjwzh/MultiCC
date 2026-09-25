@@ -147,6 +147,10 @@ quota-bar-cache.json
 # Local-only scripts (not for git)
 scripts/bigmodel-snatch/
 
+# Browser tool research notes are local to this task, not product documentation.
+docs/browser-control-review-2026-09-22.md
+docs/browser-user-feedback-2026-09-22.md
+
 # 讯飞 503 对比测试脚本（含 API key，仅本地）
 test_xf_503.sh
 
@@ -156,3 +160,7 @@ cli-provider-router/
 
 # Global official-account selection (local runtime state)
 official-provider-selection.json
+
+# Python bytecode from skill scripts and their unittest suites
+__pycache__/
+*.pyc

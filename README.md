@@ -384,6 +384,7 @@ keeps the full output and offers a force retry.
 | [Installation & service management](docs/installation.md) | Install flags, updating, `./multicc` commands, systemd, Flutter builds |
 | [Desktop app](docs/desktop.md) | macOS / Windows / Linux desktop installers: first launch, failures, data & log locations, security model, signing |
 | [Standalone package](docs/standalone.md) | The distribution form everything else wraps: layout, `multicc` commands, updates, data locations, and why it runs on macOS 11+/Intel with no compiler and no Homebrew |
+| [Browser Use on Intel/macOS 11](skills/multicc-browser/references/browser-use-local.md) | Dedicated local Chromium profiles, Browser Harness setup, smoke test, security limits, and fallback |
 | [Configuration](docs/configuration.md) | Every environment variable, providers, voice, notifications |
 | [Features](docs/features.md) | The complete feature reference |
 | [Architecture](docs/architecture.md) | Repository layout, message flows, design decisions |
