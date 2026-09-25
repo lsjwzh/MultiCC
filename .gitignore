@@ -128,6 +128,8 @@ goal-config.json
 # 营销/推广资料仅本地保存，不上仓库（含竞品对比、KOL 清单、账号策略等敏感内容）
 # 统一放进 marketing-local/；下面两条根目录规则是历史遗留的双保险
 marketing-local/
+# Jev demo render outputs are local deliverables, not repository source.
+/jev-demo-test/demo/
 PROMOTION_PLAN_v2.md
 PROMOTION_EXECUTION.md
 PROMOTION_PLAN.md
