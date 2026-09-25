@@ -1,6 +1,7 @@
 'use strict';
 
 const { sanitizePublicText } = require('../http/public-safety');
+const { createMacosAgentProvisioner } = require('../macos-agent-provision');
 
 // Names bundled skills used to ship under. Keep entries here permanently:
 // a machine can upgrade from any old version.
@@ -69,6 +70,12 @@ function createSkillSyncRuntime(rawDeps) {
   const setIntervalFn = deps.setInterval || setInterval;
   const clearIntervalFn = deps.clearInterval || clearInterval;
   const syncIntervalMs = deps.syncIntervalMs || 5 * 60 * 1000;
+  // The bundled computer-use skill drives the MultiCC Agent; keep it installed
+  // and current with the same startup that installs the bundled skills.
+  // null disables; a temp rootDir without the installer is a no-op.
+  const desktopAgent = deps.desktopAgentProvisioner !== undefined
+    ? deps.desktopAgentProvisioner
+    : createMacosAgentProvisioner({ rootDir, logger });
 
   let lastResult = null;
   let running = false;
@@ -411,6 +418,7 @@ function createSkillSyncRuntime(rawDeps) {
     if (started) return getStatus();
     acceptingAiConversions = true;
     const bundled = installBundledSkills();
+    if (desktopAgent) desktopAgent.ensure();
     let reverseImports = [];
     try {
       reverseImports = skillConverter.importAllProviderSkills() || [];

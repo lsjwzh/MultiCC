@@ -6,7 +6,7 @@ All notable changes to MultiCC are documented in this file.
 
 ### Improvements and fixes
 
-- **`computer-use` → `multicc-computer-use`** — the bundled GUI-automation skill is renamed and now drives the optional MultiCC Agent (`scripts/install-agent.sh`: one app holds the Accessibility and Screen Recording grants, so it works from any CLI, any provider and `-p` sessions) through a single `scripts/mcu.sh` — element-level see / click / set / press ported from Peekaboo, an Esc emergency stop, one-session lease and locked-screen refusal, macOS 11+ —, falling back to screencapture + cliclick when the agent is absent. The old bundled copy and its provider links are removed on startup; a same-named directory MultiCC did not install is left alone.
+- **`computer-use` → `multicc-computer-use`** — the bundled GUI-automation skill is renamed and now drives the optional MultiCC Agent (`scripts/install-agent.sh`: one app holds the Accessibility and Screen Recording grants, so it works from any CLI, any provider and `-p` sessions) through a single `scripts/mcu.sh` — element-level see / click / set / press ported from Peekaboo, an Esc emergency stop, one-session lease and locked-screen refusal, macOS 11+, installed and kept current automatically at MultiCC startup (release packages ship a prebuilt universal binary, so no Xcode tools are needed; `install-agent.sh uninstall` opts out) —, falling back to screencapture + cliclick when the agent is absent. The old bundled copy and its provider links are removed on startup; a same-named directory MultiCC did not install is left alone.
 
 ## v2.1.0 — Smarter routing, full-history search, and one unified Air console (2026-09-25)
 

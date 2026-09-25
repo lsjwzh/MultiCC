@@ -5,7 +5,7 @@ description: "通过截图、鼠标和键盘操作 macOS 原生应用（MultiCC 
 compatibility:
   os: "macOS 11 (Big Sur) 及以上，Apple 芯片与 Intel 均可；新系统自动启用更好的实现（见「系统支持」）"
   preferred:
-    - "MultiCC Agent：scripts/install-agent.sh install（仓库内），并在系统设置给「MultiCC Agent」开辅助功能 + 屏幕与系统录音"
+    - "MultiCC Agent：MultiCC 安装/更新后启动时自动安装或更新（无需手动步骤）；用户只需在系统设置给「MultiCC Agent」开辅助功能 + 输入监控 + 屏幕与系统录音"
   fallback:
     - "cliclick: brew install cliclick，并给调用链授权（见 computer-use-permissions）"
 ---
@@ -82,7 +82,8 @@ $MCU press cmd+shift+g    # 组合键；press return 3 = 连按 3 次
 | `$MCU type 文本` | 输入到当前焦点，中文直接可用 |
 
 **backend 不是 agent 时**：
-- 告诉用户可以在 MultiCC 仓库跑 `scripts/install-agent.sh install`，再到「隐私与安全性」给 **MultiCC Agent** 开辅助功能、输入监控（Esc 急停用）和屏幕与系统录音（后者需在列表点 + 手动添加 `~/Applications/MultiCC Agent.app`），授权后 `launchctl kickstart -k gui/$(id -u)/com.multicc.agent`。
+- `not installed`：MultiCC 每次启动会自动安装/更新 agent（发行包自带预编译程序；源码运行时需要 Xcode 命令行工具）。原因看 MultiCC 日志里的 `[multicc-agent]` 行；用户卸载过（`install-agent.sh uninstall`）则不会自动装回，需在 MultiCC 目录手动跑 `scripts/install-agent.sh install`。
+- `lacks ... grant`：让用户按 `status.platform.settingsApp` 所说的设置页给 **MultiCC Agent** 开辅助功能、输入监控（Esc 急停用）和屏幕录制（首次安装时系统已弹过提示、App 已在列表里，只需打开开关；若列表里没有，点 + 添加 `~/Applications/MultiCC Agent.app`），授权后 `launchctl kickstart -k gui/$(id -u)/com.multicc.agent`。
 - 当下仍可用 legacy：先跑 `bash <skill_dir>/scripts/init.sh`（检查依赖、打印进程名），授权问题用 **computer-use-permissions** 技能。legacy 没有 see/元素操作，也没有上面的安全机制。
 
 > 多显示器只保证主屏坐标。

@@ -29,7 +29,7 @@ AGENT="${MULTICC_AGENT_BIN:-$HOME/.multicc/bin/multicc-agent}"
 
 backend() {
   if [ "${MCU_BACKEND:-}" = legacy ]; then echo "legacy: forced"; return; fi
-  [ -x "$AGENT" ] || { echo "legacy: multicc-agent not installed"; return; }
+  [ -x "$AGENT" ] || { echo "legacy: multicc-agent not installed (MultiCC installs it at startup; see [multicc-agent] lines in its log)"; return; }
   local s
   s=$("$AGENT" status 2>/dev/null) || { echo "legacy: multicc-agent not running"; return; }
   case "$s" in

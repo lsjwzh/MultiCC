@@ -28,6 +28,7 @@ const FIXTURE = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js'
 
 const { findFreePort, probePort } = require(path.join(DESKTOP, 'lib', 'port-chooser.js'));
 const { waitForReadiness } = require(path.join(DESKTOP, 'lib', 'health-probe.js'));
+const { MACOS_AGENT_FILES } = require(path.join(ROOT, 'scripts', 'desktop-bundle-server.js'));
 const desktopEnv = require(path.join(DESKTOP, 'lib', 'desktop-env.js'));
 const { createBackendSupervisor } = require(path.join(DESKTOP, 'lib', 'backend-supervisor.js'));
 const { reclaimOrphan, pidAlive } = require(path.join(DESKTOP, 'lib', 'orphan-reclaim.js'));
@@ -431,8 +432,12 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   for (const must of ['server.js', 'src/paths.js', 'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
-    'package.json']) {
+    'package.json', ...MACOS_AGENT_FILES]) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
+  }
+  // the macOS agent installer is run by the server at startup: keep it executable
+  for (const sh of MACOS_AGENT_FILES.filter(f => f.endsWith('.sh'))) {
+    assert.ok(fs.statSync(path.join(staged, sh)).mode & 0o100, `${sh} must stay executable`);
   }
   // server.js requires every plugins/* module unconditionally at boot; a tree
   // without them dies before /readyz (caught for real by the local smoke run).
@@ -456,7 +461,7 @@ function stubRepoRoot(dir) {
   fs.writeFileSync(path.join(dir, 'package.json'),
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
   for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/air.html',
-    'scripts/multicc-router-mcp.js',
+    'scripts/multicc-router-mcp.js', ...MACOS_AGENT_FILES,
     'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
