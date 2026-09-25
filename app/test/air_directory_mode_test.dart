@@ -25,8 +25,10 @@ MockClient _client(List<String> requests) => MockClient((request) async {
   return http.Response(
     jsonEncode({
       'ok': true,
-      // 两个 CLI：点「新建终端」时该问一句用哪个（只有一个就直接用，不问）。
-      'clis': const ['claude', 'codex'],
+      // 点「新建终端」时该问一句用哪个（只有一个就直接用，不问）。清单里混进
+      // 两个**不该出现**的：`kimi` 这台客户端认不出（parseCli 会静默落回 claude，
+      // 等于建错终端），`codex-exp` 是实验适配器 —— 两者都不该成为选项。
+      'clis': const ['claude', 'codex', 'kimi', 'codex-exp'],
       'directories': const [
         {'id': 'd1', 'name': '工作目录 A', 'path': '/project/a'},
         {'id': 'd2', 'name': '工作目录 B', 'path': '/project/b'},
@@ -181,6 +183,10 @@ void main() {
     expect(find.text('用哪个 CLI 开这个终端？'), findsOneWidget);
     expect(find.byKey(const ValueKey('air-terminal-cli-claude')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-terminal-cli-codex')), findsOneWidget);
+    // 认不出的（kimi）和实验车道（codex-exp）不进选项：前者会静默建出 claude 终端，
+    // 后者不是给人用的常规终端。
+    expect(find.byKey(const ValueKey('air-terminal-cli-kimi')), findsNothing);
+    expect(find.byKey(const ValueKey('air-terminal-cli-codex-exp')), findsNothing);
     expect(tester.takeException(), isNull);
 
     // 关掉这一层：选一个会去建会话并 push 真的终端页（见文件头）。

@@ -779,6 +779,15 @@
       ]
     },
     {
+      "path": "tests/test-air-directory-terminal-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-air-frame-pool-cdp.js",
       "tier": "flow",
       "lane": "cdp",

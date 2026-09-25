@@ -260,6 +260,10 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
         one('#directory-terminals [data-i18n="airTerminalsHeading"]', 'airTerminalsHeading'),
         one('#directory-terminal-new [data-i18n="airNewTerminal"]', 'airNewTerminal'),
         one('#directory-terminal-list .directory-terminal-empty', 'airTerminalsEmpty'),
+        // 新建终端那层「用哪个 CLI」的弹窗：标题和说明也要是英文（它藏在关着的
+        // dialog 里，扫描器照样看得到 —— 只钉那几条可见文案不够）。
+        one('#terminal-cli-title', 'airTerminalPickTitle'),
+        one('#terminal-cli-dialog [data-i18n="airTerminalPickHint"]', 'airTerminalPickHint'),
         ...many('#sidebar .nav-row [data-i18n]', ['airConsole', 'airScheduledTasks']),
         ...many('#delivery-steps span', ['airStepTurnSucceeded', 'airStepCodeDelivered', 'airStepSourceStable', 'airStepAttribution']),
       ];
