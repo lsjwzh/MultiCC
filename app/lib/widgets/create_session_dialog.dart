@@ -114,6 +114,15 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   /// back to available so the user is never blocked from creating a session.
   bool _cliAvailable(SessionCli cli) => widget.cliAvailability[cli] ?? true;
 
+  /// 兜底车道（`codex exec`，计划淘汰）的说明：名字现在叫 Codex Exec，别和
+  /// 扶正后的 Codex 搞混，并指出该用哪条。文案与 web 选择器共用 i18n 词条。
+  String _deprecationNoteText(SessionCli cli) {
+    final replacement = cli.replacedByLane?.displayName;
+    return replacement == null
+        ? t('cliLaneDeprecatedNote')
+        : '${t('cliLaneDeprecatedNote')} · $replacement';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -637,6 +646,19 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                   if (v != null) _onCliChanged(v);
                 },
               ),
+              // 建会话时选到兜底车道（codex exec，计划淘汰）要说一句：它的名字
+              // 现在是 Codex Exec，别和扶正后的 Codex 搞混。
+              if (_pickedCli.isDeprecatedLane) ...[
+                const SizedBox(height: 6),
+                Text(
+                  _deprecationNoteText(_pickedCli),
+                  style: const TextStyle(
+                    color: Color(0xFFa85a25),
+                    fontSize: 11,
+                    height: 1.35,
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               // ── Role prompt with preset picker ──
               Row(

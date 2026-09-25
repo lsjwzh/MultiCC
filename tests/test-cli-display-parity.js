@@ -3,9 +3,10 @@
 // CLI display parity: one name per id, on all three platforms.
 //
 // What this defends:
-//   1. `{id, displayName, shortMark, colour, providerless}` exists once per
-//      platform — server (src/cli/cli-capability.js DISPLAY, the authoritative
-//      one), web (public/provider-catalog.js CLI_DISPLAY) and app
+//   1. `{id, displayName, shortMark, colour, providerless, deprecated,
+//      replacedBy}` exists once per platform — server
+//      (src/cli/cli-capability.js DISPLAY, the authoritative one), web
+//      (public/provider-catalog.js CLI_DISPLAY) and app
 //      (app/lib/utils/cli_display.dart kCliDisplays) — and the three copies
 //      agree. Before this they were written out ten-plus times and had already
 //      drifted: the app's dashboard showed codebuddy / kimi / dsh / gemini / grok
@@ -15,6 +16,9 @@
 //      table had never heard of was displayed as a completely different product.
 //   3. The consumers really point at the canonical module instead of carrying
 //      another copy.
+//   4. The 2026-09-24 rename and the deprecation plan it came with (codex-exp is
+//      the product's "Codex"; `codex exec` is the fallback "Codex Exec", on its
+//      way out) are one fact per platform, not a per-picker decision.
 //
 // The Dart file is parsed, not imported (same approach as
 // tests/test-status-presentation.js), so this stays in the plain node lane.
@@ -33,10 +37,24 @@ function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 /** kCliDisplays literal from the Dart source. */
 function dartTable() {
   const src = read('app/lib/utils/cli_display.dart');
-  const re = /'([^']+)':\s*CliDisplay\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*([A-Za-z0-9_.]+)\s*,\s*'((?:[^'\\]|\\.)*)'\s*(?:,\s*providerless:\s*(true|false))?\s*\)/g;
+  // Three positional args, then any number of `name: value` flags (true/false or
+  // a quoted string), in any order — `providerless: true`, `deprecated: true,
+  // replacedBy: 'codex-exp'`, or none at all.
+  const re = /'([^']+)':\s*CliDisplay\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*([A-Za-z0-9_.]+)\s*,\s*'((?:[^'\\]|\\.)*)'\s*((?:,\s*[A-Za-z]+\s*:\s*(?:true|false|'[^']*'))*)\s*\)/g;
   const out = {};
   for (const m of src.matchAll(re)) {
-    out[m[1]] = { displayName: m[2], colourSymbol: m[3], shortMark: m[4], providerless: m[5] === 'true' };
+    const flags = {};
+    for (const pair of m[5].matchAll(/([A-Za-z]+)\s*:\s*(true|false|'([^']*)')/g)) {
+      flags[pair[1]] = pair[2] === 'true' ? true : pair[2] === 'false' ? false : pair[3];
+    }
+    out[m[1]] = {
+      displayName: m[2],
+      colourSymbol: m[3],
+      shortMark: m[4],
+      providerless: flags.providerless === true,
+      deprecated: flags.deprecated === true,
+      replacedBy: typeof flags.replacedBy === 'string' ? flags.replacedBy : null,
+    };
   }
   assert.ok(Object.keys(out).length >= 10, 'kCliDisplays literal not found in app/lib/utils/cli_display.dart');
   return out;
@@ -56,8 +74,7 @@ test('server / web / app carry the same CLI id set', () => {
   assert.deepEqual(CAP.knownClis().sort(), ids, 'knownClis() must be the DISPLAY key set');
 });
 
-// ── 2. Same four columns ────────────────────────────────────────────────────
-
+// ── 2. Same columns everywhere ──────────────────────────────────────────────
 test('displayName is identical on all three platforms', () => {
   for (const id of ids) {
     assert.equal(WEB[id].displayName, SERVER[id].displayName, `${id}: web name`);
@@ -84,8 +101,58 @@ test('providerless flag is identical on all three platforms', () => {
   );
 });
 
-test('colour is identical between server and web, and the app brands differ deliberately', () => {
+test('the deprecation plan is identical on all three platforms', () => {
+  // 2026-09-24：常驻 app-server 车道（codex-exp）扶正为产品的 Codex，一次性
+  // `codex exec`（codex）退成兜底并计划淘汰。id 一个都没动（会话、Provider 池、
+  // 路由都存着 id），所以「哪条线路要退役、该换成谁」必须是这一列事实，而不是各
+  // 个选择器各自判断。
   for (const id of ids) {
+    const deprecated = SERVER[id].deprecated === true;
+    assert.equal(WEB[id].deprecated === true, deprecated, `${id}: web deprecated`);
+    assert.equal(DART[id].deprecated, deprecated, `${id}: app deprecated`);
+    const replacedBy = deprecated ? (SERVER[id].replacedBy || null) : null;
+    assert.equal(WEB[id].replacedBy || null, replacedBy, `${id}: web replacedBy`);
+    assert.equal(DART[id].replacedBy, replacedBy, `${id}: app replacedBy`);
+    // 两个平台的谓词要与表一致 —— 页面和 App 都问它们，不再自己判断。
+    assert.equal(CAP.isDeprecated(id), deprecated, `${id}: isDeprecated()`);
+    assert.deepEqual(CAP.deprecationOf(id), deprecated ? { replacedBy } : null, `${id}: deprecationOf()`);
+    assert.equal(CATALOG.cliDeprecated(id), deprecated, `${id}: web cliDeprecated()`);
+    assert.equal(CATALOG.cliReplacedBy(id), replacedBy, `${id}: web cliReplacedBy()`);
+    if (!deprecated) continue;
+    // 指到一个不存在、指向自己、或指向另一条也在退役的线路，等于让用户换到一条
+    // 用不了的线路上 —— UI 的提示就是这么变成假话的。
+    assert.ok(ids.includes(replacedBy), `${id} must name a lane DISPLAY knows`);
+    assert.notEqual(replacedBy, id, `${id} must not be replaced by itself`);
+    assert.equal(SERVER[replacedBy].deprecated === true, false, `${id} must not point at another dying lane`);
+  }
+  // 判定只挂在 id 上：没听说过的 CLI 没有淘汰计划，也不该因此报错。
+  assert.equal(CAP.isDeprecated('mystery-cli'), false);
+  assert.equal(CAP.deprecationOf('mystery-cli'), null);
+  assert.equal(CATALOG.cliDeprecated('mystery-cli'), false);
+  assert.equal(CATALOG.cliReplacedBy('mystery-cli'), null);
+  // The picker hands a CLI's meta to the client, so the flags have to travel with
+  // it — a picker that only gets {label, color} cannot say "计划淘汰".
+  assert.equal(CATALOG.cliMeta('codex').deprecated, true);
+  assert.equal(CATALOG.cliMeta('codex').replacedBy, 'codex-exp');
+  assert.equal(CATALOG.cliMeta('codex-exp').deprecated, undefined);
+  assert.equal(CATALOG.cliMetaMap().codex.deprecated, true);
+});
+
+test('the promoted lane carries the product name, and the fallback says what it is', () => {
+  // The rename, stated once: this is what every picker ends up showing.
+  assert.equal(CAP.displayNameOf('codex-exp'), 'Codex');
+  assert.equal(CAP.displayNameOf('codex'), 'Codex Exec');
+  assert.equal(CATALOG.cliDisplayName('codex-exp'), 'Codex');
+  assert.equal(CATALOG.cliMetaMap()['codex'].label, 'Codex Exec');
+  // 角标不能撞：两颗 X 落在同一张任务卡上就分不出是哪条车道。
+  const marks = ids.map(id => SERVER[id].shortMark);
+  assert.equal(new Set(marks).size, marks.length, 'two CLIs share a shortMark');
+  // 角标跟名字走，不是跟 id 走：X 归 Codex（codex-exp），E 归 Codex Exec（codex）。
+  assert.equal(SERVER['codex-exp'].shortMark, 'X');
+  assert.equal(SERVER.codex.shortMark, 'E');
+});
+
+test('colour is identical between server and web, and the app brands differ deliberately', () => {  for (const id of ids) {
     assert.equal(String(WEB[id].colour).toLowerCase(), String(SERVER[id].colour).toLowerCase(), `${id}: colour`);
   }
   // The app ships a light theme, so it may hold its own hex per brand — but each
@@ -151,7 +218,7 @@ test('unknown-id colour and mark stay neutral', () => {
 
 test('lookups tolerate the spacing and casing a session record carries', () => {
   assert.equal(CAP.displayNameOf(' Claude '), 'Claude Code');
-  assert.equal(CATALOG.cliDisplayName(' CODEX '), 'Codex');
+  assert.equal(CATALOG.cliDisplayName(' CODEX '), 'Codex Exec');
   assert.equal(CATALOG.cliMeta('ZCode').label, 'ZCode');
   assert.equal(CATALOG.cliMeta('zcode').color, SERVER.zcode.colour);
 });

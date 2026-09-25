@@ -186,7 +186,7 @@
             <label>Agent</label>
             <div style="display:flex;gap:12px;">
               <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="claude" checked /> Claude</label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="codex" /> Codex</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="codex" /> Codex Exec</label>
             </div>
           </div>
           <div class="setting-row"><span>${t('airBridgesWechatGatewayHint')}</span></div>
@@ -249,7 +249,7 @@
             <label>Agent</label>
             <div style="display:flex;gap:12px;">
               <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="fs-gw-cli" value="claude" checked /> Claude</label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="fs-gw-cli" value="codex" /> Codex</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="fs-gw-cli" value="codex" /> Codex Exec</label>
             </div>
           </div>
           <div class="setting-row"><span>${t('airBridgesTokenGatewayHint', { session: '__feishu_gateway__' })}</span></div>
@@ -319,7 +319,7 @@
             <label>Agent</label>
             <div style="display:flex;gap:12px;">
               <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="${idp}-gw-cli" value="claude" checked /> Claude</label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="${idp}-gw-cli" value="codex" /> Codex</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="${idp}-gw-cli" value="codex" /> Codex Exec</label>
             </div>
           </div>
           <div class="setting-row"><span>${t('airBridgesTokenGatewayHint', { session: `__${spec.platform}_gateway__` })}</span></div>

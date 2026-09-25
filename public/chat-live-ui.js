@@ -1268,6 +1268,21 @@
         description.textContent = '切换后，目标 CLI 会接着当前任务继续工作。每个 CLI 的原对话都会单独保留。';
         const select = doc.createElement('select');
         select.style.cssText = 'width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:7px;color:var(--chat-text, #c9d1d9);font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
+        // 兜底车道的标记由 cliMeta 带进来（catalog 从服务端 DISPLAY 的 deprecated 列
+        // 生成）: 名字后面直接说出来, 选到它时下面还会再解释一句。
+        const DEPRECATED_NOTE = tt('cliLaneDeprecatedNote', '兜底线路，计划淘汰');
+        const cliLabelText = meta => `${meta.label}${meta && meta.deprecated ? `（${DEPRECATED_NOTE}）` : ''}`;
+        // 选中兜底车道时在详情里再说一句, 并指出该用哪条 —— 列表里的角标只是
+        // 提示, 这里才是「你正要切到一条过渡线路」的说明。
+        const deprecationNoteNode = meta => {
+          if (!meta?.deprecated) return null;
+          const note = doc.createElement('div');
+          note.id = 'cli-deprecation-note';
+          note.style.cssText = 'color:var(--chat-warning, #d29922);margin-top:4px;';
+          const replacement = meta.replacedBy ? (cliMeta?.[meta.replacedBy]?.label || meta.replacedBy) : '';
+          note.textContent = `${meta.label} · ${DEPRECATED_NOTE}${replacement ? ` → ${replacement}` : ''}`;
+          return note;
+        };
         for (const [value, meta] of Object.entries(cliMeta || {})) {
           const sessionState = states && states[value];
           const installed = availLocal[value]?.available !== false;
@@ -1275,7 +1290,7 @@
           option.value = value;
           // hooks 缺省时退化为旧行为: 未安装 option 禁用; 有 hooks 时可选, 文案仍带 "· 未安装"
           option.disabled = !installed && value !== current && !hasHooks;
-          option.textContent = `${meta.label}${value === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
+          option.textContent = `${cliLabelText(meta)}${value === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
           optionMap[value] = option;
           select.appendChild(option);
         }
@@ -1318,7 +1333,7 @@
           const meta = cliMeta?.[cli];
           const sessionState = states && states[cli];
           const installed = isInstalled(cli);
-          option.textContent = `${meta.label}${cli === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
+          option.textContent = `${cliLabelText(meta)}${cli === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
         };
 
         // 渲染进行中/完成/失败状态的安装面板(写入 targetInfo)
@@ -1402,6 +1417,8 @@
             targetInfo.textContent = sessionState?.hasNativeSession
               ? `将继续 ${label} 上次的对话，并带上切换后新增的内容。`
               : `将打开新的 ${label} 对话，并带上当前任务信息。`;
+            const note = deprecationNoteNode(meta);
+            if (note) targetInfo.appendChild(note);
             setOkEnabled(true);
             return;
           }

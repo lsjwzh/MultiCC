@@ -101,9 +101,9 @@
   // ── CLI 目录（唯一的 web 侧副本）────────────────────────────────────────────
   //
   // 服务端 src/cli/cli-capability.js 的 DISPLAY 是权威表（displayName / shortMark
-  // / colour / providerless 四列），这里是它在浏览器侧的镜像；App 侧还有一份
-  // app/lib/utils/cli_display.dart。tests/test-cli-display-parity.js 读这三份，任何
-  // 一列漂移就红。
+  // / colour / providerless / deprecated / replacedBy 六列），这里是它在浏览器侧的
+  // 镜像；App 侧还有一份 app/lib/utils/cli_display.dart。tests/test-cli-display-
+  // parity.js 读这三份，任何一列漂移就红。
   //
   // 镜像之前，同样的四列在页面上被抄了六七遍且各抄各的：chat.js 的 CLI_META、
   // air-task-settings.js 的 CLI_LABELS/CLI_MARKS、air-cli-update.js 的第三份标签表
@@ -114,18 +114,21 @@
   // 未知 id 一律用原 id 显示：回落成别的 CLI 的名字（旧代码里是 Claude / WorkBuddy）
   // 会把新 CLI 显示成另一个产品。
   const CLI_DISPLAY = {
-    claude: { displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false },
-    'claude-exp': { displayName: 'Claude Agent SDK', shortMark: 'A', colour: '#ff9a76', providerless: false },
-    codex: { displayName: 'Codex', shortMark: 'X', colour: '#2ea043', providerless: false },
-    'codex-exp': { displayName: 'Codex Exp', shortMark: 'E', colour: '#20a66a', providerless: false },
-    opencode: { displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false },
-    zcode: { displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false },
-    qoder: { displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true },
-    kimi: { displayName: 'Kimi Code', shortMark: 'K', colour: '#13c2c2', providerless: false },
-    codebuddy: { displayName: 'WorkBuddy', shortMark: 'W', colour: '#0052d9', providerless: true },
-    dsh: { displayName: 'DSH', shortMark: 'D', colour: '#4d6bfe', providerless: true },
-    gemini: { displayName: 'Gemini', shortMark: 'G', colour: '#4285f4', providerless: true },
-    grok: { displayName: 'Grok', shortMark: 'R', colour: '#8c8f96', providerless: true },
+    claude: { displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false, deprecated: false },
+    'claude-exp': { displayName: 'Claude Agent SDK', shortMark: 'A', colour: '#ff9a76', providerless: false, deprecated: false },
+    // 2026-09-24 改名：常驻 app-server 车道（id 仍是 codex-exp）是产品的「Codex」，
+    // 一次性 `codex exec`（id 仍是 codex）是兜底的「Codex Exec」，计划淘汰。
+    // 角标跟着名字走：X 归 Codex，E 归 Codex Exec —— 两个 id 不能同用 X。
+    codex: { displayName: 'Codex Exec', shortMark: 'E', colour: '#2ea043', providerless: false, deprecated: true, replacedBy: 'codex-exp' },
+    'codex-exp': { displayName: 'Codex', shortMark: 'X', colour: '#20a66a', providerless: false, deprecated: false },
+    opencode: { displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false, deprecated: false },
+    zcode: { displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false, deprecated: false },
+    qoder: { displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true, deprecated: false },
+    kimi: { displayName: 'Kimi Code', shortMark: 'K', colour: '#13c2c2', providerless: false, deprecated: false },
+    codebuddy: { displayName: 'WorkBuddy', shortMark: 'W', colour: '#0052d9', providerless: true, deprecated: false },
+    dsh: { displayName: 'DSH', shortMark: 'D', colour: '#4d6bfe', providerless: true, deprecated: false },
+    gemini: { displayName: 'Gemini', shortMark: 'G', colour: '#4285f4', providerless: true, deprecated: false },
+    grok: { displayName: 'Grok', shortMark: 'R', colour: '#8c8f96', providerless: true, deprecated: false },
   };
   const CLI_DEFAULT_COLOUR = '#8b949e';
 
@@ -138,18 +141,36 @@
   }
 
   // chat-live-ui 的切换面板按 {label, color} 读每个 CLI（入口行、安装进度行、当前
-  // 线路行三处），所以映射里就用它那两个字面 key。
+  // 线路行三处），所以映射里就用它那两个字面 key。deprecated / replacedBy 也带上：
+  // 面板要在这个 CLI 的名字后面标注「计划淘汰」，并说明该换成哪条线路。
   function cliMeta(cli) {
     const entry = cliEntry(cli);
-    return entry
-      ? { label: entry.displayName, color: entry.colour }
-      : { label: String(cli == null ? '' : cli).trim(), color: CLI_DEFAULT_COLOUR };
+    if (!entry) return { label: String(cli == null ? '' : cli).trim(), color: CLI_DEFAULT_COLOUR };
+    const meta = { label: entry.displayName, color: entry.colour };
+    if (entry.deprecated === true) {
+      meta.deprecated = true;
+      if (entry.replacedBy) meta.replacedBy = entry.replacedBy;
+    }
+    return meta;
   }
 
   function cliMetaMap() {
     const out = {};
-    for (const id of Object.keys(CLI_DISPLAY)) out[id] = { label: CLI_DISPLAY[id].displayName, color: CLI_DISPLAY[id].colour };
+    for (const id of Object.keys(CLI_DISPLAY)) out[id] = cliMeta(id);
     return out;
+  }
+
+  // 车道还在用，但已在淘汰路上（服务端的 deprecated 列）。UI 拿它决定要不要说
+  // 「兜底线路，计划淘汰」。未知 id 与退役无关 —— 返回 false 而不是报错。
+  function cliDeprecated(cli) {
+    const entry = cliEntry(cli);
+    return entry ? entry.deprecated === true : false;
+  }
+
+  // 该换成谁；非淘汰线路与未知 id 都是 null。
+  function cliReplacedBy(cli) {
+    const entry = cliEntry(cli);
+    return entry && entry.deprecated === true && entry.replacedBy ? entry.replacedBy : null;
   }
 
   function cliShortMark(cli) {
@@ -810,6 +831,8 @@
     cliShortMark,
     cliColour,
     cliProviderless,
+    cliDeprecated,
+    cliReplacedBy,
     providerlessClis,
     nativeRouteLabel,
     CLI_DISPLAY,

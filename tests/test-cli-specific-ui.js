@@ -161,7 +161,9 @@ async function cleanup() {
   console.log('  checking Codex controls');
   await api('POST', `/api/sessions/${session.id}/switch-cli`, { cli: 'codex' });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
-  ui = await openConfig(page, 'Codex');
+  // cli 'codex' 是兜底的 `codex exec` 车道，产品名现在是 Codex Exec（扶正后的
+  // Codex 是 codex-exp）。
+  ui = await openConfig(page, 'Codex Exec');
   if (ui.agentVisible || !ui.subagentVisible || ui.effortLabel !== 'Reasoning Level') {
     throw new Error(`Codex controls mismatch: ${JSON.stringify(ui)}`);
   }

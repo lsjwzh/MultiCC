@@ -729,6 +729,7 @@
   "agentNameHint": "已定义的 agent 名称；留空使用默认 agent",
   "newChatSession": "+ 会话",
   "newTerminalSession": "+ 终端",
+  "cliLaneDeprecatedNote": "兜底线路，计划淘汰",
   "cliLabel": "CLI",
   "cliNotInstalledSuffix": "（未安装）",
   "cliSessionResumedSuffix": "，已恢复该 CLI 的原会话",

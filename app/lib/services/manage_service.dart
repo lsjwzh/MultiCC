@@ -1412,6 +1412,40 @@ class ManageService {
     return utf8.decode(res.bodyBytes);
   }
 
+  // ── Difficulty routing（Jev 难度路由）──────────────────────────────────
+  // The App editor's「测试」action, same route the web editor's routingKey.test()
+  // calls (src/routes/auto-provider-routing-test.js). The vault entry is read
+  // in-process on the server, so the key itself never travels to the phone —
+  // only the verdict comes back. An older server has no such route: 404 is
+  // reported as `test_unavailable` rather than thrown, so the panel can say
+  // "restart multicc" instead of showing an HTTP error.
+  Future<Map<String, dynamic>> testAutoProviderRouting({
+    required String apiKeyName,
+    required String text,
+  }) async {
+    final res = await _req(
+      'POST',
+      Uri.parse(_url('/api/auto-provider/routing/test')),
+      body: jsonEncode({'apiKeyName': apiKeyName, 'text': text}),
+    );
+    if (res.statusCode == 404) return const {'ok': false, 'code': 'test_unavailable'};
+    // Every failure shape this route produces carries a JSON verdict (400 for a
+    // bad entry name, 200 for a Jev verdict, 500 for an internal failure), so a
+    // body that will not decode is reported as such instead of thrown.
+    Map<dynamic, dynamic>? decoded;
+    try {
+      final body = jsonDecode(utf8.decode(res.bodyBytes));
+      if (body is Map) decoded = body;
+    } catch (_) {
+      decoded = null;
+    }
+    if (decoded == null) {
+      if (res.statusCode >= 400) _throw(res);
+      return const {'ok': false, 'code': 'invalid_response'};
+    }
+    return decoded.cast<String, dynamic>();
+  }
+
   // ── Secrets vault（敏感信息保险箱）─────────────────────────────────────
   // Mobile mirror of the /manage「敏感信息」panel. The list endpoint returns
   // metadata only (name/description/source/updatedAt); the value is fetched

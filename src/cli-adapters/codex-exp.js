@@ -132,8 +132,10 @@ function createCodexExpAdapter(deps = {}) {
       }
       if (event.id !== undefined && /(?:requestApproval|Approval)$/.test(method)) {
         return [{
+          // label 跟着展示表走（displayNameOf('codex-exp') 现在是 "Codex"），
+          // 所以这句要跟正文对齐，别再自称 "Codex Exp" —— 那个名字在界面上已经不存在了。
           type: 'error', label: displayNameOf('codex-exp'), kind: 'provider',
-          message: 'Codex Exp v1 does not support interactive approvals; the request was cancelled.',
+          message: 'Codex v1 does not support interactive approvals; the request was cancelled.',
         }];
       }
       if (method === 'thread/started') {

@@ -115,6 +115,18 @@ void main() {
       expect(SessionCli.claudeExp.displayName, 'Claude Agent SDK');
       expect(SessionCli.claude.displayName, 'Claude Code');
 
+      // 显示名同样跟产品走：扶正后的常驻车道 codex-exp 叫 Codex，兜底的
+      // codex exec（内部 id codex）叫 Codex Exec，并被标成计划淘汰 —— 选择器靠
+      // [isDeprecatedLane] 说出那句「兜底线路，计划淘汰 · Codex」。
+      expect(SessionCli.codexExp.displayName, 'Codex');
+      expect(SessionCli.codex.displayName, 'Codex Exec');
+      expect(SessionCli.codex.isDeprecatedLane, isTrue);
+      expect(SessionCli.codex.replacedByLane, SessionCli.codexExp);
+      for (final cli in SessionCli.values.where((c) => c != SessionCli.codex)) {
+        expect(cli.isDeprecatedLane, isFalse, reason: '${cli.name} is not on the way out');
+        expect(cli.replacedByLane, isNull);
+      }
+
       expect(SessionCli.opencode.supportsAgent, isTrue);
       expect(SessionCli.opencode.supportsSubagent, isFalse);
       expect(SessionCli.opencode.poolKey, 'opencode');

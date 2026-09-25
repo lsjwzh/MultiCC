@@ -729,6 +729,7 @@
   "agentNameHint": "Defined agent name; leave empty for the default agent",
   "newChatSession": "+ Chat",
   "newTerminalSession": "+ Terminal",
+  "cliLaneDeprecatedNote": "Fallback lane, planned for retirement",
   "cliLabel": "CLI",
   "cliNotInstalledSuffix": " (not installed)",
   "cliSessionResumedSuffix": "; resumed the original session for that CLI",

@@ -3,7 +3,11 @@
 
   function isRecoverableCodexReconnectErrorText(text) {
     const value = String(text || '');
-    return /^Codex 出错：Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(value)
+    // 前缀是车道的展示名（turn-engine 用 `${label} 出错：…` 拼），而 2026-09-24 给
+    // 两条车道改了名：这条文本来自一次性车道，它的 label 现在是 "Codex Exec"（原来
+    // 是 "Codex"）。三种拼法都收：新名、旧名，以及 turn-engine / finalize-host 里
+    // 硬编码的 "Codex 出错："。只认一种拼法的话，一次瞬时重连会被当成真错误弹给用户。
+    return /^(?:Codex|Codex Exp|Codex Exec) 出错：Reconnecting\.\.\.\s*\d+\/\d+\s*\(/i.test(value)
       && /stream disconnected before completion|response\.completed/i.test(value);
   }
 

@@ -423,6 +423,14 @@ extension SessionCliX on SessionCli {
   /// Brand colour of the CLI's chip/badge, from that same table.
   Color get color => cliDisplayColor(name);
 
+  /// 兜底车道，计划淘汰：`codex exec`（内部 id 仍是 codex）留着给常驻 app-server
+  /// 车道服务不了的主机/线路用，新会话该用 [SessionCli.codexExp]。id 不会变，所以
+  /// UI 只能靠展示表里的 deprecated 列知道这件事（src/cli/cli-capability.js DISPLAY）。
+  bool get isDeprecatedLane => cliDeprecated(name);
+
+  /// 淘汰后该换成谁（非淘汰车道为 null），用于那句「该用哪条」的提示。
+  SessionCli? get replacedByLane => tryParseCli(cliReplacedBy(name));
+
   /// Vendor-auth CLIs (qoder / WorkBuddy / DSH / Gemini / Grok) own their
   /// account and model config; they expose no multicc provider pool. The list is
   /// the `providerless` column of the shared CLI table, not a fifth copy of it.
@@ -735,11 +743,18 @@ class SessionProviderCandidate {
   final int priority;
   final bool enabled;
 
+  /// Difficulty ladder rung this route serves (`t1` = simplest), only present on
+  /// a pool that routes by difficulty. The editor's own chip value (1..K) never
+  /// travels — the wire carries these keys, compacted in ascending order by
+  /// [serializeAutoRouting] exactly like public/auto-provider-editor.js.
+  final String? tier;
+
   const SessionProviderCandidate({
     required this.providerId,
     this.model,
     required this.priority,
     this.enabled = true,
+    this.tier,
   });
 
   factory SessionProviderCandidate.fromJson(Map<dynamic, dynamic> json) =>
@@ -748,6 +763,9 @@ class SessionProviderCandidate {
         model: json['model']?.toString(),
         priority: (json['priority'] as num?)?.toInt() ?? 1,
         enabled: json['enabled'] != false,
+        tier: (json['tier']?.toString().trim().isEmpty ?? true)
+            ? null
+            : json['tier'].toString().trim(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -755,6 +773,95 @@ class SessionProviderCandidate {
     'model': model == null || model!.isEmpty ? null : model,
     'priority': priority,
     'enabled': enabled,
+    // Absent on an unrouted pool: the server DTO is a wire contract and an
+    // untouched pool must keep emitting byte-identical JSON.
+    if (tier != null) 'tier': tier,
+  };
+}
+
+/// The difficulty-routing block of an Auto pool (server:
+/// src/providers/auto-provider-config.js `validateRouting`): every message is
+/// first classified by the [provider] (`jev`) into one of [tiers], and the tier
+/// picks the route. [onUnknown] is what an unjudged message falls back to.
+///
+/// [model], [timeoutMs] and [escalation] are knobs the App editor does not
+/// expose; they are carried through so re-saving from the phone never silently
+/// resets what the API or the web editor configured. `null` means "the stored
+/// pool did not carry this key", which is why they are nullable rather than
+/// defaulted — an absent knob must stay absent on the wire.
+class SessionProviderRouting {
+  static const String defaultApiKeyName = 'vercel-api-key';
+
+  final int version;
+  final String provider;
+  final String apiKeyName;
+
+  /// `null` = the stored pool did not carry the key, so a save must not write
+  /// it: 'strong' is the server default and the web editor only emits this when
+  /// it was already there or the user picked something else.
+  final String? onUnknown;
+  final List<String> tiers;
+  final String? model;
+  final int? timeoutMs;
+  final Map<String, double>? escalation;
+
+  const SessionProviderRouting({
+    this.version = 1,
+    this.provider = 'jev',
+    this.apiKeyName = defaultApiKeyName,
+    this.onUnknown,
+    this.tiers = const [],
+    this.model,
+    this.timeoutMs,
+    this.escalation,
+  });
+
+  /// What the router does with a message it could not judge; the server reads a
+  /// missing key as 'strong'.
+  String get resolvedOnUnknown => onUnknown ?? 'strong';
+
+  factory SessionProviderRouting.fromJson(Map<dynamic, dynamic> json) {
+    final rawTiers = json['tiers'];
+    final rawEscalation = json['escalation'];
+    return SessionProviderRouting(
+      version: (json['version'] as num?)?.toInt() ?? 1,
+      provider: json['provider']?.toString() ?? 'jev',
+      apiKeyName: (json['apiKeyName']?.toString().trim().isEmpty ?? true)
+          ? defaultApiKeyName
+          : json['apiKeyName'].toString().trim(),
+      onUnknown: (json['onUnknown']?.toString().trim().isEmpty ?? true)
+          ? null
+          : json['onUnknown'].toString().trim(),
+      tiers: rawTiers is List
+          ? [
+              for (final tier in rawTiers)
+                if (tier?.toString().trim().isNotEmpty ?? false)
+                  tier.toString().trim(),
+            ]
+          : const [],
+      model: (json['model']?.toString().trim().isEmpty ?? true)
+          ? null
+          : json['model'].toString().trim(),
+      timeoutMs: (json['timeoutMs'] as num?)?.toInt(),
+      escalation: rawEscalation is Map
+          ? {
+              for (final entry in rawEscalation.entries)
+                if (entry.value is num)
+                  entry.key.toString(): (entry.value as num).toDouble(),
+            }
+          : null,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'version': version,
+    'provider': provider,
+    'apiKeyName': apiKeyName,
+    if (onUnknown != null) 'onUnknown': onUnknown,
+    'tiers': tiers,
+    if (model != null) 'model': model,
+    if (timeoutMs != null) 'timeoutMs': timeoutMs,
+    if (escalation != null) 'escalation': escalation,
   };
 }
 
@@ -769,6 +876,10 @@ class SessionProviderSelection {
   final bool sticky;
   final bool allowCrossTrust;
 
+  /// Present only on a pool that routes by difficulty; absent (not null-on-wire)
+  /// keeps a plain ordered pool byte-identical to what it always sent.
+  final SessionProviderRouting? routing;
+
   const SessionProviderSelection({
     this.version = 1,
     this.mode = 'auto',
@@ -777,6 +888,7 @@ class SessionProviderSelection {
     required this.maxAttempts,
     this.sticky = true,
     this.allowCrossTrust = false,
+    this.routing,
   });
 
   Map<String, dynamic> toJson() => {
@@ -787,6 +899,7 @@ class SessionProviderSelection {
     'maxAttempts': maxAttempts,
     'sticky': sticky,
     'allowCrossTrust': allowCrossTrust,
+    if (routing != null) 'routing': routing!.toJson(),
   };
 }
 
@@ -801,6 +914,7 @@ SessionProviderSelection? parseProviderSelection(dynamic json) {
       .where((candidate) => candidate.providerId.isNotEmpty)
       .toList(growable: false);
   if (candidates.length < 2) return null;
+  final rawRouting = json['routing'];
   return SessionProviderSelection(
     version: (json['version'] as num?)?.toInt() ?? 1,
     protocol: protocol,
@@ -808,6 +922,12 @@ SessionProviderSelection? parseProviderSelection(dynamic json) {
     maxAttempts: (json['maxAttempts'] as num?)?.toInt() ?? 2,
     sticky: json['sticky'] != false,
     allowCrossTrust: json['allowCrossTrust'] == true,
+    // A difficulty-routed pool must survive the trip through the App: dropping
+    // the block here would let the next save from the phone quietly downgrade
+    // it to a plain ordered pool.
+    routing: rawRouting is Map
+        ? SessionProviderRouting.fromJson(rawRouting)
+        : null,
   );
 }
 

@@ -34,7 +34,7 @@ void main() {
   });
 
   test('ids are matched regardless of casing and padding', () {
-    expect(cliDisplayName(' CODEX '), 'Codex');
+    expect(cliDisplayName(' CODEX '), 'Codex Exec');
     expect(cliDisplayName('ZCode'), 'ZCode');
     expect(cliDisplayColor('codebuddy'), AppColors.codebuddy);
   });
@@ -42,8 +42,12 @@ void main() {
   test('the app names match the server adapter label for the same id', () {
     expect(cliDisplayName('claude'), 'Claude Code');
     expect(cliDisplayName('claude-exp'), 'Claude Agent SDK');
-    expect(cliDisplayName('codex'), 'Codex');
-    expect(cliDisplayName('codex-exp'), 'Codex Exp');
+    // 2026-09-24 改名：常驻 app-server 车道（codex-exp）扶正为产品的 Codex，
+    // 一次性 `codex exec`（codex）退成兜底的 Codex Exec。角标跟着名字走。
+    expect(cliDisplayName('codex'), 'Codex Exec');
+    expect(cliDisplayName('codex-exp'), 'Codex');
+    expect(cliShortMark('codex'), 'E');
+    expect(cliShortMark('codex-exp'), 'X');
     expect(cliDisplayName('opencode'), 'OpenCode');
     expect(cliDisplayName('zcode'), 'ZCode');
     expect(cliDisplayName('qoder'), 'Qoder CN');
@@ -52,6 +56,22 @@ void main() {
     expect(cliDisplayName('dsh'), 'DSH');
     expect(cliDisplayName('gemini'), 'Gemini');
     expect(cliDisplayName('grok'), 'Grok');
+  });
+
+  test('only the one-shot codex lane is flagged as on its way out', () {
+    // 与 Web / 服务端同一条事实（src/cli/cli-capability.js DISPLAY 的 deprecated 列），
+    // 由 tests/test-cli-display-parity.js 钉住三端一致。
+    expect(cliDeprecated('codex'), isTrue);
+    expect(cliReplacedBy('codex'), 'codex-exp');
+    expect(cliDeprecated('codex-exp'), isFalse);
+    expect(cliReplacedBy('codex-exp'), isNull);
+    for (final id in kCliDisplays.keys.where((id) => id != 'codex')) {
+      expect(cliDeprecated(id), isFalse, reason: '$id is not on the way out');
+      expect(cliReplacedBy(id), isNull);
+    }
+    // 没听说过的 id 与退役无关，也不该抛错。
+    expect(cliDeprecated('mystery-cli'), isFalse);
+    expect(cliReplacedBy('mystery-cli'), isNull);
   });
 
   test('the five vendor-auth CLIs are the providerless set', () {

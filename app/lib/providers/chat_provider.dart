@@ -31,8 +31,11 @@ export 'admission_notes.dart';
 part 'chat_provider_history.dart';
 
 bool _isRecoverableCodexReconnectErrorText(String text) {
+  // 与 public/chat-event-controller.js 的同名判定逐字对齐：前缀是车道展示名，2026-09-24
+  // 改名后一次性车道写 "Codex Exec 出错："（原来 "Codex"），三种拼法都收，否则一次
+  // 瞬时重连会被当成真错误画进对话。
   return RegExp(
-        r'^Codex 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(',
+        r'^(?:Codex|Codex Exp|Codex Exec) 出错：Reconnecting\.\.\.\s*\d+/\d+\s*\(',
       ).hasMatch(text) &&
       (text.contains('stream disconnected before completion') ||
           text.contains('response.completed'));
