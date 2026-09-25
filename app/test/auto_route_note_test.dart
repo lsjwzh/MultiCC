@@ -160,4 +160,124 @@ void main() {
       isFalse,
     );
   });
+
+  test('a persisted Auto route note parses as a system line', () {
+    final message = historyRecordMessage({
+      'id': 'm1a2b3-7',
+      'role': 'system',
+      'kind': 'auto_route',
+      // The server's plain fallback for readers that don't know `autoRoute`.
+      'content': 'Auto → 智谱 · glm-4.6',
+      'ts': 1790000000000,
+      'clientMsgId': 'auto-route-t1-1',
+      'autoRoute': _route({
+        'source': 'jev',
+        'code': 'jev_choice',
+        'tierIndex': 1,
+      }),
+    });
+    expect(message, isNotNull);
+    expect(message!.role, MessageRole.system);
+    expect(message.content, '🧭 Jev 判定为复杂任务 · 选用 智谱（glm-4.6）');
+    expect(message.id, 'm1a2b3-7');
+    expect(message.clientMsgId, 'auto-route-t1-1');
+    expect(message.timestamp.millisecondsSinceEpoch, 1790000000000);
+  });
+
+  test('a note with no verdict to show is dropped, not shown raw', () {
+    // `source: jev` without a tier verdict formats empty.
+    expect(
+      historyRecordMessage({
+        'id': 'm1a2b3-8',
+        'role': 'system',
+        'content': 'Auto → 智谱 · glm-4.6',
+        'autoRoute': _route({'source': 'jev', 'code': 'jev_choice'}),
+      }),
+      isNull,
+    );
+    // Records that carry their own content are untouched.
+    final plain = historyRecordMessage({
+      'id': 'm1a2b3-9',
+      'role': 'system',
+      'content': '上下文已清空',
+    });
+    expect(plain!.content, '上下文已清空');
+    expect(plain.role, MessageRole.assistant);
+  });
+
+  test('settling stamps the persisted note key onto the live line', () {
+    final event = _route(
+      {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+      {'noteClientMsgId': 'auto-route-t1-1'},
+    );
+    // The judging line is rewritten in place, so it adopts the key too.
+    final line = AutoRouteLine();
+    final messages = <ChatMessage>[];
+    line.judging(messages);
+    expect(messages.single.clientMsgId, isNull);
+    line.settle(messages, event);
+    expect(messages.single.clientMsgId, 'auto-route-t1-1');
+
+    // A turn with no judging line (judged elsewhere) gets one, keyed.
+    final fresh = AutoRouteLine();
+    final other = <ChatMessage>[];
+    fresh.settle(other, event);
+    expect(other.single.role, MessageRole.system);
+    expect(other.single.clientMsgId, 'auto-route-t1-1');
+  });
+
+  test('a replayed note record yields to the live line that owns it', () {
+    final line = AutoRouteLine();
+    final messages = <ChatMessage>[];
+    line.judging(messages);
+    line.settle(
+      messages,
+      _route(
+        {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+        {'noteClientMsgId': 'auto-route-t1-1'},
+      ),
+    );
+    final replay = [
+      historyRecordMessage({
+        'id': 'm1a2b3-7',
+        'role': 'system',
+        'content': 'Auto → 智谱 · glm-4.6',
+        'clientMsgId': 'auto-route-t1-1',
+        'autoRoute': _route({
+          'source': 'jev',
+          'code': 'jev_choice',
+          'tierIndex': 1,
+        }),
+      })!,
+      historyRecordMessage({
+        'id': 'm1a2b3-8',
+        'role': 'system',
+        'content': 'Auto → 智谱 · glm-4.6',
+        'clientMsgId': 'auto-route-t0-1',
+        'autoRoute': _route({
+          'source': 'jev',
+          'code': 'jev_choice',
+          'tierIndex': 0,
+        }),
+      })!,
+    ];
+    line.adoptReplay(replay, messages);
+    // Another turn's note stays; ours is already on screen.
+    expect(replay.map((m) => m.clientMsgId), ['auto-route-t0-1']);
+    expect(messages, hasLength(1));
+
+    // Once that line is gone from the transcript, the record is authoritative.
+    messages.clear();
+    line.adoptReplay(replay, messages);
+    expect(replay, hasLength(1));
+
+    // And a line with no key of its own claims nothing.
+    final idle = AutoRouteLine();
+    idle.settle(
+      messages,
+      _route({'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1}),
+    );
+    idle.adoptReplay(replay, messages);
+    expect(replay, hasLength(1));
+  });
 }

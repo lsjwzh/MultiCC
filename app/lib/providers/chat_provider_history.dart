@@ -18,13 +18,16 @@ extension ChatHistoryLayer on ChatProvider {
     final parsed = history
         .map((m) {
           try {
-            return ChatMessage.fromHistory(m as Map<String, dynamic>);
+            return historyRecordMessage(m as Map<String, dynamic>);
           } catch (_) {
             return null;
           }
         })
         .whereType<ChatMessage>()
         .toList();
+    // An Auto route note already drawn live comes back as a record in this
+    // page; keeping both would show the line twice.
+    _autoRouteLine.adoptReplay(parsed, _messages);
     final liveTail = streamingAssistantTail(parsed);
     // system_init may have created an empty local streaming bubble before the
     // ordered chat_history frame arrives. Replace that placeholder with the
@@ -46,8 +49,12 @@ extension ChatHistoryLayer on ChatProvider {
   }
 
   void _mergeShellPage(List history, {String? sourceSessionId}) {
-    final parsed = history.map((m) => ChatMessage.fromHistory(
-        Map<String, dynamic>.from(m as Map))).toList();
+    final parsed = history
+        .map(
+          (m) => historyRecordMessage(Map<String, dynamic>.from(m as Map)),
+        )
+        .whereType<ChatMessage>()
+        .toList();
     final merged = mergeShellHistory(_messages, parsed, sourceSessionId: sourceSessionId);
     _messages..clear()..addAll(merged);
     final current = _folder.currentMsg;
@@ -66,7 +73,7 @@ extension ChatHistoryLayer on ChatProvider {
     final parsed = history
         .map((m) {
           try {
-            return ChatMessage.fromHistory(m as Map<String, dynamic>);
+            return historyRecordMessage(m as Map<String, dynamic>);
           } catch (_) {
             return null;
           }

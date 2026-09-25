@@ -109,6 +109,7 @@
     const attachQuoteButton = typeof settings.attachQuoteButton === 'function'
       ? settings.attachQuoteButton : function noop() {};
     const warn = typeof settings.warn === 'function' ? settings.warn : function noop() {};
+    const translate = typeof settings.translate === 'function' ? settings.translate : null;
 
     function truncate(value, limit) {
       const text = asText(value);
@@ -488,9 +489,25 @@
       if (source.role === 'assistant') return renderAssistant(source);
       const node = document.createElement('div');
       node.className = 'msg system-msg';
-      node.textContent = source.content || '';
+      node.textContent = source.autoRoute ? autoRouteText(source) : source.content || '';
+      // An Auto route note says nothing for some verdicts; keep its slot, draw nothing.
+      if (source.autoRoute && !node.textContent) node.hidden = true;
       if (source.id) node.dataset.msgId = source.id;
+      // The live note carries the same key, so a replay adopts it (no second line).
+      if (source.clientMsgId) node.dataset.clientMsgId = source.clientMsgId;
       return node;
+    }
+
+    // Persisted Auto route notes (src/chat/auto-route-notes.js) render through
+    // the formatter the live note uses, so both read the same in every locale.
+    function autoRouteText(source) {
+      const controller = globalThis.MultiCCChatEventController
+        || (typeof require === 'function' ? require('./chat-event-controller') : null);
+      try {
+        return controller?.formatAutoRouteNote?.(source.autoRoute, translate || undefined) || '';
+      } catch (_) {
+        return '';
+      }
     }
 
     function historyElements() {

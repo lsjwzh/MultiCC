@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
+import '../providers/admission_notes.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import 'message_bubble.dart';
@@ -93,6 +94,8 @@ class _TaskBoardEntrySheetState extends State<TaskBoardEntrySheet> {
   Widget build(BuildContext context) {
     final messages = (_entry?['messages'] as List? ?? [])
         .whereType<Map>()
+        .map((m) => historyRecordMessage(Map<String, dynamic>.from(m)))
+        .whereType<ChatMessage>()
         .toList();
     return SafeArea(
       child: SizedBox(
@@ -120,9 +123,7 @@ class _TaskBoardEntrySheetState extends State<TaskBoardEntrySheet> {
                   : ListView.builder(
                       itemCount: messages.length,
                       itemBuilder: (_, i) => MessageBubble(
-                        message: ChatMessage.fromHistory(
-                          Map<String, dynamic>.from(messages[i]),
-                        ),
+                        message: messages[i],
                         enableServerActions: false,
                       ),
                     ),

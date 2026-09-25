@@ -316,7 +316,13 @@
       const parts = [];
       if (state.sessionId) parts.push(`Session: ${state.sessionId.slice(0, 8)}...`);
       if (message.cli) parts.push(message.cli);
-      if (message.model) parts.push(message.model);
+      // Auto mode: the session model is only the first candidate's; name the
+      // line that actually answered (running route, else the last routed one).
+      const initAuto = (message.providerSelection !== undefined
+        ? message.providerSelection : state.sessionProviderSelection)?.mode === 'auto';
+      const autoLine = initAuto ? (message.providerRoute || message.autoProvider || null) : null;
+      const infoModel = visibleProviderModel(autoLine?.model) || message.model;
+      if (infoModel) parts.push(infoModel);
       const infoLine = parts.join(' | ');
       if (infoLine && infoLine !== state.lastInitInfoLine) {
         state.lastInitInfoLine = infoLine;
@@ -329,14 +335,14 @@
       if (message.providerSelection !== undefined) state.sessionProviderSelection = message.providerSelection || null;
       const autoMode = state.sessionProviderSelection?.mode === 'auto';
       if (message.providerId !== undefined) {
-        if (autoMode) state.activeProviderId = message.providerRoute ? (message.providerId || '') : '';
+        if (autoMode) state.activeProviderId = message.providerRoute ? (message.providerId || '') : (message.autoProvider?.providerId || '');
         else state.sessionProvider = message.providerId || '';
       }
       if (message.providerName !== undefined) {
-        if (autoMode) state.activeProviderName = message.providerRoute ? displayProviderName(message.providerName) : '';
+        if (autoMode) state.activeProviderName = displayProviderName(message.providerRoute ? message.providerName : message.autoProvider?.providerName || '');
         else state.sessionProviderDisplayName = displayProviderName(message.providerName);
       }
-      if (autoMode) state.activeProviderModel = visibleProviderModel(message.providerRoute?.model);
+      if (autoMode) state.activeProviderModel = visibleProviderModel(message.providerRoute?.model || message.autoProvider?.model);
       if (message.cliStates) state.sessionCliStates = message.cliStates;
       if (message.cliAvailability) state.cliAvailability = message.cliAvailability;
       if (message.agent !== undefined) state.sessionAgent = message.agent || '';
@@ -503,9 +509,11 @@
           // Turns nobody asked Jev about (continuations, nudges) stay silent.
           if (!pendingNote && message.routing.code === 'jev_not_prepared') break;
           const note = formatAutoRouteNote(message, host.translate);
-          if (!note) pendingNote?.remove?.();
-          else if (pendingNote) pendingNote.textContent = note;
-          else host.addSystemMsg?.(note);
+          if (!note) { pendingNote?.remove?.(); break; }
+          const noteEl = pendingNote || host.addSystemMsg?.(note);
+          if (pendingNote) pendingNote.textContent = note;
+          // Same key as the persisted history record, so a replay adopts this line.
+          if (noteEl?.dataset && message.noteClientMsgId) noteEl.dataset.clientMsgId = message.noteClientMsgId;
           break;
         }
         case 'system':

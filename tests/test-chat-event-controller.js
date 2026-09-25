@@ -1701,7 +1701,7 @@ function noteFixture() {
       return list.appendChild(node);
     },
   });
-  return { ...fixture, notes: () => list.children.map(node => node.textContent) };
+  return { ...fixture, notes: () => list.children.map(node => node.textContent), nodes: () => list.children };
 }
 
 test('the "judging" line is rewritten in place into the verdict', () => {
@@ -1749,4 +1749,38 @@ test('a message queued behind a live turn gets its verdict line when its turn st
     source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
   }), generation);
   assert.deepEqual(fixture.notes(), ['🧭 Jev 判定为简单任务 · 选用 DeepSeek 官方（deepseek-v4-flash）']);
+});
+
+test('the live verdict line carries the persisted note key so a replay adopts it', () => {
+  const fixture = noteFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent(autoRoute({
+    source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+  }, { noteClientMsgId: 'auto-route-turn-9-1' }), generation);
+  fixture.controller.handleEvent({
+    type: 'message_admission_progress', stage: 'auto_provider_routing', state: 'waiting',
+    message: '下一条', clientMsgId: 'c-jev-9',
+  }, generation);
+  fixture.controller.handleEvent(autoRoute({
+    source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2,
+  }, { noteClientMsgId: 'auto-route-turn-10-1' }), generation);
+  const keys = fixture.nodes().map(node => node.dataset.clientMsgId);
+  assert.deepEqual(keys, ['auto-route-turn-9-1', 'auto-route-turn-10-1']);
+});
+
+test('Auto init frames name the line that last answered, not the first candidate', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.controller.handleEvent({
+    type: 'system', subtype: 'init', session_id: 'task-auto-1234', is_streaming: false, cli: 'codex',
+    model: 'gpt-5.5', providerRouteProtocolVersion: 1, providerRoute: null,
+    providerId: 'deepseek', providerName: 'DeepSeek',
+    providerSelection: { mode: 'auto', protocol: 'openai_responses' },
+    autoProvider: { providerId: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-v4-flash' },
+  }, generation);
+  assert.equal(fixture.state.activeProviderId, 'deepseek');
+  assert.equal(fixture.state.activeProviderName, 'DeepSeek');
+  assert.equal(fixture.state.activeProviderModel, 'deepseek-v4-flash');
+  assert.deepEqual(fixture.calls.find(call => call[0] === 'system'),
+    ['system', 'Session: task-aut... | codex | deepseek-v4-flash']);
 });

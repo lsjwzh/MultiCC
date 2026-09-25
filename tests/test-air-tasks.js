@@ -512,6 +512,16 @@ test('Air task entry exposes provider routing metadata without credentials', asy
   // JSON 线路上没有 undefined 这个值：没设过角色预设就是没有这个键。
   assert.equal('rolePresetId' in response.configuration, false);
   assert.equal(JSON.stringify(response).includes('must-not-leak'), false);
+  // Once Auto has routed a turn, the pill names the model that actually
+  // answered, not the first candidate's.
+  record.autoProviderLastRoute = { providerId: 'provider-b', providerName: 'Provider B', model: 'gpt-b-routed' };
+  const routed = airResponse();
+  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, routed);
+  assert.equal(JSON.parse(routed.body).configuration.effectiveModel, 'gpt-b-routed');
+  record.providerSelection = null;
+  const manual = airResponse();
+  await handlers.get('/api/air/tasks/:id')({ params: { id: 't' } }, manual);
+  assert.equal(JSON.parse(manual.body).configuration.effectiveModel, 'gpt-a', 'a stale Auto line never leaks into a manual session');
 });
 
 test('Air task entry resolves the pending route provider name instead of leaking the id', async () => {

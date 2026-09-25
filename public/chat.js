@@ -531,7 +531,7 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   // Quoting reads history, it does not write it — so it stays available in the
   // archive view too, where a message may be the only copy left.
   attachQuoteButton,
-  warn: (...args) => console.warn(...args),
+  warn: (...args) => console.warn(...args), translate: tt,
 });
 const detachIndexedTask = window.MultiCCTaskIndex?.createDetachAction({
   translate: tt, confirm: _chatConfirm, request: (path, body) => chatApi.json(withToken(path), { method: 'POST', json: body }),
