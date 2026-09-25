@@ -6,6 +6,7 @@ const { isMainResult } = require('../cli-adapters/result-completion');
 const { managedRoute, createRouteRelay } = require('./claude-sdk-route');
 const { fingerprint, processOptions } = require('./claude-sdk-config');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('./monitor-admission');
+const { createBackgroundHold } = require('./background-hold');
 
 function messageQueue() {
   const messages = [];
@@ -46,6 +47,7 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
   function settle(s, item, error, result) {
     if (s.current !== item) return;
     clearTimeout(item.cancelTimer);
+    item.hold?.dispose();
     s.current = null;
     if (error) item.reject(error); else item.resolve(result);
     armIdle(s);
@@ -82,6 +84,20 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     try { await s.stopping; } finally { s.stopping = null; }
   }
 
+  function finish(s, run, item, event) {
+    s.started = true;
+    item.finishing = true;
+    // Drain proxy producers and the interrupt acknowledgement before
+    // handing another user message to this query.
+    void (async () => {
+      try {
+        await item.interrupt;
+        await run.relay?.drain();
+        if (s.run === run) settle(s, item, item.cancelled ? cancelled() : null, event);
+      } catch (error) { await stop(s); settle(s, item, error); }
+    })();
+  }
+
   async function consume(s, run) {
     let failure;
     try {
@@ -96,23 +112,22 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
           safe(s.cfg.onBackgroundEvent, event);
           armIdle(s);
         }
+        const live = item && item.sent && !item.finishing;
+        // Self-wake queries of a held turn stream into it; their results stay internal.
+        if (live && item.hold?.held && item.hold.observe(event)) continue;
         if (isMonitorHandoffResult(event)) continue;
-        if (!item || !item.sent || item.finishing) continue;
+        if (!live) continue;
         if (!item.firstByte) { item.firstByte = true; safe(item.onTiming, 'firstByte'); }
-        if (!item.cancelled) safe(item.onEvent, event);
-        if (isMainResult(event)) {
+        if (isMainResult(event) && !item.cancelled) {
           s.started = true;
-          item.finishing = true;
-          // Drain proxy producers and the interrupt acknowledgement before
-          // handing another user message to this query.
-          void (async () => {
-            try {
-              await item.interrupt;
-              await run.relay?.drain();
-              if (s.run === run) settle(s, item, item.cancelled ? cancelled() : null, event);
-            } catch (error) { await stop(s); settle(s, item, error); }
-          })();
+          item.hold ||= createBackgroundHold({ ...s.cfg.backgroundHold, hasBackground: () => hasBackground(s),
+            release: result => { if (s.run === run && s.current === item && !item.finishing) {
+              safe(item.onEvent, result); finish(s, run, item, result);
+            } } });
+          if (item.hold.start(event)) continue;
         }
+        if (!item.cancelled) safe(item.onEvent, event);
+        if (isMainResult(event)) finish(s, run, item, event);
       }
       failure = new Error('Claude Agent SDK stream ended before the next turn');
     } catch (error) { failure = error; }
@@ -252,6 +267,12 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     for (const item of s.queue.splice(0)) item.reject(cancelled());
     const item = s.current;
     if (!item || item.cancelled) return;
+    if (item.hold?.held) {
+      // The answer is complete; only its background work is cut short.
+      const result = item.hold.flush();
+      void stop(s).then(() => settle(s, item, null, result));
+      return;
+    }
     item.cancelled = true;
     const run = s.run;
     item.cancelTimer = setTimeout(() => {
