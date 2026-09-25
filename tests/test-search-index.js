@@ -362,7 +362,16 @@ test('a session with nothing to index is parsed once, not every sweep', () => {
   const logger = { warn() {}, log() {} };
   const history = createChatHistoryFileRepository({ dataDir: dir });
   const index = createSearchIndex({ dbFile: path.join(dir, 'search-index.sqlite'), logger });
-  const corpus = createMessageCorpus({ index, history, logger });
+  // The emptiness marker is only trusted once the file has settled: a write that
+  // landed in the millisecond we are now in may have changed the file again, so
+  // that case re-reads on purpose. On a fast runner the real clock put the whole
+  // body inside that window and the session was re-read, which is a flake in the
+  // test rather than in the corpus — so drive a clock this test can settle.
+  let now = 0;
+  const corpus = createMessageCorpus({ index, history, logger, now: () => now });
+  const clockAtFile = (settled = false) => {
+    now = Math.floor(fs.statSync(history.fileFor('s1')).mtimeMs) + (settled ? 2 : 0);
+  };
 
   // Tool-heavy transcripts are the real case: hundreds of KB whose content strings
   // are all too short to index, so they never produce a ref row.
@@ -370,6 +379,7 @@ test('a session with nothing to index is parsed once, not every sweep', () => {
     { id: 'm1', role: 'user', content: '好' },
     { id: 'm2', role: 'assistant', content: 'ok' },
   ]);
+  clockAtFile(true);
   const first = corpus.syncAll();
   assert.equal(first.synced, 1);
   assert.equal(first.chunks, 0);
@@ -384,6 +394,7 @@ test('a session with nothing to index is parsed once, not every sweep', () => {
     { id: 'm2', role: 'assistant', content: 'ok' },
     { id: 'm3', role: 'user', content: '现在这条内容够长了，应该被索引进来。' },
   ]);
+  clockAtFile(true);
   const grown = corpus.syncAll();
   assert.equal(grown.synced, 1);
   assert.equal(grown.chunks, 1);
