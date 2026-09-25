@@ -214,9 +214,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // airSearchScopeLabel），中英各 +3 行；⌘K 提示那行只改文案不加行。两条改动在
   // rebase 时合流（这是同一段登记，两边各改各的注释），按合流后重跑生成器的真实
   // 行数抬到 6912/427748。
+  // 任务行的 Worktree 徽标补齐 dirty / ahead / dirty+ahead 三种状态文案；此前
+  // air-admin.js 已引用这些 key，但词典缺项会把裸 key 直接渲染出来。中英各 3 行，
+  // 按生成器真实高水位抬到 6918/428225。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6912,
-    maxBytes: 427748,
+    maxLines: 6918,
+    maxBytes: 428225,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
