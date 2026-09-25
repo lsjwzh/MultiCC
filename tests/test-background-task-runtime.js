@@ -388,6 +388,7 @@ async function test(name, fn) {
     h.clock.advance(100);
     assert.strictEqual(h.injections.length, 1);
     assert.match(h.injections[0].text, /first[\s\S]*second/);
+    assert.strictEqual(h.injections[0].origin.supersedeKey, 'monitor:watch', 'one Monitor keeps one queued report');
     h.files.set('/out/terminal', 'final');
     const completion = { subtype: 'task_notification', task_id: 'watch', status: 'completed', output_file: '/out/terminal' };
     h.runtime.handleEvent('s1', {}, completion);
