@@ -91,13 +91,13 @@ test('core runner covers every selected path and expands declared variants', () 
   const manifest = JSON.parse(read('tests/test-tiers.json'));
   const core = manifest.tests.filter(entry => entry.tier === 'core');
   const plan = buildPlan(manifest, { node: 'node', flutter: 'flutter', root });
-  assert.equal(core.length, 299, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 299);
+  assert.equal(core.length, 301, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 301);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 256);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 258);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 19,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -107,8 +107,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 283,
-    '280 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 285,
+    '282 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const dispatchVariants = plan.commands
     .filter(command => command.paths.includes('tests/test-dispatch-loop-isolated.js'))

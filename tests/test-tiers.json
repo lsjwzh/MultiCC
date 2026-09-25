@@ -660,6 +660,15 @@
       "lane": "smoke"
     },
     {
+      "path": "tests/test-acp-adapter.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-agent-resources-routes.js",
       "tier": "core",
       "lane": "deterministic",
@@ -4931,6 +4940,15 @@
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-zcode-app-server-mapping.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
       ]
     },
     {
