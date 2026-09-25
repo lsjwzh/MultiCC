@@ -7,6 +7,7 @@ const {
   pickDirTarget,
   pickRouteTarget,
   rankRoutingCandidates,
+  recordAppearsAvailable,
   routingRelevanceScore,
   routingTerms,
   resolveDirectoryCommander,
@@ -134,6 +135,29 @@ test('availability callback is authoritative and task affinity never bypasses it
     queryText: '前端消息跳转',
     isAvailable: available,
   }), 'idle');
+});
+
+test('routed work only lands on a session whose own turn is settled', () => {
+  // The classify letter decides whether the session's own turn is over, so a
+  // parked B (a background job the router cannot see) must not be handed a
+  // second task to run behind the first one's back — that was the bug: the old
+  // `!['A','P'].includes(classifyState)` gated P alone, and 'A' is not even a
+  // letter. P/C (in flight), B (parked) and E (ended in a fault) are all busy;
+  // only D (executed) and W (back with the user) are free, and a session that
+  // has never been classified has no outstanding turn at all.
+  const FREE = { D: true, W: true, P: false, C: false, B: false, E: false, X: false };
+  for (const [letter, free] of Object.entries(FREE)) {
+    assert.equal(recordAppearsAvailable(rec({ taskState: { classifyState: letter } }), 'sid'), free,
+      `${letter} availability`);
+  }
+  assert.equal(recordAppearsAvailable(rec({ taskState: {} }), 'sid'), true, 'unclassified is free');
+  assert.equal(recordAppearsAvailable(rec(), 'sid'), true, 'no taskState is free');
+  // A busy/active record is still rejected regardless of the letter.
+  assert.equal(recordAppearsAvailable(rec({ active: true, taskState: { classifyState: 'D' } }), 'sid'), false);
+  assert.equal(recordAppearsAvailable(rec({ runState: 'running', taskState: { classifyState: 'W' } }), 'sid'), false);
+  // The letter is compared in canonical uppercase (callers hand over persisted
+  // snapshots, which are uppercased before matching).
+  assert.equal(recordAppearsAvailable(rec({ taskState: { classifyState: 'b' } }), 'sid'), false);
 });
 
 test('automatic authority resolves exactly one typed Commander in the requested directory', () => {

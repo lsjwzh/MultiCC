@@ -12,6 +12,7 @@ const {
 const { mountTaskShellRoutes } = require('./routes');
 const { shellHistoryPage, watchShellHistory } = require('./chat-history');
 const { createAttributionSettingsFromEnv } = require('./attribution-settings');
+const { isTerminalLetter } = require('../classify/vocab');
 
 function createTaskShellHost(deps) {
   let runtime, store, candidates, transfer;
@@ -119,7 +120,7 @@ function createTaskShellHost(deps) {
         } catch (_) {}
         const busy = !!state.active || !!state.queued?.length || !!(pending && !pending.resolved)
           || !['idle', 'assessing'].includes(state.state) || host.isRunActive(id);
-        return { busy, status: host.getRunState(id), completed: !busy && state.classifyState === 'D',
+        return { busy, status: host.getRunState(id), completed: !busy && isTerminalLetter(state.classifyState),
           turnId: currentTurn(id), pending: pending && !pending.resolved ? pending : null,
           queue: { state: shortText(state.state, 40) || 'idle', freezeReason: shortText(state.freezeReason, 160) || null,
             classifyState: shortText(state.classifyState, 8) || null, active: publicActive(state.active),

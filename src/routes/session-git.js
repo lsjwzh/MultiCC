@@ -1,5 +1,9 @@
 'use strict';
 
+const {
+  classifyDisplay, isProcessingLetter, isBackgroundLetter,
+} = require('../classify/vocab');
+
 const LOADING_MERGE_STATE = Object.freeze({
   mergeReady: false,
   dirty: false,
@@ -282,8 +286,23 @@ function createSessionGitRuntime(rawDeps) {
     const state = persisted && persisted.taskState
       ? persisted.taskState.classifyState || null
       : null;
-    if (state === 'C' || state === 'P' || state === 'B') {
-      const label = state === 'B' ? '等待后台任务' : (state === 'C' ? '任务待继续' : '处理中');
+    // "Unfinished" = a turn that is still writing into this worktree, or may
+    // still write: P (and the retired C, which only an older snapshot still
+    // carries) is a turn in flight, and B is a turn that ended parked on a
+    // background job. W is deliberately NOT unfinished — the turn is over, no
+    // process is running (isWorktreeActive above already checked), and the user
+    // is the one asking for the sync, so refusing them would be a dead end.
+    // D/E ended too.
+    //
+    // Reconcile with src/workspace/inventory.js, whose `execution_dependency`
+    // reason DOES include W: that surface is a read-only adoption/reclaim
+    // preview where a session holding an unanswered question is conservative
+    // evidence against touching the workspace. This gate refuses a user command,
+    // so it only refuses while something can still write.
+    if (isProcessingLetter(state) || isBackgroundLetter(state)) {
+      // One word per letter, from the classify vocabulary: a re-lettered B must
+      // not leave a hand-written label behind here.
+      const label = classifyDisplay(state).label;
       return {
         state,
         message: `会话任务未结束（${label}，状态 ${state}），请等待任务完成/暂停后再同步`,

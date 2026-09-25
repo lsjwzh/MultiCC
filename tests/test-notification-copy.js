@@ -201,10 +201,12 @@ test('B（后台等待）与 W（等待操作）在每一侧都不是同一句�
   assert.notEqual(dart.rows.B.wordKey, dart.rows.W.wordKey, 'App 里 B/W 同词');
   assert.notEqual(dart.rows.B.voiceKey, dart.rows.W.voiceKey, 'App 里 B/W 同一句播报');
 
-  // B 的对外词就是 vocab 给 B 的 label（卡片徽章上那一句），W 的才是 pushTitle。
-  assert.equal(serverTail('B', 'zh'), CLASSIFY_DISPLAY.B.label);
+  // B 的对外词就是 vocab 给 B 的 pushTitle（与它自己的 label 同词，但取的是推送词那
+  // 一格：改 label 不该偷偷改锁屏，反之亦然）；W 的才是 W 的 pushTitle。
+  assert.equal(serverTail('B', 'zh'), CLASSIFY_DISPLAY.B.pushTitle);
   assert.equal(serverTail('W', 'zh'), CLASSIFY_DISPLAY.W.pushTitle);
   assert.notEqual(serverTail('B', 'zh'), CLASSIFY_DISPLAY.W.pushTitle, 'B 又在借用 W 的话');
+  assert.notEqual(CLASSIFY_DISPLAY.B.pushTitle, null, 'B 的推送词不能再是 null（会漏回 W）');
 
   // background 这一格就是三侧区分「等你」和「等后台」的唯一依据。
   assert.equal(WEB.notificationCopy('B').background, true);
@@ -265,8 +267,9 @@ test('Web 与 App 的字母表逐格相等，词都来自 vocab 与 i18n 词典'
   assert.deepEqual(badge, Object.fromEntries(LETTERS.map(l => [l, dart.rows[l].labelKey])),
     '徽章短标签与通知表的标签 key 漂移了');
 
-  // vocab 的 pushTitle 不再只是摆设：服务端推送词就是它（B 见上，用 B 的 label）。
-  for (const letter of ['D', 'W', 'E']) {
+  // vocab 的 pushTitle 不再只是摆设：服务端推送词就是它 —— 有推送种类的每一档，
+  // 包括 B（它不再从 W 那儿借词）。
+  for (const letter of ['D', 'W', 'E', 'B']) {
     assert.equal(serverTail(letter, 'zh'), CLASSIFY_DISPLAY[letter].pushTitle);
   }
   // 没有推送种类的那两档（C 已退役、P 进行中）绝不冒充成功。
@@ -357,11 +360,16 @@ test('服务端推送的词只在一处；拿到字母时 B 才说自己的话�
   );
 
   // notify() 必须能从调用方拿到精确的字母（options.classifyState）；只拿到粗粒度
-  // type 时 B 与 W 就分不开了 —— 这时推送只能退回 W 的话（下面这条断言把这个降级
-  // 行为写死，免得有人以为 B 的推送词已经生效）。state-machine.js 的
-  // triggerPush(sessionId, pushType, waitMsg) 目前没传第四个参数，是本次留下的
-  // 唯一缺口（该文件由另一个 agent 持有，只在报告里交接）。
+  // type 时 B 与 W 就分不开 —— 这时推送只能退回 W 的话（下面那条断言把这个降级行为
+  // 写死，供老调用点/老快照兜底）。因此每个推等待类通知的调用点都必须把字母一起传
+  // 进来：state-machine.js 曾经漏掉第四个参数，B 的锁屏标题就会念成 W 的「等待操作」。
   assert.match(runtime, /function notify\(|classifyState/, 'notify() 拿不到精确字母');
+  const machine = read('src/classify/state-machine.js');
+  const waitingPushes = machine.match(/triggerPush\(sessionId, pushType,[^\n]*\)/g) || [];
+  assert.equal(waitingPushes.length, 2, 'state-machine.js 的等待类 triggerPush 调用点数变了，请重新核对');
+  for (const call of waitingPushes) {
+    assert.match(call, /\{ classifyState: cls \}/, `等待类 triggerPush 少了字母：${call}`);
+  }
   assert.equal(
     SERVER.notificationCopy('waiting', 'zh').title,
     SERVER.notificationCopy('W', 'zh').title,

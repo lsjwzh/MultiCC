@@ -5,13 +5,18 @@ const {
   admitOutboxItem,
   normalizeJson,
 } = require('../outbox');
-const { turnOutcomeForClassify, runStateForClassify } = require('../classify/vocab');
+const {
+  turnOutcomeForClassify, runStateForClassify, CLASSIFY_STATES,
+  isProcessingLetter, isWaitForUserLetter, isTerminalLetter, isAbnormalLetter,
+  isParkedLetter, isOutcomeLetter,
+} = require('../classify/vocab');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
 const RESOLUTION_ACTIONS = new Set(['skip', 'cancel', 'resolve']);
 const RETRY_ACTIONS = new Set(['retry', 'resume']);
-const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
+// CLASSIFY_STATES (the live-letter membership set) comes from classify/vocab —
+// the letters are declared once, there.
 
 // freezeReason → classify letter. The ONE table for what a freeze means: the
 // display run state below and classifyStateForReason both read it, and a
@@ -199,18 +204,25 @@ function activeTaskId(schedule) {
 function classifyStateForSchedule(schedule) {
   if (CLASSIFY_STATES.has(schedule?.classifyState)) return schedule.classifyState;
   const letter = classifyStateForReason(schedule?.freezeReason);
-  // A P reason means "the scheduler is still driving this", which the active
-  // slot answers better than the reason does; D is the settled default.
-  if (letter && letter !== 'P') return letter;
+  // A processing reason means "the scheduler is still driving this", which the
+  // active slot answers better than the reason does; D is the settled default.
+  if (letter && !isProcessingLetter(letter)) return letter;
   if (schedule?.active) return 'P';
   return 'D';
 }
 
+// The letter of a freeze → the freezeReason that records it. A lookup, not a
+// decision: the two directions of this map must stay exact inverses of
+// FREEZE_REASON_CLASSIFY (the W/B/E entries above), and a letter missing here
+// (D, and the retired C) means "still being driven" → classify_running.
+const FREEZE_REASON_BY_CLASSIFY = Object.freeze({
+  W: 'classify_waiting',
+  B: 'classify_background',
+  E: 'classify_error',
+});
+
 function freezeReasonForClassify(classifyState) {
-  if (classifyState === 'W') return 'classify_waiting';
-  if (classifyState === 'B') return 'classify_background';
-  if (classifyState === 'E') return 'classify_error';
-  return 'classify_running';
+  return FREEZE_REASON_BY_CLASSIFY[classifyState] || 'classify_running';
 }
 
 function classifyStateForReason(reason) {
@@ -220,22 +232,29 @@ function classifyStateForReason(reason) {
     : null;
 }
 
+// Which control kinds may start a fresh native turn in each at-rest letter. The
+// letters' meaning is vocab's; this table only says what kind of user move each
+// parked/ended turn still accepts. Everything not listed (P mid-turn, and the
+// retired C) accepts nothing here.
+const CONTROL_KINDS_BY_CLASSIFY = Object.freeze({
+  W: Object.freeze(['answer', 'approval', 'continuation']),
+  B: Object.freeze(['callback', 'continuation']),
+  E: Object.freeze(['retry', 'resume']),
+});
+
 function controlAllowedByClassify(item, classifyState) {
   const kind = workKind(item);
   // Every session.work payload is ultimately one native conversation message.
   // Classify P is the only staging gate; W/B/E/D may start a fresh CLI turn
   // even when the previous -p process and its physical active slot are gone.
   // E is an outcome label for that prior turn, never a queue gate.
-  if (item?.payload?.type === 'session.work') return classifyState !== 'P';
+  if (item?.payload?.type === 'session.work') return !isProcessingLetter(classifyState);
   // An async dispatch result is a new conversation message, not a background
   // wait state. It must never interrupt an active P turn, but once that turn
   // ends it wakes the Master from D/W/E just like direct chat input. No B state
   // is required (or manufactured) for this path.
-  if (item?.payload?.type === 'dispatch.result') return classifyState !== 'P';
-  if (classifyState === 'W') return kind === 'answer' || kind === 'approval' || kind === 'continuation';
-  if (classifyState === 'B') return kind === 'callback' || kind === 'continuation';
-  if (classifyState === 'E') return kind === 'retry' || kind === 'resume';
-  return false;
+  if (item?.payload?.type === 'dispatch.result') return !isProcessingLetter(classifyState);
+  return (CONTROL_KINDS_BY_CLASSIFY[classifyState] || []).includes(kind);
 }
 
 function recoveredSuccessProven(schedule, recoveredState = {}) {
@@ -244,7 +263,7 @@ function recoveredSuccessProven(schedule, recoveredState = {}) {
   const recoveredEndedAt = Number(recoveredState.endedAt);
   const taskMatches = !schedule.active.taskId || !recoveredState.taskId
     || schedule.active.taskId === recoveredState.taskId;
-  return recoveredState.classifyState === 'D'
+  return isTerminalLetter(recoveredState.classifyState)
     && Number.isFinite(activeStartedAt) && activeStartedAt > 0
     && Number.isFinite(recoveredEndedAt) && recoveredEndedAt >= activeStartedAt
     && taskMatches;
@@ -440,7 +459,7 @@ function createSessionWorkScheduler({
     const incomingRunId = taskRunIdForItem(item);
     const candidate = schedule?.active?.taskRunId
       ? schedule.active
-      : ['W', 'B'].includes(classifyStateForSchedule(schedule))
+      : isParkedLetter(classifyStateForSchedule(schedule))
         ? schedule?.lastDecision
         : null;
     if (!candidate?.taskRunId
@@ -494,7 +513,7 @@ function createSessionWorkScheduler({
       // control message may start a fresh native turn even if it was admitted
       // before the previous process exited. E describes the previous turn's
       // outcome only; it never gates this request or later FIFO work.
-      if (cls !== 'P') {
+      if (!isProcessingLetter(cls)) {
         const direct = ordered.find(it => it.directRun);
         if (direct) return direct;
         const control = ordered.find(item => isControlItem(item)
@@ -503,8 +522,8 @@ function createSessionWorkScheduler({
       }
       // W/B are real waits. P still has an owned turn. D/E otherwise drain:
       // E describes the request that just ended and cannot gate a later one.
-      if (cls === 'W' || cls === 'B') return null;
-      if (cls === 'P') return null;
+      if (isParkedLetter(cls)) return null;
+      if (isProcessingLetter(cls)) return null;
       return ordered[0];
     }
     const replay = ordered.find(item => isActiveReplay(schedule, item));
@@ -604,7 +623,7 @@ function createSessionWorkScheduler({
       // the old classify/awaitingRequestId fallback.
       const pendingAnswerMatches = typeof getPendingUserInput === 'function'
         ? pendingInput?.requestId === requestId
-        : classifyStateForSchedule(schedule) !== 'D'
+        : !isTerminalLetter(classifyStateForSchedule(schedule))
           && (!schedule.awaitingRequestId || schedule.awaitingRequestId === requestId);
       const correlatedAnswer = inferredKind === 'answer'
         && !!requestId
@@ -636,7 +655,7 @@ function createSessionWorkScheduler({
             if (!payload.taskId && pendingInput?.taskId) payload.taskId = pendingInput.taskId;
           }
           const previous = schedule.lastDecision || {};
-          const retainedRun = ['W', 'B'].includes(classifyStateForSchedule(schedule))
+          const retainedRun = isParkedLetter(classifyStateForSchedule(schedule))
             && previous.taskRunId
             && (!payload.taskId || !previous.taskId || payload.taskId === previous.taskId);
           if (retainedRun) {
@@ -725,7 +744,7 @@ function createSessionWorkScheduler({
         const incomingTaskId = taskIdForItem(item);
         const incomingRunId = taskRunIdForItem(item);
         const retainedRun = isControlItem(item)
-          && ['W', 'B'].includes(classifyStateForSchedule(schedule))
+          && isParkedLetter(classifyStateForSchedule(schedule))
           && previous.taskRunId
           && (!incomingTaskId || !previous.taskId || incomingTaskId === previous.taskId)
           && (!incomingRunId || incomingRunId === previous.taskRunId)
@@ -938,7 +957,7 @@ function createSessionWorkScheduler({
       schedule.active = null;
       schedule.state = 'idle';
       schedule.freezeReason = null;
-      schedule.awaitingRequestId = classifyState !== 'D' && awaitingRequestId
+      schedule.awaitingRequestId = !isTerminalLetter(classifyState) && awaitingRequestId
         ? String(awaitingRequestId)
         : null;
       if (schedule.priorityEntryId === completed.entryId) schedule.priorityEntryId = null;
@@ -953,7 +972,7 @@ function createSessionWorkScheduler({
       // Shell user messages are typed as continuations too; that transport
       // kind does not authorize them to bypass an unanswered question.
       const pending = canonicalPendingUserInput(sessionId);
-      if (schedule.classifyState === 'W' && pending) {
+      if (isWaitForUserLetter(schedule.classifyState) && pending) {
         for (const item of Object.values(draft.outbox || {})) {
           if (item && item.sessionId === sessionId && item.state === 'pending'
               && !(isUserInputAnswer(item) && item.payload.requestId === pending.requestId)
@@ -1041,7 +1060,7 @@ function createSessionWorkScheduler({
   } = {}) {
     if (RETRY_ACTIONS.has(action)) {
       const current = await status(sessionId);
-      if (current.classifyState !== 'E') {
+      if (!isAbnormalLetter(current.classifyState)) {
         return { ok: false, code: 'active_task_not_retryable' };
       }
       const lineage = current.active || current.lastDecision || {};
@@ -1492,7 +1511,10 @@ function createSessionWorkScheduler({
           // a lone task.interrupted notification must remain deliverable.
           // Rebuild a legacy active pointer only from an explicit non-D
           // classify fact.
-          if (recoveredClassify && !['D', 'E'].includes(recoveredClassify)) {
+          // Rebuild a legacy active pointer only from an explicit non-outcome
+          // classify fact: a parked or mid-turn verdict still owns the slot, a
+          // finished one (D/E) does not.
+          if (recoveredClassify && !isOutcomeLetter(recoveredClassify)) {
             schedule.active = {
               entryId: `legacy-active:${sessionId}`,
               deliveryId: null,
@@ -1536,7 +1558,7 @@ function createSessionWorkScheduler({
           : null;
         const deliveryNeedsAck = activeDelivery
           && (activeDelivery.state === 'pending' || activeDelivery.state === 'leased');
-        if (classifyState === 'E') {
+        if (isAbnormalLetter(classifyState)) {
           const completed = clone(schedule.active);
           schedule.active = null;
           schedule.state = 'idle';
@@ -1569,7 +1591,7 @@ function createSessionWorkScheduler({
           });
           continue;
         }
-        if (classifyState === 'D') {
+        if (isTerminalLetter(classifyState)) {
           if (!recoveredSuccessProven(schedule, recoveredState)) {
             schedule.classifyState = 'P';
             schedule.state = 'assessing';

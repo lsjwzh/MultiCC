@@ -98,7 +98,11 @@ const CLASSIFY_DISPLAY = {
   },
   B: {  // Wait on background task (terminal only; chat prompt no longer emits B)
     label: '后台等待',
-    pushType: 'waiting', pushTitle: '等待操作',
+    // Own wording, NOT W's borrowed '等待操作': nothing is waiting on the user
+    // while a background job runs, so telling them to act is the same lie the
+    // card used to tell. src/push/notification-copy.js reads this (as it reads
+    // every other letter's pushTitle), so the lock screen and the card agree.
+    pushType: 'waiting', pushTitle: '后台等待',
     voiceText: '等待后台任务', ding: 'waiting',
     // Its own run state, NOT `waiting`. `waiting` means "the user must answer";
     // a turn idling on a background job has nothing to ask, so folding B into it
@@ -141,6 +145,15 @@ const TURN_RUN_STATES = Object.freeze([
   'queued', 'running', 'waiting', 'background', 'succeeded', 'error', 'idle',
 ]);
 
+// The live classify letters: exactly what parseClassifyResult can still return.
+// This answers "is this a state I recognize?" — a membership question, not a
+// question about meaning — so it is one set here rather than the
+// `new Set(['P','D','W','B','E'])` that session-work/scheduler.js and
+// workspace/runtime.js each used to declare by hand. C is deliberately absent
+// (it is retired and collapses to W); the predicates below still tolerate a
+// legacy persisted 'C' wherever one is read back from an older snapshot.
+const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
+
 // Helpers
 function classifyDisplay(cls) { return CLASSIFY_DISPLAY[cls] || CLASSIFY_DISPLAY['W']; }
 /** classify letter (D/C/W/B/E/P) → its canonical turn run state. */
@@ -149,12 +162,37 @@ function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 
 // Semantic predicates over the classify LETTER — the single source for "what
 // does this state mean for my subsystem?". Downstream code MUST use these
-// instead of inline `=== 'D'` / `=== 'W'` checks, so the meaning lives here.
-//   isTerminalLetter: D — the current turn executed successfully (terminal).
-//   isSettledLetter:  D or W — won't change without new user input; safe to skip
-//                     for re-classify/push (the user is in charge either way).
+// instead of inline `=== 'D'` / `=== 'W'` checks, so the meaning lives here and
+// a re-lettered vocabulary (B's split from `waiting` is the latest) cannot leave
+// one subsystem reading the old meaning. tests/test-classify-vocab.js fails the
+// build on a fresh inline letter comparison outside this file.
+//
+// The letters answer three independent questions:
+//   Who is acting?      P/C a turn is in flight · W the user · B a background job
+//   Did a turn end?     D cleanly · E in a fault or an explicit cancel
+//   May I move it on?   D/W settle it · P/W/B mean something is still outstanding
+//
+// One-line meanings (each predicate is exactly one decision):
+//   isProcessingLetter:  P (or the retired C) — a turn is in flight right now.
+//   isWaitForUserLetter: W — the turn ended and only the user can move it on.
+//   isBackgroundLetter:  B — the turn ended parked on a background job/callback.
+//   isTerminalLetter:    D — the current turn executed successfully (terminal).
+//   isAbnormalLetter:    E — the turn ended in a fault or an explicit cancel.
+//   isSettledLetter:     D or W — won't change without new user input; safe to
+//                        skip for re-classify/push (the user is in charge).
+//   isParkedLetter:      W or B — the turn ended and is waiting on something
+//                        outside the scheduler (the user, or a background job):
+//                        nothing is running, nothing is being asked of us.
+//   isOutcomeLetter:     D or E — the turn reached a definite outcome (success
+//                        or fault), as opposed to P still running and W/B parked.
+function isProcessingLetter(cls) { return cls === 'P' || cls === 'C'; }
+function isWaitForUserLetter(cls) { return cls === 'W'; }
+function isBackgroundLetter(cls) { return cls === 'B'; }
 function isTerminalLetter(cls) { return cls === 'D'; }
-function isSettledLetter(cls) { return cls === 'D' || cls === 'W'; }
+function isAbnormalLetter(cls) { return cls === 'E'; }
+function isSettledLetter(cls) { return isTerminalLetter(cls) || isWaitForUserLetter(cls); }
+function isParkedLetter(cls) { return isWaitForUserLetter(cls) || isBackgroundLetter(cls); }
+function isOutcomeLetter(cls) { return isTerminalLetter(cls) || isAbnormalLetter(cls); }
 
 // Scheduler events carry this explicit outcome alongside the classify letter.
 // Consumers may project it onto runtime UI, but MUST NOT reinterpret
@@ -237,10 +275,18 @@ module.exports = {
   runStateForClassify,
   phaseLabel,
   applyUserInputEvidence,
+  // Letter semantics — the only sanctioned way to ask what a letter means.
+  isProcessingLetter,
+  isWaitForUserLetter,
+  isBackgroundLetter,
   isTerminalLetter,
+  isAbnormalLetter,
   isSettledLetter,
+  isParkedLetter,
+  isOutcomeLetter,
   turnOutcomeForClassify,
   CLASSIFY_DISPLAY,
+  CLASSIFY_STATES,
   CLASSIFY_TURN_OUTCOME,
   TURN_RUN_STATES,
   PHASE_LABELS,

@@ -14,6 +14,7 @@
 //   surfaced as needsReview, not as an error.
 
 const { resolveTurnState } = require('../classify/turn-state');
+const { isProcessingLetter, isAbnormalLetter } = require('../classify/vocab');
 const {
   OWNERSHIP, SILENT_E_REASONS, transitionId, projectLiveness,
 } = require('./contract');
@@ -78,11 +79,11 @@ function createTurnLedger(deps = {}) {
       seq: rec.transitionSeq, state: next.state,
     });
     rec.lastTransitionId = id;
-    const reason = next.state === 'E' ? (rec.boundary || 'unknown-interruption') : null;
+    const reason = isAbnormalLetter(next.state) ? (rec.boundary || 'unknown-interruption') : null;
     const transition = {
       transitionId: id, sessionId: rec.sessionId, epoch: rec.epoch, turnId: rec.turnId,
       from, to: next.state, evidence: next.evidence, reason,
-      silent: next.state === 'P' || SILENT_E_REASONS.has(reason),
+      silent: isProcessingLetter(next.state) || SILENT_E_REASONS.has(reason),
       at: now(),
     };
     try { onTransition(transition); } catch (e) { logger?.warn?.(`[turn-ledger] onTransition failed: ${e.message}`); }
@@ -231,7 +232,7 @@ function createTurnLedger(deps = {}) {
   function tick() {
     const t = now();
     for (const rec of records.values()) {
-      if (rec.state === 'P' && rec.lastEventAt && t - rec.lastEventAt > stallMs) rec.needsReview = true;
+      if (isProcessingLetter(rec.state) && rec.lastEventAt && t - rec.lastEventAt > stallMs) rec.needsReview = true;
     }
   }
 
@@ -242,7 +243,7 @@ function createTurnLedger(deps = {}) {
       sessionId, epoch: rec.epoch, cli: rec.cli, cliSessionId: rec.cliSessionId, cliPid: rec.cliPid,
       ownership: rec.ownership, liveness: projectLiveness(rec.ownership),
       turnId: rec.turnId, state: rec.state, evidence: rec.evidence,
-      reason: rec.state === 'E' ? (rec.boundary || 'unknown-interruption') : null,
+      reason: isAbnormalLetter(rec.state) ? (rec.boundary || 'unknown-interruption') : null,
       boundary: rec.boundary, pendingUserInput: rec.pendingUserInput,
       backgroundPending: rec.backgroundPending, stopPending: !!rec.stop,
       promptHead: rec.promptHead, needsReview: rec.needsReview,

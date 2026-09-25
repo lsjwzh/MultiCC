@@ -145,6 +145,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/auto_route_replay_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/autocommit_turn_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -1204,6 +1209,15 @@
     },
     {
       "path": "tests/test-auto-provider-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-auto-route-notes.js",
       "tier": "core",
       "lane": "deterministic",
       "owner": "npm:test:provider-router",
@@ -2889,6 +2903,15 @@
       "owner": "npm:test:contracts",
       "entrypoints": [
         "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-notification-copy.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
       ]
     },
     {
