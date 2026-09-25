@@ -329,7 +329,11 @@ class MessageBubble extends StatelessWidget {
         // 也不挂这一轮自动提交的勾选框。
         final injected = parseSystemInject(message.content);
         if (injected != null) {
-          return _SystemInjectBubble(message: message, parts: injected);
+          return _SystemInjectBubble(
+            message: message,
+            parts: injected,
+            enableServerActions: enableServerActions,
+          );
         }
         return _UserBubble(
           message: message,
@@ -1329,10 +1333,15 @@ class _StreamingDotState extends State<_StreamingDot>
 /// 不当「最后一条用户消息」（services/auto_commit.dart 的 lastUserMessageId），
 /// 引用时算系统行（services/message_quote.dart 的 _roleKey）。
 class _SystemInjectBubble extends StatefulWidget {
-  const _SystemInjectBubble({required this.message, required this.parts});
+  const _SystemInjectBubble({
+    required this.message,
+    required this.parts,
+    this.enableServerActions = true,
+  });
 
   final ChatMessage message;
   final SystemInjectParts parts;
+  final bool enableServerActions;
 
   @override
   State<_SystemInjectBubble> createState() => _SystemInjectBubbleState();
@@ -1348,8 +1357,12 @@ class _SystemInjectBubbleState extends State<_SystemInjectBubble> {
     return Align(
       alignment: Alignment.centerLeft,
       child: GestureDetector(
-        // 注入内容也是引擎写的，和用户气泡一样只提供「复制」这一种长按动作。
-        onLongPress: () => _copyMessage(context, widget.message.content),
+        // 和其它气泡同一张长按菜单：复制/引用，落库后还能删除（只删显示，与 Web 的 ✕ 一致）。
+        onLongPress: () => _showMessageActions(
+          context,
+          widget.message,
+          serverActions: widget.enableServerActions,
+        ),
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
