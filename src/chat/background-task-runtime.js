@@ -89,6 +89,10 @@ function createBackgroundTaskRuntime(deps = {}) {
       const origin = (bgTaskIds.length || bgToolUseIds.length)
         ? { bgTaskIds, bgToolUseIds }
         : {};
+      // One Monitor's reports supersede each other in the queue: while the
+      // session cannot take a turn only its latest event (or terminal) waits.
+      const monitorIds = new Set(items.map(item => (item.kind === 'monitor' ? String(item.taskId || '') : '')));
+      if (monitorIds.size === 1 && !monitorIds.has('')) origin.supersedeKey = `monitor:${[...monitorIds][0]}`;
       try {
         deliverSystem(sessionName, buildNudge(items), origin);
       } catch (error) {

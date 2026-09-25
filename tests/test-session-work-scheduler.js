@@ -1665,3 +1665,34 @@ test('dismissed W question clears durable queue correlation without admitting ne
   assert.equal(queue.queued.length, 0);
   assert.equal(queue.lastDecision.action, 'dismiss_user_input');
 });
+
+test('a newer report with the same supersede key replaces its pending predecessor only', async t => {
+  const h = fixture(t);
+  const active = await h.scheduler.admit({ sessionId: 's1', text: 'running turn', idempotencyKey: 'run' });
+  await startClaim(h, await claimOne(h));
+  const bg = { originContinue: true, supersedeKey: 'monitor:m1' };
+  const e1 = await h.scheduler.admit({ sessionId: 's1', text: 'event 1', options: bg });
+  const user = await h.scheduler.admit({ sessionId: 's1', text: 'user text', idempotencyKey: 'user' });
+  const other = await h.scheduler.admit({ sessionId: 's1', text: 'other monitor', options: { originContinue: true, supersedeKey: 'monitor:m2' } });
+  h.advance();
+  const e2 = await h.scheduler.admit({ sessionId: 's1', text: 'event 2', options: bg });
+  assert.deepEqual(e2.superseded, [e1.entry.id]);
+  assert.deepEqual((await h.scheduler.status('s1')).queued.map(item => item.text), ['user text', 'other monitor', 'event 2']);
+  assert.ok(h.events.some(event => event.type === 'queued_cancelled' && event.entryId === e1.entry.id));
+  assert.ok(active.ok && user.ok && other.ok);
+
+  // The claimed/running entry is never superseded, even when it shares the key.
+  assert.equal((await h.scheduler.complete('s1')).ok, true);
+  for (let i = 0; i < 2; i++) {
+    const next = await claimOne(h);
+    await startClaim(h, next);
+    assert.equal((await h.scheduler.complete('s1')).ok, true);
+  }
+  const running = await claimOne(h);
+  assert.equal(running.id, e2.entry.id);
+  await startClaim(h, running);
+  h.advance();
+  const e3 = await h.scheduler.admit({ sessionId: 's1', text: 'event 3', options: bg });
+  assert.equal(e3.superseded, undefined);
+  assert.deepEqual((await h.scheduler.status('s1')).queued.map(item => item.text), ['event 3']);
+});
