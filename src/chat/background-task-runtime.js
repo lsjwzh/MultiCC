@@ -198,11 +198,12 @@ function createBackgroundTaskRuntime(deps = {}) {
     return origin;
   }
 
-  function ownTask(sessionName, taskId, origin) {
+  function ownTask(sessionName, taskId, origin, description) {
     const entries = nested(ownedTasks, sessionName, true);
     const timestamp = now();
     for (const [key, value] of entries) if (timestamp - value.at > livenessTtlMs) entries.delete(key);
-    entries.set(String(taskId), { at: timestamp, delivered: false, originTurnId: origin && origin.turnId || null });
+    entries.set(String(taskId), { at: timestamp, delivered: false, originTurnId: origin && origin.turnId || null,
+      description: safeDescription(description, '') });
   }
 
   function ownedTask(sessionName, taskId) {
@@ -406,15 +407,32 @@ function createBackgroundTaskRuntime(deps = {}) {
     return 'interrupted';
   }
 
-  function outputSnippet(outputFile) {
-    if (!outputFile) return '';
+  // An Agent task's output file is its sidechain transcript (JSONL records).
+  // The model needs the agent's final report, never raw transcript records.
+  function agentReport(text) {
+    const lines = text.split('\n');
+    try { if (JSON.parse(lines[0]).isSidechain !== true) return null; } catch (_) { return null; }
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      let entry;
+      try { entry = JSON.parse(lines[i]); } catch (_) { continue; }
+      const content = entry && entry.type === 'assistant' ? entry.message?.content : null;
+      const report = typeof content === 'string' ? content : Array.isArray(content)
+        ? content.filter(block => block?.type === 'text').map(block => block.text).join('\n') : '';
+      if (report.trim()) return report;
+    }
+    return '';
+  }
+
+  function outputSnippet(outputFile, result) {
+    if (!outputFile && !result) return '';
     try {
-      const value = readFile(outputFile, 'utf8');
+      const value = result || readFile(outputFile, 'utf8');
       if (value && typeof value.then === 'function') {
         log('warn', 'background task readFile must be synchronous');
         return '';
       }
-      const output = redactProviderRouteCapability(String(value || ''));
+      const text = String(value || '');
+      const output = redactProviderRouteCapability(agentReport(text) ?? text);
       return output.length > outputCap ? output.slice(-outputCap) : output;
     } catch (_) {
       return '';
@@ -442,7 +460,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       watches.set(String(taskId), { live: true, description: event.description || '', toolUseId: event.tool_use_id });
     }
     if (subagent) tagTimed(subagentTasks, sessionName, taskId);
-    if (!sync && !monitor && !subagent) ownTask(sessionName, taskId, origin);
+    if (!sync && !monitor && !subagent) ownTask(sessionName, taskId, origin, event.description);
     const outputFile = monitorOutputFilePath(event.session_id || '', taskId, chatState && chatState.cwd);
     observe({
       sessionId: sessionName,
@@ -585,7 +603,7 @@ function createBackgroundTaskRuntime(deps = {}) {
     // The native notification query won the race and was already admitted.
     if (owned && owned.delivered) return { handled: true, decision: 'native-prompt' };
     const item = {
-      desc: event.description || event.summary || '后台任务',
+      desc: owned?.description || safeDescription(event.description || event.summary, '后台任务'),
       status: event.status || 'completed',
       snippet,
       taskId: taskId || null,
@@ -618,8 +636,8 @@ function createBackgroundTaskRuntime(deps = {}) {
     if (owned.delivered) return { handled: true, monitorOwned: true, decision: 'duplicate' };
     owned.delivered = true;
     noteBgResultInjected(sessionName);
-    coalescer.add(sessionName, { desc: event.summary || '后台任务', status: event.status || 'completed',
-      snippet: outputSnippet(event.output_file), taskId: event.task_id, toolUseId: event.tool_use_id || null });
+    coalescer.add(sessionName, { desc: owned.description || safeDescription(event.summary, '后台任务'),
+      status: event.status || 'completed', snippet: outputSnippet(event.output_file, event.result), taskId: event.task_id, toolUseId: event.tool_use_id || null });
     return { handled: true, monitorOwned: true, decision: 'inject' };
   }
 
