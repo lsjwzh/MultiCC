@@ -14,6 +14,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { zcodeEngineEnv } = require('./zcode-engine');
 
 const argv = process.argv.slice(2);
 let engine = 'zcode';
@@ -45,7 +46,7 @@ const command = engineIsScript ? process.execPath : engine;
 const args = engineIsScript ? [engine, 'tui'] : ['tui'];
 if (resume) args.push('--resume', resume);
 
-const child = spawn(command, args, { stdio: 'inherit', env: process.env });
+const child = spawn(command, args, { stdio: 'inherit', env: zcodeEngineEnv(engine) });
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     if (!child.killed) child.kill(signal);

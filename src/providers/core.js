@@ -1241,6 +1241,31 @@ function zcodeProviderMaterial(provider) {
   };
 }
 
+function zcodePersonalProviderConfig(id, name, material, modelIds) {
+  return {
+    schemaVersion: 1,
+    config: {
+      providerConfigRules: {
+        providerRules: [{
+          providerId: id,
+          ...(name ? { providerName: String(name) } : {}),
+          enabled: true,
+          config: {
+            group: 'standard-personal',
+            access: { type: 'api-key', ...(material.apiKey ? { apiKey: material.apiKey } : {}) },
+            api: {
+              type: material.kind === 'anthropic' ? 'anthropic-messages' : 'openai-responses',
+              ...(material.baseURL ? { baseUrl: material.baseURL } : {}),
+            },
+            ...(modelIds.length ? { personalModelIds: modelIds } : {}),
+          },
+        }],
+      },
+      modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
+    },
+  };
+}
+
 function buildZcodeRoute(provider, session) {
   const summary = summarize(provider);
   const id = zcodeProviderId(provider);
@@ -1272,6 +1297,17 @@ function buildZcodeRoute(provider, session) {
     provider: { [id]: providerConfig },
   });
   secureFile(configFile);
+  // Engine >=0.16.9 ignores cli/config.json's provider/model and builds its
+  // Provider Registry from <data>/.zcode/v2/provider_config.json instead; the
+  // first personalModelIds entry is the default model. Keep writing both so
+  // older engines still work.
+  const v2Dir = path.join(home, '.zcode', 'v2');
+  const personalFile = path.join(v2Dir, 'provider_config.json');
+  ensurePrivateDir(v2Dir);
+  atomicWriteJson(personalFile, zcodePersonalProviderConfig(id, provider.name, material, [
+    selected, ...models.filter(model => model !== selected),
+  ].filter(Boolean)));
+  secureFile(personalFile);
   return {
     env: {
       HOME: home,
