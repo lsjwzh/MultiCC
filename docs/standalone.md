@@ -1,8 +1,8 @@
 # 独立版（standalone）—— MultiCC 唯一的发行形态
 
-> MultiCC 只以**独立包**发布：一个自包含的压缩包，内含官方 Node 运行时 + 服务端全部生产依赖。目标机器**不需要** Node、npm、git、Homebrew 或 Xcode，也不需要编译任何原生模块。解压后 `./multicc start` 即可；桌面版（Electron）也是在这同一个包上加了一层壳。
+> MultiCC 只以**独立包**发布：一个自包含的压缩包，内含官方 Node 运行时 + 服务端全部生产依赖。目标机器**不需要** Node、npm、Homebrew 或 Xcode，也不需要编译任何原生模块；MultiCC 运行时仍需要可用的 `git`，因为每个会话都有独立 worktree。解压后 `./multicc start` 即可；桌面版（Electron）也是在这同一个包上加了一层壳。
 
-它为什么是唯一的形态：桌面版（Electron）与 Homebrew 都覆盖不到老 macOS，而 git pull + npm install 的装法要求目标机器有 git、有 Node、还能现场装依赖——这三件事在用户机器上都不该是前提。
+它为什么是唯一的形态：桌面版（Electron）与 Homebrew 都覆盖不到老 macOS，而 `git pull + npm install` 的源码装法还要求目标机器有 Node、能现场装生产依赖。独立包去掉的是这些构建前提；不会伪装 MultiCC 的 worktree 能力不需要 git。
 
 独立包不是 macOS 专用，当前 Release 固定构建五个目标：
 
@@ -25,15 +25,15 @@
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.0/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.0/install.ps1 | iex
 ```
 
-URL 里的 tag 就是安装的版本。两个脚本只负责各系统必须不同的下载、校验和解压；装好后全部进入同一个包内 `multicc` CLI。整条链路一次完成：下载对应平台的独立包 → 校验 `.sha256` → 解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）→ 在 macOS 清除下载隔离标记 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）→ 可选注册登录自启 → 启动并等待 `/readyz` → 打开浏览器。命令返回时界面已经能用；目标机器不需要 Node、npm、git、Homebrew、Visual Studio 或 Xcode。
+URL 里的 tag 就是安装的版本。两个脚本只负责各系统必须不同的下载、校验和解压；装好后全部进入同一个包内 `multicc` CLI。整条链路一次完成：下载对应平台的独立包 → 校验 `.sha256` → 解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）→ 在 macOS 清除下载隔离标记 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）→ 可选注册登录自启 → 启动并等待 `/readyz` → 打开浏览器。命令返回时界面已经能用；目标机器不需要 Node、npm、Homebrew、Visual Studio 或 Xcode。安装脚本本身不需要 git，但 MultiCC 会在解压后检查运行时必需的 git，缺少时给出安装指引。
 
 Windows 不是另一套产品：它下载 `multicc-standalone-<版本>-win32-x64.zip`，包内仍是同一个 `app-server/`、`launcher/`、manifest、升级器和固定 Node 22 运行时。PowerShell 只是 Windows 自带的薄安装外壳，等价于 macOS/Linux 的 `install.sh`。
 
@@ -48,7 +48,7 @@ curl -sSL .../install.sh | bash -s -- --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用本地的包离线安装（跳过下载，仍然校验 .sha256）
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.7-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.1.0-darwin-arm64.tar.gz
 
 # 自动化/服务器：只安装不启动，或启动但不打开浏览器
 curl -sSL .../install.sh | bash -s -- --no-start
