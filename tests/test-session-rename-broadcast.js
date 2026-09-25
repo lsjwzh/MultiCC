@@ -246,5 +246,5 @@ test('server composition gives profile routes the live chat-state reader', () =>
   assert.ok(start >= 0 && end > start);
   const composition = source.slice(start, end);
   assert.match(composition, /getChatStream: \(\) => chatStream, getChatState: id => chatSessions\.get\(id\),/);
-  assert.match(composition, /hasLiveBackgroundTasks: id => backgroundTaskRuntime\?\.hasLiveBackgroundTasks\(id\) === true/);
+  assert.match(composition, /hasLiveBackgroundTasks: id => backgroundTaskRuntime\?\.hasProcessBackgroundTasks\(id\) === true/);
 });
