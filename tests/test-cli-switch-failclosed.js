@@ -27,17 +27,69 @@ fs.mkdirSync(project, { recursive: true });
 fs.mkdirSync(dataRoot, { recursive: true });
 fs.writeFileSync(fakeCli, `#!/usr/bin/env node
 const fs = require('fs');
+const readline = require('readline');
 const countFile = ${JSON.stringify(countFile)};
 let count = 0;
 try { count = Number(fs.readFileSync(countFile, 'utf8')) || 0; } catch (_) {}
 count += 1;
 fs.writeFileSync(countFile, String(count));
 const mismatch = count > 1;
-process.stdout.write(JSON.stringify({ type: 'step_start', sessionID: mismatch ? 'native-wrong' : 'native-one', part: {} }) + '\\n');
-setTimeout(() => {
-  process.stdout.write(JSON.stringify({ type: 'text', part: { text: mismatch ? 'MUST-NOT-BE-ACCEPTED' : 'FIRST-OK' } }) + '\\n');
-  process.stdout.write(JSON.stringify({ type: 'step_finish', part: { reason: 'stop', tokens: {} } }) + '\\n');
-}, mismatch ? 1000 : 20);
+const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+let pendingPrompt = null;
+let pendingTimer = null;
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const message = JSON.parse(line);
+  const reply = result => send({ id: message.id, result });
+  if (message.method === 'initialize') {
+    reply({
+      protocolVersion: 1,
+      agentCapabilities: { loadSession: true },
+      agentInfo: { name: 'fake-opencode' },
+    });
+    return;
+  }
+  if (message.method === 'session/load') {
+    if (mismatch) {
+      send({ id: message.id, error: { code: -32001, message: 'native session unavailable' } });
+    } else {
+      reply({ configOptions: [] });
+    }
+    return;
+  }
+  if (message.method === 'session/new') {
+    reply({ sessionId: mismatch ? 'native-wrong' : 'native-one', configOptions: [] });
+    return;
+  }
+  if (message.method === 'session/set_config_option') {
+    reply({ configOptions: [] });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    const sessionId = message.params.sessionId;
+    pendingPrompt = message;
+    pendingTimer = setTimeout(() => {
+      pendingPrompt = null;
+      pendingTimer = null;
+      send({ method: 'session/update', params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'answer-1',
+          content: { type: 'text', text: mismatch ? 'MUST-NOT-BE-ACCEPTED' : 'FIRST-OK' },
+        },
+      } });
+      reply({ stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } });
+    }, mismatch ? 1000 : 20);
+    return;
+  }
+  if (message.method === 'session/cancel' && pendingPrompt) {
+    clearTimeout(pendingTimer);
+    const prompt = pendingPrompt;
+    pendingPrompt = null;
+    pendingTimer = null;
+    send({ id: prompt.id, result: { stopReason: 'cancelled' } });
+  }
+});
 `);
 fs.chmodSync(fakeCli, 0o755);
 fs.writeFileSync(fakeClaude, `#!/usr/bin/env node
