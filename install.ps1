@@ -10,6 +10,7 @@ param(
     [int]$Port = 3000,
     [string]$From = '',
     [switch]$Yes,
+    [switch]$NoData,
     [switch]$NoService,
     [switch]$NoStart,
     [switch]$NoOpen
@@ -140,6 +141,53 @@ function Read-LegacyEnv([string]$Root) {
     }
 }
 
+# Every state artifact a pre-standalone installation kept inside its own
+# directory: for those releases src/paths.js resolved the data root to the
+# package root, so this is what sat next to the code. The list is by name on
+# purpose — the same directory also held the sources, node_modules and .git, and
+# none of that is data. Anything absent is rebuilt on demand (caches) or already
+# lived under ~/.multicc even then (detached jobs, voice runtimes, samples).
+$script:LegacyDataItems = @(
+    'sessions.json', 'directories.json', '.journal', 'chat_history',
+    'aux_runs', 'events', 'bridges', 'artifacts',
+    'notes.json', 'token_usage.json', 'token_daily.json', 'token_by_role.json',
+    'providers.json', 'shares.json', 'fleet-shares.json', 'external-fleets.json',
+    'push_subscriptions.json', 'push_notification_receipts.json',
+    'tunnel-config.json', 'tunnel-repair-ledger.json', 'aux-config.json', 'goal-config.json',
+    'provider-defaults.json', 'provider-relay-shares.json',
+    'provider-limit-cache.db', 'provider-limit-cache.json', 'quota-bar-cache.json',
+    'scheduled_tasks.json', 'cron_fanout_migration.json', 'docs_registry.json', 'secrets.json',
+    'task_board.json', 'task-runs.sqlite', 'task-shells.sqlite', 'search-index.sqlite',
+    'task-short-codes.json', 'ui-layout.json', 'air-pins.json',
+    'orchestration.sqlite', 'orchestration.json', 'voice_examples.json', 'whisper_vocab.json',
+    'memories'
+)
+
+function Test-LegacyDataPresent([string]$Root) {
+    foreach ($item in $script:LegacyDataItems) {
+        if (Test-Path -LiteralPath (Join-Path $Root $item)) { return $true }
+    }
+    return $false
+}
+
+function Get-LegacyDataSize([string]$Root) {
+    [int64]$total = 0
+    foreach ($item in $script:LegacyDataItems) {
+        $path = Join-Path $Root $item
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $sum = (Get-ChildItem -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue |
+            Measure-Object -Property Length -Sum).Sum
+        if ($sum) { $total += [int64]$sum }
+    }
+    return $total
+}
+
+function Format-ByteSize([int64]$Bytes) {
+    if ($Bytes -ge 1073741824) { return ('{0:N1} GB' -f ($Bytes / 1073741824)) }
+    if ($Bytes -ge 1048576) { return ('{0:N1} MB' -f ($Bytes / 1048576)) }
+    return ('{0:N0} KB' -f ($Bytes / 1024))
+}
+
 function Assert-Bundle([string]$Root) {
     foreach ($relative in @(
         'multicc.cmd',
@@ -159,6 +207,62 @@ function Assert-Bundle([string]$Root) {
     if ([string]$manifest.platform -ne 'win32' -or [string]$manifest.arch -ne 'x64') {
         throw "Package target is $($manifest.platform)/$($manifest.arch), expected win32/x64"
     }
+}
+
+# Copy the old data out of the backup into the new data directory. The backup is
+# read, never written, and the destination is only ever an empty directory: if
+# something is already in there it is either a second MultiCC or a first run of
+# the new server, and in both cases those files are newer than the backup.
+function Copy-LegacyDataAcross([string]$Command) {
+    if (-not $legacyDataCopy) { return }
+    if ([string]::IsNullOrWhiteSpace($legacyDir) -or -not (Test-Path -LiteralPath $legacyDir)) { return }
+
+    # The data directory the launcher hands the server is `<userData>/data`, where
+    # userData is whatever directory the CLI keeps multicc.env in
+    # (desktop/lib/desktop-env.js). Asking the CLI keeps this right on every
+    # platform instead of re-deriving the per-user path here.
+    $envFile = (& $Command config path 2>$null | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($envFile)) {
+        Write-Warn 'Could not work out where this release keeps its data; nothing was copied.'
+        Write-Info "Your data is untouched in $legacyDir."
+        return
+    }
+    $dataDir = Join-Path (Split-Path -Parent $envFile) 'data'
+    if ((Test-Path -LiteralPath $dataDir) -and
+        @(Get-ChildItem -LiteralPath $dataDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+        Write-Warn 'This release already has data of its own — nothing was copied.'
+        Write-Info "Your old data is untouched in $legacyDir."
+        return
+    }
+    New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+
+    $copied = 0
+    $failed = 0
+    foreach ($item in $script:LegacyDataItems) {
+        $source = Join-Path $legacyDir $item
+        if (-not (Test-Path -LiteralPath $source)) { continue }
+        $destination = Join-Path $dataDir $item
+        if (Test-Path -LiteralPath $destination) { continue }
+        try {
+            Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+            $copied++
+        } catch {
+            $failed++
+            Write-Warn "Could not copy $item"
+        }
+    }
+
+    if ($copied -eq 0 -and $failed -eq 0) {
+        Write-Info 'No data from the previous installation needed bringing across'
+        return
+    }
+    Write-Ok "Brought your data across: $copied item(s) into $dataDir"
+    if ($failed -gt 0) {
+        Write-Warn "$failed item(s) could not be copied and are still only in $legacyDir."
+    }
+    Write-Host '       Sessions, chat history, tasks and memories are read from there now.' -ForegroundColor Blue
+    Write-Host '       The backup keeps its own copy — nothing was moved or deleted, so it' -ForegroundColor Blue
+    Write-Host "       is safe to delete $legacyDir once the new installation looks right." -ForegroundColor Blue
 }
 
 function Invoke-MultiCC([string[]]$Arguments, [switch]$IgnoreFailure) {
@@ -186,6 +290,13 @@ $oldDir = ''
 $legacyDir = ''
 $legacyToken = ''
 $legacyPort = ''
+# Whether the old installation's data is copied into the new data directory.
+# Starts from -NoData and can still be declined at the prompt.
+$legacyDataCopy = -not $NoData.IsPresent
+# Set when a real old installation's data was deliberately left in the backup, so
+# the summary can say where it is and where it would have to go.
+$legacyDataLeftBehind = $false
+$legacyDataDest = ''
 
 Write-Host ''
 Write-Host "MultiCC Windows One-Click Installer (v$ResolvedVersion)" -ForegroundColor Magenta
@@ -250,11 +361,34 @@ try {
             $legacyDir = "$InstallDir.legacy-$([DateTime]::Now.ToString('yyyyMMddHHmmss'))"
             Move-Item -LiteralPath $InstallDir -Destination $legacyDir
             Write-Ok "Previous installation kept at $legacyDir"
-            if ((Test-Path -LiteralPath (Join-Path $legacyDir 'sessions.json') -PathType Leaf) -or
-                (Test-Path -LiteralPath (Join-Path $legacyDir 'chat_history') -PathType Container) -or
-                (Test-Path -LiteralPath (Join-Path $legacyDir 'task-shells.sqlite') -PathType Leaf)) {
-                Write-Warn 'Sessions, chat history and tasks from the old installation are still in the backup.'
-                Write-Host '       This release keeps them in a per-user data directory, so it starts with none of them.' -ForegroundColor Yellow
+            # The old releases kept their data inside the install directory:
+            # sessions, chat history, tasks and memories all lived next to the
+            # code. This release reads a per-user data directory instead, so
+            # without an explicit copy the upgrade starts empty even though every
+            # byte is still on disk. The copy happens later, once the new package
+            # is in place and before the server has run for the first time.
+            if (-not (Test-LegacyDataPresent $legacyDir)) {
+                $legacyDataCopy = $false
+            } elseif ($legacyDataCopy) {
+                $dataBytes = Get-LegacyDataSize $legacyDir
+                if (-not $Yes) {
+                    Write-Host ''
+                    Write-Host "  Your previous installation also holds about $(Format-ByteSize $dataBytes) of data:"
+                    Write-Host '  sessions, chat history, the task boards, memories and provider settings.'
+                    Write-Host '  It stays in the backup either way; bringing it across means the new'
+                    Write-Host '  installation starts with your history instead of empty.'
+                    $answer = Read-Host 'Bring it across? [Y/n]'
+                    if (-not [string]::IsNullOrWhiteSpace($answer) -and $answer -notmatch '^[Yy]') {
+                        $legacyDataCopy = $false
+                    }
+                }
+            }
+            if (-not $legacyDataCopy) {
+                $legacyDataLeftBehind = $true
+                Write-Warn "Your data stays in the backup: $legacyDir"
+                Write-Host '       This release reads a per-user data directory, so it starts empty.' -ForegroundColor Yellow
+                Write-Host '       Nothing was deleted, and the end of this run prints where it would' -ForegroundColor Yellow
+                Write-Host '       have to be copied to.' -ForegroundColor Yellow
             }
         } elseif ($children.Count -gt 0) {
             # The branch above ran means the directory is no longer there (it
@@ -342,6 +476,24 @@ try {
     Invoke-MultiCC @('config', 'set', 'PORT', [string]$Port) | Out-Null
     Write-Ok "PORT set to $Port"
 
+    # ── Bring an older installation's data across ─────────────────────────
+    # Before the server has ever started: the destination has to be empty for the
+    # copy to be safe, and the first start is what makes it non-empty.
+    if (-not [string]::IsNullOrWhiteSpace($legacyDir)) {
+        Write-Step 'Bringing your data across'
+        if ($legacyDataCopy) {
+            Copy-LegacyDataAcross $MultiCCCommand
+        } else {
+            Write-Info "Skipped — the previous installation's data stays in $legacyDir"
+        }
+        # Resolved for the summary whatever the answer was: a "no" is only useful
+        # if the user leaves knowing where their history is and where it must go.
+        $legacyDataDest = (& $MultiCCCommand config path 2>$null | Out-String).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($legacyDataDest)) {
+            $legacyDataDest = Join-Path (Split-Path -Parent $legacyDataDest) 'data'
+        }
+    }
+
     if ($NoStart) { $NoService = $true }
     if (-not $NoService) {
         Write-Step 'Start automatically on login'
@@ -371,6 +523,14 @@ try {
     Write-Host "  Install: $InstallDir"
     Write-Host "  Status:  & '$MultiCCCommand' status"
     Write-Host '  Data and configuration live outside the install directory and survive upgrades.'
+    if ($legacyDataLeftBehind) {
+        Write-Host ''
+        Write-Host '  Your previous sessions are still in the backup' -ForegroundColor Yellow
+        Write-Host "    Backup:       $legacyDir"
+        Write-Host "    This release: $legacyDataDest"
+        Write-Host '    To use them, stop MultiCC, copy what you want out of the backup into the'
+        Write-Host '    directory above, and start it again. Nothing was deleted.'
+    }
 } catch {
     Write-Error $_
     exit 1
