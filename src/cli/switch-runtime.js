@@ -3,6 +3,7 @@
 const { desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
 const { isChatStateBusy } = require('../session/runtime-busy');
 const cliUpstream = require('./cli-upstream-version');
+const homebrewTakeover = require('./homebrew-takeover');
 
 const crypto = require('node:crypto');
 const os = require('node:os');
@@ -155,6 +156,9 @@ function createCliSwitchRuntime(options) {
   // specs/spawn 可由测试注入; 缺省用本文件常量与 lazy require 的 spawn。
   const installSpecs = options.installSpecs || OFFICIAL_INSTALL_SPECS;
   const spawnProcessOverride = options.spawnProcess;
+  const homebrewOwnerOf = typeof options.homebrewOwnerOf === 'function'
+    ? options.homebrewOwnerOf
+    : homebrewTakeover.homebrewOwnerOf;
   // 安装任务表(模块内, 容量上限 50; 每个 runtime 实例独立, 便于测试隔离)。
   const installJobs = new Map();
 
@@ -235,6 +239,9 @@ function createCliSwitchRuntime(options) {
     }
     if (/No binary available|Failed to download|Could not resolve|connection (timed out|refused)|network is unreachable|temporary failure/i.test(text)) {
       return '下载发布信息或二进制失败，多为网络不通或被代理拦截。可检查网络/代理后重试，或在终端手动执行上面的命令。';
+    }
+    if (/EEXIST/.test(text)) {
+      return '目标位置已有一个不是 npm 装的同名文件（例如 Homebrew 或其它渠道装的旧版），npm 拒绝覆盖。请先卸载那份旧安装再重试。';
     }
     if (/is required but not installed|Neither curl nor wget/i.test(text)) {
       return '缺少安装所需的命令行工具（如 curl / unzip / tar）。请先安装相应工具后重试。';
@@ -510,7 +517,14 @@ function createCliSwitchRuntime(options) {
 
   function launchInstallJob(cli) {
     const spec = installSpecs[cli];
-    const command = spec.command;
+    const env = buildInstallEnv(cli);
+    // 派生二进制归 Homebrew 管时先卸掉它再 npm 装(见 homebrew-takeover.js)。
+    // 探测失败按「不归 brew 管」处理, 照旧只跑 npm。
+    let brewOwner = null;
+    if (homebrewTakeover.isNpmGlobalInstall(spec.command)) {
+      try { brewOwner = homebrewOwnerOf(resolveCliCommandMap()[cli], { envPath: env.PATH }); } catch (_) {}
+    }
+    const command = homebrewTakeover.takeoverCommand(brewOwner, spec.command);
     const jobId = makeInstallJobId();
     const startedAt = new Date(clock()).toISOString();
     const log = createLogRing();
@@ -534,7 +548,6 @@ function createCliSwitchRuntime(options) {
     installJobs.set(jobId, job);
 
     const spawn = resolveSpawn();
-    const env = buildInstallEnv(cli);
     let proc;
     try {
       // 命令全来自静态表, 无用户输入拼接; 仅用 async spawn, 禁止同步子进程调用。

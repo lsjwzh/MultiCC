@@ -94,6 +94,8 @@ function createHarness(overrides = {}) {
     installSpecs: overrides.installSpecs,
     spawnProcess: overrides.spawnProcess,
     cliCommands: overrides.cliCommands,
+    // 默认桩: 不读本机真实安装布局(这台机器上的 codex 可能就是 brew 装的)。
+    homebrewOwnerOf: overrides.homebrewOwnerOf || (() => null),
     execFileVersion: overrides.execFileVersion,
     // 默认桩: 不打真实 npm registry。想断言「有新版」的用例自己注入一个。
     fetchLatestVersion: overrides.fetchLatestVersion || (async () => null),
@@ -993,4 +995,66 @@ test('install jobs serialize by install target, and different targets run in par
     const status = await harness.invokeStatus(jobId);
     assert.equal(status.body.job.status, 'running');
   }
+});
+
+// Homebrew 装的 CLI 不去兼容: 同一条命令里先 brew uninstall, 再 npm 装, 此后 bin 归 npm。
+test('upgrade of a Homebrew-owned binary uninstalls it before the npm install', async () => {
+  const spawns = [];
+  const fakeSpawn = (cmd, args) => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    spawns.push(args.join(' '));
+    return ee;
+  };
+  const seen = [];
+  const harness = createHarness({
+    spawnProcess: fakeSpawn,
+    cliCommands: { claude: '/opt/homebrew/bin/claude', codex: '/opt/homebrew/bin/codex' },
+    homebrewOwnerOf: (cmd) => {
+      seen.push(cmd);
+      return cmd === '/opt/homebrew/bin/claude' ? { kind: 'formula', name: 'claude-code', path: cmd } : null;
+    },
+    availability: { claude: { available: true }, codex: { available: true } },
+  });
+  const res = await harness.invokeUpgrade('claude');
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.command, 'brew uninstall --formula claude-code && npm install -g @anthropic-ai/claude-code');
+  assert.equal(spawns[0], '-c brew uninstall --formula claude-code && npm install -g @anthropic-ai/claude-code');
+  assert.deepEqual(seen, ['/opt/homebrew/bin/claude']);
+
+  // 不归 brew 管的照旧只跑 npm
+  const plain = await harness.invokeUpgrade('codex');
+  assert.equal(plain.body.command, 'npm install -g @openai/codex');
+});
+
+test('homebrew owner detection follows the real path and refuses unsafe names', () => {
+  const { homebrewOwnerOf, takeoverCommand } = require('../src/cli/homebrew-takeover');
+  const links = {
+    '/opt/homebrew/bin/gemini': '/opt/homebrew/Cellar/gemini-cli/0.29.5/bin/gemini',
+    '/opt/homebrew/bin/codex': '/opt/homebrew/Caskroom/codex/0.40.0/codex-aarch64-apple-darwin',
+    '/opt/homebrew/bin/npmcli': '/opt/homebrew/lib/node_modules/npmcli/bin/cli.js',
+    '/opt/homebrew/bin/evil': '/opt/homebrew/Cellar/a;rm -rf ~/1/bin/evil',
+    '/opt/homebrew/Cellar/node/26.8.1/bin/node': '/opt/homebrew/Cellar/node/26.8.1/bin/node',
+    '/opt/homebrew/bin/node22': '/opt/homebrew/Cellar/node@22/22.1.0/bin/node',
+  };
+  const realpath = (p) => { if (!links[p]) throw new Error('ENOENT'); return links[p]; };
+  assert.deepEqual(homebrewOwnerOf('/opt/homebrew/bin/gemini', { realpath }),
+    { kind: 'formula', name: 'gemini-cli', path: '/opt/homebrew/bin/gemini' });
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/codex', { realpath }).kind, 'cask');
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/npmcli', { realpath }), null);
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/evil', { realpath }), null);
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/missing', { realpath }), null);
+  // 运行时(node/npm)永远不卸
+  assert.equal(homebrewOwnerOf('/opt/homebrew/Cellar/node/26.8.1/bin/node', { realpath }), null);
+  assert.equal(homebrewOwnerOf('/opt/homebrew/bin/node22', { realpath }), null);
+  assert.equal(homebrewOwnerOf(null, { realpath }), null);
+
+  const owner = { kind: 'cask', name: 'codex' };
+  assert.equal(takeoverCommand(owner, 'npm install -g @openai/codex'),
+    'brew uninstall --cask codex && npm install -g @openai/codex');
+  // 非 npm 渠道(curl 安装脚本)不接管
+  assert.equal(takeoverCommand(owner, 'curl -fsSL https://qoder.cn/install | bash'),
+    'curl -fsSL https://qoder.cn/install | bash');
 });
