@@ -135,7 +135,7 @@ test('lid sleep prefers the helper and falls back to the prompt', async () => {
   };
   // Helper present: pmset runs through sudo and osascript is never involved.
   await macosPower.setLidSleepPrevention(true, {
-    platform: 'darwin', execFile: execFileFake,
+    platform: 'darwin', execFile: execFileFake, powerd: { setIntent: () => false },
     privileged: createPrivilegedHelper({ platform: 'darwin', run: fakeRun(withHelper()), user: 'green' }),
   });
   assert.ok(!seen.some(c => c[0] === '/usr/bin/osascript'), 'no password prompt when the helper is installed');
@@ -143,7 +143,7 @@ test('lid sleep prefers the helper and falls back to the prompt', async () => {
   seen.length = 0;
   // Helper absent: the existing prompt path is used, unchanged.
   await macosPower.setLidSleepPrevention(true, {
-    platform: 'darwin', execFile: execFileFake,
+    platform: 'darwin', execFile: execFileFake, powerd: { setIntent: () => false },
     privileged: createPrivilegedHelper({ platform: 'darwin', run: fakeRun(withoutHelper()), user: 'green' }),
   });
   assert.ok(seen.some(c => c[0] === '/usr/bin/osascript' && /with administrator privileges/.test(c[2])),

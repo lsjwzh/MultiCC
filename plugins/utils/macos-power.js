@@ -2,6 +2,7 @@
 
 const { execFile } = require('child_process');
 const { createPrivilegedHelper } = require('../../src/privileged-helper');
+const { createPowerd } = require('../../src/powerd');
 
 function isAvailable(platform = process.platform) {
   return platform === 'darwin';
@@ -46,7 +47,23 @@ async function setLidSleepPrevention(enabled, options = {}) {
 
   const value = enabled ? '1' : '0';
 
-  // Preferred path: the optional privileged helper, which runs this exact
+  // First choice: the powerd LaunchDaemon. Recording the intent is what makes
+  // "on" survive other programs resetting it; launchd runs the job as soon as
+  // the file changes, so wait briefly for the setting to land. If it does not
+  // (daemon not loaded, launchd slow), the intent is still recorded and the
+  // one-shot paths below apply the change now.
+  const powerd = options.powerd || createPowerd({ platform });
+  if (powerd.setIntent(enabled)) {
+    const deadline = Date.now() + (options.powerdWaitMs ?? 6000);
+    for (;;) {
+      const status = await getLidSleepPrevention(options);
+      if (status.enabled === enabled) return status;
+      if (Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, options.powerdPollMs ?? 250));
+    }
+  }
+
+  // Next: the optional sudoers helper, which runs this exact
   // command with no password. It returns null when it is not installed (the
   // normal case) rather than failing, so the prompt below stays the fallback
   // and nothing about this function's contract depends on the helper existing.
