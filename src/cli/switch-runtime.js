@@ -21,15 +21,24 @@ const OFFICIAL_INSTALL_SPECS = Object.freeze({
     auto: false,
       manual: 'Claude Agent SDK 由 MultiCC 内置；请升级 MultiCC 来更新 SDK',
   },
+  // codex 走官方安装脚本, 不走 npm 全局 —— 这是修一次真实事故换来的选择。
+  // `@openai/codex` 的平台二进制(约 133MB)是 optionalDependency: 下载超时会被 npm
+  // 静默丢弃, 整条命令仍然 exit 0。留下的是一个能启动失败、却对外报"安装成功"的残废
+  // 安装, job 只看退出码, 无从分辨。实测同一个包同一台机器, 一次 27 秒装好, 另一次
+  // 卡满 5 分钟默认 fetch-timeout 后被丢 —— 是下载通道本身不稳, 加长超时只是压制。
+  // 官方脚本没有这条静默路径: 单一归档、sha256 对 codex-package_SHA256SUMS、set -eu
+  // 非零退出、版本化目录 + current 软链原子切换。装机位置 ~/.local/bin 与
+  // commands.js 的 resolveCodex() 首选候选一致(见那里的注释)。
+  // 代价: 首次安装多依赖 releases.openai.com(失败会退到 GitHub Releases), 且无重试。
   codex: {
     auto: true,
-    command: 'npm install -g @openai/codex',
-    display: 'npm install -g @openai/codex',
+    command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
+    display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
   },
   'codex-exp': {
     auto: true,
-    command: 'npm install -g @openai/codex',
-    display: 'npm install -g @openai/codex',
+    command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
+    display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
   },
   opencode: {
     auto: true,
@@ -72,7 +81,11 @@ const OFFICIAL_INSTALL_SPECS = Object.freeze({
   },
 });
 
-const INSTALL_TIMEOUT_MS = 8 * 60 * 1000;
+// 15 分钟不是随手放宽, 是按最坏路径算的: codex 的官方安装脚本自己 metadata 30s +
+// asset 300s, 而它在 releases.openai.com 不可达时会退到 GitHub Releases 把整套再来
+// 一遍(≈11 分钟)。原来的 8 分钟会在这种情况下 SIGKILL 掉一个其实正在正常下载的进程。
+// 对 npm 车道无影响 —— npm 自己的 fetch-timeout 更短, 够不到这条线。
+const INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 const INSTALL_LOG_TAIL = 12 * 1024; // 环形 buffer 保留尾部约 12KB
 const INSTALL_JOB_CAPACITY = 50;
 
@@ -251,8 +264,8 @@ function createCliSwitchRuntime(options) {
 
   function findRunningInstallJob(cli) {
     // 串行键是「安装目标」而不是「CLI 名」: codex 与 codex-exp 派生同一个二进制、
-    // 跑同一条 `npm install -g @openai/codex`, 两个并发任务会让 npm 自己踩自己的
-    // 全局目录。同目标必须串行, 不同目标可以并行。
+    // 跑同一条安装命令, 两个并发任务会互相踩(以前是 npm 的全局目录, 现在是安装脚本
+    // 的 install.lock 与 current 软链)。同目标必须串行, 不同目标可以并行。
     const target = installTargetKey(cli);
     for (const job of installJobs.values()) {
       if (job.status === 'running' && installTargetKey(job.cli) === target) return job;
@@ -479,8 +492,25 @@ function createCliSwitchRuntime(options) {
     // 就是「明明说有新版，升级却总是失败」。只作用于这次安装子进程，不写任何配置。
     const registry = (latestCache.registry && latestCache.registry[cli]) || null;
     if (registry) env.npm_config_registry = registry;
+    // 上面这条只对 npm 车道有效。codex 是 curl 车道(见 OFFICIAL_INSTALL_SPECS), 它没有
+    // 「检测源 = 安装源」的问题, npm_config_registry 对它是个无害的空操作。
+    const installEnv = CLI_INSTALL_ENV[cli];
+    if (installEnv) Object.assign(env, installEnv);
     return env;
   }
+
+  // 各 CLI 安装命令需要的额外环境变量。与命令字符串分开, 是为了让 display 与官方
+  // 文档一字不差, 同时不靠 shell 里 `VAR=1 cmd` 的作用域把戏。
+  // codex: 官方安装脚本里有两个交互 prompt —— handle_conflicting_install 问「要不要
+  // 卸掉现有的 npm 版 codex」、maybe_launch_codex_now 问「现在启动 codex 吗」。
+  // 无 TTY 时 prompt_yes_no 已经默认答「否」, 所以不设也不会挂死; 但那是巧合, 显式
+  // 声明才是契约 —— 尤其 get() 那个若答"是"会把 codex TUI 拉起来, 直接吊死 install job。
+  // 同一张表的内容必须让 command 字符串保持逐字符相同, 否则 installTargetKey 会把
+  // codex 与 codex-exp 判成两个目标, 串行保护失效(见 findRunningInstallJob)。
+  const CLI_INSTALL_ENV = Object.freeze({
+    codex: { CODEX_NON_INTERACTIVE: '1' },
+    'codex-exp': { CODEX_NON_INTERACTIVE: '1' },
+  });
 
   // 各 CLI 用来覆盖可执行文件路径的环境变量(与 cli-adapters/commands.js 一致),
   // 用于「升级没作用到派生二进制」时给出可直接照做的出路。
@@ -991,8 +1021,8 @@ function createCliSwitchRuntime(options) {
 
     // POST /api/cli/:cli/upgrade — 跑官方安装命令做原地升级。
     // 刻意不复用 /install 的 `alreadyInstalled` 短路: 那条捷径的语义是「没装才装」,
-    // 而升级的前提恰恰是已经装了。其余(同一 CLI 串行、8 分钟超时、日志尾部、
-    // 失败分类提示)与安装完全同一条链路。成功后 exit 处理里会作废版本缓存。
+    // 而升级的前提恰恰是已经装了。其余(同一 CLI 串行、INSTALL_TIMEOUT_MS 超时、
+    // 日志尾部、失败分类提示)与安装完全同一条链路。成功后 exit 处理里会作废版本缓存。
     app.post('/api/cli/:cli/upgrade', asyncHandler(async (req, res) => {
       const cli = String((req.params && req.params.cli) || '').trim().toLowerCase();
       if (!supportedClis.includes(cli)) {

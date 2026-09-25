@@ -19,7 +19,10 @@ Requires the codex CLI and a git repository.
 
 ## Prerequisites
 
-- Codex installed: `npm install -g @openai/codex`
+- Codex installed: `curl -fsSL https://chatgpt.com/codex/install.sh | sh`
+  (installs to `~/.local/bin/codex`; `npm install -g @openai/codex` also works but
+  its platform binary is an optional dependency that npm drops silently on a slow
+  download, leaving a broken install behind an exit code of 0)
 - OpenAI auth configured: either `OPENAI_API_KEY` or Codex OAuth credentials
   from the Codex CLI login flow
 - **Must run inside a git repository** — Codex refuses to run outside one

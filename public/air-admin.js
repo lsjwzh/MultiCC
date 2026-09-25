@@ -838,10 +838,13 @@
     const model = make('select');
     const cli = config.cliAvailability || null;
     const noCliAtAll = !!cli && cli.claude === false && cli.codex === false;
+    // 单一事实源是服务端的 src/cli/switch-runtime.js(OFFICIAL_INSTALL_SPECS), 这里的
+    // 兜底只在 installSpecs 读不到时才走。它必须跟上, 否则前端会教用户跑一条 multicc
+    // 自己已经不再使用的命令 —— 这条 codex 分支就从 npm 换成了官方安装脚本。
     const installCmd = (cliId) => {
       const spec = auxView.installSpecs?.specs?.[cliId];
       return (spec && (spec.display || spec.command))
-        || (cliId === 'codex' ? 'npm install -g @openai/codex' : 'npm install -g @anthropic-ai/claude-code');
+        || (cliId === 'codex' ? 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' : 'npm install -g @anthropic-ai/claude-code');
     };
     const cliBanner = make('div', '', 'air-aux-warn');
     cliBanner.hidden = !noCliAtAll;

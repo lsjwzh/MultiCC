@@ -131,6 +131,39 @@ try {
     claude: 'claude.exe', 'claude-exp': process.execPath, codex: 'codex.exe', 'codex-exp': 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe', kimi: 'kimi.exe', codebuddy: 'codebuddy.exe', dsh: 'dsh.exe', gemini: 'gemini.cmd', grok: 'grok.cmd',
   }, 'Windows fallback names remain stable when no executable exists');
 
+  // resolveCodex 的候选顺序是策略而不是随手排的: 官方 curl 安装脚本(BIN_DIR 默认
+  // $HOME/.local/bin)与 standalone 包推荐的 `npm install -g --prefix "$HOME/.local"`
+  // 都落在这里, 安装脚本自己也是把 ~/.local/bin prepend 进用户 PATH —— 两边顺序一致,
+  // 才不会「multicc 跑新的、用户敲 codex 是旧的」。反过来让 /opt/homebrew/bin 抢先,
+  // 新装的 codex 会被 npm 旧副本永久遮蔽, 升级报成功、派生的却还是旧的。
+  const fakeHome = path.join(root, 'fake-home');
+  const localCodex = path.join(fakeHome, '.local', 'bin', 'codex');
+  const brewCodex = '/opt/homebrew/bin/codex';
+  // /opt/homebrew 下没法真建文件(需要 root, 而且本机真的有一份), 所以按本文件既有
+  // 做法注入 fsImpl —— 只承认列出来的这几个路径存在且可执行。
+  const onlyExisting = (...files) => ({
+    accessSync(file) {
+      if (!files.includes(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+    statSync(file) {
+      if (!files.includes(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return { isFile: () => true };
+    },
+    readdirSync() { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+  });
+  const resolveCodexWith = fsImpl => resolveCliCommands({
+    isWindows: false,
+    env: { PATH: '' },
+    fsImpl,
+    homeDir: fakeHome,
+    logger: silentLogger(),
+  }).codex;
+
+  assert.strictEqual(resolveCodexWith(onlyExisting(localCodex, brewCodex)), localCodex,
+    'codex prefers ~/.local/bin (the official installer location) over the homebrew npm copy');
+  assert.strictEqual(resolveCodexWith(onlyExisting(brewCodex)), brewCodex,
+    'a machine that only has the homebrew copy resolves exactly as before');
+
   const source = fs.readFileSync(require.resolve('../src/cli-adapters/commands'), 'utf8');
   assert.ok(!/\b(?:execSync|execFileSync|spawnSync)\b/.test(source), 'command resolution uses no synchronous child process');
 

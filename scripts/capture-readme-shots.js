@@ -209,7 +209,7 @@ function apiRoutes(options = {}) {
       ok: true,
       specs: {
         claude: { command: 'npm install -g @anthropic-ai/claude-code', display: 'npm install -g @anthropic-ai/claude-code' },
-        codex: { command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
+        codex: { command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
       },
     }),
     'GET /api/cli/versions': json({ ok: true, clis: {} }),

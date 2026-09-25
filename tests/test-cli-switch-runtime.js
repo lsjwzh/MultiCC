@@ -406,8 +406,8 @@ test('install-specs returns the static official command table', async () => {
   assert.deepEqual(res.body.specs, {
     claude: { auto: true, command: 'npm install -g @anthropic-ai/claude-code', display: 'npm install -g @anthropic-ai/claude-code' },
     'claude-exp': { auto: false, manual: 'Claude Agent SDK 由 MultiCC 内置；请升级 MultiCC 来更新 SDK' },
-    codex: { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
-    'codex-exp': { auto: true, command: 'npm install -g @openai/codex', display: 'npm install -g @openai/codex' },
+    codex: { auto: true, command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
+    'codex-exp': { auto: true, command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
     opencode: { auto: true, command: 'npm install -g opencode-ai', display: 'npm install -g opencode-ai' },
     qoder: { auto: true, command: 'curl -fsSL https://qoder.cn/install | bash', display: 'curl -fsSL https://qoder.cn/install | bash' },
     zcode: { auto: false, manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)' },
@@ -466,7 +466,7 @@ test('install transitions running -> done via a fake spawn that exits 0 and re-c
   assert.equal(res.statusCode, 202);
   assert.equal(res.body.ok, true);
   assert.equal(res.body.cli, 'codex');
-  assert.equal(res.body.command, 'npm install -g @openai/codex');
+  assert.equal(res.body.command, 'curl -fsSL https://chatgpt.com/codex/install.sh | sh');
   const jobId = res.body.jobId;
   // running before exit, stdout 已被环形缓冲收录
   res = await harness.invokeStatus(jobId);
@@ -1024,9 +1024,46 @@ test('upgrade of a Homebrew-owned binary uninstalls it before the npm install', 
   assert.equal(spawns[0], '-c brew uninstall --formula claude-code && npm install -g @anthropic-ai/claude-code');
   assert.deepEqual(seen, ['/opt/homebrew/bin/claude']);
 
-  // 不归 brew 管的照旧只跑 npm
+  // 不归 brew 管的照旧只跑安装命令本身。codex 走 curl 车道, 所以这里同时证明了
+  // 「非 npm 渠道不接管」(takeoverCommand 的门槛是 isNpmGlobalInstall)。
   const plain = await harness.invokeUpgrade('codex');
-  assert.equal(plain.body.command, 'npm install -g @openai/codex');
+  assert.equal(plain.body.command, 'curl -fsSL https://chatgpt.com/codex/install.sh | sh');
+});
+
+// 官方安装脚本里有两个交互 prompt(卸掉旧 npm 版 / 现在启动 codex 吗)。无 TTY 时
+// prompt_yes_no 恰好默认答「否」, 但那是巧合; 显式注入 CODEX_NON_INTERACTIVE 才是
+// 契约 —— 尤其第二个若答「是」会拉起 codex TUI, 直接吊死 install job。
+test('codex install job declares non-interactive env; npm lanes are untouched', async () => {
+  const calls = [];
+  const fakeSpawn = (cmd, args, opts) => {
+    const ee = new EventEmitter();
+    ee.stdout = new EventEmitter();
+    ee.stderr = new EventEmitter();
+    ee.kill = () => {};
+    // args 形如 ['-c', '<shell command>'], 取第二个才是真正跑的那条命令
+    calls.push({ cmd, command: args[1], env: (opts && opts.env) || {} });
+    return ee;
+  };
+  const harness = createHarness({ spawnProcess: fakeSpawn });
+
+  await harness.invokeUpgrade('codex');
+  // codex-exp 与 codex 派生同一个二进制、跑同一条命令: 必须仍被判成同一个安装目标,
+  // 否则两条 curl 会同时抢安装脚本的 install.lock 与 current 软链。换成 curl 之后
+  // installTargetKey(逐字符比 command)依然成立, 这条就是它的守卫。
+  const twin = await harness.invokeUpgrade('codex-exp');
+  assert.equal(twin.statusCode, 409);
+  assert.equal(twin.body.running, true);
+
+  const claude = await harness.invokeUpgrade('claude');
+  assert.equal(claude.statusCode, 202);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].cmd, 'bash');
+  assert.match(calls[0].command, /chatgpt\.com\/codex\/install\.sh/);
+  assert.equal(calls[0].env.CODEX_NON_INTERACTIVE, '1');
+  // npm 车道不该被这层 injection 波及
+  assert.equal(calls[1].env.CODEX_NON_INTERACTIVE, undefined);
+  assert.equal(calls[1].command, 'npm install -g @anthropic-ai/claude-code');
 });
 
 test('homebrew owner detection follows the real path and refuses unsafe names', () => {

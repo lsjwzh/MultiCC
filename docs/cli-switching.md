@@ -12,8 +12,8 @@ This is MultiCC's defining feature, so it is worth being precise about what it d
 |---|---|---|---|
 | Claude Code | `claude` | yes | `npm install -g @anthropic-ai/claude-code` |
 | Claude Agent SDK | `claude-exp` | yes — shares the Claude Messages provider pool | bundled with MultiCC; upgrade MultiCC to update the SDK |
-| OpenAI Codex | `codex` | yes | `npm install -g @openai/codex` |
-| Codex Exp (app-server) | `codex-exp` | yes — shares the Codex Responses provider pool | `npm install -g @openai/codex` |
+| OpenAI Codex | `codex` | yes | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` |
+| Codex Exp (app-server) | `codex-exp` | yes — shares the Codex Responses provider pool | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` |
 | OpenCode | `opencode` | yes | `npm install -g opencode-ai` |
 | ZCode (GLM) | `zcode` | yes | manual — install the ZCode desktop app from <https://zcode.z.ai> (its bundled CLI is what MultiCC drives) |
 | Kimi Code (Moonshot) | `kimi` | yes — OpenAI-format providers only (`KIMI_API_KEY`/`KIMI_BASE_URL` injection) | `npm install -g @moonshot-ai/kimi-code` |
