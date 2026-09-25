@@ -560,6 +560,7 @@ function parseDart() {
     classify: mapOf('classifyLetterStatus'),
     sessionStatuses: setOf('sessionStatuses'),
     taskStatuses: setOf('taskStatuses'),
+    openRunStates: setOf('openRunStates'),
     ringTints,
   };
 }
@@ -592,6 +593,93 @@ test('Flutter mirrors the web registry exactly', () => {
     W: SP.CLASSIFY_LETTER_STATUS.W, B: SP.CLASSIFY_LETTER_STATUS.B,
     E: SP.CLASSIFY_LETTER_STATUS.E, P: SP.CLASSIFY_LETTER_STATUS.P,
   }, 'classify table differs between web and app');
+});
+
+// ── 8b. 「忙」与「还开着的 run」：两端各自只有一处判定 ────────────────────────
+//
+// 这两个问题以前在每个消费者那里各写一遍集合：Dart 三份
+// {'running','thinking','editing'}、服务端两份 ['queued','running','waiting',
+// 'background']、App 的 ⏹ 又是第三份 `runState == 'running' || 'waiting'`。手抄的
+// 集合就是「排队中 / 等后台任务」的任务在 App 上停不掉、而在 Web 上却能被合并的原因。
+
+test('isBusyStatus is the registry mirror of the server workspace-busy predicate', () => {
+  const { RUNNING_STATUSES, SESSION_STATUSES, isRunningStatus } = require('../src/session/state-transition.js');
+  for (const status of SESSION_STATUSES) {
+    assert.equal(SP.isBusyStatus(status), isRunningStatus(status),
+      `the busy answer for session status ${status} differs from isRunningStatus`);
+  }
+  // background 是「等别人派出去的活」，两端都不是忙：本进程没有在推进这一轮。
+  // 注册表给它的词也不是「执行中」。
+  assert.equal(SP.isBusyStatus('background'), false);
+  assert.equal(isRunningStatus('background'), false);
+  assert.ok(!RUNNING_STATUSES.has('background'));
+  // 别名表刻意更宽：registry 认历史词，服务端的活状态表不认，这是两件事。
+  for (const alias of ['working', 'processing', 'assessing', 'busy', 'claimed']) {
+    assert.equal(SP.isBusyStatus(alias), true, `${alias} is a legacy alias of running`);
+    assert.ok(!SESSION_STATUSES.has(alias), `${alias} must not be a live server status`);
+  }
+  assert.equal(SP.isBusyStatus('waiting'), false);
+  assert.equal(SP.isBusyStatus('idle'), false);
+  assert.equal(SP.isBusyStatus(null), false);
+  assert.equal(SP.isBusyStatus('nonsense'), false);
+});
+
+test('canStopRunState is the one open-run list, server to both UIs', () => {
+  const { OPEN_RUN_STATES, isOpenRunState } = require('../src/classify/vocab.js');
+  assert.deepEqual([...SP.OPEN_RUN_STATES], [...OPEN_RUN_STATES], 'the web open-run list drifted');
+  const dart = parseDart();
+  assert.deepEqual(dart.openRunStates, [...OPEN_RUN_STATES],
+    'the Dart open-run set drifted from src/classify/vocab.js');
+  for (const state of ['queued', 'running', 'waiting', 'background']) {
+    assert.equal(SP.canStopRunState(state), true, `${state} is an open run`);
+    assert.equal(isOpenRunState(state), true);
+  }
+  for (const state of ['succeeded', 'error', 'idle', 'cancelled', 'blocked', 'done', 'archived', '']) {
+    assert.equal(SP.canStopRunState(state), false, `${state} is not an open run`);
+  }
+  // Dart 端必须是同一个集合上的判断，不是另一份手抄。
+  const dartSrc = read('app/lib/utils/status_presentation.dart');
+  assert.match(
+    dartSrc,
+    /bool canStopRunState\(Object\? raw\) =>\n\s+openRunStates\.contains\(coerceStatus\(StatusDomain\.task, raw\)\);/,
+    'the Dart stop predicate must read openRunStates',
+  );
+  assert.match(
+    dartSrc,
+    /bool isBusyStatus\(Object\? raw\) =>\n\s+coerceStatus\(StatusDomain\.session, raw\) == CanonicalStatus\.running;/,
+    'the Dart busy predicate must go through coerceStatus, not a hand-kept set',
+  );
+});
+
+test('no surface keeps a hand copy of either set', () => {
+  // App：三处手抄的 {'running','thinking','editing'} 已全部改问 registry。
+  for (const file of [
+    'app/lib/providers/session_manager.dart',
+    'app/lib/services/dashboard_workspace_store.dart',
+    'app/lib/widgets/directory_card.dart',
+  ]) {
+    const src = read(file);
+    assert.doesNotMatch(src, /'running',\s*'thinking',\s*'editing'/,
+      `${file} still lists the busy statuses by hand`);
+    assert.ok(src.includes('utils/status_presentation.dart'), `${file} must import the registry`);
+    assert.match(src, /isBusyStatus\(/, `${file} must ask the registry`);
+  }
+  // App 的 ⏹：曾经是 runState == 'running' || 'waiting'，于是 queued / background
+  // 的任务显示「执行中」却停不掉。
+  const board = read('app/lib/widgets/task_board_view.dart');
+  assert.match(board, /final canStop = canStopRunState\(task\.runState\);/);
+  assert.doesNotMatch(board, /runState == 'waiting'/);
+  // Web：任务板的合并资格问 registry，不再自带那四条。
+  const web = read('public/task-board-ui.js');
+  assert.match(web, /statusRegistry\(\)\?\.canStopRunState\?\.\(task\.runState\) === true/);
+  assert.doesNotMatch(web, /'running',\s*'queued',\s*'waiting',\s*'background'/);
+  // 服务端两个守卫读 vocab 的同一个函数。
+  for (const file of ['src/task-board/merge-runtime.js', 'src/task-board/lifecycle-host.js']) {
+    const src = read(file);
+    assert.match(src, /require\('\.\.\/classify\/vocab'\)/);
+    assert.match(src, /isOpenRunState\(/, `${file} must read the shared open-run list`);
+    assert.doesNotMatch(src, /'queued', 'running', 'waiting', 'background'/);
+  }
 });
 
 test('the Air word column is the one source for every Air surface', () => {

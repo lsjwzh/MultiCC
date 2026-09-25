@@ -103,6 +103,9 @@ void main() {
         'running': SessionStatus(status: 'running'),
         'editing': SessionStatus(status: 'editing'),
         'idle': SessionStatus(status: 'idle'),
+        // A parked turn (waiting on a background task, classify B) is not this
+        // process executing anything, so it is neither waiting nor running.
+        'parked': SessionStatus(status: 'background'),
       },
       nextPendingNotes: const {'waiting': 2},
       nextEvents: const [
@@ -114,6 +117,8 @@ void main() {
     expect(observed, hasLength(1));
     expect(snapshot.waitingSessionIds, {'waiting'});
     expect(snapshot.runningSessionIds, {'running', 'editing'});
+    expect(snapshot.runningSessionIds, isNot(contains('parked')),
+        reason: 'a parked background turn is not an active session');
     expect(snapshot.pendingNotes['waiting'], 2);
     expect(
       () => snapshot.statuses['new'] = const SessionStatus(status: 'idle'),

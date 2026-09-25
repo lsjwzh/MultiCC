@@ -506,7 +506,16 @@ function createTaskBoardRuntime(deps) {
     )).at(-1) || null;
   }
 
-  function exactTaskRunTarget(taskId, knownRuns = null) {
+  // The one "is there a question waiting on this run" validator. Every other
+  // reader of pendingUserInput treats `resolved === true` as "no question"
+  // (publicPendingQuestion below, session-work/host.js, task-shell/host.js,
+  // dispatch/targeting.js, classify/vocab.js applyUserInputEvidence); leaving it
+  // out here was how an already-answered question still validated as the run's
+  // answer target. `allowResolved` exists for the answer route alone: a replay
+  // of the answer that resolved it (or a crash-resume of a reserved receipt)
+  // must still find its run, and that path re-verifies the durable receipt
+  // before it does anything.
+  function exactTaskRunTarget(taskId, knownRuns = null, { allowResolved = false } = {}) {
     if (!taskRuns) return { ok: false, code: 'task_run_unavailable' };
     let run;
     try { run = latestOpenTaskRun(taskId, knownRuns); }
@@ -535,6 +544,9 @@ function createTaskBoardRuntime(deps) {
     }
     const pending = record.taskState?.pendingUserInput || null;
     if (!pending || String(pending.taskId || '') !== String(taskId)) {
+      return { ok: false, code: 'no_pending_question' };
+    }
+    if (pending.resolved === true && !allowResolved) {
       return { ok: false, code: 'no_pending_question' };
     }
     return { ok: true, run, slotId, leaseEpoch, record, pending };
@@ -1820,7 +1832,10 @@ function createTaskBoardRuntime(deps) {
     if (!requestId) return res.status(400).json({ error: 'request_id_required' });
     if (!text) return res.status(400).json({ error: 'empty_text' });
     if (!clientMsgId) return res.status(400).json({ error: 'client_msg_id_required' });
-    const target = exactTaskRunTarget(taskId);
+    // allowResolved: a replay of the answer that resolved this question (and a
+    // crash-resume of a reserved receipt) is answered below from the durable
+    // receipt, never by dispatching a second answer.
+    const target = exactTaskRunTarget(taskId, null, { allowResolved: true });
     if (!target.ok) return res.status(target.code === 'task_run_unavailable' ? 503 : 409)
       .json({ error: target.code });
     if (String(target.pending.requestId || '') !== requestId) {
@@ -1844,7 +1859,11 @@ function createTaskBoardRuntime(deps) {
         logger.log(`[multicc/taskboard] answer receipt read failed: ${error?.code || 'unknown'}`);
         return res.status(503).json({ error: 'task_run_answer_receipt_unavailable' });
       }
-      if (!receipt) return res.status(409).json({ error: 'answer_receipt_missing' });
+      // The question is answered: this is not a replay of the answer that resolved
+      // it (the receipt is keyed by clientMsgId + answerHash), so there is nothing
+      // left to answer. `no_pending_question` is the same code the validator uses;
+      // `answer_receipt_missing` named the durable store audit trail at the client.
+      if (!receipt) return res.status(409).json({ error: 'no_pending_question' });
       if (receipt.clientMsgId !== clientMsgId || receipt.answerHash !== answerHash) {
         return res.status(409).json({ error: 'idempotency_conflict' });
       }

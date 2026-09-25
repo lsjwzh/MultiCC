@@ -1,5 +1,6 @@
 'use strict';
 const { gitWorktreeMergeState, gitWorktreeRemove } = require('../git/service');
+const { isOpenRunState } = require('../classify/vocab');
 const { taskDirId } = require('./core');
 
 function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getState,
@@ -33,7 +34,11 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
       const dedicated = ids.includes(record.taskBoundTaskId);
       const selected = ids.includes(getShell().stateTarget(record.id).taskId);
       const current = ids.includes(record.taskState?.taskId) || ids.includes(getState(record.id)?._currentTaskId);
-      if ((dedicated || selected || current) && ['running', 'queued', 'waiting', 'background'].includes(getRunState(record.id))) {
+      // An open run blocks the delete: `background` too, because that turn is
+      // only idle while a job it started is still out there. Membership lives
+      // in src/classify/vocab.js (OPEN_RUN_STATES) — the same list the merge
+      // guard and both UIs read.
+      if ((dedicated || selected || current) && isOpenRunState(getRunState(record.id))) {
         throw Object.assign(new Error('task_busy'), { code: 'task_busy' });
       }
     }

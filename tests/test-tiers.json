@@ -3879,6 +3879,15 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-session-runtime-busy.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-session-triggers.js",
       "tier": "flow",
       "lane": "deterministic",

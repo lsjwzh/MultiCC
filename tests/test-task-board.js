@@ -1871,6 +1871,47 @@ test('TaskRun waiting questions project only safe fields and answers require the
   assert.equal(deliveries.at(-1).text, reservedText,
     'a reserved receipt retries the same client id after a crash before accepted');
   assert.equal(deliveries.at(-1).options.clientMsgId, reservedIdentity.clientMsgId);
+
+  // A resolved question is not a question. The run stops being an answer target
+  // the moment it is answered (`resolved === true`), which is exactly what every
+  // other reader of pendingUserInput already assumed — so the DTO stops
+  // projecting it and no client can answer it a second time.
+  records.get('task-slot-1').taskState.pendingUserInput = {
+    ...records.get('task-slot-1').taskState.pendingUserInput,
+    requestId: 'usrq-answered-elsewhere', resolved: true,
+  };
+  const answeredDetail = response();
+  routes.get('GET /api/task-board/tasks/:taskId/messages')(
+    { params: { taskId: task.id } }, answeredDetail,
+  );
+  assert.equal(answeredDetail.body.runs[0].pendingQuestion, undefined,
+    'a resolved question is never projected again');
+
+  // Resolved with no durable receipt at all (the turn was answered from the chat
+  // surface, not through this route): nothing here can be a replay, and there is
+  // nothing left to answer — not a conflict, and not a fresh dispatch.
+  const deliveriesBeforeAnswered = deliveries.length;
+  const answeredElsewhere = response();
+  routes.get('POST /api/task-board/tasks/:taskId/answer')({
+    params: { taskId: task.id },
+    body: { requestId: 'usrq-answered-elsewhere', text: '生产', clientMsgId: 'answer-elsewhere' },
+  }, answeredElsewhere);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(answeredElsewhere.code, 409);
+  assert.equal(answeredElsewhere.body.error, 'no_pending_question');
+  assert.equal(deliveries.length, deliveriesBeforeAnswered);
+
+  // Precedence, written down: the request id is matched before the resolved flag
+  // is consulted, so a stale request id is a mismatch even on a resolved question.
+  const resolvedMismatch = response();
+  routes.get('POST /api/task-board/tasks/:taskId/answer')({
+    params: { taskId: task.id },
+    body: { requestId: 'usrq-safe-1', text: '生产', clientMsgId: 'answer-elsewhere' },
+  }, resolvedMismatch);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(resolvedMismatch.code, 409);
+  assert.equal(resolvedMismatch.body.error, 'pending_request_mismatch');
+  assert.equal(deliveries.length, deliveriesBeforeAnswered);
 });
 
 test('explicit TaskBoard targets are rejected before any dispatch or TaskRun', async t => {

@@ -5,6 +5,7 @@ import '../models/message.dart';
 import '../services/workspace_service.dart';
 import '../theme.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/status_presentation.dart';
 import 'git_status_row.dart';
 import 'project_stat_pill.dart';
 import 'running_border.dart';
@@ -53,7 +54,6 @@ class DirectoryCardViewModel {
       statuses,
       now ?? DateTime.now(),
     );
-    const busy = {'running', 'thinking', 'editing'};
     return DirectoryCardViewModel(
       id: directory.id,
       name: directory.name,
@@ -61,7 +61,9 @@ class DirectoryCardViewModel {
       totalSessions: directory.totalSessions,
       activeSessions: scopedSessions.where((session) => session.active).length,
       pushState: directory.pushState,
-      running: statuses.values.any((status) => busy.contains(status.status)),
+      // 「忙」只有一处定义（registry 的 isBusyStatus）：thinking/editing 是
+      // running 的别名，background 不算忙。
+      running: statuses.values.any((status) => isBusyStatus(status.status)),
       recentEventLabels: List.unmodifiable(
         events
             .toList(growable: false)

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../utils/status_presentation.dart';
 import 'settings_service.dart';
 import 'workspace_service.dart';
 
@@ -48,13 +49,12 @@ class DirectoryWorkspaceSnapshot {
       .map((entry) => entry.key)
       .toSet();
 
-  Set<String> get runningSessionIds {
-    const busy = {'running', 'thinking', 'editing'};
-    return statuses.entries
-        .where((entry) => busy.contains(entry.value.status))
-        .map((entry) => entry.key)
-        .toSet();
-  }
+  // 「忙」只有一处定义：registry 的 isBusyStatus（镜像服务端
+  // src/session/state-transition.js isRunningStatus）。别在这里再列一次状态名。
+  Set<String> get runningSessionIds => statuses.entries
+      .where((entry) => isBusyStatus(entry.value.status))
+      .map((entry) => entry.key)
+      .toSet();
 }
 
 class _WorkspaceEntry {
