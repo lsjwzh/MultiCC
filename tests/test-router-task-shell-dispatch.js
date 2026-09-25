@@ -56,6 +56,11 @@ function integrated(t) {
     createTask: input => f.runtime.createStandalone(input),
     operations: orchestration.operations,
     completeDispatch: (...args) => orchestration.operations.completeDispatch(...args),
+    // Production polling timers are unref'ed because the server owns the
+    // process lifecycle. This isolated fixture has no server handle, so keep
+    // its awaited timer referenced and make cancellation unwrap it.
+    setTimeoutFn: (callback, delay) => ({ timer: setTimeout(callback, delay) }),
+    clearTimeoutFn: handle => clearTimeout(handle.timer),
   });
   const call = (args, turn = 'turn-1', tool = 'dispatch_master') => router.execute(
     router.issueContext({ sessionId: 'a', turnId: turn }), tool, args);
