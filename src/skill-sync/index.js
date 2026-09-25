@@ -95,6 +95,17 @@ function createSkillSyncRuntime(rawDeps) {
     catch (_) { return null; }
   }
 
+  function readFileSlice(file, start, length) {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buffer = Buffer.alloc(length);
+      const read = fs.readSync(fd, buffer, 0, length, start);
+      return buffer.subarray(0, read).toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
   function isSkillDir(dir) {
     try {
       return fs.statSync(dir).isDirectory() && fs.existsSync(path.join(dir, 'SKILL.md'));
@@ -213,6 +224,19 @@ function createSkillSyncRuntime(rawDeps) {
         try {
           for (const file of fs.readdirSync(path.join(destination, 'bin'))) {
             fs.chmodSync(path.join(destination, 'bin', file), 0o755);
+          }
+        } catch (_) {}
+        // scripts/ holds the entry point SKILL.md tells the model to run
+        // directly (`mcu.sh backend`), so a shebang must arrive executable even
+        // when the source lost its exec bit (a 100644 commit, a zip without
+        // modes) — cpSync only carries over whatever mode the source has.
+        // Data files next to them (scroll.swift, *.md) keep their own mode.
+        try {
+          for (const file of fs.readdirSync(path.join(destination, 'scripts'))) {
+            const script = path.join(destination, 'scripts', file);
+            try {
+              if (readFileSlice(script, 0, 2) === '#!') fs.chmodSync(script, 0o755);
+            } catch (_) {}
           }
         } catch (_) {}
         installed++;
