@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { NEVER_SYNCED_STATUS, createSkillSyncRuntime } = require('../src/skill-sync');
+const { NEVER_SYNCED_STATUS, RETIRED_BUNDLED_SKILLS, createSkillSyncRuntime } = require('../src/skill-sync');
 const { mountSkillSyncRoutes } = require('../src/routes/skill-sync');
 
 function createApp() {
@@ -179,6 +179,41 @@ test('bundled install never clobbers a same-named user skill without a version m
   assert.match(fs.readFileSync(path.join(destination, 'SKILL.md'), 'utf8'), /user content/);
   assert.ok(h.state.warnings.some(w => w.includes('user content not overwritten')),
     'the conflict is surfaced as a warning');
+});
+
+test('a renamed bundled skill is retired only where this installer owns it', t => {
+  const h = createHarness(t);
+  const [claude, codex, hermes] = h.providers;
+  for (const p of h.providers) fs.mkdirSync(p.dir, { recursive: true });
+  const shared = makeSkill(h.agentsSkillsDir, 'computer-use', '1');
+  fs.mkdirSync(path.join(shared, '.converted/codex'), { recursive: true });
+  fs.symlinkSync(path.join(shared, '.converted/codex'), path.join(codex.dir, 'computer-use'));
+  fs.symlinkSync(shared, path.join(hermes.dir, 'computer-use'));
+  // A hand-cloned upstream under the same name, and an unrelated link: never touched.
+  makeSkill(claude.dir, 'computer-use');
+  const elsewhere = makeSkill(h.tempDir, 'elsewhere');
+  fs.mkdirSync(path.join(h.tempDir, 'other'));
+  fs.symlinkSync(elsewhere, path.join(h.tempDir, 'other', 'computer-use'));
+
+  assert.equal(h.runtime.retireBundledSkills(), 1);
+  assert.ok(!fs.existsSync(shared));
+  assert.throws(() => fs.lstatSync(path.join(codex.dir, 'computer-use')), /ENOENT/);
+  assert.throws(() => fs.lstatSync(path.join(hermes.dir, 'computer-use')), /ENOENT/);
+  assert.ok(fs.existsSync(path.join(claude.dir, 'computer-use/SKILL.md')), 'user clone survives');
+  assert.equal(h.runtime.retireBundledSkills(), 0, 'idempotent');
+});
+
+test('an unmarked user skill under a retired name is kept', t => {
+  const h = createHarness(t);
+  makeSkill(h.agentsSkillsDir, 'computer-use');
+  assert.equal(h.runtime.retireBundledSkills(), 0);
+  assert.ok(fs.existsSync(path.join(h.agentsSkillsDir, 'computer-use/SKILL.md')));
+});
+
+test('no bundled skill ships under a retired name', () => {
+  const bundled = fs.readdirSync(path.join(__dirname, '../skills'));
+  for (const name of RETIRED_BUNDLED_SKILLS) assert.ok(!bundled.includes(name), name);
+  assert.ok(bundled.includes('multicc-computer-use'));
 });
 
 test('real Codex and Hermes conversion copies the shared registration rule', t => {

@@ -14,9 +14,16 @@
 #   ~/.multicc/agent/                      0700: agent.sock, config.json, agent.log
 #   ~/.multicc/bin/multicc-agent           client symlink for scripts and skills
 #
-# macOS keys an ad-hoc signed program's grants to its code hash, so rebuilding
-# silently revokes them. The binary is therefore rebuilt ONLY when the Swift
-# source changes (tracked by a stamp), never on a plain reinstall.
+# macOS stores each grant together with the program's designated requirement.
+# Ad-hoc signed, that requirement is the exact code hash: every rebuild revokes
+# the grants, and flipping the switch off/on in System Settings does NOT help
+# (the stored hash stays stale; the entry must be removed and re-added). So:
+#   - sign with a real certificate when the keychain has one (Developer ID
+#     Application, then Apple Development, or MULTICC_AGENT_SIGN_IDENTITY);
+#     the requirement is then "this identifier + this team" and survives
+#     rebuilds. MULTICC_AGENT_SIGN_IDENTITY=- forces ad-hoc.
+#   - rebuild ONLY when the Swift source changes (tracked by a stamp), and
+#     re-sign without rebuilding when only the chosen identity changed.
 set -eu
 
 LABEL=com.multicc.agent
@@ -59,17 +66,42 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Prints the SHA-1 of the identity to sign with, or "-" for ad-hoc.
+signing_identity() {
+  if [ -n "${MULTICC_AGENT_SIGN_IDENTITY:-}" ]; then echo "$MULTICC_AGENT_SIGN_IDENTITY"; return; fi
+  ids="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+  for kind in "Developer ID Application" "Apple Development"; do
+    hash="$(printf '%s\n' "$ids" | awk -v k="\"$kind:" 'index($0, k) { print $2; exit }')"
+    [ -n "$hash" ] && { echo "$hash"; return; }
+  done
+  echo -
+}
+
 [ -f "$SRC" ] || die "missing $SRC"
 SUM="$(shasum -a 256 "$SRC" | cut -d' ' -f1)"
 STAMP="$APP/Contents/Resources/source.sha256"
+SIGNER_STAMP="$APP/Contents/Resources/signer"
+SIGNER="$(signing_identity)"
+REBUILT=""
 if [ -x "$BIN" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SUM" ]; then
-  echo "multicc-agent: binary up to date (grants preserved)"
+  echo "multicc-agent: binary up to date"
 else
-  [ -x "$BIN" ] && echo "multicc-agent: source changed — rebuilding; macOS will ask for the grants again"
+  REBUILT=1
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   TMP="$(mktemp "$APP/Contents/MacOS/.build.XXXXXX")"
   trap 'rm -f "$TMP"' EXIT
-  xcrun swiftc -O -o "$TMP" "$SRC" || die "swift build failed (need Xcode command line tools)"
+  # Deployment target macOS 11 (Big Sur) is the floor; newer systems get newer
+  # code paths chosen at run time (see "Platform tiers" in the source). Newer
+  # frameworks are weak-linked so the one binary still launches on 11, and only
+  # when this SDK has them (an older SDK compiles those blocks out).
+  SDK="$(xcrun --show-sdk-path 2>/dev/null || true)"
+  WEAK=""
+  for fw in ScreenCaptureKit; do
+    [ -d "$SDK/System/Library/Frameworks/$fw.framework" ] && WEAK="$WEAK -Xlinker -weak_framework -Xlinker $fw"
+  done
+  # shellcheck disable=SC2086
+  xcrun swiftc -O -target "$(uname -m)-apple-macos11.0" $WEAK -o "$TMP" "$SRC" \
+    || die "swift build failed (need Xcode command line tools)"
   mv -f "$TMP" "$BIN"
   trap - EXIT
   cat > "$APP/Contents/Info.plist" <<INFO
@@ -83,12 +115,33 @@ else
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1</string>
   <key>LSUIElement</key><true/>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
 </dict>
 </plist>
 INFO
-  codesign --force --sign - --identifier "$LABEL" "$APP" >/dev/null 2>&1 || die "codesign failed"
   printf '%s\n' "$SUM" > "$STAMP"
 fi
+
+if [ -n "$REBUILT" ] || [ "$(cat "$SIGNER_STAMP" 2>/dev/null)" != "$SIGNER" ]; then
+  OLD_SIGNER="$(cat "$SIGNER_STAMP" 2>/dev/null || true)"
+  # Installs from before the signer stamp existed were always ad-hoc.
+  if [ -z "$OLD_SIGNER" ] && [ -z "$REBUILT" ]; then OLD_SIGNER=-; fi
+  # Both stamps live in Resources, which the signature seals: write, then sign.
+  printf '%s\n' "$SIGNER" > "$SIGNER_STAMP"
+  if ! codesign --force --sign "$SIGNER" --identifier "$LABEL" --timestamp=none "$APP" >/dev/null 2>&1; then
+    rm -f "$SIGNER_STAMP"
+    die "codesign failed (identity $SIGNER)"
+  fi
+  codesign --verify --strict "$APP" 2>/dev/null || die "signature does not verify"
+  if [ "$SIGNER" = - ]; then
+    if [ -f "$PLIST" ]; then
+      echo "multicc-agent: ad-hoc signed — grants are tied to this exact build; remove and re-add MultiCC Agent in System Settings"
+    fi
+  elif [ -n "$OLD_SIGNER" ] && [ "$OLD_SIGNER" != "$SIGNER" ]; then
+    echo "multicc-agent: signing identity changed — remove and re-add MultiCC Agent in System Settings once; later rebuilds keep the grants"
+  fi
+fi
+echo "multicc-agent: requirement $(codesign -dr - "$APP" 2>/dev/null | sed -n 's/^#* *designated => //p')"
 
 mkdir -p "$DIR" "$(dirname "$LINK")" "$(dirname "$PLIST")"
 chmod 0700 "$DIR"
@@ -135,5 +188,12 @@ PLIST_EOF
 plutil -lint "$PLIST" >/dev/null || die "generated plist failed validation"
 
 lc bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-lc bootstrap "$DOMAIN" "$PLIST" || die "launchctl bootstrap failed"
+# bootout returns before the old job is fully gone; bootstrap then fails with
+# "5: Input/output error". Give it a few seconds.
+n=0
+until lc bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; do
+  n=$((n + 1))
+  [ "$n" -lt 10 ] || die "launchctl bootstrap failed"
+  sleep 0.5
+done
 echo "multicc-agent: installed $LABEL"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Computer-use init — run once at the start of each task.
+# multicc-computer-use legacy init — only needed when `mcu.sh backend` is not "agent".
 # Sets up three things: scale factor, scroll tool, snap helper.
 # Safe to re-run; only recompiles scroll tool if source changed.
 
@@ -8,7 +8,7 @@ for required in screencapture sips osascript python3 swiftc cliclick; do
     command -v "$required" >/dev/null || { echo "缺少依赖：$required" >&2; exit 1; }
 done
 umask 077
-CU_DIR=$(mktemp -d "${TMPDIR:-/tmp}/computer-use.XXXXXX")
+CU_DIR=$(mktemp -d "${TMPDIR:-/tmp}/multicc-computer-use.XXXXXX")
 echo "本任务工具目录：$CU_DIR"
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
