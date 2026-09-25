@@ -27,7 +27,9 @@ const codex = createCodexAdapter({
   isTransportDisconnect: message => message === 'transport-disconnect',
 });
 const codexExp = createCodexExpAdapter({ codexCmd: 'codex' });
-const opencode = createOpencodeAdapter({ cmd: 'opencode' });
+// The JSON `run` lane stays reachable via MULTICC_OPENCODE_LEGACY_JSON; the
+// default ACP lane is covered by tests/test-acp-adapter.js.
+const opencode = createOpencodeAdapter({ cmd: 'opencode', env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } });
 const zcode = createZcodeAdapter({ cmd: 'zcode' });
 const qoder = createQoderAdapter({ cmd: 'qoderclicn' });
 const kimi = createKimiAdapter({ cmd: 'kimi' });
@@ -267,6 +269,7 @@ const userInputReminder = 'blocking question -> wait_for_user_answer';
 const opencodeWithReminder = createOpencodeAdapter({
   cmd: 'opencode',
   userInputReminder,
+  env: { MULTICC_OPENCODE_LEGACY_JSON: '1' },
 });
 assert.equal(
   opencodeWithReminder.buildInvocation(opencodeEnvelope).payload,

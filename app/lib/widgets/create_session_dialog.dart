@@ -224,6 +224,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     // Vendor-auth CLIs with a static catalog (no provider pool, no fetch API).
     if (_pickedCli == SessionCli.codebuddy) return kCodebuddyModelOptions;
     if (_pickedCli == SessionCli.dsh) return kDshModelOptions;
+    if (_pickedCli == SessionCli.gemini) return kGeminiModelOptions;
+    if (_pickedCli == SessionCli.grok) return kGrokModelOptions;
     Map<String, dynamic>? prov;
     final providerId = _effectiveProviderId;
     for (final p in _providers) {
@@ -797,6 +799,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                         ? 'WorkBuddy 模型或档位 ID'
                         : _pickedCli == SessionCli.dsh
                         ? 'DeepSeek 模型 ID'
+                        : _pickedCli == SessionCli.gemini
+                        ? 'Gemini 模型 ID'
+                        : _pickedCli == SessionCli.grok
+                        ? 'Grok 模型 ID'
                         : t('codexModelIdHint'),
                   ),
                   autofocus: true,

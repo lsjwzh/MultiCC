@@ -131,6 +131,21 @@ test('plain provider models and CLI fallback choices never retain a stale provid
   assert.equal(ai.modelChoiceLabel('', '', dsh), '默认（跟随 DSH 配置）');
   assert.deepEqual(ai.effortOptions('dsh'), []);
 
+  // gemini / grok ride the same ACP lane as opencode and manage their own
+  // vendor login, so their model list is a suggestion shortcut, not a whitelist
+  // (any id the account can reach is still accepted through 自定义…).
+  const gemini = state({ providers: [], defaults: {}, cli: 'gemini' });
+  assert.deepEqual(ai.buildModelChoices('', gemini),
+    ['', 'gemini-2.5-pro', 'gemini-2.5-flash', '__custom__']);
+  assert.equal(ai.modelChoiceLabel('', '', gemini), '默认（跟随 Gemini 配置）');
+  assert.deepEqual(ai.effortOptions('gemini'), []);
+
+  const grok = state({ providers: [], defaults: {}, cli: 'grok' });
+  assert.deepEqual(ai.buildModelChoices('', grok),
+    ['', 'grok-code-fast-1', 'grok-4', '__custom__']);
+  assert.equal(ai.modelChoiceLabel('', '', grok), '默认（跟随 Grok 配置）');
+  assert.deepEqual(ai.effortOptions('grok'), []);
+
   const zcode = state({ providers: [], defaults: {}, cli: 'zcode' });
   assert.deepEqual(ai.buildModelChoices('', zcode), ['', '__custom__']);
   assert.equal(ai.modelChoiceLabel('', '', zcode), '默认（跟随 ZCode 设置）');
@@ -152,11 +167,12 @@ test('plain provider models and CLI fallback choices never retain a stale provid
 test('vendor-managed CLIs stay providerless while ZCode exposes MultiCC providers', () => {
   const source = fs.readFileSync(path.join(ROOT, 'public', 'chat-ai-config.js'), 'utf8');
   const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
-  // qoder / codebuddy / dsh are all vendor-auth CLIs: no MultiCC provider pick.
-  assert.match(source, /const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh';/);
+  // qoder / codebuddy / dsh / gemini / grok are all vendor-auth CLIs: no MultiCC
+  // provider pick (gemini and grok log in with their own vendor credentials).
+  assert.match(source, /const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh' && cli !== 'gemini' && cli !== 'grok';/);
   assert.match(source, /ZCode 原生 \/ Coding Plan/);
   assert.match(page, /PROVIDERLESS_CLIS\.has\(_sessionCli\)/);
-  assert.match(page, /const PROVIDERLESS_CLIS = new Set\(\['qoder', 'codebuddy', 'dsh'\]\);/);
+  assert.match(page, /const PROVIDERLESS_CLIS = new Set\(\['qoder', 'codebuddy', 'dsh', 'gemini', 'grok'\]\);/);
   assert.doesNotMatch(page, /_sessionCli !== 'qoder' && _sessionCli !== 'zcode'/);
 });
 
@@ -370,7 +386,7 @@ test("subagent routing policy is one shared rule for chat and Air", () => {
   // Only Claude and Codex can send sub-agents down another line.
   assert.equal(ai.supportsSubagentCli("claude"), true);
   assert.equal(ai.supportsSubagentCli("codex"), true);
-  for (const cli of ["opencode", "zcode", "qoder", "codebuddy", "dsh", "kimi", "", null, undefined]) {
+  for (const cli of ["opencode", "zcode", "qoder", "codebuddy", "dsh", "gemini", "grok", "kimi", "", null, undefined]) {
     assert.equal(ai.supportsSubagentCli(cli), false, `${cli} cannot route sub-agents`);
     assert.equal(ai.resolveSubagent({ cli, providerId: "relay", model: "glm-5.2" }), null);
   }

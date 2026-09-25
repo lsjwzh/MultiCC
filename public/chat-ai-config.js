@@ -68,6 +68,10 @@
   ]);
   const CODEBUDDY_MODEL_OPTIONS = Object.freeze(['', ...CODEBUDDY_TIER_OPTIONS, ...CODEBUDDY_FALLBACK_MODELS]);
   const DSH_MODEL_OPTIONS = Object.freeze(['', 'deepseek-v4-flash', 'deepseek-v4-pro']);
+  // Gemini CLI / Grok Build model ids are free text; these are the current
+  // headline ids as suggestions only (the picker always offers 自定义/__custom__).
+  const GEMINI_MODEL_OPTIONS = Object.freeze(['', 'gemini-2.5-pro', 'gemini-2.5-flash']);
+  const GROK_MODEL_OPTIONS = Object.freeze(['', 'grok-code-fast-1', 'grok-4']);
   // Provider-less ZCode follows its native config/Coding Plan. Do not hardcode
   // a vendor/model pair here: the native provider may be Z.ai, BigModel, Start
   // Plan, Team Plan, or a user-defined provider.
@@ -322,6 +326,8 @@
         ...concrete.filter(model => !CODEBUDDY_TIER_OPTIONS.includes(model)), '__custom__'];
     }
     if (state && state.cli === 'dsh') return [...DSH_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'gemini') return [...GEMINI_MODEL_OPTIONS, '__custom__'];
+    if (state && state.cli === 'grok') return [...GROK_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'zcode') return [...ZCODE_MODEL_OPTIONS, '__custom__'];
     if (state && state.cli === 'opencode') {
       // No multicc-managed provider chosen: list the local opencode CLI's
@@ -474,6 +480,8 @@
       if (state && state.cli === 'qoder') return localized(state, 'aiConfigDefaultFollowQoder', '默认（跟随 Qoder CN 设置）');
       if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
       if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
+      if (state && state.cli === 'gemini') return localized(state, 'aiConfigDefaultFollowGemini', '默认（跟随 Gemini 配置）');
+      if (state && state.cli === 'grok') return localized(state, 'aiConfigDefaultFollowGrok', '默认（跟随 Grok 配置）');
       if (state && state.cli === 'zcode') return localized(state, 'aiConfigDefaultFollowZcode', '默认（跟随 ZCode 设置）');
       return translate(state, 'default');
     }
@@ -486,7 +494,7 @@
         'deep-model': localized(state, 'aiConfigTierDeep', 'deep（深度档）'),
       })[value] || (value === '__custom__' ? translate(state, 'custom') : value);
     }
-    if (state && state.cli === 'dsh') {
+    if (state && (state.cli === 'dsh' || state.cli === 'gemini' || state.cli === 'grok')) {
       return value === '__custom__' ? translate(state, 'custom') : value;
     }
     if (state && state.cli === 'qoder') {
@@ -724,13 +732,13 @@
     const document = documentOf(state);
     const cli = state.cli || 'claude';
     const choicesForEffort = effortOptions(cli);
-    const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh';
+    const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh' && cli !== 'gemini' && cli !== 'grok';
     return new Promise((resolve) => {
       ensureModalStyle(document);
       const { overlay, box, body, footer } = modalShell(document, 620);
       body.innerHTML = `
         <div style="font-size:15px;font-weight:600;margin-bottom:8px;">AI 配置（下一轮生效）</div>
-        <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
+        <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.5;margin-bottom:12px;">${supportsProvider ? 'Provider、' : ''}Model${choicesForEffort.length ? `、${effortLabel(cli)}` : ''} 会一起保存。${supportsProvider ? (cli === 'zcode' ? '选择 Provider 时使用 MultiCC 的三协议隔离配置；选择默认时跟随 ZCode 原生设置 / Coding Plan。' : '切换 Provider 后，Model 选项会按该 Provider 的可用模型联动更新。') : (cli === 'codebuddy' ? 'WorkBuddy 使用自身账号与厂商配置。' : cli === 'dsh' ? 'DSH 使用 DeepSeek 自身凭证（DEEPSEEK_API_KEY 或 dsh 内置 credentials）。' : cli === 'gemini' ? 'Gemini 使用 Google 自身凭证（gemini login 或 GEMINI_API_KEY）。' : cli === 'grok' ? 'Grok 使用 xAI 自身凭证（grok login 或 XAI_API_KEY）。' : 'Qoder CN 使用自身账号与厂商配置。')}</div>
         <div id="ai-provider-section">
           <label style="display:block;font-size:12px;color:var(--chat-muted, #8b949e);margin-bottom:5px;">Provider</label>
           <select id="ai-provider" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:12px;"></select>
@@ -1118,6 +1126,8 @@
     QODER_MODEL_OPTIONS,
     CODEBUDDY_MODEL_OPTIONS,
     DSH_MODEL_OPTIONS,
+    GEMINI_MODEL_OPTIONS,
+    GROK_MODEL_OPTIONS,
     defaultEffort,
     effortOptions,
     effortLabel,

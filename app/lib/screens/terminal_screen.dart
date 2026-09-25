@@ -357,6 +357,8 @@ Widget _cliBadge(SessionCli cli) {
     SessionCli.qoder => const Color(0xFFc25e1e),
     SessionCli.codebuddy => const Color(0xFF2a5fd8),
     SessionCli.dsh => const Color(0xFF2b44d6),
+    SessionCli.gemini => const Color(0xFF4285f4),
+    SessionCli.grok => const Color(0xFF8c8f96),
   };
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),

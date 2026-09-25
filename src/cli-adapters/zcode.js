@@ -59,7 +59,21 @@ function createZcodeAdapter({ cmd } = {}) {
       if (event.type === 'step_start') {
         decoded.push({ type: 'status', status: 'thinking' });
       } else if (event.type === 'text' && part.text) {
-        decoded.push({ type: 'assistant_text', text: part.text });
+        // delta=true：bridge 走 app-server 时 text 事件就是 token 级分片，必须原样
+        // 接着拼（否则宿主会按 `\n\n` 拼成分段垃圾）。legacy 路径一轮只有一条 text
+        // 事件，delta 与否等价。
+        decoded.push({ type: 'assistant_text', text: part.text, delta: true });
+      } else if (event.type === 'reasoning' && part.text) {
+        // 思考分片按「快照」下发（part.text 是累计全文）：宿主对同一 id 的 thinking
+        // 事件是覆盖式更新，只有 snapshot 才不会每片都新建一张 Thinking 卡片。
+        // 收尾那一条带 completed=true，用来关掉卡片（同 codex-exp 的写法）。
+        decoded.push({
+          type: 'thinking',
+          id: part.id || part.partID || `reasoning_${event.sessionID || 'current'}`,
+          text: part.text,
+          snapshot: true,
+          ...(part.completed === true ? { completed: true } : { delta: true }),
+        });
       } else if (event.type === 'tool_use' || event.type === 'tool_call') {
         const state = part.state || {};
         decoded.push({

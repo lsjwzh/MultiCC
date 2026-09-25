@@ -15,10 +15,16 @@ test('vendor-auth CLIs stay providerless while ZCode resolves both MultiCC provi
   assert.equal(providers.appTypeForCli('kimi'), null);
   assert.equal(providers.appTypeForCli('codebuddy'), null);
   assert.equal(providers.appTypeForCli('dsh'), null);
+  // gemini / grok ride the ACP lane and sign in with their own vendor account,
+  // so they expose no MultiCC pool either.
+  assert.equal(providers.appTypeForCli('gemini'), null);
+  assert.equal(providers.appTypeForCli('grok'), null);
   assert.equal(providers.appTypeForCli('zcode'), null);
   assert.deepEqual(providers.appTypesForCli('qoder'), []);
   assert.deepEqual(providers.appTypesForCli('codebuddy'), []);
   assert.deepEqual(providers.appTypesForCli('dsh'), []);
+  assert.deepEqual(providers.appTypesForCli('gemini'), []);
+  assert.deepEqual(providers.appTypesForCli('grok'), []);
   assert.deepEqual(providers.appTypesForCli('zcode'), ['claude', 'codex']);
 });
 
@@ -40,6 +46,22 @@ test('stale vendor provider ids cannot silently fall through to another account'
     providerName: null,
   });
   assert.deepEqual(providers.resolveSpawnEnv({ cli: 'dsh', provider: 'stale-provider' }), {
+    env: {},
+    skipDefaultModel: false,
+    aliasOnly: false,
+    providerModel: null,
+    providerModels: [],
+    providerName: null,
+  });
+  assert.deepEqual(providers.resolveSpawnEnv({ cli: 'gemini', provider: 'stale-provider' }), {
+    env: {},
+    skipDefaultModel: false,
+    aliasOnly: false,
+    providerModel: null,
+    providerModels: [],
+    providerName: null,
+  });
+  assert.deepEqual(providers.resolveSpawnEnv({ cli: 'grok', provider: 'stale-provider' }), {
     env: {},
     skipDefaultModel: false,
     aliasOnly: false,
