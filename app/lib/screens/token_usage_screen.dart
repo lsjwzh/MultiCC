@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../utils/format.dart';
 
 /// Token 用量统计 — 镜像网页 manage 页「全局配置」里的用量展示：按时间窗
 /// （今天 / 本周 / 本月 / 全部）显示各模型累计 token 消耗。只读，可强制刷新。
@@ -363,11 +364,10 @@ class _TokenUsageScreenState extends State<TokenUsageScreen> {
     );
   }
 
-  String _fmt(int n) {
-    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
-    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
-    return '$n';
-  }
+  /// 计费口径的 token 数：走 utils/format.dart 的 [formatTokenCount]（百万两位
+  /// 小数、千位一位、再小就是带千分位的原数）。原来这里给百万位只留一位小数，
+  /// 跟消息气泡里同一类数字（两位）不一致。
+  String _fmt(int n) => formatTokenCount(n);
 
   Widget _stat(String label, String value, Color valueColor) {
     return Column(

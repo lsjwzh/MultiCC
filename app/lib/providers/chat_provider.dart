@@ -8,6 +8,7 @@ import '../models/dispatch_queue.dart';
 import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../models/usage_readout.dart';
+import '../utils/format.dart';
 import '../models/vendor_quota.dart';
 import '../services/chat_debug_log.dart';
 import '../services/chat_service.dart';
@@ -2538,7 +2539,7 @@ class ChatProvider extends ChangeNotifier {
     }
     final ms = (msg['durationMs'] as num?)?.toInt();
     final turns = (msg['num_turns'] as num?)?.toInt();
-    if (ms != null) _turnDurationText = _fmtDuration(ms);
+    if (ms != null) _turnDurationText = formatDuration(ms);
     if (turns != null) _turnCount = turns;
 
     // Completion notification is NOT fired here: a `result` only means the
@@ -2719,15 +2720,6 @@ class ChatProvider extends ChangeNotifier {
   void _addSystemMsg(String text) {
     _messages.add(ChatMessage(role: MessageRole.system, content: text));
     notifyListeners();
-  }
-
-  /// Human-friendly duration: 820ms / 6.2s / 1m3s
-  static String _fmtDuration(int ms) {
-    if (ms < 1000) return '${ms}ms';
-    final s = ms / 1000;
-    if (s < 60) return '${s.toStringAsFixed(1)}s';
-    final m = (s / 60).floor();
-    return '${m}m${(s % 60).round()}s';
   }
 
   // ── Public actions ─────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import '../i18n.dart';
+import 'format.dart';
 
 /// 千分位 —— 对齐 web 的 `Number(n).toLocaleString()`（`12345` → `12,345`）。
 String _thousands(Object? n) {
@@ -12,11 +13,11 @@ String _thousands(Object? n) {
   return buf.toString();
 }
 
-/// MB，两位小数 —— web 里的 `mb()`。
-String _mb(Object? n) {
-  final v = (n as num?)?.toDouble() ?? 0;
-  return '${(v / 1048576).toStringAsFixed(2)} MB';
-}
+/// 字节数走全站唯一那份（format.dart 的 [formatBytes]；web 那侧的同一份在
+/// `public/shared/format.js`，chat-context-controls.js 的 `mb()` 用同一组选项）。
+/// 这一页原来是「固定说 MB、两位小数」，一个 6 KB 的转写会写成「0.01 MB」。
+String _mb(Object? n) =>
+    formatBytes(n as num?, unitDecimals: const {'MB': 2}, placeholder: '0 B');
 
 /// 把 `GET /api/sessions/:id/context-level` 的响应翻成一句系统消息
 /// （Web `chat-context-controls.js` 的 `showContextLevel`）。

@@ -1625,13 +1625,6 @@ function fileExt(name) {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
-function formatSize(bytes) {
-  if (bytes === null) return '';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 async function loadFiles(dirPath) {
   filesError.style.display = 'none';
   filesList.innerHTML = '<div style="padding:16px 12px; font-size:12px; color:#6e7681;">加载中…</div>';
@@ -1697,7 +1690,7 @@ function makeFileItem(name, isDir, fullPath, size, onDirClick) {
   if (!isDir && fullPath) {
     const sizeEl = document.createElement('span');
     sizeEl.className = 'fi-size';
-    sizeEl.textContent = formatSize(size);
+    sizeEl.textContent = FMT.formatBytes(size, { placeholder: '' });
 
     const actions = document.createElement('div');
     actions.className = 'fi-actions';
@@ -1801,7 +1794,7 @@ const MAX_UPLOAD_SIZE = 25 * 1024 * 1024; // 25 MB
 
 function uploadFile(file) {
   if (file.size > MAX_UPLOAD_SIZE) {
-    alert(`文件过大：${(file.size / 1024 / 1024).toFixed(1)} MB，上限 25 MB`);
+    alert(`文件过大：${FMT.formatBytes(file.size, { maxUnit: 'MB' })}，上限 25 MB`);
     return;
   }
   const reader = new FileReader();

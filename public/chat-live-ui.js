@@ -1,6 +1,13 @@
 (function attachMultiCCChatLiveUi(global) {
   'use strict';
 
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
+
   const errorModel = global.MultiCCErrorEnvelope
     || (typeof module === 'object' && module.exports ? require('./error-envelope') : null);
 
@@ -121,13 +128,10 @@
     return next;
   }
 
+  // 一段测出来的墙钟时间走全站唯一那份（shared/format.js）。原来这一份少一个空格
+  // （「1m3s」），跟对话记录里那份（「1m 3s」）同一个意思却长得不一样。
   function fmtDuration(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return '';
-    if (ms < 1000) return `${ms}ms`;
-    const seconds = ms / 1000;
-    if (seconds < 60) return `${seconds.toFixed(1)}s`;
-    const minutes = Math.floor(seconds / 60);
-    return `${minutes}m${Math.round(seconds % 60)}s`;
+    return FMT.formatDuration(ms);
   }
 
   function createLiveUi(options) {
@@ -257,10 +261,9 @@
     function buildUsageLine(usage, roleBreakdown) {
       const { main, sub } = splitUsageRoles(usage, roleBreakdown);
       if (!main && !sub) return null;
-      const number = value => Number(value || 0).toLocaleString('en-US');
-      const short = value => value > 1e6
-        ? `${(value / 1e6).toFixed(2)}M`
-        : value > 1e3 ? `${(value / 1e3).toFixed(1)}k` : number(value);
+      const number = value => FMT.groupedNumber(Number(value || 0));
+      // token 数的紧凑写法与用量面板同一份（shared/format.js）。
+      const short = value => FMT.formatTokenCount(value);
       const line = doc.createElement('div');
       line.className = 'msg-usage';
       const tokenLine = (key, fallback, part) => tt(key, fallback, {

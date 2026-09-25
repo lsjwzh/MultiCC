@@ -7,7 +7,12 @@
   const document = root.document;
   const model = root.MultiCCMemoryModel;
   const escapeHtml = model.escapeHtml;
-  const formatSize = model.formatSize;
+  // 字节数走全站唯一那份（shared/format.js）—— 与 memory-graph.js 同一处取舍：
+  // 没有大小画 –，不画 0 B。
+  const FMT = (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (root && root.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
+  const fileSize = bytes => FMT.formatBytes(bytes, { placeholder: '–' });
   // 文案走全局 t()（i18n.js 在 manage.html 里晚于本文件加载、在 Air 里是懒重放，所以
   // 一律在渲染/回执时取值，不在模块常量里冻结译文；取不到就退回 key）。
   const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
@@ -165,7 +170,7 @@
         <span>📄</span>
         <span class="mt-fname">${escapeHtml(f.name)}</span>
         <span class="mt-ftitle">${escapeHtml(f.title || '')}</span>
-        <span class="mt-tok"><span class="tokn">~${(f.tokens || 0).toLocaleString()}</span> tok · ${escapeHtml(formatSize(f.size))}</span>
+        <span class="mt-tok"><span class="tokn">~${(f.tokens || 0).toLocaleString()}</span> tok · ${escapeHtml(fileSize(f.size))}</span>
         <button class="mt-edit" data-edit="${escapeHtml(f.rel)}">${t('memoryFileEdit')}</button>
       </div>
       <code class="mt-fpath" data-copy="${escapeHtml(f.path)}" title="${t('memoryFilePathCopyHint')}">${escapeHtml(f.path)}</code>

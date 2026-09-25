@@ -20,6 +20,12 @@
   if (!root || !root.document) return;
   const document = root.document;
   const el = id => document.getElementById(id);
+  // 数字格式的唯一来源（shared/format.js，页面里先于本文件加载）。Node 侧的沙箱里
+  // 没有页面全局，也没有 require，所以三种取法都留着 —— 测试要么注入
+  // MultiCCFormat，要么让它落到 require 上。
+  const FMT = (typeof window !== 'undefined' && window.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
   const make = (tag, text, className) => {
     const value = document.createElement(tag);
     if (text != null) value.textContent = text;
@@ -75,13 +81,11 @@
   }
 
   // 时间是相对的：这一格是排查用的，「5 分钟前」比一个绝对时刻好读（旧页同样只给
-  // 相对量）。跟着 getLocale() 走，不需要为「秒/分钟/小时」新开 i18n key。
+  // 相对量）。走全站唯一那份（shared/format.js）—— 原来这里用 Intl.RelativeTimeFormat
+  // 自己拼，于是同一页上「多久以前」有两套词（这一格说「5分钟前」，别处说「5 分钟前」），
+  // 而且这一格只分到小时，一天前的推送会被说成一个很大的时数。
   function formatTime(ts) {
-    const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-    const relative = new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto' });
-    if (seconds < 60) return relative.format(-seconds, 'second');
-    if (seconds < 3600) return relative.format(-Math.floor(seconds / 60), 'minute');
-    return relative.format(-Math.floor(seconds / 3600), 'hour');
+    return FMT.formatRelativeTime(ts);
   }
 
   // 端点那格是 URL，用等宽字体（其它几格是短标签，普通字体就够）——类名按 id 定死，

@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../services/air_ops_service.dart';
 import '../../services/qr_encoder.dart';
 import '../../theme.dart';
+import '../../utils/format.dart';
 import 'air_ops_store.dart';
 
 // ── 版本行 ────────────────────────────────────────────────────────────────
@@ -62,11 +63,16 @@ String opsUptimeLabel(int ms) {
 
 // ── 安装包 ────────────────────────────────────────────────────────────────
 
-String opsPackageSize(int bytes) {
-  if (bytes <= 0) return '—';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).round()} KB';
-  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-}
+/// 安装包大小。字节数走全站唯一那份（utils/format.dart；web 那侧同一份定义在
+/// public/shared/format.js，air-ops.js 用同一组选项）。本页只保留自己的取舍：
+/// 0 字节的产物是「还没发布」而不是「0 B」，未知画 —，KB 取整（跟管理台那格报同一个
+/// 文件同一个数）。
+String opsPackageSize(int bytes) => formatBytes(
+      bytes,
+      unitDecimals: const {'KB': 0},
+      placeholder: '—',
+      zeroIsMissing: true,
+    );
 
 String opsPackageMtime(int ms) {
   if (ms <= 0) return '—';

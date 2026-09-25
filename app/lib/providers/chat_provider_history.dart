@@ -119,7 +119,7 @@ extension ChatHistoryLayer on ChatProvider {
       _turnUsage = m.usage;
       _contextTrace = m.contextTrace;
       // Round count is a result-frame fact and is not persisted; the timing is.
-      if (m.durationMs != null) _turnDurationText = ChatProvider._fmtDuration(m.durationMs!);
+      if (m.durationMs != null) _turnDurationText = formatDuration(m.durationMs!);
       break;
     }
   }

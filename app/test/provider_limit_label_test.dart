@@ -14,7 +14,10 @@ void main() {
 
   tearDown(() => I18n.switchLang('zh'));
 
-  final now = 1_000_000;
+  // A real epoch, not a small counter: the shared relative-time table (format.dart
+  // / shared/format.js) treats a stamp <= 0 as "no stamp", so a clock near 1970
+  // cannot express an hours-old reading. 2023-11-14T22:13:20Z.
+  final now = 1_700_000_000_000;
   Map<String, dynamic> provider(Map<String, dynamic> limit) =>
       {'id': 'p1', 'name': 'GLM', 'limit': limit};
 
@@ -107,6 +110,9 @@ void main() {
     expect(limitAgoText(now - 50 * 3_600_000, now), '2 天前');
     // future timestamps clamp to just-now
     expect(limitAgoText(now + 30_000, now), '刚刚');
+    // a stamp of 0 means "never fetched", not "1970" — the same rule the web copy
+    // in public/shared/format.js applies to the same table.
+    expect(limitAgoText(0, now), '');
 
     I18n.switchLang('en');
     expect(limitAgoText(now - 20_000, now), '20s ago');

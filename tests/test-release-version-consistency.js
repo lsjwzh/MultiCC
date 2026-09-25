@@ -93,16 +93,20 @@ test('core runner covers every selected path and expands declared variants', () 
   const plan = buildPlan(manifest, { node: 'node', flutter: 'flutter', root });
   // Re-audited: bb5601a2 registered tests/test-dom-helpers-escape.js as core
   // without moving these numbers off 297 (one deterministic Node unit test, no
-  // external side effects — safe for the release core tier), and this tranche's
+  // external side effects — safe for the release core tier), this tranche's
   // registration of tests/test-auto-route-notes.js adds one more of the same
-  // kind. 297 + 2 = 299.
-  assert.equal(core.length, 299, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 299);
+  // kind, and the format consolidation registers tests/test-format-guard.js —
+  // likewise a static Node unit test that reads public/ and the Flutter source
+  // and writes nothing. 297 + 3 = 300. 62119be9 then added
+  // tests/test-proxy-stall-watch.js (pure in-memory unit test, registered as
+  // core on rebase): 301.
+  assert.equal(core.length, 301, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 301);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 256);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 258);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 19,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -112,8 +116,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 283,
-    '280 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 285,
+    '282 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

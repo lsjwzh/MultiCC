@@ -19,6 +19,9 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
+// 全站唯一那份相对时间表（页面里是 window.MultiCCFormat，这里是 require）—— 无窗口
+// 时它回落到 zh 字面量，与 app/assets/i18n/zh.json 由 tests/test-format-parity.js 钉住。
+const { formatRelativeTime } = require('../public/shared/format.js');
 
 test('the Air push panel is native: masked Bark placeholder, exact POST bodies, visible failures', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
@@ -113,13 +116,11 @@ test('the Air push panel is native: masked Bark placeholder, exact POST bodies, 
     const posts = () => page.requests.filter(r => r.method === 'POST' && r.path === '/api/settings/notify').map(r => JSON.parse(r.body));
     // 「多久以前」不是一个固定字符串，测试按同一个 Intl 口径复算一遍（两边都不是写死的
     // 中文/英文）；夹具取的都是桶中间的值（2 分钟、3 小时），不会卡在分钟边界上翻档。
-    const relative = ms => page.evaluate(`(() => {
-      const seconds = Math.max(0, Math.floor((Date.now() - ${ms}) / 1000));
-      const fmt = new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto' });
-      if (seconds < 60) return fmt.format(-seconds, 'second');
-      if (seconds < 3600) return fmt.format(-Math.floor(seconds / 60), 'minute');
-      return fmt.format(-Math.floor(seconds / 3600), 'hour');
-    })()`);
+    // 相对时间的措辞只有一张表（public/shared/format.js）；期望值从那份表算，测试里
+    // 不再抄第二份。以前这一格在页面里用 Intl.RelativeTimeFormat 自己拼，于是同一页
+    // 上「多久以前」有两套词（这里「2分钟前」，别处「2 分钟前」），而且一天前的推送
+    // 会被说成一个很大的时数。
+    const relative = ms => Promise.resolve(formatRelativeTime(ms));
     const refresh = async () => {
       await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].find(b => b.textContent.includes(${JSON.stringify(await tr('airAdminRefresh'))})).click()`);
     };

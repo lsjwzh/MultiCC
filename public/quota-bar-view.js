@@ -25,6 +25,13 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
+  // 时间格式的唯一来源（shared/format.js，air.html / chat.html 里先于本文件加载）。
+  // Node 侧（生成金样夹具、奇偶校验测试）没有页面全局，所以两种取法都留着。
+  const FMT = (typeof require === 'function' ? require('./shared/format.js') : null)
+    || (typeof self !== 'undefined' && self.MultiCCFormat)
+    || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
+    || null;
+
   function finiteNumber(value) {
     if (value === null || value === '' || typeof value === 'boolean') return null;
     const number = Number(value);
@@ -52,18 +59,11 @@
 
   // How long ago a fetch landed. This is the number that tells the user whether
   // the bar in front of them is worth believing.
+  // 这一格的位置很窄（一条限流条上并排三个窗口段），所以用紧凑档：只有「秒」那一级
+  // 跟别处不同（`57s 前` 而不是 `57 秒前`），分钟以上完全同词。档位表在
+  // shared/format.js，compact 只换那一级的 i18n key。
   function relativeAgo(tsMs, nowMs) {
-    const ts = finiteNumber(tsMs);
-    if (ts === null || ts <= 0) return '';
-    const sec = Math.max(0, Math.floor((nowMs - ts) / 1000));
-    if (sec < 5) return '刚刚';
-    if (sec < 60) return `${sec}s 前`;
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `${min} 分钟前`;
-    const h = Math.floor(min / 60);
-    if (h < 24) return `${h} 小时前`;
-    const d = Math.floor(h / 24);
-    return `${d} 天前`;
+    return FMT.formatRelativeTime(tsMs, { now: nowMs, compact: true });
   }
 
   const TOKEN = /\{(cd|ago):(-?\d+)\}/g;

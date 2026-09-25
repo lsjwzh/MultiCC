@@ -1,5 +1,9 @@
 import 'message.dart';
 
+// formatCompactTokens 的唯一实现在 ../utils/format.dart；这里把名字转出去，本文件
+// 的调用方（chat_screen.dart）不必改 import。
+export '../utils/format.dart' show formatCompactTokens;
+
 /// How full the context is, and how sure we are about it.
 ///
 /// This mirrors public/chat-usage-readout.js so web and app answer the question
@@ -76,13 +80,3 @@ class ContextReadout {
   }
 }
 
-String formatCompactTokens(int value) {
-  final n = value > 0 ? value : 0;
-  if (n >= 1000000) {
-    return '${(n / 1000000).toStringAsFixed(1).replaceAll(RegExp(r'\.0$'), '')}M';
-  }
-  if (n >= 1000) {
-    return '${(n / 1000).toStringAsFixed(1).replaceAll(RegExp(r'\.0$'), '')}K';
-  }
-  return '$n';
-}

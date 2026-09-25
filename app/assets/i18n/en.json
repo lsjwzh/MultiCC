@@ -563,6 +563,7 @@
   "notAvailable": "N/A",
   "justNow": "just now",
   "secondsAgo": "{n}s ago",
+  "secondsAgoCompact": "{n}s ago",
   "minutesAgo": "{n}m ago",
   "hoursAgo": "{n}h ago",
   "daysAgo": "{n}d ago",

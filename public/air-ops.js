@@ -17,6 +17,10 @@
   if (!root || !root.document) return;
   const document = root.document;
   const el = id => document.getElementById(id);
+  // 数字格式的唯一来源（shared/format.js，先于本文件加载）。Node 侧的 DOM 沙箱里没
+  // 有它，所以两种取法都留着：页面走全局，测试走 require。
+  const FMT = root.MultiCCFormat
+    || (typeof require === 'function' ? require('./shared/format.js') : null);
 
   const POLL_MS = 2500;
   const MAX_WAIT_MS = 20 * 60 * 1000;
@@ -437,12 +441,12 @@
   }
 
   // ── APK / iOS OTA ──────────────────────────────────────────────────────
-  function fmtSize(bytes) {
-    const value = Number(bytes);
-    if (!Number.isFinite(value) || value <= 0) return '—';
-    if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
-    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  }
+  // 字节数走全站唯一那份（public/shared/format.js）：单位、进位、小数位都由它定。
+  // 这里只保留本页的取舍 —— 0 字节的产物是「没发布」而不是「0 B」，KB 取整（跟管理台
+  // 那格报同一个文件同一个数），以及未知用 '—'。
+  const PKG_SIZE = Object.freeze({
+    placeholder: '—', zeroIsMissing: true, unitDecimals: { KB: 0 },
+  });
 
   function fmtMtime(value) {
     const date = new Date(value);
@@ -484,7 +488,7 @@
         any = true;
         extra.append(downloadRow(
           `Android APK · ${apk.versionName || '—'}${apk.versionCode == null ? '' : `+${apk.versionCode}`}`,
-          `${fmtSize(apk.size)} · ${fmtMtime(apk.mtime)}`,
+          `${FMT.formatBytes(apk.size, PKG_SIZE)} · ${fmtMtime(apk.mtime)}`,
           apk.downloadUrl || '/multicc.apk',
         ));
       }
@@ -495,7 +499,7 @@
         any = true;
         extra.append(downloadRow(
           `${t('airOpsIosPackage')} · ${ios.versionName || '—'}${ios.versionCode ? `+${ios.versionCode}` : ''}`,
-          `${fmtSize(ios.size)} · ${fmtMtime(ios.mtime)}`,
+          `${FMT.formatBytes(ios.size, PKG_SIZE)} · ${fmtMtime(ios.mtime)}`,
           ios.installPage || '/ios-ota',
         ));
       }

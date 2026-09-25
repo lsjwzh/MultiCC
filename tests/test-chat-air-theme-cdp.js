@@ -11,9 +11,14 @@ test('Air themes restored/live messages, expanded tools, diagnostics and artifac
       'content-type': file.endsWith('.js') ? 'text/javascript' : 'text/css',
     } };
   }
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
+    routes[`/shared/${file}`] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
+  }
   // Keep the real Chat DOM and every local stylesheet; isolate the renderer
   // from live sessions and network boot. Markup is a saved highlighter output.
-  const scripts = ['error-envelope', 'status-presentation', 'chat-token-readout', 'chat-usage-readout',
+  // shared/format.js 排在渲染器前面，跟 chat.html 里的顺序一致：下面这几个模块的
+  // 数字（时长 / token 数 / 用量色）都取那一份，缺了它渲染时就是 null.formatDuration。
+  const scripts = ['shared/format', 'error-envelope', 'status-presentation', 'chat-token-readout', 'chat-usage-readout',
     'chat-live-ui', 'chat-history-view', 'chat-user-input-card', 'task-artifacts', 'chat-air-toolbar'];
   const html = fs.readFileSync(path.join(publicDir, 'chat.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
