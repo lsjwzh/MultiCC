@@ -4,6 +4,7 @@ const { sanitizePublicText } = require('../http/public-safety');
 const { isSettledLetter } = require('../classify/vocab');
 const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
 const { BusinessPushRequestError } = require('./business');
+const { notificationCopy } = require('./notification-copy');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 const DEFAULT_IDLE_MS = 6000;
@@ -235,7 +236,12 @@ function createPushRuntime(options) {
     } catch (error) { warn(label, error); }
   }
 
-  function notify(sessionId, type, message) {
+  // `options.classifyState` is the classify LETTER behind this outcome. It is
+  // needed only where the push TYPE cannot tell two outcomes apart: B (waiting
+  // on a background job) and W (waiting on the user) both push `waiting`, and
+  // they must not say the same words. Callers that have the letter (the
+  // classify broadcast does: `classifyState`) should pass it.
+  function notify(sessionId, type, message, options) {
     if (stopped) return false;
     const monitor = initMonitor(sessionId);
     const timestamp = now();
@@ -245,21 +251,21 @@ function createPushRuntime(options) {
     const session = sessions.get(sessionId);
     const cwd = session ? String(session.cwd || '') : '';
     const shortCwd = cwd.length > 30 ? `...${cwd.slice(-27)}` : cwd;
-    const payloadForLocale = locale => ({
-      title: locale === 'en'
-        ? type === 'waiting' ? `MultiCC #${sessionId}: Action Required`
-          : type === 'error' ? `MultiCC #${sessionId}: Error`
-            : `MultiCC #${sessionId}: Execution succeeded`
-        : type === 'waiting' ? `MultiCC #${sessionId}: 等待操作`
-          : type === 'error' ? `MultiCC #${sessionId}: 出现异常`
-            : `MultiCC #${sessionId}: 执行成功`,
-      body: `${message}\n${shortCwd}`,
-      sessionId,
-      type,
-      locale: locale === 'en' ? 'en' : 'zh',
-      tag: `multicc-${sessionId}`,
-      url: '/manage',
-    });
+    const spec = (options && options.classifyState) || type;
+    // Title copy comes from the one table in ./notification-copy (which reads
+    // the classify vocab) — no per-type string branches here any more.
+    const payloadForLocale = locale => {
+      const copy = notificationCopy(spec, locale);
+      return {
+        title: `MultiCC #${sessionId}: ${copy.title}`,
+        body: `${message}\n${shortCwd}`,
+        sessionId,
+        type,
+        locale: copy.locale,
+        tag: `multicc-${sessionId}`,
+        url: '/manage',
+      };
+    };
     const payload = payloadForLocale('zh');
 
     push.globalStats.lastPushTime = timestamp;

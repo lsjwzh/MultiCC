@@ -110,9 +110,10 @@ void main() {
       expect(SessionCli.claudeExp.supportsSubagent, isTrue);
       expect(SessionCli.claudeExp.poolKey, 'claude');
       expect(SessionCli.claudeExp.defaultEffort, 'medium');
-      // 显示名跟产品走：这是 Anthropic 的 Claude Agent SDK（内部 id 仍是 claude-exp）。
+      // 显示名跟产品走：Claude 那一档是 "Claude Code"（服务端 cli-capability 与
+      // Web provider-catalog 同名，三端一致性见 tests/test-cli-display-parity.js）。
       expect(SessionCli.claudeExp.displayName, 'Claude Agent SDK');
-      expect(SessionCli.claude.displayName, 'Claude');
+      expect(SessionCli.claude.displayName, 'Claude Code');
 
       expect(SessionCli.opencode.supportsAgent, isTrue);
       expect(SessionCli.opencode.supportsSubagent, isFalse);
@@ -200,7 +201,9 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(_host(_configSheet(SessionCli.claude)));
-      expect(find.text('Claude Agent'), findsOneWidget);
+      // 标题取 CLI 的展示名（cli_display.dart）：claude 那一档是 "Claude Code"，
+      // 所以这里跟着变成 "Claude Code Agent"。
+      expect(find.text('Claude Code Agent'), findsOneWidget);
       expect(find.text('子任务'), findsOneWidget);
       expect(find.text('Effort'), findsOneWidget);
     });

@@ -1,14 +1,19 @@
 'use strict';
 
-// Canonical DOM helpers for classic-script pages (chat / index / manage /
-// wechat). Load this BEFORE the first classic consumer: the manage page alone
-// has ~9 scripts calling a global escapeHtml that used to be defined midway
-// through manage-dashboard.js — a hidden load-order coupling this file removes.
+// Canonical DOM helpers for classic-script pages (chat / index / air / manage /
+// wechat / dashboard / meta / share). Load this BEFORE the first classic
+// consumer: the manage page alone has ~9 scripts calling a global escapeHtml
+// that used to be defined midway through manage-dashboard.js — a hidden
+// load-order coupling this file removes.
 //
 // Deliberately NOT consolidated here: the self-contained module copies in
 // safe-markdown, status-presentation, task-board-ui, chat-usage-readout,
-// memory-model, tour and manage-workspace-setup — those are Node-requireable
-// units and rendering/security boundaries that must not depend on page order.
+// tour, memory-model, task-graph, docs-registry, air-tunnel, air-bridges and
+// air-provider-advanced — those are Node-requireable units and
+// rendering/security boundaries that must not depend on page order. They must
+// all encode the same five characters (& < > " '); tests/test-dom-helpers-escape.js
+// scans public/ and fails any copy that is neither a delegate to this file nor
+// on that list, and any copy at all that leaves a character raw.
 (function attachMultiCCDomHelpers(root) {
   // Escapes all five HTML-significant characters; null/undefined render as ''.
   function escapeHtml(value) {

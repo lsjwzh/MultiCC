@@ -63,10 +63,16 @@
     </div>
   </footer>
 
+<!-- Five-character escapeHtml (quotes included) from the shared helper. Absolute
+     path on purpose: this document carries no <base href>, so a relative one would
+     resolve against whatever deep address it was opened under. -->
+<script src="/shared/dom-helpers.js"></script>
 <script>
 const TOKEN = decodeURIComponent(location.pathname.replace(/^\/share\//, '').replace(/\/$/, ''));
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+// Shared escaper. The local copy this replaced encoded only & < > — a label with a
+// quote in it broke out of whatever attribute it was interpolated into.
+const esc = escapeHtml;
 let ACCESS = 'view', SESSION = null, ws = null, liveEl = null, liveText = '';
 
 function show(view) {

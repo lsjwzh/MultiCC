@@ -238,6 +238,19 @@
       ? api.providerDisplayName(provider) : (provider && provider.name) || '';
   }
 
+  // CLI 展示名与「自持账号」两列来自共享 CLI 目录（权威表：服务端
+  // src/cli/cli-capability.js）。Node 里没有 root，按 raw id 和「有 provider」回落 ——
+  // 与浏览器侧相比只会更保守，不会把某个 CLI 认成另一个 CLI。
+  function cliDisplayName(cli) {
+    const api = root && root.MultiCCProviderCatalog;
+    return api && api.cliDisplayName ? api.cliDisplayName(cli) : String(cli == null ? '' : cli).trim();
+  }
+
+  function cliProviderless(cli) {
+    const api = root && root.MultiCCProviderCatalog;
+    return !!(api && api.cliProviderless && api.cliProviderless(cli));
+  }
+
   function providerShortName(providerId, state) {
     if (!providerId) return translate(state, 'default');
     const provider = providersOf(state).find(item => item && item.id === providerId);
@@ -732,7 +745,7 @@
     const document = documentOf(state);
     const cli = state.cli || 'claude';
     const choicesForEffort = effortOptions(cli);
-    const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh' && cli !== 'gemini' && cli !== 'grok';
+    const supportsProvider = !cliProviderless(cli);
     return new Promise((resolve) => {
       ensureModalStyle(document);
       const { overlay, box, body, footer } = modalShell(document, 620);
@@ -764,7 +777,7 @@
         </div>
         <div id="ai-agent-section">
           <div style="height:1px;background:var(--chat-line, #30363d);margin:4px 0 14px;"></div>
-          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${isClaudeCli(cli) ? (cli === 'claude-exp' ? 'Claude Agent SDK' : 'Claude Code') : cli === 'opencode' ? 'OpenCode' : cli === 'qoder' ? 'Qoder CN' : 'WorkBuddy'} Agent</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:2px;">${cliDisplayName(cli)} Agent</div>
           <div style="font-size:11px;color:var(--chat-muted, #8b949e);line-height:1.45;margin-bottom:8px;">对应原生 <code>--agent</code>，用于选择该 CLI 已定义的主 agent；它不同于下面的子任务路由。留空使用 CLI 默认 agent。</div>
           <input id="ai-agent" type="text" list="ai-agent-list" maxlength="80" placeholder="${cli === 'opencode' ? '例如 build' : '已定义的 agent 名称'}" style="width:100%;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:13px;padding:8px 10px;outline:none;margin-bottom:14px;">
           <datalist id="ai-agent-list">${cli === 'opencode' ? '<option value="build"></option>' : ''}</datalist>

@@ -240,6 +240,9 @@
     #notify-toast.waiting { background: #d29922; }
     #notify-toast.completed,
     #notify-toast.succeeded { background: #238636; }
+    /* 与聊天页同一套档位：client.js 的提示条档位来自共享文案表。 */
+    #notify-toast.running { background: #1f6feb; }
+    #notify-toast.error { background: #da3633; }
     #notify-toast .toast-close {
       position: absolute;
       right: 10px;
@@ -910,6 +913,9 @@
   <script src="error-envelope.js"></script>
   <script src="auth-client.js"></script>
   <script src="shared/dom-helpers.js"></script>
+  <!-- 通知标题的唯一来源（pwa.js 的本地通知兜底 + client.js 的 speakNotify），
+       本页不加载 i18n.js，模块自带中英兜底。 -->
+  <script src="shared/notification-copy.js"></script>
   <script src="client.js?v=voice-task-label-20260820"></script>
 </body>
 </html>

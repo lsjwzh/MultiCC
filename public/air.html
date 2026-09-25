@@ -16,6 +16,10 @@
        而 t() 只从 window.MULTICC_I18N_CATALOG 现取（见 i18n.js）。 -->
   <script src="i18n-catalog.js"></script>
   <script src="i18n.js"></script>
+  <!-- 规范转义表（escapeHtml / _hashColor）。Air 原来没有它：manage-official-accounts.js
+       只能拿 typeof 兜底，air-provider-advanced.js 的 ensureGlobals 还要自己补一个 ——
+       这里放一份，两者都退化成 no-op，全站同一份五个字符的实现。 -->
+  <script src="shared/dom-helpers.js"></script>
 </head>
 <body>
   <aside id="sidebar" aria-label="工作目录与任务导航" data-i18n-aria-label="airSidebarNav">
@@ -613,6 +617,8 @@
   <script src="task-search.js"></script>
   <script src="air-admin.js"></script>
   <script src="qrcode.min.js"></script>
+  <!-- 通知标题的唯一来源（pwa.js 的本地通知兜底也读它）。 -->
+  <script src="shared/notification-copy.js"></script>
   <!-- pwa.js owns the push subscription (and its own #push-toggle lookup);
        air-ops.js re-owns only the label, which pwa.js would print in English. -->
   <script src="pwa.js"></script>

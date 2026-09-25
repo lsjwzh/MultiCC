@@ -217,6 +217,7 @@
 <script src="auth-client.js"></script>
 <script src="i18n-catalog.js"></script>
 <script src="i18n.js"></script>
+<script src="shared/dom-helpers.js"></script>
 <script src="status-presentation.js"></script>
 <script src="task-board-ui.js"></script>
 <script>
@@ -224,7 +225,9 @@ const $ = (id) => document.getElementById(id);
 let ws = null, selected = null;
 const dirMap = new Map();      // dirId → {label, sessions: Map, events: []}
 const SESSION_SOURCE_ID = new URLSearchParams(location.search).get('from') || '';
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Shared five-character escaper (shared/dom-helpers.js, loaded above) instead of
+// this page's own copy — one definition to keep honest.
+const esc = escapeHtml;
 
 // Status glyph for a task row — same shared registry as manage.html and the app,
 // so an errored task always renders ❌ with an accessible name.

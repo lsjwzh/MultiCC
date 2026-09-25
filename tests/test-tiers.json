@@ -235,6 +235,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/cli_display_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/code_highlight_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -1972,6 +1977,15 @@
       ]
     },
     {
+      "path": "tests/test-cli-display-parity.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-cli-specific-ui.js",
       "tier": "other",
       "lane": "deterministic",
@@ -2411,6 +2425,15 @@
       "owner": "npm:test:state",
       "entrypoints": [
         "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-dom-helpers-escape.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
       ]
     },
     {

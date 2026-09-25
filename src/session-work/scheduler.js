@@ -5,7 +5,7 @@ const {
   admitOutboxItem,
   normalizeJson,
 } = require('../outbox');
-const { turnOutcomeForClassify } = require('../classify/vocab');
+const { turnOutcomeForClassify, runStateForClassify } = require('../classify/vocab');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
@@ -13,35 +13,54 @@ const RESOLUTION_ACTIONS = new Set(['skip', 'cancel', 'resolve']);
 const RETRY_ACTIONS = new Set(['retry', 'resume']);
 const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
 
-// Explicit freezeReason → display runState map. Replaces the old
+// freezeReason → classify letter. The ONE table for what a freeze means: the
+// display run state below and classifyStateForReason both read it, and a
+// letter-backed reason therefore renders exactly like its letter (vocab
+// CLASSIFY_DISPLAY), so a frozen B slot can never draw differently from a
+// settled B verdict.
+//
+// This replaced a hand-copied reason → runState table which had to be kept in
+// sync with the classify letters by hand, and an older
 // `String(reason).includes('error') ? 'error' : 'waiting'` substring heuristic,
 // which collapsed EVERY non-"error" freeze into "Waiting for user" — falsely
 // telling the user to act when the session was actually mid-recovery, settling a
-// durable ack, or interrupted. runState vocabulary is the fixed renderable set
-// {queued, running, waiting, error, succeeded, idle}. A reason not listed here falls
-// back to the old heuristic so a future scheduler reason never crashes the UI.
-const FREEZE_REASON_RUN_STATE = Object.freeze({
-  // Genuinely handed back to the user / an external party.
-  awaiting_user_input: 'waiting',
-  awaiting_callback: 'waiting',
-  waiting: 'waiting',
+// durable ack, or (with B) idling on a background job.
+const FREEZE_REASON_CLASSIFY = Object.freeze({
+  awaiting_user_input: 'W',
+  waiting: 'W',
+  classify_waiting: 'W',
+  // External hand-off: a callback is outstanding, nothing is asked of the user.
+  awaiting_callback: 'B',
+  classify_background: 'B',
   // Faults / interruptions — surface as an attention state, NOT "waiting on you".
-  error: 'error',
-  classification_error: 'error',
-  unknown_interruption: 'error',
-  legacy_unresolved: 'error',
+  error: 'E',
+  classification_error: 'E',
+  unknown_interruption: 'E',
+  classify_error: 'E',
   // Live work the scheduler will drive forward — not user-blocked.
+  incomplete_requires_resume: 'P',
+  classify_running: 'P',
+});
+
+// Freezes with no classify letter. runState vocabulary is vocab TURN_RUN_STATES.
+const FREEZE_REASON_EXTRA_RUN_STATE = Object.freeze({
+  legacy_unresolved: 'error',
   delivery_recovery: 'running',
   continuation_ready: 'running',
-  incomplete_requires_resume: 'running',
   // Claim released; work is pending re-run.
   prelaunch_deferred: 'queued',
-  classify_waiting: 'waiting',
-  classify_background: 'waiting',
-  classify_error: 'error',
-  classify_running: 'running',
-  // Auth/config not set up -- user must act, not a transient error.
+  // Auth/config not set up -- user must act, not a transient error. Stays
+  // `waiting` here; the display layer refines it to `blocked` (go fix a
+  // prerequisite, not answer in the conversation).
   configuration_required: 'waiting',
+});
+
+// Explicit freezeReason → display runState map. A reason not listed here falls
+// back to a substring heuristic so a future scheduler reason never crashes the UI.
+const FREEZE_REASON_RUN_STATE = Object.freeze({
+  ...Object.fromEntries(Object.entries(FREEZE_REASON_CLASSIFY)
+    .map(([reason, letter]) => [reason, runStateForClassify(letter)])),
+  ...FREEZE_REASON_EXTRA_RUN_STATE,
 });
 
 function runStateForFreezeReason(reason) {
@@ -179,10 +198,10 @@ function activeTaskId(schedule) {
 
 function classifyStateForSchedule(schedule) {
   if (CLASSIFY_STATES.has(schedule?.classifyState)) return schedule.classifyState;
-  if (schedule?.freezeReason === 'awaiting_user_input' || schedule?.freezeReason === 'waiting') return 'W';
-  if (schedule?.freezeReason === 'awaiting_callback') return 'B';
-  if (schedule?.freezeReason === 'error' || schedule?.freezeReason === 'classification_error'
-      || schedule?.freezeReason === 'unknown_interruption') return 'E';
+  const letter = classifyStateForReason(schedule?.freezeReason);
+  // A P reason means "the scheduler is still driving this", which the active
+  // slot answers better than the reason does; D is the settled default.
+  if (letter && letter !== 'P') return letter;
   if (schedule?.active) return 'P';
   return 'D';
 }
@@ -196,12 +215,9 @@ function freezeReasonForClassify(classifyState) {
 
 function classifyStateForReason(reason) {
   const key = String(reason || '');
-  if (key === 'awaiting_user_input' || key === 'waiting' || key === 'classify_waiting') return 'W';
-  if (key === 'awaiting_callback' || key === 'classify_background') return 'B';
-  if (key === 'error' || key === 'classification_error' || key === 'unknown_interruption'
-      || key === 'classify_error') return 'E';
-  if (key === 'incomplete_requires_resume' || key === 'classify_running') return 'P';
-  return null;
+  return Object.prototype.hasOwnProperty.call(FREEZE_REASON_CLASSIFY, key)
+    ? FREEZE_REASON_CLASSIFY[key]
+    : null;
 }
 
 function controlAllowedByClassify(item, classifyState) {
@@ -1686,6 +1702,7 @@ function createSessionWorkScheduler({
 module.exports = {
   ACTIVE_STATES,
   CONTROL_KINDS,
+  FREEZE_REASON_CLASSIFY,
   FREEZE_REASON_RUN_STATE,
   createSessionWorkScheduler,
   isControlItem,

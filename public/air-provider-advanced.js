@@ -28,6 +28,8 @@
   const document = root.document;
 
   const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
+  // 五个字符与 shared/dom-helpers.js 的 escapeHtml 同一份语义。本模块自带一份：它既当
+  // 本模块的转义，也是在页面没加载 dom-helpers.js 时补 window.escapeHtml 的兜底实现。
   const esc = value => String(value == null ? '' : value)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');

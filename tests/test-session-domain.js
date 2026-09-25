@@ -168,15 +168,33 @@ test('legacy and v1 workspace views consume the same canonical session and facts
   assert.equal(v1.status, 'succeeded', 'turn success remains distinct from task lifecycle completion');
 });
 
-test('session state transitions preserve run segments and pending work forces waiting', () => {
+test('session state transitions preserve run segments and outstanding work reads background', () => {
   const started = transitionSessionState(null, { status: 'thinking' }, { now: 100 });
   assert.deepEqual(started.state, { status: 'thinking', lastActivity: 100, runStartedAt: 100, runEndedAt: null });
   const editing = transitionSessionState(started.state, { status: 'editing' }, { now: 120 });
   assert.equal(editing.state.runStartedAt, 100);
+  // A finished run that still has a dispatch/callback outstanding is a BACKGROUND
+  // wait: something outside this conversation owes us an answer, the user owes
+  // nothing. Folding it into `waiting` is what put 「等待回答」 on those cards.
   const waiting = transitionSessionState(editing.state, { status: 'succeeded' }, { now: 150, pendingWork: true });
-  assert.deepEqual(waiting.state, { status: 'waiting', lastActivity: 150, runStartedAt: 100, runEndedAt: 150 });
+  assert.deepEqual(waiting.state, { status: 'background', lastActivity: 150, runStartedAt: 100, runEndedAt: 150 });
+  assert.notEqual(waiting.state.status, 'waiting');
+  // A request that is already a wait, a fault or a live run is never masked.
+  assert.equal(
+    transitionSessionState(editing.state, { status: 'waiting' }, { now: 150, pendingWork: true }).state.status,
+    'waiting',
+  );
+  assert.equal(
+    transitionSessionState(editing.state, { status: 'error' }, { now: 150, pendingWork: true }).state.status,
+    'error',
+  );
+  assert.equal(
+    transitionSessionState(editing.state, { status: 'editing' }, { now: 150, pendingWork: true }).state.status,
+    'editing',
+  );
   const service = createSessionStateService({ clock: () => 200, hasPendingWork: id => id === 's1' });
-  assert.equal(service.transition('s1', waiting.state, { status: 'idle' }).state.status, 'waiting');
+  assert.equal(service.transition('s1', waiting.state, { status: 'idle' }).state.status, 'background');
+  assert.equal(service.transition('s2', waiting.state, { status: 'idle' }).state.status, 'idle');
   assert.throws(() => transitionSessionState(null, { status: 'unknown' }), /unsupported status/);
 });
 

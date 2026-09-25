@@ -199,15 +199,9 @@
   }
 
   // ── HTML escape ──────────────────────────────────────────────
-  function esc(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  // Five characters, shared with every other page (shared/dom-helpers.js is
+  // loaded by dashboard.html before this file).
+  function esc(s) { return escapeHtml(s); }
 
   // ── Data loading ────────────────────────────────────────────
   function loadAll() {

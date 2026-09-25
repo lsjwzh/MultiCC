@@ -50,6 +50,9 @@ function loadModule() {
     },
   });
   window.window = window;
+  // The notification words come from the shared table; inside the sandbox there
+  // is no `require`, so hand it over the same way a page's <script> tag does.
+  window.MultiCCNotificationCopy = require('../public/shared/notification-copy.js');
 
   vm.runInNewContext(fs.readFileSync(MODULE_FILE, 'utf8'), {
     window,
@@ -107,7 +110,7 @@ async function main() {
   assert.deepStrictEqual(errorPayload, {
     sessionId: 'alpha',
     type: 'error',
-    title: 'MultiCC #alpha: 任务异常',
+    title: 'MultiCC #alpha: 出现异常',
     body: '接口中断',
     url: '/chat.html?session=alpha',
   });
@@ -175,7 +178,7 @@ async function main() {
   assert.strictEqual(localNotifications.length, 1);
   assert.strictEqual(controller.speak('接口异常', 'error'), true, 'error has an independent cooldown bucket');
   assert.strictEqual(localNotifications[1].type, 'error');
-  assert.ok(localNotifications[1].title.includes('任务异常'));
+  assert.ok(localNotifications[1].title.includes('出现异常'));
   clock += api.NOTIFY_COOLDOWN + 1;
   assert.strictEqual(controller.speak('再次执行成功', 'succeeded'), true);
   assert.strictEqual(localNotifications.length, 3);

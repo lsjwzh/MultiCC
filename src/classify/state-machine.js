@@ -339,8 +339,13 @@ function createClassifyStateMachine(rawDeps) {
       : cancel.runnerStopped === false ? '取消失败：任务未能停止'
         : cancel.superseded === true ? '已切换到立即发送的消息'
         : finalGoal ? `已取消：${finalGoal}` : '任务已取消';
+    // B idles on a background job and nothing is asked of the user, so its copy
+    // is the letter's own label (「后台等待」) — never W's 「等待交互」/「等待你」,
+    // which is the same lie `waiting` used to tell on every Air card. W keeps its
+    // own phrasing. The label comes from vocab, so the word is defined once.
     const waitMsg = cancelMsg || (error ? (policyMessage || 'API 异常，未自动重试')
-      : finalGoal ? `等待：${finalGoal}` : '等待交互');
+      : finalGoal ? `${background ? disp.label : '等待'}：${finalGoal}`
+        : background ? disp.label : '等待交互');
     // The user just pressed Cancel — they are looking at the screen. Broadcast
     // (drives the bar and every card) but no lock-screen push.
     if (isTerminal) {
@@ -352,7 +357,10 @@ function createClassifyStateMachine(rawDeps) {
     }
     const dirId2 = persistedSessions.get(sessionName)?.dirId;
     if (dirId2) workspaceBroadcast(dirId2, { type: 'notify', sessionId, state: pushType, classifyState: cls, message: waitMsg });
-    setSessionStatus(sessionName, { status: 'waiting' });
+    // The letter's own run state — B settles as `background`, E as `error`, W as
+    // `waiting`. Same fold as session-work-host.getRunState and the task board,
+    // so a card and its session row cannot disagree about one verdict.
+    setSessionStatus(sessionName, { status: disp.cardStatus });
     // Persist the accurate rule letter. Cancellation metadata remains the guard
     // against stale finalizers and late task-attribution work.
     setTaskState(sessionName, cancel

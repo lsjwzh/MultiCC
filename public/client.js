@@ -419,7 +419,16 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-function speakNotify(text, type) {
+// 通知文案只有一份：public/shared/notification-copy.js（与服务器
+// src/push/notification-copy.js 同一张表）。本页不加载 i18n.js，模块自带的
+// 中文/英文兜底就是这里显示的词。
+function outcomeCopy() {
+  return typeof MultiCCNotificationCopy !== 'undefined' ? MultiCCNotificationCopy : null;
+}
+
+// `spec` is a classify LETTER (D/W/B/E/P/C) or the coarse push type — one table
+// decides the words, the toast class and the local-notification bucket.
+function speakNotify(text, spec) {
   if (!_notifyEnabled) return;
   const now = Date.now();
   // Skip within first 5s of connection (replay buffer)
@@ -427,8 +436,13 @@ function speakNotify(text, type) {
   // Page is in foreground — user can see the terminal, no need to notify
   if (document.visibilityState === 'visible') return;
 
-  const succeeded = type === 'succeeded' || type === 'completed';
-  if (succeeded) {
+  const copy = outcomeCopy();
+  const entry = copy ? copy.notificationCopy(spec) : null;
+  // 进行中（P）与续报（C）在表里没有推送种类：它们只是状态更新，所以走 'running'
+  // 那一档 —— 以前这种帧会被当成成功，提示条染绿还朗读一句「本轮执行成功」。
+  const kind = (entry && entry.type)
+    || (spec === 'waiting' || spec === 'error' ? spec : 'running');
+  if (kind === 'succeeded') {
     if (now - _notifyLastSucceeded < NOTIFY_COOLDOWN) return;
     _notifyLastSucceeded = now;
   } else {
@@ -437,15 +451,16 @@ function speakNotify(text, type) {
   }
 
   // Show visual toast + play voice
-  showNotifyToast(text, type);
+  showNotifyToast(text, kind);
+  // 表说这一档没什么可念的（C / P）：只更新提示条，别出声、别弹系统通知。
+  if (entry && !entry.voiceKey) return;
 
   if (typeof showLocalTaskNotification === 'function') {
     const sid = sessionId || _params.get('id') || 'terminal';
-    const isWaiting = !succeeded;
     showLocalTaskNotification({
       sessionId: sid,
-      type: isWaiting ? 'waiting' : 'succeeded',
-      title: isWaiting ? `MultiCC #${sid}: 等待操作` : `MultiCC #${sid}: 执行成功`,
+      type: kind,
+      title: copy ? copy.notificationTitle(spec, sid) : `MultiCC #${sid}`,
       body: text,
       url: location.pathname + location.search,
     });
@@ -627,10 +642,16 @@ async function connect() {
         }
       } else if (msg.type === 'notify') {
         // Server-side aux-AI verdict (single judge): turn succeeded / waiting.
-        const waiting = msg.state === 'waiting';
-        const completionVoice = !waiting && typeof msg.voiceMessage === 'string'
+        // The frame carries the classify LETTER when there is one (B and W both
+        // push type 'waiting'); the table owns the wording, so this page no
+        // longer says '正在等待您的操作' where the chat bar says '等待你的操作'.
+        const copy = outcomeCopy();
+        const spec = msg.classifyState || msg.state;
+        const isSucceeded = copy ? copy.notificationCopy(spec).type === 'succeeded' : msg.state !== 'waiting';
+        const completionVoice = isSucceeded && typeof msg.voiceMessage === 'string'
           ? msg.voiceMessage.trim() : '';
-        speakNotify(waiting ? '正在等待您的操作' : (completionVoice || '本轮执行成功'), waiting ? 'action' : 'succeeded');
+        speakNotify(completionVoice || (copy ? copy.notificationVoice(spec) : '') || msg.message,
+          spec);
       } else if (msg.type === 'exit') {
         term.write(msg.data);
         _sessionExited = true;

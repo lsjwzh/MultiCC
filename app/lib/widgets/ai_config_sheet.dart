@@ -303,11 +303,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   }
 
   String _providerName(String id) {
-    if (_isQoder) return 'Qoder CN';
-    if (widget.cli == SessionCli.codebuddy) return 'WorkBuddy';
-    if (widget.cli == SessionCli.dsh) return 'DSH';
-    if (widget.cli == SessionCli.gemini) return 'Gemini';
-    if (widget.cli == SessionCli.grok) return 'Grok';
+    // 自持账号的 CLI 没有 MultiCC 线路，这里显示的是 CLI 自己的名字 —— 走唯一那份展示
+    // 表（SessionCli.displayName，源自 app/lib/utils/cli_display.dart），不再抄五遍。
+    if (!widget.cli.supportsProvider) return widget.cli.displayName;
     if (id.isEmpty) {
       for (final p in widget.providers) {
         final providerId = p['id']?.toString() ?? '';
@@ -475,11 +473,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   String _modelLabel(String model) {
     if (model.isEmpty) {
-      if (_isQoder) return '默认 / 跟随 Qoder CN 设置';
-      if (widget.cli == SessionCli.codebuddy) return '默认 / 跟随 WorkBuddy 设置';
-      if (widget.cli == SessionCli.dsh) return '默认 / 跟随 DSH 配置';
-      if (widget.cli == SessionCli.gemini) return '默认 / 跟随 Gemini 配置';
-      if (widget.cli == SessionCli.grok) return '默认 / 跟随 Grok 配置';
+      // Vendor-auth CLIs own their account/model settings, so the hint names the
+      // product itself. One branch for all of them: the five ids used to be
+      // spelled out here (and again in message.dart's per-CLI model lists).
+      if (!widget.cli.supportsProvider) {
+        return '默认 / 跟随 ${widget.cli.displayName} 设置';
+      }
       return '默认 / 跟随 Provider';
     }
     return modelShortNameForCli(widget.cli, model);
@@ -513,9 +512,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   String _effortDescription(String value) {
     if (value.isEmpty) {
-      if (_isQoder) return 'Default — Follow Qoder CN settings';
-      if (widget.cli == SessionCli.codebuddy) {
-        return 'Default — Follow WorkBuddy settings';
+      if (!widget.cli.supportsProvider) {
+        return 'Default — Follow ${widget.cli.displayName} settings';
       }
       return 'Default — Follow the selected model/provider';
     }

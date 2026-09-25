@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { renderPrompt } = require('../message-composer');
 const { createClaudeAdapter } = require('./claude');
+const { displayNameOf } = require('../cli/cli-capability');
 
 function createClaudeExpAdapter(deps = {}) {
   const base = createClaudeAdapter(deps);
@@ -56,7 +57,7 @@ function createClaudeExpAdapter(deps = {}) {
     decodeEvent(event) {
       if (event?.type === 'system' && event.subtype === 'sdk_error') {
         return [{
-      type: 'error', label: 'Claude Agent SDK', kind: 'provider',
+      type: 'error', label: displayNameOf('claude-exp'), kind: 'provider',
           message: event.error || 'Claude Agent SDK bridge failed',
         }];
       }

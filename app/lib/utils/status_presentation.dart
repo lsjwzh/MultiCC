@@ -26,6 +26,7 @@ enum CanonicalStatus {
   queued,
   running,
   waiting,
+  background,
   blocked,
   error,
   succeeded,
@@ -41,6 +42,14 @@ enum CanonicalStatus {
 /// [spinner] 只有 running 为 true —— 这是「异常卡片必须立刻停止转圈」的机制保证。
 /// [terminal] 表示静止的终态；error 刻意不算终态（它可重试，标成终态会诱导隐藏）。
 /// [priority] 多信号并存时谁胜出：故障高于进度，失败永远不会被乐观信号盖住。
+///
+/// [labelKey] 是这个状态的通用词（会话列表、任务板）。
+/// [ariaKey] 是无障碍名，永远用文字讲清状态。
+/// [airLabelKey] 是 **Air 面** 用的那个词（侧栏任务行、控制台、任务详情）。Air 跟
+///   它旁边印着的工作区租约 / 工作流阶段词是同一套词，所以单独占一列，而不是每个
+///   Air 界面各留一张手抄表 —— 那正是「等待回答」被贴到后台等待上的成因。
+///   Web 侧同一列由 `public/status-presentation.js` 的 `airStatusLabels()` 出，
+///   `air.js` 的 `stateNames` 和控制台的 `STATUS_COPY` 都从它构建。
 class StatusSpec {
   const StatusSpec({
     required this.status,
@@ -51,6 +60,7 @@ class StatusSpec {
     required this.priority,
     required this.labelKey,
     required this.ariaKey,
+    required this.airLabelKey,
   });
 
   final CanonicalStatus status;
@@ -61,11 +71,15 @@ class StatusSpec {
   final int priority;
   final String labelKey;
   final String ariaKey;
+  final String airLabelKey;
 
   String get label => t(labelKey);
 
   /// 无障碍名：始终用文字讲清状态，不靠颜色传达（对应 WCAG 1.4.1）。
   String get semanticLabel => t(ariaKey);
+
+  /// Air 面上的词。Air 面任何地方都不许再手写第二份状态词表。
+  String get airLabel => t(airLabelKey);
 
   Color get color => statusToneColor(tone);
 }
@@ -80,6 +94,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 10,
     labelKey: 'statusIdle',
     ariaKey: 'statusAriaIdle',
+    airLabelKey: 'airStateIdle',
   ),
   CanonicalStatus.queued: StatusSpec(
     status: CanonicalStatus.queued,
@@ -90,6 +105,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 60,
     labelKey: 'statusQueued',
     ariaKey: 'statusAriaQueued',
+    airLabelKey: 'airStateQueued',
   ),
   CanonicalStatus.running: StatusSpec(
     status: CanonicalStatus.running,
@@ -100,6 +116,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 70,
     labelKey: 'statusRunning',
     ariaKey: 'statusAriaRunning',
+    airLabelKey: 'airStateRunning',
   ),
   CanonicalStatus.waiting: StatusSpec(
     status: CanonicalStatus.waiting,
@@ -110,6 +127,22 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 50,
     labelKey: 'statusWaiting',
     ariaKey: 'statusAriaWaiting',
+    airLabelKey: 'airStateWaiting',
+  ),
+  // 在等后台任务（classify 字母 B）：回调或派出去的 worker 还在外面跑。它 **不是**
+  // waiting —— 没有任何东西要用户回答，所以不能借用「该你了」那个词，也不该拿到那
+  // 份注意力。优先级排在 waiting 之下（真有人等你回答永远更急）、succeeded 之上；
+  // 故障（error/blocked）稳压它，后台等待永远不盖住故障。
+  CanonicalStatus.background: StatusSpec(
+    status: CanonicalStatus.background,
+    icon: '⏳',
+    tone: 'info',
+    spinner: false,
+    terminal: false,
+    priority: 45,
+    labelKey: 'statusBackground',
+    ariaKey: 'statusAriaBackground',
+    airLabelKey: 'airStateBackground',
   ),
   CanonicalStatus.blocked: StatusSpec(
     status: CanonicalStatus.blocked,
@@ -120,6 +153,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 80,
     labelKey: 'statusBlocked',
     ariaKey: 'statusAriaBlocked',
+    airLabelKey: 'airStateBlocked',
   ),
   CanonicalStatus.error: StatusSpec(
     status: CanonicalStatus.error,
@@ -130,6 +164,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 90,
     labelKey: 'statusError',
     ariaKey: 'statusAriaError',
+    airLabelKey: 'airStateFailed',
   ),
   CanonicalStatus.succeeded: StatusSpec(
     status: CanonicalStatus.succeeded,
@@ -140,6 +175,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 30,
     labelKey: 'statusSucceeded',
     ariaKey: 'statusAriaSucceeded',
+    airLabelKey: 'airStateSucceeded',
   ),
   CanonicalStatus.done: StatusSpec(
     status: CanonicalStatus.done,
@@ -150,6 +186,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 30,
     labelKey: 'statusDone',
     ariaKey: 'statusAriaDone',
+    airLabelKey: 'airStateDone',
   ),
   // 仅展示层：服务端把已取消的认领折叠成 runState idle，但「你把它停掉了」和
   // 「什么都没在跑」对读者是两件事，被中断的一轮更不能被打扮成已完成。
@@ -162,6 +199,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 25,
     labelKey: 'statusCancelled',
     ariaKey: 'statusAriaCancelled',
+    airLabelKey: 'airStateCancelled',
   ),
   CanonicalStatus.archived: StatusSpec(
     status: CanonicalStatus.archived,
@@ -172,6 +210,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 20,
     labelKey: 'statusArchived',
     ariaKey: 'statusAriaArchived',
+    airLabelKey: 'airStateArchived',
   ),
   CanonicalStatus.offline: StatusSpec(
     status: CanonicalStatus.offline,
@@ -182,6 +221,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 15,
     labelKey: 'statusOffline',
     ariaKey: 'statusAriaOffline',
+    airLabelKey: 'airStateOffline',
   ),
   // 未知值的中性落点：既不落成功也不落进行中——认不出来的状态不能读作「做完了」
   // 或「还在跑」。每次命中都会记进诊断表。
@@ -194,6 +234,7 @@ const Map<CanonicalStatus, StatusSpec> statusPresentation = {
     priority: 0,
     labelKey: 'statusUnknown',
     ariaKey: 'statusAriaUnknown',
+    airLabelKey: 'airStateUnknown',
   ),
 };
 
@@ -202,6 +243,7 @@ const Set<CanonicalStatus> sessionStatuses = {
   CanonicalStatus.queued,
   CanonicalStatus.running,
   CanonicalStatus.waiting,
+  CanonicalStatus.background,
   CanonicalStatus.blocked,
   CanonicalStatus.error,
   CanonicalStatus.succeeded,
@@ -215,6 +257,7 @@ const Set<CanonicalStatus> taskStatuses = {
   CanonicalStatus.queued,
   CanonicalStatus.running,
   CanonicalStatus.waiting,
+  CanonicalStatus.background,
   CanonicalStatus.blocked,
   CanonicalStatus.error,
   CanonicalStatus.succeeded,
@@ -274,12 +317,15 @@ const Map<String, CanonicalStatus> statusAliases = {
 /// FREEZE_REASON_RUN_STATE，只有一处展示层细化：configuration_required 判 blocked
 /// 而非 waiting——服务端说得对（需要用户动手），但要动的是别处的配置而不是在本对
 /// 话里回一句，所以给锁而不是暂停。
+///
+/// awaiting_callback / classify_background 是 B（等后台任务）：回调在别人手里，
+/// 不是在等你回答，落 background。
 const Map<String, CanonicalStatus> freezeReasonStatus = {
   'awaiting_user_input': CanonicalStatus.waiting,
-  'awaiting_callback': CanonicalStatus.waiting,
+  'awaiting_callback': CanonicalStatus.background,
   'waiting': CanonicalStatus.waiting,
   'classify_waiting': CanonicalStatus.waiting,
-  'classify_background': CanonicalStatus.waiting,
+  'classify_background': CanonicalStatus.background,
   'configuration_required': CanonicalStatus.blocked,
   'error': CanonicalStatus.error,
   'classification_error': CanonicalStatus.error,
@@ -294,14 +340,15 @@ const Map<String, CanonicalStatus> freezeReasonStatus = {
 };
 
 /// classify 字母 → 状态。逐键镜像 src/classify/vocab.js CLASSIFY_DISPLAY 的
-/// cardStatus，只有 E 例外：那里 cardStatus 是 waiting、barTint 是 error，而
-/// 「异常必须带统一错误图标、不得继续转圈」要求读者一眼看出出错，故取 barTint。
+/// cardStatus（E 也在内：它的 cardStatus 就是 error —— API 异常是用户必须一眼看出
+/// 的故障）。W 和 B 是两个不同的状态：W 等你回答，B 在等后台任务，把它们并成一个
+/// 正是「一条根本不需要人回答的卡上写着『等待回答』」的成因。
 /// C 已退役（parseClassifyResult 会把 C 折成 W），保留仅为渲染历史记录。
 const Map<String, CanonicalStatus> classifyLetterStatus = {
   'D': CanonicalStatus.succeeded,
   'C': CanonicalStatus.running,
   'W': CanonicalStatus.waiting,
-  'B': CanonicalStatus.waiting,
+  'B': CanonicalStatus.background,
   'E': CanonicalStatus.error,
   'P': CanonicalStatus.running,
 };
@@ -454,6 +501,24 @@ CanonicalStatus highestPriority(StatusDomain domain, Iterable<Object?> raw) {
 
 StatusSpec statusSpecOf(StatusDomain domain, Object? status) =>
     statusPresentation[coerceStatus(domain, status)]!;
+
+// ── Air 词表：一份，给所有 Air 界面 ─────────────────────────────────────────
+//
+// Air（侧栏任务行、控制台、任务详情）说的是自己那套词 —— 跟它旁边印着的工作区
+// 租约 / 工作流阶段词同源。这份词表的唯一来源是每个 spec 的 [StatusSpec.airLabelKey]
+// 列（Web 侧同一列由 public/status-presentation.js 的 `airStatusLabels()` 出，
+// air.js 的 stateNames 和控制台的 STATUS_COPY 都从它构建）。从前
+// air_service.dart 的 airStateNames、air_task_status.dart 的 airStatusCopy 和
+// air_task_details.dart 里那几处硬编码各写了一份，于是同一条任务在侧栏和控制台能
+// 读出两个词 —— 后台等待借走「等待回答」也是这么来的。
+
+/// 一个 canonical 状态在 Air 面上的词。
+String airStatusWord(CanonicalStatus status) => statusPresentation[status]!.airLabel;
+
+/// 全部 canonical 状态 → Air 词（整表，给 airLabel 那类按原始串取词的调用点）。
+Map<CanonicalStatus, String> airStatusWords() => {
+  for (final status in CanonicalStatus.values) status: airStatusWord(status),
+};
 
 /// 运行标记的颜色：和 Web 的 status-presentation.js `RING_TINTS` 是同一份，顺序也
 /// 必须一样 —— 颜色按 id 哈希取，同一个 id 在两端要落到同一个色。

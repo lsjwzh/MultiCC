@@ -4,6 +4,7 @@ import '../i18n.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../utils/cli_display.dart';
 import '../utils/session_status_helpers.dart';
 
 /// 状态看板 — 镜像网页 dashboard.html：全会话一览（active/idle）+ 聚合统计
@@ -119,26 +120,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             runSpacing: 6,
             children: [
               ...byCli.entries.map(
+                // 名字与颜色只有一份表（app/lib/utils/cli_display.dart）：以前这里是
+                // 一条 `_ => 'Claude'` 的 switch，codebuddy / kimi / dsh / gemini /
+                // grok 在仪表盘上都显示成 Claude。
                 (e) => _chip(
-                  switch (e.key) {
-                    'codex' => 'Codex',
-                    'claude-exp' => 'Claude Agent SDK',
-                    'codex-exp' => 'Codex Exp',
-                    'opencode' => 'OpenCode',
-                    'zcode' => 'ZCode',
-                    'qoder' => 'Qoder CN',
-                    _ => 'Claude',
-                  },
+                  cliDisplayName(e.key),
                   '${e.value}',
-                  switch (e.key) {
-                    'codex' => AppColors.codex,
-                    'claude-exp' => AppColors.claude,
-                    'codex-exp' => AppColors.codex,
-                    'opencode' => AppColors.opencode,
-                    'zcode' => AppColors.zcode,
-                    'qoder' => AppColors.qoder,
-                    _ => AppColors.claude,
-                  },
+                  cliDisplayColor(e.key),
                 ),
               ),
               ...byKind.entries.map(
@@ -253,15 +241,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _sessionTile(Map<String, dynamic> s) {
     final active = s['active'] == true;
-    final cli = switch (s['cli'] ?? 'claude') {
-      'codex' => 'Codex',
-      'claude-exp' => 'Claude Agent SDK',
-      'codex-exp' => 'Codex Exp',
-      'opencode' => 'OpenCode',
-      'zcode' => 'ZCode',
-      'qoder' => 'Qoder CN',
-      _ => 'Claude',
-    };
+    // 会话的 cli 是服务端记录里的 id：按 id 查展示名，未知 id 原样显示（下面的
+    // switch 回落成 'Claude' 会把每个没见过的 CLI 都标成 Claude）。
+    final cli = cliDisplayName(s['cli']?.toString());
     final kind = (s['kind'] ?? 'terminal') == 'chat' ? 'Chat' : 'Term';
     final label = (s['label'] as String?)?.isNotEmpty == true
         ? s['label'] as String

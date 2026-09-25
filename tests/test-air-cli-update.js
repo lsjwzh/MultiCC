@@ -22,6 +22,10 @@ const { t, getLocale } = require('./helpers/i18n-translator');
 const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'air-cli-update.js'), 'utf8');
 const AIR_HTML = fs.readFileSync(path.join(ROOT, 'public', 'air.html'), 'utf8');
+// 页面先加载共享的 CLI 目录（air.html 的 <script src="provider-catalog.js">），浮层里的
+// CLI 名字从它取。沙箱照页面的顺序来 —— 少了它，浮层渲染就只能在读 .cliDisplayName
+// 时崩掉，而不是在这里红。
+const CATALOG = require('../public/provider-catalog');
 
 // ── Minimal DOM ────────────────────────────────────────────────────────────
 class FakeClassList {
@@ -169,6 +173,7 @@ function buildContext({ fetchImpl, confirmResult = true }) {
     console: createSandboxConsole(),
     t,
     getLocale,
+    MultiCCProviderCatalog: CATALOG,
   };
   context.window = context;
   vm.createContext(context);

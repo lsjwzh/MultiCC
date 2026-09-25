@@ -42,6 +42,7 @@
   // 文案只在渲染时查。t() 由 air.html 的 i18n.js 提供；万一没挂上（缓存半套静态资源）
   // 只退化成 key 本身，不让整页因为文案层缺失而崩。
   const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
+  // 五个字符与 shared/dom-helpers.js 的 escapeHtml 同一份语义。自包含 IIFE，不依赖页面顺序。
   const esc = value => String(value == null ? '' : value)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');

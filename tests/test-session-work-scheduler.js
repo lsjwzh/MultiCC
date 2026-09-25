@@ -8,15 +8,21 @@ const test = require('node:test');
 const { createOrchestrationStore } = require('../src/orchestration/store');
 const { createOutbox } = require('../src/outbox');
 const {
+  FREEZE_REASON_CLASSIFY,
   createSessionWorkScheduler,
   runStateForFreezeReason,
 } = require('../src/session-work/scheduler');
+const { runStateForClassify } = require('../src/classify/vocab');
 
 test('runStateForFreezeReason maps each freeze reason to a truthful runState', () => {
-  // User / external hand-off → waiting (the only reasons that mean "act now").
+  // User hand-off → waiting (the only reason that means "act now").
   assert.equal(runStateForFreezeReason('awaiting_user_input'), 'waiting');
-  assert.equal(runStateForFreezeReason('awaiting_callback'), 'waiting');
   assert.equal(runStateForFreezeReason('waiting'), 'waiting');
+  // A callback is in someone else's hands: a BACKGROUND wait, not a question.
+  // Folding it into `waiting` made every Air card and session row answer
+  // 「等待回答」 about work the user cannot answer.
+  assert.equal(runStateForFreezeReason('awaiting_callback'), 'background');
+  assert.equal(runStateForFreezeReason('classify_background'), 'background');
   // Faults / interruptions → error, NOT a false "waiting on you".
   assert.equal(runStateForFreezeReason('error'), 'error');
   assert.equal(runStateForFreezeReason('classification_error'), 'error');
@@ -27,7 +33,6 @@ test('runStateForFreezeReason maps each freeze reason to a truthful runState', (
   assert.equal(runStateForFreezeReason('continuation_ready'), 'running');
   assert.equal(runStateForFreezeReason('incomplete_requires_resume'), 'running');
   assert.equal(runStateForFreezeReason('classify_waiting'), 'waiting');
-  assert.equal(runStateForFreezeReason('classify_background'), 'waiting');
   assert.equal(runStateForFreezeReason('classify_error'), 'error');
   assert.equal(runStateForFreezeReason('classify_running'), 'running');
   // Deferred claim → queued.
@@ -37,6 +42,15 @@ test('runStateForFreezeReason maps each freeze reason to a truthful runState', (
   assert.equal(runStateForFreezeReason('something_new'), 'waiting');
   assert.equal(runStateForFreezeReason(null), 'waiting');
   assert.equal(runStateForFreezeReason(undefined), 'waiting');
+  // The table is derived from the classify letters, not hand-copied: every
+  // freeze reason that owes its run state to a letter must agree with the letter.
+  for (const [reason, letter] of Object.entries(FREEZE_REASON_CLASSIFY)) {
+    assert.equal(
+      runStateForFreezeReason(reason),
+      runStateForClassify(letter),
+      `freeze reason ${reason} drifted from classify letter ${letter}`,
+    );
+  }
 });
 
 function fixture(t, options = {}) {

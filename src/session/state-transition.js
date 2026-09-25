@@ -2,7 +2,7 @@
 
 const RUNNING_STATUSES = new Set(['thinking', 'editing', 'running']);
 const SESSION_STATUSES = new Set([
-  ...RUNNING_STATUSES, 'idle', 'waiting', 'succeeded', 'completed', 'error',
+  ...RUNNING_STATUSES, 'idle', 'waiting', 'background', 'succeeded', 'completed', 'error',
 ]);
 
 function initialSessionState() {
@@ -49,8 +49,13 @@ function transitionSessionState(previous, patch = {}, { now = Date.now(), pendin
     runEndedAt = at;
   }
 
-  const status = pendingWork && !isRunningStatus(requested) && requested !== 'waiting'
-    ? 'waiting'
+  // Outstanding work (a dispatch to another session, a pending callback) means
+  // the session idles on something outside this conversation: `background`, not
+  // `waiting` — nothing is asked of the user. A request that already IS a wait
+  // or a fault is never overwritten by it.
+  const status = pendingWork && !isRunningStatus(requested)
+      && !['waiting', 'background', 'error'].includes(requested)
+    ? 'background'
     : requested;
   const state = Object.freeze({ status, lastActivity: at, runStartedAt, runEndedAt });
   return Object.freeze({

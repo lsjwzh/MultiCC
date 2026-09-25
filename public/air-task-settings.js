@@ -1,15 +1,11 @@
 (function () {
   'use strict';
 
-  const CLI_LABELS = Object.freeze({
-  claude: 'Claude Code', 'claude-exp': 'Claude Agent SDK', codex: 'Codex', 'codex-exp': 'Codex Exp', opencode: 'OpenCode', zcode: 'ZCode',
-    qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', kimi: 'Kimi Code', gemini: 'Gemini', grok: 'Grok',
-  });
-  const CLI_MARKS = Object.freeze({
-    claude: 'C', 'claude-exp': 'A', codex: 'X', 'codex-exp': 'E', opencode: 'O', zcode: 'Z', qoder: 'Q',
-    codebuddy: 'W', dsh: 'D', kimi: 'K', gemini: 'G', grok: 'R',
-  });
-  const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh', 'gemini', 'grok']);
+  // 展示名、短标记、是否自持账号三列都取自共享 CLI 目录（public/provider-catalog.js，
+  // 权威表在服务端 src/cli/cli-capability.js）—— 这里原本各抄了一份副本。
+  const cliLabel = cli => window.MultiCCProviderCatalog.cliDisplayName(cli);
+  const cliMark = cli => window.MultiCCProviderCatalog.cliShortMark(cli);
+  const isProviderless = cli => window.MultiCCProviderCatalog.cliProviderless(cli);
   const EFFORT_LABELS = Object.freeze({
     claude: t('airTaskSettingsEffortClaude'), 'claude-exp': t('airTaskSettingsEffortClaude'), codex: t('airTaskSettingsEffortCodex'), 'codex-exp': t('airTaskSettingsEffortCodex'), opencode: t('airTaskSettingsEffortOpenCode'),
     qoder: t('airTaskSettingsEffortLabel'), codebuddy: t('airTaskSettingsEffortLabel'),
@@ -138,7 +134,7 @@
     if (cli === 'zcode') return [t('airTaskSettingsNativeZcodeTitle'), t('airTaskSettingsNativeZcodeNote')];
     if (cli === 'opencode') return [t('airTaskSettingsNativeOpenCodeTitle'), t('airTaskSettingsNativeOpenCodeNote')];
     if (cli === 'kimi') return [t('airTaskSettingsNativeKimiTitle'), t('airTaskSettingsNativeKimiNote')];
-    if (PROVIDERLESS_CLIS.has(cli)) return [t('airTaskSettingsNativeCliTitle'), t('airTaskSettingsNativeCliNote')];
+    if (isProviderless(cli)) return [t('airTaskSettingsNativeCliTitle'), t('airTaskSettingsNativeCliNote')];
     return [t('airTaskSettingsNativeDefaultTitle'), t('airTaskSettingsNativeDefaultNote')];
   }
 
@@ -268,8 +264,8 @@
         button.dataset.cli = cli; button.setAttribute('role', 'radio');
         button.setAttribute('aria-checked', String(cli === currentCli));
         button.classList.toggle('selected', cli === currentCli);
-        button.append(node('span', CLI_MARKS[cli] || cli.slice(0, 1).toUpperCase(), 'air-cli-mark'));
-        const copy = node('span'); copy.append(node('strong', CLI_LABELS[cli] || cli), node('small', cli));
+        button.append(node('span', cliMark(cli), 'air-cli-mark'));
+        const copy = node('span'); copy.append(node('strong', cliLabel(cli)), node('small', cli));
         button.append(copy);
         button.onclick = () => { if (cli !== currentCli && !loading) selectCli(cli, false); };
         return button;
@@ -314,7 +310,7 @@
     function renderSubProviders() {
       const head = node('option', t('airTaskSettingsFollowPrimary')); head.value = '';
       const items = [head];
-      if (!PROVIDERLESS_CLIS.has(currentCli)) {
+      if (!isProviderless(currentCli)) {
         for (const provider of providers) {
           if ((currentCli === 'codex' || currentCli === 'codex-exp') && provider.isOfficial) continue;
           // tr 要传进去：缓存里那条「更新于 / 查询失败 / 过期」的尾巴不传就永远是中文。
@@ -417,12 +413,12 @@
       // 支持 Provider 的 CLI 已经有一条真实的内置 Official Provider：空值
       // 「Default login / official account」只是旧 UI 对同一件事的第二种说法，
       // 会让人以为它是另一条线路。Providerless CLI 仍保留自身的原生项。
-      if (PROVIDERLESS_CLIS.has(currentCli) || !official) {
+      if (isProviderless(currentCli) || !official) {
         const [nativeTitle] = nativeProviderCopy(currentCli);
         const head = node('option', nativeTitle); head.value = '';
         options.push(head);
       }
-      if (!PROVIDERLESS_CLIS.has(currentCli)) {
+      if (!isProviderless(currentCli)) {
         for (const auto of autoApi.availableProtocols(providers)) {
           if (!autoApi.defaultSelection(providers, auto.protocol)
               && config.providerSelection?.protocol !== auto.protocol) continue;
@@ -442,9 +438,9 @@
       if (!options.some(option => option.value === desired)) desired = official?.id || '';
       const desiredProvider = providers.find(provider => provider.id === desired);
       chooseProvider(desired, initial ? config.model || '' : desiredProvider?.model || '');
-      providerStatus.textContent = PROVIDERLESS_CLIS.has(currentCli)
-        ? t('airTaskSettingsStatusNative', { cli: CLI_LABELS[currentCli] || currentCli })
-        : providers.length ? t('airTaskSettingsProvidersLoaded', { n: providers.length, cli: CLI_LABELS[currentCli] || currentCli })
+      providerStatus.textContent = isProviderless(currentCli)
+        ? t('airTaskSettingsStatusNative', { cli: cliLabel(currentCli) })
+        : providers.length ? t('airTaskSettingsProvidersLoaded', { n: providers.length, cli: cliLabel(currentCli) })
           : t('airTaskSettingsNoProviders');
     }
 
@@ -515,7 +511,7 @@
         }
         const base = `/api/sessions/${encodeURIComponent(entry.sessionId)}`;
         if (currentCli !== config.cli) await request(base + '/switch-cli', { cli: currentCli });
-        if (!PROVIDERLESS_CLIS.has(currentCli)) {
+        if (!isProviderless(currentCli)) {
           // Provider mutation may assign its default model. Persist the chosen
           // model in a second transaction so the provider default cannot win.
           await request(base, { provider, providerSelection }, 'PATCH');

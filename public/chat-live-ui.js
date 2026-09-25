@@ -339,23 +339,32 @@
         || (typeof require === 'function' ? require('./status-presentation.js') : null);
     }
 
-    // Voice/ding are audio concerns and stay here; the visual half (canonical
-    // status → glyph/tone) comes from the registry so the chat bar cannot drift
-    // from the session card and the task board.
+    // Shared outcome-copy table (public/shared/notification-copy.js). Resolved
+    // lazily, exactly like the status registry above.
+    function outcomeCopy() {
+      return global.MultiCCNotificationCopy
+        || (typeof require === 'function' ? require('./shared/notification-copy.js') : null);
+    }
+
+    // Which label/voice/ding a classify outcome gets. The TABLE is shared with
+    // every other notification surface (client.js / pwa.js / chat-event-
+    // controller.js / chat-notifications.js) so the bar cannot say 「等待用户」
+    // about the outcome a lock-screen notification calls 「等待操作」; this
+    // function only localizes it and folds in the canonical status. A caller may
+    // pass a classify LETTER (D/W/B/E/P/C) or the coarse push TYPE
+    // (succeeded/waiting/error) — both resolve to the same row.
     function classifyDisplay(classifyState) {
-      const map = {
-        D: { label: translate('classifySucceeded'), voice: translate('voiceExecutionSucceeded'), ding: 'succeeded' },
-        C: { label: translate('classifyContinuing'), voice: null, ding: null },
-        W: { label: translate('classifyWaitingUser'), voice: translate('voiceWaitingAction'), ding: 'waiting' },
-        B: { label: translate('classifyWaitingBackground'), voice: translate('voiceWaitingBackground'), ding: 'waiting' },
-        E: { label: translate('classifyApiError'), voice: translate('voiceApiInterrupted'), ding: 'error' },
-        P: { label: translate('classifyProcessing'), voice: null, ding: null },
+      const copy = outcomeCopy().notificationCopy(classifyState);
+      const status = statusRegistry().classifyStatus(copy.letter);
+      return {
+        label: translate(copy.labelKey),
+        voice: copy.voiceKey ? translate(copy.voiceKey) : null,
+        ding: copy.ding,
+        status,
+        // barTint is kept for callers that still read it; it now equals the
+        // canonical status rather than a second, hand-maintained vocabulary.
+        barTint: status,
       };
-      const entry = map[classifyState] || map.W;
-      const status = statusRegistry().classifyStatus(map[classifyState] ? classifyState : 'W');
-      // barTint is kept for callers that still read it; it now equals the
-      // canonical status rather than a second, hand-maintained vocabulary.
-      return { ...entry, status, barTint: status };
     }
 
     // The verdict currently on the bar, and whether Aux is still revising it.

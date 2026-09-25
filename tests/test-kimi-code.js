@@ -35,8 +35,13 @@ test('registration chain exposes kimi across every integration point', () => {
   ));
   assert.equal(schema.properties.cli.enum.includes('kimi'), true);
 
-  const chatHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.js'), 'utf8');
-  assert.match(chatHtml, /kimi:\s*\{\s*label:\s*'Kimi Code'/);
+  // 展示名不再每个页面各写一份：chat.js 的 CLI_META 由 public/provider-catalog.js 的
+  // 共享目录生成，权威表在 src/cli/cli-capability.js（三端一致由
+  // tests/test-cli-display-parity.js 锁）。这里只证明 kimi 真的走通了这条链。
+  assert.equal(require('../src/cli/cli-capability').displayNameOf('kimi'), 'Kimi Code');
+  assert.equal(require('../public/provider-catalog').cliMeta('kimi').label, 'Kimi Code');
+  const chatPage = fs.readFileSync(path.join(__dirname, '..', 'public', 'chat.js'), 'utf8');
+  assert.match(chatPage, /const CLI_META = _providerCatalog\.cliMetaMap\(\)/);
 
   const { OFFICIAL_INSTALL_SPECS } = require('../src/cli/switch-runtime');
   assert.deepEqual(OFFICIAL_INSTALL_SPECS.kimi, {

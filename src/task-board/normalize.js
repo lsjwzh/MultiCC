@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const planning = require('./planning');
+const { TURN_RUN_STATES } = require('../classify/vocab');
 // Task board core — pure logic for the AI-tagged module→task board shown in
 // the fleet panel (meta.html). No I/O and no host state: given a board object
 // and inputs, every function here is deterministic, so the whole tagging /
@@ -33,7 +34,10 @@ const PENDING_TASK_TITLE = '新任务';
 // Runtime projection is deliberately separate from task.status lifecycle.
 // `succeeded` says the latest turn succeeded; only explicit user action writes
 // task.status = 'done'. Legacy runState done/completed is migrated below.
-const TASK_RUN_STATES = new Set(['queued', 'running', 'waiting', 'succeeded', 'error', 'idle']);
+// The vocabulary itself lives in src/classify/vocab.js (TURN_RUN_STATES): the
+// classify letters, the session run state and this board projection all speak
+// one list. Adding a state there is the only edit needed.
+const TASK_RUN_STATES = new Set(TURN_RUN_STATES);
 const MAX_ROUTING_ATTEMPTS = 50;
 
 // Where the card came from, so the board can tell the two admissions apart at

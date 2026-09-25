@@ -32,15 +32,15 @@
   //   blocked — frozen on something the user must go fix elsewhere (not a reply)
   //   offline — no run state at all (record absent / session not active)
   const SESSION_STATUSES = Object.freeze([
-    'idle', 'queued', 'running', 'waiting', 'blocked', 'error', 'succeeded', 'cancelled',
-    'offline', 'unknown',
+    'idle', 'queued', 'running', 'waiting', 'background', 'blocked', 'error', 'succeeded',
+    'cancelled', 'offline', 'unknown',
   ]);
 
   // Task lifecycle. task.status {active,done,archived} refined by the aggregated
   // task.runState the server computes in src/task-board.js.
   const TASK_STATUSES = Object.freeze([
-    'idle', 'queued', 'running', 'waiting', 'blocked', 'error', 'succeeded', 'done', 'cancelled',
-    'archived', 'unknown',
+    'idle', 'queued', 'running', 'waiting', 'background', 'blocked', 'error', 'succeeded', 'done',
+    'cancelled', 'archived', 'unknown',
   ]);
 
   const DOMAIN_STATUSES = Object.freeze({ session: SESSION_STATUSES, task: TASK_STATUSES });
@@ -50,6 +50,16 @@
   // icon      — the ONE glyph for this status everywhere. Status is never carried
   //             by colour alone (WCAG 1.4.1): every badge renders icon + an
   //             accessible name, and optionally a visible label.
+  // labelKey  — the status's generic word (session lists, fleet, task board).
+  // ariaKey   — the accessible name; always says the state in words.
+  // airLabelKey — the word the AIR surfaces use (sidebar task rows, the console,
+  //             the task-detail panel). Air says these states in the same
+  //             vocabulary as the workspace/stage words printed next to them, so
+  //             it gets its own column here instead of one hand-kept table per
+  //             Air script. air.js's `stateNames` and air-admin.js's `STATUS_COPY`
+  //             are BUILT from it via airStatusLabels() — that duplication is
+  //             what let one Air surface say 「等待回答」 about a background job
+  //             while another said something else about the same status.
   // tone      — semantic colour token, resolved by status-badge.css. Not a hex.
   // spinner   — may this status animate? Only `running`. This is what guarantees
   //             an errored card stops spinning the moment it turns red.
@@ -60,57 +70,68 @@
   const STATUS_PRESENTATION = Object.freeze({
     idle: Object.freeze({
       icon: '⚪', tone: 'neutral', spinner: false, terminal: false, priority: 10,
-      labelKey: 'statusIdle', ariaKey: 'statusAriaIdle',
+      labelKey: 'statusIdle', ariaKey: 'statusAriaIdle', airLabelKey: 'airStateIdle',
     }),
     queued: Object.freeze({
       icon: '📥', tone: 'info', spinner: false, terminal: false, priority: 60,
-      labelKey: 'statusQueued', ariaKey: 'statusAriaQueued',
+      labelKey: 'statusQueued', ariaKey: 'statusAriaQueued', airLabelKey: 'airStateQueued',
     }),
     running: Object.freeze({
       icon: '🔄', tone: 'running', spinner: true, terminal: false, priority: 70,
-      labelKey: 'statusRunning', ariaKey: 'statusAriaRunning',
+      labelKey: 'statusRunning', ariaKey: 'statusAriaRunning', airLabelKey: 'airStateRunning',
     }),
     waiting: Object.freeze({
       icon: '⏸️', tone: 'waiting', spinner: false, terminal: false, priority: 50,
-      labelKey: 'statusWaiting', ariaKey: 'statusAriaWaiting',
+      labelKey: 'statusWaiting', ariaKey: 'statusAriaWaiting', airLabelKey: 'airStateWaiting',
+    }),
+    // Idling on a background job (classify B): a callback or a dispatched worker
+    // is still out there. NOT `waiting` — nothing is asked of the user, so it
+    // must not borrow the "your turn" word or the attention it earns. Ranked
+    // below `waiting` (a real question always outranks it) and above `succeeded`;
+    // faults still outrank it, so a background wait never masks a failure.
+    background: Object.freeze({
+      icon: '⏳', tone: 'info', spinner: false, terminal: false, priority: 45,
+      labelKey: 'statusBackground', ariaKey: 'statusAriaBackground', airLabelKey: 'airStateBackground',
     }),
     blocked: Object.freeze({
       icon: '🔒', tone: 'blocked', spinner: false, terminal: false, priority: 80,
-      labelKey: 'statusBlocked', ariaKey: 'statusAriaBlocked',
+      labelKey: 'statusBlocked', ariaKey: 'statusAriaBlocked', airLabelKey: 'airStateBlocked',
     }),
     error: Object.freeze({
       icon: '❌', tone: 'danger', spinner: false, terminal: false, priority: 90,
-      labelKey: 'statusError', ariaKey: 'statusAriaError',
+      labelKey: 'statusError', ariaKey: 'statusAriaError', airLabelKey: 'airStateFailed',
     }),
     succeeded: Object.freeze({
       icon: '✅', tone: 'success', spinner: false, terminal: true, priority: 30,
-      labelKey: 'statusSucceeded', ariaKey: 'statusAriaSucceeded',
+      labelKey: 'statusSucceeded', ariaKey: 'statusAriaSucceeded', airLabelKey: 'airStateSucceeded',
     }),
     done: Object.freeze({
       icon: '✅', tone: 'success', spinner: false, terminal: true, priority: 30,
-      labelKey: 'statusDone', ariaKey: 'statusAriaDone',
+      labelKey: 'statusDone', ariaKey: 'statusAriaDone', airLabelKey: 'airStateDone',
+      // (`done` answers two questions in Air — task.status and the last workflow
+      // stage — and both print this one word.)
     }),
     // Presentation-only: the server folds a cancelled claim into runState 'idle',
     // but "you stopped this" and "nothing is happening" are different things to a
     // reader, and an interrupted turn must never be dressed up as completed.
     cancelled: Object.freeze({
       icon: '🚫', tone: 'muted', spinner: false, terminal: true, priority: 25,
-      labelKey: 'statusCancelled', ariaKey: 'statusAriaCancelled',
+      labelKey: 'statusCancelled', ariaKey: 'statusAriaCancelled', airLabelKey: 'airStateCancelled',
     }),
     archived: Object.freeze({
       icon: '🗄', tone: 'muted', spinner: false, terminal: true, priority: 20,
-      labelKey: 'statusArchived', ariaKey: 'statusAriaArchived',
+      labelKey: 'statusArchived', ariaKey: 'statusAriaArchived', airLabelKey: 'airStateArchived',
     }),
     offline: Object.freeze({
       icon: '⊘', tone: 'muted', spinner: false, terminal: false, priority: 15,
-      labelKey: 'statusOffline', ariaKey: 'statusAriaOffline',
+      labelKey: 'statusOffline', ariaKey: 'statusAriaOffline', airLabelKey: 'airStateOffline',
     }),
     // Neutral landing pad for a value this build does not know. Never resolves to
     // success or running: an unrecognised status must not read as "finished" or
     // "still going". Every hit is recorded for diagnostics.
     unknown: Object.freeze({
       icon: '❔', tone: 'neutral', spinner: false, terminal: false, priority: 0,
-      labelKey: 'statusUnknown', ariaKey: 'statusAriaUnknown',
+      labelKey: 'statusUnknown', ariaKey: 'statusAriaUnknown', airLabelKey: 'airStateUnknown',
     }),
   });
 
@@ -157,10 +178,12 @@
   // tests/test-status-presentation.js asserts this is the only divergence.
   const FREEZE_REASON_STATUS = Object.freeze({
     awaiting_user_input: 'waiting',
-    awaiting_callback: 'waiting',
+    // A callback is outstanding in someone else's hands: a background wait, not
+    // a question. Same fold as the classify letter B below.
+    awaiting_callback: 'background',
     waiting: 'waiting',
     classify_waiting: 'waiting',
-    classify_background: 'waiting',
+    classify_background: 'background',
     configuration_required: 'blocked',
     error: 'error',
     classification_error: 'error',
@@ -175,14 +198,15 @@
   });
 
   // classify letter → canonical status. Mirrors src/classify/vocab.js
-  // CLASSIFY_DISPLAY: normally `cardStatus`, except that `E` is surfaced by its
-  // `barTint: 'error'` rather than its `cardStatus: 'waiting'` — an API failure is
-  // a fault the user must see as a fault, and the card is the only place some
-  // surfaces show it. `C` is retired server-side but stays here so a replayed or
+  // CLASSIFY_DISPLAY `cardStatus` key-for-key (E included: its cardStatus IS
+  // `error` — an API failure is a fault the user must see as a fault). W and B
+  // stay two different statuses: W waits for the user, B waits on a background
+  // job, and folding them is what made a card say 「等待回答」 about work nobody
+  // can answer. `C` is retired server-side but stays here so a replayed or
   // persisted old payload still renders instead of falling to unknown.
   // tests/test-status-presentation.js pins this against the server table.
   const CLASSIFY_LETTER_STATUS = Object.freeze({
-    D: 'succeeded', C: 'running', W: 'waiting', B: 'waiting', E: 'error', P: 'running',
+    D: 'succeeded', C: 'running', W: 'waiting', B: 'background', E: 'error', P: 'running',
   });
 
   /** classify letter (D/C/W/B/E/P) → canonical session status. */
@@ -192,6 +216,50 @@
     if (hit) return hit;
     if (key) recordUnknown('classify', key);
     return 'unknown';
+  }
+
+  // ── Air copy: one table for both Air surfaces ───────────────────────────────
+  //
+  // Air (sidebar task rows + the console) prints a status in ITS OWN words — the
+  // ones the workspace-lease and workflow-stage words sitting next to it use. Two
+  // hand-kept copies of that vocabulary (air.js `stateNames`, air-admin.js
+  // `STATUS_COPY`) is what let one of them call a status 「等待回答」 while the
+  // other called the same status something else. The words now live once, in the
+  // `airLabelKey` column of the specs above, and both scripts build their table
+  // from airStatusLabels().
+
+  /**
+   * The Air word for one canonical status. `translate` is the page's `t()`; a key
+   * the catalogue does not know falls back to the generic label — never to the
+   * raw key, which would put `airStateFoo` on a badge.
+   */
+  function airStatusLabel(status, translate) {
+    const spec = STATUS_PRESENTATION[normalizeKey(status)];
+    if (!spec) return '';
+    const t = typeof translate === 'function' ? translate : identity;
+    const word = t(spec.airLabelKey);
+    return word && word !== spec.airLabelKey ? String(word) : String(t(spec.labelKey));
+  }
+
+  /** Every canonical status → its Air word, keyed by status name. */
+  function airStatusLabels(translate) {
+    const out = {};
+    for (const name of Object.keys(STATUS_PRESENTATION)) out[name] = airStatusLabel(name, translate);
+    return out;
+  }
+
+  /**
+   * Air word for a RAW server value: a canonical status, or one of the historic
+   * aliases Air's `label()` still receives (`failed`, `completed`, …). Returns ''
+   * for anything that is not a status at all, so the caller can fall through to
+   * its own workspace / workflow-stage words without the two vocabularies
+   * fighting over the same string.
+   */
+  function airStatusWordFor(value, translate) {
+    const key = normalizeKey(value);
+    if (!key) return '';
+    const canonical = STATUS_PRESENTATION[key] ? key : STATUS_ALIASES[key];
+    return canonical ? airStatusLabel(canonical, translate) : '';
   }
 
   // ── Diagnostics for unrecognised values ─────────────────────────────────────
@@ -515,6 +583,9 @@
     ringTint,
     coerceStatus,
     classifyStatus,
+    airStatusLabel,
+    airStatusLabels,
+    airStatusWordFor,
     freezeReasonStatus,
     sessionStatus,
     sessionCardStatus,

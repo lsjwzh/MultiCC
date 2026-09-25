@@ -8,18 +8,22 @@ const { createOpencodeLikeAdapter } = require('./opencode-like');
 // session/cancel. Session ids (ses_…) are the same ids `opencode run --session`
 // uses, so conversations started on the old JSON lane resume unchanged.
 // MULTICC_OPENCODE_LEGACY_JSON=1 restores the `run --format json` lane.
+const { displayNameOf } = require('../cli/cli-capability');
+
+const LABEL = displayNameOf('opencode');
+
 function createOpencodeAdapter({
   cmd, userInputReminder = '', routerMcpNode = null, routerMcpScript = null,
   env = process.env,
 }) {
   if (env.MULTICC_OPENCODE_LEGACY_JSON === '1') {
     return createOpencodeLikeAdapter({
-      name: 'opencode', label: 'OpenCode', cmd, supportsAgentVariant: true,
+      name: 'opencode', label: LABEL, cmd, supportsAgentVariant: true,
       includeThinking: true, userInputReminder,
     });
   }
   return createAcpAdapter({
-    name: 'opencode', label: 'OpenCode', cmd, agentArgs: ['acp'],
+    name: 'opencode', label: LABEL, cmd, agentArgs: ['acp'],
     // OpenCode agents (build/plan) are ACP session modes.
     agentViaMode: true,
     routerMcpNode, routerMcpScript, userInputReminder,

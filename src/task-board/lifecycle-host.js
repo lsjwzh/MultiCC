@@ -33,7 +33,7 @@ function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getS
       const dedicated = ids.includes(record.taskBoundTaskId);
       const selected = ids.includes(getShell().stateTarget(record.id).taskId);
       const current = ids.includes(record.taskState?.taskId) || ids.includes(getState(record.id)?._currentTaskId);
-      if ((dedicated || selected || current) && ['running', 'queued', 'waiting'].includes(getRunState(record.id))) {
+      if ((dedicated || selected || current) && ['running', 'queued', 'waiting', 'background'].includes(getRunState(record.id))) {
         throw Object.assign(new Error('task_busy'), { code: 'task_busy' });
       }
     }

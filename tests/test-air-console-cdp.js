@@ -722,3 +722,78 @@ test('the console shows only the 5 most recently updated waits and hands the res
 
   console.log('截图目录: ' + shots);
 });
+
+// B（等后台任务）在真页面上只报「等待后台任务」。这一条断的是 DOM：词表那一层
+// 由 tests/test-status-presentation.js 钉（两个语言、每个状态一个词），这里要证的是
+// 那张表真的喂到了界面上 —— 侧栏的徽标、控制台的待办清单、统计卡三处读的是同一份
+// 判定，等后台任务不在任何一处被说成「等待回答」。
+test('a task waiting on background work never renders as waiting for you', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const routes = {}, publicDir = path.resolve(__dirname, '../public');
+  const shots = path.join(os.tmpdir(), 'multicc-air-background-qa');
+  const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
+    const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
+    routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': type } };
+  }
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
+    routes['/shared/' + file] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
+  }
+  routes['/air'] = routes['/air.html'];
+  routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
+  routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
+
+  const directories = [{ id: 'd1', name: 'MultiCC 主仓', path: '/projects/multicc' }];
+  const configuration = { cli: 'codex', provider: 'codex-lab', providerName: 'Lab Responses', providerSelection: null,
+    model: 'gpt-5.5', effectiveModel: 'gpt-5.5', effort: 'medium' };
+  const task = (id, title, status, runState, updatedAt, resource) => ({ id, dirId: 'd1', title, recordType: 'planned',
+    workflowStage: 'doing', status, runState, updatedAt, resource: resource || { residency: 'planned', lease: 'idle' }, configuration });
+  // 三条活着的任务各说各的：等后台任务、等回答、正在跑。等后台任务那条既不该算进
+  // 「谁在等我」，也不该拿「在跑」的圈 —— 外面有东西在跑，但本机这一轮没在跑。
+  const airTasks = [
+    task('tsk_bg', '等回调：索引重建', 'active', 'background', 900),
+    task('tsk_wait', '等回答：发布口径', 'active', 'waiting', 800),
+    task('tsk_run', '在跑：投放日报', 'active', 'running', 700, { residency: 'materialized', lease: 'running' }),
+  ];
+  routes['/api/air'] = () => json({ ok: true, directories, clis: ['codex'], migration: { errors: [] }, tasks: airTasks, sessions: [] });
+  routes['/api/cron'] = () => json([]);
+  routes['/api/docs-registry'] = () => json([]);
+  for (const entry of airTasks) {
+    routes[`/api/air/tasks/${entry.id}`] = routes[`/api/task-shell-tasks/${entry.id}`] = () => json({ ok: true,
+      task: entry, sessionId: `task-${entry.id}`, ownerShellId: 'shell-a', readOnly: false,
+      execution: { busy: false, status: 'idle' }, resource: entry.resource, attribution: {},
+      roleBindings: { version: 0, bindings: [] }, messages: [] });
+    routes[`POST /api/task-board/tasks/${entry.id}/chat-session`] = () => json({ ok: true, sessionId: `task-${entry.id}` });
+  }
+  routes['POST /api/task-shells'] = () => json({ id: 'shell-a' });
+
+  await withCdpHarness({ routes, screenshotDir: shots }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/air?dir=d1&task=tsk_bg');
+    assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='等回调：索引重建'`));
+
+    const badge = await page.evaluate(`document.querySelector('#tasks button .mc-status-label').textContent`);
+    assert.equal(badge, '等待后台任务', '侧栏徽标说的是「等后台任务」');
+    assert.notEqual(badge, '等待回答', '同一行绝不能自报「等待回答」');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#tasks button.ring-running').length`), 0, '等后台任务不算本机在跑，不拿圈');
+    await page.screenshot('bg-wait-sidebar');
+
+    // 控制台徽标数的是「要我动手的」：只有那条等回答的，等后台任务的不算。
+    assert.ok(await page.waitFor(`document.getElementById('console-badge').hidden===false`));
+    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '1', '等后台任务不该在侧栏催我');
+    await page.evaluate(`document.getElementById('overview').click()`);
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.admin-stats .admin-stat').length===4`));
+    const stats = await page.evaluate(`[...document.querySelectorAll('.admin-stats .admin-stat strong')].map(el=>el.textContent)`);
+    assert.equal(stats[1], '3', '三条任务都还没结束');
+    assert.equal(stats[2], '1', '「谁在等我」只数那条等回答的');
+    // 浮层是后挂上去的容器，innerText 对这种没进布局的节点会回空串 —— 读 textContent。
+    const attention = await page.evaluate(`document.querySelector('.console-attention').textContent.replace(/\\s+/g,' ')`);
+    assert.ok(attention.includes('等回答：发布口径'), '等回答的进清单');
+    assert.equal(attention.includes('等回调：索引重建'), false, '等后台任务的不进「谁在等我」');
+    assert.equal(attention.includes('等待后台任务'), false, '这份清单里没有一条该说「等后台任务」');
+    await page.screenshot('bg-wait-console');
+  });
+
+  console.log('截图目录: ' + shots);
+});

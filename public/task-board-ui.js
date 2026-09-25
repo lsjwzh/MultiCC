@@ -166,7 +166,9 @@
 
   function taskMergeEligibility(task, options) {
     if (!task || !String(task.id || '').trim()) return { ok: false, reason: 'missing_task' };
-    if (['running', 'queued', 'waiting'].includes(String(task.runState || ''))) {
+    // `background` is busy too: the turn is idle only because a job it started
+    // is still out there, so its tree is not ours to merge yet.
+    if (['running', 'queued', 'waiting', 'background'].includes(String(task.runState || ''))) {
       return { ok: false, reason: 'task_busy' };
     }
     if (task.moduleAssignment?.running === true) {
