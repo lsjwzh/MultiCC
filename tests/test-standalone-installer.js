@@ -154,6 +154,63 @@ test('install.sh unpacks, configures, starts, and safely replaces a previous ins
   assert.deepEqual(leftovers, [], 'the replaced installation must not be left behind');
 });
 
+// A user coming from a pre-standalone release has an installation the current
+// guard does not recognise, because the old installer put the repository itself
+// at the install path. That is a published MultiCC install, not a stray
+// directory: it must be upgraded rather than refused, its files must survive,
+// and the token and port it was configured with must carry over — the user's
+// phone, bookmarks and other devices already carry them.
+test('install.sh upgrades a pre-standalone source checkout instead of refusing it', () => {
+  const fixture = buildFixtureBundle();
+  const archive = archiveFixture(fixture);
+  const targetParent = tmpdir('multicc-installer-legacy-');
+  const installDir = path.join(targetParent, 'MultiCC');
+  const home = tmpdir('multicc-installer-home-');
+  const env = { MULTICC_STANDALONE_HOME: home };
+
+  // The shape a v1.x/v2.0.3 install has: the project itself, its dependencies,
+  // a launcher, and the .env the old installer wrote its settings into.
+  fs.mkdirSync(path.join(installDir, 'node_modules', 'some-dep'), { recursive: true });
+  fs.writeFileSync(path.join(installDir, 'package.json'), '{"name":"multicc","version":"1.6.10"}\n');
+  fs.writeFileSync(path.join(installDir, 'server.js'), '// legacy entry point\n');
+  fs.writeFileSync(path.join(installDir, '.env'), 'ACCESS_TOKEN=legacy-token\nPORT=3222\n');
+  const legacyLauncher = path.join(installDir, 'multicc');
+  fs.writeFileSync(legacyLauncher, '#!/bin/sh\necho "node not found" >&2\nexit 1\n');
+  fs.chmodSync(legacyLauncher, 0o755);
+
+  const res = runInstaller(['--from', archive, '--dir', installDir, '--yes', '--no-start'], { env });
+  assert.equal(res.status, 0, `upgrading an old installation must succeed:\n${res.stdout}\n${res.stderr}`);
+  assert.match(res.stdout, /older MultiCC installation/i,
+    'an old installation must be reported, not silently replaced');
+
+  // The previous installation is kept whole next to the new one, never deleted.
+  const backups = fs.readdirSync(targetParent).filter(name => name.includes('.legacy-'));
+  assert.equal(backups.length, 1, 'the previous installation must be kept as a backup');
+  const backup = path.join(targetParent, backups[0]);
+  assert.equal(fs.readFileSync(path.join(backup, 'package.json'), 'utf8'),
+    '{"name":"multicc","version":"1.6.10"}\n', 'the backup must keep the old tree');
+  assert.equal(fs.existsSync(path.join(backup, 'server.js')), true);
+  assert.equal(fs.existsSync(path.join(backup, 'node_modules', 'some-dep')), true,
+    'a kept backup must not be trimmed');
+  assert.equal(fs.readFileSync(path.join(backup, '.env'), 'utf8'),
+    'ACCESS_TOKEN=legacy-token\nPORT=3222\n', 'the old settings must stay readable in the backup');
+
+  // What landed at the install path is the real standalone package.
+  assert.equal(fs.existsSync(path.join(installDir, resourcesRel(), 'bundle-manifest.json')), true);
+  assert.equal(fs.existsSync(path.join(installDir, 'multicc')), true);
+
+  // The settings the user already relies on followed them across the upgrade.
+  const token = spawnSync(path.join(installDir, 'multicc'), ['config', 'get', 'ACCESS_TOKEN'],
+    { encoding: 'utf8', env: { ...process.env, ...env } });
+  assert.equal(token.stdout.trim(), 'legacy-token',
+    'the token from the old installation must be reused, or every saved URL breaks');
+  const list = spawnSync(path.join(installDir, 'multicc'), ['config', 'list'],
+    { encoding: 'utf8', env: { ...process.env, ...env } });
+  assert.match(list.stdout, /PORT=3222/, 'the port from the old installation must be reused');
+});
+
+// The old guard's protection must survive this: a directory that is merely
+// not-MultiCC, even one holding a launcher-shaped file, is still refused.
 test('install.sh refuses to touch a directory that is not a MultiCC install', () => {
   const fixture = buildFixtureBundle();
   const archive = archiveFixture(fixture);
@@ -243,11 +300,41 @@ test('install.ps1 is the native Windows path over the same standalone contract',
   assert.match(source, /manifest\.arch[^\n]+x64/);
   assert.match(source, /Join-Path \$env:USERPROFILE 'MultiCC'/,
     'Windows and POSIX installers must both use a stable per-user MultiCC directory');
+  assert.match(source, /function Test-LegacyInstall/,
+    'an installation from before the standalone package must be recognised, not refused');
+  assert.match(source, /function Read-LegacyEnv/,
+    'the token and port the old installation was configured with must be carried over');
+  assert.match(source, /\$legacyDir = "\$InstallDir\.legacy-/,
+    'the old installation must be renamed aside and kept, never deleted');
+  assert.match(source, /\[switch\]\$Yes/,
+    'the upgrade prompt needs a headless escape hatch, like the POSIX --yes');
   assert.match(source, /Invoke-MultiCC @\('config', 'set', 'PORT'/);
   assert.match(source, /Invoke-MultiCC \$startArgs/,
     'a normal Windows install must return only after starting the shared CLI');
   assert.doesNotMatch(source, /\bnpm (?:install|ci)\b|\bgit clone\b/,
     'the Windows target must not need a toolchain either');
+});
+
+test('both installers verify the new package before they touch the old installation', () => {
+  const sh = fs.readFileSync(INSTALLER, 'utf8');
+  const ps1 = fs.readFileSync(WINDOWS_INSTALLER, 'utf8');
+  // A failed or corrupt download must never disturb an installation that still
+  // works, so the rename-aside has to come after the download is verified.
+  assert.ok(sh.indexOf('prepare_legacy_upgrade "$INSTALL_DIR"') > sh.indexOf('Checksum verified'),
+    'install.sh must verify the download before renaming the old installation aside');
+  assert.ok(ps1.indexOf('Test-LegacyInstall $InstallDir') > ps1.indexOf('Assert-Bundle $staged'),
+    'install.ps1 must validate the staged package before renaming the old installation aside');
+});
+
+test('both installers put the old directory back when the new one cannot land', () => {
+  const sh = fs.readFileSync(INSTALLER, 'utf8');
+  const ps1 = fs.readFileSync(WINDOWS_INSTALLER, 'utf8');
+  // Otherwise a half-finished install leaves someone with neither the new
+  // installation nor a working old one.
+  assert.match(sh, /\[ -n "\$LEGACY_DIR" \] && \[ -d "\$LEGACY_DIR" \]/,
+    'install.sh must restore the previous installation when the move fails');
+  assert.match(ps1, /IsNullOrWhiteSpace\(\$legacyDir\)[\s\S]{0,140}Move-Item -LiteralPath \$legacyDir -Destination \$InstallDir/,
+    'install.ps1 must restore the previous installation when the move fails');
 });
 
 test('install.sh keeps the old --branch command line working', () => {

@@ -83,6 +83,8 @@ INSTALLER_VERSION="2.1.1"
 INSTALL_DIR=""
 ACCESS_TOKEN=""
 PORT="3000"
+PORT_GIVEN=false
+ASSUME_YES=false
 NO_SERVICE=false
 NO_START=false
 NO_OPEN=false
@@ -97,9 +99,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dir)       need_val "$1" "$#"; INSTALL_DIR="$2"; shift 2 ;;
     --token)     need_val "$1" "$#"; ACCESS_TOKEN="$2"; shift 2 ;;
-    --port)      need_val "$1" "$#"; PORT="$2"; shift 2 ;;
+    --port)      need_val "$1" "$#"; PORT="$2"; PORT_GIVEN=true; shift 2 ;;
     --version|-V) need_val "$1" "$#"; VERSION="$2"; shift 2 ;;
     --from)      need_val "$1" "$#"; FROM="$2"; shift 2 ;;
+    --yes|-y)     ASSUME_YES=true; shift ;;
     --no-service) NO_SERVICE=true; shift ;;
     --no-start)   NO_START=true; NO_SERVICE=true; shift ;;
     --no-open)    NO_OPEN=true; shift ;;
@@ -132,6 +135,7 @@ Options:
   --token <xxx>       Pre-set ACCESS_TOKEN (default: auto-generate)
   --port <port>       Server port (default: 3000)
   --from <path|url>   Install from a local archive/directory or URL instead of GitHub
+  --yes               Upgrade an older installation without asking first
   --no-service        Skip the start-on-login setup
   --no-start          Install and configure only; do not start MultiCC
   --no-open           Start MultiCC but do not open a browser
@@ -337,16 +341,196 @@ is_multicc_install() {
   esac
 }
 
+# ── Installations from before the standalone package ──────────────────────
+# The guard below used to reject every one of these outright, and that is a
+# real trap: each of them WAS a valid MultiCC installation, put there by a
+# published installer, and its own launcher said so. Three shapes exist in the
+# wild, all of them installed by something the user was told to run:
+#   * a source checkout — the old installer placed the repository itself at the
+#     install path and installed its dependencies there, so the directory IS
+#     the project: root `multicc`, package.json, node_modules, and (when the
+#     installer wrote it) a .env still holding the ACCESS_TOKEN in use;
+#   * a hand-unpacked portable release — MultiCC.app or Resources/ carrying the
+#     shipped manifest, but no root launcher, which only came with the later
+#     bundle layout;
+#   * a bundle that was unpacked, trimmed or left half-installed — launcher and
+#     its own runtime, with no manifest at all.
+# What every one of them lacks is the full triple is_multicc_install() wants.
+#
+# Being generous here would undo the protection that function was deliberately
+# tightened for (a developer's checkout must not be replaced by the default
+# ~/MultiCC path). So identity is checked, not just file names: MultiCC's own
+# package.json, a manifest that only a shipped bundle carries, or the app /
+# runtime layout no unrelated project would have. A directory holding a file
+# that merely happens to be called `multicc` still gets the old refusal.
+has_multicc_manifest() {
+  [ -f "$1/MultiCC.app/Contents/Resources/bundle-manifest.json" ] \
+    || [ -f "$1/Resources/bundle-manifest.json" ]
+}
+
+is_legacy_multicc_install() {
+  [ -d "$1" ] || return 1
+  is_multicc_install "$1" && return 1
+  # A shipped bundle, in a layout older than the one today's check describes.
+  has_multicc_manifest "$1" && return 0
+  { [ -f "$1/multicc" ] || [ -f "$1/multicc.cmd" ]; } || return 1
+  if [ -f "$1/package.json" ] \
+    && grep -qE '"name"[[:space:]]*:[[:space:]]*"multicc"' "$1/package.json" 2>/dev/null; then
+    return 0
+  fi
+  [ -d "$1/MultiCC.app" ] || [ -d "$1/Resources/runtime" ]
+}
+
+# Values the old installation was configured with. Filled in by
+# prepare_legacy_upgrade() and applied after the new package is in place, so a
+# user coming from an old install keeps the token their phone/bookmarks and the
+# port they reach it on. The old installer wrote these into the install
+# directory's own .env (data and configuration moved to the per-user data
+# directory later), so that file is the only place left to read them from.
+LEGACY_DIR=""
+LEGACY_ENV_FILE=""
+LEGACY_TOKEN=""
+LEGACY_PORT=""
+
+read_legacy_env() {
+  local env_file="$1/.env"
+  LEGACY_ENV_FILE="$env_file"
+  [ -f "$env_file" ] || return 0
+  LEGACY_TOKEN="$(grep -E '^ACCESS_TOKEN=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+  LEGACY_PORT="$(grep -E '^PORT=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+}
+
+# Stop a pre-standalone installation and take its directory out of the way,
+# without ever deleting it. Called only after the new package has been
+# downloaded and verified, so a failed download leaves the old install alone.
+prepare_legacy_upgrade() {
+  local dir="$1" stamp answer=""
+  stamp="$(date +%Y%m%d%H%M%S)"
+  LEGACY_DIR="$dir.legacy-$stamp"
+
+  read_legacy_env "$dir"
+  if [ -n "$LEGACY_TOKEN" ]; then
+    info "Found the ACCESS_TOKEN of your previous installation — it will be kept"
+  fi
+
+  # Ask before touching a directory we did not create. The old installers ran
+  # from a git checkout, and someone who deliberately cloned MultiCC into this
+  # path should not have it renamed out from under them without a word. Without
+  # a terminal (the documented `curl … | bash` path) there is nobody to ask, and
+  # the move is reversible anyway: the directory is renamed, never removed.
+  if [ "$ASSUME_YES" = false ] && [ -r /dev/tty ]; then
+    echo ""
+    echo "  ${C_BOLD}An older MultiCC installation was found at:${C_RESET}"
+    echo "    $dir"
+    echo "  It will be stopped and kept as:"
+    echo "    $LEGACY_DIR"
+    echo "  Nothing is deleted — your data, sessions and chat history are untouched."
+    read -r -p "  ${C_YELLOW}>>${C_RESET} Upgrade it in place? [Y/n] " answer </dev/tty || answer=""
+    case "${answer:-y}" in
+      y|Y|"") ;;
+      *)
+        err "Upgrade cancelled. Nothing was changed."
+        echo "       Install somewhere else with --dir, or move that directory away yourself."
+        exit 1
+        ;;
+    esac
+  fi
+
+  # 1. Take the old login service out first. Its label (com.multicc.server) is
+  #    the same one the standalone package installs, and it points at this
+  #    directory: leave it loaded and it will keep trying to start a launcher
+  #    that has been renamed away, while the new service fights it for the port.
+  #    `uninstall` is the old script's own command: it unloads the login job and
+  #    stops the server. Running it is best-effort — that launcher is a shell
+  #    script that wants a system Node runtime, which may be long gone by now —
+  #    so a failure falls through to a direct launchctl unload. Neither path may
+  #    abort the upgrade: a leftover process is something the next `multicc
+  #    stop` can still deal with, a half-moved installation is not.
+  local stopped=false
+  if [ -x "$dir/multicc" ]; then
+    if (cd "$dir" && ./multicc uninstall) >/dev/null 2>&1; then
+      stopped=true
+      ok "Stopped the previous installation and removed its auto-start service"
+    fi
+  fi
+  if [ "$stopped" = false ]; then
+    # The old login job has to go whatever else happens: it points at this
+    # directory, and KeepAlive means launchd would keep restarting a launcher
+    # that is about to be renamed away.
+    if [ "$PLATFORM" = "darwin" ]; then
+      local plist="$HOME/Library/LaunchAgents/com.multicc.server.plist"
+      if [ -f "$plist" ]; then
+        launchctl unload "$plist" 2>/dev/null || true
+        rm -f "$plist"
+        info "Removed the previous auto-start service"
+      fi
+    elif [ "$PLATFORM" = "linux" ]; then
+      # The old installer never wrote this unit, it printed one for the user to
+      # paste — so it is removed only when it is really there, and the user is
+      # told, because they may have written it by hand.
+      local unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/multicc.service"
+      if [ -f "$unit" ]; then
+        systemctl --user disable --now multicc >/dev/null 2>&1 || true
+        rm -f "$unit"
+        info "Removed the previous auto-start service"
+      fi
+    fi
+    if [ -x "$dir/multicc" ]; then
+      (cd "$dir" && ./multicc stop) >/dev/null 2>&1 && ok "Stopped the previous installation" || true
+    fi
+  fi
+
+  # 2. Move it aside. `mv` on the same filesystem is atomic and cheap even for
+  #    a source checkout with node_modules in it, and it keeps every byte of the
+  #    old configuration recoverable if something about the new package is not
+  #    wanted after all.
+  if ! mv "$dir" "$LEGACY_DIR"; then
+    err "Could not move the previous installation out of the way."
+    echo "       Move $dir away yourself and re-run the installer."
+    exit 1
+  fi
+  ok "Previous installation kept at $LEGACY_DIR"
+  if [ -n "$LEGACY_TOKEN" ]; then
+    echo "       Its settings were read from $LEGACY_DIR/.env and are being reused."
+  fi
+  if [ "$stopped" = false ]; then
+    warn "Could not stop the previous instance automatically."
+    echo "       If it is still running it holds the old port, and the new installation will"
+    echo "       come up on the next free one — check 'multicc status' before pointing anyone at it."
+  fi
+
+  # The old releases kept their data inside the install directory: sessions,
+  # chat history, tasks and memories all lived next to the code. This release
+  # reads them from a per-user data directory instead, so an upgrade starts
+  # empty. Saying so plainly is the difference between "my history is gone" and
+  # "my history is in the backup, and here is how to bring it across".
+  if [ -f "$LEGACY_DIR/sessions.json" ] || [ -d "$LEGACY_DIR/chat_history" ] \
+    || [ -f "$LEGACY_DIR/task-shells.sqlite" ]; then
+    warn "Sessions, chat history and tasks from the old installation are still in the backup."
+    echo "       This release keeps them in a per-user data directory, so it starts with none"
+    echo "       of them. The backup holds everything — do not delete it until you have decided."
+  fi
+  return 0
+}
+
 if [ -e "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]; then
   err "$INSTALL_DIR exists and is not a directory."
   exit 1
 fi
+LEGACY_PENDING=false
 if [ -d "$INSTALL_DIR" ] && ! is_multicc_install "$INSTALL_DIR"; then
-  if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+  if is_legacy_multicc_install "$INSTALL_DIR"; then
+    LEGACY_PENDING=true
+  elif [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
     err "$INSTALL_DIR already exists and does not look like a MultiCC installation."
     echo "       Nothing was deleted. Pick another location with --dir, or move that directory away."
     exit 1
   fi
+fi
+if [ "$LEGACY_PENDING" = true ]; then
+  info "An older MultiCC installation was found at $INSTALL_DIR"
+  echo "       It predates the standalone package. It will be stopped and kept as a"
+  echo "       backup next to the new installation; nothing in it is deleted."
 fi
 
 # The staging area must share a filesystem with the install directory: it is
@@ -502,7 +686,11 @@ fi
 
 # ── Install (replace any previous version) ────────────────────────────────
 step "Installing to $INSTALL_DIR"
-if [ -d "$INSTALL_DIR" ] && is_multicc_install "$INSTALL_DIR"; then
+if [ "$LEGACY_PENDING" = true ]; then
+  # Reached only after the new package has been downloaded and verified, so a
+  # failed download never disturbs an installation that still works.
+  prepare_legacy_upgrade "$INSTALL_DIR"
+elif [ -d "$INSTALL_DIR" ] && is_multicc_install "$INSTALL_DIR"; then
   info "Existing installation found — replacing it (your data is kept)"
   # A running server would keep serving from the directory we are about to
   # replace, so ask it to stop first. Failure to stop is not fatal: the new
@@ -523,7 +711,14 @@ fi
 
 if ! mv "$UNPACK_DIR" "$INSTALL_DIR"; then
   err "Could not move the package into place."
-  if [ -n "$OLD_DIR" ] && [ -d "$OLD_DIR" ]; then
+  # Whatever was moved aside goes back, so a failed install never leaves someone
+  # with neither the new installation nor the working old one. For a legacy
+  # upgrade that means the backup stops being a backup and becomes the install
+  # again — which is the right trade when the alternative is nothing at all.
+  if [ -n "$LEGACY_DIR" ] && [ -d "$LEGACY_DIR" ]; then
+    mv "$LEGACY_DIR" "$INSTALL_DIR" 2>/dev/null \
+      && warn "Your previous installation was put back at $INSTALL_DIR."
+  elif [ -n "$OLD_DIR" ] && [ -d "$OLD_DIR" ]; then
     mv "$OLD_DIR" "$INSTALL_DIR" 2>/dev/null && warn "The previous installation was restored."
   fi
   exit 1
@@ -598,8 +793,37 @@ if [ ! -x "$MULTICC_BIN" ] && [ "$PLATFORM" != "win32" ]; then
   exit 1
 fi
 
+# A pre-standalone installation kept its settings in the install directory's own
+# .env, and that file holds more than the token and the port: the push (VAPID)
+# key pair and any ASR credentials the server generated on its first start live
+# there too, and silently dropping them breaks notifications that used to work.
+# So the whole file is carried across — never over one that already has content,
+# which is what a second installation would be looking at.
+if [ -n "$LEGACY_ENV_FILE" ] && [ -f "$LEGACY_ENV_FILE" ]; then
+  TARGET_ENV="$("${MULTICC_CMD[@]}" config path 2>/dev/null || true)"
+  if [ -n "$TARGET_ENV" ] && [ ! -s "$TARGET_ENV" ]; then
+    mkdir -p "$(dirname "$TARGET_ENV")" 2>/dev/null || true
+    if cp "$LEGACY_ENV_FILE" "$TARGET_ENV" 2>/dev/null; then
+      chmod 600 "$TARGET_ENV" 2>/dev/null || true
+      info "Kept the settings from your previous installation"
+    fi
+  fi
+fi
+
+# Order matters. An explicit --token wins; otherwise the token the previous
+# (pre-standalone) installation was configured with is the one the user's
+# bookmarks, phone and other devices already carry, so it is preferred over a
+# token that happens to sit in the data directory already.
+if [ -z "$ACCESS_TOKEN" ] && [ -n "$LEGACY_TOKEN" ]; then
+  ACCESS_TOKEN="$LEGACY_TOKEN"
+fi
+if [ "$PORT_GIVEN" = false ] && [ -n "$LEGACY_PORT" ]; then
+  PORT="$LEGACY_PORT"
+fi
+
 if [ -n "$ACCESS_TOKEN" ]; then
-  "${MULTICC_CMD[@]}" config set ACCESS_TOKEN "$ACCESS_TOKEN" >/dev/null && ok "ACCESS_TOKEN saved"
+  "${MULTICC_CMD[@]}" config set ACCESS_TOKEN "$ACCESS_TOKEN" >/dev/null \
+    && ok "ACCESS_TOKEN saved${LEGACY_TOKEN:+ (kept from the previous installation)}"
 elif EXISTING_TOKEN="$("${MULTICC_CMD[@]}" config get ACCESS_TOKEN 2>/dev/null)" && [ -n "$EXISTING_TOKEN" ]; then
   ACCESS_TOKEN="$EXISTING_TOKEN"
   info "Keeping the existing ACCESS_TOKEN"
