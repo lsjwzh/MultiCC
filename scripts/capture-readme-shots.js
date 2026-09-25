@@ -217,7 +217,7 @@ function apiRoutes(options = {}) {
     'GET /api/provider-defaults': json({ claude: 'claude-official', codex: 'codex-official' }),
     'GET /api/token-usage/global': json({ ok: true, usage: null, stats: [] }),
     'GET /api/token-usage/by-role': json({ ok: true, roles: [] }),
-    'GET /api/version-check': json({ current: '2.1.1', channel: 'release', latest: 'v2.1.1', latestVersion: '2.1.1', updateAvailable: false }),
+    'GET /api/version-check': json({ current: '2.1.2', channel: 'release', latest: 'v2.1.2', latestVersion: '2.1.2', updateAvailable: false }),
     'GET /api/server-info': json({ url: 'http://127.0.0.1:3000', uptimeMs: 3 * 3600 * 1000 + 25 * 60 * 1000 }),
     'GET /api/apk-info': json({ exists: false }),
     'GET /api/ios-ota-info': json({ exists: false }),

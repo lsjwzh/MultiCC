@@ -1,5 +1,5 @@
 # MultiCC Windows one-click installer (standalone package)
-# MultiCC version 2.1.1
+# MultiCC version 2.1.2
 
 [CmdletBinding()]
 param(
@@ -9,6 +9,7 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 3000,
     [string]$From = '',
+    [string]$AdoptData = '',
     [switch]$Yes,
     [switch]$NoData,
     [switch]$NoService,
@@ -24,7 +25,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 # Keep this in sync with package.json when cutting a release. The stable raw
 # URL and the release asset are intentionally pinned to the same immutable tag.
-$InstallerVersion = '2.1.1'
+$InstallerVersion = '2.1.2'
 $Repository = 'lsjwzh/MultiCC'
 $ReleasesUrl = "https://github.com/$Repository/releases"
 $LatestApi = "https://api.github.com/repos/$Repository/releases/latest"
@@ -209,13 +210,134 @@ function Assert-Bundle([string]$Root) {
     }
 }
 
-# Copy the old data out of the backup into the new data directory. The backup is
-# read, never written, and the destination is only ever an empty directory: if
-# something is already in there it is either a second MultiCC or a first run of
-# the new server, and in both cases those files are newer than the backup.
-function Copy-LegacyDataAcross([string]$Command) {
-    if (-not $legacyDataCopy) { return }
-    if ([string]::IsNullOrWhiteSpace($legacyDir) -or -not (Test-Path -LiteralPath $legacyDir)) { return }
+# ── An older installation that is somewhere else entirely ─────────────────
+# Not every old installation is at the path this run installs into. The oldest
+# installer put MultiCC wherever it happened to be run from ($PWD/MultiCC by
+# default, $PWD itself with --no-clone), while this release installs to
+# %USERPROFILE%\MultiCC, so an installation that predates the standalone package
+# is routinely somewhere else. Two candidate directories are therefore checked
+# in addition to the install path, and each still has to pass the same
+# Test-LegacyInstall check — a directory that merely looks similar is never
+# touched. Unlike macOS and Linux there is no login service to consult here: the
+# old installer registered nothing of its own on Windows, so these candidates
+# are the only evidence there is.
+function Get-LegacyElsewhereCandidates {
+    $current = (Get-Location).Path
+    return @((Join-Path $current 'MultiCC'), $current)
+}
+
+function Find-LegacyElsewhere([string]$InstallDir) {
+    foreach ($candidate in (Get-LegacyElsewhereCandidates)) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
+        $full = [IO.Path]::GetFullPath($candidate)
+        if ($full -eq $InstallDir) { continue }
+        if (Test-LegacyInstall $full) { return $full }
+    }
+    return ''
+}
+
+# Whether that installation is running right now, from the pid file its own
+# launcher kept. A running installation is still writing the files a copy would
+# read, so it is worth saying before offering one.
+function Test-LegacyInstallRunning([string]$Root) {
+    $pidFile = Join-Path $Root '.multicc.pid'
+    if (-not (Test-Path -LiteralPath $pidFile -PathType Leaf)) { return $false }
+    $raw = Get-Content -LiteralPath $pidFile -Raw -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+    $value = 0
+    if (-not [int]::TryParse(($raw -replace '\D', ''), [ref]$value)) { return $false }
+    return $null -ne (Get-Process -Id $value -ErrorAction SilentlyContinue)
+}
+
+# Something to say about an older installation that is not the one being
+# replaced, and — when the user is there to say yes — consent to copy its data.
+# It is never started, stopped, renamed or written to. The copy is offered,
+# never assumed: a directory the user did not name is reported and left alone,
+# with the one switch that includes it printed. -Yes still counts as an answer,
+# because it is the default the question offers.
+function Show-AdoptOffer([string]$Root) {
+    if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) { return }
+    if (-not (Test-LegacyDataPresent $Root)) {
+        Write-Info "Another MultiCC installation is on this machine, at $Root (it holds no data)"
+        $script:adoptCopy = $false
+        return
+    }
+    $size = Format-ByteSize (Get-LegacyDataSize $Root)
+    Write-Host ''
+    Write-Host '  Another MultiCC installation is on this machine:'
+    Write-Host "    $Root"
+    Write-Host '  It is not the directory being installed into, so nothing in it is changed.'
+    Write-Host "  It holds about $size of data: sessions, chat history, the task boards,"
+    Write-Host '  memories and provider settings. Its own token and port are not taken —'
+    Write-Host '  what data is copied, nothing else; this installation is configured on its own.'
+    if (Test-LegacyInstallRunning $Root) {
+        Write-Host '  It also looks like it is still running — it keeps writing those files,'
+        Write-Host '  so a copy taken now is a snapshot of this moment.'
+    }
+    if ($script:adoptExplicit) {
+        if (-not $script:adoptCopy) {
+            $script:adoptDataLeftBehind = $true
+            Write-Warn 'Both -AdoptData and -NoData were given — nothing was copied.'
+            return
+        }
+        Write-Ok "Bringing your data across from $Root"
+        return
+    }
+    if (-not $script:adoptCopy) {
+        $script:adoptDataLeftBehind = $true
+        Write-Host '  Its data stays where it is (-NoData). Include it later with:'
+        Write-Host "    -AdoptData '$Root'"
+        return
+    }
+    if ($Yes) {
+        Write-Ok "Bringing your data across from $Root"
+        return
+    }
+    # IsInputRedirected is the closest Windows has to the POSIX `[ -t 0 ]`, and
+    # UserInteractive covers the other half: a runner or a service can hand over an
+    # unredirected stdin that still has no one behind it.
+    if ([Console]::IsInputRedirected -or -not [Environment]::UserInteractive) {
+        # No console to ask on: the answer that cannot be declined has to be the
+        # one that changes nothing.
+        $script:adoptCopy = $false
+        $script:adoptDataLeftBehind = $true
+        Write-Host '  Nothing was copied: this installation starts without it. To include it, re-run'
+        Write-Host '  with:'
+        Write-Host "    -AdoptData '$Root'"
+        return
+    }
+    Write-Host '  Copy it into this installation, so your history is here? The original stays'
+    Write-Host '  where it is, as a second MultiCC you can keep or delete afterwards.'
+    try {
+        $answer = Read-Host 'Bring it across? [Y/n]'
+    } catch {
+        # A missing console has to end here rather than at the next command: this
+        # is the one place where guessing means writing someone else's data.
+        $script:adoptCopy = $false
+        $script:adoptDataLeftBehind = $true
+        Write-Warn "Could not read an answer ($($_.Exception.Message)) — nothing was copied."
+        Write-Host "       Include it later with: -AdoptData '$Root'"
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($answer) -or $answer -match '^[Yy]') {
+        Write-Ok "Bringing your data across from $Root"
+        return
+    }
+    $script:adoptCopy = $false
+    $script:adoptDataLeftBehind = $true
+    Write-Info 'Left where it is — this installation starts without it'
+    Write-Host "       Include it later with: -AdoptData '$Root'"
+}
+
+# Copy the old data out of the source installation into the new data directory.
+# The source is read, never written, and the destination is only ever an empty
+# directory: if something is already in there it is either a second MultiCC or a
+# first run of the new server, and in both cases those files are newer than the
+# source. The source directory is passed in so the same code serves both an
+# installation that was replaced and one that is being left where it is.
+function Copy-LegacyDataAcross([string]$Command, [string]$Source) {
+    if ([string]::IsNullOrWhiteSpace($Source) -or -not (Test-Path -LiteralPath $Source)) { return }
 
     # The data directory the launcher hands the server is `<userData>/data`, where
     # userData is whatever directory the CLI keeps multicc.env in
@@ -224,14 +346,14 @@ function Copy-LegacyDataAcross([string]$Command) {
     $envFile = (& $Command config path 2>$null | Out-String).Trim()
     if ([string]::IsNullOrWhiteSpace($envFile)) {
         Write-Warn 'Could not work out where this release keeps its data; nothing was copied.'
-        Write-Info "Your data is untouched in $legacyDir."
+        Write-Info "Your data is untouched in $Source."
         return
     }
     $dataDir = Join-Path (Split-Path -Parent $envFile) 'data'
     if ((Test-Path -LiteralPath $dataDir) -and
         @(Get-ChildItem -LiteralPath $dataDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
         Write-Warn 'This release already has data of its own — nothing was copied.'
-        Write-Info "Your old data is untouched in $legacyDir."
+        Write-Info "Your old data is untouched in $Source."
         return
     }
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
@@ -239,12 +361,12 @@ function Copy-LegacyDataAcross([string]$Command) {
     $copied = 0
     $failed = 0
     foreach ($item in $script:LegacyDataItems) {
-        $source = Join-Path $legacyDir $item
-        if (-not (Test-Path -LiteralPath $source)) { continue }
+        $itemPath = Join-Path $Source $item
+        if (-not (Test-Path -LiteralPath $itemPath)) { continue }
         $destination = Join-Path $dataDir $item
         if (Test-Path -LiteralPath $destination) { continue }
         try {
-            Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+            Copy-Item -LiteralPath $itemPath -Destination $destination -Recurse -Force
             $copied++
         } catch {
             $failed++
@@ -258,11 +380,11 @@ function Copy-LegacyDataAcross([string]$Command) {
     }
     Write-Ok "Brought your data across: $copied item(s) into $dataDir"
     if ($failed -gt 0) {
-        Write-Warn "$failed item(s) could not be copied and are still only in $legacyDir."
+        Write-Warn "$failed item(s) could not be copied and are still only in $Source."
     }
     Write-Host '       Sessions, chat history, tasks and memories are read from there now.' -ForegroundColor Blue
-    Write-Host '       The backup keeps its own copy — nothing was moved or deleted, so it' -ForegroundColor Blue
-    Write-Host "       is safe to delete $legacyDir once the new installation looks right." -ForegroundColor Blue
+    Write-Host '       The source keeps its own copy — nothing was moved or deleted, so it' -ForegroundColor Blue
+    Write-Host "       is safe to delete $Source once the new installation looks right." -ForegroundColor Blue
 }
 
 function Invoke-MultiCC([string[]]$Arguments, [switch]$IgnoreFailure) {
@@ -297,6 +419,32 @@ $legacyDataCopy = -not $NoData.IsPresent
 # the summary can say where it is and where it would have to go.
 $legacyDataLeftBehind = $false
 $legacyDataDest = ''
+
+# An older installation that is NOT the directory this run installs into. It is
+# never moved, stopped, renamed or written to: the only thing taken from it is a
+# copy of the data, and only when the user asked for it (-AdoptData) or said yes
+# to the question. $adoptExplicit records which of the two it was, because the
+# answer changes what may happen without a prompt.
+$adoptDir = ''
+$adoptCopy = -not $NoData.IsPresent
+$adoptExplicit = $false
+$adoptDataLeftBehind = $false
+# Whether this run replaces an installation that is already there. An upgrade in
+# place already has whatever history matters; only a first install goes looking
+# for a second installation elsewhere on the machine.
+$targetHadInstall = (Test-Path -LiteralPath $InstallDir -PathType Container) -and (Test-StandaloneInstall $InstallDir)
+# -AdoptData: an old installation the user named. Checked here, before anything
+# is downloaded, so a wrong path costs nothing.
+if (-not [string]::IsNullOrWhiteSpace($AdoptData)) {
+    $adoptCandidate = [IO.Path]::GetFullPath($AdoptData)
+    if (-not (Test-Path -LiteralPath $adoptCandidate -PathType Container) -or
+        -not (Test-LegacyInstall $adoptCandidate)) {
+        throw "-AdoptData: not a pre-standalone MultiCC installation: $adoptCandidate"
+    }
+    $adoptDir = $adoptCandidate
+    $adoptExplicit = $true
+    Write-Info "Using the data of the older installation at $adoptDir"
+}
 
 Write-Host ''
 Write-Host "MultiCC Windows One-Click Installer (v$ResolvedVersion)" -ForegroundColor Magenta
@@ -334,6 +482,11 @@ try {
             # backup rather than deleting it. Ask first unless -Yes — the old
             # installer worked from a checkout someone may still be developing in.
             Write-Info 'An older MultiCC installation was found; it will be kept as a backup.'
+            if (-not [string]::IsNullOrWhiteSpace($adoptDir)) {
+                Write-Warn "-AdoptData was ignored: $InstallDir is itself an older installation,"
+                Write-Warn 'and it is that installation''s data which is being brought across.'
+                $adoptDir = ''
+            }
             Read-LegacyEnv $InstallDir
             if (-not $Yes) {
                 $answer = Read-Host 'Upgrade it in place? The old directory is kept, never deleted. [Y/n]'
@@ -482,16 +635,32 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($legacyDir)) {
         Write-Step 'Bringing your data across'
         if ($legacyDataCopy) {
-            Copy-LegacyDataAcross $MultiCCCommand
+            Copy-LegacyDataAcross $MultiCCCommand $legacyDir
         } else {
             Write-Info "Skipped — the previous installation's data stays in $legacyDir"
         }
-        # Resolved for the summary whatever the answer was: a "no" is only useful
-        # if the user leaves knowing where their history is and where it must go.
-        $legacyDataDest = (& $MultiCCCommand config path 2>$null | Out-String).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($legacyDataDest)) {
-            $legacyDataDest = Join-Path (Split-Path -Parent $legacyDataDest) 'data'
+    } else {
+        # Nothing was replaced here, which is not the same as there being nothing
+        # to bring across: an installation from before the standalone package is
+        # usually somewhere else on the machine (see Find-LegacyElsewhere). Only a
+        # first install looks — an upgrade in place already has the history that
+        # matters, and an installation named with -AdoptData is used either way.
+        if ([string]::IsNullOrWhiteSpace($adoptDir) -and -not $targetHadInstall) {
+            $adoptDir = Find-LegacyElsewhere $InstallDir
         }
+        if (-not [string]::IsNullOrWhiteSpace($adoptDir)) {
+            Show-AdoptOffer $adoptDir
+            if ($adoptCopy) {
+                Write-Step 'Bringing your data across'
+                Copy-LegacyDataAcross $MultiCCCommand $adoptDir
+            }
+        }
+    }
+    # Resolved for the summary whatever the answer was: a "no" is only useful if
+    # the user leaves knowing where their history is and where it would have to go.
+    $legacyDataDest = (& $MultiCCCommand config path 2>$null | Out-String).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($legacyDataDest)) {
+        $legacyDataDest = Join-Path (Split-Path -Parent $legacyDataDest) 'data'
     }
 
     if ($NoStart) { $NoService = $true }
@@ -530,6 +699,15 @@ try {
         Write-Host "    This release: $legacyDataDest"
         Write-Host '    To use them, stop MultiCC, copy what you want out of the backup into the'
         Write-Host '    directory above, and start it again. Nothing was deleted.'
+    }
+    if ($adoptDataLeftBehind -and -not [string]::IsNullOrWhiteSpace($adoptDir)) {
+        Write-Host ''
+        Write-Host '  Another MultiCC installation still holds data for you' -ForegroundColor Yellow
+        Write-Host "    Old install:  $adoptDir"
+        Write-Host "    This release: $legacyDataDest"
+        Write-Host '    Nothing in it was changed, and it was not moved or stopped. To use that'
+        Write-Host "    data here, re-run this installer with -AdoptData '$adoptDir', or copy"
+        Write-Host '    what you want into the directory above and start MultiCC again.'
     }
 } catch {
     Write-Error $_

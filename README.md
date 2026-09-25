@@ -137,12 +137,12 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.ps1 | iex
 ```
 
 One line, no flags: the tag in the URL *is* the version. The script downloads that
@@ -167,17 +167,28 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # From a package you already downloaded
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.1.1-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.1.2-darwin-arm64.tar.gz
 
 # Server/automation installs: install without starting, or start without a browser
 curl -sSL .../install.sh | bash -s -- --no-start
 curl -sSL .../install.sh | bash -s -- --no-open
+
+# Coming from an installation that predates the standalone package, somewhere else
+# on this machine (the oldest installers put it wherever they were run from)
+curl -sSL .../install.sh | bash -s -- --adopt-data "$HOME/MultiCC"
 ```
 
 Windows exposes the same choices as PowerShell parameters (`-InstallDir`,
-`-Version`, `-From`, `-AccessToken`, `-Port`, `-NoService`, `-NoStart`,
-`-NoOpen`). Download `install.ps1` first when passing options; the flagless
-`irm ... | iex` command above remains the normal path.
+`-Version`, `-From`, `-AccessToken`, `-Port`, `-Yes`, `-NoData`, `-AdoptData`,
+`-NoService`, `-NoStart`, `-NoOpen`). Download `install.ps1` first when passing
+options; the flagless `irm ... | iex` command above remains the normal path.
+
+An installation from before the standalone package is upgraded in place when it is
+the directory being installed into: it is stopped, kept as a backup, and its
+settings and data come across. One that lives somewhere else is reported and left
+exactly as it is — nothing is copied from a directory you did not point the
+installer at without an answer — and `--adopt-data <path>` brings its sessions,
+chat history and memories over as a copy, leaving the original untouched.
 
 To hack on MultiCC itself, run it from a checkout — that path is for developers, and
 `./multicc update` there is a `git pull` + `npm install`:

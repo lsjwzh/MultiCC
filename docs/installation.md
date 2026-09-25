@@ -6,12 +6,12 @@
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.ps1 | iex
 ```
 
 The tag in the URL **is** the version. The script downloads that release's
@@ -51,16 +51,28 @@ the authority for anything below.
 | `--no-service` | Skip the start-on-login setup |
 | `--no-start` | Install/configure only; also skips start-on-login setup |
 | `--no-open` | Start the server but do not open a browser |
+| `--yes` | Upgrade an older installation in place without asking again |
+| `--no-data` | Keep an older installation's data in the backup instead of bringing it across |
+| `--adopt-data <path>` | Bring the data of an older installation at `<path>` across (read-only source) |
 
 Windows PowerShell uses the same concepts with native parameter names:
-`-InstallDir`, `-Version`, `-From`, `-AccessToken`, `-Port`, `-NoService`,
-`-NoStart`, and `-NoOpen`.
+`-InstallDir`, `-Version`, `-From`, `-AccessToken`, `-Port`, `-Yes`, `-NoData`,
+`-AdoptData`, `-NoService`, `-NoStart`, and `-NoOpen`.
 
 Older published command lines still work through compatibility shims: `--branch
 <tag>` is an alias for `--version`, `--no-clone` means "install from the current
 directory" (equivalent to `--from .`), and `--no-apk` is a warning-only no-op —
 installation never builds an APK. Re-running the installer on the same directory
 is an in-place replacement with a rollback point — see
+[standalone.md](standalone.md).
+
+Installations from before the standalone package are handled too. One that sits at
+the install path is upgraded in place: stopped, kept as a `<dir>.legacy-<timestamp>`
+backup, with its token, port and data brought across. One that lives **somewhere
+else** — the oldest installers put MultiCC wherever they were run from — is
+reported and left exactly as it is, because a directory this run was not pointed at
+is not a directory it may move. Bring its data over with `--adopt-data <path>`;
+the copy is one-way and the old installation keeps everything. Details in
 [standalone.md](standalone.md).
 
 **Update anytime (installed package):**

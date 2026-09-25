@@ -82,12 +82,47 @@ function archiveFixture({ scratch, name, root }, { corrupt = false } = {}) {
   return archive;
 }
 
+// Spawned with detached: true so the installer runs in its own session, without
+// the terminal this test suite was started from. That is not cosmetic: every
+// question the installer asks is read from /dev/tty, and `[ -r /dev/tty ]` only
+// checks the device node's permissions — so from an interactive terminal a plain
+// child would block on a prompt that no one is there to answer, and the suite
+// would hang instead of failing. Detached, those reads fail immediately, which is
+// exactly the no-terminal path a `curl … | bash` install takes.
 function runInstaller(args, { cwd, env = {} } = {}) {
   return spawnSync('bash', [INSTALLER, ...args], {
     encoding: 'utf8',
     cwd: cwd || ROOT,
+    detached: true,
     env: { ...process.env, ...env, MULTICC_STANDALONE_HOME: env.MULTICC_STANDALONE_HOME || '' },
   });
+}
+
+// A bash child reports directories through its own getcwd, which on macOS answers
+// /private/var for what os.tmpdir() calls /var. Comparing against the canonical
+// path keeps the assertions below about the installer, not about the filesystem.
+function canonical(dir) {
+  return fs.realpathSync(dir);
+}
+
+// The shape a pre-standalone release leaves behind: the project itself, the
+// launcher the old installer generated, the .env it wrote its settings into, and
+// the state beside the code — for those releases the package root WAS the data
+// root. `dir` is where the old installer happened to be run from.
+function writeLegacyInstall(dir, { session = 'legacy-session' } = {}) {
+  write(path.join(dir, 'package.json'), '{"name":"multicc","version":"1.6.10"}\n');
+  write(path.join(dir, 'multicc'), '#!/bin/sh\nexit 1\n', 0o755);
+  write(path.join(dir, '.env'), 'ACCESS_TOKEN=legacy-token\nPORT=3222\n');
+  write(path.join(dir, 'sessions.json'), `{"sessions":[{"id":"${session}"}]}\n`);
+  write(path.join(dir, 'chat_history', `${session}.jsonl`), '{"role":"user"}\n');
+  return dir;
+}
+
+function legacyData(session = 'legacy-session') {
+  return {
+    sessions: `{"sessions":[{"id":"${session}"}]}\n`,
+    history: path.join('chat_history', `${session}.jsonl`),
+  };
 }
 
 test('install.sh unpacks, configures, starts, and safely replaces a previous install', t => {
@@ -275,6 +310,161 @@ test('install.sh leaves the old data in the backup when asked to', () => {
     '--no-data must not create or fill the data directory');
   assert.match(res.stdout, /data stays in the backup/i,
     'the user must be told the data was left behind, not left to discover it');
+});
+
+// The oldest installer put MultiCC wherever it happened to be run from
+// ($PWD/MultiCC by default), while today's release installs to a fixed per-user
+// directory. So the installation with the user's history in it is routinely NOT
+// the path this run installs into — and a run that only looks at its own target
+// reports a clean first install and leaves every session behind.
+test('install.sh finds a pre-standalone installation that is not at the install path', () => {
+  const fixture = buildFixtureBundle();
+  const archive = archiveFixture(fixture);
+  const cwd = canonical(tmpdir('multicc-installer-elsewhere-'));
+  const legacy = writeLegacyInstall(path.join(cwd, 'MultiCC'));
+  const data = legacyData();
+  const targetParent = tmpdir('multicc-installer-elsewhere-target-');
+  const installDir = path.join(targetParent, 'MultiCC');
+  const home = tmpdir('multicc-installer-elsewhere-home-');
+  // HOME is redirected so the search is hermetic: the login service a real
+  // installation on this machine may have registered is read from
+  // ~/Library/LaunchAgents, and a developer machine is not a test fixture.
+  const env = {
+    HOME: tmpdir('multicc-installer-elsewhere-fakehome-'),
+    MULTICC_STANDALONE_HOME: home,
+  };
+
+  const res = runInstaller([
+    '--from', archive, '--dir', installDir, '--token', 'installer-test-token',
+    '--port', '3121', '--no-service', '--no-start', '--no-open',
+  ], { cwd, env });
+  assert.equal(res.status, 0, `installer failed:\n${res.stdout}\n${res.stderr}`);
+  assert.match(res.stdout, /Another MultiCC installation is on this machine/,
+    'an installation elsewhere on the machine must be reported, not ignored');
+  assert.ok(res.stdout.includes(legacy),
+    `the installer must name the directory it found:\n${res.stdout}`);
+  assert.match(res.stdout, /still holds data for you/i,
+    'the summary has to say where the history is, not just that something was skipped');
+  assert.match(res.stdout, /--adopt-data/, 'and the one switch that would include it');
+
+  // Reported, never obeyed. There is no terminal on this run, and a question
+  // nobody can answer must fall on the side that changes nothing: the installer
+  // must not copy a directory the user did not name.
+  assert.equal(fs.existsSync(path.join(home, 'data')), false,
+    'no data may be copied when there was nobody to ask');
+  // The other installation is read-only to this run: not stopped, not renamed,
+  // not upgraded, and nothing new beside it.
+  assert.deepEqual(fs.readdirSync(cwd), ['MultiCC'],
+    'the installation that was found must not be moved or added to');
+  assert.equal(fs.readFileSync(path.join(legacy, 'sessions.json'), 'utf8'), data.sessions,
+    'its data must still be there, exactly as it was');
+
+  // A first install of a fresh package, not a rebuild of the old one.
+  assert.equal(fs.existsSync(path.join(installDir, 'multicc')), true,
+    'the install itself must still complete');
+  const token = spawnSync(path.join(installDir, 'multicc'), ['config', 'get', 'ACCESS_TOKEN'],
+    { encoding: 'utf8', env: { ...process.env, ...env } });
+  assert.equal(token.stdout.trim(), 'installer-test-token',
+    "the other installation's token is not taken — each installation is configured on its own");
+});
+
+// The switch for someone who knows where their old installation is, and wants it
+// in the new one. The source is a source: read, never written, never moved.
+test('install.sh --adopt-data copies the named installation in and leaves it where it is', () => {
+  const fixture = buildFixtureBundle();
+  const archive = archiveFixture(fixture);
+  const cwd = canonical(tmpdir('multicc-installer-adopt-'));
+  const legacy = writeLegacyInstall(path.join(cwd, 'MultiCC'));
+  const data = legacyData();
+  const targetParent = tmpdir('multicc-installer-adopt-target-');
+  const installDir = path.join(targetParent, 'MultiCC');
+  const home = tmpdir('multicc-installer-adopt-home-');
+  const env = {
+    HOME: tmpdir('multicc-installer-adopt-fakehome-'),
+    MULTICC_STANDALONE_HOME: home,
+  };
+
+  const res = runInstaller([
+    '--from', archive, '--dir', installDir, '--token', 'installer-test-token',
+    '--port', '3122', '--adopt-data', legacy, '--no-service', '--no-start', '--no-open',
+  ], { cwd, env });
+  assert.equal(res.status, 0, `installer failed:\n${res.stdout}\n${res.stderr}`);
+  assert.match(res.stdout, /Using the data of the older installation/, 'the named path must be used');
+  assert.match(res.stdout, /Brought your data across/i);
+
+  // The data is where the launcher looks for it: `<userData>/data`.
+  const dataDir = path.join(home, 'data');
+  assert.equal(fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8'), data.sessions,
+    'the named installation must be brought across');
+  assert.equal(fs.existsSync(path.join(dataDir, data.history)), true,
+    'and so must its chat history');
+  // A copy, never a move: the source keeps everything, and nothing was created
+  // next to it — no backup rename, which would be a destructive surprise on a
+  // directory this run was only told to read.
+  assert.equal(fs.readFileSync(path.join(legacy, 'sessions.json'), 'utf8'), data.sessions,
+    'the source installation must be left exactly as it was');
+  assert.deepEqual(fs.readdirSync(cwd), ['MultiCC'],
+    'the installation named with --adopt-data must not be renamed or added to');
+});
+
+test('install.sh refuses --adopt-data on a directory that is not an older installation', () => {
+  const fixture = buildFixtureBundle();
+  const archive = archiveFixture(fixture);
+  const notAnInstall = tmpdir('multicc-installer-adopt-bad-');
+  fs.writeFileSync(path.join(notAnInstall, 'my-notes.txt'), 'do not read me\n');
+  const installDir = path.join(tmpdir('multicc-installer-adopt-bad-target-'), 'MultiCC');
+
+  const res = runInstaller([
+    '--from', archive, '--dir', installDir, '--adopt-data', notAnInstall,
+    '--no-service', '--no-start', '--no-open',
+  ], { env: { MULTICC_STANDALONE_HOME: tmpdir('multicc-installer-adopt-bad-home-') } });
+  assert.notEqual(res.status, 0, 'an unrelated directory must not be accepted as a data source');
+  assert.match(`${res.stdout}${res.stderr}`, /not a pre-standalone MultiCC installation/);
+  assert.equal(fs.readFileSync(path.join(notAnInstall, 'my-notes.txt'), 'utf8'), 'do not read me\n');
+  assert.equal(fs.existsSync(installDir), false,
+    'the path is checked before anything is downloaded, so a bad one installs nothing');
+});
+
+// The question the installer asks has to be unanswerable the same way on both
+// platforms: with no terminal, the safe answer is the one nobody chose.
+test('both installers decline to copy data they cannot ask about', () => {
+  const sh = fs.readFileSync(INSTALLER, 'utf8');
+  const ps1 = fs.readFileSync(WINDOWS_INSTALLER, 'utf8');
+  assert.match(sh, /answer <\/dev\/tty \|\| answer="__no_terminal__"/,
+    'install.sh must distinguish "no terminal" from the enter key, which means yes');
+  assert.match(ps1, /\[Console\]::IsInputRedirected/,
+    'install.ps1 must not fall back to the default answer when there is no console');
+  assert.match(ps1, /\[string\]\$AdoptData/,
+    'Windows needs the POSIX --adopt-data escape hatch too');
+  assert.match(ps1, /function Find-LegacyElsewhere/,
+    'an installation that is not at the install path must be found on Windows too');
+  assert.match(ps1, /function Test-LegacyInstallRunning/,
+    'both installers have to warn before copying from a running installation');
+});
+
+
+// install.ps1 is the one part of the installer that cannot run on the machine
+// this suite runs on, so the Windows upgrade path is the one place a wrong
+// directory could still be copied from unnoticed. Skipped where there is no
+// PowerShell — but the images that build the Windows package have it.
+test('install.ps1 copies from an old installation found elsewhere, and only when told to', t => {
+  const pwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0'], { encoding: 'utf8' });
+  if (pwsh.error || pwsh.status !== 0) {
+    t.skip('pwsh is not installed here');
+    return;
+  }
+
+  const fixture = canonical(tmpdir('multicc-installer-ps1-adopt-'));
+  const legacy = writeLegacyInstall(path.join(fixture, 'work', 'MultiCC'));
+  fs.mkdirSync(path.join(legacy, 'node_modules', 'some-dep'), { recursive: true });
+
+  const res = spawnSync('pwsh', [
+    '-NoProfile', '-File', path.join(__dirname, 'fixtures', 'install-ps1-adopt-harness.ps1'),
+    '-Installer', WINDOWS_INSTALLER, '-Fixture', fixture,
+  ], { encoding: 'utf8', detached: true });
+  assert.equal(res.status, 0, `the Windows adopt path failed:\n${res.stdout}\n${res.stderr}`);
+  assert.doesNotMatch(res.stdout, /FAIL/, res.stdout);
+  assert.match(res.stdout, /all checks passed/);
 });
 
 // The two installers have to agree on what counts as data. A name that is on one

@@ -116,12 +116,12 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.ps1 | iex
 ```
 
 一行命令，没有任何参数：URL 里的 tag **就是**版本。脚本下载该版本的**独立包**——服务端 + 固定版本的 Node 运行时 + 全部生产依赖，一个压缩包；校验 SHA-256、解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）、移除 macOS 下载隔离标记、生成 `ACCESS_TOKEN`、启动服务并自动打开浏览器，同时可选注册为登录自启（macOS `launchd` / Linux systemd user / Windows Startup）。命令结束时界面已经可用；全程不编译任何东西，**目标机器不需要 Node、npm、Homebrew、Visual Studio 或 Xcode**。MultiCC 运行时需要可用的 `git`（每个会话都有独立 worktree）；安装器会检查并在缺失时给出对应平台的最短修复方法。
@@ -137,16 +137,23 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用已经下载好的包安装
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.1.1-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.1.2-darwin-arm64.tar.gz
 
 # 服务器/自动化环境：装好但不启动，或启动但不打开浏览器
 curl -sSL .../install.sh | bash -s -- --no-start
 curl -sSL .../install.sh | bash -s -- --no-open
+
+# 机器上还有一份独立包之前的旧安装、而且不在这次要装的目录里
+# （最早的安装器把 MultiCC 装在它当时被运行的目录）
+curl -sSL .../install.sh | bash -s -- --adopt-data "$HOME/MultiCC"
 ```
 
 Windows 对应参数为 `-InstallDir`、`-Version`、`-From`、`-AccessToken`、
-`-Port`、`-NoService`、`-NoStart`、`-NoOpen`。需要传参数时先下载
+`-Port`、`-Yes`、`-NoData`、`-AdoptData`、`-NoService`、`-NoStart`、`-NoOpen`。
+需要传参数时先下载
 `install.ps1` 再执行；日常安装仍然只需上面的无参数一行命令。
+
+独立包之前的旧安装如果就在要装的目录上，会被**原地升级**：停下来、整棵目录留作备份、设置和数据搬进新数据目录。如果它在别处，则只报告、原样不动——没人回答时不会从一个你没指定的目录里拷任何东西——用 `--adopt-data <path>` 可以把它的会话、聊天历史和 memories 拷进来，原件保持不动。
 
 想改 MultiCC 本身，就从源码检出运行——那条路是给开发者准备的，那里的 `./multicc update` 是 `git pull` + `npm install`：
 
