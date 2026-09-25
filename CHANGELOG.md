@@ -41,7 +41,7 @@ All notable changes to MultiCC are documented in this file.
 - When Git is unavailable, Air can open the macOS Command Line Tools installer directly.
 - Full Disk Access errors now offer a one-click jump to the correct System Settings pane and identify the exact app or executable that needs permission.
 - The optional lid-sleep helper is narrowly scoped to `pmset -a disablesleep`, validates its sudoers entry before installation, and still falls back to the normal administrator prompt.
-- Desktop builds include hardened-runtime entitlements for the required macOS access paths.
+- Desktop builds now enable the hardened runtime, include the Electron/Node entitlements it requires, and declare usage descriptions for Desktop, Documents, Downloads, removable volumes, and network volumes.
 
 ### Compatibility
 
