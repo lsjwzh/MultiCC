@@ -50,7 +50,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
-const { DEFAULT_ZCODE_ENGINE } = require('./zcode-engine');
+const { DEFAULT_ZCODE_ENGINE, zcodeEngineEnv } = require('./zcode-engine');
 const { isZcodeSessionId } = require('./zcode-session');
 const {
   RUNTIME_PREFERENCES,
@@ -159,7 +159,7 @@ if (model) {
 function runLegacy() {
   const zargs = [ZCODE_ENGINE, '--json', '--prompt', prompt];
   if (isZcodeSessionId(cliSessionId)) zargs.push('--resume', cliSessionId);
-  const res = spawnSync(process.execPath, zargs, { encoding: 'utf8', env: process.env, maxBuffer: 1e8 });
+  const res = spawnSync(process.execPath, zargs, { encoding: 'utf8', env: zcodeEngineEnv(ZCODE_ENGINE), maxBuffer: 1e8 });
 
   if (res.status !== 0) {
     const msg = ((res.stdout || '') + (res.stderr || '')).split('\n').slice(0, 3).join(' ').slice(0, 300);
@@ -256,7 +256,7 @@ function serverErrorText(error) {
 async function runAppServer() {
   const child = spawn(process.execPath, [ZCODE_ENGINE, 'app-server'], {
     cwd: process.cwd(),
-    env: process.env,
+    env: zcodeEngineEnv(ZCODE_ENGINE),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   appChild = child;
@@ -490,12 +490,21 @@ async function runAppServer() {
     if (isZcodeSessionId(cliSessionId)) {
       // 续轮：全新进程的 workspaceModelCatalogs 是空的，不喂 runtimeModel 的话
       // resume 会给会话挂 restoreWarning，紧随其后的 send 直接 -32031。
+      // 引擎 0.16.9 起 provider 改由 provider_config.json 注册，resume 的参数 schema
+      // 是 strict 且删掉了 runtimeModel（带上就 -32602 Unrecognized key → 整轮掉回
+      // 不流式的 legacy）。先按老引擎的需要带上，被拒再不带重试一次。
       const runtimeModel = buildRuntimeModel(readVendorConfig(), null);
-      const resumed = await request('session/resume', {
-        sessionId: cliSessionId,
-        workspace,
-        ...(runtimeModel ? { runtimeModel } : {}),
-      }, HANDSHAKE_TIMEOUT_MS);
+      const resumeParams = { sessionId: cliSessionId, workspace };
+      let resumed;
+      try {
+        resumed = await request('session/resume', {
+          ...resumeParams,
+          ...(runtimeModel ? { runtimeModel } : {}),
+        }, HANDSHAKE_TIMEOUT_MS);
+      } catch (err) {
+        if (!runtimeModel || !/runtimeModel/.test(String(err && err.message))) throw err;
+        resumed = await request('session/resume', resumeParams, HANDSHAKE_TIMEOUT_MS);
+      }
       sid = sessionIdOf(resumed) || cliSessionId;
     } else {
       // mode=yolo：等价于 CLI `--prompt` 的默认模式（help: "default: yolo for --prompt"），
