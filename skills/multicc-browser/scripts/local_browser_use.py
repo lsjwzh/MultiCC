@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -26,6 +27,16 @@ NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 SOURCE_PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9 _-]{0,63}$")
 SMOKE_HTML = "data:text/html,<title>MultiCC Browser Use Smoke</title><h1>MultiCC Browser Use Smoke</h1>"
 SMOKE_TITLE = "MultiCC Browser Use Smoke"
+DEFAULT_CDP_TIMEOUT = 45
+MOCK_KEYCHAIN_MARKER = ".multicc-mock-keychain"
+MOCK_KEYCHAIN_MARKER_NOTE = (
+    "This profile is pinned to Chrome's --use-mock-keychain: at-rest cookie encryption uses a fixed key "
+    "instead of the macOS login keychain. Removing this file is a keychain-mode change; existing logins "
+    "stored under the fixed key will not decrypt.\n")
+SEEDED_MARKER = ".multicc-seeded"
+SEEDED_MARKER_NOTE = (
+    "Copied once from a personal Chrome profile. Decrypting the copied cookies still needs the login "
+    "keychain key, so this launcher refuses --mock-keychain for this profile.\n")
 
 
 def profile_path(name):
@@ -34,16 +45,65 @@ def profile_path(name):
     return Path.home() / "Library" / "Application Support" / "MultiCC" / "browser-use" / name
 
 
-def chrome_args(executable, directory, port, headless):
+def chrome_args(executable, directory, port, headless, mock_keychain=False):
     if not 1024 <= port <= 65535:
         raise ValueError("port must be between 1024 and 65535")
     args = [str(executable), f"--user-data-dir={directory}",
             f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
             "--no-first-run", "--no-default-browser-check", "--profile-directory=Default"]
+    if mock_keychain:
+        args.append("--use-mock-keychain")
     if headless:
         args.append("--headless")
     args.append("about:blank")
     return args
+
+
+def resolve_mock_keychain(profile, requested):
+    """Whether this launch may use the mock keychain, plus a note to print. Read-only."""
+    if (profile / SEEDED_MARKER).exists():
+        if requested:
+            raise ValueError(f"{profile} was seeded from a personal Chrome profile; --mock-keychain would "
+                             "make the copied cookies undecryptable")
+        return False, None
+    if requested:
+        if (profile / MOCK_KEYCHAIN_MARKER).exists():
+            return True, None
+        if profile.is_dir() and next(profile.iterdir(), None) is not None:
+            raise ValueError(f"{profile} already holds a profile and no {MOCK_KEYCHAIN_MARKER} marker; "
+                             "changing keychain mode would make its existing logins undecryptable")
+        return True, None
+    if (profile / MOCK_KEYCHAIN_MARKER).exists():
+        return True, f"note: {MOCK_KEYCHAIN_MARKER} pins this profile to --use-mock-keychain; applying it"
+    return False, None
+
+
+def pin_mock_keychain(profile):
+    """Record the mode in the profile root so a later start cannot silently switch keychain."""
+    marker = profile / MOCK_KEYCHAIN_MARKER
+    if marker.exists():
+        return False
+    marker.write_text(MOCK_KEYCHAIN_MARKER_NOTE, encoding="utf-8")
+    return True
+
+
+def security_agent_running():
+    """True when a SecurityAgent authorization dialog is up. Read-only, best effort."""
+    try:
+        return subprocess.run(["pgrep", "-x", "SecurityAgent"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, check=False).returncode == 0
+    except OSError:
+        return False
+
+
+def cdp_timeout_hint():
+    """Why CDP may never listen here, and the two cheap mitigations."""
+    hint = ('a macOS Keychain prompt ("Chrome Safe Storage") may be waiting behind SecurityAgent: answer '
+            "it in the GUI and retry, or pass --mock-keychain for smoke/fresh profiles; a first Rosetta "
+            "(x64) run can also need a larger --cdp-timeout")
+    if security_agent_running():
+        return "SecurityAgent is running, so that prompt is likely up; " + hint
+    return hint
 
 
 def require_free_loopback_port(port):
@@ -53,7 +113,18 @@ def require_free_loopback_port(port):
             raise RuntimeError(f"CDP port {port} is already in use; choose another per-profile port")
 
 
-def wait_for_cdp(port, process, timeout=20):
+def positive_seconds(value):
+    """--cdp-timeout: strictly positive, since a NaN/inf wait would never expire."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number of seconds: {value}")
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("--cdp-timeout must be a positive number of seconds")
+    return seconds
+
+
+def wait_for_cdp(port, process, timeout=DEFAULT_CDP_TIMEOUT):
     url = f"http://127.0.0.1:{port}/json/version"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -67,7 +138,7 @@ def wait_for_cdp(port, process, timeout=20):
         except (OSError, URLError, ValueError):
             pass
         time.sleep(0.2)
-    raise RuntimeError(f"CDP endpoint did not become ready at {url}")
+    raise RuntimeError(f"CDP endpoint did not become ready at {url}; {cdp_timeout_hint()}")
 
 
 def incompatibility(executable):
@@ -136,6 +207,7 @@ def seed_profile(source_root, source_profile, target_root):
 
         shutil.copy2(source_root / "Local State", staging / "Local State")
         shutil.copytree(source_dir, staging / "Default", ignore=ignore_ephemeral)
+        (staging / SEEDED_MARKER).write_text(SEEDED_MARKER_NOTE, encoding="utf-8")
         os.chmod(staging, 0o700)
         staging.rename(target_root)
     finally:
@@ -168,6 +240,11 @@ def main(argv=None):
     parser.add_argument("--name", default="default", help="stable business/account profile name")
     parser.add_argument("--port", type=int, default=9331, help="unique loopback CDP port (9222 is the Agent watchdog, 9229 Node inspector)")
     parser.add_argument("--headless", action="store_true", help="do not show a window")
+    parser.add_argument("--cdp-timeout", type=positive_seconds, default=DEFAULT_CDP_TIMEOUT,
+                        help="seconds to wait for the CDP endpoint (default: 45; a first Rosetta run can be slow)")
+    parser.add_argument("--mock-keychain", action="store_true",
+                        help="launch Chrome with --use-mock-keychain: fixed-key at-rest encryption, no login "
+                             "keychain prompt; refused by seed and by profiles started with the real keychain")
     parser.add_argument("--log-dir", type=Path, help="smoke output directory; default: temporary directory")
     parser.add_argument("--browser-use-bin", default="browser-harness",
                         help="Browser Harness (default) or Browser Use CLI executable")
@@ -182,6 +259,9 @@ def main(argv=None):
         parser.error(str(error))
 
     if args.mode == "seed":
+        if args.mock_keychain:
+            parser.error("seed must keep the real keychain key that encrypts the copied cookies; "
+                         "--mock-keychain is only for smoke and fresh profiles")
         if not args.confirm_source_closed:
             parser.error("seed requires --confirm-source-closed; quit the source Chrome first")
         try:
@@ -196,8 +276,15 @@ def main(argv=None):
     reason = incompatibility(args.browser)
     if reason:
         parser.error(reason + "; run scripts/browser_probe.py to list browsers that fit this macOS")
+    mock_keychain = args.mock_keychain
+    mock_note = None
+    if args.mode == "start":
+        try:
+            mock_keychain, mock_note = resolve_mock_keychain(durable_profile, args.mock_keychain)
+        except ValueError as error:
+            parser.error(str(error))
     try:
-        chrome_args(args.browser, durable_profile, args.port, args.headless)
+        chrome_args(args.browser, durable_profile, args.port, args.headless, mock_keychain)
     except ValueError as error:
         parser.error(str(error))
 
@@ -211,12 +298,18 @@ def main(argv=None):
         log_dir = profile.parent
 
     require_free_loopback_port(args.port)
+    # Only past every read-only check does the profile learn the choice, so a failed
+    # validation never leaves a marker that would pin an unlaunched profile.
+    if mock_keychain and args.mode == "start" and pin_mock_keychain(profile):
+        print(f"note: pinned --use-mock-keychain for {profile} ({MOCK_KEYCHAIN_MARKER})", flush=True)
+    if mock_note:
+        print(mock_note, flush=True)
     log_file = log_dir / f"{args.name}-browser.log"
     with log_file.open("ab") as browser_log:
-        process = subprocess.Popen(chrome_args(args.browser, profile, args.port, args.headless),
+        process = subprocess.Popen(chrome_args(args.browser, profile, args.port, args.headless, mock_keychain),
                                    stdin=subprocess.DEVNULL, stdout=browser_log, stderr=browser_log)
         try:
-            endpoint, version = wait_for_cdp(args.port, process)
+            endpoint, version = wait_for_cdp(args.port, process, args.cdp_timeout)
             print(f"browser={version} profile={profile} cdp={endpoint} log={log_file}", flush=True)
             if args.mode == "start":
                 print(f"Use BU_CDP_URL={endpoint} BU_NAME={args.name} {args.browser_use_bin}; "

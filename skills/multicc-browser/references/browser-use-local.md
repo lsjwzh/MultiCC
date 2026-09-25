@@ -29,7 +29,7 @@ python3.12 skills/multicc-browser/scripts/local_browser_use.py smoke \
   --port 9331 --headless
 ```
 
-脚本为验收创建**临时** Profile，启动浏览器、访问内置 `data:` 页面、读取并核对标题、截图，然后关闭它启动的浏览器；成功输出 `PASS title=... screenshot=... log=...`。保留的输出目录含浏览器启动日志、Browser Harness 完整输出和 PNG，可供复核。失败会输出 `FAIL` 和日志路径。不能用单纯的 `--version` 或 wheel 标签代替这一验收。
+脚本为验收创建**临时** Profile，启动浏览器、访问内置 `data:` 页面、读取并核对标题、截图，然后关闭它启动的浏览器；成功输出 `PASS title=... screenshot=... log=...`。保留的输出目录含浏览器启动日志、Browser Harness 完整输出和 PNG，可供复核。失败会输出 `FAIL` 和日志路径。不能用单纯的 `--version` 或 wheel 标签代替这一验收。若启动一直等不到 CDP，先看下文「启动被 macOS 钥匙串挡住」。
 
 ## 首选：一次性复制个人 Profile，再使用专用浏览器
 
@@ -59,6 +59,17 @@ python3.12 skills/multicc-browser/scripts/local_browser_use.py start \
 另一个终端使用启动输出中的端点，例如 `BU_CDP_URL=http://127.0.0.1:9331 BU_NAME=account-one browser-harness`。第二个账号用 `--name account-two --port 9332`；对应的 Profile 固定存放在 `~/Library/Application Support/MultiCC/browser-use/<name>`，不在会被回收的 worktree。关闭启动终端只停止它创建的浏览器进程，Profile 不删除。不要让两个浏览器进程共享同一 Profile；同账号的多个页面应复用同一浏览器和 Harness daemon。CDP 仅绑定 loopback，不能转发到公网。
 
 如果刻意改成接管个人 Chrome，Harness 的 `mac-approve` 可在弹窗出现时定向点击一次，但首次启用远程调试和授予 macOS 辅助功能权限仍需人工完成。不要运行常驻自动点击授权脚本；它可能批准不属于本次任务的连接。
+
+## 启动被 macOS 钥匙串挡住（`--mock-keychain`、`--cdp-timeout`）
+
+若本机已有另一个 Chrome 持有登录钥匙串项 `Chrome Safe Storage`，首次启动**专用** Chrome 可能阻塞在 `SecItemCopyMatching`：GUI 里弹出 SecurityAgent 授权对话框（headless 下无人应答），CDP 端口一直不监听，脚本最终报 `FAIL CDP endpoint did not become ready`。该报错现在附带提示，并在探测到 `SecurityAgent` 进程时明确指出。
+
+处理顺序：
+
+1. 首选在 GUI 里应答该对话框（只应答确实属于本次任务的请求）后重试。
+2. 仅做验收或用新 Profile 时可加 `--mock-keychain`：它给 Chrome 加 `--use-mock-keychain`，不再读登录钥匙串，代价是**静态 Cookie 加密改用固定 key，比登录钥匙串弱**。因此它不是默认值，`seed` 直接拒绝（复制来的 Cookie 需真 key 才能解密）。
+3. `start` 只在**新建或空**的 Profile 上接受 `--mock-keychain`，并写下 `.multicc-mock-keychain` 标记让选择“粘住”：之后即使不带参数也会自动沿用（一个 Profile 的钥匙串模式必须一致，改成真钥匙串会让已有登录失效）。已有内容的 Profile 没有该标记时拒绝；带 `seed` 写的 `.multicc-seeded` 标记的 Profile 一律拒绝。
+4. `--cdp-timeout 秒数`（默认 45，必须 > 0）放宽等待。首次 Rosetta（x64）启动本身可能偏慢（实测一次 28 s），不要靠反复重试掩盖。
 
 ## 新版 MultiCC Agent 与本路径的关系
 
@@ -112,7 +123,14 @@ MultiCC 在 macOS 启动时会按需安装/更新 Agent（用户卸载并禁用�
 - **打桩 Intel 主机（in-process 替换 `platform.mac_ver`，只让 `lipo` 走真实调用）**：macOS **11.7.10** 下 138 `compatible=True`、**150 `compatible=False`（why=`needs macOS 12.0`）**、Chrome 153 `False`；macOS **12.7.6** 下 138 与 150 都 `True`。把临时 venv 放到 `PATH` 后 `choice=browser-harness`，并打印出可直接照抄的 `smoke` 命令；不放时 `choice=None`（退出码 2）。分级判定与 `FROZEN_CHROME` 表一致。
 - **smoke 通过（两次）**：138 → `browser=Chrome/138.0.7204.183`、`PASS title=MultiCC Browser Use Smoke`、PNG 756×417、整条命令 9.4s；150 → `browser=Chrome/150.0.7871.124`、`PASS`、7.4s。两次 Harness 日志都是 `MULTICC_BROWSER_USE_SMOKE_OK`。
 - **确实在 Rosetta 下运行**：两个包的浏览器日志都带 Chromium 自己的 `The use of Rosetta to run the x64 version of Chromium on Arm is neither tested nor maintained`；运行期 `sample` 头部为 `Code Type: X86-64 (translated)`，父进程是启动它的 `local_browser_use.py`，与 `lipo -archs` 只有 x86_64 互相印证。
-- **首次启动可能被登录钥匙串挡住（重要，务必知情）**：本机第一次用 138 起 headless 时，浏览器在 `Security.framework` 的 `SecItemCopyMatching` 上阻塞（读个人 Chrome 已于 2025-06-05 创建的登录钥匙串项 `Chrome Safe Storage`），SecurityAgent 弹出授权对话框且无人应答，CDP 一直不监听——浏览器日志只有 Rosetta 那一行，脚本按 20s 上限判 `FAIL CDP endpoint did not become ready`。**取消**该对话框（只取消，未批准任何访问）后 138 即可启动（一次 28s），之后 smoke/start 稳定 6–9s 起来；另测 `--use-mock-keychain` 可让 138 在 6s 内到达 CDP。150 全程没有阻塞（它也会拉起 SecurityAgent，但不等其应答）。
+- **首次启动可能被登录钥匙串挡住（重要，务必知情）**：本机第一次用 138 起 headless 时，浏览器在 `Security.framework` 的 `SecItemCopyMatching` 上阻塞（读个人 Chrome 已于 2025-06-05 创建的登录钥匙串项 `Chrome Safe Storage`），SecurityAgent 弹出授权对话框且无人应答，CDP 一直不监听——浏览器日志只有 Rosetta 那一行，脚本按 20s 上限判 `FAIL CDP endpoint did not become ready`。**取消**该对话框（只取消，未批准任何访问）后 138 即可启动（一次 28s），之后 smoke/start 稳定 6–9s 起来；另测 `--use-mock-keychain` 可让 138 在 6s 内到达 CDP。150 全程没有阻塞（它也会拉起 SecurityAgent，但不等其应答）。**已落地的缓解**：启动器新增 `--cdp-timeout`（默认 45）与 `--mock-keychain`，并在 CDP 超时时报出钥匙串提示、附带 `SecurityAgent` 进程探测结果；规则与取舍见上文「启动被 macOS 钥匙串挡住」。
 - **两账号持久化通过（138 x64）**：`start --headless` 起 `legacy-test-a`/9351 与 `legacy-test-b`/9352，Harness 写 `multicc-acct=alpha|beta`（含 max-age 的 cookie + localStorage）。两账号互不可见（A 只见 alpha、B 只见 beta）；`SIGTERM` 停掉两个浏览器进程（当时启动器已因下述缺陷自行退出）、确认两个端口关闭后重新 `start`，A 仍是 alpha、B 仍是 beta，且隔离与磁盘上一致（各自 `Default/Local Storage/leveldb` 只含自己的值）。重启浏览器后按 Harness 说明先 `--reload` 丢弃旧 daemon 再连。
 - **发现并修复的脚本缺陷**：给启动器发 `SIGTERM` 只会杀掉启动器，**它启动的浏览器会变成孤儿**继续监听 CDP 端口（脚本只处理 `KeyboardInterrupt`，`SIGTERM` 默认不触发 `finally`）。已做最小修复：注册 `SIGTERM` 处理函数转成 `KeyboardInterrupt`，使 `start` 的停止语义与文档一致；修复后实测 `SIGTERM` 启动器 → 只它自己的浏览器退出、端口关闭、无残留。
 - **本验收不能证明**：真 macOS 11/12 Intel 内核/图形栈/系统权限弹窗下的浏览器启动；真机钥匙串（登录会话、ACL、Seeded Profile 的 Cookie 解密）行为——本机是 arm64 登录会话里跑的转译 x64 进程，与真 Intel 机可能不同；有头（非 headless）模式的首次运行 UI 与授权弹窗未测；只验证到 CDP 层的 set/get 与持久化，没有真实站点登录；150 只做了探测与单次 smoke，两账号持久化只在 138 上做过。这些仍需真机验收，不能用本节结果代替。
+
+## 钥匙串阻塞缓解的验证（2026-09-25）
+
+- 改动：`--cdp-timeout`（默认 45，必须 > 0）传给 `wait_for_cdp`；CDP 超时的 `FAIL` 报错附带钥匙串提示，并在 `pgrep -x SecurityAgent` 命中时明确指出（只读，命令缺失或报错一律当未运行）；`--mock-keychain` 的准入规则见上文；`seed` 现在会在目标根写 `.multicc-seeded`。
+- 测试：`python3 -m unittest discover -s tests -p 'test_*browser*.py'` 18/18（系统 `python3` 3.9.6 与 `python3.12` 各跑一遍），`node --test tests/test-skill-sync.js` 15/15，`node --test tests/test-source-line-budget.js` 5/5，`git diff --check` 干净。全部为打桩测试，不启动真实浏览器。
+- 本机实跑（macOS 15.3/arm64、Rosetta 下 Chrome for Testing 138 x64、`browser-harness==0.1.13`）：`smoke --mock-keychain --headless --port 9361` 5.9s 通过；`start --mock-keychain --headless --port 9362` 打印 pin 提示并写出标记，`SIGTERM` 启动器后端口关闭、无残留浏览器（启动器退出码 130）；同一 Profile 不带 `--mock-keychain` 再 `start` 打印沿用提示并正常启动；非空且无标记的 Profile 带 `--mock-keychain` 被拒（退出码 2，未写标记）。测试 Profile 目录已删除。
+- **未验证**：真 macOS 11/12 Intel 的钥匙串行为、有头模式下 SecurityAgent 对话框的人工应答流程，以及探测在真弹窗时的命中（实跑时没有弹窗，探测只在打桩下测过）。

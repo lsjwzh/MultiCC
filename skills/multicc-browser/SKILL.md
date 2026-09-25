@@ -23,7 +23,7 @@ python3 <skill_dir>/scripts/browser_probe.py
 
 ## 选执行层
 
-- **Browser Use 本地专用浏览器**：需要在 Intel/macOS 11 本机尝试时，先读 [本地 Browser Use 适配](references/browser-use-local.md)。使用官方 Browser Harness 连接一台专用的、已确认能在该系统运行的 Chromium；每个账号独立持久目录和端口。若用户明确选择沿用个人 Chrome 登录态，可在源浏览器完全退出后用 `seed` 一次性复制指定 Profile，再启动专用进程；复制不是免弹窗的原因，独立进程和目录才是。预检和 smoke 未通过前不要宣称可用。不要让 CLI 默认接管个人 Chrome。
+- **Browser Use 本地专用浏览器**：需要在 Intel/macOS 11 本机尝试时，先读 [本地 Browser Use 适配](references/browser-use-local.md)。使用官方 Browser Harness 连接一台专用的、已确认能在该系统运行的 Chromium；每个账号独立持久目录和端口。若用户明确选择沿用个人 Chrome 登录态，可在源浏览器完全退出后用 `seed` 一次性复制指定 Profile，再启动专用进程；复制不是免弹窗的原因，独立进程和目录才是。首次启动可能被 macOS 钥匙串授权对话框挡住（headless 下无人应答即表现为 CDP 超时）；按该文档处理，`--mock-keychain` 只限 smoke 与新建 Profile。预检和 smoke 未通过前不要宣称可用。不要让 CLI 默认接管个人 Chrome。
 - **OpenClaw 托管浏览器**：适合 Claude/Codex 等 MultiCC 会话通过 CLI 控制。先读 [OpenClaw 适配](references/openclaw.md)，验证命令和 Gateway 可用，再用明确命名的托管 Profile。不要使用其默认的 `chrome` 扩展接管档案。
 - **Hermes 原生浏览器工具**：仅当当前运行环境实际暴露 `browser_*` 工具时使用。先读 [Hermes 适配](references/hermes.md)。不要为了调用浏览器而额外启动一个 Hermes 模型 Agent；它会引入另一套模型决策循环，也不会自动继承当前 MultiCC 会话的权限和上下文。
 - **BrowserAct**：若本机已安装且用户选择沿用现有浏览器，必须先加载其原生 `browser-act` 技能及完整 core 指南；优先使用各自持久的独立 `chrome` 浏览器，而非 `chrome-direct` 接管个人 Chrome。不要猜测其命令、Profile 或会话归属。
