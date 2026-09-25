@@ -1,12 +1,14 @@
 """Standard-library checks for the macOS Browser Use launcher."""
 
 import importlib.util
+import sys
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 
+sys.dont_write_bytecode = True
 SCRIPT = Path(__file__).resolve().parents[1] / "skills/multicc-browser/scripts/local_browser_use.py"
 SPEC = importlib.util.spec_from_file_location("local_browser_use", SCRIPT)
 browser_use = importlib.util.module_from_spec(SPEC)

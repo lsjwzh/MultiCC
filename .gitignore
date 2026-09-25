@@ -160,3 +160,7 @@ cli-provider-router/
 
 # Global official-account selection (local runtime state)
 official-provider-selection.json
+
+# Python bytecode from skill scripts and their unittest suites
+__pycache__/
+*.pyc

@@ -176,14 +176,17 @@ test('bundled browser skill keeps its adapters and local launcher after sync', t
   h.runtime.syncSharedSkills();
   for (const provider of h.providers) {
     const installed = path.join(provider.dir, 'multicc-browser');
-    assert.equal(fs.readFileSync(path.join(installed, 'references/openclaw.md'), 'utf8'),
-      fs.readFileSync(path.join(source, 'references/openclaw.md'), 'utf8'));
-    assert.equal(fs.readFileSync(path.join(installed, 'references/hermes.md'), 'utf8'),
-      fs.readFileSync(path.join(source, 'references/hermes.md'), 'utf8'));
-    assert.equal(fs.readFileSync(path.join(installed, 'references/browser-use-local.md'), 'utf8'),
-      fs.readFileSync(path.join(source, 'references/browser-use-local.md'), 'utf8'));
-    assert.equal(fs.readFileSync(path.join(installed, 'scripts/local_browser_use.py'), 'utf8'),
-      fs.readFileSync(path.join(source, 'scripts/local_browser_use.py'), 'utf8'));
+    for (const relative of [
+      'references/openclaw.md',
+      'references/hermes.md',
+      'references/browser-use-local.md',
+      'references/macos-tiers.md',
+      'scripts/local_browser_use.py',
+      'scripts/browser_probe.py',
+    ]) {
+      assert.equal(fs.readFileSync(path.join(installed, relative), 'utf8'),
+        fs.readFileSync(path.join(source, relative), 'utf8'));
+    }
   }
 });
 

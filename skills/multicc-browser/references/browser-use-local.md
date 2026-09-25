@@ -4,6 +4,8 @@ Browser Use 官方 `browser-use` 技能调用 CLI；CLI 的本地执行层是官
 
 ## 安装与预检
 
+先运行 `python3 skills/multicc-browser/scripts/browser_probe.py`：它列出本机哪些 Chromium-family 浏览器声明可在此 macOS 运行，并给出带正确路径和空闲端口的 `smoke` 命令。`start`/`smoke` 启动前也会读取浏览器 `.app` 的 `LSMinimumSystemVersion`，声明不兼容时直接拒绝，不再等浏览器崩溃。未指定 `--port` 时默认 9331（避开 Agent 守护的 9222 与 Node 调试的 9229）。
+
 在目标 Intel/macOS 11 上准备 Python 3.12、`browser-harness==0.1.13` 和**经过该机实测可运行**的 Chromium-family 可执行文件。推荐在独立 Python 环境里安装：
 
 ```bash
@@ -93,3 +95,10 @@ MultiCC 在 macOS 启动时会按需安装/更新 Agent（用户卸载并禁用�
 - 本会话分支已合并当时的本地 `main`（`acd2b848`）。新版 Agent 具有 AX 元素操作、macOS 11+ 分层实现与启动时按需安装；浏览器的专用 Profile + Browser Harness 流程保持独立。
 - 当前 macOS 开发机上，Browser Use Python 测试 5/5、技能同步测试 15/15、Agent 协议/安装及搜索索引测试通过；桌面打包测试 28/28、技能格式检查通过。这是开发机回归，不是目标旧 Mac 的真机验收。
 - **仍缺 Intel/macOS 11 真机验证**：可信且可运行的 Chromium、Harness CDP 操作、两账号独立 Profile、重启登录态、无逐次授权弹窗；Agent 的编译/协议通过也不能替代这些项目。
+
+## 分级探测验证（2026-09-25）
+
+- 分支已合并最新本地 `main`（`d076a7b0`），无冲突。新增 `browser_probe.py` 与 [macOS 分级选路](macos-tiers.md)，`start`/`smoke` 启动前按 `.app` 的 `LSMinimumSystemVersion` 与架构拒绝不兼容浏览器，默认端口改为 9331。
+- 开发机（macOS 15.3/arm64，系统 `python3` 3.9）探测：`tier=current`，Chrome 153 的最低系统为 13.0；把 Harness 放进临时 venv 后，照探测打印的 `next` 命令原样执行 `smoke` 得到 `PASS`，9331 端口随后关闭。
+- 以打桩的 macOS 11.7/x86_64 运行探测：Chrome 153 判为 `needs macOS 13.0`，Harness 路线 `needs-setup`，BrowserAct/OpenClaw `not-recommended`，`choice=none`，退出码 2；Agent 桌面路线始终标为前台且需同意。
+- Python 测试 10/10（`python3.12` 与系统 `python3` 3.9 均通过），`node --test tests/test-skill-sync.js` 15/15。**这仍是开发机与模拟结果**，macOS 11/12 Intel 真机上的浏览器启动、CDP 操作和登录保持仍待验收。

@@ -1,11 +1,25 @@
 ---
 name: multicc-browser
-description: 在 MultiCC 会话中操作需要交互或登录的网页；按可用执行层选择独立持久浏览器，隔离多账号与多会话，并避免反复接管个人 Chrome。
+description: 在 MultiCC 会话中操作需要交互或登录的网页；先探测 macOS 档位（11–12 / 13 / 14+）与可用执行层，再选择独立持久浏览器，隔离多账号与多会话，并避免反复接管个人 Chrome。
 ---
 
 # MultiCC 浏览器操控
 
 本技能是跨 CLI 的操作规程，**不是浏览器引擎**。只有已安装且通过预检的执行层才能操作网页；不要把一份 `SKILL.md` 或 `command -v` 当作浏览器已可用的证明。普通公开网页的只读资料优先用搜索/抓取；需要 JS 渲染、登录或点击时才进入浏览器。
+
+## 先探测，再按系统档位选路
+
+在 macOS 上第一次操作浏览器前，运行只读探测（系统自带 `python3` 即可，不启动浏览器）：
+
+```bash
+python3 <skill_dir>/scripts/browser_probe.py
+```
+
+它报告档位、各 Chromium-family 浏览器能否在本机运行，以及按档位排好的路线和下一步命令。**用它的 `choice`**；没有 `choice`（退出码 2）就说明缺什么并停止。档位矩阵与各家技能取舍见 [macOS 分级选路](references/macos-tiers.md)：
+
+- **macOS 11–12（legacy）**：当前 Chrome 已不支持。默认 Browser Harness + 本机实测可运行的冻结版 Chromium + 专用 Profile；BrowserAct/OpenClaw 须先证明其浏览器能在本机启动。
+- **macOS 13（transitional）/ 14+（current）**：已安装 BrowserAct 时默认用它的独立持久 `chrome` 浏览器；否则 Browser Harness + 当前 Chrome 的专用 Profile，或已自检的 OpenClaw。
+- 任何档位：MultiCC Agent 只是前台桌面后备，不计入 `choice`。
 
 ## 选执行层
 

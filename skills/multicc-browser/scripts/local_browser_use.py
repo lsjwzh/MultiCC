@@ -16,6 +16,10 @@ import time
 from urllib.error import URLError
 from urllib.request import urlopen
 
+sys.dont_write_bytecode = True  # keep the installed skill directory free of __pycache__
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import browser_probe  # noqa: E402  (sibling script, shared bundle checks)
+
 
 NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 SOURCE_PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9 _-]{0,63}$")
@@ -63,6 +67,18 @@ def wait_for_cdp(port, process, timeout=20):
             pass
         time.sleep(0.2)
     raise RuntimeError(f"CDP endpoint did not become ready at {url}")
+
+
+def incompatibility(executable):
+    """Reason the browser's app bundle declares it cannot run on this macOS, else None."""
+    app = browser_probe.app_bundle_for(executable)
+    if not app:
+        return None
+    mac, _, machine = platform.mac_ver()
+    entry = browser_probe.inspect_app(app, browser_probe.version_tuple(mac), machine or platform.machine())
+    if entry and entry["compatible"] is False:
+        return f"{app.name} {entry['version']} cannot run here: {entry['why']}"
+    return None
 
 
 def stop_owned_browser(process):
@@ -144,7 +160,7 @@ def main(argv=None):
     parser.add_argument("--confirm-source-closed", action="store_true",
                         help="confirm the source browser is fully closed before seed")
     parser.add_argument("--name", default="default", help="stable business/account profile name")
-    parser.add_argument("--port", type=int, default=9229, help="unique loopback CDP port")
+    parser.add_argument("--port", type=int, default=9331, help="unique loopback CDP port (9222 is the Agent watchdog, 9229 Node inspector)")
     parser.add_argument("--headless", action="store_true", help="do not show a window")
     parser.add_argument("--log-dir", type=Path, help="smoke output directory; default: temporary directory")
     parser.add_argument("--browser-use-bin", default="browser-harness",
@@ -170,6 +186,9 @@ def main(argv=None):
 
     if not args.browser or not args.browser.is_file() or not os.access(args.browser, os.X_OK):
         parser.error("--browser must name an existing executable; no browser is downloaded automatically")
+    reason = incompatibility(args.browser)
+    if reason:
+        parser.error(reason + "; run scripts/browser_probe.py to list browsers that fit this macOS")
     try:
         chrome_args(args.browser, durable_profile, args.port, args.headless)
     except ValueError as error:
