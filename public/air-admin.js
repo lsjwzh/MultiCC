@@ -71,7 +71,11 @@
   let currentContext = null;
   // 控制台里那份「全部任务」的筛选，存在模块上而不是 DOM 上：面板每次重开都会
   // 重建 DOM，筛选跟着输入框一起丢掉的话，翻回去看同一条列表要重挑一次。
-  const consoleFilter = { query: '', status: 'open', dir: 'all' };
+  //
+  // fullText 默认开：搜索的默认目标是「全部记录（含对话）」，因为只出现在对话正文里
+  // 的词走不到任务板语料。注意它换的不是上面那条状态口径 —— 列表默认仍是「进行中与
+  // 待处理」，搜索另有一份 searchFilter()（见下）。
+  const consoleFilter = { query: '', status: 'open', dir: 'all', fullText: true };
   // 面板是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数说清楚。
   const TASK_LIST_LIMIT = 60;
   // 「谁在等我」是面板的第一格，也是打开控制台第一眼要看的东西，所以它只留最近更新的
@@ -259,10 +263,24 @@
     return matched.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
   }
 
-  /** 全文检索结果 → 相关度顺序的任务数组（服务端顺序，逐条仍是同一份筛选口径）。 */
+  /**
+   * 搜索用的筛选口径：搜索永远搜「全部记录」，不套状态那格 —— 默认只看在办会把已
+   * 归档任务的命中静默滤掉（服务端有结果、列表显示 0 条），而那正是「明明搜得到却
+   * 搜不到」的来源。状态选择器管的是不搜索时的列表；目录那格照旧参与（它本来就是
+   * 搜索范围的一部分）。
+   */
+  function searchFilter(filter = {}) {
+    return { ...filter, status: 'all' };
+  }
+
+  /**
+   * 全文检索结果 → 相关度顺序的任务数组（服务端顺序，逐条仍是同一份筛选口径）。
+   * rankedHits 会把两条语料合成一份：任务板命中在前，会话正文命中接在后面（同一条
+   * 任务只留最强的那次）。
+   */
   function rankedRows(tasks, filter, directoryName, results) {
-    const ranked = window.MultiCCTaskSearch?.rankedTasks(results, tasks);
-    if (!ranked) return null;
+    const ranked = window.MultiCCTaskSearch?.rankedHits?.(results, tasks);
+    if (!ranked?.length) return null;
     const snippets = new Map(ranked.map(({ task, hit }) => [task.id, hit.snippet]));
     const rows = filterTasks(ranked.map(({ task }) => task), filter, directoryName, { keepOrder: true });
     // 本地状态/目录筛选可能把命中的前几名滤掉，滤掉的那几条不该继续占位置。
@@ -440,6 +458,15 @@
       statusPick.append(option);
     }
     statusPick.value = consoleFilter.status;
+    const scopePick = make('select');
+    scopePick.id = 'console-task-scope';
+    scopePick.setAttribute('aria-label', t('airSearchScopeLabel'));
+    for (const [value, text] of [['full', t('airSearchScopeFull')], ['board', t('airSearchScopeBoard')]]) {
+      const option = make('option', text);
+      option.value = value;
+      scopePick.append(option);
+    }
+    scopePick.value = consoleFilter.fullText ? 'full' : 'board';
     const dirPick = make('select');
     dirPick.id = 'console-task-dir';
     dirPick.setAttribute('aria-label', t('airAdminFilterByDirectory'));
@@ -463,9 +490,13 @@
     function paintTaskList() {
       // 有全文结果就按相关度排（标题没命中、正文命中的任务因此能被找到）；没有
       // （还没回来 / 报错 / 查询为空）就退回原来的本地标题筛选，面板从不空着。
-      const rows = (consoleFilter.query.trim()
-        ? rankedRows(tasks, consoleFilter, context.directoryName, fullText?.results())
-        : null) || filterTasks(tasks, consoleFilter, context.directoryName).map(task => ({ task }));
+      // 有查询时口径换成 searchFilter()：服务端那次和「还没回来/报错」的本地退路
+      // 必须同一份口径，否则同一句话在结果回来前后能搜出两种条数。
+      const querying = !!consoleFilter.query.trim();
+      const active = querying ? searchFilter(consoleFilter) : consoleFilter;
+      const rows = (querying
+        ? rankedRows(tasks, active, context.directoryName, fullText?.results())
+        : null) || filterTasks(tasks, active, context.directoryName).map(task => ({ task }));
       const shown = rows.slice(0, TASK_LIST_LIMIT);
       allList.replaceChildren(...shown.map(({ task, snippet }) => taskRow(task, context, {
         onOpen: () => context.closeConsole?.(), deletable: true, snippet,
@@ -482,11 +513,19 @@
     fullText = window.MultiCCTaskSearch?.attach(search, {
       request: path => context.api(path),
       limit: TASK_LIST_LIMIT,
+      fullText: () => consoleFilter.fullText,
       onChange: () => paintTaskList(),
     });
     statusPick.onchange = () => { consoleFilter.status = statusPick.value; paintTaskList(); };
+    // 搜索范围换了要重新问一次服务端（两条语料的召回不同），不能只重画：
+    // 缓存按「查询词 + 范围」分开，所以换回来是立刻的。
+    scopePick.onchange = () => {
+      consoleFilter.fullText = scopePick.value === 'full';
+      fullText?.refresh();
+      paintTaskList();
+    };
     dirPick.onchange = () => { consoleFilter.dir = dirPick.value; paintTaskList(); };
-    controls.append(search, statusPick, dirPick);
+    controls.append(search, statusPick, scopePick, dirPick);
     allPanel.append(allHead, controls, allList);
     paintTaskList();
 
@@ -1123,6 +1162,7 @@
     worktreeChangeBadge,
     applyRing,
     filterTasks,
+    searchFilter,
     rankedRows,
   });
 })(typeof window !== 'undefined' ? window : null);
