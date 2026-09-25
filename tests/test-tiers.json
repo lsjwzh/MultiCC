@@ -550,6 +550,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/system_inject_message_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/task_artifacts_test.dart",
       "tier": "flow",
       "lane": "flutter"

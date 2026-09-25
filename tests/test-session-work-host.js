@@ -101,6 +101,7 @@ function fixture(options = {}) {
     finishProviderAttempt: (attempt, facts) => calls.push(['finish-provider-attempt', attempt, facts]),
     appendMessage: (...args) => calls.push(['append-message', ...args]),
     cancelPreparation: (...args) => calls.push(['cancel-preparation', ...args]),
+    stopBackgroundForInsert: sessionId => calls.push(['stop-background', sessionId]),
     chatStream: options.chatStream || { isAlive: () => false, cancel() {} },
     zcodeAuth: options.zcodeAuth || { ensureZcodeAuth: () => ({ ok: true }) },
     runnerStopTimeoutMs: options.runnerStopTimeoutMs,
@@ -293,6 +294,17 @@ test('an immediate same-task successor keeps the dispatch live and marks only th
   assert.equal(result.superseded, true);
   assert.equal(result.successorRetainsDispatch, true);
   assert.equal(result.dispatchSettlement, null);
+});
+
+test('an immediate insert stops background tasks before the runner; a manual cancel does not', async () => {
+  const inserted = cancelFixture();
+  await inserted.h.host.cancelActiveTurn('s1', { source: 'insert_queued' });
+  const names = inserted.h.calls.map(call => call[0]);
+  assert.deepEqual(inserted.h.calls.filter(call => call[0] === 'stop-background'), [['stop-background', 's1']]);
+  assert.ok(names.indexOf('stop-background') < names.indexOf('dispatch'));
+  const manual = cancelFixture();
+  await manual.h.host.cancelActiveTurn('s1', { source: 'manual_cancel' });
+  assert.equal(manual.h.calls.some(call => call[0] === 'stop-background'), false);
 });
 
 test('a partial assistant reply is persisted once, and a cancel never advances the FIFO', async () => {

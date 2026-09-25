@@ -1470,6 +1470,7 @@ function createChatTurnEngine(deps) {
           buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
           pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
           normalizeEffort, cliEffortLevel,
+          takeBackgroundStopNote: name => getBackgroundTaskRuntime()?.takeStoppedNote?.(name) || '',
         },
       });
     } catch (e) {

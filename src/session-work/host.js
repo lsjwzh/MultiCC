@@ -839,6 +839,15 @@ function createSessionWorkHost(deps = {}) {
     );
     const effectiveReason = supersededByEntryId
       ? 'superseded_by_immediate_insert' : reason;
+    // Inserting a message replaces everything the session was doing, including
+    // its background tasks (stopping the resident process takes them with it).
+    // Settle their pending notices first so none of them wakes the session
+    // behind the inserted turn.
+    if ((supersededByEntryId || ['insert_queued', 'force_insert'].includes(source))
+        && typeof deps.stopBackgroundForInsert === 'function') {
+      try { deps.stopBackgroundForInsert(sessionId); }
+      catch (error) { log.warn?.('session_insert_background_stop_failed', { sessionId, error: error.message }); }
+    }
     stopRunner(
       sessionId,
       effectiveReason,

@@ -62,6 +62,14 @@ function createBackgroundTaskRuntime(deps = {}) {
   // MultiCC turn so a completion can distinguish "the originating turn is
   // still consuming this tool" from "the turn already ended; wake it again".
   const taskOrigins = new Map();
+  // Main-thread background tasks (run_in_background Bash / Agent) whose result
+  // the host delivers itself. A resident CLI also wakes the model with its own
+  // native notification query; the UserPromptSubmit hook consults this map so
+  // exactly one of the two reaches the model. `delivered` flips once the host
+  // queued (or deliberately suppressed) the result.
+  const ownedTasks = new Map();
+  // One-shot note for the next turn: background tasks stopped by "insert now".
+  const stoppedNotes = new Map();
   const mainToolUses = new Map();
   const knownSessions = new Set();
 
@@ -188,6 +196,18 @@ function createBackgroundTaskRuntime(deps = {}) {
     entries.delete(key);
     if (entries.size === 0) taskOrigins.delete(sessionName);
     return origin;
+  }
+
+  function ownTask(sessionName, taskId, origin) {
+    const entries = nested(ownedTasks, sessionName, true);
+    const timestamp = now();
+    for (const [key, value] of entries) if (timestamp - value.at > livenessTtlMs) entries.delete(key);
+    entries.set(String(taskId), { at: timestamp, delivered: false, originTurnId: origin && origin.turnId || null });
+  }
+
+  function ownedTask(sessionName, taskId) {
+    const value = taskId && nested(ownedTasks, sessionName)?.get(String(taskId));
+    return value && now() - value.at <= livenessTtlMs ? value : null;
   }
 
   function markTaskOutputAwaiting(sessionName, input) {
@@ -422,6 +442,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       watches.set(String(taskId), { live: true, description: event.description || '', toolUseId: event.tool_use_id });
     }
     if (subagent) tagTimed(subagentTasks, sessionName, taskId);
+    if (!sync && !monitor && !subagent) ownTask(sessionName, taskId, origin);
     const outputFile = monitorOutputFilePath(event.session_id || '', taskId, chatState && chatState.cwd);
     observe({
       sessionId: sessionName,
@@ -537,7 +558,9 @@ function createBackgroundTaskRuntime(deps = {}) {
       log('warn', 'background task classifier returned an invalid decision');
       return { handled: true, decision: 'invalid' };
     }
+    const owned = !watch && ownedTask(sessionName, taskId);
     if (decision.action === 'suppress') {
+      if (owned) owned.delivered = true;
       if (decision.reason === 'taskoutput') consumeTimed(taskOutputAwaiting, sessionName, taskId);
       else if (decision.reason === 'sync-bash') consumeTimed(syncBashTasks, sessionName, taskId);
       else if (decision.reason === 'sidechain') consumeTimed(subagentTasks, sessionName, taskId);
@@ -557,6 +580,8 @@ function createBackgroundTaskRuntime(deps = {}) {
     if (turnAlreadyHasResult(chatState, event.tool_use_id, origin)) {
       return { handled: true, decision: 'turn-result' };
     }
+    // The native notification query won the race and was already admitted.
+    if (owned && owned.delivered) return { handled: true, decision: 'native-prompt' };
     const item = {
       desc: event.description || event.summary || '后台任务',
       status: event.status || 'completed',
@@ -568,11 +593,53 @@ function createBackgroundTaskRuntime(deps = {}) {
       noteBgResultInjected(sessionName);
       knownSessions.add(sessionName);
       coalescer.add(sessionName, item);
+      if (owned) owned.delivered = true;
     } catch (error) {
       log('warn', 'background task completion buffering failed', error);
       return { handled: true, decision: 'failed' };
     }
     return { handled: true, decision: 'inject' };
+  }
+
+  // A native notification query for a main-thread background task. The host
+  // owns delivery, so the native query is always swallowed: either the host
+  // already queued this result (duplicate), or the hook arrived first and the
+  // host queues it now. The one exception is a completion the originating turn
+  // is still streaming through — the CLI hands that over in-turn.
+  function handleTaskPrompt(sessionName, chatState, event) {
+    const owned = ownedTask(sessionName, event.task_id);
+    if (!owned) return { handled: false };
+    const activeTurnId = String(chatState && chatState._activeTurn && chatState._activeTurn.turnId || '').trim();
+    if (!owned.delivered && owned.originTurnId && chatState && chatState.isStreaming === true
+        && activeTurnId === owned.originTurnId) return { handled: false };
+    if (event.probe) return { handled: true, monitorOwned: true };
+    if (owned.delivered) return { handled: true, monitorOwned: true, decision: 'duplicate' };
+    owned.delivered = true;
+    noteBgResultInjected(sessionName);
+    coalescer.add(sessionName, { desc: event.summary || '后台任务', status: event.status || 'completed',
+      snippet: outputSnippet(event.output_file), taskId: event.task_id, toolUseId: event.tool_use_id || null });
+    return { handled: true, monitorOwned: true, decision: 'inject' };
+  }
+
+  // "Insert now" replaces the running work with the user's message: the
+  // resident process is stopped and its background tasks die with it. Drop
+  // completions still waiting in the coalescer (they would wake the session
+  // right after the inserted turn) and leave the next turn a note so the model
+  // does not wait on tasks that no longer exist.
+  function stopForInsert(sessionName) {
+    if (!sessionName) return 0;
+    const tasks = listActiveBackgroundTasks(sessionName);
+    coalescer.cancel(sessionName);
+    for (const owned of nested(ownedTasks, sessionName)?.values() || []) owned.delivered = true;
+    if (tasks.length) stoppedNotes.set(sessionName, tasks.map(task => `${task.task_id}: ${task.description}`));
+    return tasks.length;
+  }
+
+  function takeStoppedNote(sessionName) {
+    const tasks = stoppedNotes.get(sessionName);
+    if (!tasks) return '';
+    stoppedNotes.delete(sessionName);
+    return `[Background tasks stopped] The user interrupted the previous turn with this message, which stopped these background tasks before they finished. Do not wait for their notifications; rerun one only if it is still needed.\n${tasks.map(line => `- ${line}`).join('\n')}\n\n`;
   }
 
   function handleEvent(sessionName, chatState, event) {
@@ -581,7 +648,8 @@ function createBackgroundTaskRuntime(deps = {}) {
     knownSessions.add(sessionName);
     if (event.subtype === 'monitor_prompt') {
       const watch = monitorWatches.get(sessionName)?.get(String(event.task_id));
-      if (!watch || (!watch.live && now() - watch.endedAt > dedupTtlMs)) return { handled: false };
+      if (!watch) return handleTaskPrompt(sessionName, chatState, event);
+      if (!watch.live && now() - watch.endedAt > dedupTtlMs) return { handled: false };
       if (event.probe) return { handled: true, monitorOwned: true };
       if (event.status) {
         watch.terminalHandled = true;
@@ -632,6 +700,8 @@ function createBackgroundTaskRuntime(deps = {}) {
     monitorWatches.delete(sessionName);
     monitorEvents.map.delete(sessionName);
     taskOrigins.delete(sessionName);
+    ownedTasks.delete(sessionName);
+    stoppedNotes.delete(sessionName);
     mainToolUses.delete(sessionName);
     knownSessions.delete(sessionName);
     return killed;
@@ -646,6 +716,7 @@ function createBackgroundTaskRuntime(deps = {}) {
       ...subagentTasks.map.keys(),
       ...monitorTasks.map.keys(),
       ...taskOrigins.keys(),
+      ...ownedTasks.keys(),
       ...mainToolUses.keys(),
     ]);
     let killed = 0;
@@ -662,6 +733,8 @@ function createBackgroundTaskRuntime(deps = {}) {
     backgroundSilenceMs,
     listActiveBackgroundTasks,
     reapSessionShadows,
+    stopForInsert,
+    takeStoppedNote,
     stopSession,
     stopAll,
   });

@@ -27,6 +27,9 @@
 
     function attachAutoCommitCheck(bubbleEl, checked) {
       if (!bubbleEl) return null;
+      // A 🔇 system-inject card is not a user turn: it owns no per-turn commit
+      // choice, whether the bubble came from a live send or a history reload.
+      if (bubbleEl.classList && bubbleEl.classList.contains('system-inject')) return null;
       // User bubbles hold their text directly (no .msg-content wrapper); attach to
       // the bubble itself in that case so the checkbox sits under "我" message.
       const ce = bubbleEl.querySelector('.msg-content') || bubbleEl;

@@ -325,6 +325,12 @@ class MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     switch (message.role) {
       case MessageRole.user:
+        // 🔇 系统注入（引擎写的 role=user）不是人打的：画成系统卡，不画用户气泡，
+        // 也不挂这一轮自动提交的勾选框。
+        final injected = parseSystemInject(message.content);
+        if (injected != null) {
+          return _SystemInjectBubble(message: message, parts: injected);
+        }
         return _UserBubble(
           message: message,
           enableServerActions: enableServerActions,
@@ -1309,6 +1315,104 @@ class _StreamingDotState extends State<_StreamingDot>
         decoration: BoxDecoration(
           color: AppColors.accent.withValues(alpha: _anim.value),
           shape: BoxShape.circle,
+        ),
+      ),
+    );
+  }
+}
+
+/// 🔇 系统注入卡（Web 的 `.msg.user.system-inject`）：一行「图标 + 【…】标题」，
+/// 正文默认压成一行省略号，点标题展开（展开态按原文换行）。
+///
+/// 它出现在会话里的身份是 role=user（引擎就是这么落库的），所以它在别的「用户
+/// 消息」语义里必须被排除：不挂自动提交勾选（本文件的分支直接绕开 `_UserBubble`），
+/// 不当「最后一条用户消息」（services/auto_commit.dart 的 lastUserMessageId），
+/// 引用时算系统行（services/message_quote.dart 的 _roleKey）。
+class _SystemInjectBubble extends StatefulWidget {
+  const _SystemInjectBubble({required this.message, required this.parts});
+
+  final ChatMessage message;
+  final SystemInjectParts parts;
+
+  @override
+  State<_SystemInjectBubble> createState() => _SystemInjectBubbleState();
+}
+
+class _SystemInjectBubbleState extends State<_SystemInjectBubble> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = widget.parts.body;
+    final hasBody = body.isNotEmpty;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: GestureDetector(
+        // 注入内容也是引擎写的，和用户气泡一样只提供「复制」这一种长按动作。
+        onLongPress: () => _copyMessage(context, widget.message.content),
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          constraints: const BoxConstraints(maxWidth: 620),
+          decoration: BoxDecoration(
+            color: AppColors.bgSoft,
+            border: Border.all(color: AppColors.line),
+            borderRadius: BorderRadius.circular(AppColors.radiusChip),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                // 标题行整条都是展开开关；没有正文的注入（一行的「继续：…」）不接点击。
+                onTap: hasBody ? () => setState(() => _open = !_open) : null,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('🔇', style: TextStyle(fontSize: 11)),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        widget.parts.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (hasBody) ...[
+                      const SizedBox(width: 6),
+                      Icon(
+                        _open ? Icons.expand_more : Icons.chevron_right,
+                        size: 14,
+                        color: AppColors.faint,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (hasBody)
+                Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: Text(
+                    body,
+                    // 折叠 = 一行省略号；展开 = 全文，换行按原文保留。
+                    maxLines: _open ? null : 1,
+                    overflow: _open ? TextOverflow.visible : TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppColors.faint,
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+              _TaskAttributionTail(message: widget.message),
+            ],
+          ),
         ),
       ),
     );

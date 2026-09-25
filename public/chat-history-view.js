@@ -19,6 +19,32 @@
     try { return JSON.stringify(value); } catch (_) { return String(value); }
   }
 
+  // System-injected messages (src/session/delivery.js SYSTEM_PREFIX) are stored
+  // as role=user rows, but nobody typed them: the engine writes them. Same
+  // token the server matches on — one constant, one recognition rule.
+  const SYSTEM_INJECT_PREFIX = '🔇';
+
+  // Split an injected message into "title + body". The engine labels most of
+  // them with a leading 【…】 bracket (后台任务完成 ×2, 延迟条件已到, 内置任务已中断…)
+  // and that label is the title; the rest is the body. Two injections ship
+  // label-less on a single line (autoContinue's 「继续：…」, bgCheck's
+  // 「[后台进程检查] …」) — that line becomes the title and the body stays empty,
+  // so the renderer draws no expand control it has nothing to expand.
+  // Returns null for anything that is not an injected message.
+  function parseSystemInject(value) {
+    const raw = asText(value).trimStart();
+    if (!raw.startsWith(SYSTEM_INJECT_PREFIX)) return null;
+    const rest = raw.slice(SYSTEM_INJECT_PREFIX.length).trim();
+    if (!rest) return null; // a bare prefix has nothing worth drawing
+    const labelled = /^【([^】\n]+)】[ \t]*\n?/.exec(rest);
+    if (labelled) {
+      return Object.freeze({ label: labelled[1].trim(), body: rest.slice(labelled[0].length).trim() });
+    }
+    const lineBreak = rest.indexOf('\n');
+    if (lineBreak < 0) return Object.freeze({ label: rest, body: '' });
+    return Object.freeze({ label: rest.slice(0, lineBreak).trim(), body: rest.slice(lineBreak + 1).trim() });
+  }
+
   // Render a wall-clock span as the short suffix shown after "done"/"failed".
   // Mirrors DSH's measured-state tag — the real elapsed time of a tool call,
   // never a fabricated 0ms. <1s shows ms, <60s shows seconds (1 decimal under
@@ -401,11 +427,26 @@
     // not a real user turn. Duplicate detection skips these when backtracking
     // to find the previous assistant (two retries of the same reply are often
     // separated only by such a nudge).
+    //
+    // The injected card below keeps the `user` class on purpose: this module's
+    // own backtracking, the live host's pending-answer anchor and the history
+    // selectors all look nodes up by `.msg.user`. `system-inject` is the extra
+    // modifier that says "styled as a system card, never counted as a user
+    // turn"; the 🔇 glyph stays the card's leading icon so the text test here
+    // keeps matching even for a card built by an older host.
     function isInjectedNudgeNode(node) {
       if (!node) return false;
       if (node.dataset.rawText) return false; // assistant nodes carry rawText
+      if (!node.classList.contains('user')) return false;
       const text = node.textContent || '';
-      return node.classList.contains('user') && text.trimStart().startsWith('🔇');
+      return node.classList.contains('system-inject')
+        || text.trimStart().startsWith(SYSTEM_INJECT_PREFIX);
+    }
+    // True for the real user bubbles only: the last-user anchor (per-turn
+    // auto-commit checkbox, retry's "resend the original text") must never land
+    // on an injected card.
+    function isUserMessageNode(node) {
+      return !!node && node.classList.contains('user') && !node.classList.contains('system-inject');
     }
     function stableToolsString(tools) {
       try { return JSON.stringify(tools || null); } catch (_) { return ''; }
@@ -469,11 +510,60 @@
       return node;
     }
 
-    function renderUser(message) {
+    // The one and only producer of a user bubble. History replay (renderUser)
+    // and the live optimistic send (chat.js addUserMsg) both come through here,
+    // so an injected 🔇 message renders as the same card whether it arrives
+    // over the socket or with the next page load. Text goes in as textContent —
+    // the body is engine-authored and is never markup.
+    function createUserNode(text, clientMsgId) {
+      const injected = parseSystemInject(text);
+      const node = injected ? renderSystemInject(injected) : document.createElement('div');
+      if (!injected) {
+        node.className = 'msg user';
+        node.textContent = asText(text);
+      }
+      if (clientMsgId) node.dataset.clientMsgId = clientMsgId;
+      return node;
+    }
+
+    // A compact muted card instead of a user bubble: 🔇 + the 【…】 title on one
+    // line, the body clamped to a single ellipsized line until the title is
+    // clicked (styles in chat-system-inject.css). Plain textContent keeps every
+    // newline in the DOM; the expanded rule is what turns them back into lines.
+    function renderSystemInject(injected) {
       const node = document.createElement('div');
-      node.className = 'msg user';
-      node.textContent = message.content || '';
-      if (Array.isArray(message.bgToolUseIds) && message.bgToolUseIds.length) {
+      node.className = 'msg user system-inject';
+      const head = document.createElement('div');
+      head.className = 'system-inject-head';
+      const icon = document.createElement('span');
+      icon.className = 'system-inject-icon';
+      icon.textContent = SYSTEM_INJECT_PREFIX;
+      const label = document.createElement('span');
+      label.className = 'system-inject-label';
+      label.textContent = injected.label;
+      head.appendChild(icon);
+      head.appendChild(label);
+      node.appendChild(head);
+      if (injected.body) {
+        const arrow = document.createElement('span');
+        arrow.className = 'system-inject-arrow';
+        arrow.textContent = '▶';
+        head.appendChild(arrow);
+        const body = document.createElement('div');
+        body.className = 'system-inject-body';
+        body.textContent = injected.body;
+        node.appendChild(body);
+        head.onclick = () => node.classList.toggle('open');
+      }
+      return node;
+    }
+
+    function renderUser(message) {
+      const node = createUserNode(message.content, message.clientMsgId);
+      // The injected card never carries the 「🔁 后台任务回流」 footnote: its own
+      // title already says which background tasks came back.
+      if (!node.classList.contains('system-inject')
+          && Array.isArray(message.bgToolUseIds) && message.bgToolUseIds.length) {
         const tag = document.createElement('div');
         tag.textContent = '🔁 后台任务回流' + (message.bgToolUseIds.length > 1 ? ` ×${message.bgToolUseIds.length}` : '');
         tag.style.cssText = 'font-size:11px;color:var(--chat-muted, #8b949e);margin-top:6px;border-top:1px dashed rgba(139,164,158,.35);padding-top:4px;';
@@ -664,7 +754,7 @@
             return Object.freeze({
               node,
               currentElement: hostState.currentElement || null,
-              lastUserElement: node,
+              lastUserElement: isUserMessageNode(node) ? node : (hostState.lastUserElement || null),
             });
           }
         }
@@ -672,7 +762,7 @@
         return Object.freeze({
           node,
           currentElement: hostState.currentElement || null,
-          lastUserElement: source.role === 'user' ? node : (hostState.lastUserElement || null),
+          lastUserElement: isUserMessageNode(node) ? node : (hostState.lastUserElement || null),
         });
       }
 
@@ -803,7 +893,8 @@
             else messagesEl.appendChild(node);
             // A freshly appended user bubble is the new last-user element, so the
             // host can re-attach the per-turn auto-commit checkbox after a reload.
-            if (operation.message?.role === 'user') lastUserElement = node;
+            // An injected 🔇 card is not one — it must not steal that anchor.
+            if (isUserMessageNode(node)) lastUserElement = node;
           }
         } catch (error) {
           warn('[multicc] history view skipped message', index, error);
@@ -887,7 +978,10 @@
         }
         return clientNode;
       }
-      const selector = role === 'user' ? '.msg.user' : '.msg.assistant';
+      // A role-tagged commit whose body never reached this client tags the last
+      // node of that role — but never an injected 🔇 card, which is a user node
+      // only for the backtracking selectors above.
+      const selector = role === 'user' ? '.msg.user:not(.system-inject)' : '.msg.assistant';
       const nodes = messagesEl.querySelectorAll(selector);
       const node = nodes[nodes.length - 1];
       if (!node || node.dataset.msgId) return node || null;
@@ -927,6 +1021,7 @@
       clearSource,
       createAssistantBubble,
       createToolCard,
+      createUserNode,
       findByClientMsgId,
       findById,
       getToolStack,
@@ -943,5 +1038,5 @@
     });
   }
 
-  return Object.freeze({ createHistoryView });
+  return Object.freeze({ createHistoryView, parseSystemInject });
 });

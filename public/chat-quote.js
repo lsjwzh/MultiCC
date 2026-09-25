@@ -36,6 +36,10 @@
 
   function roleOf(node) {
     if (!node || !node.classList) return 'system';
+    // An injected 🔇 card keeps the `user` class for the view's own backtracking
+    // selectors, but it is engine-authored: quote it as a system line, never as
+    // something the human said.
+    if (node.classList.contains('system-inject')) return 'system';
     if (node.classList.contains('user')) return 'user';
     if (node.classList.contains('assistant')) return 'assistant';
     return 'system';
