@@ -3,6 +3,7 @@
 const { isMainResult } = require('../cli-adapters/result-completion');
 const { isMonitorHandoffResult } = require('./monitor-admission');
 const { createMonitorControl } = require('./monitor-control');
+const { createBackgroundHold } = require('./background-hold');
 
 // ── Persistent streaming Claude process per chat session ──
 //
@@ -240,7 +241,10 @@ function onStdout(name, chunk) {
       continue;
     }
 
-    if (s.monitorControl?.accept(evt) || isMonitorHandoffResult(evt)) continue;
+    if (s.monitorControl?.accept(evt)) continue;
+    // Self-wake queries of a held turn stream into it; their results stay internal.
+    if (s.current?.hold?.held && s.current.hold.observe(evt)) continue;
+    if (isMonitorHandoffResult(evt)) continue;
     if (recoverMissingResume(name, evt)) return;
     if (s.current) s.current.eventCount += 1;
 
@@ -249,8 +253,10 @@ function onStdout(name, chunk) {
       // keep our id; CLI honors --session-id, but record just in case
     }
 
-    if (s.current && typeof s.current.onEvent === 'function') {
-      try { s.current.onEvent(evt); } catch (_) {}
+    const cur = s.current;
+    if (cur && isMainResult(evt) && holdTurn(name, s, cur, evt)) continue;
+    if (cur && typeof cur.onEvent === 'function') {
+      try { cur.onEvent(evt); } catch (_) {}
     }
 
     // Background task events (task_started/task_updated/task_notification/
@@ -260,7 +266,8 @@ function onStdout(name, chunk) {
     // post-result events would be silently dropped. Forward them through a
     // SEPARATE callback independent of s.current so the server can shadow-tail
     // Monitor output and surface progress to the UI.
-    if (s.onBackgroundEvent && evt.type === 'system' &&
+    // A cancelled process reports its dying tasks as stopped; onExit reaps them.
+    if (s.onBackgroundEvent && !s.recycling && evt.type === 'system' &&
         /^(task_started|task_progress|task_updated|task_notification|background_tasks_changed)$/.test(evt.subtype || '')) {
       try { s.onBackgroundEvent(evt); } catch (_) {}
       // Start a fresh idle window after a background event.
@@ -269,10 +276,19 @@ function onStdout(name, chunk) {
 
     // A `result` event marks the END of the current turn. The process stays
     // alive and ready for the next message.
-    if (isMainResult(evt)) {
-      finishTurn(name, evt);
-    }
+    if (isMainResult(evt)) finishTurn(name, evt);
   }
+}
+
+// Returns true when the main result is held until background work finishes.
+function holdTurn(name, s, cur, evt) {
+  cur.hold ||= createBackgroundHold({ ...s.backgroundHold, hasBackground: () => !!s.isBackgroundActive?.(),
+    release: result => {
+      if (sessions.get(name) !== s || s.current !== cur) return;
+      try { cur.onEvent?.(result); } catch (_) {}
+      finishTurn(name, result);
+    } });
+  return cur.hold.start(evt);
 }
 
 function finishTurn(name, resultEvt) {
@@ -280,6 +296,7 @@ function finishTurn(name, resultEvt) {
   if (!s) return;
   s.started = true;
   const cur = s.current;
+  cur?.hold?.dispose();
   s.current = null;
   s.busy = false;
   if (cur && typeof cur.resolve === 'function') {
@@ -296,6 +313,7 @@ function onExit(name, code, signal, err) {
   clearIdle(s);
   const wasBusy = s.busy;
   const cur = s.current;
+  cur?.hold?.dispose();
   s.proc = null;
   s.busy = false;
   s.current = null;
@@ -479,6 +497,7 @@ function ensure(name, cfg) {
       env: cfg.env || {},
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       isBackgroundActive: cfg.isBackgroundActive || null,
+      backgroundHold: cfg.backgroundHold || null,
       onExit: cfg.onExit || null,
       onDispose: cfg.onDispose || null,
       onNewSessionId: cfg.onNewSessionId || null,
@@ -505,6 +524,7 @@ function ensure(name, cfg) {
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
     if (cfg.isBackgroundActive !== undefined) s.isBackgroundActive = cfg.isBackgroundActive;
+    if (cfg.backgroundHold !== undefined) s.backgroundHold = cfg.backgroundHold;
   }
   return s;
 }
@@ -590,6 +610,8 @@ function cancel(name) {
   // Reject queued sends so callers don't hang.
   const pending = s.queue.splice(0);
   for (const q of pending) { try { q.reject(new Error('cancelled')); } catch (_) {} }
+  // A held turn's answer is complete; only its background work is cut short.
+  if (s.current?.hold?.held) s.current.hold.flush();
   if (s.proc) {
     s.recycling = true;
     try { s.proc.kill('SIGTERM'); } catch (_) {}
