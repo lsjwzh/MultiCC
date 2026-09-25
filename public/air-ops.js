@@ -198,10 +198,13 @@
   };
   const STEP_ICONS = { done: '✓', running: '⟳', failed: '✗', skipped: '–', pending: '·' };
 
+  // An elapsed span is one of the five questions shared/format.js owns, so this
+  // is a delegate and nothing more: a second mm:ss spelling of "how long" is
+  // exactly what tests/test-format-guard.js exists to catch, and it caught this
+  // one. The name stays because the update panel reads better referring to
+  // durationText() than to formatBytes-style plumbing.
   function durationText(ms) {
-    const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
-    const minutes = Math.floor(total / 60);
-    return minutes ? `${minutes}:${String(total % 60).padStart(2, '0')}` : `${total}s`;
+    return FMT.formatDuration(ms);
   }
 
   // Reconcile what the log says with what the client can see. The log cannot
