@@ -7,6 +7,47 @@ import 'role_tokens.dart';
 
 enum MessageRole { user, assistant, system }
 
+/// 系统注入消息的前缀 —— 服务端 `src/session/delivery.js` 的 SYSTEM_PREFIX。
+/// 后台任务完成、延迟条件已到、内置任务已中断… 引擎把它们写成 role=user 的历史
+/// 记录，但没人打过这些字：渲染成系统卡而不是用户气泡（见 widgets/message_bubble.dart）。
+const String kSystemInjectPrefix = '🔇';
+
+/// 一条注入消息拆出来的两半：标题（引擎写的【…】标签）和正文。
+class SystemInjectParts {
+  const SystemInjectParts(this.label, this.body);
+
+  final String label;
+  final String body;
+
+  @override
+  String toString() => 'SystemInjectParts($label, $body)';
+}
+
+/// 拆成「标题 + 正文」，与 Web 端 `public/chat-history-view.js` 的
+/// `parseSystemInject` 同一规则（两端要读出同一张卡）。首行是【…】标签时它就是
+/// 标题、其余是正文；引擎还有两种不带标签的单行注入（autoContinue 的「继续：…」、
+/// bgCheck 的「[后台进程检查] …」），那整行当标题、正文留空，卡片就不画展开控件。
+/// 不是注入消息（或只剩一个前缀）时返回 null。
+SystemInjectParts? parseSystemInject(String? content) {
+  final raw = (content ?? '').trimLeft();
+  if (!raw.startsWith(kSystemInjectPrefix)) return null;
+  final rest = raw.substring(kSystemInjectPrefix.length).trim();
+  if (rest.isEmpty) return null;
+  final labelled = RegExp(r'^【([^】\n]+)】[ \t]*\n?').firstMatch(rest);
+  if (labelled != null) {
+    return SystemInjectParts(
+      labelled.group(1)!.trim(),
+      rest.substring(labelled.group(0)!.length).trim(),
+    );
+  }
+  final lineBreak = rest.indexOf('\n');
+  if (lineBreak < 0) return SystemInjectParts(rest, '');
+  return SystemInjectParts(
+    rest.substring(0, lineBreak).trim(),
+    rest.substring(lineBreak + 1).trim(),
+  );
+}
+
 /// Token usage information for a message (mirrors Anthropic's usage shape)
 class MessageUsage {
   final int inputTokens;

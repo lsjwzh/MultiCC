@@ -118,7 +118,7 @@ async function test(name, fn) {
     assert.deepStrictEqual(Object.keys(runtime).sort(), [
       'backgroundSilenceMs', 'handleEvent', 'hasLiveBackgroundTasks', 'hasProcessBackgroundTasks', 'listActiveBackgroundTasks',
       'markTaskOutputAwaiting', 'reapSessionShadows', 'recordMainToolUseId',
-      'stopAll', 'stopSession',
+      'stopAll', 'stopForInsert', 'stopSession', 'takeStoppedNote',
     ]);
     assert.strictEqual(Object.isFrozen(runtime), true);
   });
@@ -628,6 +628,71 @@ async function test(name, fn) {
       subtype: 'task_notification', task_id: 'stale-pull', status: 'completed',
     });
     assert.strictEqual(result.decision, 'inject');
+  });
+
+  await test('a native notification for a main-thread background task never doubles the host delivery', () => {
+    const bgState = turnId => ({ cwd: '/repo', isStreaming: false, _activeTurn: turnId ? { turnId } : null,
+      currentToolCalls: [{ id: 'bg-tool', name: 'Bash', input: { command: 'sleep 8', run_in_background: true } }] });
+    const prompt = { subtype: 'monitor_prompt', task_id: 'bg', tool_use_id: 'bg-tool', status: 'completed',
+      summary: 'Background command completed', output_file: '/out/bg' };
+    const completion = { subtype: 'task_notification', task_id: 'bg', tool_use_id: 'bg-tool', status: 'completed', output_file: '/out/bg' };
+
+    // Completion first (the order a resident CLI emits): host queues, hook swallows the native query.
+    let h = makeHarness();
+    h.files.set('/out/bg', 'BGDONE');
+    h.runtime.recordMainToolUseId('s1', 'bg-tool');
+    h.runtime.handleEvent('s1', bgState('turn-1'), { subtype: 'task_started', task_id: 'bg', tool_use_id: 'bg-tool', session_id: 'native' });
+    assert.strictEqual(h.runtime.handleEvent('s1', bgState(), completion).decision, 'inject');
+    assert.strictEqual(h.runtime.handleEvent('s1', bgState(), { ...prompt, probe: true }).monitorOwned, true);
+    assert.strictEqual(h.runtime.handleEvent('s1', bgState(), prompt).decision, 'duplicate');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1);
+    assert.match(h.injections[0].text, /BGDONE/);
+
+    // Hook first: the host delivers from the hook and the later bookend does not repeat it.
+    h = makeHarness();
+    h.files.set('/out/bg', 'BGDONE');
+    h.runtime.recordMainToolUseId('s1', 'bg-tool');
+    h.runtime.handleEvent('s1', bgState('turn-1'), { subtype: 'task_started', task_id: 'bg', tool_use_id: 'bg-tool', session_id: 'native' });
+    assert.strictEqual(h.runtime.handleEvent('s1', bgState(), prompt).decision, 'inject');
+    assert.strictEqual(h.runtime.handleEvent('s1', bgState(), completion).decision, 'native-prompt');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1);
+    assert.match(h.injections[0].text, /BGDONE/);
+
+    // The originating turn is still streaming: the CLI hands the result over in-turn.
+    h = makeHarness();
+    h.runtime.recordMainToolUseId('s1', 'bg-tool');
+    h.runtime.handleEvent('s1', bgState('turn-1'), { subtype: 'task_started', task_id: 'bg', tool_use_id: 'bg-tool', session_id: 'native' });
+    const live = { ...bgState('turn-1'), isStreaming: true };
+    assert.strictEqual(h.runtime.handleEvent('s1', live, { ...prompt, probe: true }).handled, false);
+
+    // Tasks the host never saw started (sub-agent side chains, other sessions) pass through.
+    assert.strictEqual(h.runtime.handleEvent('s1', bgState(), { ...prompt, task_id: 'unknown', probe: true }).handled, false);
+    assert.strictEqual(h.runtime.handleEvent('s2', bgState(), { ...prompt, probe: true }).handled, false);
+  });
+
+  await test('insert-now drops pending completions and leaves a one-shot note for the next turn', () => {
+    const h = makeHarness();
+    const state = { cwd: '/repo', _activeTurn: { turnId: 'turn-1' },
+      currentToolCalls: [
+        { id: 'a-tool', name: 'Bash', input: { command: 'sleep 60', run_in_background: true } },
+        { id: 'b-tool', name: 'Bash', input: { command: 'sleep 1', run_in_background: true } },
+      ] };
+    h.runtime.recordMainToolUseId('s1', 'a-tool');
+    h.runtime.recordMainToolUseId('s1', 'b-tool');
+    h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'a', tool_use_id: 'a-tool', description: 'long build', session_id: 'native' });
+    h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'b', tool_use_id: 'b-tool', session_id: 'native' });
+    h.runtime.handleEvent('s1', { ...state, _activeTurn: null }, { subtype: 'task_notification', task_id: 'b', tool_use_id: 'b-tool', status: 'completed' });
+    assert.strictEqual(h.runtime.stopForInsert('s1'), 1);
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 0, 'a buffered completion must not wake the session behind the inserted turn');
+    assert.strictEqual(h.runtime.handleEvent('s1', {}, { subtype: 'monitor_prompt', task_id: 'a', status: 'killed' }).decision, 'duplicate');
+    const note = h.runtime.takeStoppedNote('s1');
+    assert.match(note, /a: long build/);
+    assert.strictEqual(h.runtime.takeStoppedNote('s1'), '');
+    assert.strictEqual(h.runtime.stopForInsert('idle'), 0);
+    assert.strictEqual(h.runtime.takeStoppedNote('idle'), '');
   });
 
   console.log(`\n${passed} background-task runtime tests passed`);

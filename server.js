@@ -2483,7 +2483,7 @@ sessionWorkHost = createSessionWorkHost({
   assignKillReason,
   finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   releaseProviderProducers: (sessionId, reason) => providerAttemptRuntime.forceReleaseProducers(sessionId, reason),
-  appendMessage: appendChatMessage,
+  stopBackgroundForInsert: sessionId => backgroundTaskRuntime.stopForInsert(sessionId), appendMessage: appendChatMessage,
   onTerminalWork: (sessionId, completion) => {
     workspaceAdmission?.settled(sessionId, completion);
     Promise.resolve(sessionHibernationRuntime?.touchTerminal(sessionId, completion)).catch(error => {

@@ -17,7 +17,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'gateway'|'dispatch-context'|'cross-agent-notes'} ContextLayerKind
+ * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'} ContextLayerKind
  */
 
 /**
@@ -187,7 +187,7 @@ function validateEnvelope(env) {
  * @param {Object} input.deps - injected dependencies (avoids a circular require of server.js):
  *   { resolveRolePrompt, multiccImgHint, buildSubagentProviderHint, buildCliHandoffPrompt, buildGatewayPrompt, buildDispatchContextPrompt,
  *     buildGoalLimitNote, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
- *     chatBroadcast, normalizeEffort, cliEffortLevel }
+ *     chatBroadcast, normalizeEffort, cliEffortLevel, takeBackgroundStopNote? }
  * @returns {MessageEnvelope}
  */
 function composeMessage({ text, persisted, sessionName, opts, deps }) {
@@ -257,6 +257,13 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
       const dc = deps.buildDispatchContextPrompt(sessionName);
       if (dc) contextLayers.push({ kind: 'dispatch-context', order: 20, text: dc });
     }
+
+    // order 25: one-shot notice that "insert now" stopped this session's
+    // background tasks, so the model does not wait on notifications that will
+    // never arrive.
+    const stoppedNote = typeof deps.takeBackgroundStopNote === 'function'
+      ? deps.takeBackgroundStopNote(sessionName) : '';
+    if (stoppedNote) contextLayers.push({ kind: 'background-stopped', order: 25, text: stoppedNote });
 
     // order 30: cross-agent notes (today server.js:9036-9054, including side effects).
     const pendingNotes = deps.pendingNotesFor(sessionName).slice(0, 10);

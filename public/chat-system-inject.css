@@ -1,0 +1,63 @@
+/* 系统注入消息（🔇 前缀：后台任务完成、延迟条件已到、内置任务已中断…）的卡片样式。
+ *
+ * 和 chat-history-view.js 的 renderSystemInject 同域：那边只造 DOM
+ * （.system-inject-head / -icon / -label / -arrow / -body），这里只决定它长什么样。
+ *
+ * 卡片保留 .msg.user 这个类是有意的：chat-history-view 自己的去重回溯、宿主侧的
+ * 「待答锚点」都按 .msg.user 找节点。代价是蓝底、右对齐、圆角这几条得在这里逐条
+ * 压回去 —— 本文件由 chat.html 在 chat-air.css 之后加载，同权重下后定义的生效。
+ * 语义上的收窄（不是「最后一条用户消息」、不挂自动提交勾选、引用时算系统角色）
+ * 由 .system-inject 这个修饰类表达，见 chat-history-view.js / chat-quote.js。
+ *
+ * 颜色一律走 --chat-* token：Air 浅色主题重映射的就是这几个变量，深色走 fallback。
+ */
+
+.msg.user.system-inject {
+  align-self: flex-start;
+  max-width: min(620px, 92%);
+  padding: 5px 10px;
+  color: var(--chat-muted, #8b949e);
+  background: var(--chat-soft, #21262d);
+  border: 1px solid var(--chat-line, #30363d);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.system-inject-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.system-inject-icon { font-size: 11px; opacity: .8; }
+.system-inject-label { font-weight: 600; color: var(--chat-muted, #8b949e); }
+.system-inject-head:hover .system-inject-label { color: var(--chat-text, #e7eaee); }
+.system-inject-arrow { font-size: 9px; color: var(--chat-muted, #6e7681); transition: transform .2s; }
+.msg.user.system-inject.open .system-inject-arrow { transform: rotate(90deg); }
+
+/* 折叠态就是「一行 + 省略号」：正文一直在 DOM 里（textContent，从不解析成 HTML），
+   被压成一行而没被丢掉；展开态的 pre-wrap 才是把里面的换行还原出来的那一步。 */
+.system-inject-body {
+  margin-top: 3px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--chat-muted, #8b949e);
+}
+.msg.user.system-inject.open .system-inject-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+/* 归因尾注（#CODE · 任务名）挂在 .msg.user 上时默认是右对齐白字，配蓝底气泡的。
+   卡片不是蓝底，同一条尾注得按卡片的色调重画。 */
+.msg.user.system-inject > .msg-task-tail {
+  margin-left: 0;
+  color: var(--chat-muted, #8b949e);
+  text-align: left;
+}

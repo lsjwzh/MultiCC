@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHistoryView } = require('../public/chat-history-view');
+const { createHistoryView, parseSystemInject } = require('../public/chat-history-view');
 const liveUiApi = require('../public/chat-live-ui');
 
 const ROOT = path.join(__dirname, '..');
@@ -839,4 +839,127 @@ test('a persisted Auto route note renders through the live formatter and adopts 
   });
   assert.equal(messagesEl.querySelectorAll('.msg.system-msg').length, 1);
   assert.equal(view.findById('n1').textContent, note.textContent);
+});
+
+// ── 🔇 system-injected messages (src/session/delivery.js SYSTEM_PREFIX) ──
+// They are persisted as role=user but nobody typed them. The card keeps the
+// `user` class for the backtracking selectors; `system-inject` marks it as
+// "not a user turn" for everything else.
+
+test('injected message parsing splits the 【…】 title from its body', () => {
+  const done = parseSystemInject('🔇【后台任务完成】你之前启动的后台任务（x）已结束（状态：completed）。');
+  assert.deepEqual({ label: done.label, body: done.body },
+    { label: '后台任务完成', body: '你之前启动的后台任务（x）已结束（状态：completed）。' });
+
+  const multi = parseSystemInject('🔇【后台任务完成 ×2】多个任务已结束：\n- a\n- b');
+  assert.equal(multi.label, '后台任务完成 ×2');
+  assert.equal(multi.body, '多个任务已结束：\n- a\n- b', '正文的换行必须原样保留');
+
+  // autoContinue / bgCheck ship no bracket label on a single line: that line is
+  // the whole title, and there is no body to expand.
+  assert.deepEqual(
+    { ...parseSystemInject('🔇继续：如果已经可以推进就继续。') },
+    { label: '继续：如果已经可以推进就继续。', body: '' });
+  const labelled = parseSystemInject('  🔇[后台进程检查] 请现在处理\n第二行');
+  assert.equal(labelled.label, '[后台进程检查] 请现在处理');
+  assert.equal(labelled.body, '第二行');
+
+  // Not injected at all — including a bare prefix with nothing after it.
+  assert.equal(parseSystemInject('普通用户消息'), null);
+  assert.equal(parseSystemInject('🔇'), null);
+});
+
+test('an injected 🔇 message renders as a collapsed card, not a user bubble', () => {
+  const content = '🔇【后台任务完成 ×2】多个后台任务已结束，请一并推进：\n- 构建\n- 部署';
+  const { view } = fixture();
+  const node = view.renderMessage({ id: 'u1', role: 'user', content, clientMsgId: 'c1' });
+  assert.equal(node.classList.contains('user'), true, '回溯选择器仍按 .msg.user 找节点');
+  assert.equal(node.classList.contains('system-inject'), true);
+  assert.equal(node.dataset.clientMsgId, 'c1');
+  assert.equal(node.querySelector('.system-inject-label').textContent, '后台任务完成 ×2');
+  assert.equal(node.querySelector('.system-inject-body').textContent, '多个后台任务已结束，请一并推进：\n- 构建\n- 部署');
+  // The 🔇 glyph stays the leading icon, so the text-based detector still reads
+  // this node as injected even without the modifier class.
+  assert.equal(node.textContent.trimStart().startsWith('🔇'), true);
+  assert.equal(node.querySelector('.system-inject-icon').textContent, '🔇');
+  assert.equal(node.querySelector('.system-inject-body').innerHTML, '', '正文只能是文本节点');
+
+  // Collapsed by default; the title line toggles the body open. Same affordance
+  // as a tool card (chat-history-view's own header.onclick pattern).
+  assert.equal(node.classList.contains('open'), false);
+  node.querySelector('.system-inject-head').onclick();
+  assert.equal(node.classList.contains('open'), true);
+  node.querySelector('.system-inject-head').onclick();
+  assert.equal(node.classList.contains('open'), false);
+
+  // A label-less one-liner has nothing to expand: no arrow, no click handler.
+  const single = view.renderMessage({ id: 'u2', role: 'user', content: '🔇继续：请继续未完成的任务' });
+  assert.equal(single.querySelector('.system-inject-body'), null);
+  assert.equal(single.querySelector('.system-inject-arrow'), null);
+  assert.equal(single.querySelector('.system-inject-head').onclick, null);
+  assert.equal(single.querySelector('.system-inject-label').textContent, '继续：请继续未完成的任务');
+});
+
+test('an injected card never becomes the last-user anchor', () => {
+  const { view, messagesEl } = fixture();
+  const real = view.commitMessage({ id: 'u1', role: 'user', content: 'real question' });
+  assert.equal(real.lastUserElement.dataset.msgId, 'u1');
+
+  const injected = view.commitMessage(
+    { id: 'u2', role: 'user', content: '🔇【内置任务已中断】Task x 仍未结束。' },
+    { lastUserElement: real.lastUserElement },
+  );
+  assert.equal(injected.node.classList.contains('system-inject'), true);
+  assert.equal(injected.lastUserElement.dataset.msgId, 'u1',
+    '注入卡不能顶掉「最后一条用户消息」——自动提交勾选、重发取原文都挂在这个锚点上');
+
+  // The history-replay path must not anchor on it either.
+  const plan = view.applyPlan({
+    operations: [{ kind: 'append', id: 'u3', message: {
+      id: 'u3', role: 'user', content: '🔇【延迟条件已到】请检查当前状态并继续。',
+    } }],
+    messages: [], hasMore: false, streamingTail: null,
+  });
+  assert.equal(plan.lastUserElement, null);
+  assert.equal(messagesEl.children.length, 3);
+  assert.equal(messagesEl.children[2].classList.contains('system-inject'), true);
+
+  // …and a role-tagged commit with no body never lands on the card: the taggable
+  // selector skips `.system-inject` entirely (here it falls back to the earlier
+  // real bubble instead).
+  const card = messagesEl.children[2];
+  assert.equal(card.querySelector('.system-inject-label').textContent, '延迟条件已到');
+  assert.notEqual(view.tagLatestMessage('user', 'u9', 'client-9'), card);
+  const later = view.commitMessage({ id: 'u4', role: 'user', content: 'another real question' });
+  assert.equal(view.tagLatestMessage('user', 'u10', 'client-10'), later.node, '真用户气泡照旧可被认领');
+  assert.equal(later.lastUserElement.dataset.msgId, 'u4');
+});
+
+test('duplicate detection still backtracks across an injected card', () => {
+  const { view, messagesEl } = fixture();
+  const answer = 'the same reply to the same turn, long enough to be contained';
+  view.commitMessage({ id: 'a1', role: 'assistant', content: answer });
+  view.commitMessage({ id: 'u1', role: 'user', content: '🔇继续：你上一轮提到的外部结果可以推进了。' });
+  view.commitMessage({ id: 'a2', role: 'assistant', content: answer + ' (retried)' });
+  // If the card were read as a real user turn the walk would stop there and the
+  // older copy would survive as a duplicate.
+  assert.equal(messagesEl.querySelectorAll('.msg.assistant').length, 1, '🔇 nudge 不是真用户轮，去重照旧');
+  assert.ok(view.findById('a2'));
+  assert.equal(messagesEl.querySelectorAll('.msg.user').length, 1, '卡片仍带 user 类');
+  assert.equal(messagesEl.querySelectorAll('.msg.user:not(.system-inject)').length, 0);
+});
+
+test('the rest of the chat UI treats an injected card as a system line', () => {
+  const autoCommitSource = fs.readFileSync(path.join(ROOT, 'public/chat-auto-commit-choice.js'), 'utf8');
+  assert.match(autoCommitSource, /contains\('system-inject'\)\) return null/,
+    '注入卡不挂自动提交勾选');
+  const quoteSource = fs.readFileSync(path.join(ROOT, 'public/chat-quote.js'), 'utf8');
+  assert.match(quoteSource, /contains\('system-inject'\)\) return 'system'/,
+    '引用注入卡时角色算系统，不算「我」');
+  // Both live creation paths go through the view's single user-node producer.
+  assert.match(CHAT_SOURCE, /const div = chatHistoryView\.createUserNode\(text, clientMsgId\)/);
+  assert.match(VIEW_SOURCE, /createUserNode,/);
+  // The card styles must land after chat-air.css: they win over
+  // `.air-chat .msg.user` on load order, not on specificity.
+  assert.ok(HTML.indexOf('chat-air.css') < HTML.indexOf('chat-system-inject.css'));
 });

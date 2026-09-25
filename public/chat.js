@@ -940,10 +940,9 @@ function highlightCodeBlocks(root) {
 
 let _lastUserBubble = null;  // the most recent user message bubble (holds the per-turn auto-commit checkbox)
 function addUserMsg(text, clientMsgId) {
-  const div = document.createElement('div');
-  div.className = 'msg user';
-  div.textContent = text;
-  if (clientMsgId) div.dataset.clientMsgId = clientMsgId;
+  // 气泡由 view 造：🔇 系统注入（引擎写的 role=user）在这里和历史回放一样是张
+  // 系统卡，不是用户气泡。勾选/锚点的归属由 view 的 lastUserElement 决定。
+  const div = chatHistoryView.createUserNode(text, clientMsgId);
   // 插入位在待答节点之前：queued:false 广播丢失、admission 进度回填、队列
   // started 后的补画，都可能晚于 message_start —— 那时列表尾上要么是本轮流式
   // 气泡，要么是它之前那个「正在处理…」占位（.thinking-bubble）。占位不是
@@ -952,9 +951,12 @@ function addUserMsg(text, clientMsgId) {
   const streamingTail = chatHistoryView.pendingAnswerAnchor?.({ currentElement: currentMsgEl }) || null;
   if (streamingTail) messagesEl.insertBefore(div, streamingTail);
   else messagesEl.appendChild(div);
-  // Per-message auto-commit checkbox lives under the user's own message.
-  attachAutoCommitCheck(div, _sessionAutoCommit);
-  _lastUserBubble = div;
+  // Per-message auto-commit checkbox lives under the user's own message. A
+  // system-inject card takes neither the checkbox nor the last-user anchor.
+  if (!div.classList.contains('system-inject')) {
+    attachAutoCommitCheck(div, _sessionAutoCommit);
+    _lastUserBubble = div;
+  }
   forceScrollToBottom();
   return div;
 }

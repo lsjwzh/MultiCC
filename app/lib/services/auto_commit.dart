@@ -17,11 +17,17 @@ bool sessionAutoCommitOf(List<Session> sessions, String sessionId) {
 
 /// 最后一轮用户消息的 id —— Web 的 `_lastUserBubble`。每轮自动提交的勾选框就
 /// 挂在它下面，所以「这一轮」= 最后一条用户消息。
+///
+/// 🔇 系统注入消息也是 role=user（引擎落库的形状），但没人打过它：它接不住这个
+/// 锚点，否则后台任务完成提示一到，勾选框就跑到系统卡上去了。Web 端同理
+/// （chat-history-view 的 lastUserElement 只认真用户气泡）。
 String? lastUserMessageId(List<ChatMessage> messages) {
   for (var i = messages.length - 1; i >= 0; i--) {
     final m = messages[i];
     final id = m.id;
-    if (m.role == MessageRole.user && id != null && id.isNotEmpty) return id;
+    if (m.role == MessageRole.user && id != null && id.isNotEmpty) {
+      if (parseSystemInject(m.content) == null) return id;
+    }
   }
   return null;
 }
