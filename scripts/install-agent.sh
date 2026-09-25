@@ -7,6 +7,16 @@
 #   install-agent.sh uninstall
 #   install-agent.sh status
 #
+# MultiCC runs "install" by itself at startup (src/macos-agent-provision.js)
+# whenever the agent is missing or its source changed, so installing or
+# updating MultiCC installs or updates the agent. "uninstall" turns that off
+# (marker file auto-install-disabled); a manual "install" turns it back on.
+#
+# Binary: the release package ships a prebuilt universal one
+# (macos-agent/prebuilt/, with the SHA-256 of the source it was built from);
+# it is used when it matches the source. Otherwise build it here, which needs
+# the Xcode command line tools.
+#
 # Layout:
 #   ~/Applications/MultiCC Agent.app       the ONE program that holds the
 #                                          Accessibility + Screen Recording grants
@@ -29,6 +39,7 @@ set -eu
 LABEL=com.multicc.agent
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/macos-agent/MultiCCAgent.swift"
+PREBUILT="${MULTICC_AGENT_PREBUILT:-$HERE/macos-agent/prebuilt}"
 APP="${MULTICC_AGENT_APP:-$HOME/Applications/MultiCC Agent.app}"
 BIN="$APP/Contents/MacOS/MultiCCAgent"
 PLIST="${MULTICC_AGENT_PLIST:-$HOME/Library/LaunchAgents/$LABEL.plist}"
@@ -46,6 +57,8 @@ case "${1:-}" in
     rm -f "$PLIST" "$LINK" "$DIR/agent.sock"
     rm -rf "$APP"
     # config.json and agent.log stay: they hold the user's choices and history.
+    # The marker stops MultiCC from reinstalling it at the next start.
+    mkdir -p "$DIR" && : > "$DIR/auto-install-disabled"
     echo "multicc-agent: removed $LABEL (grants in System Settings can be deleted by hand)"
     exit 0
     ;;
@@ -90,18 +103,13 @@ else
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   TMP="$(mktemp "$APP/Contents/MacOS/.build.XXXXXX")"
   trap 'rm -f "$TMP"' EXIT
-  # Deployment target macOS 11 (Big Sur) is the floor; newer systems get newer
-  # code paths chosen at run time (see "Platform tiers" in the source). Newer
-  # frameworks are weak-linked so the one binary still launches on 11, and only
-  # when this SDK has them (an older SDK compiles those blocks out).
-  SDK="$(xcrun --show-sdk-path 2>/dev/null || true)"
-  WEAK=""
-  for fw in ScreenCaptureKit; do
-    [ -d "$SDK/System/Library/Frameworks/$fw.framework" ] && WEAK="$WEAK -Xlinker -weak_framework -Xlinker $fw"
-  done
-  # shellcheck disable=SC2086
-  xcrun swiftc -O -target "$(uname -m)-apple-macos11.0" $WEAK -o "$TMP" "$SRC" \
-    || die "swift build failed (need Xcode command line tools)"
+  if [ -x "$PREBUILT/MultiCCAgent" ] && [ "$(cat "$PREBUILT/source.sha256" 2>/dev/null)" = "$SUM" ]; then
+    cp "$PREBUILT/MultiCCAgent" "$TMP"
+    echo "multicc-agent: using prebuilt binary"
+  else
+    sh "$HERE/macos-agent/build.sh" "$TMP" \
+      || die "swift build failed (need Xcode command line tools: xcode-select --install)"
+  fi
   mv -f "$TMP" "$BIN"
   trap - EXIT
   cat > "$APP/Contents/Info.plist" <<INFO
@@ -145,6 +153,7 @@ echo "multicc-agent: requirement $(codesign -dr - "$APP" 2>/dev/null | sed -n 's
 
 mkdir -p "$DIR" "$(dirname "$LINK")" "$(dirname "$PLIST")"
 chmod 0700 "$DIR"
+rm -f "$DIR/auto-install-disabled"
 ln -sf "$BIN" "$LINK"
 
 # Config is written once and then belongs to the user; --chrome-launch updates

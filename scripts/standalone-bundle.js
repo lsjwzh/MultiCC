@@ -84,6 +84,7 @@ function parseArgs(argv) {
     runtime: true,
     verify: true,
     archive: true,
+    agent: true,
     runtimeTarball: null,
     cacheDir: path.join(os.tmpdir(), 'multicc-standalone-cache'),
     help: false,
@@ -105,6 +106,7 @@ function parseArgs(argv) {
     else if (arg === '--no-verify') args.verify = false;
     else if (arg === '--archive') args.archive = true;
     else if (arg === '--no-archive') args.archive = false;
+    else if (arg === '--no-agent') args.agent = false;
     else if (arg === '--help' || arg === '-h') args.help = true;
     else { console.error(`unknown argument: ${arg}`); process.exit(2); }
   }
@@ -614,6 +616,29 @@ function verifyRuntimeArch({ runtimeNode, arch, platform, logger = console }) {
   return { arch: found, platform: format };
 }
 
+// The macOS package ships a prebuilt universal MultiCC Agent next to its
+// source, so a user's Mac needs no Xcode command line tools: install-agent.sh
+// takes it when prebuilt/source.sha256 matches the source (and builds locally
+// otherwise). Built on the release's macOS runner; a non-macOS host cannot
+// compile Swift for macOS, so it skips and installs fall back to local builds.
+function prebuildMacosAgent({ serverDir, logger = console, hostPlatform = process.platform }) {
+  if (hostPlatform !== 'darwin') {
+    logger.log('[standalone-bundle] macOS agent prebuild skipped: needs a macOS build host');
+    return { skipped: true };
+  }
+  const agentDir = path.join(serverDir, 'scripts', 'macos-agent');
+  const outDir = path.join(agentDir, 'prebuilt');
+  fs.mkdirSync(outDir, { recursive: true });
+  const binary = path.join(outDir, 'MultiCCAgent');
+  const built = spawnSync('/bin/sh',
+    [path.join(agentDir, 'build.sh'), binary, 'arm64', 'x86_64'], { stdio: 'inherit' });
+  if (built.status !== 0) throw new Error(`macOS agent prebuild failed (exit ${built.status}); pass --no-agent to ship without it`);
+  const sum = crypto.createHash('sha256').update(fs.readFileSync(path.join(agentDir, 'MultiCCAgent.swift'))).digest('hex');
+  fs.writeFileSync(path.join(outDir, 'source.sha256'), `${sum}\n`);
+  logger.log(`[standalone-bundle] macOS agent prebuilt (universal, source ${sum.slice(0, 12)})`);
+  return { skipped: false, binary, sum };
+}
+
 // The Resources tree a MultiCC install is made of — server + production deps, a
 // pinned Node runtime, the launcher, and (in the caller) the manifest. Two
 // shipped forms wrap the very same tree: the standalone package adds a bundle
@@ -631,6 +656,7 @@ async function stageResources({
   verify = true,
   cacheDir = path.join(os.tmpdir(), 'multicc-standalone-cache'),
   runtimeTarball = null,
+  agent = true,
   logger = console,
 }) {
   assertNodeVersionSupported(nodeVersion);
@@ -661,6 +687,9 @@ async function stageResources({
     npmEnv,
     logger,
   });
+  if (platform === 'darwin' && agent) {
+    prebuildMacosAgent({ serverDir: path.join(resourcesDir, 'app-server'), logger });
+  }
 
   let runtime = null;
   if (withRuntime) {
@@ -758,6 +787,7 @@ async function buildStandaloneBundle(args, { logger = console } = {}) {
     platform: args.platform,
     arch: args.arch,
     nodeVersion: args.nodeVersion,
+    agent: args.agent !== false,
     install: args.install,
     runtime: args.runtime,
     verify: args.verify,
@@ -800,7 +830,7 @@ async function buildStandaloneBundle(args, { logger = console } = {}) {
 function usage() {
   console.log(`usage: standalone-bundle.js [--platform darwin|linux|win32] [--arch x64|arm64]
                             [--node-version ${DEFAULT_NODE_VERSION}] [--out <dir>] [--runtime-tarball <path>]
-                            [--no-install] [--no-runtime] [--no-verify] [--no-archive] [--repo-root <dir>]`);
+                            [--no-install] [--no-runtime] [--no-verify] [--no-archive] [--no-agent] [--repo-root <dir>]`);
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -836,6 +866,7 @@ module.exports = {
   macosCommandScript,
   macosInfoPlist,
   macosLauncherScript,
+  prebuildMacosAgent,
   multiccWrapper,
   multiccWrapperWindows,
   nodeDistFileName,

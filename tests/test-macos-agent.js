@@ -154,3 +154,128 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
   assert.ok(!fs.existsSync(env.MULTICC_AGENT_APP) && !fs.existsSync(env.MULTICC_AGENT_PLIST));
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+// ── Auto-provisioning: installing/updating MultiCC installs/updates the agent ──
+const { createMacosAgentProvisioner } = require('../src/macos-agent-provision');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const { EventEmitter } = require('node:events');
+const { MACOS_AGENT_FILES } = require('../scripts/desktop-bundle-server');
+
+function provisionFixture() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-prov-'));
+  const root = path.join(tmp, 'root');
+  fs.mkdirSync(path.join(root, 'scripts', 'macos-agent'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'scripts', 'install-agent.sh'), '#!/bin/sh\n');
+  fs.writeFileSync(path.join(root, 'scripts', 'macos-agent', 'MultiCCAgent.swift'), '// v1\n');
+  const env = {
+    MULTICC_AGENT_APP: path.join(tmp, 'MultiCC Agent.app'),
+    MULTICC_AGENT_PLIST: path.join(tmp, 'agent.plist'),
+    MULTICC_AGENT_DIR: path.join(tmp, 'agent'),
+  };
+  const installed = (source) => {
+    const res = path.join(env.MULTICC_AGENT_APP, 'Contents', 'Resources');
+    fs.mkdirSync(path.join(env.MULTICC_AGENT_APP, 'Contents', 'MacOS'), { recursive: true });
+    fs.mkdirSync(res, { recursive: true });
+    fs.writeFileSync(path.join(env.MULTICC_AGENT_APP, 'Contents', 'MacOS', 'MultiCCAgent'), '');
+    fs.writeFileSync(path.join(res, 'source.sha256'), `${crypto.createHash('sha256').update(source).digest('hex')}\n`);
+    fs.writeFileSync(env.MULTICC_AGENT_PLIST, '');
+  };
+  const calls = [];
+  const exits = { install: 0, 'request-permissions': 0 };
+  const spawnFake = (file, args) => {
+    const sub = args[args.length - 1];
+    calls.push([path.basename(file), sub]);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    setImmediate(() => { child.stdout.emit('data', `ran ${sub}\n`); child.emit('close', exits[sub]); });
+    return child;
+  };
+  const logs = [];
+  const make = (over = {}) => createMacosAgentProvisioner({
+    rootDir: root, home: tmp, platform: 'darwin', env, spawn: spawnFake,
+    logger: { log: (m) => logs.push(m), warn: (m) => logs.push(`WARN ${m}`) }, ...over,
+  });
+  return { tmp, root, env, installed, calls, exits, logs, make };
+}
+
+test('agent provisioning: decides install / update / skip from what is on disk', () => {
+  const f = provisionFixture();
+  assert.deepEqual(f.make({ platform: 'linux' }).plan(), { action: 'skip', reason: 'not-macos' });
+  assert.equal(f.make({ env: { ...f.env, MULTICC_AGENT_AUTO_INSTALL: '0' } }).plan().reason, 'disabled-by-env');
+  assert.equal(f.make({ rootDir: path.join(f.tmp, 'nowhere') }).plan().reason, 'installer-not-shipped');
+  assert.deepEqual(f.make().plan(), { action: 'install', reason: 'not-installed' });
+  f.installed('// v1\n');
+  assert.deepEqual(f.make().plan(), { action: 'skip', reason: 'up-to-date' });
+  fs.writeFileSync(path.join(f.root, 'scripts', 'macos-agent', 'MultiCCAgent.swift'), '// v2\n');
+  assert.deepEqual(f.make().plan(), { action: 'update', reason: 'source-changed' });
+  f.installed('// v2\n');
+  fs.rmSync(f.env.MULTICC_AGENT_PLIST);
+  assert.deepEqual(f.make().plan(), { action: 'update', reason: 'launch-agent-missing' });
+  fs.mkdirSync(f.env.MULTICC_AGENT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(f.env.MULTICC_AGENT_DIR, 'auto-install-disabled'), '');
+  assert.equal(f.make().plan().reason, 'uninstalled-by-user');
+  fs.rmSync(f.tmp, { recursive: true, force: true });
+});
+
+test('agent provisioning: runs the installer in the background, asks for grants only on first install, never throws', async () => {
+  const f = provisionFixture();
+  const p = f.make();
+  const [a, b] = [p.ensure(), p.ensure()];
+  assert.equal(a, b, 'single-flight');
+  const first = await a;
+  assert.equal(first.ok, true);
+  assert.deepEqual(f.calls, [['sh', 'install'], ['MultiCCAgent', 'request-permissions']]);
+
+  f.calls.length = 0;
+  f.installed('// v1\n');
+  fs.writeFileSync(path.join(f.root, 'scripts', 'macos-agent', 'MultiCCAgent.swift'), '// v2\n');
+  const update = await f.make().ensure();
+  assert.equal(update.action, 'update');
+  assert.deepEqual(f.calls, [['sh', 'install']], 'an update keeps the existing grants: no prompts');
+
+  f.calls.length = 0;
+  f.exits.install = 3;
+  const failed = await f.make().ensure();
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /ran install/);
+  assert.ok(f.logs.some((l) => l.startsWith('WARN') && l.includes('exit 3')));
+
+  const exploding = f.make({ spawn: () => { throw new Error('spawn EACCES'); } });
+  assert.equal((await exploding.ensure()).ok, false);
+  fs.rmSync(f.tmp, { recursive: true, force: true });
+});
+
+test('agent provisioning: packages ship the installer, and the installer prefers a matching prebuilt binary', { skip: process.platform !== 'darwin', timeout: 60000 }, () => {
+  for (const file of MACOS_AGENT_FILES) assert.ok(fs.existsSync(path.join(__dirname, '..', file)), file);
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-prebuilt-'));
+  const prebuilt = path.join(tmp, 'prebuilt');
+  fs.mkdirSync(prebuilt);
+  // Any Mach-O stands in for the agent; only the copy path is under test.
+  fs.copyFileSync('/usr/bin/true', path.join(prebuilt, 'MultiCCAgent'));
+  const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'macos-agent', 'MultiCCAgent.swift'));
+  fs.writeFileSync(path.join(prebuilt, 'source.sha256'), `${crypto.createHash('sha256').update(source).digest('hex')}\n`);
+  const env = {
+    ...process.env,
+    MULTICC_AGENT_PREBUILT: prebuilt,
+    MULTICC_AGENT_APP: path.join(tmp, 'MultiCC Agent.app'),
+    MULTICC_AGENT_PLIST: path.join(tmp, 'agent.plist'),
+    MULTICC_AGENT_DIR: path.join(tmp, 'agent'),
+    MULTICC_AGENT_LINK: path.join(tmp, 'bin', 'multicc-agent'),
+    MULTICC_AGENT_NO_LAUNCHCTL: '1',
+    MULTICC_AGENT_SIGN_IDENTITY: '-',
+  };
+  const out = execFileSync('/bin/sh', [INSTALLER, 'install'], { env, encoding: 'utf8' });
+  assert.match(out, /using prebuilt binary/);
+  assert.equal(fs.readFileSync(path.join(env.MULTICC_AGENT_APP, 'Contents', 'Resources', 'source.sha256'), 'utf8').trim(),
+    fs.readFileSync(path.join(prebuilt, 'source.sha256'), 'utf8').trim());
+
+  // uninstall stops auto-install until the next manual install
+  execFileSync('/bin/sh', [INSTALLER, 'uninstall'], { env });
+  assert.ok(fs.existsSync(path.join(env.MULTICC_AGENT_DIR, 'auto-install-disabled')));
+  execFileSync('/bin/sh', [INSTALLER, 'install'], { env });
+  assert.ok(!fs.existsSync(path.join(env.MULTICC_AGENT_DIR, 'auto-install-disabled')));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
