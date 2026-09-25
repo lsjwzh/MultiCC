@@ -1453,7 +1453,7 @@
     },
     {
       "path": "tests/test-chat-history-ordering.js",
-      "tier": "core",
+      "tier": "other",
       "lane": "deterministic",
       "owner": "npm:test:security",
       "entrypoints": [
@@ -1480,7 +1480,7 @@
     },
     {
       "path": "tests/test-chat-history-view.js",
-      "tier": "core",
+      "tier": "other",
       "lane": "deterministic",
       "owner": "npm:test:security",
       "entrypoints": [
@@ -1530,7 +1530,7 @@
     },
     {
       "path": "tests/test-chat-recovery-service.js",
-      "tier": "core",
+      "tier": "flow",
       "lane": "deterministic",
       "owner": "npm:test:security",
       "entrypoints": [
@@ -4055,7 +4055,7 @@
     },
     {
       "path": "tests/test-task-board-groups.js",
-      "tier": "core",
+      "tier": "other",
       "lane": "deterministic"
     },
     {
