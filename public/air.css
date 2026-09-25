@@ -467,6 +467,23 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
   line-height: 1.6;
   white-space: pre-wrap;
 }
+.ops-progress { margin-top: 14px; }
+.ops-progress-summary { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.ops-progress-bar { height: 5px; margin: 7px 0 10px; overflow: hidden; border-radius: 999px; background: var(--well); }
+.ops-progress-bar > span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--accent); transition: width .4s ease; }
+.ops-progress.is-failed .ops-progress-bar > span { background: var(--danger); }
+.ops-steps { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.ops-step { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.ops-step-icon { flex: 0 0 14px; text-align: center; }
+.ops-step-name { flex: 1; min-width: 0; }
+.ops-step-meta { font-size: 11px; font-variant-numeric: tabular-nums; }
+.ops-step.is-done .ops-step-icon { color: var(--green); }
+.ops-step.is-running { color: var(--text); font-weight: 600; }
+.ops-step.is-running .ops-step-icon { color: var(--accent); animation: ops-step-spin 1.2s linear infinite; }
+.ops-step.is-failed, .ops-step.is-failed .ops-step-icon { color: var(--danger); }
+.ops-step.is-skipped .ops-step-name, .ops-step.is-pending .ops-step-name { opacity: .6; }
+@keyframes ops-step-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ops-step.is-running .ops-step-icon { animation: none; } }
 .ops-downloads { display: grid; gap: 9px; margin-top: 14px; }
 .ops-download { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--well); }
 .ops-download > div { min-width: 0; flex: 1; display: grid; }

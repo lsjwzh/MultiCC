@@ -55,6 +55,7 @@ class FakeNode {
     this.open = false;
     this.scrollTop = 0;
     this.scrollHeight = 0;
+    this.style = {};
     this._text = '';
     this.onclick = null;
     this.onkeydown = null;
@@ -72,6 +73,8 @@ class FakeNode {
     if (this.children.length) return this.children.map(child => child.textContent).join('');
     return this._text;
   }
+
+  get firstChild() { return this.children[0] || null; }
 
   appendChild(child) {
     child.parentNode = this;
@@ -199,6 +202,7 @@ function buildContext({ fetchImpl, confirmResult = true, pushInfo = null, qrcode
     setTimeout: (fn, ms) => clock.schedule(fn, ms, false),
     clearTimeout: id => clock.clear(id),
     setInterval: (fn, ms) => clock.schedule(fn, ms, true),
+    clearInterval: id => clock.clear(id),
     fetch: fetchImpl,
     location: { reload: () => reloads.push(Date.now()), origin: 'http://127.0.0.1:3000' },
     confirm: () => confirmResult,
@@ -340,6 +344,83 @@ test('clicking the version row asks first, then updates and reloads once the ser
   await settle();
   assert.equal(reloads.length, 1, 'the page reloads exactly once after the server comes back');
   assert.match(registry['air-ver-hint'].textContent, /更新完成|重载/);
+});
+
+test('a running update shows each step, where it is stuck, and a failed step', async () => {
+  const at = seconds => new Date(seconds * 1000).toISOString();
+  const steps = (overrides) => ['deps', 'check', 'fetch', 'install', 'verify', 'restart', 'ready']
+    .map(id => ({ id, state: 'pending', startedAt: null, endedAt: null, note: null, ...(overrides[id] || {}) }));
+  const fetchImpl = scriptedFetch({
+    '/api/update/status': [
+      { json: { state: 'idle', running: false } },
+      { json: { state: 'running', running: true, tail: 'Receiving objects: 40%', steps: steps({
+        deps: { state: 'done', startedAt: at(1000), endedAt: at(1002) },
+        check: { state: 'done', startedAt: at(1002), endedAt: at(1005), note: 'v1.7.0' },
+        fetch: { state: 'running', startedAt: at(1005) },
+      }) } },
+      { json: { state: 'failed', running: false, exitCode: 1, force: false, tail: 'fatal: unable to access', steps: steps({
+        deps: { state: 'done', startedAt: at(1000), endedAt: at(1002) },
+        check: { state: 'done', startedAt: at(1002), endedAt: at(1005) },
+        fetch: { state: 'running', startedAt: at(1005) },
+      }) } },
+    ],
+    '/api/version-check': [{ json: { current: '1.6.10', channel: 'dev', latest: 'v1.7.0', updateAvailable: true } }],
+    '/api/update': [{ status: 202, json: { ok: true, status: 'started', force: false, activeStreaming: 0 } }],
+    '/api/server-info': [{ json: { uptimeMs: 900 } }],
+  });
+  const { registry, advance } = buildContext({ fetchImpl });
+  await settle();
+  registry['air-ver-row'].onclick();
+  await settle();
+  findButton(registry, '立即更新').onclick();
+  await settle();
+
+  const stepRows = () => registry['ops-extra'].descendants().filter(node => node.tagName === 'LI');
+  assert.equal(stepRows().length, 7, 'every step is listed up front, not just the ones that ran');
+  assert.deepEqual(stepRows().map(row => row.className.replace('ops-step is-', '')),
+    ['done', 'done', 'running', 'pending', 'pending', 'pending', 'pending']);
+  assert.match(dialogText(registry), /拉取新代码/);
+  assert.match(dialogText(registry), /2\/7 步/);
+  assert.match(dialogText(registry), /Receiving objects: 40%/, 'the raw log stays visible under the steps');
+
+  await advance(2500);
+  await settle();
+  assert.equal(stepRows()[2].className, 'ops-step is-failed', 'the step that never finished is the one marked failed');
+  assert.ok(findButton(registry, '强制重试') || findButton(registry, t('airOpsForceRetry')));
+});
+
+test('a standalone install updates without the git force option and shows download progress', async () => {
+  const at = seconds => new Date(seconds * 1000).toISOString();
+  const plan = ['check', 'download', 'checksum', 'extract', 'restart', 'ready'];
+  const fetchImpl = scriptedFetch({
+    '/api/update/status': [
+      { json: { state: 'idle', running: false, kind: 'standalone' } },
+      { json: { state: 'running', running: true, kind: 'standalone', tail: 'Updating 2.1.0 → 2.2.0...', steps: plan.map(id => ({
+        id, state: 'pending', startedAt: null, endedAt: null, note: null, progress: null,
+        ...(id === 'check' ? { state: 'done', startedAt: at(1000), endedAt: at(1001) } : {}),
+        ...(id === 'download' ? { state: 'running', startedAt: at(1001), progress: { text: '12.0 / 48.0 MB · 25% · 4.5 MB/s', percent: 25 } } : {}),
+      })) } },
+    ],
+    '/api/version-check': [{ json: { current: '2.1.0', channel: 'stable', latest: 'v2.2.0', updateAvailable: true } }],
+    '/api/update': [{ status: 202, json: { ok: true, status: 'started', force: false, activeStreaming: 0 } }],
+    '/api/server-info': [{ json: { uptimeMs: 900 } }],
+  });
+  const { registry } = buildContext({ fetchImpl });
+  await settle();
+  registry['air-ver-row'].onclick();
+  await settle();
+  assert.equal(registry['ops-extra'].descendants().some(node => node.type === 'checkbox'), false,
+    'a downloaded package has no git working tree to force');
+  assert.match(dialogText(registry), /GitHub Releases/);
+  findButton(registry, '立即更新').onclick();
+  await settle();
+
+  assert.deepEqual(fetchImpl.calls.find(call => call.url === '/api/update').body, { force: false });
+  const rows = registry['ops-extra'].descendants().filter(node => node.tagName === 'LI');
+  assert.equal(rows.length, 6, 'the run\'s own plan decides the steps');
+  assert.match(dialogText(registry), /下载新版本安装包/);
+  assert.match(dialogText(registry), /12\.0 \/ 48\.0 MB · 25%/);
+  assert.match(registry['air-ver-hint'].textContent, /25%/);
 });
 
 test('the force checkbox is what reaches the API, not a separate button', async () => {
@@ -625,7 +706,7 @@ test('the module stays inert on a page without the ops region', async () => {
     addEventListener() {},
     removeEventListener() {},
   };
-  const context = { document, setTimeout: () => 0, setInterval: () => 0, clearTimeout() {}, fetch: fetchImpl, console: createSandboxConsole(), t, getLocale };
+  const context = { document, setTimeout: () => 0, setInterval: () => 0, clearInterval() {}, clearTimeout() {}, fetch: fetchImpl, console: createSandboxConsole(), t, getLocale };
   context.window = context;
   vm.createContext(context);
   assert.doesNotThrow(() => vm.runInContext(SOURCE, context, { filename: 'air-ops.js' }));

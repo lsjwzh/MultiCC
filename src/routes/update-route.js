@@ -11,7 +11,7 @@
 // answer, but it does not exist yet in the second between spawning and the
 // child's first write — `_updateScheduled` covers exactly that window, and
 // expires so a child that died before writing anything cannot 409 forever.
-const { startDetachedUpdate, readUpdateStatus } = require('../update-runner');
+const { startDetachedUpdate, readUpdateStatus, detectStandaloneUpdate } = require('../update-runner');
 
 const UPDATE_FLAG_TTL_MS = 20000;
 
@@ -24,6 +24,10 @@ const UPDATE_FLAG_TTL_MS = 20000;
 //   isDesktopMode     () => boolean — desktop installs ship an immutable copy of
 //                     the server; `./multicc update` (git-based) can only
 //                     corrupt it, so refuse with an actionable error instead.
+//                     The standalone package runs in desktop mode too but
+//                     updates itself (bundled `multicc update`), so it is let
+//                     through — see detectStandaloneUpdate.
+//   isStandalone      () => boolean — defaults to detecting the standalone layout
 function createUpdateRoute(deps) {
   const {
     chatSessions,
@@ -33,6 +37,7 @@ function createUpdateRoute(deps) {
     log = console,
     now = Date.now,
     isDesktopMode = () => /^(1|true|yes|on)$/i.test(String(process.env.MULTICC_DESKTOP || '').trim()),
+    isStandalone = () => Boolean(detectStandaloneUpdate({ rootDir })),
   } = deps || {};
   if (typeof spawn !== 'function') throw new TypeError('update route requires spawn');
   if (!rootDir) throw new TypeError('update route requires rootDir');
@@ -71,15 +76,21 @@ function createUpdateRoute(deps) {
     return { ...current, scheduled: false };
   }
 
+  // Tells the client which updater will run: the standalone package has no
+  // git "force" mode, so the dialog leaves that option out.
+  function updateKind() {
+    try { return isStandalone() ? 'standalone' : 'git'; } catch (_) { return 'git'; }
+  }
+
   function mountRoutes(app) {
     app.get('/api/update/status', (req, res) => {
-      res.json(admissionStatus());
+      res.json({ ...admissionStatus(), kind: updateKind() });
     });
 
     app.post('/api/update', (req, res) => {
       expireScheduledFlag();
       if (getShuttingDown()) return res.status(409).json({ error: 'server is shutting down' });
-      if (isDesktopMode()) {
+      if (isDesktopMode() && updateKind() !== 'standalone') {
         return res.status(409).json({
           error: 'this MultiCC runs inside the desktop app; install a new desktop release to update',
           code: 'DESKTOP_UPDATE_UNSUPPORTED',

@@ -245,9 +245,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 新增 secondsAgoCompact 中英各 1 行 = +2，重跑生成器后按
   // split(/\n/).length 量到 6904 行 / 428203 字节（生成器输出与提交版本逐字一致，
   // 没有带进别的漂移）。
+  // 2026-09-25 MultiCC 自更新弹窗改成分步进度：七个步骤名 + 「跳过」+ 进度行
+  // 共 9 个键，中英各 9 行 = +18，重跑生成器实测 6922 行 / 429053 字节。
+  // 同日独立包也能从左下角更新：下载/校验/解压三个步骤名 + 独立包说明共 4 键，
+  // 中英各 4 行 = +8，实测 6930 行 / 429730 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6904,
-    maxBytes: 428203,
+    maxLines: 6930,
+    maxBytes: 429730,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
