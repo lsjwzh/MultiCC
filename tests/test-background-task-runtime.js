@@ -405,6 +405,28 @@ async function test(name, fn) {
     assert.strictEqual(h.runtime.handleEvent('s1', {}, event).handled, false);
   });
 
+  await test('a Monitor that ends during a live turn is left to that turn, with the idle hook as fallback', () => {
+    const h = makeHarness();
+    const live = { cwd: '/repo', isStreaming: true, currentToolCalls: [{ id: 'tool', name: 'Monitor', input: { persistent: true } }] };
+    h.runtime.recordMainToolUseId('s1', 'tool');
+    h.runtime.handleEvent('s1', live, { subtype: 'task_started', task_id: 'watch', tool_use_id: 'tool', session_id: 'native' });
+    // The model stops its own Monitor with TaskStop mid-turn.
+    h.runtime.handleEvent('s1', live, { subtype: 'task_notification', task_id: 'watch', status: 'stopped' });
+    const terminal = { subtype: 'monitor_prompt', task_id: 'watch', event_id: 'end', status: 'stopped', output: 'last' };
+    assert.strictEqual(h.runtime.handleEvent('s1', live, { ...terminal, probe: true }).handled, false, 'in-turn terminal stays native');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 0, 'no 🔇 for what the running turn already knows');
+    // Had the CLI not handed it over in-turn, its idle hook reports it once.
+    live.isStreaming = false;
+    assert.strictEqual(h.runtime.handleEvent('s1', live, terminal).decision, 'inject');
+    assert.strictEqual(h.runtime.handleEvent('s1', live, { ...terminal, event_id: 'again' }).decision, 'duplicate');
+    live.isStreaming = true;
+    assert.strictEqual(h.runtime.handleEvent('s1', live, { ...terminal, probe: true }).monitorOwned, true,
+      'a native repeat inside the delivering turn stays blocked');
+    h.clock.advance(100);
+    assert.strictEqual(h.injections.length, 1);
+  });
+
   await test('a process exit retires and reports active Monitor watches without leaking tails', () => {
     const h = makeHarness();
     h.runtime.handleEvent('s1', { currentToolCalls: [{ id: 'tool', name: 'Monitor', input: { persistent: true } }] },
