@@ -568,7 +568,9 @@ function createBackgroundTaskRuntime(deps = {}) {
         consumeTimed(monitorTasks, sessionName, taskId);
         // The terminal bookend includes an authoritative output file. Queue it
         // here as well: native TaskStop/exit paths may suppress the prompt hook.
-        if (watch && !watch.terminalQueued) {
+        // A live turn already knows (its own TaskStop, or the CLI hands the
+        // event over in-turn); if not, the CLI's idle hook still reports it.
+        if (watch && !watch.terminalQueued && chatState?.isStreaming !== true) {
           watch.terminalQueued = true;
           noteBgResultInjected(sessionName);
           coalescer.add(sessionName, { kind: 'monitor', desc: event.summary || watch.description,
@@ -659,15 +661,18 @@ function createBackgroundTaskRuntime(deps = {}) {
       const watch = monitorWatches.get(sessionName)?.get(String(event.task_id));
       if (!watch) return handleTaskPrompt(sessionName, chatState, event);
       if (!watch.live && now() - watch.endedAt > dedupTtlMs) return { handled: false };
-      // Progress stays inside the resident session. During a live turn the CLI
-      // attaches it to that turn's next request, so leave it native. Between
-      // turns it would start an unadmitted query; block that without queueing
-      // a 🔇 turn per event — the terminal bookend below continues the task.
+      // Monitor events stay inside the resident session. During a live turn
+      // the CLI attaches them to that turn's next request, so leave them
+      // native. Between turns they would start an unadmitted query: block
+      // progress without queueing a 🔇 turn per event — only the terminal
+      // bookend below continues the task.
       const inTurn = chatState?.isStreaming === true;
       // An in-turn batch is only ever probed (the hook then leaves it native);
       // an idle one is probed and then delivered — show each event once.
       if (!event.status && (inTurn || !event.probe)) showMonitorEvent(sessionName, event, watch);
-      if (!event.status && inTurn) return { handled: false };
+      // Once the host has queued the terminal report, a native repeat (even
+      // inside the turn that delivers it) is a duplicate.
+      if (inTurn && !(event.status && watch.terminalQueued)) return { handled: false };
       if (event.probe) return { handled: true, monitorOwned: true };
       if (!event.status) return { handled: true, monitorOwned: true, decision: 'progress' };
       watch.terminalHandled = true;
