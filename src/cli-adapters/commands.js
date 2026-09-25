@@ -140,11 +140,18 @@ function resolveCodex(context) {
       if (localCandidates.length) return localCandidates[0].exe;
     } catch (_) {}
   }
+  // 顺序即策略, 不是随手排的: ~/.local/bin 必须在 homebrew 之前。
+  // 官方 curl 安装脚本(BIN_DIR 默认 $HOME/.local/bin)和 standalone 包推荐的
+  // `npm install -g --prefix "$HOME/.local"` 都落在这里, 而安装脚本自己也是把
+  // ~/.local/bin prepend 进用户 PATH —— 两边顺序一致, 才不会出现「multicc 跑新的、
+  // 用户敲 codex 是旧的」。反过来, 若让 /opt/homebrew/bin 优先, 新装的 codex 会被
+  // npm 旧副本永久遮蔽, 升级"成功"却不生效。
+  // 只装了 homebrew 那份的机器完全无感: 前两个候选不存在, 照样命中第三条。
   const directHit = firstRunnable([
-    '/opt/homebrew/bin/codex',
-    '/usr/local/bin/codex',
     path.join(homeDir, '.local', 'bin', 'codex'),
     path.join(homeDir, '.cargo', 'bin', 'codex'),
+    '/opt/homebrew/bin/codex',
+    '/usr/local/bin/codex',
   ], context);
   if (directHit) return directHit;
   return findExecutableOnPath('codex', context) || (isWindows ? 'codex.exe' : 'codex');
