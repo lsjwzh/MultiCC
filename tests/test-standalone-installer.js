@@ -610,6 +610,22 @@ test('install.ps1 is the native Windows path over the same standalone contract',
     'the Windows target must not need a toolchain either');
 });
 
+test('install.ps1 stays ASCII so Windows PowerShell 5.1 can read it from disk', () => {
+  const bytes = fs.readFileSync(WINDOWS_INSTALLER);
+  // powershell.exe 5.1 is what a Windows user has by default, and it reads a
+  // .ps1 with no BOM as ANSI text. A UTF-8 em dash then arrives as mojibake whose
+  // bytes cp1252 maps to typographic quotes — and PowerShell accepts those as
+  // string delimiters, so the quote balance shifts and the file stops parsing at
+  // all ("The string is missing the terminator: '"). v2.1.2 shipped with 65 such
+  // characters: the Windows smoke failed, which skipped the release job, and that
+  // release never got its standalone or desktop assets. The documented
+  // `irm … | iex` one-liner decodes the response as UTF-8 and hid this; only the
+  // file on disk (and -From) sees it. A BOM is not the fix either — the pipeline
+  // path would then begin with U+FEFF and fail as a stray character.
+  const nonAscii = [...new Set([...bytes.toString('utf8')].filter(char => char.charCodeAt(0) > 127))];
+  assert.deepEqual(nonAscii, [], 'install.ps1 must stay ASCII-only (see the comment above)');
+});
+
 test('both installers verify the new package before they touch the old installation', () => {
   const sh = fs.readFileSync(INSTALLER, 'utf8');
   const ps1 = fs.readFileSync(WINDOWS_INSTALLER, 'utf8');
