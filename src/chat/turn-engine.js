@@ -48,6 +48,7 @@ const {
   providerRetryRouteOptions,
 } = require('./provider-invocation');
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
+const { createAutoRouteNotes } = require('./auto-route-notes');
 const { admissionRootCause, deliverAfterPendingMemory } = require('./admission-progress');
 const { createAutoProviderHandoff } = require('./auto-provider-handoff');
 const { redactProviderRouteCapability } = require('../observability');
@@ -321,7 +322,8 @@ function createChatTurnEngine(deps) {
   const recordDeliveryProbe = deliveryProbeRegistry.record;
   const runnerDeliveryHandoff = deliveryProbeRegistry.lookup;
   const autoProviderRuntime = deps.autoProviderRuntime || createAutoProviderRuntime({
-    providers, providerLimitCache, emit: chatBroadcast, logger,
+    providers, providerLimitCache, logger, emit: createAutoRouteNotes({ broadcast: chatBroadcast,
+      append: appendChatMessage, records: persistedSessions, save: savePersistedSessionsBestEffort }),
     hasLiveBackgroundTasks: sessionId => {
       try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
       catch (_) { return true; }
@@ -2693,7 +2695,7 @@ function createChatTurnEngine(deps) {
     }
     const activeRoute = attemptRuntime.snapshot(sessionName);
     const autoProvider = persisted.providerSelection?.mode === 'auto'
-      ? autoProviderRuntime.snapshot(sessionName) : null;
+      ? (autoProviderRuntime.snapshot(sessionName) || persisted.autoProviderLastRoute || null) : null;
     const reconnectRoute = activeRoute && activeRoute.outcome === 'running'
       ? providerAttemptFields(activeRoute) : null;
 

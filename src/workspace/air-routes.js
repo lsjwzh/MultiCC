@@ -233,6 +233,9 @@ function mountAirRoutes(app, deps) {
     return { ok: true, taskId, url: '/air?' + new URLSearchParams({ task: taskId, ...(dirId ? { dir: dirId } : {}) }) };
   }));
   app.post('/api/air/tasks', route(async req => { const result = await deps.shell.createTask(req.body); deps.admission.identify(result.sessionId); return result; }));
+  // In Auto mode the session's own model is only the first candidate's; the
+  // pill must name the line that actually answered (see chat/auto-route-notes).
+  const autoLine = record => (record?.providerSelection?.mode === 'auto' ? record.autoProviderLastRoute || null : null);
   async function taskDetail(taskId) {
     const entry = await deps.shell.taskEntry(taskId);
     const record = deps.records.get(entry.sessionId);
@@ -253,7 +256,7 @@ function mountAirRoutes(app, deps) {
       pendingConfiguration: pending ? { ...pending, providerName: pendingProviderName } : null,
       cli: record?.cli,
       model: record?.model,
-      effectiveModel: deps.effectiveModel?.(record) || record?.model || null,
+      effectiveModel: autoLine(record)?.model || deps.effectiveModel?.(record) || record?.model || null,
       effort: record?.effort,
       effectiveEffort: deps.effectiveEffort?.(record) || record?.effort || null,
       provider: record?.provider || null,
@@ -283,7 +286,7 @@ function mountAirRoutes(app, deps) {
     return { ok: true, taskId: req.params.id, readOnly: entry.readOnly,
       sessionId: entry.sessionId, sourceSessionId: entry.sourceSessionId,
       configuration: allowed ? {
-        cli: record.cli, model: record.model, effectiveModel: deps.effectiveModel?.(record) || record.model || null,
+        cli: record.cli, model: record.model, effectiveModel: autoLine(record)?.model || deps.effectiveModel?.(record) || record.model || null,
         effort: record.effort, provider: record.provider || null,
         providerName: deps.providerName?.(record) || record.provider || null,
         providerSelection: record.providerSelection || null, subagent: deps.serializeSubagent?.(record.subagent) || null,

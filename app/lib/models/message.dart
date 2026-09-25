@@ -174,7 +174,10 @@ class ChatMessage {
   /// Client-generated correlation id carried through the durable FIFO. Unlike
   /// [id] this exists before persistence, so delayed chat_msg_meta events can
   /// tag the exact optimistic bubble instead of whichever user bubble is last.
-  final String? clientMsgId;
+  /// A live Auto route note is the one line that learns it late: the server
+  /// only mints the key of the persisted record when the verdict is broadcast,
+  /// so the note that is already on screen adopts it then (AutoRouteLine.settle).
+  String? clientMsgId;
 
   /// Durable interrupted-draft marker (server: `partial` in the unified
   /// history DTO — a mid-turn checkpoint that was never finalized, e.g. the
@@ -229,9 +232,17 @@ class ChatMessage {
   }) : toolCalls = toolCalls ?? [],
        timestamp = timestamp ?? DateTime.now();
 
-  ChatMessage.fromHistory(Map<String, dynamic> json)
-    : role = json['role'] == 'user' ? MessageRole.user : MessageRole.assistant,
-      content = (json['content'] ?? '').toString(),
+  /// [role] / [content] override what the record itself says, for a record
+  /// whose line is **derived** rather than persisted — an Auto route note
+  /// carries the structured verdict plus a plain fallback content, and the chat
+  /// shows the formatted verdict instead (`historyRecordMessage` in
+  /// providers/admission_notes.dart). Every other field still comes from [json].
+  ChatMessage.fromHistory(
+    Map<String, dynamic> json, {
+    MessageRole? role,
+    String? content,
+  }) : role = role ?? (json['role'] == 'user' ? MessageRole.user : MessageRole.assistant),
+      content = content ?? (json['content'] ?? '').toString(),
       toolCalls = _parseHistoryTools(json['tools']),
       timestamp = json['ts'] != null
           ? DateTime.fromMillisecondsSinceEpoch((json['ts'] as num).toInt())

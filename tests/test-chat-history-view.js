@@ -802,3 +802,41 @@ test('vendored DOMPurify bytes and license match recorded official npm provenanc
   assert.match(provenance, /sha512-\/2GogDQlohXPZe6D6NOgQvXLPSYBqIWMnZ8zzOhn09REE4ey/);
   assert.match(provenance, /No local\s+changes were made/);
 });
+
+test('a persisted Auto route note renders through the live formatter and adopts the live line', () => {
+  const zh = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+  const translate = (key, params) => String(zh[key] ?? key)
+    .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
+  const { document, messagesEl, view } = fixture({ translate });
+  const autoRoute = {
+    phase: 'selected', providerId: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-v4-flash',
+    tier: 't1', preferredTier: 't1',
+    routing: { source: 'jev', code: 'jev_choice', tierIndex: 0, tierCount: 2, latencyMs: 400 },
+  };
+  const note = view.renderMessage({
+    id: 'n1', role: 'system', kind: 'auto_route', content: 'Auto → DeepSeek · deepseek-v4-flash',
+    clientMsgId: 'auto-route-t1-1', autoRoute,
+  });
+  assert.equal(note.textContent, '🧭 Jev 判定为简单任务 · 选用 DeepSeek（deepseek-v4-flash） · 用时 0.4 秒');
+  assert.equal(note.dataset.clientMsgId, 'auto-route-t1-1');
+  assert.equal(note.hidden, undefined);
+  // A verdict the formatter has nothing to say about keeps its slot but draws nothing.
+  const silent = view.renderMessage({ id: 'n2', role: 'system', autoRoute: { ...autoRoute, routing: { source: 'jev' } } });
+  assert.equal(silent.textContent, '');
+  assert.equal(silent.hidden, true);
+
+  // The live line (no id yet) is adopted by the replayed record instead of doubled.
+  const live = document.createElement('div');
+  live.className = 'msg system-msg';
+  live.textContent = 'live verdict';
+  live.dataset.clientMsgId = 'auto-route-t1-1';
+  messagesEl.appendChild(live);
+  view.applyPlan({
+    operations: [{ kind: 'append', id: 'n1', message: {
+      id: 'n1', role: 'system', clientMsgId: 'auto-route-t1-1', autoRoute,
+    } }],
+    messages: [], hasMore: false, streamingTail: null,
+  });
+  assert.equal(messagesEl.querySelectorAll('.msg.system-msg').length, 1);
+  assert.equal(view.findById('n1').textContent, note.textContent);
+});

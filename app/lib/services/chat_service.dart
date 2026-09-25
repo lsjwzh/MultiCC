@@ -4,6 +4,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/message.dart';
+import '../providers/admission_notes.dart';
 import 'chat_debug_log.dart';
 import 'provider_route_gate.dart';
 import 'chat_shell_view.dart';
@@ -888,7 +889,7 @@ class ChatService {
         ? list
               .map((m) {
                 try {
-                  return ChatMessage.fromHistory(m as Map<String, dynamic>);
+                  return historyRecordMessage(m as Map<String, dynamic>);
                 } catch (_) {
                   return null;
                 }
