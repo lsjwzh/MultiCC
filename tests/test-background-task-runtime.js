@@ -373,7 +373,7 @@ async function test(name, fn) {
     assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), false);
   });
 
-  await test('Monitor hooks deduplicate deliveries, preserve distinct events and respect session ownership', () => {
+  await test('Monitor hooks absorb progress events, deliver the terminal bookend once and respect session ownership', () => {
     const h = makeHarness();
     const state = { cwd: '/repo', currentToolCalls: [{ id: 'tool', name: 'Monitor', input: { persistent: true } }] };
     h.runtime.recordMainToolUseId('s1', 'tool');
@@ -382,21 +382,20 @@ async function test(name, fn) {
     assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), true, 'even day-long silence cannot kill a live Monitor');
     const event = { subtype: 'monitor_prompt', task_id: 'watch', event_id: 'event-1', output: 'first' };
     assert.strictEqual(h.runtime.handleEvent('s2', {}, event).handled, false);
-    assert.strictEqual(h.runtime.handleEvent('s1', {}, event).decision, 'inject');
-    assert.strictEqual(h.runtime.handleEvent('s1', {}, event).decision, 'duplicate');
+    assert.strictEqual(h.runtime.handleEvent('s1', {}, { ...event, probe: true }).monitorOwned, true, 'the native self-wake is blocked');
+    const progress = h.runtime.handleEvent('s1', {}, event);
+    assert.deepStrictEqual([progress.monitorOwned, progress.decision], [true, 'progress']);
     h.runtime.handleEvent('s1', {}, { ...event, event_id: 'event-2', output: 'second' });
     h.clock.advance(100);
-    assert.strictEqual(h.injections.length, 1);
-    assert.match(h.injections[0].text, /first[\s\S]*second/);
-    assert.strictEqual(h.injections[0].origin.supersedeKey, 'monitor:watch', 'one Monitor keeps one queued report');
+    assert.strictEqual(h.injections.length, 0, 'progress stays inside the resident session: no queued 🔇 turn');
     h.files.set('/out/terminal', 'final');
     const completion = { subtype: 'task_notification', task_id: 'watch', status: 'completed', output_file: '/out/terminal' };
     h.runtime.handleEvent('s1', {}, completion);
     h.runtime.handleEvent('s1', {}, completion);
     h.runtime.handleEvent('s1', {}, { ...event, event_id: 'terminal', status: 'completed' });
     h.clock.advance(100);
-    assert.strictEqual(h.injections.length, 2, 'terminal bookend and native hook produce only one delivery');
-    assert.match(h.injections[1].text, /final/);
+    assert.strictEqual(h.injections.length, 1, 'terminal bookend and native hook produce only one delivery');
+    assert.match(h.injections[0].text, /final/);
     assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), false);
     h.runtime.stopSession('s1');
     assert.strictEqual(h.runtime.handleEvent('s1', {}, event).handled, false);
