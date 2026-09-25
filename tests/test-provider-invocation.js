@@ -459,3 +459,69 @@ test('bare retries rebuild invocation text without replaying composition layers'
   assert.equal(captured.suffix, '');
   assert.equal(captured.historyHandle.cliSessionId, 'native-1');
 });
+
+// ---------------------------------------------------------------------------
+// The Auto-only idle budget handed to the proxy stall watchdog
+// ---------------------------------------------------------------------------
+
+function prepareFor(session, input = {}) {
+  const { attempts, factory } = makeHarness();
+  const provider = { buildInvocation: envelope => ({ cmd: 'claude', payload: envelope.userText }) };
+  const { request, turn } = turnInput();
+  const invocation = factory.prepare({
+    request, turn, session, provider,
+    envelope: { userText: 'hello', spawnOpts: {}, historyHandle: {} },
+    attemptNo: 1, ...input,
+  });
+  return { attempts, invocation };
+}
+
+test('only an Auto session arms a stall watchdog, with the reviewed default budget', () => {
+  const auto = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet',
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] } };
+  assert.equal(prepareFor(auto).invocation.attempt.stallTimeoutMs, 120_000);
+  assert.equal(prepareFor(auto, { env: {} }).invocation.attempt.stallTimeoutMs, 120_000);
+  // A concrete session keeps today's behaviour exactly: no budget, so the proxy
+  // never wraps its response object.
+  const manual = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet',
+    providerSelection: { version: 1, mode: 'manual', candidates: [] } };
+  assert.equal(prepareFor(manual).invocation.attempt.stallTimeoutMs, 0);
+  assert.equal(prepareFor(manual, { env: { MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' } })
+    .invocation.attempt.stallTimeoutMs, 0, 'an env var cannot arm a watchdog on a non-Auto session');
+  assert.equal(prepareFor({ id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet' })
+    .invocation.attempt.stallTimeoutMs, 0);
+});
+
+test('the environment overrides the Auto budget and can switch the watchdog off', () => {
+  const auto = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet',
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] } };
+  const budget = env => prepareFor(auto, { env }).invocation.attempt.stallTimeoutMs;
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' }), 45_000);
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: '0' }), 0, 'zero disables the watchdog');
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: '1000' }), 15_000, 'clamped up to the floor');
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: '3600000' }), 600_000, 'clamped down to the ceiling');
+  assert.equal(budget({ MULTICC_AUTO_STALL_TIMEOUT_MS: 'later' }), 120_000, 'unparseable keeps the default');
+});
+
+test('the budget travels with every physical attempt, the failover one included', () => {
+  const { attempts, factory } = makeHarness();
+  const auto = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet',
+    providerSelection: { version: 1, mode: 'auto', protocol: 'anthropic', candidates: [] } };
+  const provider = { buildInvocation: envelope => ({ cmd: 'claude', payload: envelope.userText }) };
+  const envelope = { userText: 'hello', spawnOpts: {}, historyHandle: {} };
+  const { request, turn } = turnInput();
+  const env = { MULTICC_AUTO_STALL_TIMEOUT_MS: '45000' };
+  const first = factory.prepare({
+    request, turn, session: auto, provider, envelope, attemptNo: 1, env,
+  });
+  assert.equal(first.attempt.stallTimeoutMs, 45_000);
+  assert.equal(first.attempt.providerId, 'provider-a');
+  attempts.finishAttempt(first.attempt, { outcome: 'failed', errorCategory: 'timeout' });
+  const next = factory.prepare({
+    request, turn, session: auto, provider, envelope, attemptNo: 2, env,
+    providerId: 'provider-b', reasonCode: 'auto_failover',
+  });
+  assert.equal(next.attempt.providerId, 'provider-b');
+  assert.equal(next.attempt.stallTimeoutMs, 45_000,
+    'the switched line gets its own idle budget, not the failed attempt\'s leftovers');
+});

@@ -1156,3 +1156,79 @@ test('background traffic on the main route never holds the next turn or binds to
   assert.equal(runtime.onProxyActivity({ ...request, phase: 'end' }).routeAttemptId, next.routeAttemptId,
     'once a turn runs again, main-route traffic is that turn\'s own');
 });
+
+// ---------------------------------------------------------------------------
+// Auto Provider stall watchdog: the attempt-side contract
+// ---------------------------------------------------------------------------
+
+function inflow(attempt, overrides = {}) {
+  return Object.freeze({
+    version: 1, requestId: 'request-1', requestKind: 'inference',
+    termination: 'upstream_failure', httpStatus: null,
+  });
+}
+
+test('the stall budget is part of the immutable attempt snapshot', () => {
+  const { runtime } = harness();
+  const withBudget = runtime.beginAttempt(route({ stallTimeoutMs: 90_000 }));
+  assert.equal(withBudget.stallTimeoutMs, 90_000);
+  assert.equal(withBudget.stalled, false);
+  assert.equal(Object.isFrozen(withBudget), true, 'a snapshot can never be edited after the spawn');
+  // A caller that states nothing, or states garbage, gets today's behaviour: no
+  // budget, so the proxy never arms a watchdog for the attempt.
+  runtime.finishAttempt(withBudget, { outcome: 'failed', errorCategory: 'transport' });
+  assert.equal(runtime.beginAttempt(route({ attemptNo: 2 })).stallTimeoutMs, 0);
+  runtime.finishAttempt(runtime.snapshot('session-1'), { outcome: 'failed', errorCategory: 'transport' });
+  assert.equal(runtime.beginAttempt(route({ attemptNo: 3, stallTimeoutMs: 'soon' })).stallTimeoutMs, 0);
+});
+
+test('a proved stall retires the attempt and refuses every later re-dial', () => {
+  const { runtime, audit } = harness();
+  const attempt = runtime.beginAttempt(route({ stallTimeoutMs: 60_000 }));
+  assert.equal(runtime.authorizeProxyRequest(proxy(runtime, attempt)).ok, true);
+
+  const observed = runtime.observeProxyOutcome({
+    ...attempt, roleKind: 'main', routeAttribution: 'exact',
+    status: 'error', errorCode: 'stream_idle_timeout', proxyOutcome: inflow(attempt),
+  });
+  assert.equal(observed.accepted, true);
+  assert.equal(observed.failure.code, 'stream_idle_timeout');
+  assert.equal(runtime.snapshot('session-1').stalled, true);
+  assert.ok(audit.some(item => item.event.type === 'provider_attempt_stalled'));
+
+  // The CLI's own retry (codex re-dials the same stream several times) is
+  // refused with a code that names the proven cause, and it is not a poisoning
+  // of the attempt: the failure category stays the stall.
+  const refused = runtime.authorizeProxyRequest(proxy(runtime, attempt));
+  assert.deepEqual(refused, { ok: false, code: 'attempt_stalled', sessionId: 'session-1' });
+  assert.equal(runtime.snapshot('session-1').outcome, 'running',
+    'a stalled attempt is retired by the turn, not killed out from under it');
+  assert.equal(runtime.proxyFailure(attempt).code, 'stream_idle_timeout');
+});
+
+test('the socket teardown the watchdog causes cannot replace the stall it recorded', () => {
+  const { runtime } = harness();
+  const attempt = runtime.beginAttempt(route({ stallTimeoutMs: 60_000 }));
+  runtime.observeProxyOutcome({
+    ...attempt, roleKind: 'main', routeAttribution: 'exact',
+    status: 'error', errorCode: 'response_stalled_before_response', proxyOutcome: inflow(attempt),
+  });
+  const disconnect = runtime.observeProxyOutcome({
+    ...attempt, roleKind: 'main', routeAttribution: 'exact',
+    status: 'error', errorCode: 'DOWNSTREAM_DISCONNECT', proxyOutcome: downstreamOutcome(),
+  });
+  assert.equal(disconnect.accepted, true);
+  assert.equal(disconnect.failure.code, 'response_stalled_before_response',
+    'a teardown is an effect of the stall, never evidence that replaces it');
+  assert.equal(runtime.proxyFailure(attempt).code, 'response_stalled_before_response');
+  assert.equal(runtime.snapshot('session-1').stalled, true);
+  // An unrelated code is not a stall: the route stays replayable.
+  const { runtime: other } = harness();
+  const clean = other.beginAttempt(route({ stallTimeoutMs: 60_000 }));
+  other.observeProxyOutcome({
+    ...clean, roleKind: 'main', routeAttribution: 'exact',
+    status: 'error', errorCode: 'UPSTREAM_HTTP_ERROR', statusCode: 503,
+  });
+  assert.equal(other.snapshot('session-1').stalled, false);
+  assert.equal(other.authorizeProxyRequest(proxy(other, clean)).ok, true);
+});

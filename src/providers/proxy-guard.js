@@ -2,6 +2,7 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { observeProxyRequest } = require('./proxy-outcome');
+const { createProxyStallWatch } = require('./proxy-stall-watch');
 
 function clean(value) {
   return value == null ? '' : String(value).trim();
@@ -43,13 +44,23 @@ function classifyProviderProxyRoute(protocol, segments = []) {
   return Object.freeze({ scope: 'attempt', providerId, sessionId, role });
 }
 
-function reject(res) {
+// `attempt_stalled` is the one rejection that says "this route, not this token":
+// the host has already proved the line went silent and is failing the turn over
+// to another candidate, so a CLI that re-dials it would only burn its own retry
+// budget on a route that cannot answer. `x-should-retry: false` is what the
+// Anthropic SDK honours; every other 409 (including its body and headers) stays
+// exactly as it was.
+function reject(res, code = '') {
   const body = JSON.stringify({ error: 'provider route attempt is no longer active' });
+  const stalled = clean(code) === 'attempt_stalled';
   if (res && typeof res.status === 'function' && typeof res.json === 'function') {
+    if (stalled && typeof res.setHeader === 'function') res.setHeader('x-should-retry', 'false');
     return res.status(409).json(JSON.parse(body));
   }
   if (res && typeof res.writeHead === 'function') {
-    res.writeHead(409, { 'content-type': 'application/json' });
+    res.writeHead(409, stalled
+      ? { 'content-type': 'application/json', 'x-should-retry': 'false' }
+      : { 'content-type': 'application/json' });
   } else if (res) {
     res.statusCode = 409;
     if (typeof res.setHeader === 'function') res.setHeader('content-type', 'application/json');
@@ -98,7 +109,7 @@ function createProviderProxyGuard(options = {}) {
       reportRejection(options, { protocol, stage: 'http_guard', method,
         providerId: route.providerId, sessionId: route.sessionId, role: route.role,
         reason: clean(decision && decision.code) || 'attempt_not_active' });
-      return reject(res);
+      return reject(res, clean(decision && decision.code));
     }
     // Claude probes connectivity with HEAD /api/hello (older versions use /).
     // This checks the local proxy, not model inference. Keep it behind attempt
@@ -208,7 +219,7 @@ function createProviderProxyAdmission(options = {}) {
         sessionId: error.sessionId || context?.sessionId || '',
         role: error.role || context?.role || '',
         reason: error.reason || 'attempt_not_active' });
-      return reject(res);
+      return reject(res, error.reason);
     }
     if (typeof next === 'function') return next(error);
     throw error;
@@ -228,15 +239,39 @@ function createProviderProxyAdmission(options = {}) {
         proxyOutcome,
       });
     });
+    // Idle watchdog for this one downstream response. It is created before the
+    // adapter runs but installs itself only when the attempt that the adapter
+    // resolves carries a stall budget (Auto Provider routes) and this request is
+    // inference, so every other route keeps its response object untouched.
+    context.stall = createProxyStallWatch({
+      protocol, req, res, observation: context.observation,
+      setTimeout: options.setTimeout, clearTimeout: options.clearTimeout,
+      sessionId: context.sessionId, providerId: context.mainProviderId, role: context.role,
+      onStall: detail => {
+        reportRejection(options, {
+          protocol, stage: 'stall_watchdog',
+          providerId: detail.providerId || context.mainProviderId || '',
+          sessionId: detail.sessionId || context.sessionId || '',
+          role: detail.role || context.role || '',
+          reason: detail.code,
+          timeoutMs: detail.timeoutMs,
+        });
+        return typeof options.onStall === 'function' ? options.onStall(detail) : undefined;
+      },
+    });
     let result;
     try {
       const call = () => handler(req, res, next);
       result = requestContext.run(context, call);
     } catch (error) {
+      context.stall.dispose();
       return handleFailure(error, res, next, context);
     }
     if (result && typeof result.then === 'function') {
-      return result.catch(error => handleFailure(error, res, next, context));
+      return result.catch(error => {
+        context.stall.dispose();
+        return handleFailure(error, res, next, context);
+      });
     }
     return result;
   }
@@ -273,6 +308,10 @@ function createProviderProxyAdmission(options = {}) {
       context.attempt = decision.attempt;
       context.providerId = clean(providerId);
       context.role = role;
+      // The attempt is resolved immediately before the adapter dials upstream,
+      // which is the moment the idle budget starts running: it covers "no first
+      // byte at all" as well as "mid-stream silence".
+      context.stall?.arm(decision.attempt);
     }
     return getProvider(appType, providerId);
   }
