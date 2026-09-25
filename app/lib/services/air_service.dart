@@ -3,45 +3,75 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
+import '../utils/status_presentation.dart';
 import 'settings_service.dart';
 import 'session_service.dart';
 
-/// 状态词表，逐条对齐 Web Air（`public/air.js` 的 `stateNames`）。两套界面
-/// 说同一件事就得用同一个词，否则「等待目录容量」和「排队中」会被当成两回事。
-const Map<String, String> airStateNames = {
-  'active': '进行中',
-  'succeeded': '成功',
-  'unknown': '结果待核验',
-  'failed': '失败',
-  'error': '失败',
-  'cancelled': '已取消',
-  'workspace_execution_capacity': '等待执行名额',
-  'workspace_resident_capacity': '等待目录容量',
-  'workspace_restore_capacity': '等待目录准备名额',
-  'planned': '执行时准备目录',
-  'resident': '目录已准备',
-  'retained': '目录已保留',
-  'hibernated': '目录已休眠',
-  'reserved': '准备执行',
-  'materializing': '正在准备目录',
-  'starting': '正在启动',
-  'running': '执行中',
-  'uncertain': '等待核实执行状态',
-  'idle': '空闲',
-  'queued': '排队中',
-  'waiting': '等待回答',
-  'archived': '已归档',
-  'stale': '建议已过期',
-  'inbox': '待处理',
-  'ready': '待执行',
-  'doing': '进行中',
-  'review': '待验收',
-  'done': '已完成',
+/// Air 面自己的词表。**规范状态的词不在这里写第二遍**：它们在注册表的
+/// `airLabelKey` 列上（`utils/status_presentation.dart` 的 [StatusSpec.airLabel]，
+/// 取词走 [airStatusWord]），Web 侧同一列由 `public/status-presentation.js` 的
+/// `airStatusLabels()` 出 —— `air.js` 的 `stateNames` 就是这样构建的，两套界面说同
+/// 一件事就得用同一个词。这张表只补 Air 自己那几个值：工作区租约/容量去向、工作流
+/// 阶段，以及生命周期词 `active`（它是「目录里有一个任务」，不是 running）。
+///
+/// 键是服务端原样下发的串，所以别名也得认（`failed` 就是 `error`）：认不出来才落回
+/// 原串，那样界面上会蹦一个英文词，看得见。
+const Map<String, String> _airOnlyStateKeys = {
+  'active': 'airStateActive',
+  'workspace_execution_capacity': 'airStateExecCapacity',
+  'workspace_resident_capacity': 'airStateResidentCapacity',
+  'workspace_restore_capacity': 'airStateRestoreCapacity',
+  'planned': 'airStatePlanned',
+  'resident': 'airStateResident',
+  'retained': 'airStateRetained',
+  'hibernated': 'airStateHibernated',
+  'reserved': 'airStateReserved',
+  'materializing': 'airStateMaterializing',
+  'starting': 'airStateStarting',
+  'uncertain': 'airStateUncertain',
+  'stale': 'airStateStale',
+  'inbox': 'airStageInbox',
+  'ready': 'airStageReady',
+  'doing': 'airStateActive',
+  'review': 'airStageReview',
 };
 
-String airLabel(String? value) =>
-    (value == null || value.isEmpty) ? '' : (airStateNames[value] ?? value);
+/// 整张 Air 词表（原始串 → 词）：规范状态、Air 自己的词、别名合在一起，和 Web
+/// `air.js` 的 `stateNames` + `airStatusWordFor()` 两次查找等价。取词一律走
+/// [airLabel]，这张表只给需要遍历的地方（和测试）用。
+Map<String, String> airStateNames() => {
+  for (final status in CanonicalStatus.values) status.name: airStatusWord(status),
+  for (final entry in _airOnlyStateKeys.entries) entry.key: t(entry.value),
+  // 别名键（failed / completed / …）也进表，但取的是被折到的那个状态的词；表里
+  // 已经有的键（done → statusAliases 说 succeeded、active → running）不覆盖它 ——
+  // Air 自己的词和生命周期判定优先。
+  for (final entry in statusAliases.entries)
+    if (!_airOnlyStateKeys.containsKey(entry.key) &&
+        !CanonicalStatus.values.any((s) => s.name == entry.key))
+      entry.key: airStatusWord(entry.value),
+};
+
+/// 一个原始串在 Air 面上叫什么。规范状态（含 background）先按名字认，再认 Air
+/// 自己的词，最后认别名；都不认就返回 null，交给调用方落回原串。
+String? _airWordFor(String key) {
+  for (final status in CanonicalStatus.values) {
+    if (status.name == key) return airStatusWord(status);
+  }
+  final override = _airOnlyStateKeys[key];
+  if (override != null) return t(override);
+  final alias = statusAliases[key];
+  return alias != null ? airStatusWord(alias) : null;
+}
+
+/// Air 面上一个服务端原始串的词。认不出来的原样透出（界面上会蹦一个英文词，看得
+/// 见），空串进空串出。
+String airLabel(String? value) {
+  final key = (value ?? '').trim();
+  if (key.isEmpty) return '';
+  return _airWordFor(key) ?? key;
+}
 
 /// 页头顶上那排「齐刘海」最多放得下几个。上限由服务端把着（第 6 个回
 /// `pin_limit_reached`），这里这个数只用来先把话说在前面。
@@ -92,8 +122,9 @@ String airResourceText(Map<String, dynamic>? resource) {
   final capacity = resource['capacityReason']?.toString();
   if (capacity != null && capacity.isNotEmpty) return airLabel(capacity);
   final lease = resource['lease']?.toString();
-  if (lease != null && lease.isNotEmpty && lease != 'idle')
+  if (lease != null && lease.isNotEmpty && lease != 'idle') {
     return airLabel(lease);
+  }
   return airLabel(resource['residency']?.toString());
 }
 

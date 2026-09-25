@@ -12,7 +12,8 @@ const {
 } = require('./normalize');
 // Read-side projection: the board DTO consumed by the panel. Pure over the
 // normalized board; never mutates task records.
-// Aggregate turn run-state from a task's sessions: running > waiting > error > idle;
+// Aggregate turn run-state from a task's sessions: running > queued > waiting >
+// background > error > idle;
 // succeeded only when all sessions succeeded. This never mutates task.status.
 function aggregateTaskRunState(sessionIds, getSessionRunState) {
   if (!getSessionRunState || !sessionIds.length) return 'idle';
@@ -22,6 +23,10 @@ function aggregateTaskRunState(sessionIds, getSessionRunState) {
   if (states.some(s => s === 'running')) return 'running';
   if (states.some(s => s === 'queued')) return 'queued';
   if (states.some(s => s === 'waiting')) return 'waiting';
+  // Idling on a background job outranks a fault the same way `waiting` does: a
+  // task that is visibly moving on its own must not read as "stopped on an
+  // error" while its callback is still outstanding.
+  if (states.some(s => s === 'background')) return 'background';
   if (states.some(s => s === 'error')) return 'error';
   if (states.every(s => s === 'succeeded')) return 'succeeded';
   return 'idle';

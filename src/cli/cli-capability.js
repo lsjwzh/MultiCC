@@ -8,6 +8,10 @@
 //                 process — the turn IS the child; cancelling reaps it
 //                 turn    — the turn is interrupted in place, the child survives
 //
+// DISPLAY, further down, is the same idea for the CLI's *name*: how it is
+// called, marked and coloured on screen, and whether it owns its provider. See
+// the comment above it — that table is the one the web and the app mirror.
+//
 // These used to be one fact derived from an inline pair of claude CLI names
 // (`Array.includes` over a two-element name list) repeated at ten call sites.
 // That made "streams" and "is resident" look like the same question, so a CLI
@@ -54,12 +58,97 @@ const FAMILIES = Object.freeze({
   grok: 'acp',
 });
 
+// ── Display facts ──────────────────────────────────────────────────────────
+//
+//   displayName — the product name shown wherever the CLI is named.
+//   shortMark   — the single letter on a collapsed CLI chip (Air task cards).
+//   colour      — the CLI's brand colour on the web (hex, dark theme).
+//   providerless— the CLI owns its account/model config, so a multicc provider
+//                 (and a subagent route) must not be bound to its sessions.
+//
+// This is the ONE table for all four. Each of them used to be spelled out per
+// surface and had drifted: web `CLI_META` (chat.js), `CLI_LABELS`/`CLI_MARKS`
+// (air-task-settings.js), a third label list in air-cli-update.js (missing
+// claude-exp/codex-exp), a four-entry one in air-provider.js, a ternary chain
+// in chat-ai-config.js that printed "WorkBuddy" for any CLI it did not know, a
+// label ternary in server.js (where the unknown case became "Claude Code"), and
+// on Flutter a `switch` in dashboard_screen.dart whose `_ => 'Claude'` really
+// did render codebuddy / dsh / gemini / grok as "Claude".
+//
+// The mirrors are public/provider-catalog.js (web) and
+// app/lib/utils/cli_display.dart (app); tests/test-cli-display-parity.js reads
+// all three and fails when an id, a name, a mark, a colour or the providerless
+// flag drifts. Add a CLI here first, then mirror it — an id this table does not
+// know falls back to its own raw id everywhere, never to a neighbour's name.
+//
+// "Claude Code", not "Claude": one spelling for the product, and it is the one
+// the server already prints when it names a claude session.
+const DISPLAY = Object.freeze({
+  claude: Object.freeze({ displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false }),
+  // 产品名（不是文案）：Anthropic 的 Claude Agent SDK，内部 id 仍是 claude-exp。
+  'claude-exp': Object.freeze({ displayName: 'Claude Agent SDK', shortMark: 'A', colour: '#ff9a76', providerless: false }),
+  codex: Object.freeze({ displayName: 'Codex', shortMark: 'X', colour: '#2ea043', providerless: false }),
+  'codex-exp': Object.freeze({ displayName: 'Codex Exp', shortMark: 'E', colour: '#20a66a', providerless: false }),
+  opencode: Object.freeze({ displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false }),
+  zcode: Object.freeze({ displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false }),
+  qoder: Object.freeze({ displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true }),
+  kimi: Object.freeze({ displayName: 'Kimi Code', shortMark: 'K', colour: '#13c2c2', providerless: false }),
+  codebuddy: Object.freeze({ displayName: 'WorkBuddy', shortMark: 'W', colour: '#0052d9', providerless: true }),
+  dsh: Object.freeze({ displayName: 'DSH', shortMark: 'D', colour: '#4d6bfe', providerless: true }),
+  gemini: Object.freeze({ displayName: 'Gemini', shortMark: 'G', colour: '#4285f4', providerless: true }),
+  grok: Object.freeze({ displayName: 'Grok', shortMark: 'R', colour: '#8c8f96', providerless: true }),
+});
+
+// Neutral grey, matching the muted text both clients already draw with. Only
+// for a CLI the table has never heard of — its own name is still what is shown.
+const DEFAULT_COLOUR = '#8b949e';
+
 function nameOf(cli) {
   return String(cli == null ? '' : cli).trim().toLowerCase();
 }
 
 function capabilityOf(cli) {
   return CAPABILITIES[nameOf(cli)] || DEFAULT_CAPABILITY;
+}
+
+function displayOf(cli) {
+  return DISPLAY[nameOf(cli)] || null;
+}
+
+// An unknown id keeps its own spelling. The fallbacks this replaced answered
+// 'Claude' (Flutter) or 'WorkBuddy' (web AI-config), which is how a new CLI
+// came to be displayed as a completely different product.
+function displayNameOf(cli) {
+  const entry = displayOf(cli);
+  if (entry) return entry.displayName;
+  return String(cli == null ? '' : cli).trim();
+}
+
+function shortMarkOf(cli) {
+  const entry = displayOf(cli);
+  if (entry) return entry.shortMark;
+  return displayNameOf(cli).slice(0, 1).toUpperCase();
+}
+
+function colourOf(cli) {
+  const entry = displayOf(cli);
+  return entry ? entry.colour : DEFAULT_COLOUR;
+}
+
+// Vendor-auth CLIs (Qoder CN / WorkBuddy / DSH / Gemini / Grok) sign in with
+// their own account, so no multicc provider is bound to their sessions. This
+// predicate is what PROVIDERLESS_CLIS was a fourth copy of.
+function isProviderless(cli) {
+  const entry = displayOf(cli);
+  return entry ? entry.providerless : false;
+}
+
+function providerlessClis() {
+  return new Set(Object.keys(DISPLAY).filter(id => DISPLAY[id].providerless));
+}
+
+function knownClis() {
+  return Object.keys(DISPLAY);
 }
 
 // The resident lane. A resident CLI keeps one child across turns, so its turns
@@ -132,11 +221,20 @@ function protocolFamilyOf(cli, format = 'wire') {
 module.exports = {
   CAPABILITIES,
   DEFAULT_CAPABILITY,
+  DEFAULT_COLOUR,
+  DISPLAY,
   cancelStopsProcess,
   capabilityOf,
+  colourOf,
+  displayNameOf,
+  displayOf,
+  isProviderless,
   isResident,
   isResidentSession,
+  knownClis,
   protocolFamilyOf,
   protocolOf,
+  providerlessClis,
+  shortMarkOf,
   transportOf,
 };

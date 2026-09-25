@@ -5,6 +5,7 @@ import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../utils/cli_display.dart';
 import '../widgets/cron_run_history.dart';
 
 /// 定时任务 (Cron) 管理。镜像网页管理台的「定时任务」面板：列出、新建、编辑、
@@ -526,11 +527,10 @@ class _CronEditorState extends State<_CronEditor> {
               spacing: 8,
               runSpacing: 8,
               children: [
-                _cliChoice('claude', 'Claude'),
-                _cliChoice('codex', 'Codex'),
-                _cliChoice('opencode', 'OpenCode'),
-                _cliChoice('zcode', 'ZCode'),
-                _cliChoice('qoder', 'Qoder CN'),
+                // 名字走唯一那份 CLI 展示表（app/lib/utils/cli_display.dart），
+                // 免得这里再抄一遍、和别处漂开。
+                for (final cli in const ['claude', 'codex', 'opencode', 'zcode', 'qoder'])
+                  _cliChoice(cli, cliDisplayName(cli)),
               ],
             ),
             const SizedBox(height: 14),

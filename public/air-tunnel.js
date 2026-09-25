@@ -15,6 +15,8 @@
   let loadGeneration = 0;
 
   const byId = id => document.getElementById(id);
+  // 五个字符与 shared/dom-helpers.js 的 escapeHtml 同一份语义。本模块是自包含 IIFE，
+  // 页面加载顺序不保证，所以自带一份，不复用页面全局。
   const esc = value => String(value == null ? '' : value)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&#39;');

@@ -2,6 +2,8 @@
 
 const path = require('node:path');
 const { completion, createCompletionTracker } = require('./completion');
+const { displayNameOf } = require('../cli/cli-capability');
+
 const { renderPrompt } = require('../message-composer');
 const { normalizeCodexUsage, routerMcpConfigArgs } = require('./codex');
 
@@ -130,7 +132,7 @@ function createCodexExpAdapter(deps = {}) {
       }
       if (event.id !== undefined && /(?:requestApproval|Approval)$/.test(method)) {
         return [{
-          type: 'error', label: 'Codex Exp', kind: 'provider',
+          type: 'error', label: displayNameOf('codex-exp'), kind: 'provider',
           message: 'Codex Exp v1 does not support interactive approvals; the request was cancelled.',
         }];
       }
@@ -214,12 +216,12 @@ function createCodexExpAdapter(deps = {}) {
         usageByTurn.delete(turn.id);
         activeTurns.delete(turn.id);
         if (turn.status !== 'completed') {
-          return [{ type: 'error', label: 'Codex Exp', message: turn.error?.message || `turn ${turn.status}`, kind: turn.status === 'interrupted' ? 'cancelled' : 'provider' }];
+          return [{ type: 'error', label: displayNameOf('codex-exp'), message: turn.error?.message || `turn ${turn.status}`, kind: turn.status === 'interrupted' ? 'cancelled' : 'provider' }];
         }
         return [{ type: 'complete', cost: null, usage }];
       }
       if (method === 'error') {
-        return [{ type: 'error', label: 'Codex Exp', message: params.error?.message || params.message || 'app-server error', kind: 'provider', error: params.error }];
+        return [{ type: 'error', label: displayNameOf('codex-exp'), message: params.error?.message || params.message || 'app-server error', kind: 'provider', error: params.error }];
       }
       if (method === 'warning' || method === 'configWarning' || method === 'deprecationNotice') {
         return [{ type: 'activity', phase: 'warning', message: params.message || params.summary || '' }];

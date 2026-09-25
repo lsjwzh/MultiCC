@@ -18,6 +18,7 @@ import '../services/quota_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/transcript_live_folder.dart';
+import '../utils/session_status_helpers.dart';
 import 'admission_notes.dart';
 
 // Re-exported so existing tests keep importing the sidecar helpers from the
@@ -1394,31 +1395,15 @@ class ChatProvider extends ChangeNotifier {
           }
         } else {
           // Prefer the precise classifyState letter (D/W/B/E/P) when the
-          // server provides it; fall back to the coarse notify state.
-          final cls = (p['classifyState'] ?? '').toString().toUpperCase();
-          String outcome;
-          switch (cls) {
-            case 'D':
-              outcome = t('classifySucceeded');
-              break;
-            case 'E':
-              outcome = t('apiError');
-              break;
-            case 'C': // Legacy server: retired C is safest as wait-for-user.
-            case 'W':
-              outcome = t('waitingAction');
-              break;
-            case 'B':
-              outcome = t('waitingBackground');
-              break;
-            default:
-              outcome = notifyState == 'waiting'
-                  ? t('waitingInteraction')
-                  : notifyState == 'error'
-                  ? t('errorOccurred')
-                  : t('classifySucceeded');
-          }
-          _maybeNotify(outcome, notifyMsg);
+          // server provides it; fall back to the coarse notify state. The
+          // wording itself lives in session_status_helpers (one table shared
+          // with the task list and the voice call), so notifications, the
+          // chat bar and TTS all say the same thing for one outcome.
+          final cls = (p['classifyState'] ?? '').toString();
+          _maybeNotify(
+            classifyNotificationWord(cls.isEmpty ? notifyState : cls),
+            notifyMsg,
+          );
         }
         break;
 

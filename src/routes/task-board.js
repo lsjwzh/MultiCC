@@ -10,7 +10,7 @@ const planning = require('../task-board/planning');
 const { createPaths } = require('../paths');
 const { isVoiceRouterRecord } = require('../voice/router');
 const { runStateForFreezeReason } = require('../session-work/scheduler');
-const { classifyDisplay } = require('../classify/vocab');
+const { runStateForClassify: runStateForLetter } = require('../classify/vocab');
 const { publicRunDto } = require('./task-runs');
 const {
   buildTaskRunContext: defaultBuildTaskRunContext,
@@ -1268,13 +1268,17 @@ function createTaskBoardRuntime(deps) {
   // and task-context-host.runState, so the task card, the session card and the
   // chat bar cannot disagree about what one verdict means.
   function runStateForClassify(classifyState) {
-    return classifyDisplay(classifyState || 'D').cardStatus;
+    return runStateForLetter(classifyState || 'D');
   }
 
   function runStateForTurnOutcome(turnOutcome, classifyState) {
     if (turnOutcome === 'succeeded') return 'succeeded';
     if (turnOutcome === 'failed') return 'error';
-    if (turnOutcome === 'waiting_user' || turnOutcome === 'waiting_background') return 'waiting';
+    // Same projection as the classify letter it came from, so a turn that idled
+    // on a background job reads `background` here too — never `waiting`, which
+    // would tell the user to answer something nobody asked.
+    if (turnOutcome === 'waiting_user') return runStateForLetter('W');
+    if (turnOutcome === 'waiting_background') return runStateForLetter('B');
     if (turnOutcome === 'running') return 'running';
     return runStateForClassify(classifyState);
   }

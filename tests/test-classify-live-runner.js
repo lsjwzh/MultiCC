@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
+const { classifyDisplay } = require('../src/classify/vocab');
 
 function fixture({
   cli = 'opencode', goal = '已识别任务', isStreaming = true, type = 'worker',
@@ -39,6 +40,7 @@ function fixture({
   const observed = {
     enqueued: 0, enqueuedTasks: [], transitions: 0,
     transitionResults: [], transitionOptions: [], broadcasts: [], summaries: [],
+    statuses: [],
     boardReassignments: [], boardGroupLinks: [], shellSettlements: [], separations: [], annotations: [],
   };
   const auxQueue = {
@@ -108,7 +110,7 @@ function fixture({
     },
     getTaskState: value => value?.taskState || {},
     setSessionSummary: (_sessionId, summary) => observed.summaries.push(summary),
-    setSessionStatus() {},
+    setSessionStatus: (_sessionId, patch) => observed.statuses.push(patch),
     chatBroadcast: (_sessionId, event) => observed.broadcasts.push(event),
     workspaceBroadcast() {},
     terminalBroadcast() {},
@@ -184,6 +186,27 @@ test('unknown liveness fails closed before classify admission', () => {
   assert.equal(h.observed.enqueued, 0);
   assert.equal(h.observed.transitions, 0);
   assert.equal(h.record.taskState.classifyState, 'P');
+});
+
+test('a B verdict waits on a background job, so its copy never asks the user to answer', () => {
+  // B is the letter for "this turn idles on work running somewhere else". It
+  // used to broadcast W's 「等待交互」 and write the canonical `waiting` status,
+  // which is how a card with nothing to answer ended up telling the user to
+  // answer it. Both now come from the letter: its own label, and its own
+  // run state.
+  const h = fixture({ cli: 'claude', type: 'gateway', isStreaming: false });
+  h.chatState.claudeProc = null;
+  h.machine.classifyTurnEnd(h.chatState, 's1', { classification: 'background-pending' });
+  assert.equal(h.record.taskState.classifyState, 'B');
+  assert.equal(h.observed.statuses.at(-1).status, 'background', 'not a blanket waiting');
+  const notify = h.observed.broadcasts.filter(event => event.type === 'notify').pop();
+  assert.equal(notify.classifyState, 'B');
+  // Nobody can answer a background job — no copy on this path may ask.
+  assert.match(notify.message, /^后台等待：已识别任务$/);
+  assert.doesNotMatch(notify.message, /等待交互|等待你|回答/);
+  // W keeps its own phrasing: the two letters must not share one sentence.
+  const wLabel = classifyDisplay('W').label;
+  assert.notEqual(wLabel, classifyDisplay('B').label);
 });
 
 test('a succeeded gateway turn deterministically reaches D without Aux classification', () => {

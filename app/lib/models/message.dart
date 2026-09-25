@@ -1,5 +1,8 @@
 import 'dart:convert';
 
+import 'package:flutter/material.dart' show Color;
+
+import '../utils/cli_display.dart';
 import 'role_tokens.dart';
 
 enum MessageRole { user, assistant, system }
@@ -411,30 +414,19 @@ extension SessionCliX on SessionCli {
       ? 'claude'
       : name;
 
-  /// Human-readable label for UI display.
-  String get displayName => switch (this) {
-    SessionCli.claude => 'Claude',
-    // 显示名跟产品走：这是 Anthropic 的 Claude Agent SDK（内部 id 仍是 claude-exp）。
-    SessionCli.claudeExp => 'Claude Agent SDK',
-    SessionCli.codex => 'Codex',
-    SessionCli.codexExp => 'Codex Exp',
-    SessionCli.opencode => 'OpenCode',
-    SessionCli.zcode => 'ZCode',
-    SessionCli.qoder => 'Qoder CN',
-    SessionCli.codebuddy => 'WorkBuddy',
-    SessionCli.dsh => 'DSH',
-    SessionCli.gemini => 'Gemini',
-    SessionCli.grok => 'Grok',
-  };
+  /// Human-readable label for UI display. The names live in ONE table
+  /// (`kCliDisplays`, app/lib/utils/cli_display.dart) mirrored from the server's
+  /// src/cli/cli-capability.js DISPLAY — this getter is the only source the UI
+  /// reads, and an id the table does not know keeps its own name.
+  String get displayName => cliDisplayName(name);
+
+  /// Brand colour of the CLI's chip/badge, from that same table.
+  Color get color => cliDisplayColor(name);
 
   /// Vendor-auth CLIs (qoder / WorkBuddy / DSH / Gemini / Grok) own their
-  /// account and model config; they expose no multicc provider pool.
-  bool get supportsProvider =>
-      this != SessionCli.qoder &&
-      this != SessionCli.codebuddy &&
-      this != SessionCli.dsh &&
-      this != SessionCli.gemini &&
-      this != SessionCli.grok;
+  /// account and model config; they expose no multicc provider pool. The list is
+  /// the `providerless` column of the shared CLI table, not a fifth copy of it.
+  bool get supportsProvider => !cliProviderless(name);
   bool get supportsAgent =>
       isClaudeFamily ||
       this == SessionCli.opencode ||

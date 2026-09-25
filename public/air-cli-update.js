@@ -26,19 +26,11 @@
   const POLL_MS = 2500;
   const MAX_WAIT_MS = 8 * 60 * 1000;
 
-  // 产品名，不是文案：中文界面里也是这几个词，所以不进 i18n 词典。
-  const CLI_LABELS = Object.freeze({
-    claude: 'Claude Code',
-    codex: 'Codex',
-    opencode: 'OpenCode',
-    zcode: 'ZCode',
-    qoder: 'Qoder CN',
-    kimi: 'Kimi Code',
-    codebuddy: 'WorkBuddy',
-    dsh: 'DSH',
-    gemini: 'Gemini',
-    grok: 'Grok',
-  });
+  // 产品名，不是文案：中文界面里也是这几个词，所以不进 i18n 词典。这张表和服务端
+  // src/cli/cli-capability.js 的 DISPLAY 同源（web 侧走共享 CLI 目录
+  // public/provider-catalog.js）—— 原本这里是第三份手抄副本，漏了 claude-exp/codex-exp
+  // 两个车道，于是它们升级完在浮层里只剩内部 id。
+  const cliLabel = cli => window.MultiCCProviderCatalog.cliDisplayName(cli);
 
   let lastState = null;
   let lastError = false;
@@ -139,7 +131,7 @@
     const mode = rowMode(entry);
     const row = node('div', `cli-update-row${entry.updateAvailable ? ' is-update' : (mode === 'install' ? ' is-missing' : ' is-current')}`);
     const name = node('span', 'cli-update-name');
-    name.append(node('strong', null, CLI_LABELS[cli] || cli));
+    name.append(node('strong', null, cliLabel(cli)));
     const status = node('small', 'cli-update-versions', statusLine(entry));
     name.append(status);
     row.append(name);
@@ -259,7 +251,7 @@
       line.hidden = true;
       return;
     }
-    line.textContent = cli ? `[${CLI_LABELS[cli] || cli}] ${log}` : log;
+    line.textContent = cli ? `[${cliLabel(cli)}] ${log}` : log;
     line.hidden = false;
     line.scrollTop = line.scrollHeight;
   }
@@ -272,7 +264,7 @@
     const labels = install
       ? { running: 'airCliUpdateInstalling', done: 'airCliUpdateInstallDone', failed: 'airCliUpdateInstallFailed' }
       : { running: 'airCliUpdateUpgrading', done: 'airCliUpdateDone', failed: 'airCliUpdateFailed' };
-    const name = CLI_LABELS[cli] || cli;
+    const name = cliLabel(cli);
     const entry = ((lastState && lastState.versions) || {})[cli] || {};
     // 安装一个还没有的 CLI 不影响任何现有会话，点了就装，不再多问一次；升级会
     // 换掉正在用的二进制，所以仍要确认。

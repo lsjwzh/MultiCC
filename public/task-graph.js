@@ -14,6 +14,8 @@
   // 在渲染时取，别把这个 IIFE 求值那一刻的语言钉死。
   const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
 
+  // 五个字符与 shared/dom-helpers.js 的 escapeHtml 同一份语义。自包含 IIFE，自带一份，
+  // 不复用页面全局 —— 图谱面板的渲染不依赖脚本顺序。
   function escapeHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

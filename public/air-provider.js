@@ -43,7 +43,10 @@
     return node;
   };
   const protocolName = value => ({ anthropic: 'Anthropic Messages', openai_responses: 'OpenAI Responses' }[value] || value);
-  const cliName = value => ({ claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', zcode: 'ZCode' }[value] || value);
+  // CLI 展示名走共享 CLI 目录（权威表：服务端 src/cli/cli-capability.js）。这里原本
+  // 只列了 claude/codex/opencode/zcode 四个，其余 CLI（含 kimi、claude-exp）在线路上
+  // 只能显示内部 id。
+  const cliName = value => (catalogApi && catalogApi.cliDisplayName ? catalogApi.cliDisplayName(value) : value);
 
   function ensureDialog() {
     if (el('air-provider-dialog')) return el('air-provider-dialog');

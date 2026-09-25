@@ -821,19 +821,22 @@
           }
           break;
         case 'notify': {
+          // A frame carries the classify LETTER when the server had one; the
+          // coarse state (succeeded/waiting/error) otherwise. Both resolve
+          // through the shared copy table (liveUi.classifyDisplay), so a
+          // letter-less frame speaks exactly what the bar shows — no second,
+          // hand-written fallback that drifts from it. C is retired (the parser
+          // collapses it to W) and P is mid-turn: neither has anything to
+          // announce, and the table is what says so (`voice === null`).
           const classifyState = message.classifyState || null;
-          if (message.state === 'running' || classifyState === 'P' || classifyState === 'C') {
+          const display = liveUi.classifyDisplay(classifyState || message.state);
+          if (message.state === 'running' || !display.voice) {
             host.showNotifyToast?.(message.message || '任务进行中', 'running');
-          } else {
-            const display = liveUi.classifyDisplay(classifyState);
-            const completionVoice = classifyState === 'D'
-              ? taskAwareCompletionVoice(message, display.voice) : '';
-            if (display.voice) host.speakNotify?.(completionVoice || display.voice, display.ding);
-            else {
-              const waiting = message.state === 'waiting';
-              host.speakNotify?.(waiting ? '等待操作' : '本轮执行成功', waiting ? 'waiting' : 'succeeded');
-            }
+            break;
           }
+          const completionVoice = classifyState === 'D'
+            ? taskAwareCompletionVoice(message, display.voice) : '';
+          host.speakNotify?.(completionVoice || display.voice, display.ding);
           break;
         }
         case 'error':

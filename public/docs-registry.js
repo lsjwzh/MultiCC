@@ -49,6 +49,8 @@ if (typeof window !== 'undefined' && typeof window.document !== 'undefined') {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  // 五个字符与 shared/dom-helpers.js 的 escapeHtml 同一份语义。本文件按模块被引用
+  // （见 tests/test-docs-registry.js），不依赖页面先加载 dom-helpers.js。
   function esc(value) {
     return String(value == null ? '' : value)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

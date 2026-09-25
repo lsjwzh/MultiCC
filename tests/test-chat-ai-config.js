@@ -11,18 +11,16 @@ const providerCatalog = require('../public/provider-catalog');
 
 const ROOT = path.join(__dirname, '..');
 // 显示名只有一个：Anthropic 的 Claude Agent SDK（内部 id 仍是 claude-exp）。这张表
-// 原本在四个地方各有一份；旧管理台（新建会话 + 任务板）整页删掉之后，Web 上只剩
-// 聊天头和任务设置两处，但「改一处漏一处」的坑还在，所以照样在这里锁住。
-test('every claude-exp label map says "Claude Agent SDK", never "Claude Exp"', () => {
-  const labelled = [
-    'public/chat.js',
-    'public/air-task-settings.js',
-  ];
-  for (const file of labelled) {
-    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
-    assert.match(source, /['"]claude-exp['"]\s*:\s*(?:\{\s*label:\s*)?['"]Claude Agent SDK['"]/, `${file} labels claude-exp as Claude Agent SDK`);
-  }
-  const anyUi = [...labelled, 'src/cli-adapters/claude-exp.js', 'src/cli/switch-runtime.js'];
+// 原本在四个地方各有一份（chat.js 的 CLI_META、air-task-settings.js 的 CLI_LABELS…），
+// 现在 Web 侧只有 public/provider-catalog.js 一份，服务端权威表在
+// src/cli/cli-capability.js；三端一致性由 tests/test-cli-display-parity.js 锁。
+test('claude-exp is labelled "Claude Agent SDK" by the shared catalog, never "Claude Exp"', () => {
+  assert.equal(providerCatalog.cliDisplayName('claude-exp'), 'Claude Agent SDK');
+  assert.equal(providerCatalog.cliMeta('claude-exp').label, 'Claude Agent SDK');
+  assert.equal(providerCatalog.CLI_DISPLAY['claude-exp'].displayName, 'Claude Agent SDK');
+  assert.equal(providerCatalog.cliShortMark('claude-exp'), 'A');
+  // 页面不再各持一份标签表：这些文件里不该再出现 claude-exp 的字面标签。
+  const anyUi = ['public/chat.js', 'public/air-task-settings.js', 'src/cli-adapters/claude-exp.js', 'src/cli/switch-runtime.js'];
   for (const file of anyUi) {
     const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
     assert.ok(!source.includes('Claude Exp'), `${file} still says "Claude Exp"`);
@@ -169,10 +167,17 @@ test('vendor-managed CLIs stay providerless while ZCode exposes MultiCC provider
   const page = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
   // qoder / codebuddy / dsh / gemini / grok are all vendor-auth CLIs: no MultiCC
   // provider pick (gemini and grok log in with their own vendor credentials).
-  assert.match(source, /const supportsProvider = cli !== 'qoder' && cli !== 'codebuddy' && cli !== 'dsh' && cli !== 'gemini' && cli !== 'grok';/);
+  // The id list lives in the CLI catalog now — both ends derive it, so a sixth
+  // vendor CLI cannot be providerless on one page and not the other. Parity is
+  // pinned by tests/test-cli-display-parity.js.
+  assert.match(source, /const supportsProvider = !cliProviderless\(cli\);/);
+  assert.equal(providerCatalog.cliProviderless('qoder'), true);
+  assert.equal(providerCatalog.cliProviderless('gemini'), true);
+  assert.equal(providerCatalog.cliProviderless('zcode'), false);
   assert.match(source, /ZCode 原生 \/ Coding Plan/);
   assert.match(page, /PROVIDERLESS_CLIS\.has\(_sessionCli\)/);
-  assert.match(page, /const PROVIDERLESS_CLIS = new Set\(\['qoder', 'codebuddy', 'dsh', 'gemini', 'grok'\]\);/);
+  assert.match(page, /const PROVIDERLESS_CLIS = _providerCatalog\.providerlessClis\(\);/);
+  assert.doesNotMatch(page, /const PROVIDERLESS_CLIS = new Set\(\[/);
   assert.doesNotMatch(page, /_sessionCli !== 'qoder' && _sessionCli !== 'zcode'/);
 });
 

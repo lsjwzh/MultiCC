@@ -75,7 +75,7 @@ const { findProviderReferences } = require('./src/providers/references');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
-const { isResidentSession } = require('./src/cli/cli-capability');
+const { isResidentSession, displayNameOf } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { renderPrompt } = require('./src/message-composer');
 const {
@@ -1211,7 +1211,7 @@ async function createSession(id) {
         console.log(`[multicc] Session ${id} exited (tmux session gone)`);
         cleanupPushMonitor(id);
         if (session.captureTimer) { clearInterval(session.captureTimer); session.captureTimer = null; }
-        const cliLabel = session.cli === 'qoder' ? 'Qoder CN' : session.cli === 'codex' ? 'Codex' : session.cli === 'codebuddy' ? 'WorkBuddy' : session.cli === 'dsh' ? 'DSH' : session.cli === 'gemini' ? 'Gemini' : session.cli === 'grok' ? 'Grok' : 'Claude Code';
+        const cliLabel = displayNameOf(session.cli || 'claude'); // 旧 terminal 会话没有 cli 字段
         const exitMsg = `\r\n\x1b[33m[${cliLabel} process exited]\x1b[0m\r\n`;
         broadcastTo(session.clients, { type: 'exit', data: exitMsg });
         await stopOutputCapture(session);

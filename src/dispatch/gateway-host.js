@@ -591,7 +591,7 @@ function createGatewayHost(rawDeps) {
     const targetId = operation?.spec?.targetId || (run ? run.targetId : sessionName);
     const replyTo = operation?.spec?.replyTo || (run && run.replyTo);
     // A worker finished → drop it from the dispatcher's pending list (so the
-    // dispatcher's status can leave 'waiting' once all workers回流).
+    // dispatcher's status can leave the background wait once all workers回流).
     if (replyTo) removePendingDispatch(replyTo, dispatchId);
     if (operation && TERMINAL_DISPATCH_STATUS.has(operation.status)) return;
     const resultMode = operation?.spec?.resultMode || null;

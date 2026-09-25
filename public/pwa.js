@@ -326,9 +326,14 @@ async function showLocalTaskNotification(payload) {
 
   const sessionId = payload.sessionId || 'general';
   const type = payload.type || 'succeeded';
-  const title = payload.title || (typeof t === 'function'
-    ? t(type === 'waiting' ? 'notificationWaitingTitle' : 'notificationSucceededTitle', { session: sessionId })
-    : `MultiCC #${sessionId}: ${type === 'waiting' ? 'Action Required' : 'Execution succeeded'}`);
+  // A payload may carry the classify LETTER (B and W both push type 'waiting'
+  // and must not read the same). Title copy comes from the one shared table
+  // (public/shared/notification-copy.js) — the local fallback here used to
+  // answer every non-waiting payload with "Execution succeeded", so an error
+  // notification announced a success.
+  const copy = typeof MultiCCNotificationCopy !== 'undefined' ? MultiCCNotificationCopy : null;
+  const title = payload.title
+    || (copy ? copy.notificationTitle(payload.classifyState || type, sessionId, window.t) : `MultiCC #${sessionId}`);
   const options = {
     body: payload.body || payload.message || '',
     icon: '/icon.svg',

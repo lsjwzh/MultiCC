@@ -18,7 +18,8 @@ const { isZcodeSessionId } = require('./zcode-session');
 
 const BRIDGE = path.join(__dirname, 'zcode-bridge.cjs');
 const TERMINAL_BRIDGE = path.join(__dirname, 'zcode-terminal.cjs');
-const LABEL = 'ZCode';
+const { displayNameOf } = require('../cli/cli-capability');
+const LABEL = displayNameOf('zcode');
 const shellArg = value => JSON.stringify(String(value));
 
 function createZcodeAdapter({ cmd } = {}) {

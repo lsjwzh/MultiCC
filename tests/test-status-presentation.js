@@ -20,17 +20,25 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const SP = require('../public/status-presentation.js');
-const { CLASSIFY_DISPLAY } = require('../src/classify/vocab.js');
+const { CLASSIFY_DISPLAY, TURN_RUN_STATES } = require('../src/classify/vocab.js');
 const { FREEZE_REASON_RUN_STATE } = require('../src/session-work/scheduler.js');
 
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 
-/** TASK_RUN_STATES is module-private in src/task-board/normalize.js; read the literal. */
+/**
+ * The server's run-state list is `TURN_RUN_STATES` in src/classify/vocab.js — ONE
+ * list. src/task-board/normalize.js must build its Set from it rather than keep a
+ * second hand copy (that copy is how `background` would go missing on the board
+ * while every other surface learned about it).
+ */
 function serverTaskRunStates() {
   const src = read('src/task-board/normalize.js');
-  const m = /const TASK_RUN_STATES = new Set\(\[([^\]]*)\]\)/.exec(src);
-  assert.ok(m, 'TASK_RUN_STATES literal not found in src/task-board/normalize.js');
-  return m[1].split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+  assert.match(
+    src,
+    /const TASK_RUN_STATES = new Set\(TURN_RUN_STATES\)/,
+    'src/task-board/normalize.js must build TASK_RUN_STATES from TURN_RUN_STATES',
+  );
+  return [...TURN_RUN_STATES];
 }
 
 // ── Minimal DOM ─────────────────────────────────────────────────────────────
@@ -136,6 +144,52 @@ test('every server run state is a first-class display status', () => {
     assert.equal(SP.coerceStatus('task', state), state, `task runState ${state}`);
     assert.equal(SP.coerceStatus('session', state), state, `session runState ${state}`);
   }
+});
+
+test('a background wait is its own status, never the waiting word', () => {
+  // classify B: the turn is idling on a callback or a dispatched worker. Nothing
+  // is asked of the user, so it must not be folded into `waiting` — that fold is
+  // what made Air answer 「等待回答」 about work nobody can answer.
+  assert.equal(CLASSIFY_DISPLAY.B.cardStatus, 'background');
+  assert.equal(CLASSIFY_DISPLAY.B.barTint, 'background');
+  assert.equal(SP.classifyStatus('B'), 'background');
+  assert.notEqual(SP.classifyStatus('B'), SP.classifyStatus('W'), 'B and W must stay two statuses');
+  assert.ok(serverTaskRunStates().includes('background'), 'background must be one of the run states');
+  assert.equal(SP.freezeReasonStatus('awaiting_callback'), 'background');
+  assert.equal(SP.freezeReasonStatus('classify_background'), 'background');
+  assert.equal(SP.coerceStatus('session', 'background'), 'background');
+  assert.equal(SP.coerceStatus('task', 'background'), 'background');
+
+  // Both languages, both ends of the vocabulary: the badge word and the Air word
+  // for a background wait must differ from `waiting`'s, and neither may ask the
+  // user anything.
+  for (const [locale, file] of [['zh', 'app/assets/i18n/zh.json'], ['en', 'app/assets/i18n/en.json']]) {
+    const catalog = JSON.parse(read(file));
+    const t = key => catalog[key] ?? key;
+    const word = SP.airStatusLabel('background', t);
+    assert.ok(word && word !== 'airStateBackground', `${locale}: background has no Air word`);
+    assert.equal(word, t('airStateBackground'), `${locale}: Air word must come from the registry column`);
+    assert.notEqual(word, SP.airStatusLabel('waiting', t), `${locale}: Air says the same thing for waiting and background`);
+    assert.notEqual(t('statusBackground'), t('statusWaiting'), `${locale}: the two labels collide`);
+    assert.ok(!/回答|answer/i.test(t('statusAriaBackground')), `${locale}: background's accessible name must not ask the user`);
+    assert.ok(!/回答|answer/i.test(word), `${locale}: a background wait must not read as a question`);
+  }
+
+  // Raw values Air's `label()` actually receives: the canonical name resolves to
+  // the background word, not to the waiting one — and air.js's own fallback
+  // (`airStatusWordFor`) agrees with `airStatusLabels()`, which is what lets the
+  // sidebar drop its hand-kept status table.
+  const zh = JSON.parse(read('app/assets/i18n/zh.json'));
+  const t = key => zh[key] ?? key;
+  assert.equal(SP.airStatusWordFor('background', t), SP.airStatusLabel('background', t));
+  assert.notEqual(SP.airStatusWordFor('background', t), SP.airStatusWordFor('waiting', t));
+  // Every canonical status has its own Air word: two states sharing one word is
+  // how a fold becomes invisible again.
+  const words = Object.keys(SP.STATUS_PRESENTATION).map(name => SP.airStatusLabel(name, t));
+  assert.equal(new Set(words).size, words.length, `Air words collide: ${words.join(' / ')}`);
+  const en = JSON.parse(read('app/assets/i18n/en.json'));
+  const wordsEn = Object.keys(SP.STATUS_PRESENTATION).map(name => SP.airStatusLabel(name, key => en[key] ?? key));
+  assert.equal(new Set(wordsEn).size, wordsEn.length, `Air words collide in en: ${wordsEn.join(' / ')}`);
 });
 
 // ── 2. Registry invariants ──────────────────────────────────────────────────
@@ -422,6 +476,7 @@ test('every label and aria key exists in both zh and en', () => {
   for (const spec of Object.values(SP.STATUS_PRESENTATION)) {
     keys.add(spec.labelKey);
     keys.add(spec.ariaKey);
+    keys.add(spec.airLabelKey);
   }
   for (const key of keys) {
     const occurrences = catalog.split(`"${key}"`).length - 1;
@@ -433,13 +488,20 @@ test('zh and en both define the status keys in the source catalogs', () => {
   const zh = JSON.parse(read('app/assets/i18n/zh.json'));
   const en = JSON.parse(read('app/assets/i18n/en.json'));
   for (const spec of Object.values(SP.STATUS_PRESENTATION)) {
-    for (const key of [spec.labelKey, spec.ariaKey]) {
+    for (const key of [spec.labelKey, spec.ariaKey, spec.airLabelKey]) {
       assert.ok(zh[key], `zh.json missing ${key}`);
       assert.ok(en[key], `en.json missing ${key}`);
+      assert.notEqual(zh[key], key, `zh.json ${key} is still the raw key`);
+      assert.notEqual(en[key], key, `en.json ${key} is still the raw key`);
       // Long copy breaks cards; the visible labels stay short in both languages.
       if (key === spec.labelKey) {
         assert.ok(zh[key].length <= 8, `zh label ${key} too long for a card: ${zh[key]}`);
         assert.ok(en[key].length <= 16, `en label ${key} too long for a card: ${en[key]}`);
+      }
+      // The Air column prints on the same badge, so it is bounded too.
+      if (key === spec.airLabelKey) {
+        assert.ok(zh[key].length <= 8, `zh Air word ${key} too long for a badge: ${zh[key]}`);
+        assert.ok(en[key].length <= 24, `en Air word ${key} too long for a badge: ${en[key]}`);
       }
     }
   }
@@ -469,6 +531,7 @@ function parseDart() {
       priority: Number(field('priority')),
       labelKey: field('labelKey'),
       ariaKey: field('ariaKey'),
+      airLabelKey: field('airLabelKey'),
     };
   }
   const mapOf = (name) => {
@@ -518,6 +581,7 @@ test('Flutter mirrors the web registry exactly', () => {
       priority: web.priority,
       labelKey: web.labelKey,
       ariaKey: web.ariaKey,
+      airLabelKey: web.airLabelKey,
     }, `spec for ${name} differs between web and app`);
   }
 
@@ -528,6 +592,43 @@ test('Flutter mirrors the web registry exactly', () => {
     W: SP.CLASSIFY_LETTER_STATUS.W, B: SP.CLASSIFY_LETTER_STATUS.B,
     E: SP.CLASSIFY_LETTER_STATUS.E, P: SP.CLASSIFY_LETTER_STATUS.P,
   }, 'classify table differs between web and app');
+});
+
+test('the Air word column is the one source for every Air surface', () => {
+  // The words Air prints for a status live in the `airLabelKey` column of the
+  // specs (parity asserted above). What this test defends is that nobody keeps a
+  // SECOND copy of them: four hand-kept tables (air.js stateNames, air-admin.js
+  // STATUS_COPY, the app's airServiceNames and airStatusCopy) had already drifted
+  // apart, which is how one Air surface ended up calling a background wait
+  // 「等待回答」.
+  const dartSrc = read('app/lib/utils/status_presentation.dart');
+  assert.match(
+    dartSrc,
+    /String airStatusWord\(CanonicalStatus status\) => statusPresentation\[status\]!\.airLabel;/,
+    'the Dart Air word must read the registry column',
+  );
+
+  // Web: both Air scripts build their table from the registry.
+  for (const file of ['public/air.js', 'public/air-admin.js']) {
+    assert.ok(read(file).includes('airStatusLabels'), `${file} must build its status words from the registry`);
+  }
+  // The console's old hand-kept status table read these keys; its remaining
+  // airAdminStatus* uses are the liveness pill (Up/Down/Starting/Unknown), the
+  // queue's idle word and the archived filter chip — other axes, not statuses.
+  assert.ok(
+    !/airAdminStatus(Queued|Running|Waiting|Background|Blocked|Error|Succeeded|Done|Cancelled|Offline)/.test(read('public/air-admin.js')),
+    'public/air-admin.js still reads the old hand-kept status words',
+  );
+
+  // App: the two tables that used to list the canonical statuses now derive them.
+  for (const file of ['app/lib/widgets/air/air_task_status.dart', 'app/lib/services/air_service.dart']) {
+    const src = read(file);
+    assert.ok(/airStatusWord|airStatusWords/.test(src), `${file} must derive its Air words from the registry`);
+    assert.ok(
+      !/'(空闲|排队中|执行中|等待回答|等待配置|执行成功|执行异常|状态未知)'/.test(src),
+      `${file} still keeps a hand copy of the status words`,
+    );
+  }
 });
 
 // ── 9. Wiring: pages that draw badges must load the registry and its CSS ────

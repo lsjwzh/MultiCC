@@ -222,9 +222,13 @@
     }
     return api.json(url, options);
   }
+  // Same five characters as shared/dom-helpers.js. The tree and graph renderers
+  // (memory-controller / memory-graph, which take this by reference) write the
+  // result into attributes — data-rel / data-copy / <option value=> — so the
+  // apostrophe has to be encoded as well, not just the double quote.
   function escapeHtml(str) {
     return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
   function formatSize(bytes) {
     const n = Number(bytes);

@@ -12,6 +12,14 @@
     return out && out !== key ? out : fallback;
   }
 
+  // 通知标题只有一份：public/shared/notification-copy.js（与服务器
+  // src/push/notification-copy.js 同一张表、同一句话）。本地那份 titleSuffix 表
+  // 就是「系统通知说出现异常、本页通知说任务异常」的来历。
+  function outcomeCopy() {
+    return root.MultiCCNotificationCopy
+      || (typeof require === 'function' ? require('./shared/notification-copy.js') : null);
+  }
+
   function normalizeNotificationType(type) {
     return type === 'waiting' || type === 'error' ? type : 'succeeded';
   }
@@ -25,13 +33,10 @@
   function localNotificationPayload(sessionId, text, type, url) {
     const sid = sessionId || 'chat';
     const normalizedType = normalizeNotificationType(type);
-    const titleSuffix = normalizedType === 'waiting'
-      ? '等待操作'
-      : normalizedType === 'error' ? '任务异常' : '执行成功';
     return {
       sessionId: sid,
       type: normalizedType,
-      title: `MultiCC #${sid}: ${titleSuffix}`,
+      title: outcomeCopy().notificationTitle(normalizedType, sid, root.t),
       body: text,
       url,
     };

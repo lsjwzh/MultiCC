@@ -100,7 +100,11 @@ const CLASSIFY_DISPLAY = {
     label: '后台等待',
     pushType: 'waiting', pushTitle: '等待操作',
     voiceText: '等待后台任务', ding: 'waiting',
-    cardStatus: 'waiting', barTint: 'waiting',
+    // Its own run state, NOT `waiting`. `waiting` means "the user must answer";
+    // a turn idling on a background job has nothing to ask, so folding B into it
+    // made every Air card and session row say 「等待回答」 about work the user
+    // cannot act on. Both projections read one value, like E's below.
+    cardStatus: 'background', barTint: 'background',
   },
   E: {  // Abnormal end — API error, or an explicit user/watchdog cancellation
     label: 'API 异常',
@@ -128,8 +132,19 @@ const PHASE_LABELS = {
   wrapping: '收尾中', done: '已完成',
 };
 
+// The renderable turn run-state vocabulary. ONE server-side list: every
+// run-state producer (session-work-host.getRunState, task-board aggregation,
+// workspace status) emits only these, and each classify letter's `cardStatus`
+// above is one of them. task-board.normalize builds its TASK_RUN_STATES set
+// from this, so the two can never drift apart.
+const TURN_RUN_STATES = Object.freeze([
+  'queued', 'running', 'waiting', 'background', 'succeeded', 'error', 'idle',
+]);
+
 // Helpers
 function classifyDisplay(cls) { return CLASSIFY_DISPLAY[cls] || CLASSIFY_DISPLAY['W']; }
+/** classify letter (D/C/W/B/E/P) → its canonical turn run state. */
+function runStateForClassify(cls) { return classifyDisplay(cls).cardStatus; }
 function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 
 // Semantic predicates over the classify LETTER — the single source for "what
@@ -219,6 +234,7 @@ module.exports = {
   parseClassifyResult,
   buildClassifySystemPrompt,
   classifyDisplay,
+  runStateForClassify,
   phaseLabel,
   applyUserInputEvidence,
   isTerminalLetter,
@@ -226,5 +242,6 @@ module.exports = {
   turnOutcomeForClassify,
   CLASSIFY_DISPLAY,
   CLASSIFY_TURN_OUTCOME,
+  TURN_RUN_STATES,
   PHASE_LABELS,
 };

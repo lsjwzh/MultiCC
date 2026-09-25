@@ -2,15 +2,25 @@ import 'package:flutter/material.dart';
 
 import '../../services/air_service.dart';
 import '../../theme.dart';
+import '../../utils/status_presentation.dart';
 import 'air_role_editor.dart';
 import 'air_task_actions.dart';
 
+/// 等用户回答的那个词。状态词只有一份（`utils/status_presentation.dart` 的
+/// `airLabelKey` 列，Air 面与徽标共用），所以交付卡里那几处「等待回答」不再手写：
+/// 手写第二遍就会跟徽标漂开。等后台任务（background）是另一个词，永远不会被写成
+/// 这句 —— 那正是「没人需要回答的卡却写着等待回答」的成因。
+String get airWaitingWord => airStatusWord(CanonicalStatus.waiting);
+
 /// 归属建议被挡在哪一条上（Web `air.js` 的 `blockerNames`）。这些是枚举值，漏
 /// 一个界面上就会蹦出一行英文。
-const Map<String, String> airBlockerNames = {
+///
+/// 不是 const：里面有句要插状态词（见 [airWaitingWord]），而语言是可以切换的，
+/// 常量表会把第一次取到的语言钉死。
+Map<String, String> get airBlockerNames => {
   'view_changed': '已有新输入或视图变化，旧建议不能迟到改投。',
   'final_run_result_required': '等待本轮最终执行结果。',
-  'run_not_succeeded': '本轮失败、取消或仍在等待回答。',
+  'run_not_succeeded': '本轮失败、取消或仍在$airWaitingWord。',
   'code_observation_required': '本轮最终代码版本尚未核实。',
   'integration_receipt_required': '等待本轮代码按项目流程合入基分支。',
   'baseline_revalidation_required': '基分支已变化，需要重新核验交付记录。',
@@ -172,7 +182,7 @@ AirDeliveryCopy airDeliveryCopy(Map<String, dynamic> value) {
     title = '${airLabel(capacity)} · 现有工作现场正在保留';
     text = '消息已绑定当前任务；资源可用后继续，不会停止其他服务或删除未交付修改。';
   } else if (pending) {
-    eyebrow = 'MULTICC · 等待回答';
+    eyebrow = 'MULTICC · $airWaitingWord';
     title = '本轮需要你的回答';
     text = '回答仍提交给原任务与原请求，不会因为归属建议改变目标。';
   } else if (candidate?['state'] == 'stale' && separation == null) {
@@ -229,7 +239,7 @@ AirDeliveryCopy airDeliveryCopy(Map<String, dynamic> value) {
   } else if (failed || (run != null && run['outcome'] != 'succeeded')) {
     eyebrow = 'MULTICC · 本轮未成功';
     title = '任务保持进行中';
-    text = '失败、取消或等待回答都不会被误写成任务完成，后续可以在当前任务重试或继续。';
+    text = '失败、取消或$airWaitingWord都不会被误写成任务完成，后续可以在当前任务重试或继续。';
   } else if (run != null) {
     eyebrow = 'MULTICC · 本轮结果';
     title = integration != null ? '本轮成功，交付记录已保存' : '本轮成功，任务仍保持当前归属';
@@ -323,7 +333,7 @@ List<AirDetailGroup> airDetailGroups(Map<String, dynamic> value) {
         (
           '本轮结果',
           run != null
-              ? '${airLabel(run['outcome']?.toString())}${run['pendingInput'] == true ? ' · 等待回答' : ''}'
+              ? '${airLabel(run['outcome']?.toString())}${run['pendingInput'] == true ? ' · $airWaitingWord' : ''}'
               : '尚无已核验的本轮结果',
         ),
         ('代码版本', run?['codeObserved'] == true ? '已观测最终版本' : '尚未核实'),

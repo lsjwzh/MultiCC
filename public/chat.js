@@ -287,9 +287,6 @@ function closeHeaderMoreModal() { return headerMoreController.close(); }
 let ws = null;
 let sessionId = null;
 
-// Simple HTML escape helper (memo + s2s pickers rely on this at top level) —
-// canonical copy in shared/dom-helpers.js.
-
 // Shared Memo protocol/controller; this file keeps only the Chat-specific UI adapter.
 const chatMemoClient = window.MultiCCMemo.createClient({ api: window.MultiCCApi });
 const chatMemoController = window.MultiCCMemo.createController({
@@ -401,27 +398,14 @@ let activeContentType = null;
 let activeContentIndex = -1;
 let currentCli = 'claude';
 const cliBtn = document.getElementById('cli-btn');
-const CLI_META = {
-  claude: { label: 'Claude', color: '#f78166' },
-    // 产品名（不是文案）：Anthropic 的 Claude Agent SDK，内部 id 仍是 claude-exp。
-    'claude-exp': { label: 'Claude Agent SDK', color: '#ff9a76' },
-  codex: { label: 'Codex', color: '#2ea043' },
-  'codex-exp': { label: 'Codex Exp', color: '#20a66a' },
-  opencode: { label: 'OpenCode', color: '#388bfd' },
-  zcode: { label: 'ZCode', color: '#a371f7' },
-  qoder: { label: 'Qoder CN', color: '#ff8a3d' },
-  kimi: { label: 'Kimi Code', color: '#13c2c2' },
-  codebuddy: { label: 'WorkBuddy', color: '#0052d9' },
-  dsh: { label: 'DSH', color: '#4d6bfe' },
-  gemini: { label: 'Gemini', color: '#4285f4' },
-  grok: { label: 'Grok', color: '#8c8f96' },
-};
-// Vendor-auth CLIs own their account/model config (no multicc provider).
-const PROVIDERLESS_CLIS = new Set(['qoder', 'codebuddy', 'dsh', 'gemini', 'grok']);
+// 展示名/颜色/无 provider 这几列来自共享的 CLI 目录（public/provider-catalog.js），
+// 权威表在服务端 src/cli/cli-capability.js —— 以前这张表和另外六份副本各写各的。
+const CLI_META = _providerCatalog.cliMetaMap();
+const PROVIDERLESS_CLIS = _providerCatalog.providerlessClis();
 
 function applyCliUi(cli) {
   const next = CLI_META[cli] ? cli : 'claude';
-  const meta = CLI_META[next];
+  const meta = _providerCatalog.cliMeta(cli);
   currentCli = next; window.MultiCCChatRateLimit?.setCli(next);
   _sessionCli = next;
   const badge = document.querySelector('.badge');
@@ -1264,11 +1248,10 @@ messagesEl.addEventListener('scroll', () => {
   }
 }, { passive: true });
 
-function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+/* The page's single escaper: the shared five-character one (shared/dom-helpers.js
+   is loaded before this file). The old textContent→innerHTML copy left quotes raw,
+   so anything rendered into an attribute came out unescaped. */
+function escHtml(s) { return escapeHtml(s); }
 
 function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + '...' : s;
@@ -1624,11 +1607,11 @@ function updateModelBtn() {
   const auto = _sessionProviderSelection?.mode === 'auto' ? _sessionProviderSelection : null;
   const shown = auto ? _activeProviderModel : (_sessionEffectiveModel || _sessionModel);
   const actualProvider = _activeProviderName;
-  // Vendor-auth CLIs show their own product name instead of a multicc provider.
-  const NATIVE_ROUTE_LABELS = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', gemini: 'Gemini', grok: 'Grok' };
+  // 厂商自持账号的 CLI 显示自己的产品名而不是 multicc 线路名（共享 CLI 目录出）。
+  const nativeRoute = _providerCatalog.nativeRouteLabel(_sessionCli);
   const provider = auto
       ? `Auto · ${window.MultiCCChatAiConfig.autoProtocolLabel(auto.protocol)} → ${actualProvider || '待路由'}`
-      : (NATIVE_ROUTE_LABELS[_sessionCli]
+      : (nativeRoute
       || (_sessionProvider ? providerShortName(_sessionProvider) : '')
       || _sessionProviderDisplayName
       || (_sessionCli === 'zcode' ? 'ZCode 原生' : tt('default')));
@@ -2419,10 +2402,9 @@ async function openMessagePicker() {
     msgs = d.messages || [];
   } catch (e) { listEl.textContent = '加载失败：' + chatApi.errorText(e); return; }
   if (!msgs.length) { listEl.textContent = tt('noMessages'); return; }
-  const escH = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   listEl.innerHTML = msgs.map((m, i) => {
     const who = m.role === 'user' ? '我' : 'AI';
-    const preview = escH((m.content || '').replace(/\s+/g, ' ').slice(0, 120)) || (m.tools && m.tools.length ? `（${m.tools.length} 个工具调用）` : '（空）');
+    const preview = escHtml((m.content || '').replace(/\s+/g, ' ').slice(0, 120)) || (m.tools && m.tools.length ? `（${m.tools.length} 个工具调用）` : '（空）');
     return `<label style="display:flex;gap:8px;align-items:flex-start;padding:6px;border-bottom:1px solid var(--chat-soft, #21262d);cursor:pointer;font-size:12px;">
       <input type="checkbox" data-i="${i}" style="margin-top:2px;">
       <span><b style="color:${m.role === 'user' ? 'var(--chat-blue, #79c0ff)' : 'var(--chat-text, #e7eaee)'}">${who}</b> <span style="color:var(--chat-muted, #8b949e)">${preview}</span></span></label>`;

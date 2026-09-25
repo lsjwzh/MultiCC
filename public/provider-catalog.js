@@ -98,6 +98,90 @@
     return suffix ? base + OFFICIAL_SUFFIX_SEPARATOR + suffix : base;
   }
 
+  // ── CLI 目录（唯一的 web 侧副本）────────────────────────────────────────────
+  //
+  // 服务端 src/cli/cli-capability.js 的 DISPLAY 是权威表（displayName / shortMark
+  // / colour / providerless 四列），这里是它在浏览器侧的镜像；App 侧还有一份
+  // app/lib/utils/cli_display.dart。tests/test-cli-display-parity.js 读这三份，任何
+  // 一列漂移就红。
+  //
+  // 镜像之前，同样的四列在页面上被抄了六七遍且各抄各的：chat.js 的 CLI_META、
+  // air-task-settings.js 的 CLI_LABELS/CLI_MARKS、air-cli-update.js 的第三份标签表
+  // （漏了 claude-exp/codex-exp）、air-provider.js 只列 4 个 CLI 的那份、
+  // chat-ai-config.js 里把不认识的 CLI 印成「WorkBuddy」的三元链、以及 chat.js /
+  // air.js 三处各写一遍的 NATIVE_ROUTE_LABELS。现在它们全部从这里取。
+  //
+  // 未知 id 一律用原 id 显示：回落成别的 CLI 的名字（旧代码里是 Claude / WorkBuddy）
+  // 会把新 CLI 显示成另一个产品。
+  const CLI_DISPLAY = {
+    claude: { displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false },
+    'claude-exp': { displayName: 'Claude Agent SDK', shortMark: 'A', colour: '#ff9a76', providerless: false },
+    codex: { displayName: 'Codex', shortMark: 'X', colour: '#2ea043', providerless: false },
+    'codex-exp': { displayName: 'Codex Exp', shortMark: 'E', colour: '#20a66a', providerless: false },
+    opencode: { displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false },
+    zcode: { displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false },
+    qoder: { displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true },
+    kimi: { displayName: 'Kimi Code', shortMark: 'K', colour: '#13c2c2', providerless: false },
+    codebuddy: { displayName: 'WorkBuddy', shortMark: 'W', colour: '#0052d9', providerless: true },
+    dsh: { displayName: 'DSH', shortMark: 'D', colour: '#4d6bfe', providerless: true },
+    gemini: { displayName: 'Gemini', shortMark: 'G', colour: '#4285f4', providerless: true },
+    grok: { displayName: 'Grok', shortMark: 'R', colour: '#8c8f96', providerless: true },
+  };
+  const CLI_DEFAULT_COLOUR = '#8b949e';
+
+  const cliKey = cli => String(cli == null ? '' : cli).trim().toLowerCase();
+  const cliEntry = cli => CLI_DISPLAY[cliKey(cli)] || null;
+
+  function cliDisplayName(cli) {
+    const entry = cliEntry(cli);
+    return entry ? entry.displayName : String(cli == null ? '' : cli).trim();
+  }
+
+  // chat-live-ui 的切换面板按 {label, color} 读每个 CLI（入口行、安装进度行、当前
+  // 线路行三处），所以映射里就用它那两个字面 key。
+  function cliMeta(cli) {
+    const entry = cliEntry(cli);
+    return entry
+      ? { label: entry.displayName, color: entry.colour }
+      : { label: String(cli == null ? '' : cli).trim(), color: CLI_DEFAULT_COLOUR };
+  }
+
+  function cliMetaMap() {
+    const out = {};
+    for (const id of Object.keys(CLI_DISPLAY)) out[id] = { label: CLI_DISPLAY[id].displayName, color: CLI_DISPLAY[id].colour };
+    return out;
+  }
+
+  function cliShortMark(cli) {
+    const entry = cliEntry(cli);
+    if (entry) return entry.shortMark;
+    // An unknown id still gets its own letter; an empty one has none to give,
+    // and the badge would otherwise collapse to nothing (the app draws '?').
+    const name = cliDisplayName(cli);
+    return name ? name.slice(0, 1).toUpperCase() : '?';
+  }
+
+  function cliColour(cli) {
+    const entry = cliEntry(cli);
+    return entry ? entry.colour : CLI_DEFAULT_COLOUR;
+  }
+
+  function cliProviderless(cli) {
+    const entry = cliEntry(cli);
+    return entry ? entry.providerless === true : false;
+  }
+
+  function providerlessClis() {
+    return new Set(Object.keys(CLI_DISPLAY).filter(id => CLI_DISPLAY[id].providerless));
+  }
+
+  // 厂商自持账号的 CLI 在「线路」位置上显示自己的产品名，而不是 multicc 线路名
+  // （NATIVE_ROUTE_LABELS 的四个副本就是这张表）。它就是「无 provider 的那些 CLI 的
+  // 展示名」，所以不再单独列一份。
+  function nativeRouteLabel(cli) {
+    return cliProviderless(cli) ? cliDisplayName(cli) : '';
+  }
+
   function formatUsageWindow(value) {
     const window = normalizeWindow(value);
     if (window.inputTokens + window.outputTokens === 0) return '';
@@ -720,6 +804,16 @@
   return {
     normalizeProvider,
     providerDisplayName,
+    cliDisplayName,
+    cliMeta,
+    cliMetaMap,
+    cliShortMark,
+    cliColour,
+    cliProviderless,
+    providerlessClis,
+    nativeRouteLabel,
+    CLI_DISPLAY,
+    CLI_DEFAULT_COLOUR,
     officialProviderKind,
     normalizeCatalog,
     normalizeDefaults,

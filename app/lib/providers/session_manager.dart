@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/widgets.dart';
 
-import '../i18n.dart';
 import '../models/message.dart';
 import '../services/background_service.dart';
 import '../services/notification_service.dart';
@@ -513,11 +512,13 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     if (SettingsService.current?.taskNotifyEnabled(sessionId) == false) return;
     if (!_isInBackground && sessionId == _activeSessionId) return;
     final who = _displayTitleFor(sessionId);
-    final outcome = state == 'waiting'
-        ? t('waitingInteraction')
-        : state == 'error'
-        ? t('errorOccurred')
-        : t('classifySucceeded');
+    // This workspace channel only carries the coarse state, but
+    // workspace_service._handle already wrote the exact classify letter onto
+    // the session status (and notified listeners) just before calling us, so
+    // the wording matches what chat/voice call would say for the same verdict.
+    final outcome = classifyNotificationWord(
+      liveStatus(sessionId)?.classifyState ?? state,
+    );
     NotificationService.show(
       title: 'MultiCC · $who: $outcome',
       body: message.isNotEmpty ? message : who,

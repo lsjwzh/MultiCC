@@ -1,6 +1,7 @@
 'use strict';
 
 const { createAcpAdapter } = require('./acp');
+const { displayNameOf } = require('../cli/cli-capability');
 
 // Grok Build (@xai-official/grok) over ACP (`grok agent stdio`). Model and
 // reasoning effort are launch flags of `grok agent` and must precede the
@@ -10,7 +11,7 @@ const { createAcpAdapter } = require('./acp');
 // auto-answers permission requests). Auth is the CLI's own (`grok login`).
 function createGrokAdapter({ cmd, routerMcpNode = null, routerMcpScript = null, userInputReminder = '' }) {
   return createAcpAdapter({
-    name: 'grok', label: 'Grok', cmd,
+    name: 'grok', label: displayNameOf('grok'), cmd,
     agentArgs: so => [
       'agent', '--no-leader', '--always-approve',
       ...(so.rawModel ? ['-m', so.rawModel] : []),

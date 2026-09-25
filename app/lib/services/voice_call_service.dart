@@ -31,6 +31,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../providers/chat_provider.dart';
 import '../services/chat_service.dart';
 import '../services/settings_service.dart';
+import '../utils/session_status_helpers.dart';
 import 'ws_ticket_service.dart';
 
 enum VoiceCallState { idle, listening, confirming, executing, reporting }
@@ -733,10 +734,13 @@ class VoiceCallService extends ChangeNotifier {
     _idleHintTimer?.cancel();
     _idleHintTimer = null;
     _setState(VoiceCallState.reporting);
-    _setStatus(waiting ? '等待操作，整理汇报…' : '执行成功，整理汇报…');
+    // 与通知/分类条同一张表：电话里听到的那句话，和通知栏里写的那句话，
+    // 必须是同一个词（见 session_status_helpers 的表）。
+    final verdict = waiting ? 'W' : 'D';
+    _setStatus('${classifyNotificationWord(verdict)}，整理汇报…');
     notifyListeners();
 
-    final fallback = waiting ? '正在等待你的下一步指示。' : '本轮执行成功。';
+    final fallback = classifyNotificationVoice(verdict);
     String summary = fallback;
     final eventsSnapshot = _progressEvents.toList();
     if (eventsSnapshot.isNotEmpty) {

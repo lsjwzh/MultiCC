@@ -101,7 +101,7 @@ function createTaskMergeHandler({
       modules: board.modules,
       tasks: { [task.id]: task },
     }, getSessionRunState).tasks[0];
-    if (['queued', 'running', 'waiting'].includes(projection?.runState)) return true;
+    if (['queued', 'running', 'waiting', 'background'].includes(projection?.runState)) return true;
     if (!taskRuns) return false;
     try {
       return taskIdentityIds(task).some(identityId => (

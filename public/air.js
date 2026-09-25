@@ -77,18 +77,17 @@
   // 走不到任务板语料。状态那格管的是不搜索时的列表，搜索另有 searchFilter() 那份口径。
   const directoryTaskFilter = { query: '', status: 'open', fullText: true };
 
-  // 状态/阶段/阻断原因的文案一律现取 t()：这些表在 render 的每一行上被读，
-  // 而 t() 查不到 key 只会回显 key 本身，所以漏翻是看得见的（不会静默变成中文）。
+  // 状态/阶段/阻断原因的文案一律现取 t()：这些表每一行都会读，而 t() 查不到 key
+  // 只会回显 key 本身 —— 漏翻是看得见的。规范状态的词不在这张表里写第二遍：注册表
+  // （status-presentation.js）的 airLabelKey 是 Air 词表的唯一一份，airStatusLabels()
+  // 一份喂这里、一份喂 air-admin.js，别名（failed / thinking…）也归它折算；本地只留
+  // 租约/容量去向、工作流阶段（planning.js WORKFLOW_STAGES 五个都要有词）和 active/stale。
   const stateNames = {
-    active: t('airStateActive'), succeeded: t('airStateSucceeded'), unknown: t('airStateUnknown'), failed: t('airStateFailed'), error: t('airStateFailed'), cancelled: t('airStateCancelled'),
-    workspace_execution_capacity: t('airStateExecCapacity'), workspace_resident_capacity: t('airStateResidentCapacity'),
-    workspace_restore_capacity: t('airStateRestoreCapacity'), planned: t('airStatePlanned'), resident: t('airStateResident'),
-    retained: t('airStateRetained'), hibernated: t('airStateHibernated'), reserved: t('airStateReserved'), materializing: t('airStateMaterializing'),
-    starting: t('airStateStarting'), running: t('airStateRunning'), uncertain: t('airStateUncertain'), idle: t('airStateIdle'), queued: t('airStateQueued'),
-    waiting: t('airStateWaiting'), archived: t('airStateArchived'), stale: t('airStateStale'),
-    // 工作流阶段（src/task-board/planning.js WORKFLOW_STAGES）五个都要有词：任务行
-    // 会把阶段当补充信息写在徽标后面，漏一个就有一行蹦出英文。
-    inbox: t('airStageInbox'), ready: t('airStageReady'), doing: t('airStateActive'), review: t('airStageReview'), done: t('airStageDone'),
+    ...window.MultiCCStatusPresentation?.airStatusLabels?.(t), active: t('airStateActive'), stale: t('airStateStale'),
+    workspace_execution_capacity: t('airStateExecCapacity'), workspace_resident_capacity: t('airStateResidentCapacity'), planned: t('airStatePlanned'),
+    workspace_restore_capacity: t('airStateRestoreCapacity'), resident: t('airStateResident'), retained: t('airStateRetained'), hibernated: t('airStateHibernated'),
+    reserved: t('airStateReserved'), materializing: t('airStateMaterializing'), starting: t('airStateStarting'), uncertain: t('airStateUncertain'),
+    inbox: t('airStageInbox'), ready: t('airStageReady'), doing: t('airStateActive'), review: t('airStageReview'),
   };
   const blockerNames = {
     view_changed: t('airBlockViewChanged'),
@@ -112,7 +111,8 @@
     t('airStepTurnSucceeded'), t('airStepCodeDelivered'), t('airStepSourceStable'), t('airStepAttribution'),
   ];
 
-  const label = value => stateNames[value] || value || '';
+  const label = value =>   // 本地表优先（active / stale 是 Air 自己的词），其余交给注册表
+    stateNames[value] || window.MultiCCStatusPresentation?.airStatusWordFor?.(value, t) || value || '';
   const node = (tag, text, className) => {
     const element = document.createElement(tag);
     if (text != null) element.textContent = text;
@@ -1036,7 +1036,7 @@
     const ai = $('quick-ai-pill'), role = $('quick-role-pill');
     if (!ai || !role) return;
     const cli = quickCli();
-    const nativeRoute = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', gemini: 'Gemini', grok: 'Grok' }[cli];
+    const nativeRoute = window.MultiCCProviderCatalog.nativeRouteLabel(cli); // 自持账号的 CLI 显示产品名（共享 CLI 目录出）
     const route = nativeRoute || (quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
       : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute'));
@@ -2609,7 +2609,7 @@
     // 待生效那份配置里的 provider 是 id；服务端随 pending 下发了解析好的
     // providerName（见 src/workspace/air-routes.js），名字就在这儿用，没有名字
     // 才退回 id —— 不然下一轮生效的那条线路在药丸上是一串 UUID。
-    const nativeRoute = { qoder: 'Qoder CN', codebuddy: 'WorkBuddy', dsh: 'DSH', gemini: 'Gemini', grok: 'Grok' }[shown?.cli];
+    const nativeRoute = window.MultiCCProviderCatalog.nativeRouteLabel(shown?.cli);
     const routeName = nativeRoute || (shown?.providerSelection?.mode === 'auto'
       ? `Auto ${shown.providerSelection.protocol}`
       : providerDisplayName((pending?.providerName || shown?.providerName || shown?.provider) || '') || t('airQuickDefaultRoute'));

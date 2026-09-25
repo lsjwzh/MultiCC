@@ -17,7 +17,8 @@ const { renderPrompt } = require('../message-composer');
 const { claudeLikeMcpArgs } = require('./router-mcp');
 const { completion, createCompletionTracker } = require('./completion');
 
-const LABEL = 'Kimi Code';
+const { displayNameOf } = require('../cli/cli-capability');
+const LABEL = displayNameOf('kimi');
 
 function parseToolArguments(raw) {
   if (raw == null) return {};

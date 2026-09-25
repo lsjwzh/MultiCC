@@ -71,9 +71,14 @@ const MIGRATION_DEBT = Object.freeze({
   // searchFilter()（永远搜全部记录，不套状态那格），目录页这里多两行算这份口径。
   // ⌘K 面板没有放开关的位置，直接固定搜全部。行数 3094 -> 3118，其中 4 行仍是上面
   // 那笔 main 既有漂移（3098），这次一并按实测高水位登记。
+  // 「等后台任务」独立成状态之后，这张表里的规范状态词全部改由注册表
+  // （status-presentation.js）的 airLabelKey 列经 airStatusLabels() 提供 —— 六个手抄的
+  // 状态条目（含把 B 说成「等待回答」的那个）连同一条中间变量一起删掉，`label()` 只多
+  // 一行去注册表折算别名。少掉的词换来一段解释「为什么规范状态不在这里再写一遍」的
+  // 注释，行数刚好抵平（3118 不变），字节按重排后的实测降到 169154。
   'public/air.js': Object.freeze({
     ceiling: 3118,
-    byteCeiling: 169155,
+    byteCeiling: 169154,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -101,9 +106,12 @@ const MIGRATION_DEBT = Object.freeze({
   // cohesive ~200-line unit, and dropping back to <= 3000 retires this entry.
   // The Jev routing note moved the admission-progress helpers out to
   // app/lib/providers/admission_notes.dart, ratcheting this down to 3032.
+  // 通知文案归一（tests/test-notification-copy.js）把 notify 分支里那张
+  // 字母→outcome 的 switch 换成了对 session_status_helpers 的一行调用，
+  // 于是同提交把天花板压到实测高水位 3017/121688。
   'app/lib/providers/chat_provider.dart': Object.freeze({
-    ceiling: 3032,
-    byteCeiling: 122073,
+    ceiling: 3017,
+    byteCeiling: 121688,
     target: 3000,
   }),
 });
@@ -219,9 +227,14 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 按生成器真实高水位抬到 6918/428225。
   // 新 CLI gemini / grok（两条 providerless 车道）各要一句「默认（跟随 X 配置）」，
   // 中英各 2 行 = +4 行，重跑生成器后抬到 6922/428499。
+  // 推送/通知文案归一（tests/test-notification-copy.js）：新增 B 的
+  // notificationWaitingBackgroundTitle 中英各 1 行，同时删掉 18 个没人引用的
+  // 同义 key（waitingInteraction / waitingBackground / apiError / tbRun* /
+  // tbClass* / queue*），本笔净减 34 行。天花板按本树重跑生成器后的实测值登记
+  // （6899 是 wc -l，这里的量法是 split('\n').length，多一格行尾换行）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6922,
-    maxBytes: 428499,
+    maxLines: 6900,
+    maxBytes: 427999,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

@@ -1,6 +1,7 @@
 'use strict';
 
 const { completion, createCompletionTracker } = require('./completion');
+const { displayNameOf } = require('../cli/cli-capability');
 
 const { renderPrompt } = require('../message-composer');
 const { extractUpstreamError } = require('../upstream-error');
@@ -334,7 +335,7 @@ function createCodexAdapter(deps) {
         if (event.type === 'error' && kind === 'provider' && isCodexInternalNoise(message)) return [];
         return [{
           type: 'error',
-          label: 'Codex',
+          label: displayNameOf('codex'),
           message,
           kind,
           error: {

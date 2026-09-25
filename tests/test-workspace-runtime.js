@@ -218,7 +218,7 @@ test('summary persistence and broadcast preserve legacy ordering and idempotence
   assert.equal(runtime.setSummary('aux', 'ignored'), false);
 });
 
-test('status transitions coalesce unchanged events and pending dispatch forces waiting', () => {
+test('status transitions coalesce unchanged events and a pending dispatch forces background', () => {
   const pending = { currentTask: { pendingDispatches: [{ id: 'x' }] } };
   const { runtime } = createHarness({ chatSessions: new Map([['plain', pending]]) });
   const scoped = new FakeSocket();
@@ -236,7 +236,9 @@ test('status transitions coalesce unchanged events and pending dispatch forces w
   assert.equal(scoped.messages.length, 1, 'unchanged status/currentFile does not rebroadcast');
 
   const completed = runtime.setStatus('plain', { status: 'completed', currentFile: null });
-  assert.equal(completed.status, 'waiting');
+  // The run ended but a dispatch is still outstanding: a background wait, not
+  // 「等待回答」 — the user has nothing to answer here.
+  assert.equal(completed.status, 'background');
   assert.equal(completed.runEndedAt > completed.runStartedAt, true);
   assert.equal(scoped.messages.length, 2);
   assert.equal(meta.messages[1].dirId, 'd2');

@@ -123,14 +123,13 @@
   // `runState === 'running'`：注册表只给 running 设了 spinner，于是「出错的任务
   // 绝不动画」是一条规则，而不是每个用到状态的地方各判一遍。
   const RUNNING_LEASES = ['reserved', 'materializing', 'starting', 'running', 'uncertain'];
-  // Air 不带 i18n 词典（air.html 里没有 t()），注册表的 labelKey 在这儿查不到文案，
-  // 所以显式给一份中文。词表跟 air.js 的 stateNames 是同源的，只是这里只需要状态名。
-  const STATUS_COPY = Object.freeze({
-    idle: t('airAdminStatusIdle'), queued: t('airAdminStatusQueued'), running: t('airAdminStatusRunning'), waiting: t('airAdminStatusWaiting'), blocked: t('airAdminStatusBlocked'),
-    error: t('airAdminStatusError'), succeeded: t('airAdminStatusSucceeded'), done: t('airAdminStatusDone'), cancelled: t('airAdminStatusCancelled'),
-    archived: t('airAdminStatusArchived'), offline: t('airAdminStatusOffline'), unknown: t('airAdminStatusUnknown'),
-  });
   const registry = () => root.MultiCCStatusPresentation;
+  // 状态词只有一份，在注册表的 airLabelKey 列上（Air 面自带的词表，跟阶段、资源
+  // 去向那些词同源），由 airStatusLabels() 取给这一页和侧栏（air.js 的 stateNames）。
+  // 这张表从前是手抄的，于是同一个状态在侧栏和控制台能读出两个词 —— 比如「等待回答」
+  // 出现在一条只是在等后台任务、根本不需要用户动手的卡上。
+  // t() 是 air.html 的全局（i18n.js 载入），Air 是带词典的。
+  const STATUS_COPY = Object.freeze(registry()?.airStatusLabels?.(t) || {});
 
   /** 权威状态：生命周期（archived/done）优先，其次是这一轮的 runState。 */
   function taskStatus(task) {
@@ -348,12 +347,12 @@
     if (status === 'waiting') return 0;
     if (status === 'error') return 1;
     if (task.resource?.capacityReason) return 2;
-    if (status === 'running' || RUNNING_LEASES.includes(task.resource?.lease)) return 3;
+    if (status === 'running' || status === 'background' || RUNNING_LEASES.includes(task.resource?.lease)) return 3;
     if (status === 'done' || status === 'archived') return 5;
     return 4;
   }
   // 「在等我」的分界线：0 等我回答 · 1 出错要我去处理 · 2 卡在资源 —— 这三类都得
-  // 我动手。3（正在跑）不列进来：跑着的东西不是待办，它不需要我操作。上面那张
+  // 我动手。3（正在跑 / 后台等待）不列进来：跑着的东西不是待办，它不需要我操作。上面那张
   // 「等待处理」统计卡走的是同一条线，两处口径必须一致。
   function needsAttention(task) { return taskUrgency(task) < 3; }
   // 谁在等我由上面那条线筛出来，排在最前面的是最近动过的那条 —— 刚有动静的

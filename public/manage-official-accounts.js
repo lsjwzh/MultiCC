@@ -17,7 +17,12 @@
   // 旧页删掉之后这个模块只剩 Air 在用（air-provider-advanced.js 画骨架、显式调 load()），
   // 所以它自己写进 DOM 的那些文案也归 i18n 管了 —— 全部走 t()，key 以 airOfficialAcct 开头。
   const tr = (key, params) => (typeof window.t === 'function' ? window.t(key, params) : key);
-  const esc = (v) => (typeof escapeHtml === 'function' ? escapeHtml(String(v == null ? '' : v)) : String(v == null ? '' : v));
+  // 五个字符的转义（& < > " '），和 shared/dom-helpers.js 的 escapeHtml 同一份语义。
+  // 旧实现里 typeof 守卫的 else 分支直接把原文吐回去 —— 账号 id/邮箱一旦落在属性位置上
+  // 就是一个注入点，宁可在这里自己转一遍。
+  const esc = (v) => (typeof escapeHtml === 'function'
+    ? escapeHtml(String(v == null ? '' : v))
+    : String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
   const toast = (msg, isError) => { if (typeof showToast === 'function') showToast(msg, isError); };
 
   const state = {

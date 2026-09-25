@@ -6,7 +6,6 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../services/workspace_service.dart';
-import '../theme.dart';
 import 'manual_order.dart';
 import 'status_presentation.dart';
 
@@ -20,20 +19,10 @@ String withTaskCode(String? code, String text) {
   return '#$c · $text';
 }
 
-/// Brand color for a session's CLI.
-Color cliBrandColor(SessionCli cli) => switch (cli) {
-  SessionCli.claude => AppColors.claude,
-  SessionCli.claudeExp => AppColors.claude,
-  SessionCli.codex => AppColors.codex,
-  SessionCli.codexExp => AppColors.codex,
-  SessionCli.opencode => AppColors.opencode,
-  SessionCli.zcode => AppColors.zcode,
-  SessionCli.qoder => AppColors.qoder,
-  SessionCli.codebuddy => AppColors.codebuddy,
-  SessionCli.dsh => AppColors.dsh,
-  SessionCli.gemini => AppColors.gemini,
-  SessionCli.grok => AppColors.grok,
-};
+/// Brand color for a session's CLI. One table (app/lib/utils/cli_display.dart,
+/// mirrored from the server's src/cli/cli-capability.js DISPLAY) — this was a
+/// second switch over the same eleven CLIs.
+Color cliBrandColor(SessionCli cli) => cli.color;
 
 // Workspace status board: 一律走中心 registry（utils/status_presentation.dart），
 // 本文件不再自带状态色表/图标表——那正是 error 会话在卡片上只有一个灰点、没有
@@ -68,6 +57,113 @@ const Map<String, String> _classifyLabelKey = {
   if (labelKey == null) return null;
   final spec = statusPresentation[classifyStatusOf(key)]!;
   return (color: spec.color, label: t(labelKey), emoji: spec.icon);
+}
+
+// ── 分类结果的「对外文案」 ──────────────────────────────────────────────────
+//
+// 一条分类结果在系统通知、聊天条、语音播报里说的必须是同一句话。此前这份文案
+// 在 chat_provider（一个 switch）、session_manager（三元表达式）和
+// voice_call_service（两句写死的收尾语）里各写了一遍，同一个 B 在通知里说
+// 「等待后台」、在分类条上说「后台等待」。
+//
+// 这张表是 App 侧的唯一来源。同一个字母的表在三处，由
+// tests/test-notification-copy.js 钉住：
+//   · 服务端推送标题  src/push/notification-copy.js
+//   · Web             public/shared/notification-copy.js
+//   · App（本文件）    wordKey / voiceKey 指向 i18n 词典里的同一批 key
+class ClassifyNotificationCopy {
+  const ClassifyNotificationCopy({
+    required this.letter,
+    required this.type,
+    required this.wordKey,
+    required this.labelKey,
+    required this.voiceKey,
+    required this.ding,
+    required this.background,
+  });
+
+  /// 规范化的分类字母（未知/空一律落到 W）。
+  final String letter;
+
+  /// 推送/通知的种类：succeeded | waiting | error（null = 无可播报）。
+  final String? type;
+
+  /// 通知标题里那半句话的词典 key。
+  final String wordKey;
+
+  /// 分类条 / 徽章上的短标签 key（比 wordKey 更短、更少动作含义）。
+  final String labelKey;
+
+  /// 播报句子的词典 key（null = 这一档无可播报，如 C/P）。
+  final String? voiceKey;
+
+  /// 提示音/本地通知的桶：succeeded | waiting | error（null = 不响）。
+  final String? ding;
+
+  /// 是否在等后台任务（B）：够用来区分「等你操作」和「你不用管」。
+  final bool background;
+}
+
+/// 字母 → 文案。C 已退役（服务端解析时折成 W），保留仅为了历史记录照样能渲染。
+const Map<String, ClassifyNotificationCopy> _classifyCopy = {
+  'D': ClassifyNotificationCopy(
+    letter: 'D', type: 'succeeded', wordKey: 'classifySucceeded',
+    labelKey: 'classifySucceeded', voiceKey: 'voiceExecutionSucceeded',
+    ding: 'succeeded', background: false,
+  ),
+  // C 已退役：服务端解析时折成 W。历史记录里存着的 C 说的话跟 W 一样，但既不
+  // 播报也不响铃；短标签仍用「继续中」，因为它确实是在跑而不是在等人。
+  'C': ClassifyNotificationCopy(
+    letter: 'C', type: 'waiting', wordKey: 'waitingAction',
+    labelKey: 'classifyContinuing', voiceKey: null,
+    ding: null, background: false,
+  ),
+  'W': ClassifyNotificationCopy(
+    letter: 'W', type: 'waiting', wordKey: 'waitingAction',
+    labelKey: 'classifyWaitingUser', voiceKey: 'voiceWaitingAction',
+    ding: 'waiting', background: false,
+  ),
+  // B 与 W 的 push type 都是 waiting，说的却不是一回事：B 没什么在等用户。
+  'B': ClassifyNotificationCopy(
+    letter: 'B', type: 'waiting', wordKey: 'classifyWaitingBackground',
+    labelKey: 'classifyWaitingBackground', voiceKey: 'voiceWaitingBackground',
+    ding: 'waiting', background: true,
+  ),
+  'E': ClassifyNotificationCopy(
+    letter: 'E', type: 'error', wordKey: 'errorOccurred',
+    labelKey: 'classifyApiError', voiceKey: 'voiceApiInterrupted',
+    ding: 'error', background: false,
+  ),
+  'P': ClassifyNotificationCopy(
+    letter: 'P', type: null, wordKey: 'classifyProcessing',
+    labelKey: 'classifyProcessing', voiceKey: null,
+    ding: null, background: false,
+  ),
+};
+
+/// 推送种类 / 旧服务端的粗粒度 state → 字母。
+const Map<String, String> _letterOfNotificationType = {
+  'succeeded': 'D', 'completed': 'D', 'waiting': 'W',
+  'waiting_background': 'B', 'error': 'E', 'running': 'P',
+};
+
+/// 分类字母（或粗粒度的 succeeded/waiting/error）→ 对外文案。
+/// 认不出的字母按 W 兜底（与 vocab 的 classifyDisplay 一致：绝不说成成功），
+/// 认不出的词按 succeeded 兜底（旧服务端的粗粒度 state 老规矩）。
+ClassifyNotificationCopy classifyNotificationCopy(String? spec) {
+  final raw = (spec ?? '').trim();
+  final letter = _letterOfNotificationType[raw.toLowerCase()];
+  return _classifyCopy[raw.toUpperCase()] ?? _classifyCopy[letter] ?? _classifyCopy['W']!;
+}
+
+/// 通知标题里那半句话（"MultiCC · 会话: 等待操作" 的后半句）。
+String classifyNotificationWord(String? spec) =>
+    t(classifyNotificationCopy(spec).wordKey);
+
+/// 播报句子；这一档无可播报（C/P）时返回空串。
+String classifyNotificationVoice(String? spec) {
+  final key = classifyNotificationCopy(spec).voiceKey;
+  return key == null ? '' : t(key);
 }
 
 /// 「判定已暂停」 pill: the caveat that goes next to a judgement the classifier
