@@ -11,6 +11,10 @@ const {
   sleepNow,
 } = require('../plugins/utils/macos-power');
 
+// The daemon path is covered in test-powerd.js; here it is always absent so
+// these cases never touch a real intent file on a machine that has it installed.
+const NO_POWERD = { setIntent: () => false };
+
 assert.strictEqual(isAvailable('darwin'), true);
 assert.strictEqual(isAvailable('linux'), false);
 
@@ -47,6 +51,7 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   const invocations = [];
   const status = await setLidSleepPrevention(true, {
     platform: 'darwin',
+    powerd: NO_POWERD,
     // No privileged helper installed — the case this block is about. Stated
     // explicitly because the injected execFile below answers every command
     // successfully, which would otherwise look like a helper that is present.
@@ -78,6 +83,7 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   await assert.rejects(
     setLidSleepPrevention(false, {
       platform: 'darwin',
+      powerd: NO_POWERD,
       execFile(file, args, options, callback) {
         const error = new Error('execution error: User canceled. (-128)');
         callback(error, '', '');
@@ -89,6 +95,7 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   await assert.rejects(
     setLidSleepPrevention(true, {
       platform: 'darwin',
+      powerd: NO_POWERD,
       execFile(file, args, options, callback) {
         callback(null, file === '/usr/bin/pmset' ? 'Battery Power:\n sleep 1\n' : '', '');
       },
