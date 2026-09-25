@@ -2829,6 +2829,33 @@
       ]
     },
     {
+      "path": "tests/test-mbrowser-cli.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-mbrowser-daemon.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-mbrowser-snapshot.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-memo-controller.js",
       "tier": "other",
       "lane": "deterministic",

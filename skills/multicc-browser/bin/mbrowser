@@ -1,0 +1,330 @@
+#!/usr/bin/env node
+'use strict';
+
+// mbrowser — MultiCC's own browser executor.
+//
+// Thin by design: parse arguments, hand page commands to the resident daemon
+// over its unix socket, and keep lifecycle commands in the CLI process.
+//
+// Exit codes: 0 ok, 1 error, 2 usage.
+
+const path = require('path');
+
+const LIB = path.join(__dirname, '..', 'lib');
+const P = require(path.join(LIB, 'paths'));
+const client = require(path.join(LIB, 'client'));
+const lifecycle = require(path.join(LIB, 'lifecycle'));
+const { COMMANDS } = require(path.join(LIB, 'actions'));
+const { VERSION } = require(path.join(LIB, 'version'));
+
+const PAGE_COMMANDS = Object.keys(COMMANDS);
+const LIFECYCLE_COMMANDS = ['doctor', 'profiles', 'start', 'login', 'attach', 'status', 'stop', 'ping'];
+
+const BOOLEAN_FLAGS = new Set([
+  'json', 'create', 'force', 'all', 'headed', 'headless', 'mockKeychain', 'keepChrome', 'newTab',
+  'double', 'right', 'clear', 'submit', 'interactive', 'full', 'load', 'idle', 'hard', 'help',
+  'version', 'verbose',
+]);
+
+// Flags that take a value. An unknown `--flag` is a hard usage error: a typo
+// like `--headlesss` must never be swallowed while the browser runs headed.
+const VALUE_FLAGS = new Set([
+  'profile', 'browser', 'startupTimeout', 'cdpUrl', 'out', 'ref', 'text', 'selector',
+  'ms', 'maxChars', 'timeout', 'px', 'direction', 'tab', 'quietMs',
+]);
+
+const USAGE = `usage: mbrowser <command> [args] [-p NAME] [--json] [--tab TARGET]
+
+page commands:
+  open URL [--new-tab]                 navigate (adds https:// when it looks like a host)
+  snapshot [--interactive] [--max-chars N]
+  click REF | --xy X Y [--double] [--right]
+  type REF TEXT [--clear] [--submit]
+  press KEY                            Enter, Tab, F5, ctrl+a, cmd+v, …
+  select REF VALUE                     <select> only
+  hover REF
+  scroll [up|down|left|right] [PX] [--ref REF]
+  upload REF FILE...
+  screenshot [OUT] [--full] [--ref REF]
+  text [--ref REF] [--max-chars N]
+  eval JS
+  wait [--text T] [--selector CSS] [--load] [--idle] [--ms N] [--timeout S]
+  back | forward | reload
+  tabs | tab TARGET | close [TARGET]
+  dialog accept|dismiss [TEXT]
+
+lifecycle:
+  doctor                               what this machine can run
+  profiles                             known profiles and their state
+  start [NAME] [--create] [--headed|--headless] [--browser PATH] [--mock-keychain]
+        [--startup-timeout S] [--force]
+  login NAME [URL]                     headed browser for a manual login
+  attach NAME --cdp-url http://127.0.0.1:PORT
+  status [NAME]                        daemon, browser and tab state
+  stop [NAME|--all] [--keep-chrome]
+  ping                                 daemon metadata (starts one if needed)
+
+global: -p/--profile NAME (default $MBROWSER_PROFILE or 'default'), --json, --tab TARGET,
+        -h/--help, --version`;
+
+function camel(name) {
+  return name.replace(/-([a-z0-9])/g, (_, char) => char.toUpperCase());
+}
+
+function parseArgs(argv) {
+  const flags = {};
+  const positional = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--') {
+      positional.push(...argv.slice(index + 1));
+      break;
+    }
+    if (arg.startsWith('--')) {
+      const eq = arg.indexOf('=');
+      const name = eq >= 0 ? arg.slice(2, eq) : arg.slice(2);
+      const key = camel(name);
+      const inline = eq >= 0 ? arg.slice(eq + 1) : undefined;
+      if (key === 'xy') {
+        // `--xy 10 20`, `--xy 10,20` and `--xy=10,20` all mean the same point.
+        const text = inline !== undefined ? inline : argv[index + 1];
+        const parts = text === undefined ? [] : text.split(/[,\s]+/).filter(Boolean);
+        if (parts.length === 2) {
+          flags.xy = parts.map(Number);
+          index += 1;
+        } else {
+          const x = Number(text);
+          const y = Number(argv[index + 2]);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            throw new P.MbError('usage', '--xy needs two numbers: --xy X Y');
+          }
+          flags.xy = [x, y];
+          index += 2;
+        }
+        if (flags.xy.some(value => !Number.isFinite(value))) {
+          throw new P.MbError('usage', '--xy needs two numbers: --xy X Y');
+        }
+        continue;
+      }
+      if (BOOLEAN_FLAGS.has(key)) {
+        // A bare boolean never consumes the next argument.
+        if (inline !== undefined) throw new P.MbError('usage', `--${name} does not take a value`);
+        flags[key] = true;
+        continue;
+      }
+      if (!VALUE_FLAGS.has(key)) throw new P.MbError('usage', `unknown flag --${name}`);
+      if (inline !== undefined) {
+        if (!inline) throw new P.MbError('usage', `flag --${name} needs a value`);
+        flags[key] = inline;
+        continue;
+      }
+      const value = argv[index + 1];
+      // A value flag with no value is a hard usage error. Filling in `true`
+      // turns `click --ref` into a bogus ref and `screenshot --out` into a file
+      // called "true", which the daemon then reports as some unrelated failure.
+      // A following `-x`/`--flag`/`--` is another argument, never a value, so
+      // `click --ref -p work` cannot smuggle "-p" into the ref either.
+      if (value === undefined || (value.startsWith('-') && value.length > 1)) {
+        throw new P.MbError('usage', `flag --${name} needs a value`);
+      }
+      flags[key] = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-') && arg.length > 1) {
+      const key = arg.slice(1, 2);
+      if (key === 'p') {
+        const value = argv[index + 1];
+        if (value === undefined || (value.startsWith('-') && value.length > 1)) {
+          throw new P.MbError('usage', 'flag -p/--profile needs a profile name');
+        }
+        flags.profile = value;
+        index += 1;
+      } else if (key === 'h') {
+        flags.help = true;
+      } else {
+        throw new P.MbError('usage', `unknown flag ${arg}`);
+      }
+      continue;
+    }
+    positional.push(arg);
+  }
+  return { flags, positional };
+}
+
+function profileNameFrom(flags, positional, { required = false, index = 0 } = {}) {
+  const name = flags.profile || positional[index] || P.defaultProfile();
+  P.requireName(name);
+  if (required && !flags.profile && !positional[index]) {
+    throw new P.MbError('usage', 'this command needs a profile name (NAME or -p NAME)');
+  }
+  return name;
+}
+
+// Every command that can start a daemon runs a Chrome in
+// <profiles-root>/<name>; creating that directory is the user-visible act of
+// creating a profile, so it must never be a side effect of a typo. Only
+// `start --create` (and `login --create`) may mint a profile.
+function assertProfileExists(name) {
+  if (lifecycle.profileExists(name)) return;
+  throw new P.MbError('not_created',
+    `profile ${name} does not exist; create it with \`mbrowser start ${name} --create\``);
+}
+
+function commandArgs(command, positional) {  const rest = positional.slice();
+  const on = index => (rest[index] === undefined ? undefined : rest[index]);
+  switch (command) {
+    case 'open': return { url: on(0), newTab: false };
+    case 'click': return { ref: on(0) };
+    case 'type': return { ref: on(0), text: on(1) !== undefined ? rest.slice(1).join(' ') : '' };
+    case 'press': return { key: on(0) };
+    case 'select': return { ref: on(0), value: rest.slice(1).join(' ') };
+    case 'hover': return { ref: on(0) };
+    case 'scroll': {
+      // `scroll 800` (pixels only) and `scroll down 800` are both accepted.
+      const first = on(0);
+      if (first && /^(up|down|left|right)$/.test(first)) return { direction: first, px: on(1) };
+      return { direction: 'down', px: first };
+    }
+    case 'upload': return { ref: on(0), files: rest.slice(1) };
+    case 'screenshot': return { out: on(0) };
+    case 'text': return {};
+    case 'eval': return { js: rest.join(' ') };
+    case 'wait': return {};
+    case 'tab': return { target: on(0) };
+    case 'close': return { target: on(0) };
+    case 'dialog': return { decision: on(0) === 'dismiss' ? 'dismiss' : 'accept', text: rest.slice(1).join(' ') || undefined };
+    case 'snapshot': return {};
+    default: return {};
+  }
+}
+
+function printResult(flags, result) {
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  if (result && typeof result.text === 'string') {
+    process.stdout.write(`${result.text}\n`);
+    return;
+  }
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+async function main(argv) {
+  const { flags, positional } = parseArgs(argv);
+  if (flags.version) {
+    process.stdout.write(`mbrowser ${VERSION} (node ${process.version})\n`);
+    return 0;
+  }
+  if (flags.help || positional.length === 0) {
+    process.stdout.write(`${USAGE}\n`);
+    return positional.length === 0 && !flags.help ? 2 : 0;
+  }
+  const command = positional[0];
+  const args = commandArgs(command, positional.slice(1));
+
+  if (command === 'help') {
+    process.stdout.write(`${USAGE}\n`);
+    return 0;
+  }
+
+  if (LIFECYCLE_COMMANDS.includes(command)) {
+    if (command === 'doctor') return report(flags, await lifecycle.doctor({ browser: flags.browser }));
+    if (command === 'profiles') return report(flags, lifecycle.profiles());
+    if (command === 'start') {
+      return report(flags, await lifecycle.start({
+        name: profileNameFrom(flags, positional, { index: 1 }),
+        create: Boolean(flags.create),
+        headed: flags.headed === true,
+        headless: flags.headless === true,
+        browser: flags.browser,
+        mockKeychain: Boolean(flags.mockKeychain),
+        startupTimeout: flags.startupTimeout,
+        force: Boolean(flags.force),
+      }));
+    }
+    if (command === 'login') {
+      return report(flags, await lifecycle.login({
+        name: profileNameFrom(flags, positional, { index: 1 }),
+        url: positional[2],
+        create: Boolean(flags.create),
+        browser: flags.browser,
+      }));
+    }
+    if (command === 'attach') {
+      return report(flags, await lifecycle.attach({
+        name: profileNameFrom(flags, positional, { index: 1 }),
+        cdpUrl: flags.cdpUrl,
+      }));
+    }
+    if (command === 'status') {
+      if (flags.all) return report(flags, lifecycle.profiles());
+      return report(flags, await lifecycle.status({ name: profileNameFrom(flags, positional, { index: 1 }) }));
+    }
+    if (command === 'stop') {
+      return report(flags, await lifecycle.stop({
+        name: profileNameFrom(flags, positional, { index: 1 }),
+        all: Boolean(flags.all),
+        keepChrome: Boolean(flags.keepChrome),
+      }));
+    }
+    if (command === 'ping') {
+      const name = profileNameFrom(flags, positional, { index: 1 });
+      // `ping` starts a daemon, and a daemon starts Chrome in a fresh
+      // user-data-dir: a mistyped -p would silently mint a new profile.
+      assertProfileExists(name);
+      const ping = await client.ensureDaemon(name, {});
+      return report(flags, { text: JSON.stringify(ping, null, 2), ...ping });
+    }
+  }
+
+  if (!PAGE_COMMANDS.includes(command)) {
+    process.stderr.write(`mbrowser: usage: unknown command "${command}"\n\n${USAGE}\n`);
+    return 2;
+  }
+
+  const name = profileNameFrom(flags, positional);
+  assertProfileExists(name);
+  args.newTab = flags.newTab === true;
+  args.double = flags.double === true;
+  args.right = flags.right === true;
+  args.clear = flags.clear === true;
+  args.submit = flags.submit === true;
+  args.interactive = flags.interactive === true;
+  args.full = flags.full === true;
+  args.hard = flags.hard === true;
+  if (flags.xy) { [args.x, args.y] = flags.xy; }
+  if (flags.ref) args.ref = flags.ref;
+  if (flags.out) args.out = flags.out;
+  if (flags.text !== undefined && flags.text !== true) args.text = flags.text;
+  if (flags.selector) args.selector = flags.selector;
+  if (flags.load === true) args.load = true;
+  if (flags.idle === true) args.idle = true;
+  if (flags.ms !== undefined) args.ms = flags.ms;
+  if (flags.maxChars !== undefined) args.maxChars = flags.maxChars;
+  if (flags.timeout !== undefined) args.timeout = flags.timeout;
+  if (flags.px !== undefined) args.px = flags.px;
+  if (flags.direction !== undefined) args.direction = flags.direction;
+  if (flags.quietMs !== undefined) args.quietMs = flags.quietMs;
+
+  const result = await client.call(name, command, args, { tab: flags.tab, owner: undefined });
+  return report(flags, result);
+}
+
+function report(flags, result) {
+  printResult(flags, result);
+  return 0;
+}
+
+if (require.main === module) {
+  main(process.argv.slice(2)).then(code => {
+    process.exitCode = code || 0;
+  }, error => {
+    const code = error && error.code ? error.code : 'error';
+    process.stderr.write(`mbrowser: ${code}: ${error && error.message ? error.message : error}\n`);
+    process.exitCode = code === 'usage' ? 2 : 1;
+  });
+}
+
+module.exports = { parseArgs, camel, commandArgs, USAGE, PAGE_COMMANDS };

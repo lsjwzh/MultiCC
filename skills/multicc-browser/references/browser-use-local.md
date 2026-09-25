@@ -1,10 +1,14 @@
-# Browser Use 本地专用浏览器（Intel/macOS 11 候选路径）
+# Browser Harness 本地专用浏览器（可选备选，Python）
 
-Browser Use 官方 `browser-use` 技能调用 CLI；CLI 的本地执行层是官方 `browser-harness`，通过 CDP 连接 Chromium。默认接管个人 Chrome 会触发权限确认，也不能解决旧系统浏览器版本限制。MultiCC 的 `scripts/local_browser_use.py` 启动用户指定的兼容浏览器及专用 Profile，并把 CDP 地址交给 Harness；用户明确选择时可用 `seed` 将**已退出的**个人 Chrome 指定 Profile 一次性复制到专用目录。它不下载浏览器，也不启动云服务。
+> **这不是默认路线。** MultiCC 默认用自带的 `mbrowser`（见 [SKILL.md](../SKILL.md) 与 [mbrowser 命令参考](mbrowser.md)），它不需要 Python。本文档只在**用户明确点名 Browser Harness / Browser Use**、或本机缺 Node 22 时使用。
+>
+> **两者共用同一批专用 Profile 目录**：`~/Library/Application Support/MultiCC/browser-use/<name>`。同一个 Profile **不要被 mbrowser 和 Harness 同时打开**（Chrome 会拒绝或损坏同一 user-data-dir 的锁）；切换前先停掉另一边的浏览器进程。Harness 的 Profile 也不要用 `--port` 之外的端口约定去猜 mbrowser 的端口——mbrowser 的端口是 `--remote-debugging-port=0` 由系统分配的。
+
+Browser Use 官方 `browser-use` 技能调用 CLI；CLI 的本地执行层是官方 `browser-harness`，通过 CDP 连接 Chromium。默认接管个人 Chrome 会触发权限确认，也不能解决旧系统浏览器版本限制。MultiCC 的 `scripts/local_browser_use.py` 启动用户指定的兼容浏览器及专用 Profile，并把 CDP 地址交给 Harness；用户明确选择时可用 `seed` 将**已退出的**个人 Chrome 指定 Profile 一次性复制到专用目录。它不下载浏览器，也不启动云服务。Harness 的 `seed` 与 mbrowser 看到的是同一批目录，因此复制来的登录态对 mbrowser 同样可用。
 
 ## 安装与预检
 
-先运行 `python3 skills/multicc-browser/scripts/browser_probe.py`：它列出本机哪些 Chromium-family 浏览器声明可在此 macOS 运行，并给出带正确路径和空闲端口的 `smoke` 命令。`start`/`smoke` 启动前也会读取浏览器 `.app` 的 `LSMinimumSystemVersion`，声明不兼容时直接拒绝，不再等浏览器崩溃。未指定 `--port` 时默认 9331（避开 Agent 守护的 9222 与 Node 调试的 9229）。
+先运行 `python3 skills/multicc-browser/scripts/browser_probe.py`：它列出本机哪些 Chromium-family 浏览器声明可在此 macOS 运行，并给出带**绝对**脚本路径、空闲端口和已发现解释器的 `smoke` 命令。命令里的解释器是探测到的 3.11+ Python（运行探测的那个，或 PATH 上的 `python3.13`/`python3.12`/`python3.11`）；都找不到时探测会明说需要 Python ≥3.11，而不是印一条跑不起来的命令。`start`/`smoke` 启动前也会读取浏览器 `.app` 的 `LSMinimumSystemVersion`，声明不兼容时直接拒绝，不再等浏览器崩溃。未指定 `--port` 时默认 9331（避开 Agent 守护的 9222 与 Node 调试的 9229）。
 
 在目标 Intel/macOS 11 上准备 Python 3.12、`browser-harness==0.1.13` 和**经过该机实测可运行**的 Chromium-family 可执行文件。推荐在独立 Python 环境里安装：
 
