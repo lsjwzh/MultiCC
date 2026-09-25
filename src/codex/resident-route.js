@@ -104,7 +104,12 @@ function createCodexResidentRoutes({ providers, logger = console } = {}) {
   // the route is materialized, so the lane asks for both through one call.
   function prepare(childEnv, options = {}) {
     if (!childEnv || typeof childEnv !== 'object') return false;
-    if (protocolFamilyOf(options.cli, 'api') !== 'openai_responses') {
+    const family = protocolFamilyOf(options.cli, 'api');
+    // A resident CLI of neither family (zcode) owns its route already: its
+    // provider was materialized into a private HOME by the route overrides, and
+    // the Anthropic hop would only plant ANTHROPIC_* the engine never reads.
+    if (family === null && options.cli) return false;
+    if (family !== 'openai_responses') {
       providers.applyClaudeProxyEnv(childEnv, {
         providerId: options.providerId,
         sessionId: options.sessionId,

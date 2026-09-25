@@ -46,12 +46,13 @@ test('the table places each CLI in exactly one lane', () => {
   // codex-exp's protocol (app-server) was always long-lived; the bridge now holds
   // that child across turns, so it moved from the per-turn to the resident lane.
   // Nothing about callers changed — only this table and the runtime that owns the
-  // resident child.
-  for (const cli of ['claude', 'claude-exp', 'codex-exp']) {
+  // resident child. zcode followed the same way: its engine's app-server keeps the
+  // session (and the background tasks it runs) alive across turns.
+  for (const cli of ['claude', 'claude-exp', 'codex-exp', 'zcode']) {
     assert.equal(isResident(cli), true, `${cli} keeps its child across turns`);
     assert.equal(capabilityOf(cli).lifecycle, 'resident');
   }
-  for (const cli of ['codex', 'opencode', 'zcode', 'dsh', 'qoder', 'kimi', 'codebuddy', 'gemini', 'grok']) {
+  for (const cli of ['codex', 'opencode', 'dsh', 'qoder', 'kimi', 'codebuddy', 'gemini', 'grok']) {
     assert.equal(isResident(cli), false, `${cli} is spawned per turn`);
     assert.equal(capabilityOf(cli).lifecycle, 'per-turn');
   }
@@ -64,6 +65,7 @@ test('a cancel that reaps the child is distinguished from one that interrupts in
   // still running, or waits for a process that is designed to survive.
   assert.equal(cancelStopsProcess('claude'), true);
   assert.equal(cancelStopsProcess('codex-exp'), true);
+  assert.equal(cancelStopsProcess('zcode'), true);
   assert.equal(cancelStopsProcess('claude-exp'), false, 'the SDK lane interrupts the turn, not the child');
   assert.equal(cancelStopsProcess('codex'), true);
   assert.equal(cancelStopsProcess('not-a-cli'), true, 'the default lane is a per-turn child');

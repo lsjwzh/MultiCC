@@ -155,6 +155,18 @@ test('a resident claude turn routes through the proxy and holds no codex home', 
   assert.deepEqual(routes.stats(), { live: 0, retired: 0 });
 });
 
+test('a resident zcode turn keeps its own route: no proxy env, no codex home', () => {
+  const providers = createPort();
+  const routes = createCodexResidentRoutes({ providers });
+  const zcode = { HOME: '/tmp/multicc-zcode-private-home', TERM: 'dumb' };
+  assert.equal(routes.prepare(zcode, {
+    cli: 'zcode', providerId: 'zhipu', sessionId: 'pr1.session.token', port: 3000, officialOAuth: false,
+  }), false);
+  assert.deepEqual(zcode, { HOME: '/tmp/multicc-zcode-private-home', TERM: 'dumb' });
+  assert.deepEqual(providers.calls.claude, []);
+  assert.deepEqual(providers.calls.codex, []);
+});
+
 test('a codex turn that must be routed fails loudly when the route cannot be materialized', () => {
   const providers = createPort({ fail: true });
   const routes = createCodexResidentRoutes({ providers });
