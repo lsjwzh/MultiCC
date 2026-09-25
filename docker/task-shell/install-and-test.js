@@ -12,9 +12,7 @@ const { spawn } = require('node:child_process');
 //   2. install it through install.sh, the way a user does — from the package,
 //      not from a git checkout;
 //   3. boot it through the `multicc` command it ships, and prove a real
-//      session survives a stop/start;
-//   4. only then install this checkout's dev dependencies and run the
-//      regression suites, which are about the app and belong in the source tree.
+//      session survives a stop/start.
 //
 // Steps 2-3 run in a container with no node_modules, no git repo and no
 // globally installed Node — that is what makes the standalone claim meaningful.
@@ -89,16 +87,5 @@ async function run(command, args, cwd, env = process.env) {
   delete smokeEnv.ACCESS_TOKEN; // The config install.sh wrote is the only source.
   await run(process.execPath, [`${candidate}/docker/task-shell/installed-smoke.js`], installed, smokeEnv);
 
-  // 4) Only now, with the install proven on a pristine machine, bring in the
-  // dev dependencies the app's own suites need. They test the application, and
-  // the source checkout is where they were written to run.
-  await run('npm', ['ci', '--no-audit', '--no-fund'], candidate);
-  const regressionData = path.join(dataDir, 'regression');
-  await run(process.execPath, ['docker/task-shell/run-tests.js'], candidate, {
-    ...smokeEnv,
-    MULTICC_DATA_DIR: regressionData,
-    MULTICC_MEMORY_ROOT: `${regressionData}/memories`,
-    MULTICC_ENV_FILE: path.join(dataDir, 'regression.env'),
-  });
   console.log('PASS clean-install release gate:', JSON.stringify({ ...manifest, version, node: process.version, platform: process.platform, arch: process.arch }));
 })().catch(error => { console.error(error); process.exitCode = 1; });

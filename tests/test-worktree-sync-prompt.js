@@ -2,18 +2,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const { createHostPrompts } = require('../src/chat/host-prompts');
+const prompt = createHostPrompts({ PORT: '3000' }).multiccImgHint;
 
 test('worktree prompt distinguishes same-session busy from real sync conflicts', () => {
-  assert.match(server, /不要要求目标会话启动后再重复 sync/);
-  assert.match(server, /唯一阻塞原因是 busy\/running/);
-  assert.match(server, /目标正是 \$MULTICC_SESSION_ID/);
-  assert.match(server, /git status --short/);
-  assert.match(server, /git rev-list --left-right --count HEAD\.\.\.main/);
-  assert.match(server, /工作区 clean 且结果为 `0 0` 才可继续/);
-  assert.match(server, /dirty、conflict、分支落后\/分叉/);
-  assert.match(server, /不要把“正在回答本轮消息”误报成 worktree 冲突/);
+  assert.match(prompt, /does not call "its own session's sync" endpoint/);
+  assert.match(prompt, /returns HTTP 409 busy by design/);
+  assert.match(prompt, /Self-sync: align with the local base branch directly with Git/);
+  assert.match(prompt, /git status --short/);
+  assert.match(prompt, /git rev-list --left-right --count HEAD\.\.\.main/);
+  assert.match(prompt, /only `0 0` means fully aligned/);
+  assert.match(prompt, /Stop and report when dirty, of unclear ownership, or in conflict/);
+  assert.match(prompt, /do not mistake the endpoint's `unmerged` wording for a Git index conflict/);
 });

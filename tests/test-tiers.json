@@ -1,0 +1,4991 @@
+{
+  "schemaVersion": 1,
+  "tiers": {
+    "core": {
+      "label": "核心功能",
+      "intent": "Mechanism-level invariants and main-path bug regressions: lifecycle and durable state, model and multi-CLI routing, worktree isolation and sync, task separation and stages, reliable delivery, and security boundaries. UI presentation is excluded."
+    },
+    "flow": {
+      "label": "影响流程",
+      "intent": "Installation, upgrade, release, cross-process integration, end-to-end wiring, and behavior-level UI workflows."
+    },
+    "other": {
+      "label": "其他",
+      "intent": "Presentation-only UI, optional integrations, performance probes, and live/manual diagnostics."
+    }
+  },
+  "lanes": {
+    "deterministic": "Hermetic Node test runnable without a live MultiCC service.",
+    "isolated": "Starts isolated processes, servers, repositories, or data roots.",
+    "cdp": "Requires headless Chrome/CDP; a missing browser must not count as coverage.",
+    "live": "Requires live services, providers, devices, credentials, or timing-sensitive benchmarks.",
+    "smoke": "Exercises a running MultiCC service and may create temporary product state.",
+    "flutter": "Runs under flutter test without a simulator or device.",
+    "device": "Requires a booted Flutter device/simulator and a running service."
+  },
+  "tests": [
+    {
+      "path": "app/integration_test/ui_tour_test.dart",
+      "tier": "flow",
+      "lane": "device"
+    },
+    {
+      "path": "app/test/air_console_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_destinations_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_directory_mode_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_directory_stats_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_fleet_sharing_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_new_task_sheet_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_open_navigation_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_ops_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_palette_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_role_editor_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_schedules_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_service_payload_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_session_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_sidebar_task_band_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_sidebar_task_status_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_task_config_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_task_details_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_task_status_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_tasks_view_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_worktree_panel_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/app_update_provider_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/auto_provider_config_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/auto_route_note_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/autocommit_turn_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/aux_classify_bar_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/aux_verdict_staleness_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/background_task_board_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/background_tasks_dock_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/basic_mode_message_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_composer_fold_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_debug_panel_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_header_title_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_message_replay_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_runtime_panels_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_runtime_state_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_service_keepalive_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_service_queue_action_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_shell_provider_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_shell_view_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/claude_models_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/cli_compatibility_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/code_highlight_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/codex_models_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/connection_probe_service_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/context_level_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/context_source_details_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/context_trace_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/create_session_dialog_provider_limit_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/cron_run_history_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/dashboard_declutter_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/dashboard_workspace_coordinator_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/dashboard_workspace_store_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/directory_card_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/dispatch_floating_dock_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/dispatch_hint_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/dispatch_mode_selector_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/dispatch_queue_panel_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/dispatch_queue_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/docs_registry_entry_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/docs_registry_screen_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/download_ticket_service_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/fleet_session_order_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/git_log_sheet_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/goal_precheck_timeout_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/graph_canvas_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/i18n_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/input_bar_keyboard_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/input_bar_slash_commands_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/lan_discovery_picker_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/lan_discovery_service_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/main_shell_overlay_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/manage_service_docs_registry_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/marquee_text_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/memory_file_editor_screen_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/memory_graph_screen_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/merge_hint_bar_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/message_bubble_task_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/message_quote_provider_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/message_quote_sheet_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/message_quote_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/message_quote_wiring_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/overlay_geometry_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/part_delta_sidecar_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/provider_label_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/provider_limit_label_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/provider_limit_picker_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/provider_route_gate_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/provider_switch_limit_bar_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/qr_encoder_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/queue_action_stale_schedule_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/quota_bar_render_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/quota_gating_parity_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/role_tokens_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/scheduled_send_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/secrets_entry_visibility_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/secrets_screen_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/session_card_task_icon_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/session_layer_collapse_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/settings_experience_mode_migration_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/setup_connection_gate_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/shell_config_entry_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/staged_user_send_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_artifacts_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_board_entry_service_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_board_model_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_bound_chat_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_chat_open_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_chat_transport_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_graph_screen_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_notify_permission_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_notify_preference_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_run_summary_list_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_run_summary_model_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/task_separation_prompt_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/thinking_indicator_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/tool_input_view_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/tool_trajectory_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/tour_overlay_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/transcript_live_folder_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/usage_timing_line_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/vendor_quota_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/workspace_navigation_drawer_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/workspace_task_run_stream_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/worktree_conflict_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/ws_ticket_service_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "tests/smoke-core.js",
+      "tier": "flow",
+      "lane": "smoke"
+    },
+    {
+      "path": "tests/test-acp-adapter.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-agent-resources-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-air-bridges-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-chat-layer-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-cli-update-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-cli-update.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-conditional-detail-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-conditional-get.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-conditional-poll-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-console-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-directory-nav-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-frame-pool-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-frame-reload-rebind-cdp.js",
+      "tier": "flow",
+      "lane": "cdp"
+    },
+    {
+      "path": "tests/test-air-git-log.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-air-global-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-goal-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-i18n-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-manage-shell.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-memory-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-ops-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-ops.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-paint-budget.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-pins.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-push-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-resources-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-search-scope-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-secrets-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-skillsync-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-storage-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-task-band-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-task-first-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:task-first:cdp",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-task-lifecycle-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-task-motion.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-task-notify.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-air-task-reorder-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-taskgraph-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-tasks.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-tunnel-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-usage-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-usage.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-air-voice-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-workspace-fixes-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-workspaces-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-aliyun-quota.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-api-contracts.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-api-error-host-wiring.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-api-error-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-api-error-policy.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-architecture-boundaries.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-ark-quota.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-artifacts-runtime.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-attribution-mode.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-auth-client-url-hygiene.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-auth-locality-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-auth-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-auto-provider-config.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-auto-provider-editor.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-auto-provider-handoff.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-auto-provider-routing-test.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-auto-provider-routing.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-auto-provider-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-aux-goal-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-aux-http.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-aux-responses.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-aux-run-log.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-aux-run-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-aux-verdict-health.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-background-task-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-battery-guard.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-bg-completion-coalescer.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-bridge-contract.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:bridges",
+      "entrypoints": [
+        "npm:test:bridges"
+      ]
+    },
+    {
+      "path": "tests/test-business-push.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-cancel-state-flow.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-admit-error-feedback.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-ai-config.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-air-theme-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-chat-composer-band-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-chat-composer-collapse-cdp.js",
+      "tier": "flow",
+      "lane": "cdp"
+    },
+    {
+      "path": "tests/test-chat-composer.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-context-controls.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-diff-dock.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-dispatch-activity.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-dispatch-hint.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-dto-golden.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-duplicate-guards.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-event-controller.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-finalize-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-finalize-plan.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-header-shapes-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-chat-history-ordering.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-history-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-history-store.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-history-view.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-host-coordinator.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-layout-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-chat-message-focus.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-notifications.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-quote.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-chat-recovery-service.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-scheduled-send.js",
+      "tier": "flow",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-chat-scroll-controller.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-session-queue.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-share-mode.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-share-view-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-chat-stream-cancel-escalation.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-stream-close.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-stream-idle-guard.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-stream-provider-recycle.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-stream-recycle-request.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-stream-resume.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:cli-switch",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-stream.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-chat-task-attribution.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-chat-task-index.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-chat-task-mode.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-task-separation.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-chat-token-readout.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-transport.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-turn-core.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-usage-readout.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-chat-usage-summary.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-user-input-card.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat-worktree-status.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-chat.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-chrome-cdp.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-classify-api-error-state.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-classify-api-errors.js",
+      "tier": "other",
+      "lane": "live",
+      "owner": "npm:test:classify-live",
+      "entrypoints": [
+        "npm:test:classify-live"
+      ]
+    },
+    {
+      "path": "tests/test-classify-live-runner.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-classify-vocab.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-exp-adapter.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-exp-sdk.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-models-route.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-claude-oauth-refresh.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-claude-oauth-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-official-accounts.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-claude-passthrough-hop.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router",
+        "npm:test:relay-transparency"
+      ]
+    },
+    {
+      "path": "tests/test-claude-proxy-policy.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-claude-rate-limit.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-claude-sdk-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-sdk-route.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-sdk-stream.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-claude-settings-override.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-claude-subagent-live.js",
+      "tier": "other",
+      "lane": "live",
+      "owner": "npm:test:subagent-live",
+      "entrypoints": [
+        "npm:test:subagent-live"
+      ]
+    },
+    {
+      "path": "tests/test-claude-subagent-routing.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router",
+        "npm:test:subagent-routing"
+      ]
+    },
+    {
+      "path": "tests/test-claude-usage-quota.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-cli-adapters.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:cli-switch",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-cli-capability.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-cli-command-resolution.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-cli-completion-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-cli-completion.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-cli-specific-ui.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "entrypoints": [
+        "npm:test:cli-switch"
+      ]
+    },
+    {
+      "path": "tests/test-cli-switch-api.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:cli-switch",
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-cli-switch-failclosed.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:cli-switch",
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-cli-switch-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-cli-switch.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:cli-switch",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-cli-upstream-version.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-codebuddy-models-route.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-codex-app-bridge-resident.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-codex-app-stream.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-codex-attempt-home.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-codex-exp-adapter.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-codex-history-hooks.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-codex-image-bridge.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-codex-models-route.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-codex-oauth-refresh.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-codex-oauth-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-codex-official-models.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-codex-official-relay.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router",
+        "npm:test:relay-transparency"
+      ]
+    },
+    {
+      "path": "tests/test-codex-resident-route.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-codex-rollout-guard-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-codex-rollout-guard.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-codex-session-file.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-codex-subagent-live.js",
+      "tier": "other",
+      "lane": "live",
+      "owner": "npm:test:codex-subagent-live",
+      "entrypoints": [
+        "npm:test:codex-subagent-live"
+      ]
+    },
+    {
+      "path": "tests/test-codex-subagent-routing.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:codex-subagent-routing",
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-codex-transform.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-codex-usage.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-commander-migration-isolated.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-commander-migration.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-context-plan.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-cron-fanout-migration.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-cron-fanout-upgrade-isolated.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-cron-task-first.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-cross-cli-dispatch.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-danmaku-dock.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-dashboard.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-delivery-evidence.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-delivery-handoff-probe.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-desktop-shell.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:desktop",
+      "entrypoints": [
+        "npm:test:desktop"
+      ]
+    },
+    {
+      "path": "tests/test-detached-durable.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-detached.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-developer-tools-route.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-directory-service.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-directory.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-dispatch-cancel.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-dispatch-interface-retirement.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-dispatch-loop-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ],
+      "variants": [
+        {
+          "id": "existing-target",
+          "args": []
+        },
+        {
+          "id": "new-task",
+          "args": [
+            "--new-task"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/test-dispatch-progress.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-dispatch-targeting.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-docker-task-shell.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js"
+      ]
+    },
+    {
+      "path": "tests/test-docs-registry.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-durable-operations-api.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-durable-operations-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-error-envelope.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-file-transfer-routes.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-fleet-sharing-routes.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-fleet-sharing-two-ip.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-fleet-sharing.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-folder-memory-service.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-gateway-core.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:bridges",
+      "entrypoints": [
+        "npm:test:bridges"
+      ]
+    },
+    {
+      "path": "tests/test-gateway-dispatch-wakeup.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-git-bundle.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:git",
+      "entrypoints": [
+        "npm:test:git"
+      ]
+    },
+    {
+      "path": "tests/test-git-push.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:git",
+      "entrypoints": [
+        "npm:test:git",
+        "npm:test:git-push"
+      ]
+    },
+    {
+      "path": "tests/test-git-safety.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:git",
+      "entrypoints": [
+        "npm:test:git",
+        "npm:test:repo-actor"
+      ]
+    },
+    {
+      "path": "tests/test-handoff-env.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-handoff-zip.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-header-more-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-host-lifecycle-task-run-close.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-host-read-routes.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-host-write-routes.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-http-error-boundary.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-i18n.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "entrypoints": [
+        "npm:test:i18n"
+      ]
+    },
+    {
+      "path": "tests/test-ios-ota.js",
+      "tier": "flow",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-jev-client.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-kimi-code.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-kimi-quota.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-lan-discovery.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-liveness-api.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-liveness-display.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-liveness-process-probe.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-liveness-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-local-asr.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-log-housekeeping.js",
+      "tier": "flow",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-macos-agent.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-macos-disk-permissions.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-macos-power.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core",
+        "npm:test:power"
+      ]
+    },
+    {
+      "path": "tests/test-macos-privacy-route.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-manage-official-accounts.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-manage-provider-relay.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-manage-ui-modules.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-memo-controller.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-memo-http-api.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-memo-http-controller.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-memory-api.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated",
+        "npm:test:memory"
+      ]
+    },
+    {
+      "path": "tests/test-memory-browser-routes.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-memory-controller.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-memory-runtime.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-memory-store.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "entrypoints": [
+        "npm:test:memory"
+      ]
+    },
+    {
+      "path": "tests/test-memory-task-distill.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-message-composer-golden.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:cli-switch",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-model-history-converter.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-monitor-admission.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-newcomer-onboarding.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-official-accounts.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-official-fetch.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-opencode-context-guard.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-opencode-go-default-provider.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-opencode-model-limits.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-opencode-models.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-operation-service.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-orchestration-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-orchestration-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-orchestration-sqlite-store.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-orchestration-store.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-outbox.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-path-safety.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-pending-config-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-powerd.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-privileged-helper-route.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-privileged-helper.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-processing-watchdog.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-progress-heartbeat.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-provider-attempt-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-balance.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-binding.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-catalog.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-provider-ccswitch-readonly.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-provider-invocation.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-limit-cache.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-log-watchdog.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-provider-protocol-routing.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-proxy-guard.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-quota-ui.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-provider-references.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-relay-quota.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-relay-share-store.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-router-port.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-router-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-provider-sharing-two-ip.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-provider-usage.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-provider-zhipu-fable-alias.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-providerless-vendor-clis.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-proxy-broadcast.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-public-session-access.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-publish-ipa-guard.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:governance",
+      "entrypoints": [
+        "npm:test:governance"
+      ]
+    },
+    {
+      "path": "tests/test-push-delivery-stats.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-push-localization.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-push-runtime.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-qoder-chat.js",
+      "tier": "core",
+      "lane": "isolated",
+      "entrypoints": [
+        "npm:test:cli-switch"
+      ]
+    },
+    {
+      "path": "tests/test-qoder-models-route.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-quick-voice.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-quota-bar-parity.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-quota-bars-routes.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-quota-chrome-routes.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-quota-gating-parity.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-quota-managed-browser.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-qwen-audio-runtime.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-realtime-voice.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-release-upgrade.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:native",
+      "entrypoints": [
+        "npm:test:native"
+      ]
+    },
+    {
+      "path": "tests/test-release-version-consistency.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:governance",
+      "entrypoints": [
+        "npm:test:governance"
+      ]
+    },
+    {
+      "path": "tests/test-repo-actor.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:git",
+      "entrypoints": [
+        "npm:test:git",
+        "npm:test:repo-actor"
+      ]
+    },
+    {
+      "path": "tests/test-repository-artifacts.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:governance",
+      "entrypoints": [
+        "npm:test:governance"
+      ]
+    },
+    {
+      "path": "tests/test-request-locality.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-resident-pool.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-role-token-usage-observed.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-role-worker.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-router-mcp-config.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-router-mcp.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-router-targeting.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-router-task-shell-dispatch.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-router-tool-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-router-tool-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-runtime-deps.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:native",
+      "entrypoints": [
+        "npm:test:native"
+      ]
+    },
+    {
+      "path": "tests/test-runtime-governance.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-runtime-lifecycle-stops.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-safe-markdown.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-scan-route.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-scheduled-messages.js",
+      "tier": "flow",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-search-index.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-search-runtime.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-secrets-entry-visibility.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-secrets-vault.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-security-observability.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-server-cpu-hotpaths.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:cpu-hotpaths",
+      "entrypoints": [
+        "npm:test:cpu-hotpaths"
+      ]
+    },
+    {
+      "path": "tests/test-server-graceful-shutdown.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-server-processes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-server-restart.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-admin-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-session-autocommit-default.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-session-bounded-api.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-session-bundle-api.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-session-create-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-delete-connected-api.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-session-delivery.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-domain.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-session-git-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:git",
+      "entrypoints": [
+        "npm:test:git"
+      ]
+    },
+    {
+      "path": "tests/test-session-hibernation-contract.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-session-hibernation-git.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:git",
+      "entrypoints": [
+        "npm:test:git"
+      ]
+    },
+    {
+      "path": "tests/test-session-hibernation.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-session-lifecycle-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-memory-routes.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-persistence-api.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-session-persistence.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-session-policy.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-rename-broadcast.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-session-triggers.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-work-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-session-work-scheduler.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-share-base-url-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-share-routes.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-share-store.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-shell-chat-continuity.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-shutdown-http-errors.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-skill-sync.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-source-line-budget.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-sqlite-driver.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:native",
+      "entrypoints": [
+        "npm:test:native"
+      ]
+    },
+    {
+      "path": "tests/test-sqlite-runtime-check.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:native",
+      "entrypoints": [
+        "npm:test:native"
+      ]
+    },
+    {
+      "path": "tests/test-sqlite-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-stalled-turn-recovery.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-standalone-bundle.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:standalone",
+      "entrypoints": [
+        "npm:test:standalone"
+      ]
+    },
+    {
+      "path": "tests/test-standalone-installer.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:standalone",
+      "entrypoints": [
+        "npm:test:standalone"
+      ]
+    },
+    {
+      "path": "tests/test-starting-stall-recovery-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-state-bootstrap.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-state-store.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-static-doc-page.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-status-presentation.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-stream-integration.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-system-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-tailscale-funnel-health.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-artifacts-cdp.js",
+      "tier": "flow",
+      "lane": "cdp"
+    },
+    {
+      "path": "tests/test-task-artifacts.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-task-attribution-backtest.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-task-attribution-eligibility.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-task-attribution-facts.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-task-attribution-retrieval.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-task-board-auto-classify.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:task-board-auto",
+      "entrypoints": [
+        "npm:test:task-board-auto"
+      ]
+    },
+    {
+      "path": "tests/test-task-board-auto-provider-ui.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-board-cancel-run.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-board-groups.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-task-board-merge.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-board.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-bound-routing-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-task-bound-session.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-context-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-first-entry.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-task-first-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first:isolated"
+      ],
+      "variants": [
+        {
+          "id": "token",
+          "args": []
+        },
+        {
+          "id": "no-token",
+          "args": [
+            "--no-token"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/test-task-first-migration.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-task-graph-context.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-graph-routes.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-task-history-retention.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
+      "path": "tests/test-task-lifecycle.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-task-planning.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-relocate.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-role-bindings.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-task-routing.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-cleanup.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-context.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-errors.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-task-run-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-main-usage-integration.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-panel-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-production.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-provider-bridge.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-recovery.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-routing-contract.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-server-composition.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-store.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-run-stream-forwarder.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-task-search.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-separation.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-attribution-decisions.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:task-shells:cdp",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-shells:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-context-isolation.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-shells:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-http.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-independent-continue.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-shells:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-lab-service.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-lookup-index.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-ownership.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-relations.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-task-index.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-task-operations.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shell-transitions.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-shells.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-shells"
+      ]
+    },
+    {
+      "path": "tests/test-task-short-code.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-task-transcript.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-task-worktree.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-telegram-client-adapter.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-terminal-deps-install.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:native",
+      "entrypoints": [
+        "npm:test:native"
+      ]
+    },
+    {
+      "path": "tests/test-token-global.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-token-usage-routes.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-transcript-prune.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-tts-performance.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-tui-chat-mirror-runtime.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-tunnel-restart-semantics.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-tunnel-sakurafrp-api.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-tunnel-sakurafrp-install.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-tunnel-sakurafrp-wiring.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-turn-error-veto.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-turn-event-journal.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-turn-event-replay.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-turn-ledger.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-turn-state-rules.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:contracts",
+      "entrypoints": [
+        "npm:test:contracts"
+      ]
+    },
+    {
+      "path": "tests/test-turn-timing.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-ui-layout-routes.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-unified-official-providers.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-update-runner.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-upload-middleware.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-upstream-error.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-usage-limit-poller.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-usage-limit-wiring.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-usage-observed.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
+      "path": "tests/test-user-input-answer-delivery.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-user-input-signal-host.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-vendored-assets.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-voice-acp-admission.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-voice-compare.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-voice-gateway-proxy.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-voice-gateway.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-voice-global-gateway.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-voice-global-lifecycle.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-voice-latency.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-voice-routes.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-wait-api-durable.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-wait-injector.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-wait-integration.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-wait-live.js",
+      "tier": "other",
+      "lane": "live"
+    },
+    {
+      "path": "tests/test-wait-service.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-web-api-client.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-workbuddy-dsh-adapters.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-workspace-admission.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-workspace-escalation.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-workspace-inventory.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "docker/task-shell/run-tests.js",
+        "npm:test:task-first"
+      ]
+    },
+    {
+      "path": "tests/test-workspace-residency.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-workspace-runtime.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-workspaces-routes.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-worktree-orphan-scan.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-worktree-reclamation-gate.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:worktree-reclamation",
+      "entrypoints": [
+        "npm:test:worktree-reclamation"
+      ]
+    },
+    {
+      "path": "tests/test-worktree-sync-prompt.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-ws-backpressure.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-ws-connection-router.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-zcode-app-server-mapping.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-zcode-auth.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-zcode-bridge.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-zcode-session-recovery-isolated.js",
+      "tier": "core",
+      "lane": "isolated",
+      "owner": "npm:test:integration:isolated",
+      "entrypoints": [
+        "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test.js",
+      "tier": "other",
+      "lane": "live",
+      "owner": "npm:test:live",
+      "entrypoints": [
+        "npm:test:live"
+      ]
+    }
+  ]
+}

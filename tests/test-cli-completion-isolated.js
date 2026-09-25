@@ -31,9 +31,11 @@ for (const cli of ['codex', 'claude', 'opencode']) {
   commands[cli.toUpperCase() + '_CMD'] = file;
   fs.writeFileSync(file, `#!/usr/bin/env node
 const fs = require('node:fs');
+const readline = require('node:readline');
 const cli = ${JSON.stringify(cli)};
 const mode = fs.readFileSync(${JSON.stringify(scenarioFile)}, 'utf8');
 const emit = event => process.stdout.write(JSON.stringify(event) + '\\n');
+const rpc = message => emit({ jsonrpc: '2.0', ...message });
 function reply() {
   const text = 'native-answer:' + cli + ':' + mode;
   if (cli === 'codex') {
@@ -43,15 +45,52 @@ function reply() {
   } else if (cli === 'claude') {
     emit({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
     emit({ type: 'result', subtype: 'success', is_error: mode === 'failed', terminal_reason: mode === 'failed' ? 'api_error' : 'completed', usage: {} });
-  } else {
-    emit({ type: 'step_start', sessionID: 'session-' + mode });
-    emit({ type: 'text', part: { text } });
-    if (mode === 'tool-stop') emit({ type: 'tool_use', part: { callID: 'tool-1', tool: 'read', state: { status: 'completed', output: 'ok' } } });
-    emit({ type: 'step_finish', part: { reason: 'stop', tokens: {} } });
   }
   if (cli !== 'claude') process.exitCode = mode === 'late-exit-error' ? 1 : 0;
 }
-if (cli === 'claude' && process.argv.includes('--input-format')) {
+if (cli === 'opencode') {
+  readline.createInterface({ input: process.stdin }).on('line', line => {
+    const message = JSON.parse(line);
+    const respond = result => rpc({ id: message.id, result });
+    if (message.method === 'initialize') {
+      respond({
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: true },
+        agentInfo: { name: 'fake-opencode' },
+      });
+    } else if (message.method === 'session/new') {
+      respond({ sessionId: 'session-' + mode, configOptions: [] });
+    } else if (message.method === 'session/load') {
+      respond({ configOptions: [] });
+    } else if (message.method === 'session/set_config_option') {
+      respond({ configOptions: [] });
+    } else if (message.method === 'session/prompt') {
+      const sessionId = message.params.sessionId;
+      rpc({ method: 'session/update', params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'answer-1',
+          content: { type: 'text', text: 'native-answer:opencode:' + mode },
+        },
+      } });
+      if (mode === 'tool-stop') {
+        rpc({ method: 'session/update', params: {
+          sessionId,
+          update: {
+            sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'read',
+            kind: 'read', status: 'completed', rawInput: { path: 'README.md' },
+            content: [{ type: 'content', content: { type: 'text', text: 'ok' } }],
+          },
+        } });
+      }
+      respond({
+        stopReason: mode === 'tool-stop' ? 'max_turn_requests' : 'end_turn',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      });
+    }
+  });
+} else if (cli === 'claude' && process.argv.includes('--input-format')) {
   let pending = '';
   process.stdin.on('data', data => {
     pending += data;

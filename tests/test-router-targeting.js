@@ -54,9 +54,9 @@ function fixture(t, overrides = {}) {
         gateway: false,
         oneWay: opts.oneWay,
         resultMode: opts.resultMode,
-        taskId: opts.taskId,
-        taskStart: opts.taskStart,
-        taskSource: opts.taskSource,
+        taskId: opts.taskId || null,
+        taskStart: opts.taskStart === true,
+        taskSource: opts.taskSource || null,
         taskText: opts.taskText || null,
       },
     });

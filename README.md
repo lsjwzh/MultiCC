@@ -216,9 +216,8 @@ app and the installer ship **the same standalone tree**, just with a window arou
 it. It supports macOS 11+ including Intel Macs:
 `multicc-standalone-<version>-darwin-x64.tar.gz`.
 
-Desktop installers appear on the Releases page from the first tag published after
-this feature landed; until such a release exists, build and run it from source
-with `npm run desktop:dev`.
+Stable releases include native desktop installers; developers can run the shell
+from source with `npm run desktop:dev`.
 
 **→ Install, first launch, startup failures, data/log locations, security model,
 signing status: [Desktop app](docs/desktop.md)** — or, for old/Intel Macs and
@@ -231,9 +230,9 @@ published, signed with the project release key, and attached to that exact GitHu
 Release. The **APK area in the web console** prefers a non-empty local
 `public/multicc.apk`; when none exists, it links only to the `multicc.apk` asset
 for the server's exact package version. It never falls forward to `latest`.
-Installation and `./multicc update` never build an APK. Starting with v1.6.1,
-every stable release ships a signed APK asset, so the remote fallback is
-available immediately. The same Release carries the **standalone packages** that
+Installation and `./multicc update` never build an APK. Current stable releases
+ship a signed APK asset, so the remote fallback is available immediately. The
+same Release carries the **standalone packages** that
 `install.sh` downloads, the desktop installers built on top of them, and their
 checksums (`SHA256SUMS.txt` covers everything).
 

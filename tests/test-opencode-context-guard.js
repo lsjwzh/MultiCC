@@ -165,8 +165,12 @@ test('turn-engine wires the opencode rotation at turn admission, before native-s
   assert.ok(hook > 0, 'the opencode admission hook must exist');
   const codexHook = source.indexOf("turnCli === 'codex' && persisted.cliSessionId");
   assert.ok(codexHook > 0 && hook > codexHook, 'the opencode hook sits after the codex guard');
-  const lineage = source.indexOf('hasNativeSession: !!persisted.cliSessionId');
-  assert.ok(lineage > hook, 'rotation must clear native state BEFORE the turn decides first-vs-resume');
+  const request = source.indexOf('turnRequest = normalizeTurnRequest({');
+  const lineage = source.indexOf('hasNativeSession:', request);
+  assert.ok(request > hook && lineage > request,
+    'rotation must clear native state BEFORE the turn decides first-vs-resume');
+  assert.match(source.slice(lineage, lineage + 160), /hasNativeHistory\(persisted\)/,
+    'first-vs-resume must use the canonical native-history proof');
   assert.ok(source.includes("reason: 'auto_native_context_rotate'"));
   // Rotation is decision + shared handoff machinery, never a direct write into
   // the user's OpenCode database.
