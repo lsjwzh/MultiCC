@@ -698,6 +698,35 @@ async function test(name, fn) {
     assert.strictEqual(h.runtime.handleEvent('s2', bgState(), { ...prompt, probe: true }).handled, false);
   });
 
+  await test('a background Agent reports its description and final text, never transcript records', () => {
+    const transcript = [
+      { isSidechain: true, type: 'user', message: { role: 'user', content: 'research it' } },
+      { isSidechain: true, type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read' }] } },
+      { isSidechain: true, type: 'assistant', message: { content: [{ type: 'text', text: 'FINAL REPORT' }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const agentState = { cwd: '/repo', isStreaming: false, _activeTurn: { turnId: 'turn-1' },
+      currentToolCalls: [{ id: 'ag-tool', name: 'Agent', input: { run_in_background: true } }] };
+    const start = { subtype: 'task_started', task_id: 'ag', tool_use_id: 'ag-tool', session_id: 'native',
+      description: 'Research data layout' };
+    for (const viaHook of [false, true]) {
+      const h = makeHarness();
+      h.files.set('/out/ag', transcript);
+      h.runtime.recordMainToolUseId('s1', 'ag-tool');
+      h.runtime.handleEvent('s1', agentState, start);
+      const result = h.runtime.handleEvent('s1', { ...agentState, _activeTurn: null }, viaHook
+        ? { subtype: 'monitor_prompt', task_id: 'ag', tool_use_id: 'ag-tool', status: 'completed',
+          summary: 'Agent "Research data layout" finished', result: 'FINAL REPORT', output_file: '/out/ag' }
+        : { subtype: 'task_notification', task_id: 'ag', tool_use_id: 'ag-tool', status: 'completed',
+          summary: 'FINAL REPORT', output_file: '/out/ag' });
+      assert.strictEqual(result.decision, 'inject');
+      h.clock.advance(100);
+      assert.strictEqual(h.injections.length, 1);
+      assert.match(h.injections[0].text, /后台任务（Research data layout）/);
+      assert.match(h.injections[0].text, /\nFINAL REPORT/);
+      assert.doesNotMatch(h.injections[0].text, /isSidechain|tool_use/);
+    }
+  });
+
   await test('insert-now drops pending completions and leaves a one-shot note for the next turn', () => {
     const h = makeHarness();
     const state = { cwd: '/repo', _activeTurn: { turnId: 'turn-1' },

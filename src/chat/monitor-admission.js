@@ -24,6 +24,7 @@ function notifications(input) {
     return { type: 'system', subtype: 'monitor_prompt', task_id: taskId,
       event_id: input.prompt_id ? `${input.prompt_id}:${index}` : undefined,
       summary: field('summary').slice(0, 240), status: field('status'), output: field('event').slice(0, 8000),
+      result: field('result').slice(0, 64 * 1024) || undefined,
       output_file: field('output-file').slice(0, 4096) || undefined, tool_use_id: field('tool-use-id').slice(0, 160) || undefined };
   });
   return events.length && events.every(Boolean) ? events : null;
