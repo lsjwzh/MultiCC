@@ -2,6 +2,12 @@
 
 const { sanitizePublicText } = require('../http/public-safety');
 
+// Names bundled skills used to ship under. Keep entries here permanently:
+// a machine can upgrade from any old version.
+const RETIRED_BUNDLED_SKILLS = Object.freeze([
+  'computer-use', // -> multicc-computer-use (2026-09-25)
+]);
+
 const NEVER_SYNCED_STATUS = Object.freeze({
   ts: 0,
   status: 'never-synced',
@@ -142,7 +148,37 @@ function createSkillSyncRuntime(rawDeps) {
     return lastResult || NEVER_SYNCED_STATUS;
   }
 
+  // A bundled skill that was renamed leaves its old copy installed on every
+  // machine, still advertised to every CLI. Remove it, but only what this
+  // installer provably owns: the shared copy must carry .skill-version, and a
+  // provider entry is removed only if it is a symlink into that copy. A real
+  // directory under the old name (e.g. a hand-cloned upstream) is left alone.
+  function retireBundledSkills() {
+    let retired = 0;
+    for (const name of RETIRED_BUNDLED_SKILLS) {
+      const shared = path.join(agentsSkillsDir, name);
+      if (!fs.existsSync(shared) || readSkillVersion(shared) === null) continue;
+      for (const provider of providers) {
+        const entry = path.join(provider.dir, name);
+        try {
+          if (!fs.lstatSync(entry).isSymbolicLink()) continue;
+          const target = path.resolve(provider.dir, fs.readlinkSync(entry));
+          if (target === shared || target.startsWith(shared + path.sep)) fs.unlinkSync(entry);
+        } catch (_) {}
+      }
+      try {
+        fs.rmSync(shared, { recursive: true, force: true });
+        retired++;
+        logger.log(`[multicc/skills] retired bundled ${name}`);
+      } catch (error) {
+        logger.warn(`[multicc/skills] retire bundled ${name} failed: ${publicSkillError(error)}`);
+      }
+    }
+    return retired;
+  }
+
   function installBundledSkills() {
+    retireBundledSkills();
     const sourceRoot = path.join(rootDir, 'skills');
     let names;
     try { names = fs.readdirSync(sourceRoot); }
@@ -424,6 +460,7 @@ function createSkillSyncRuntime(rawDeps) {
     start,
     stop,
     installBundledSkills,
+    retireBundledSkills,
     syncSharedSkills,
     queueAiSkillConversions,
   };
@@ -431,5 +468,6 @@ function createSkillSyncRuntime(rawDeps) {
 
 module.exports = {
   NEVER_SYNCED_STATUS,
+  RETIRED_BUNDLED_SKILLS,
   createSkillSyncRuntime,
 };
