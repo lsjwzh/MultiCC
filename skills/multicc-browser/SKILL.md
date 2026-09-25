@@ -9,7 +9,7 @@ description: 在 MultiCC 会话中操作需要交互或登录的网页；按可�
 
 ## 选执行层
 
-- **Browser Use 本地专用浏览器**：需要在 Intel/macOS 11 本机尝试时，先读 [本地 Browser Use 适配](references/browser-use-local.md)。使用官方 Browser Harness（Browser Use CLI 的执行层）连接一台专用的、已确认能在该系统运行的 Chromium；每个账号独立持久目录和端口。预检和 smoke 未通过前不要宣称可用。不要让 CLI 默认接管个人 Chrome。
+- **Browser Use 本地专用浏览器**：需要在 Intel/macOS 11 本机尝试时，先读 [本地 Browser Use 适配](references/browser-use-local.md)。使用官方 Browser Harness 连接一台专用的、已确认能在该系统运行的 Chromium；每个账号独立持久目录和端口。若用户明确选择沿用个人 Chrome 登录态，可在源浏览器完全退出后用 `seed` 一次性复制指定 Profile，再启动专用进程；复制不是免弹窗的原因，独立进程和目录才是。预检和 smoke 未通过前不要宣称可用。不要让 CLI 默认接管个人 Chrome。
 - **OpenClaw 托管浏览器**：适合 Claude/Codex 等 MultiCC 会话通过 CLI 控制。先读 [OpenClaw 适配](references/openclaw.md)，验证命令和 Gateway 可用，再用明确命名的托管 Profile。不要使用其默认的 `chrome` 扩展接管档案。
 - **Hermes 原生浏览器工具**：仅当当前运行环境实际暴露 `browser_*` 工具时使用。先读 [Hermes 适配](references/hermes.md)。不要为了调用浏览器而额外启动一个 Hermes 模型 Agent；它会引入另一套模型决策循环，也不会自动继承当前 MultiCC 会话的权限和上下文。
 - **BrowserAct**：若本机已安装且用户选择沿用现有浏览器，必须先加载其原生 `browser-act` 技能及完整 core 指南；优先使用各自持久的独立 `chrome` 浏览器，而非 `chrome-direct` 接管个人 Chrome。不要猜测其命令、Profile 或会话归属。
@@ -20,7 +20,7 @@ description: 在 MultiCC 会话中操作需要交互或登录的网页；按可�
 
 1. 按业务身份分配**固定、独立的浏览器 Profile / 用户数据目录**；不同浏览器进程绝不同时打开同一目录。一个账号的并行页面可在同一浏览器内用不同标签或窗口，但需要独立进程时必须用不同 Profile。
 2. 每次操作显式指定 Profile 和本会话拥有的标签/窗口/任务标识。不要操作或关闭其他 MultiCC 会话创建的目标；目标归属不明就先停下确认。
-3. 不默认接管个人 Chrome、复用其 CDP/扩展标签、复制主 Chrome Profile，或改用每次销毁登录态的临时隔离模式。它们分别可能引入授权弹框、账号串用或重新登录。
+3. 不默认接管个人 Chrome、复用其 CDP/扩展标签，或改用每次销毁登录态的临时隔离模式。仅在用户明确选择时一次性复制指定个人 Profile；不得复制正在运行的 Profile、覆盖目标或把源 Profile 作为后续工作目录。登录态复制不保证成功，须实际重启验证。
 4. 不因环境里存在云端 API key 就自动切到 Browserbase/Browser Use/Firecrawl。云端会改变页面、Cookie 与费用边界，须先获得明确选择。
 
 ## 操作与安全

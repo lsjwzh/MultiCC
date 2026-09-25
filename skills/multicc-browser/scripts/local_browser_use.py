@@ -18,6 +18,7 @@ from urllib.request import urlopen
 
 
 NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+SOURCE_PROFILE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9 _-]{0,63}$")
 SMOKE_HTML = "data:text/html,<title>MultiCC Browser Use Smoke</title><h1>MultiCC Browser Use Smoke</h1>"
 SMOKE_TITLE = "MultiCC Browser Use Smoke"
 
@@ -33,7 +34,7 @@ def chrome_args(executable, directory, port, headless):
         raise ValueError("port must be between 1024 and 65535")
     args = [str(executable), f"--user-data-dir={directory}",
             f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
-            "--no-first-run", "--no-default-browser-check"]
+            "--no-first-run", "--no-default-browser-check", "--profile-directory=Default"]
     if headless:
         args.append("--headless")
     args.append("about:blank")
@@ -74,6 +75,53 @@ def stop_owned_browser(process):
             process.wait(timeout=5)
 
 
+def seed_profile(source_root, source_profile, target_root):
+    """One-time, offline copy into a dedicated profile; never modify the source."""
+    if not SOURCE_PROFILE_RE.fullmatch(source_profile):
+        raise ValueError("source profile must be a single Chrome profile directory name")
+    source_root = source_root.expanduser().resolve()
+    target_root = target_root.expanduser()
+    if target_root.exists() or target_root.is_symlink():
+        raise RuntimeError(f"target already exists; refusing to overwrite: {target_root}")
+    if (source_root / "Local State").is_symlink() or not (source_root / "Local State").is_file():
+        raise RuntimeError(f"not a Chrome user-data directory (Local State missing): {source_root}")
+    source_dir = source_root / source_profile
+    if source_dir.is_symlink() or (source_dir / "Preferences").is_symlink() or not (source_dir / "Preferences").is_file():
+        raise RuntimeError(f"Chrome profile Preferences missing: {source_dir}")
+    lock = source_root / "SingletonLock"
+    if lock.is_symlink():
+        match = re.search(r"-(\d+)$", os.readlink(lock))
+        if not match:
+            raise RuntimeError("source Chrome lock cannot be checked; close Chrome and inspect it before seeding")
+        try:
+            os.kill(int(match.group(1)), 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            raise RuntimeError("source Chrome may still be running; close it before seeding")
+        else:
+            raise RuntimeError("source Chrome is running; close it before seeding")
+    elif lock.exists():
+        raise RuntimeError("source Chrome lock exists; close it before seeding")
+
+    target_root.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{target_root.name}-seed-", dir=target_root.parent))
+    try:
+        def ignore_ephemeral(directory, names):
+            ignored = {"Cache", "Code Cache", "GPUCache", "GrShaderCache", "Crashpad",
+                       "DevToolsActivePort", "SingletonCookie", "SingletonLock", "SingletonSocket"}
+            return {name for name in names if name in ignored or (Path(directory) / name).is_symlink()}
+
+        shutil.copy2(source_root / "Local State", staging / "Local State")
+        shutil.copytree(source_dir, staging / "Default", ignore=ignore_ephemeral)
+        os.chmod(staging, 0o700)
+        staging.rename(target_root)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    return target_root
+
+
 def smoke_program(screenshot):
     return ("new_tab(" + json.dumps(SMOKE_HTML) + ")\n"
             "wait_for_load()\n"
@@ -85,9 +133,16 @@ def smoke_program(screenshot):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("start", "smoke"))
-    parser.add_argument("--browser", required=True, type=Path,
+    parser.add_argument("mode", choices=("seed", "start", "smoke"))
+    parser.add_argument("--browser", type=Path,
                         help="path to a Chromium-family executable that runs on this macOS")
+    parser.add_argument("--source-user-data-dir", type=Path,
+                        default=Path.home() / "Library/Application Support/Google/Chrome",
+                        help="Chrome user-data root to copy from; used only by seed")
+    parser.add_argument("--source-profile", default="Default",
+                        help="source Chrome profile directory, e.g. Default or Profile 1")
+    parser.add_argument("--confirm-source-closed", action="store_true",
+                        help="confirm the source browser is fully closed before seed")
     parser.add_argument("--name", default="default", help="stable business/account profile name")
     parser.add_argument("--port", type=int, default=9229, help="unique loopback CDP port")
     parser.add_argument("--headless", action="store_true", help="do not show a window")
@@ -98,10 +153,24 @@ def main(argv=None):
 
     if platform.system() != "Darwin":
         parser.error("this launcher currently targets macOS; use Browser Use directly elsewhere")
-    if not args.browser.is_file() or not os.access(args.browser, os.X_OK):
-        parser.error("--browser must name an existing executable; no browser is downloaded automatically")
     try:
         durable_profile = profile_path(args.name)
+    except ValueError as error:
+        parser.error(str(error))
+
+    if args.mode == "seed":
+        if not args.confirm_source_closed:
+            parser.error("seed requires --confirm-source-closed; quit the source Chrome first")
+        try:
+            target = seed_profile(args.source_user_data_dir, args.source_profile, durable_profile)
+        except (OSError, RuntimeError, ValueError) as error:
+            parser.error(str(error))
+        print(f"SEEDED profile={target} source-profile={args.source_profile}; verify login in the dedicated browser", flush=True)
+        return 0
+
+    if not args.browser or not args.browser.is_file() or not os.access(args.browser, os.X_OK):
+        parser.error("--browser must name an existing executable; no browser is downloaded automatically")
+    try:
         chrome_args(args.browser, durable_profile, args.port, args.headless)
     except ValueError as error:
         parser.error(str(error))
