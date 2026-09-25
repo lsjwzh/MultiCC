@@ -35,4 +35,4 @@ description: 在 MultiCC 会话中操作需要交互或登录的网页；按可�
 
 本技能不能让不受支持的浏览器内核变得兼容。Intel/macOS 11 可尝试 Browser Harness + 兼容该系统的 Chromium-family 可执行文件，但 Python 包可安装不等于浏览器或 CDP 功能已验证；必须以目标机 smoke 结果为准。当前新版 Chrome 和 BrowserAct 不满足这台旧机器的本地要求。旧版浏览器可能停止接收安全更新，勿将其视作安全的日常登录浏览器。需要回退时可在受支持的机器运行浏览器执行层；远程 CDP/控制服务不得无认证暴露到公网。
 
-MultiCC Agent 是桌面权限与单端口 Chrome 守护进程，不是 Browser Harness 的替代执行层：它能点击、输入、截图，却不提供 DOM/标题读取，也不能改变浏览器的系统最低版本。它的可选用途和 macOS 11 目标编译边界见[本地 Browser Use 适配](references/browser-use-local.md)；不要自动把本技能改走 Agent 的前台坐标点击。
+MultiCC Agent v2 可在 macOS 11+ 做桌面截图、AX 元素观察/点击/输入，并守护单个 Chrome CDP 端口，但不提供网页 DOM、页面快照或浏览器内核，不能替代 Browser Harness，也不能改变浏览器的系统最低版本。MultiCC 启动时会按需安装/更新 Agent，系统权限仍须用户亲自开启。只有用户明确同意转为**前台桌面操作**时，才另行使用 `multicc-computer-use` 技能；不能把它作为 Browser Use/CDP 失败的静默回退。细节见[本地 Browser Use 适配](references/browser-use-local.md)。
