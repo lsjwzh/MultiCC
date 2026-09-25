@@ -406,20 +406,27 @@ test('the sync follows a session file: append, skip, prune, delete', () => {
   const logger = { warn() {}, log() {} };
   const history = createChatHistoryFileRepository({ dataDir: dir });
   const index = createSearchIndex({ dbFile: path.join(dir, 'search-index.sqlite'), logger });
-  const corpus = createMessageCorpus({ index, history, logger });
+  let now = 0;
+  const corpus = createMessageCorpus({ index, history, logger, now: () => now });
+  const clockAtFile = (settled = false) => {
+    now = Math.floor(fs.statSync(history.fileFor('s1')).mtimeMs) + (settled ? 2 : 0);
+  };
 
   const first = { id: 'm1', role: 'user', content: '第一个问题：分词器为什么用 bigram 而不是 trigram。' };
   const second = { id: 'm2', role: 'assistant', content: '第二个回答：因为 trigram 对两个字的中文词完全失明。' };
   history.write('s1', [first, second]);
+  clockAtFile();
   const built = corpus.syncAll();
   assert.equal(built.synced, 1);
   assert.equal(corpus.search({ text: '分词器' }).results.length, 1);
 
   // Unchanged file: skipped without being re-read.
+  clockAtFile(true);
   assert.equal(corpus.syncSession('s1').sessionSkipped, true);
 
   // Appended turn: only the new content is written.
   history.write('s1', [first, second, { id: 'm3', role: 'user', content: '第三个问题：那索引占多少空间。' }]);
+  clockAtFile();
   const appended = corpus.syncSession('s1');
   assert.equal(appended.sessionSkipped, false);
   assert.equal(appended.inserted, 1);
@@ -428,6 +435,7 @@ test('the sync follows a session file: append, skip, prune, delete', () => {
 
   // Pruned turn: the retired tail stops answering.
   history.write('s1', [first]);
+  clockAtFile();
   const pruned = corpus.syncSession('s1');
   assert.ok(pruned.pruned >= 1);
   assert.equal(corpus.search({ text: '占多少空间' }).results.length, 0);
@@ -486,6 +494,8 @@ test('an mtime that has not settled is re-read rather than trusted', () => {
   const corpus = createMessageCorpus({ index, history, logger, now: () => fs.statSync(history.fileFor('s1')).mtimeMs });
   history.write('s1', [{ role: 'user', content: '这段话在同一个毫秒里被写入，快路径不能直接跳过它。' }]);
   assert.equal(corpus.syncSession('s1').sessionSkipped, false);
+  assert.equal(corpus.syncSession('s1').sessionSkipped, false,
+    'an indexed file still inside the settle window must be read again');
   index.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
