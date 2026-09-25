@@ -650,12 +650,12 @@ function createBackgroundTaskRuntime(deps = {}) {
       const watch = monitorWatches.get(sessionName)?.get(String(event.task_id));
       if (!watch) return handleTaskPrompt(sessionName, chatState, event);
       if (!watch.live && now() - watch.endedAt > dedupTtlMs) return { handled: false };
+      // Progress stays inside the resident session. During a live turn the CLI
+      // attaches it to that turn's next request, so leave it native. Between
+      // turns it would start an unadmitted query; block that without queueing
+      // a 🔇 turn per event — the terminal bookend below continues the task.
+      if (!event.status && chatState?.isStreaming === true) return { handled: false };
       if (event.probe) return { handled: true, monitorOwned: true };
-      // A progress event only ever reaches this hook from a resident process
-      // that has no live turn: the watch runs inside the session and its
-      // progress is already on the task ledger. Waking the model (natively or
-      // as a queued 🔇 turn) per event only piles up work; the terminal
-      // bookend below is the one report that continues the task.
       if (!event.status) return { handled: true, monitorOwned: true, decision: 'progress' };
       watch.terminalHandled = true;
       if (watch.terminalQueued) return { handled: true, monitorOwned: true, decision: 'duplicate' };

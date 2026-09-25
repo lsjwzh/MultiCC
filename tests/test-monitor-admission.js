@@ -165,3 +165,59 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor reports only it
   assert.ok(injections.some(text => /MONITOR_LINE_B/.test(text)));
   assert.deepEqual(requests, ['monitor-turn-1', 'monitor-turn-1', 'monitor-turn-2']);
 });
+
+for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during a live turn reaches that turn natively`, { timeout: 30000 }, async t => {
+  const seen = [], injections = [], hooks = [];
+  const f = await sdkFixture(t, ({ index, input }) => {
+    // The command text also contains the marker; only a delivered event counts.
+    seen[index] = JSON.stringify(input.messages).split("printf 'MONITOR_LINE_A").join('').includes('<event>MONITOR_LINE_A</event>');
+    if (index === 1) return { type: 'tool_use', id: 'monitor-tool', name: 'Monitor', input: {
+      description: 'in-turn Monitor', persistent: true,
+      command: "while [ ! -f monitor-event ]; do sleep 0.02; done; printf 'MONITOR_LINE_A\\n'; while [ ! -f monitor-stop ]; do sleep 0.02; done" } };
+    if (index === 2) return { type: 'tool_use', id: 'bash-tool', name: 'Bash', input: {
+      command: 'touch monitor-event; sleep 3; echo slept', description: 'let the Monitor report' } };
+    return null;
+  });
+  fs.writeFileSync(path.join(f.configDir, '.claude.json'), JSON.stringify({ cachedGrowthBookFeatures: {
+    tengu_amber_sentinel: true, tengu_breezy_crescent: false } }));
+  f.env.CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF = '1';
+  const stream = lane === 'sdk' ? createStreamRouter({}, createSdkStream()) : require('../src/chat/chat-stream');
+  const state = { cwd: f.cwd, currentToolCalls: [], isStreaming: true, _activeTurn: { turnId: 'turn-1' } };
+  const background = createBackgroundTaskRuntime({
+    broadcast() {}, observeTask() {}, noteBgResultInjected() {},
+    deliverSystem: (id, text) => { injections.push(text); },
+    createCoalescer: coalescing.createCoalescer, buildNudge: coalescing.buildNudge,
+    classifyCompletion: coalescing.classifyBgCompletion,
+    spawn() { throw new Error('Monitor must not create a writer shadow'); },
+    readFile: fs.readFileSync, realpath: fs.realpathSync, tmpdir: () => f.root,
+    getuid: () => process.getuid?.() || 0, now: Date.now,
+    setTimer: setTimeout, clearTimer: clearTimeout, completionWindowMs: 30,
+  });
+  await stream.claimWorkspace('inturn', { id: `inturn-${lane}`, path: f.cwd });
+  stream.ensure('inturn', { cwd: f.cwd, sessionId: randomUUID(), idleMs: 30000, monitorAdmission: true, env: { ...f.env },
+    onBackgroundEvent: event => {
+      const verdict = background.handleEvent('inturn', state, event);
+      if (event.subtype === 'monitor_prompt' && !event.probe) hooks.push(verdict);
+      return verdict;
+    },
+    isBackgroundActive: () => background.hasProcessBackgroundTasks('inturn'),
+    ...(lane === 'sdk' ? { sdkOptions: { model: 'claude-sonnet-4-6' } } : {
+      cmd: path.join(path.dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), '..',
+        `claude-agent-sdk-${process.platform}-${process.arch}`, 'claude'),
+      baseArgs: ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json',
+        '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6'] }) });
+  f.teardown.tasks.push(async () => {
+    fs.writeFileSync(path.join(f.cwd, 'monitor-stop'), 'stop');
+    try { await stream.closeAndWait('inturn'); } finally { background.stopAll(); }
+  });
+  await stream.send('inturn', 'Start the in-turn Monitor', event => {
+    if (event.type !== 'assistant' || event.parent_tool_use_id) return;
+    for (const block of event.message?.content || []) if (block.type === 'tool_use') {
+      state.currentToolCalls.push(block); background.recordMainToolUseId('inturn', block.id);
+    }
+  });
+  state.isStreaming = false;
+  assert.deepEqual(seen.slice(1), [false, false, true], 'the running turn sees the Monitor event');
+  assert.deepEqual(injections, [], 'no queued 🔇 duplicate');
+  assert.ok(hooks.every(verdict => verdict.handled === false));
+});
