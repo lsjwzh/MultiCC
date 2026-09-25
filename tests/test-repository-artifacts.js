@@ -74,6 +74,32 @@ function trackedPaths() {
     .toString('utf8').split('\0').filter(Boolean);
 }
 
+// A bundled skill is copied into ~/.agents/skills byte-for-byte, mode included,
+// and only `bin/` is chmodded by the installer. An entry point the skill docs
+// run directly (`MCU=<skill_dir>/scripts/mcu.sh; $MCU backend`) must therefore
+// carry its executable bit in git, or every installed copy is "permission
+// denied" on the user's machine.
+test('bundled skill entry points the docs execute directly are tracked 100755', () => {
+  const indexModes = new Map(
+    childProcess.execFileSync('git', ['ls-files', '-s', '--', 'skills'], { cwd: REPO_ROOT })
+      .toString('utf8').split('\n').filter(Boolean)
+      .map(line => {
+        const [meta, file] = line.split('\t');
+        return [file, meta.split(/\s+/)[0]];
+      }));
+  for (const file of [
+    'skills/multicc-computer-use/scripts/mcu.sh',
+    'skills/multicc-computer-use/scripts/init.sh',
+    'skills/multicc-artifact/bin/artifact',
+    'skills/multicc-trigger/bin/mtrigger',
+  ]) {
+    assert.equal(indexModes.get(file), '100755', `${file} must be tracked executable`);
+  }
+  // eslint-disable-next-line no-bitwise
+  assert.equal((fs.statSync(path.join(REPO_ROOT, 'skills', 'multicc-computer-use', 'scripts', 'mcu.sh'))
+    .mode & 0o111) !== 0, true, 'mcu.sh must be executable on disk too');
+});
+
 test('APK and generated sidecars are untracked and ignored build artifacts', () => {
   assert.deepEqual(trackedPaths().filter(file => file.startsWith('public/multicc.apk')), []);
   for (const file of [

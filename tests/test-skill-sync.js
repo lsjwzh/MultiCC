@@ -190,6 +190,30 @@ test('bundled browser skill keeps its adapters and local launcher after sync', t
   }
 });
 
+// SKILL.md tells the model to run `scripts/mcu.sh` itself, so the installed
+// copy must carry an executable bit even though git stores these files 100644
+// and cpSync copies that mode over verbatim.
+test('bundled install makes shebang scripts under scripts/ executable', t => {
+  const h = createHarness(t);
+  const source = makeSkill(path.join(h.rootDir, 'skills'), 'scripted-skill', 'v1');
+  fs.mkdirSync(path.join(source, 'scripts'));
+  for (const [name, content] of [
+    ['run.sh', '#!/bin/bash\necho run\n'],
+    ['data.txt', 'plain data, no shebang\n'],
+  ]) {
+    fs.writeFileSync(path.join(source, 'scripts', name), content);
+    fs.chmodSync(path.join(source, 'scripts', name), 0o644);
+  }
+  assert.equal(h.runtime.installBundledSkills(), 1);
+  const destination = path.join(h.agentsSkillsDir, 'scripted-skill', 'scripts');
+  // eslint-disable-next-line no-bitwise
+  assert.notEqual(fs.statSync(path.join(destination, 'run.sh')).mode & 0o111, 0,
+    'a shebang script must land executable');
+  // eslint-disable-next-line no-bitwise
+  assert.equal(fs.statSync(path.join(destination, 'data.txt')).mode & 0o111, 0,
+    'a data file must keep its own mode');
+});
+
 test('bundled install never clobbers a same-named user skill without a version marker', t => {
   const h = createHarness(t);
   const source = path.join(__dirname, '../skills/multicc-artifact');
