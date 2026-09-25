@@ -177,6 +177,16 @@ test('install.sh upgrades a pre-standalone source checkout instead of refusing i
   const legacyLauncher = path.join(installDir, 'multicc');
   fs.writeFileSync(legacyLauncher, '#!/bin/sh\necho "node not found" >&2\nexit 1\n');
   fs.chmodSync(legacyLauncher, 0o755);
+  // The data: for these releases the data root WAS the package root, so the
+  // user's sessions, chat history, task databases and memories sat next to the
+  // source. `server.js` and `node_modules` above are not data and must not be
+  // swept up with them.
+  write(path.join(installDir, 'sessions.json'), '{"sessions":[{"id":"legacy-session"}]}\n');
+  write(path.join(installDir, 'chat_history', 'legacy-session.jsonl'), '{"role":"user"}\n');
+  write(path.join(installDir, 'task-shells.sqlite'), 'SQLite format 3\0legacy\n');
+  write(path.join(installDir, 'ui-layout.json'), '{"theme":"dark"}\n');
+  write(path.join(installDir, 'memories', 'note.md'), '# remembered\n');
+  write(path.join(installDir, 'logs', 'multicc.log'), 'not data\n');
 
   const res = runInstaller(['--from', archive, '--dir', installDir, '--yes', '--no-start'], { env });
   assert.equal(res.status, 0, `upgrading an old installation must succeed:\n${res.stdout}\n${res.stderr}`);
@@ -207,6 +217,95 @@ test('install.sh upgrades a pre-standalone source checkout instead of refusing i
   const list = spawnSync(path.join(installDir, 'multicc'), ['config', 'list'],
     { encoding: 'utf8', env: { ...process.env, ...env } });
   assert.match(list.stdout, /PORT=3222/, 'the port from the old installation must be reused');
+
+  // And the data came with them. The destination is `<userData>/data`, which is
+  // what the launcher hands the server as MULTICC_DATA_DIR (desktop/lib/
+  // desktop-env.js) — a copy that missed it would leave every session invisible
+  // while reporting a clean upgrade.
+  const dataDir = path.join(home, 'data');
+  assert.equal(fs.readFileSync(path.join(dataDir, 'sessions.json'), 'utf8'),
+    '{"sessions":[{"id":"legacy-session"}]}\n', 'sessions must be brought across');
+  assert.equal(fs.existsSync(path.join(dataDir, 'chat_history', 'legacy-session.jsonl')), true,
+    'chat history must be brought across');
+  assert.equal(fs.existsSync(path.join(dataDir, 'task-shells.sqlite')), true,
+    'the task databases must be brought across');
+  assert.equal(fs.existsSync(path.join(dataDir, 'ui-layout.json')), true);
+  // memories are not inside data/ by accident: desktop-env sets memoryRoot to
+  // `<dataRoot>/memories`, so the old memories/ dir has to land exactly there.
+  assert.equal(fs.readFileSync(path.join(dataDir, 'memories', 'note.md'), 'utf8'), '# remembered\n',
+    'memories must land on the memory root the launcher uses');
+  // The code that happened to live in the same directory is not data.
+  assert.equal(fs.existsSync(path.join(dataDir, 'node_modules')), false,
+    'dependencies must not be copied into the data directory');
+  assert.equal(fs.existsSync(path.join(dataDir, 'server.js')), false,
+    'the old server entry point must not be copied into the data directory');
+  assert.equal(fs.existsSync(path.join(dataDir, 'logs')), false,
+    'logs are not state and must not be copied');
+  // A copy, never a move: the backup still holds the originals.
+  assert.equal(fs.existsSync(path.join(backup, 'sessions.json')), true,
+    'the backup must keep its own copy of the data');
+  assert.match(res.stdout, /Brought your data across/i);
+});
+
+// Declining, or asking for it up front, has to actually leave the data alone:
+// the whole point of the prompt is that it is safe to say no.
+test('install.sh leaves the old data in the backup when asked to', () => {
+  const fixture = buildFixtureBundle();
+  const archive = archiveFixture(fixture);
+  const targetParent = tmpdir('multicc-installer-nodata-');
+  const installDir = path.join(targetParent, 'MultiCC');
+  const home = tmpdir('multicc-installer-nodata-home-');
+  const env = { MULTICC_STANDALONE_HOME: home };
+
+  write(path.join(installDir, 'package.json'), '{"name":"multicc","version":"1.6.10"}\n');
+  // The launcher is what makes it an installation rather than a loose copy of
+  // the sources, and the guard deliberately still requires it.
+  write(path.join(installDir, 'multicc'), '#!/bin/sh\nexit 1\n', 0o755);
+  write(path.join(installDir, 'sessions.json'), '{"sessions":[{"id":"legacy-session"}]}\n');
+  write(path.join(installDir, 'chat_history', 'x.jsonl'), '{}\n');
+
+  const res = runInstaller(['--from', archive, '--dir', installDir, '--yes', '--no-data', '--no-start'], { env });
+  assert.equal(res.status, 0, `--no-data must still install:\n${res.stdout}\n${res.stderr}`);
+
+  const backups = fs.readdirSync(targetParent).filter(name => name.includes('.legacy-'));
+  assert.equal(backups.length, 1, 'the old installation must still be kept as a backup');
+  const backup = path.join(targetParent, backups[0]);
+  assert.equal(fs.existsSync(path.join(backup, 'sessions.json')), true);
+  assert.equal(fs.existsSync(path.join(home, 'data')), false,
+    '--no-data must not create or fill the data directory');
+  assert.match(res.stdout, /data stays in the backup/i,
+    'the user must be told the data was left behind, not left to discover it');
+});
+
+// The two installers have to agree on what counts as data. A name that is on one
+// list and not the other is a platform that silently loses that file on upgrade,
+// and nothing else in the suite would notice.
+test('both installers carry across exactly the same set of data files', () => {
+  const sh = fs.readFileSync(INSTALLER, 'utf8');
+  const shBlock = sh.slice(sh.indexOf('legacy_data_items() {'));
+  const shList = shBlock.slice(shBlock.indexOf("printf '%s\\n'"), shBlock.indexOf('\n}'))
+    .replace(/\\\n/g, ' ')
+    .split(/\s+/)
+    .map(token => token.replace(/[\\;]/g, ''))
+    .filter(token => /^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/.test(token))
+    .filter(token => token !== 'printf');
+
+  const ps1 = fs.readFileSync(WINDOWS_INSTALLER, 'utf8');
+  const ps1Block = (ps1.match(/\$script:LegacyDataItems = @\(([\s\S]*?)\n\)/) || [])[1];
+  assert.ok(ps1Block, 'the Windows data list must be a literal array this test can read');
+  const ps1List = (ps1Block.match(/'([^']+)'/g) || []).map(quoted => quoted.slice(1, -1));
+
+  assert.ok(shList.length > 30, `the POSIX list must not have collapsed: ${shList.join(',')}`);
+  assert.deepEqual([...shList].sort(), [...ps1List].sort(),
+    'the POSIX and Windows data lists must be identical');
+  // Spot-check the ones whose absence is the whole point of the migration.
+  for (const required of ['sessions.json', 'chat_history', 'task-shells.sqlite', 'memories', 'secrets.json']) {
+    assert.ok(shList.includes(required), `${required} must be on the list`);
+  }
+  // And the ones that must never be: the code that happened to sit beside them.
+  for (const forbidden of ['node_modules', '.git', 'package.json', 'server.js', 'src']) {
+    assert.ok(!shList.includes(forbidden), `${forbidden} must never be copied as data`);
+  }
 });
 
 // The old guard's protection must survive this: a directory that is merely
@@ -308,6 +407,12 @@ test('install.ps1 is the native Windows path over the same standalone contract',
     'the old installation must be renamed aside and kept, never deleted');
   assert.match(source, /\[switch\]\$Yes/,
     'the upgrade prompt needs a headless escape hatch, like the POSIX --yes');
+  assert.match(source, /\[switch\]\$NoData/,
+    'Windows needs the POSIX --no-data escape hatch too');
+  assert.match(source, /function Copy-LegacyDataAcross/,
+    "the old installation's data must be brought across, or a Windows upgrade looks empty");
+  assert.match(source, /Split-Path -Parent \$envFile\) 'data'/,
+    'the data directory must be derived from what the CLI reports, not hard-coded');
   assert.match(source, /Invoke-MultiCC @\('config', 'set', 'PORT'/);
   assert.match(source, /Invoke-MultiCC \$startArgs/,
     'a normal Windows install must return only after starting the shared CLI');

@@ -88,6 +88,7 @@ ASSUME_YES=false
 NO_SERVICE=false
 NO_START=false
 NO_OPEN=false
+COPY_LEGACY_DATA=true
 VERSION=""
 FROM=""
 
@@ -106,6 +107,7 @@ while [ $# -gt 0 ]; do
     --no-service) NO_SERVICE=true; shift ;;
     --no-start)   NO_START=true; NO_SERVICE=true; shift ;;
     --no-open)    NO_OPEN=true; shift ;;
+    --no-data)    COPY_LEGACY_DATA=false; shift ;;
     --no-apk)     warn "--no-apk is no longer needed; APK builds are always on demand"; shift ;;
     # `--branch` and `--no-clone` belonged to the old git-clone installer. They
     # are kept as compatibility shims so an older published command line still
@@ -136,6 +138,8 @@ Options:
   --port <port>       Server port (default: 3000)
   --from <path|url>   Install from a local archive/directory or URL instead of GitHub
   --yes               Upgrade an older installation without asking first
+  --no-data           Keep an older installation's data in the backup instead of
+                      bringing it across
   --no-service        Skip the start-on-login setup
   --no-start          Install and configure only; do not start MultiCC
   --no-open           Start MultiCC but do not open a browser
@@ -391,6 +395,12 @@ LEGACY_DIR=""
 LEGACY_ENV_FILE=""
 LEGACY_TOKEN=""
 LEGACY_PORT=""
+# Whether the old installation's data is copied into the new data directory.
+# Starts from the --no-data flag and can still be declined at the prompt.
+LEGACY_DATA_COPY="$COPY_LEGACY_DATA"
+# Set when a real old installation's data was deliberately left in the backup,
+# so the summary can say where it is and where it would have to go.
+LEGACY_DATA_LEFT_BEHIND=false
 
 read_legacy_env() {
   local env_file="$1/.env"
@@ -398,6 +408,132 @@ read_legacy_env() {
   [ -f "$env_file" ] || return 0
   LEGACY_TOKEN="$(grep -E '^ACCESS_TOKEN=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
   LEGACY_PORT="$(grep -E '^PORT=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+}
+
+# Every state artifact a pre-standalone installation kept in its own directory.
+# The names come from src/paths.js: for those releases the data root WAS the
+# package root, so this is what sat next to the code. Listing them one by one
+# instead of copying the directory wholesale is deliberate — the same directory
+# also held the source checkout, node_modules, .git and the bundle itself, and
+# none of that is data. Anything not on this list is either rebuilt on demand
+# (caches, the search index) or already lived outside the install directory:
+# detached jobs, voice runtimes and sample workspaces went to ~/.multicc even
+# then (src/paths.js detachedDir/voiceRuntimesDir/sampleWorkspacesDir), which is
+# why they keep working across this upgrade untouched.
+legacy_data_items() {
+  printf '%s\n' \
+    sessions.json directories.json .journal chat_history \
+    aux_runs events bridges artifacts \
+    notes.json token_usage.json token_daily.json token_by_role.json \
+    providers.json shares.json fleet-shares.json external-fleets.json \
+    push_subscriptions.json push_notification_receipts.json \
+    tunnel-config.json tunnel-repair-ledger.json aux-config.json goal-config.json \
+    provider-defaults.json provider-relay-shares.json \
+    provider-limit-cache.db provider-limit-cache.json quota-bar-cache.json \
+    scheduled_tasks.json cron_fanout_migration.json docs_registry.json secrets.json \
+    task_board.json task-runs.sqlite task-shells.sqlite search-index.sqlite \
+    task-short-codes.json ui-layout.json air-pins.json \
+    orchestration.sqlite orchestration.json voice_examples.json whisper_vocab.json \
+    memories
+}
+
+# True when the old installation actually has any of it, so a user who upgraded
+# from a fresh checkout is never asked about data that does not exist.
+legacy_data_present() {
+  local item
+  for item in $(legacy_data_items); do
+    [ -e "$1/$item" ] && return 0
+  done
+  return 1
+}
+
+# Size in KB, for telling the user what they are about to copy. Integer shell
+# arithmetic only: awk is not guaranteed to be here (the checksum step already
+# warns when it is missing) and this must not become a new hard dependency.
+legacy_data_size() {
+  local item size total=0
+  for item in $(legacy_data_items); do
+    [ -e "$1/$item" ] || continue
+    size="$(du -sk "$1/$item" 2>/dev/null | awk '{print $1}' 2>/dev/null || true)"
+    case "$size" in ''|*[!0-9]*) continue ;; esac
+    total=$((total + size))
+  done
+  printf '%s' "$total"
+}
+
+human_size() {
+  if [ "$1" -ge 1048576 ]; then
+    printf '%s GB' "$(( $1 / 1048576 ))"
+  elif [ "$1" -ge 1024 ]; then
+    printf '%s MB' "$(( $1 / 1024 ))"
+  else
+    printf '%s KB' "$1"
+  fi
+}
+
+# The data directory the standalone launcher hands the server is
+# `<userData>/data`, where userData is whatever directory the CLI keeps
+# multicc.env in (desktop/lib/desktop-env.js: dataRoot = join(userData, 'data')).
+# Asking the CLI keeps this correct on every platform instead of re-deriving it
+# from ~/Library/Application Support here.
+legacy_data_target() {
+  local env_file
+  env_file="$("${MULTICC_CMD[@]}" config path 2>/dev/null || true)"
+  [ -n "$env_file" ] || return 1
+  printf '%s/data' "$(dirname "$env_file")"
+}
+
+# Copy the old data out of the backup into the new data directory. The backup is
+# read, never written, and the destination is only ever an empty directory: if
+# something is already in there it is either a second MultiCC or a first run of
+# the new server, and both are newer than the backup.
+bring_legacy_data_across() {
+  local src="$LEGACY_DIR" target item copied=0 failed=0
+  [ "$LEGACY_DATA_COPY" = true ] || return 0
+  [ -n "$src" ] || return 0
+  [ -d "$src" ] || return 0
+
+  if ! target="$(legacy_data_target)"; then
+    warn "Could not work out where this release keeps its data; nothing was copied."
+    echo "       Your data is untouched in $src."
+    return 0
+  fi
+  if [ -d "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
+    warn "This release already has data of its own — nothing was copied."
+    echo "       $target"
+    echo "       Your old data is untouched in $src."
+    return 0
+  fi
+  if ! mkdir -p "$target" 2>/dev/null; then
+    warn "Could not create $target; nothing was copied."
+    echo "       Your data is untouched in $src."
+    return 0
+  fi
+
+  for item in $(legacy_data_items); do
+    [ -e "$src/$item" ] || continue
+    [ -e "$target/$item" ] && continue
+    if cp -Rp "$src/$item" "$target/$item" 2>/dev/null; then
+      copied=$((copied + 1))
+    else
+      failed=$((failed + 1))
+      warn "Could not copy $item"
+    fi
+  done
+
+  if [ "$copied" -eq 0 ] && [ "$failed" -eq 0 ]; then
+    rmdir "$target" 2>/dev/null || true
+    info "No data from the previous installation needed bringing across"
+    return 0
+  fi
+  ok "Brought your data across: $copied item(s) into $target"
+  if [ "$failed" -gt 0 ]; then
+    warn "$failed item(s) could not be copied and are still only in $src."
+  fi
+  echo "       Sessions, chat history, tasks and memories are read from there now."
+  echo "       The backup keeps its own copy — nothing was moved or deleted, so it is"
+  echo "       safe to delete $src once the new installation looks right."
+  return 0
 }
 
 # Stop a pre-standalone installation and take its directory out of the way,
@@ -501,14 +637,36 @@ prepare_legacy_upgrade() {
 
   # The old releases kept their data inside the install directory: sessions,
   # chat history, tasks and memories all lived next to the code. This release
-  # reads them from a per-user data directory instead, so an upgrade starts
-  # empty. Saying so plainly is the difference between "my history is gone" and
-  # "my history is in the backup, and here is how to bring it across".
-  if [ -f "$LEGACY_DIR/sessions.json" ] || [ -d "$LEGACY_DIR/chat_history" ] \
-    || [ -f "$LEGACY_DIR/task-shells.sqlite" ]; then
-    warn "Sessions, chat history and tasks from the old installation are still in the backup."
-    echo "       This release keeps them in a per-user data directory, so it starts with none"
-    echo "       of them. The backup holds everything — do not delete it until you have decided."
+  # reads them from a per-user data directory instead, so without an explicit
+  # copy the upgrade starts empty even though every byte is still on disk. The
+  # copy itself happens later, once the new package is in place and before the
+  # server has run for the first time — here we only find out how much there is
+  # and let the user opt out.
+  if ! legacy_data_present "$LEGACY_DIR"; then
+    LEGACY_DATA_COPY=false
+  elif [ "$LEGACY_DATA_COPY" = true ]; then
+    local data_kb
+    data_kb="$(legacy_data_size "$LEGACY_DIR")"
+    if [ "$ASSUME_YES" = false ] && [ -r /dev/tty ]; then
+      echo ""
+      echo "  Your previous installation also holds about $(human_size "$data_kb") of data:"
+      echo "  sessions, chat history, the task boards, memories and provider settings."
+      echo "  It stays in the backup either way; bringing it across means the new"
+      echo "  installation starts with your history instead of empty."
+      read -r -p "  ${C_YELLOW}>>${C_RESET} Bring it across? [Y/n] " answer </dev/tty || answer=""
+      case "${answer:-y}" in
+        y|Y|"") ;;
+        *) LEGACY_DATA_COPY=false ;;
+      esac
+    fi
+  fi
+  if [ "$LEGACY_DATA_COPY" = false ] && legacy_data_present "$LEGACY_DIR"; then
+    LEGACY_DATA_LEFT_BEHIND=true
+    warn "Your data stays in the backup: $LEGACY_DIR"
+    echo "       This release reads a per-user data directory, so it starts empty."
+    echo "       Nothing was deleted — every session and every byte is still in there,"
+    echo "       and whatever should be used can still be copied by hand: the rest of"
+    echo "       this run prints exactly which directory to copy it into."
   fi
   return 0
 }
@@ -834,6 +992,22 @@ else
 fi
 "${MULTICC_CMD[@]}" config set PORT "$PORT" >/dev/null && ok "PORT set to $PORT"
 
+# ── Bring an older installation's data across ─────────────────────────────
+# Runs before the server has ever started: the destination has to be empty for
+# the copy to be safe, and the first start is what makes it non-empty.
+LEGACY_DATA_DEST=""
+if [ "$LEGACY_PENDING" = true ]; then
+  step "Bringing your data across"
+  if [ "$LEGACY_DATA_COPY" = true ]; then
+    bring_legacy_data_across
+  else
+    info "Skipped — the previous installation's data stays in $LEGACY_DIR"
+  fi
+fi
+# Resolved for the summary whatever the answer was: a "no" is only useful if the
+# user leaves knowing where their history is and where it would have to go.
+LEGACY_DATA_DEST="$(legacy_data_target 2>/dev/null || true)"
+
 # ── Start on login (optional) ─────────────────────────────────────────────
 if [ "$NO_SERVICE" = false ]; then
   step "Start automatically on login"
@@ -934,6 +1108,14 @@ echo ""
 echo "  Sessions, providers and chat history live outside this directory,"
 echo "  so replacing or updating the package never touches them."
 echo ""
+if [ "$LEGACY_DATA_LEFT_BEHIND" = true ]; then
+  echo "  ${C_BOLD}${C_YELLOW}Your previous sessions are still in the backup${C_RESET}"
+  echo "    Backup:       $LEGACY_DIR"
+  echo "    This release: ${LEGACY_DATA_DEST:-<whatever the line under '$CMD_NAME config path' points at>/data}"
+  echo "    To use them, stop MultiCC, copy what you want out of the backup into the"
+  echo "    directory above, and start it again. Nothing was deleted."
+  echo ""
+fi
 # Repeated here because the check above scrolls past behind the service prompt
 # and the startup output — this is the last thing on screen, and it is the one
 # thing standing between a finished install and a working first session.
