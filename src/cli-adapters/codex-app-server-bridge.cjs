@@ -163,7 +163,10 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
 
 async function initialize() {
   const initialized = await request('initialize', {
-    clientInfo: { name: 'multicc-codex-exp', title: 'MultiCC Codex Experimental', version: '0.1.0' },
+    // `name` 是车道的身份（也用来给 threadSource 打标）保持 multicc-codex-exp
+    // 不变；title 是上游看到的产品名，这条车道已不再是试验品 —— 它就是产品的
+    // Codex（2026-09-24 改名，扶正的是车道，id 没动）。
+    clientInfo: { name: 'multicc-codex-exp', title: 'MultiCC Codex', version: '0.1.0' },
   });
   const version = versionFromUserAgent(initialized?.userAgent);
   if (!versionAtLeast(version, MIN_CODEX_VERSION)) {

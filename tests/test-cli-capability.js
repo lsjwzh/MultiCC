@@ -12,8 +12,12 @@ const path = require('node:path');
 const {
   CAPABILITIES,
   DEFAULT_CAPABILITY,
+  DISPLAY,
   cancelStopsProcess,
   capabilityOf,
+  deprecationOf,
+  displayNameOf,
+  isDeprecated,
   isResident,
   isResidentSession,
   protocolFamilyOf,
@@ -141,6 +145,63 @@ test('protocol family answers both spellings and leaves the fallback to the call
   assert.equal(protocolFamilyOf('gemini'), null);
   assert.equal(protocolFamilyOf('grok'), null);
   assert.equal(protocolFamilyOf(undefined), null);
+});
+
+test('the one-shot codex lane is marked as the fallback it now is', () => {
+  // 2026-09-24：常驻 app-server 车道（id 仍叫 codex-exp）扶正为产品的「Codex」，
+  // 一次性 `codex exec`（id 仍叫 codex）退成兜底，计划淘汰。**id 一个都没动** ——
+  // 会话记录、Provider 池、路由都存着 id —— 所以「哪条线路在退役、该换成谁」必须是
+  // 表里的一列事实，而不是各选择器各自的判断。
+  assert.equal(isDeprecated('codex'), true);
+  assert.deepEqual(deprecationOf('codex'), { replacedBy: 'codex-exp' });
+  assert.equal(isDeprecated('codex-exp'), false, 'the promoted lane is the replacement, not deprecated');
+  assert.equal(displayNameOf('codex'), 'Codex Exec');
+  assert.equal(displayNameOf('codex-exp'), 'Codex');
+  // 角标跟名字走，且不能撞车：两颗 X 落在同一张任务卡上就分不出是哪条车道。
+  assert.equal(CAPABILITIES && DISPLAY.codex.shortMark, 'E');
+  assert.equal(DISPLAY['codex-exp'].shortMark, 'X');
+  for (const cli of Object.keys(CAPABILITIES)) {
+    const plan = deprecationOf(cli);
+    if (!plan) continue;
+    // 指向不存在、指向自己、或指向另一条也在退役的线路，UI 的「该换成 X」就成了假话。
+    assert.notEqual(plan.replacedBy, cli);
+    assert.ok(DISPLAY[plan.replacedBy], `${cli} names a lane that exists`);
+    assert.equal(isDeprecated(plan.replacedBy), false, `${cli} must not point at another dying lane`);
+  }
+  // 没听说过的 id 没有淘汰计划；判定不该抛错。
+  for (const unknown of ['mystery-cli', '', undefined, null]) {
+    assert.equal(deprecationOf(unknown), null, `deprecationOf(${String(unknown)})`);
+    assert.equal(isDeprecated(unknown), false, `isDeprecated(${String(unknown)})`);
+  }
+});
+
+test('an adapter error label follows the display table, and the parsers accept every spelling', () => {
+  // label 不是自选文案：turn-engine 用 `${label} 出错：${message}` 拼错误文本，
+  // 所以 label 走展示表（displayNameOf）意味着改名会改到这句用户可见的文本。
+  // 一次性车道的 label 从 "Codex" 变成 "Codex Exec"（常驻车道从 "Codex Exp" 变成
+  // "Codex"），三处按前缀解析的地方必须同时认旧拼法和新拼法 —— 只认一种，瞬时重连
+  // 会被当成真错误画进对话，错误信封会被当成正文留在记录里。
+  const source = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
+  assert.match(source('src/cli-adapters/codex.js'), /label:\s*displayNameOf\('codex'\)/);
+  assert.match(source('src/cli-adapters/codex-exp.js'), /label:\s*displayNameOf\('codex-exp'\)/);
+  assert.doesNotMatch(source('src/cli-adapters/codex.js'), /label:\s*'Codex'/);
+  // 正文里不能再自称一个界面上已经不存在的名字。
+  assert.doesNotMatch(source('src/cli-adapters/codex-exp.js'), /Codex Exp v1 does not support/);
+  assert.match(source('src/cli-adapters/codex-exp.js'), /message:\s*'Codex v1 does not support/);
+  // 三个解析点：重连抑制在 web 与 App 各一份，错误信封词表在服务端。
+  assert.match(source('public/chat-event-controller.js'), /\(\?:Codex\|Codex Exp\|Codex Exec\) 出错：Reconnecting/);
+  assert.match(source('app/lib/providers/chat_provider.dart'), /\(\?:Codex\|Codex Exp\|Codex Exec\) 出错：Reconnecting/);
+  assert.match(source('src/chat/api-error-policy.js'), /codex\\s\*\(\?:exec\\s\*\|exp\\s\*\)\?\(\?:error\|出错\)/);
+  // 行为断言，比上面的字面量检查更硬：两种拼法都要被认成纯错误信封。
+  const { isErrorOnlyText } = require('../src/chat/api-error-policy.js');
+  for (const text of [
+    'Codex 出错：Selected model is at capacity.',
+    'Codex Exec 出错：Selected model is at capacity.',
+    'Codex Exp 出错：Selected model is at capacity.',
+  ]) {
+    assert.equal(isErrorOnlyText(text), true, `${text} must read as an error-only envelope`);
+  }
+  assert.equal(isErrorOnlyText('我的正文：Codex Exec 出错：x'), false, 'a prefix match mid-sentence is not an envelope');
 });
 
 test('the table cannot be rewritten at runtime', () => {

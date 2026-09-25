@@ -165,7 +165,17 @@ function sanitizeMessage(value, fallback = 'Upstream API request failed', maxLen
 // Provider-owned fallback only: distinguishes a short error envelope rendered
 // as assistant text from meaningful partial output. It is never applied to user
 // input and never decides the category by itself.
-const ERROR_ONLY_PREFIX_RE = /^(?:api\s*error|failed to authenticate|error:|codex\s*(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|kimi\s*(?:error|出错)|codebuddy\s*(?:error|出错)|dsh\s*(?:error|出错)|gemini\s*(?:error|出错)|grok\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out)/i;
+//
+// The codex alternation carries both lane names on purpose. An adapter's label
+// follows the CLI display table (src/cli/cli-capability.js DISPLAY), which was
+// renamed on 2026-09-24: the resident lane is "Codex" and the one-shot
+// `codex exec` fallback is "Codex Exec". So the same adapter that used to write
+// "Codex 出错：" now writes "Codex Exec 出错：" on that lane, and a pattern fixed
+// on the old spelling would silently stop recognizing the envelope as error-only
+// — the error text would land in the transcript as if it were partial output.
+// "Codex Exp" is the resident lane's former name, kept for text that persisted
+// under it.
+const ERROR_ONLY_PREFIX_RE = /^(?:api\s*error|failed to authenticate|error:|codex\s*(?:exec\s*|exp\s*)?(?:error|出错)|claude\s*(?:error|出错)|opencode\s*(?:error|出错)|qoder\s*(?:error|出错)|zcode\s*(?:error|出错)|kimi\s*(?:error|出错)|codebuddy\s*(?:error|出错)|dsh\s*(?:error|出错)|gemini\s*(?:error|出错)|grok\s*(?:error|出错)|stream disconnected|connection (?:closed|reset|refused)|request (?:failed|timed out)|rate limit|overloaded|internal server error|service unavailable|timeout|timed out)/i;
 
 function isErrorOnlyText(value) {
   const text = String(value || '').trim();

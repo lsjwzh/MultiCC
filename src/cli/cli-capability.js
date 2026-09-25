@@ -9,8 +9,9 @@
 //                 turn    — the turn is interrupted in place, the child survives
 //
 // DISPLAY, further down, is the same idea for the CLI's *name*: how it is
-// called, marked and coloured on screen, and whether it owns its provider. See
-// the comment above it — that table is the one the web and the app mirror.
+// called, marked and coloured on screen, whether it owns its provider, and
+// whether the lane is on its way out. See the comment above it — that table is
+// the one the web and the app mirror.
 //
 // These used to be one fact derived from an inline pair of claude CLI names
 // (`Array.includes` over a two-element name list) repeated at ten call sites.
@@ -65,8 +66,11 @@ const FAMILIES = Object.freeze({
 //   colour      — the CLI's brand colour on the web (hex, dark theme).
 //   providerless— the CLI owns its account/model config, so a multicc provider
 //                 (and a subagent route) must not be bound to its sessions.
+//   deprecated  — the lane still works but is on the way out; pickers say so.
+//   replacedBy  — the lane to use instead, for a deprecated one. Only ever
+//                 present alongside deprecated: true (see deprecationOf).
 //
-// This is the ONE table for all four. Each of them used to be spelled out per
+// This is the ONE table for all of them. Each of them used to be spelled out per
 // surface and had drifted: web `CLI_META` (chat.js), `CLI_LABELS`/`CLI_MARKS`
 // (air-task-settings.js), a third label list in air-cli-update.js (missing
 // claude-exp/codex-exp), a four-entry one in air-provider.js, a ternary chain
@@ -77,26 +81,34 @@ const FAMILIES = Object.freeze({
 //
 // The mirrors are public/provider-catalog.js (web) and
 // app/lib/utils/cli_display.dart (app); tests/test-cli-display-parity.js reads
-// all three and fails when an id, a name, a mark, a colour or the providerless
-// flag drifts. Add a CLI here first, then mirror it — an id this table does not
-// know falls back to its own raw id everywhere, never to a neighbour's name.
+// all three and fails when an id, a name, a mark, a colour, the providerless
+// flag or the deprecation plan drifts. Add a CLI here first, then mirror it —
+// an id this table does not know falls back to its own raw id everywhere, never
+// to a neighbour's name.
 //
 // "Claude Code", not "Claude": one spelling for the product, and it is the one
 // the server already prints when it names a claude session.
 const DISPLAY = Object.freeze({
-  claude: Object.freeze({ displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false }),
+  claude: Object.freeze({ displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false, deprecated: false }),
   // 产品名（不是文案）：Anthropic 的 Claude Agent SDK，内部 id 仍是 claude-exp。
-  'claude-exp': Object.freeze({ displayName: 'Claude Agent SDK', shortMark: 'A', colour: '#ff9a76', providerless: false }),
-  codex: Object.freeze({ displayName: 'Codex', shortMark: 'X', colour: '#2ea043', providerless: false }),
-  'codex-exp': Object.freeze({ displayName: 'Codex Exp', shortMark: 'E', colour: '#20a66a', providerless: false }),
-  opencode: Object.freeze({ displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false }),
-  zcode: Object.freeze({ displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false }),
-  qoder: Object.freeze({ displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true }),
-  kimi: Object.freeze({ displayName: 'Kimi Code', shortMark: 'K', colour: '#13c2c2', providerless: false }),
-  codebuddy: Object.freeze({ displayName: 'WorkBuddy', shortMark: 'W', colour: '#0052d9', providerless: true }),
-  dsh: Object.freeze({ displayName: 'DSH', shortMark: 'D', colour: '#4d6bfe', providerless: true }),
-  gemini: Object.freeze({ displayName: 'Gemini', shortMark: 'G', colour: '#4285f4', providerless: true }),
-  grok: Object.freeze({ displayName: 'Grok', shortMark: 'R', colour: '#8c8f96', providerless: true }),
+  'claude-exp': Object.freeze({ displayName: 'Claude Agent SDK', shortMark: 'A', colour: '#ff9a76', providerless: false, deprecated: false }),
+  // 2026-09-24：常驻 app-server 车道（id 仍叫 codex-exp）扶正为产品的「Codex」，
+  // 一次性 `codex exec` 车道（id 仍叫 codex）退成兜底，显示名改为「Codex Exec」，
+  // 并标成计划淘汰。**只有显示名和角标动了**：会话记录、Provider 池、路由、适配器
+  // label 全都记着旧 id，改名意味着改数据。
+  //
+  // 两个 id 的角标跟着名字走：X 归扶正后的 Codex，E 归兜底的 Codex Exec（Exec）。
+  // 二者不能同用 X —— 同一张任务卡上两颗 X 分不出是哪条车道。
+  codex: Object.freeze({ displayName: 'Codex Exec', shortMark: 'E', colour: '#2ea043', providerless: false, deprecated: true, replacedBy: 'codex-exp' }),
+  'codex-exp': Object.freeze({ displayName: 'Codex', shortMark: 'X', colour: '#20a66a', providerless: false, deprecated: false }),
+  opencode: Object.freeze({ displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false, deprecated: false }),
+  zcode: Object.freeze({ displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false, deprecated: false }),
+  qoder: Object.freeze({ displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true, deprecated: false }),
+  kimi: Object.freeze({ displayName: 'Kimi Code', shortMark: 'K', colour: '#13c2c2', providerless: false, deprecated: false }),
+  codebuddy: Object.freeze({ displayName: 'WorkBuddy', shortMark: 'W', colour: '#0052d9', providerless: true, deprecated: false }),
+  dsh: Object.freeze({ displayName: 'DSH', shortMark: 'D', colour: '#4d6bfe', providerless: true, deprecated: false }),
+  gemini: Object.freeze({ displayName: 'Gemini', shortMark: 'G', colour: '#4285f4', providerless: true, deprecated: false }),
+  grok: Object.freeze({ displayName: 'Grok', shortMark: 'R', colour: '#8c8f96', providerless: true, deprecated: false }),
 });
 
 // Neutral grey, matching the muted text both clients already draw with. Only
@@ -145,6 +157,22 @@ function isProviderless(cli) {
 
 function providerlessClis() {
   return new Set(Object.keys(DISPLAY).filter(id => DISPLAY[id].providerless));
+}
+
+// A lane kept only as a fallback, on its way out. The id never moves (sessions,
+// provider pools and wire routes persist it), so this flag — not a rename — is
+// how the pickers learn to say "计划淘汰" and which lane to use instead.
+//
+// Returns null for a live lane and for an unknown id alike: a caller must not
+// have to tell "no plan" from "never heard of it" to render a warning.
+function deprecationOf(cli) {
+  const entry = displayOf(cli);
+  if (!entry || entry.deprecated !== true) return null;
+  return { replacedBy: entry.replacedBy || null };
+}
+
+function isDeprecated(cli) {
+  return deprecationOf(cli) !== null;
 }
 
 function knownClis() {
@@ -226,8 +254,10 @@ module.exports = {
   cancelStopsProcess,
   capabilityOf,
   colourOf,
+  deprecationOf,
   displayNameOf,
   displayOf,
+  isDeprecated,
   isProviderless,
   isResident,
   isResidentSession,

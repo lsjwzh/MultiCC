@@ -5,6 +5,8 @@
   // 权威表在服务端 src/cli/cli-capability.js）—— 这里原本各抄了一份副本。
   const cliLabel = cli => window.MultiCCProviderCatalog.cliDisplayName(cli);
   const cliMark = cli => window.MultiCCProviderCatalog.cliShortMark(cli);
+  // 兜底车道（服务端 DISPLAY 的 deprecated 列）：车道还能跑，但在淘汰路上。
+  const cliDeprecated = cli => window.MultiCCProviderCatalog.cliDeprecated(cli);
   const isProviderless = cli => window.MultiCCProviderCatalog.cliProviderless(cli);
   const EFFORT_LABELS = Object.freeze({
     claude: t('airTaskSettingsEffortClaude'), 'claude-exp': t('airTaskSettingsEffortClaude'), codex: t('airTaskSettingsEffortCodex'), 'codex-exp': t('airTaskSettingsEffortCodex'), opencode: t('airTaskSettingsEffortOpenCode'),
@@ -265,7 +267,13 @@
         button.setAttribute('aria-checked', String(cli === currentCli));
         button.classList.toggle('selected', cli === currentCli);
         button.append(node('span', cliMark(cli), 'air-cli-mark'));
-        const copy = node('span'); copy.append(node('strong', cliLabel(cli)), node('small', cli));
+        // 第二行本来是内部 id；兜底车道（服务端 DISPLAY 的 deprecated 列）在这里
+        // 明说一句计划淘汰 —— 角标和名字都看不出一条线路是不是过渡品。
+        const copy = node('span');
+        copy.append(
+          node('strong', cliLabel(cli)),
+          node('small', cliDeprecated(cli) ? `${cli} · ${t('cliLaneDeprecatedNote')}` : cli),
+        );
         button.append(copy);
         button.onclick = () => { if (cli !== currentCli && !loading) selectCli(cli, false); };
         return button;

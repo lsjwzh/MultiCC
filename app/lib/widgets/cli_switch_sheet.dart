@@ -107,6 +107,26 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
     return available ? AppColors.muted : AppColors.faint;
   }
 
+  /// 兜底车道的提示：`codex exec` 只作兜底、计划淘汰，选中它的人应该知道，
+  /// 并知道该用哪条（常驻车道的 Codex）。这句和 web 的 chat-live-ui 选择器、
+  /// 新建会话弹窗是同一条说明（那边走 i18n 词条 cliLaneDeprecatedNote，这个
+  /// 面板和本文件其余文案一样是中文硬写）。
+  List<Widget> _deprecationDetails(SessionCli cli) {
+    if (!cli.isDeprecatedLane) return const [];
+    final replacement = cli.replacedByLane?.displayName;
+    return [
+      const SizedBox(height: 4),
+      Text(
+        replacement == null ? '兜底线路，计划淘汰' : '兜底线路，计划淘汰 · $replacement',
+        style: const TextStyle(
+          color: Color(0xFFa85a25),
+          fontSize: 11,
+          height: 1.4,
+        ),
+      ),
+    ];
+  }
+
   /// Extra detail lines under the description while an install runs or has
   /// failed: an actionable hint (e.g. certificate / VPN advice) plus the
   /// captured installer log tail. Without these the user only ever saw a bare
@@ -472,6 +492,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
                         fontSize: 11,
                       ),
                     ),
+                    ..._deprecationDetails(cli),
                     ..._installDetails(cli),
                   ],
                 ),

@@ -516,7 +516,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}?.textContent.includes('Lab Responses')`), 'AI 配置 renders on the composer card');
     await page.evaluate(`${composerPill('air-ai-pill')}.click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] select[aria-label="Provider"]')?.value==='codex-lab'`));
-    assert.equal(await page.evaluate(`document.querySelector('.air-cli-option.selected strong').textContent`), 'Codex');
+    // 这条任务的 cli 是 codex（兜底的 `codex exec` 车道），产品名现在是
+    // Codex Exec；扶正后叫 Codex 的是 codex-exp。
+    assert.equal(await page.evaluate(`document.querySelector('.air-cli-option.selected strong').textContent`), 'Codex Exec');
     // Provider 是下拉（和 chat 的 AI 配置、App 的配置面板同一版），一行装完，
     // 不再是一墙卡片：Auto 池 + 三条 Provider。内置 Official 就是
     // 默认，不再另造一条空值的「默认登录」。
