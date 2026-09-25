@@ -264,7 +264,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
 
 // A resident session driven turn by turn against the fake upstream, with the
 // production background runtime deciding every native notification.
-async function residentSession(t, lane, reply, backgroundHold = { quietMs: 300 }) {
+async function residentSession(t, lane, reply, backgroundHold = { quietMs: 300 }, managedRoute = false) {
   const injections = [], decisions = [], main = [];
   const f = await sdkFixture(t, args => {
     const first = JSON.stringify(args.input.messages[0]?.content || '');
@@ -286,7 +286,10 @@ async function residentSession(t, lane, reply, backgroundHold = { quietMs: 300 }
     setTimer: setTimeout, clearTimer: clearTimeout, completionWindowMs: 30,
   });
   await stream.claimWorkspace(name, { id: name, path: f.cwd });
-  stream.ensure(name, { cwd: f.cwd, sessionId: randomUUID(), idleMs: 30000, monitorAdmission: true, env: { ...f.env },
+  // A managed route makes the SDK lane proxy every request through its relay.
+  const env = managedRoute ? { ...f.env, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: 'isolated-route',
+    ANTHROPIC_BASE_URL: `${f.env.ANTHROPIC_BASE_URL}/claude-proxy/test-provider/route` } : { ...f.env };
+  stream.ensure(name, { cwd: f.cwd, sessionId: randomUUID(), idleMs: 30000, monitorAdmission: true, env,
     backgroundHold, onExit: () => background.reapSessionShadows(name),
     onBackgroundEvent: event => {
       const verdict = background.handleEvent(name, state, event);
@@ -371,6 +374,22 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} background work outlivi
   assert.equal(s.injections.length, 1, `one wake-up (${s.decisions.join(', ')})`);
   assert.match(s.injections[0], /slow background job/);
   assert.equal(s.main.length, 2, 'the native self-wake never ran outside admission');
+});
+
+test('real sdk turn released at the hold cap with a background agent mid-request keeps its answer and the process', { timeout: 40000 }, async t => {
+  let unblock;
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  const s = await residentSession(t, 'sdk', { main: n => n === 1 ? backgroundAgent : null,
+    sub: async () => { await blocked; return { type: 'text', text: 'AGENT_FINAL_REPORT END_OF_REPORT' }; } },
+  { quietMs: 300, maxMs: 600 }, true);
+  t.after(() => unblock());
+  const response = await s.turn('Research in the background');
+  const result = response.type === 'result' ? response : response.result;
+  assert.equal(result.is_error, false, 'the relay still carrying the agent request does not fail the finished turn');
+  assert.match(result.result, /^sdk-answer-/);
+  assert.equal(s.stream.isAlive(s.name), true, 'the process and its background agent survive');
+  assert.equal(s.background.hasProcessBackgroundTasks(s.name), true);
+  unblock();
 });
 
 for (const lane of ['sdk', 'legacy']) test(`real ${lane} cancelling a held turn keeps its answer and stops the background work`, { timeout: 40000 }, async t => {

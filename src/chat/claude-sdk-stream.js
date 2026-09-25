@@ -92,7 +92,12 @@ function createSdkStream({ loadSdk = () => import('@anthropic-ai/claude-agent-sd
     void (async () => {
       try {
         await item.interrupt;
-        await run.relay?.drain();
+        try { await run.relay?.drain(); } catch (error) {
+          // Background agents still stream through the relay (hold cap reached).
+          // The answer is complete; pump() drains again before binding the next
+          // route, so do not kill the process and its background work here.
+          if (error?.code !== 'SDK_ROUTE_BUSY' || !hasBackground(s) || item.cancelled) throw error;
+        }
         if (s.run === run) settle(s, item, item.cancelled ? cancelled() : null, event);
       } catch (error) { await stop(s); settle(s, item, error); }
     })();
