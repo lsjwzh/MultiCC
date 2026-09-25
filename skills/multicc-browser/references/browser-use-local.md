@@ -102,3 +102,17 @@ MultiCC 在 macOS 启动时会按需安装/更新 Agent（用户卸载并禁用�
 - 开发机（macOS 15.3/arm64，系统 `python3` 3.9）探测：`tier=current`，Chrome 153 的最低系统为 13.0；把 Harness 放进临时 venv 后，照探测打印的 `next` 命令原样执行 `smoke` 得到 `PASS`，9331 端口随后关闭。
 - 以打桩的 macOS 11.7/x86_64 运行探测：Chrome 153 判为 `needs macOS 13.0`，Harness 路线 `needs-setup`，BrowserAct/OpenClaw `not-recommended`，`choice=none`，退出码 2；Agent 桌面路线始终标为前台且需同意。
 - Python 测试 10/10（`python3.12` 与系统 `python3` 3.9 均通过），`node --test tests/test-skill-sync.js` 15/15。**这仍是开发机与模拟结果**，macOS 11/12 Intel 真机上的浏览器启动、CDP 操作和登录保持仍待验收。
+
+## Rosetta 等效验收：Chrome for Testing 138/150 mac-x64（2026-09-25）
+
+方法：在 macOS 15.3/arm64 上用 Rosetta 跑**官方 Chrome for Testing `mac-x64`** 构建（`known-good-versions-with-downloads.json` 中 138.x / 150.x 各自最后一个有 mac-x64 `chrome` 下载的版本，storage.googleapis.com 直链，解压后无 quarantine 属性），Harness 为 `browser-harness==0.1.13` 装在临时 venv。这是能找到的最接近 macOS 11/12 Intel 的等效环境。
+
+- **版本与兼容声明（真机读数）**：`138.0.7204.183` → `CFBundleShortVersionString` 138.0.7204.183、`LSMinimumSystemVersion` **11.0**、主程序与 Renderer Helper 的 `lipo -archs` 均为**只有 x86_64**；`150.0.7871.124` → **12.0**、同样只有 x86_64。即 138 的声明门槛确实 ≤ 11.0、150 的确实 ≤ 12.0，两包都没有 arm64 切片（真 Intel 机不会因架构被拒）。
+- **探测（`browser_probe.py --browser` 两个 app，系统 `/usr/bin/python3`）**：真机 `tier=current`，两个包都 `[ok]`（arm64 主机不触发 Intel 专属的 arm64-only 拒绝分支）；另有本机 Google Chrome 153 `min=13.0`。
+- **打桩 Intel 主机（in-process 替换 `platform.mac_ver`，只让 `lipo` 走真实调用）**：macOS **11.7.10** 下 138 `compatible=True`、**150 `compatible=False`（why=`needs macOS 12.0`）**、Chrome 153 `False`；macOS **12.7.6** 下 138 与 150 都 `True`。把临时 venv 放到 `PATH` 后 `choice=browser-harness`，并打印出可直接照抄的 `smoke` 命令；不放时 `choice=None`（退出码 2）。分级判定与 `FROZEN_CHROME` 表一致。
+- **smoke 通过（两次）**：138 → `browser=Chrome/138.0.7204.183`、`PASS title=MultiCC Browser Use Smoke`、PNG 756×417、整条命令 9.4s；150 → `browser=Chrome/150.0.7871.124`、`PASS`、7.4s。两次 Harness 日志都是 `MULTICC_BROWSER_USE_SMOKE_OK`。
+- **确实在 Rosetta 下运行**：两个包的浏览器日志都带 Chromium 自己的 `The use of Rosetta to run the x64 version of Chromium on Arm is neither tested nor maintained`；运行期 `sample` 头部为 `Code Type: X86-64 (translated)`，父进程是启动它的 `local_browser_use.py`，与 `lipo -archs` 只有 x86_64 互相印证。
+- **首次启动可能被登录钥匙串挡住（重要，务必知情）**：本机第一次用 138 起 headless 时，浏览器在 `Security.framework` 的 `SecItemCopyMatching` 上阻塞（读个人 Chrome 已于 2025-06-05 创建的登录钥匙串项 `Chrome Safe Storage`），SecurityAgent 弹出授权对话框且无人应答，CDP 一直不监听——浏览器日志只有 Rosetta 那一行，脚本按 20s 上限判 `FAIL CDP endpoint did not become ready`。**取消**该对话框（只取消，未批准任何访问）后 138 即可启动（一次 28s），之后 smoke/start 稳定 6–9s 起来；另测 `--use-mock-keychain` 可让 138 在 6s 内到达 CDP。150 全程没有阻塞（它也会拉起 SecurityAgent，但不等其应答）。
+- **两账号持久化通过（138 x64）**：`start --headless` 起 `legacy-test-a`/9351 与 `legacy-test-b`/9352，Harness 写 `multicc-acct=alpha|beta`（含 max-age 的 cookie + localStorage）。两账号互不可见（A 只见 alpha、B 只见 beta）；`SIGTERM` 停掉两个浏览器进程（当时启动器已因下述缺陷自行退出）、确认两个端口关闭后重新 `start`，A 仍是 alpha、B 仍是 beta，且隔离与磁盘上一致（各自 `Default/Local Storage/leveldb` 只含自己的值）。重启浏览器后按 Harness 说明先 `--reload` 丢弃旧 daemon 再连。
+- **发现并修复的脚本缺陷**：给启动器发 `SIGTERM` 只会杀掉启动器，**它启动的浏览器会变成孤儿**继续监听 CDP 端口（脚本只处理 `KeyboardInterrupt`，`SIGTERM` 默认不触发 `finally`）。已做最小修复：注册 `SIGTERM` 处理函数转成 `KeyboardInterrupt`，使 `start` 的停止语义与文档一致；修复后实测 `SIGTERM` 启动器 → 只它自己的浏览器退出、端口关闭、无残留。
+- **本验收不能证明**：真 macOS 11/12 Intel 内核/图形栈/系统权限弹窗下的浏览器启动；真机钥匙串（登录会话、ACL、Seeded Profile 的 Cookie 解密）行为——本机是 arm64 登录会话里跑的转译 x64 进程，与真 Intel 机可能不同；有头（非 headless）模式的首次运行 UI 与授权弹窗未测；只验证到 CDP 层的 set/get 与持久化，没有真实站点登录；150 只做了探测与单次 smoke，两账号持久化只在 138 上做过。这些仍需真机验收，不能用本节结果代替。

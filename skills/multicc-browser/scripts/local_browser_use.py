@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -91,6 +92,11 @@ def stop_owned_browser(process):
             process.wait(timeout=5)
 
 
+def _sigterm(signum, frame):
+    """Make SIGTERM behave like Ctrl-C so `start` stops only the browser it owns."""
+    raise KeyboardInterrupt
+
+
 def seed_profile(source_root, source_profile, target_root):
     """One-time, offline copy into a dedicated profile; never modify the source."""
     if not SOURCE_PROFILE_RE.fullmatch(source_profile):
@@ -169,6 +175,7 @@ def main(argv=None):
 
     if platform.system() != "Darwin":
         parser.error("this launcher currently targets macOS; use Browser Use directly elsewhere")
+    signal.signal(signal.SIGTERM, _sigterm)
     try:
         durable_profile = profile_path(args.name)
     except ValueError as error:
