@@ -195,3 +195,57 @@ test('auth HTTP DTOs exclude credential material, paths, URLs, and raw login err
     },
   });
 });
+
+test('engine 0.16.9 personal provider_config.json satisfies the native gate and receives manual keys', t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-auth-v2-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const v2 = path.join(home, '.zcode', 'v2');
+  fs.mkdirSync(v2, { recursive: true });
+  const other = { providerId: 'mine', enabled: false, config: { group: 'standard-personal', access: { type: 'api-key', apiKey: 'x' } } };
+  fs.writeFileSync(path.join(v2, 'provider_config.json'), JSON.stringify({
+    schemaVersion: 1,
+    config: {
+      providerConfigRules: { providerRules: [other, {
+        providerId: 'bigmodel-api', templateId: 'bigmodel-api',
+        config: { group: 'standard-personal', access: { type: 'api-key', apiKey: 'desktop-key' } },
+      }] },
+      modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
+    },
+  }));
+
+  const status = runWithHome(home, `
+    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    process.stdout.write(JSON.stringify(auth.getZcodeAuthStatus()));
+  `);
+  assert.equal(status.configured, true);
+  assert.equal(status.provider, 'bigmodel-api', 'disabled rules are skipped');
+  assert.equal(status.source, 'provider_config');
+
+  runWithHome(home, `
+    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    process.stdout.write(JSON.stringify(auth.setZcodeApiKey('zai', 'new-key')));
+  `);
+  const written = JSON.parse(fs.readFileSync(path.join(v2, 'provider_config.json'), 'utf8'));
+  const rules = written.config.providerConfigRules.providerRules;
+  assert.deepEqual(rules[0], {
+    providerId: 'zai-api', templateId: 'zai-api',
+    config: { group: 'standard-personal', access: { type: 'api-key', apiKey: 'new-key' } },
+  });
+  assert.deepEqual(rules.slice(1).map(rule => rule.providerId), ['mine', 'bigmodel-api'], 'other rules preserved');
+  assert.deepEqual(written.config.modelConfigRules, { providerModelRules: [], manualProviderModelRules: [] });
+
+  runWithHome(home, `
+    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    process.stdout.write(JSON.stringify(auth.setZcodeApiKey('bigmodel', 'relay-key', { baseURL: 'https://relay.example/api/anthropic' })));
+  `);
+  const relayed = JSON.parse(fs.readFileSync(path.join(v2, 'provider_config.json'), 'utf8')).config.providerConfigRules.providerRules;
+  assert.deepEqual(relayed[0], {
+    providerId: 'bigmodel-api', templateId: 'bigmodel-api',
+    config: {
+      group: 'standard-personal',
+      access: { type: 'api-key', apiKey: 'relay-key' },
+      api: { type: 'anthropic-messages', baseUrl: 'https://relay.example/api/anthropic' },
+    },
+  }, 'custom baseURL is carried into the template rule');
+  assert.deepEqual(relayed.slice(1).map(rule => rule.providerId), ['zai-api', 'mine']);
+});
