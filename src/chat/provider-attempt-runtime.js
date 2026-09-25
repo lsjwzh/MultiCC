@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { isCompleted } = require('../cli-adapters/completion');
 const { isResident } = require('../cli/cli-capability');
 const { isProxyFailureCompatibleWithCompletion } = require('./adapter-completion');
+const { isProxyStallCode } = require('../providers/proxy-stall-watch');
 const {
   createExactSecretStreamRedactor, redactExactSecretFragments, redactProviderRouteCapability,
 } = require('../observability');
@@ -50,6 +51,15 @@ function positiveInteger(value, label) {
     throw new ProviderAttemptError(`${label} must be a positive integer`, 'PROVIDER_ATTEMPT_IDENTITY_INVALID');
   }
   return number;
+}
+
+// Optional per-attempt idle budget for the host-side stall watchdog. 0 (the
+// default, and what every non-Auto route passes) means "no watchdog at all".
+// Anything malformed degrades to 0 rather than throwing: a diagnostics budget
+// must never be the reason a turn cannot start.
+function stallTimeoutBudget(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : 0;
 }
 
 function createProviderRevision(input = {}) {
@@ -186,6 +196,10 @@ function snapshot(record) {
     providerRevision: record.providerRevision,
     attemptNo: record.attemptNo,
     routeGeneration: record.routeGeneration,
+    // The idle budget the proxy watchdog enforces for this physical route, and
+    // whether it has already fired. A stalled attempt is not a route to replay.
+    stallTimeoutMs: record.stallTimeoutMs,
+    stalled: record.stalled === true,
     replayFence: record.replayFence,
     visibleOutputObserved: record.visibleOutputObserved,
     toolIntentObserved: record.toolIntentObserved,
@@ -648,6 +662,8 @@ function createProviderAttemptRuntime(options = {}) {
       routeGeneration,
       proxyRouteToken,
       spawnKey,
+      stallTimeoutMs: stallTimeoutBudget(input.stallTimeoutMs),
+      stalled: false,
       replayFence: continuation && previous ? previous.replayFence : 'none',
       visibleOutputObserved: !!(continuation && previous && previous.visibleOutputObserved),
       toolIntentObserved: !!(continuation && previous && previous.toolIntentObserved),
@@ -859,6 +875,12 @@ function createProviderAttemptRuntime(options = {}) {
       });
     }
     if (!record || record.outcome !== 'running') return reject('proxy_attempt_not_running');
+    // The host already proved this route went silent and is retiring it. A CLI
+    // that re-dials it (codex retries the same stream several times before it
+    // gives up) would only hold the turn open on a line that cannot answer, and
+    // would deny Auto the chance to switch. Not poisoned: the attempt's failure
+    // category is the stall, which the turn's error decision already owns.
+    if (record.stalled === true) return reject('attempt_stalled');
     if (role === 'main' && clean(input.providerId)
         && clean(input.providerId) !== record.providerId) {
       return reject('provider_route_mismatch', true);
@@ -1198,6 +1220,20 @@ function createProviderAttemptRuntime(options = {}) {
       observedAt: Number(now()),
       ...(proxyOutcome ? { proxyOutcome, requestId: proxyOutcome.requestId } : {}),
     });
+    // Host-observed silence, not a client that walked away: the route is dead,
+    // and every later request for this attempt must be refused instead of
+    // re-dialed. The failure above stays the stronger evidence, so the teardown
+    // that follows cannot overwrite it with DOWNSTREAM_DISCONNECT.
+    if (isProxyStallCode(record.proxyFailure.code)) {
+      record.stalled = true;
+      auditOnly(sessionId, {
+        type: 'provider_attempt_stalled', operation: 'proxy_outcome',
+        runtimeEpoch: record.runtimeEpoch, turnId: record.turnId,
+        routeAttemptId: record.routeAttemptId, routeGeneration: record.routeGeneration,
+        providerId: record.providerId, code: record.proxyFailure.code,
+        requestId: record.proxyFailure.requestId || null,
+      });
+    }
     return Object.freeze({ accepted: true, code: null, failure: record.proxyFailure });
   }
 
