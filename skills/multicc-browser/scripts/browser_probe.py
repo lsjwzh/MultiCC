@@ -3,8 +3,14 @@
 
 Runs on the system python3 of macOS 11 (3.8) so it can be used before any
 setup. It never launches a browser, never touches a profile and never
-downloads anything; it only reads app bundles, PATH and the MultiCC Agent
-status, then prints a tier plus ordered routes.
+downloads anything; it only reads app bundles, PATH, `node -v` and the MultiCC
+Agent status, then prints a tier plus ordered routes.
+
+The default route on every tier is MultiCC's own executor, `mbrowser`
+(<skill_dir>/bin/mbrowser): it ships with the Node runtime MultiCC installs.
+BrowserAct, OpenClaw and Browser Harness stay listed as opt-in alternatives —
+`which` finding their CLI is not proof they can drive a browser here, so none
+of them is ever reported as `available` or picked as the default `choice`.
 """
 
 import argparse
@@ -22,9 +28,14 @@ import sys
 # Chromium-family apps that expose CDP with a dedicated --user-data-dir.
 APP_NAMES = ("Google Chrome for Testing", "Chromium", "Google Chrome", "Microsoft Edge",
              "Brave Browser", "Google Chrome Canary")
+SKILL_DIR = Path(__file__).resolve().parent.parent
+MBROWSER_BIN = SKILL_DIR / "bin" / "mbrowser"
+LOCAL_BROWSER_USE = SKILL_DIR / "scripts" / "local_browser_use.py"
 AGENT_BIN = Path(os.environ.get("MULTICC_AGENT_BIN", str(Path.home() / ".multicc/bin/multicc-agent")))
 HARNESS_VENV_BIN = Path.home() / ".local/share/multicc-browser-use-venv/bin/browser-harness"
 FIRST_DEDICATED_PORT = 9331
+MIN_NODE_MAJOR = 22
+HARNESS_MIN_PYTHON = (3, 11)
 
 # Last major that still ships for each legacy macOS; Edge/Brave follow the
 # same Chromium cutoffs. Informational only: compatibility is decided from each
@@ -131,13 +142,47 @@ def which_any(*names):
     return None
 
 
+def probe_node():
+    """Locate the Node runtime that runs `mbrowser` (needs major >= 22).
+
+    MULTICC_NODE wins over PATH because MultiCC pins the runtime it ships and
+    puts on PATH. `node -v` is read-only, like the other probes here.
+    """
+    report = {"path": None, "version": None, "ok": False, "minMajor": MIN_NODE_MAJOR}
+    for candidate in (os.environ.get("MULTICC_NODE"), shutil.which("node")):
+        if not candidate:
+            continue
+        version = run_quiet([candidate, "-v"])
+        if version is None:
+            continue
+        entry = {"path": candidate, "version": version.lstrip("v") or None,
+                 "ok": version_tuple(version.lstrip("v")) >= (MIN_NODE_MAJOR,)}
+        if entry["ok"]:
+            return entry
+        if report["path"] is None:
+            report.update(entry)
+    return report
+
+
+def python_interpreter():
+    """Interpreter to write into suggested commands, or None below 3.11.
+
+    sys.executable is preferred so the printed command matches the interpreter
+    already running here; otherwise the first 3.11+ python3 on PATH.
+    """
+    if sys.executable and version_tuple(platform.python_version()) >= HARNESS_MIN_PYTHON:
+        return sys.executable
+    return which_any("python3.13", "python3.12", "python3.11")
+
+
 def probe_tools():
     harness = which_any("browser-harness") or (str(HARNESS_VENV_BIN) if HARNESS_VENV_BIN.is_file() else None)
-    python = which_any("python3.13", "python3.12", "python3.11")
+    python = python_interpreter()
     return {
         "browserHarness": {"path": harness,
                            "version": run_quiet([harness, "--version"]) if harness else None},
         "python311Plus": python,
+        "node": probe_node(),
         "uv": which_any("uv"),
         "browserAct": which_any("browser-act"),
         "openclaw": which_any("openclaw"),
@@ -174,52 +219,83 @@ def suggest_port(reserved):
     return None
 
 
-def route(route_id, status, why, next_step, foreground=False, consent=False):
+def route(route_id, status, why, next_step, foreground=False, consent=False, label=None):
     return {"id": route_id, "status": status, "why": why, "next": next_step,
-            "foreground": foreground, "requiresConsent": consent}
+            "foreground": foreground, "requiresConsent": consent, "label": label}
 
 
 def plan_routes(tier, browsers, tools, agent, port):
-    """Ordered routes. Only the first 'available' one is the default choice."""
+    """Ordered routes. Only the first 'available' one is the default choice.
+
+    `multicc` (MultiCC's own `mbrowser`) is the only route that can ever be
+    `available`; the third-party executors are opt-in and are listed with a
+    status that keeps them out of `choice`.
+    """
     compatible = [b for b in browsers if b["compatible"]]
     # A dedicated testing/Chromium build beats reusing the personal Chrome app.
     browser = compatible[0] if compatible else None
-    script = "skills/multicc-browser/scripts/local_browser_use.py"
     harness_bin = tools["browserHarness"]["path"]
+    python_bin = tools.get("python311Plus")
+    node = tools.get("node") or {}
+
+    if node.get("ok") and browser:
+        why = (f"MultiCC mbrowser on a dedicated persistent profile "
+               f"({Path(browser['app']).name} {browser['version']}, node {node['version']})")
+        if tier == "legacy":
+            why += "; legacy engine with no further security updates, keep real accounts off it unless the user accepts the risk"
+        mbrowser = route("multicc", "available", why, f"{MBROWSER_BIN} doctor", label="MultiCC mbrowser")
+    elif not node.get("ok"):
+        found = f"found node {node['version']}" if node.get("path") else "node not found"
+        mbrowser = route("multicc", "needs-setup",
+                         f"{found}; mbrowser needs Node >= {MIN_NODE_MAJOR} (MultiCC ships and pins it)",
+                         "restart MultiCC so it installs/updates its Node runtime, or set MULTICC_NODE to a Node >= 22",
+                         label="MultiCC mbrowser")
+    else:
+        mbrowser = route("multicc", "needs-setup",
+                         "no Chromium-family app here runs on this macOS",
+                         "obtain a trusted build whose LSMinimumSystemVersion fits (see references/macos-tiers.md); nothing is downloaded automatically",
+                         label="MultiCC mbrowser")
 
     if not browser:
         harness = route("browser-harness", "needs-setup",
                         "no Chromium-family app here runs on this macOS",
                         "obtain a trusted build whose LSMinimumSystemVersion fits (see references/macos-tiers.md); nothing is downloaded automatically")
-    elif not (harness_bin and tools["python311Plus"]):
+    elif not (harness_bin and python_bin):
+        missing = "browser-harness" if not harness_bin else "Python >= 3.11"
         harness = route("browser-harness", "needs-setup",
-                        f"compatible browser {browser['version']} found; Python 3.11+ or browser-harness missing",
-                        "install browser-harness==0.1.13 in a Python 3.12 venv (references/browser-use-local.md)")
+                        f"compatible browser {browser['version']} found; {missing} missing, so this optional Python route cannot run",
+                        "install browser-harness==0.1.13 in a Python 3.11+ venv (references/browser-use-local.md)")
     else:
-        harness = route("browser-harness", "available",
-                        f"{Path(browser['app']).name} {browser['version']} + dedicated profile over loopback CDP",
-                        f"python3.12 {script} smoke --browser '{browser['executable']}' "
-                        f"--browser-use-bin '{harness_bin}' --port {port or 9331} --headless")
+        harness = route("browser-harness", "opt-in",
+                        f"Browser Harness {tools['browserHarness']['version'] or ''} + dedicated profile; Python alternative, only when the user asks for it",
+                        f"{python_bin} {LOCAL_BROWSER_USE} smoke --browser '{browser['executable']}' "
+                        f"--browser-use-bin '{harness_bin}' --port {port or FIRST_DEDICATED_PORT} --headless")
 
     if not tools["browserAct"]:
+        # The interpreter this Mac already has beats a hardcoded version that
+        # no `python3.x` on PATH may satisfy.
         act = route("browser-act", "unavailable", "browser-act CLI not installed",
-                    "only install after the user approves (uv tool install browser-act-cli --python 3.12)")
+                    "only install after the user approves "
+                    f"(uv tool install browser-act-cli --python {python_bin or '3.12'})")
     elif tier == "legacy":
         act = route("browser-act", "not-recommended",
-                    "its managed browsers follow current Chromium, which no longer ships for macOS 11/12",
-                    "use only after a smoke on this Mac proves its browser starts")
+                    "opt-in alternative; its managed browsers follow current Chromium, which no longer ships for macOS 11/12",
+                    "only if the user explicitly asks, and only after a smoke on this Mac proves its browser starts")
     else:
-        act = route("browser-act", "available", "verified local executor for current macOS",
-                    "load the browser-act skill and its core guide; use a dedicated 'chrome' browser, not chrome-direct")
+        act = route("browser-act", "installed-unverified",
+                    "opt-in alternative: the CLI is on PATH, which proves nothing about its browser or session here",
+                    "only if the user explicitly asks: load the browser-act skill and its core guide, then verify a dedicated 'chrome' browser (never chrome-direct)")
 
     if not tools["openclaw"]:
         claw = route("openclaw", "unavailable", "openclaw CLI not installed", "see references/openclaw.md")
     elif tier == "legacy":
-        claw = route("openclaw", "not-recommended", "managed profiles launch current Chrome",
-                     "verify Gateway and browser start on this Mac first")
+        claw = route("openclaw", "not-recommended",
+                     "opt-in alternative; managed profiles launch current Chrome",
+                     "only if the user explicitly asks, and only after verifying Gateway and browser start on this Mac")
     else:
-        claw = route("openclaw", "needs-verify", "CLI present; Gateway and managed profile unverified",
-                     "follow references/openclaw.md preflight")
+        claw = route("openclaw", "installed-unverified",
+                     "opt-in alternative: CLI present; Gateway and managed profile unverified",
+                     "only if the user explicitly asks: follow references/openclaw.md preflight")
 
     if not agent.get("installed"):
         desk = route("agent-desktop", "unavailable", "MultiCC Agent not installed (MultiCC installs it at startup)",
@@ -234,7 +310,7 @@ def plan_routes(tier, browsers, tools, agent, port):
                      True, True)
 
     ordered = [harness, act, claw] if tier == "legacy" else [act, harness, claw]
-    return ordered + [desk]
+    return [mbrowser] + ordered + [desk]
 
 
 def notes_for(tier, os_version):
@@ -244,10 +320,12 @@ def notes_for(tier, os_version):
     if tier == "legacy":
         return [f"macOS {major}: Chrome stops at {FROZEN_CHROME.get(major)} with no further security updates; "
                 "keep real accounts off it unless the user accepts the risk",
+                f"mbrowser still works on this tier with a compatible engine (Chrome for Testing {FROZEN_CHROME.get(major)} or older)",
                 "never fall back to the personal Chrome, a cloud browser or the Agent desktop silently"]
     if tier == "transitional":
         return ["macOS 13: current Chrome still ships; Agent screenshots use screencapture, not ScreenCaptureKit"]
-    return ["macOS 14+: all local routes supported; prefer dedicated persistent browsers over chrome-direct"]
+    return ["macOS 14+: current Chrome/Edge/Chromium/Brave all work with mbrowser; prefer dedicated persistent profiles",
+            "BrowserAct/OpenClaw/Browser Harness are opt-in alternatives, not defaults"]
 
 
 def probe(extra_browsers=()):
@@ -264,6 +342,9 @@ def probe(extra_browsers=()):
     reserved = {agent.get("chromeWatchdogPort")} - {None}
     port = suggest_port(reserved)
     routes = plan_routes(tier, browsers, tools, agent, port)
+    # Only `available` counts. Opt-in statuses (`opt-in`, `installed-unverified`,
+    # `not-recommended`) and every foreground route are deliberately excluded,
+    # so the third-party executors can never become the default.
     choice = next((r["id"] for r in routes if r["status"] == "available" and not r["foreground"]), None)
     return {"os": {"version": mac, "machine": machine, "tier": tier},
             "browsers": browsers, "tools": tools, "agent": agent,
@@ -281,10 +362,14 @@ def render(report):
                      f"min={browser['minimumMacOS'] or '-'}{detail}")
     if not report["browsers"]:
         lines.append("  no Chromium-family app found")
+    node = (report.get("tools") or {}).get("node") or {}
+    lines.append(f"  node: {node.get('path') or 'not found'} "
+                 f"{node.get('version') or '-'} (needs >= {node.get('minMajor', MIN_NODE_MAJOR)})")
     lines.append("routes:")
     for item in report["routes"]:
         flags = " [foreground, needs consent]" if item["foreground"] else ""
-        lines.append(f"  {item['id']}: {item['status']}{flags} - {item['why']}")
+        label = f" ({item['label']})" if item.get("label") else ""
+        lines.append(f"  {item['id']}{label}: {item['status']}{flags} - {item['why']}")
         lines.append(f"    next: {item['next']}")
     lines.append(f"choice={report['choice'] or 'none'} suggestedPort={report['suggestedPort']}")
     lines.extend(f"note: {note}" for note in report["notes"])

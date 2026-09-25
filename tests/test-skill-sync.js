@@ -174,6 +174,9 @@ test('bundled browser skill keeps its adapters and local launcher after sync', t
   fs.cpSync(source, path.join(h.rootDir, 'skills/multicc-browser'), { recursive: true });
   assert.equal(h.runtime.installBundledSkills(), 1);
   h.runtime.syncSharedSkills();
+  // SKILL.md routes the model to the mbrowser reference first; a rename that
+  // skips the sync would leave the installed skill with a dead link.
+  assert.match(fs.readFileSync(path.join(source, 'SKILL.md'), 'utf8'), /references\/mbrowser.md/);
   for (const provider of h.providers) {
     const installed = path.join(provider.dir, 'multicc-browser');
     for (const relative of [
@@ -181,6 +184,7 @@ test('bundled browser skill keeps its adapters and local launcher after sync', t
       'references/hermes.md',
       'references/browser-use-local.md',
       'references/macos-tiers.md',
+      'references/mbrowser.md',
       'scripts/local_browser_use.py',
       'scripts/browser_probe.py',
     ]) {

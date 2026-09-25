@@ -91,6 +91,7 @@ test('bundled skill entry points the docs execute directly are tracked 100755', 
     'skills/multicc-computer-use/scripts/mcu.sh',
     'skills/multicc-computer-use/scripts/init.sh',
     'skills/multicc-artifact/bin/artifact',
+    'skills/multicc-browser/bin/mbrowser',
     'skills/multicc-trigger/bin/mtrigger',
   ]) {
     assert.equal(indexModes.get(file), '100755', `${file} must be tracked executable`);
