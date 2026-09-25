@@ -49,6 +49,8 @@
 // misclassified as an API error; a reply that was already persisted stays
 // persisted.
 
+const { isProcessingLetter } = require('../classify/vocab');
+
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_CONFIRMATIONS = 2;
 const DEFAULT_COOLDOWN_MS = 120_000;
@@ -101,7 +103,7 @@ function createStalledTurnRecovery(deps = {}) {
     }
 
     const task = deps.getTaskState(record) || {};
-    if (task.classifyState !== 'P') {
+    if (!isProcessingLetter(task.classifyState)) {
       clearSuspect(sessionId);
       return { sessionId, action: 'skip', reason: 'not_processing' };
     }

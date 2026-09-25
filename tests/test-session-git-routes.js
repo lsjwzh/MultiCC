@@ -547,6 +547,41 @@ test('active and classify gates block sync while force bypasses both', async () 
   assert.equal(fixture.calls.broadcasts.at(-1)[1].type, 'merge_status');
 });
 
+test('the sync gate blocks only letters that can still write into the worktree', async () => {
+  // "Unfinished" is about writing, not about who is waiting: P (a turn in
+  // flight) and the retired-but-persisted C are mid-turn, B ended parked on a
+  // background job that may still write. W ended with the user holding the
+  // question — nothing is running and the user is the one asking, so refusing
+  // the sync would be a dead end. D/E ended too, and an unclassified session has
+  // no turn at all. (src/workspace/inventory.js's read-only preview counts W as
+  // execution_dependency instead; that surface does not refuse a user command.)
+  const fixture = createFixture();
+  assert.equal(fixture.runtime.isWorktreeActive('s1'), false);
+  const BLOCKED = { P: true, C: true, B: true, W: false, D: false, E: false };
+  for (const [letter, blocked] of Object.entries(BLOCKED)) {
+    fixture.records.get('s1').taskState.classifyState = letter;
+    fixture.calls.sync.length = 0;
+    const response = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
+      params: { id: 's1' },
+    });
+    assert.equal(response.statusCode, blocked ? 409 : 200, `${letter} sync status`);
+    if (blocked) {
+      assert.equal(response.body.classifyState, letter, `${letter} reported state`);
+      assert.equal(fixture.calls.sync.length, 0, `${letter} must not reach git`);
+    } else {
+      assert.equal(fixture.calls.sync.length, 1, `${letter} should reach git`);
+    }
+  }
+  // No letter at all (never classified) is not a reason to refuse.
+  delete fixture.records.get('s1').taskState;
+  fixture.calls.sync.length = 0;
+  const unclassified = await invoke(fixture.app.routes.get('POST /api/sessions/:id/sync'), {
+    params: { id: 's1' },
+  });
+  assert.equal(unclassified.statusCode, 200);
+  assert.equal(fixture.calls.sync.length, 1);
+});
+
 test('merge reports sibling active, dirty, unmerged, conflicts and successful sync', async () => {
   const records = new Map([
     ['s1', { id: 's1', dirId: 'd1', branch: 'b1', worktreePath: '/wt/1' }],

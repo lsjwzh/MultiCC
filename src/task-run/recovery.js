@@ -1,5 +1,9 @@
 'use strict';
 
+const {
+  isTerminalLetter, isParkedLetter, isOutcomeLetter,
+} = require('../classify/vocab');
+
 function exactLease(item) {
   return {
     slotId: item.slotId,
@@ -31,7 +35,9 @@ function terminalRecoveryProof(status, item) {
       : { action: 'quarantine', code: 'TASK_RUN_SCHEDULER_LEASE_MISMATCH' };
   }
   const classifyState = String(status.classifyState || '');
-  if (!['D', 'E', 'W', 'B'].includes(classifyState)) return { action: 'none' };
+  // Only a definite verdict proves a terminal run: an outcome (D/E) or a parked
+  // turn (W/B). A still-processing P — and anything unrecognized — proves nothing.
+  if (!isOutcomeLetter(classifyState) && !isParkedLetter(classifyState)) return { action: 'none' };
   const decision = status.lastDecision && typeof status.lastDecision === 'object'
     ? status.lastDecision : {};
   const exact = (!status.sessionId || status.sessionId === item.slotId)
@@ -41,7 +47,7 @@ function terminalRecoveryProof(status, item) {
   if (!exact) {
     return { action: 'quarantine', code: 'TASK_RUN_SCHEDULER_LEASE_MISMATCH' };
   }
-  if (classifyState === 'W' || classifyState === 'B') return { action: 'retained' };
+  if (isParkedLetter(classifyState)) return { action: 'retained' };
   return {
     action: 'recover',
     event: {
@@ -52,7 +58,7 @@ function terminalRecoveryProof(status, item) {
       taskRunId: item.runId,
       leaseEpoch: Number(item.leaseEpoch),
       classifyState,
-      turnOutcome: classifyState === 'D' ? 'succeeded' : 'failed',
+      turnOutcome: isTerminalLetter(classifyState) ? 'succeeded' : 'failed',
       reason: decision.reason || `recovered_${classifyState}`,
       attemptOutcome: decision.action === 'superseded' ? 'superseded' : null,
       at: Number(decision.at || status.updatedAt) || Date.now(),

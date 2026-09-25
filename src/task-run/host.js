@@ -5,6 +5,7 @@ const { createUsageObserved, validateUsageObserved } = require('../usage-observe
 const { assertProviderBinding } = require('../providers/binding');
 const { isTaskRunWrapperText } = require('./context');
 const { describeRunFailure, recordRunError } = require('./errors');
+const { isAbnormalLetter, isParkedLetter, isOutcomeLetter } = require('../classify/vocab');
 const { TERMINAL_EXECUTION_STATUSES } = require('./store');
 
 const TASK_RUN_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp']);
@@ -40,7 +41,7 @@ function stableMainUsageEventId(payload = {}) {
 
 function executionStatus(event) {
   if (event?.attemptOutcome === 'cancelled' || event?.reason === 'cancelled') return 'cancelled';
-  if (event?.turnOutcome === 'failed' || event?.classifyState === 'E') return 'failed';
+  if (event?.turnOutcome === 'failed' || isAbnormalLetter(event?.classifyState)) return 'failed';
   return 'succeeded';
 }
 
@@ -650,7 +651,7 @@ function createTaskRunHost(options = {}) {
       return Promise.resolve({ ok: false, code: 'stale_task_run_lease' });
     }
     const runId = event.taskRunId;
-    if (event.classifyState === 'W' || event.classifyState === 'B') {
+    if (isParkedLetter(event.classifyState)) {
       return Promise.resolve({ ok: true, waiting: true, runId });
     }
     const requestedStatus = executionStatus(event);
@@ -834,7 +835,7 @@ function createTaskRunHost(options = {}) {
     const runId = clean(event.taskRunId);
     const leaseEpoch = Number(event.leaseEpoch);
     if (event.recovered !== true || event.type !== 'completed'
-        || !['D', 'E'].includes(event.classifyState)
+        || !isOutcomeLetter(event.classifyState)
         || !sessionId || !runId
         || !Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1) {
       return { ok: false, code: 'TASK_RUN_TERMINAL_RECOVERY_INVALID' };

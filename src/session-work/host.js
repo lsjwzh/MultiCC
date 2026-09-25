@@ -1,6 +1,9 @@
 'use strict';
 
 const { runStateForFreezeReason } = require('./scheduler');
+const {
+  isProcessingLetter, isBackgroundLetter, isAbnormalLetter, isTerminalLetter,
+} = require('../classify/vocab');
 const zcodeAuth = require('../cli-adapters/zcode-auth');
 const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
@@ -108,12 +111,12 @@ function createSessionWorkHost(deps = {}) {
       || (options.originTrigger === true ? 'trigger'
         : options.originContinue === true ? 'continuation' : 'direct');
     const classifyState = deps.getTaskState(deps.getRecord(sessionId))?.classifyState || null;
-    // Only PROCESS (P) stages typed chat input behind the active turn. In every
+    // Only PROCESS stages typed chat input behind the active turn. In every
     // other classify state a typed message is an immediate, correlated
     // continuation of the current native conversation.
     const directContinuation = !requestId
       && source === 'direct'
-      && classifyState !== 'P'
+      && !isProcessingLetter(classifyState)
       && !!status?.active;
     const admissionOptions = { ...options };
     if (!requestId) delete admissionOptions.userInputRequestId;
@@ -232,7 +235,7 @@ function createSessionWorkHost(deps = {}) {
     if (pending.resolved === true) return { ok: true, duplicate: true };
     const cs = deps.getChatSession(sessionId);
     const state = deps.getTaskState(record) || {};
-    if (cs?.isStreaming || state.classifyState === 'P'
+    if (cs?.isStreaming || isProcessingLetter(state.classifyState)
         || (queue.active && queue.state !== 'frozen')) {
       return { ok: false, code: 'turn_still_active' };
     }
@@ -461,9 +464,9 @@ function createSessionWorkHost(deps = {}) {
       // result.state is the letter (D/W/B/E/P) — single source. hasPending can
       // still force B (an unresolved structured question waits on callback).
       const resultLetter = result?.state || 'W';
-      const classifyState = resultLetter === 'E' ? 'E'
-        : resultLetter === 'D' ? 'D'
-          : resultLetter === 'B' || runtime.hasPending(sessionId) ? 'B'
+      const classifyState = isAbnormalLetter(resultLetter) ? 'E'
+        : isTerminalLetter(resultLetter) ? 'D'
+          : isBackgroundLetter(resultLetter) || runtime.hasPending(sessionId) ? 'B'
             : 'W';   // W, or P-misjudged-at-turn-end → at-rest
       const pendingInput = deps.pendingUserInput(sessionId);
       // Queue rule: P enqueues, D drains, W/B/E leave the FIFO alone. Every
@@ -514,7 +517,7 @@ function createSessionWorkHost(deps = {}) {
     // the final per-entry time and task-id check; an unproven interruption stays
     // P and fails closed instead of being silently discarded.
     const recoveredClassify = record?.type === 'gateway'
-      && state.classifyState === 'P'
+      && isProcessingLetter(state.classifyState)
       && endedAt
       ? 'D'
       : state.classifyState;
@@ -814,7 +817,7 @@ function createSessionWorkHost(deps = {}) {
   // drifted out of sync is repaired rather than left stale.
   function alreadyCancelled(sessionId) {
     const taskState = deps.getTaskState(deps.getRecord(sessionId)) || {};
-    return taskState.classifyState === 'E' && !!taskState.cancelledAt;
+    return isAbnormalLetter(taskState.classifyState) && !!taskState.cancelledAt;
   }
 
   async function runCancel(sessionId, intent) {

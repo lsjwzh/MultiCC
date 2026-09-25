@@ -1,6 +1,7 @@
 'use strict';
 
 const { taskDirId } = require('./normalize');
+const { isSettledLetter } = require('../classify/vocab');
 // ── Panel-input routing ─────────────────────────────────────────────────────
 // The task panel's composer is not attached to any session. Automatic routing
 // resolves the directory's typed Commander below. These semantic worker
@@ -115,7 +116,18 @@ function recordAppearsAvailable(rec, sid, options = {}) {
   if (!rec || rec.active === true || rec.busy === true) return false;
   const state = String(rec.runState || rec.status || rec.taskState?.runState || '').toLowerCase();
   if (['active', 'busy', 'running', 'thinking', 'editing', 'working', 'starting'].includes(state)) return false;
-  return !['A', 'P'].includes(rec.taskState?.classifyState);
+  // The classify letter is the last word on whether this session's own turn is
+  // over. Only a SETTLED turn (D executed, W back with the user) is free for
+  // newly routed work: P is mid-turn, B is parked on a background job that will
+  // write more output, and E ended in a fault — handing any of them a second
+  // task would run it behind the first one's back. A session that has never been
+  // classified has no outstanding turn at all.
+  //
+  // This used to read `!['A', 'P'].includes(...)`. 'A' is not a letter — the
+  // parser only emits D/W/B/E/P — so the guard gated P alone and a B session
+  // (waiting on a callback the router cannot see) was handed a second task.
+  const classifyState = String(rec.taskState?.classifyState || '').trim().toUpperCase();
+  return !classifyState || isSettledLetter(classifyState);
 }
 
 function rankRoutingCandidates(records, {

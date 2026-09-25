@@ -14,9 +14,19 @@ const {
   parseClassifyResult,
   buildClassifySystemPrompt,
   classifyDisplay,
+  runStateForClassify,
   phaseLabel,
   applyUserInputEvidence,
+  isProcessingLetter,
+  isWaitForUserLetter,
+  isBackgroundLetter,
+  isTerminalLetter,
+  isAbnormalLetter,
+  isSettledLetter,
+  isParkedLetter,
+  isOutcomeLetter,
   CLASSIFY_DISPLAY,
+  CLASSIFY_STATES,
   PHASE_LABELS,
 } = require('../src/classify/vocab');
 
@@ -128,6 +138,9 @@ test('CLASSIFY_DISPLAY is complete and self-consistent for every state', () => {
   assert.equal(CLASSIFY_DISPLAY.D.cardStatus, 'succeeded');
   assert.equal(CLASSIFY_DISPLAY.D.label, '执行成功');
   assert.equal(CLASSIFY_DISPLAY.W.cardStatus, 'waiting');
+  // B borrowed W's `waiting` until it got its own run state: 「等待回答」 about a
+  // job the user cannot answer was the lie the split removed.
+  assert.equal(CLASSIFY_DISPLAY.B.cardStatus, 'background');
   assert.equal(CLASSIFY_DISPLAY.E.barTint, 'error');
 });
 
@@ -164,6 +177,192 @@ test('classify C is retired: no dispatch branch persists it, it falls through to
   assert.equal(parseClassifyResult('目标\n实现中\nC').state, 'W');
   assert.equal(parseClassifyResult('目标\n实现中\nC').background, undefined);
   assert.equal(parseClassifyResult('目标\n实现中\nC').error, undefined);
+});
+
+// ── Letter semantics: the predicates, not inline letter comparisons ──────────
+
+test('each predicate answers exactly one question, and the letters partition by "who acts next"', () => {
+  // [processing, waitForUser, background, terminal, abnormal] per letter.
+  // C is RETIRED as an output (parseClassifyResult collapses it to W) but a
+  // legacy persisted C is still an in-flight turn, so it reads as processing.
+  const EXPECT = {
+    P: [true, false, false, false, false],
+    C: [true, false, false, false, false],
+    W: [false, true, false, false, false],
+    B: [false, false, true, false, false],
+    D: [false, false, false, true, false],
+    E: [false, false, false, false, true],
+  };
+  for (const letter of Object.keys(CLASSIFY_DISPLAY)) {
+    assert.ok(EXPECT[letter], `${letter} has no pinned predicate expectation`);
+  }
+  for (const [letter, [processing, waiting, background, terminal, abnormal]] of Object.entries(EXPECT)) {
+    assert.equal(isProcessingLetter(letter), processing, `${letter} isProcessingLetter`);
+    assert.equal(isWaitForUserLetter(letter), waiting, `${letter} isWaitForUserLetter`);
+    assert.equal(isBackgroundLetter(letter), background, `${letter} isBackgroundLetter`);
+    assert.equal(isTerminalLetter(letter), terminal, `${letter} isTerminalLetter`);
+    assert.equal(isAbnormalLetter(letter), abnormal, `${letter} isAbnormalLetter`);
+    // "Who acts next" is a partition: P/C the turn, W the user, B a background
+    // job — never two of them at once. D/E name nobody: the turn is over and
+    // the next move is the user's (that is isSettled/isOutcome's business).
+    assert.ok([processing, waiting, background].filter(Boolean).length <= 1,
+      `${letter} must name at most one actor`);
+    assert.equal([processing, waiting, background].filter(Boolean).length,
+      (terminal || abnormal) ? 0 : 1, `${letter} names no actor only when the turn is over`);
+  }
+
+  // Derived predicates are defined, not re-decided: settled = D|W, parked = W|B,
+  // outcome = D|E. A letter re-scoped here on its own would drift from the two
+  // base decisions.
+  for (const letter of Object.keys(CLASSIFY_DISPLAY)) {
+    assert.equal(isSettledLetter(letter), isTerminalLetter(letter) || isWaitForUserLetter(letter),
+      `${letter} isSettledLetter`);
+    assert.equal(isParkedLetter(letter), isWaitForUserLetter(letter) || isBackgroundLetter(letter),
+      `${letter} isParkedLetter`);
+    assert.equal(isOutcomeLetter(letter), isTerminalLetter(letter) || isAbnormalLetter(letter),
+      `${letter} isOutcomeLetter`);
+  }
+
+  // The two axes are independent: a turn can be parked (W/B) without having
+  // reached an outcome, and have an outcome (D/E) without being parked.
+  assert.equal(isParkedLetter('D'), false);
+  assert.equal(isOutcomeLetter('W'), false);
+  assert.equal(isSettledLetter('B'), false, 'B is parked, not settled — a callback still writes');
+  assert.equal(isSettledLetter('E'), false, 'a fault still needs a retry/resume decision');
+});
+
+test('no predicate claims an unknown or un-normalized letter', () => {
+  const PREDICATES = {
+    isProcessingLetter, isWaitForUserLetter, isBackgroundLetter,
+    isTerminalLetter, isAbnormalLetter, isSettledLetter, isParkedLetter, isOutcomeLetter,
+  };
+  // The safety property: garbage must never read as "nothing outstanding" —
+  // an unrecognized letter is not settled, not parked, not an outcome.
+  for (const junk of [undefined, null, '', '   ', 'X', 'd', 'w', 0]) {
+    for (const [name, fn] of Object.entries(PREDICATES)) {
+      assert.equal(fn(junk), false, `${name}(${JSON.stringify(junk)}) must be false`);
+    }
+  }
+  // Letters are canonical uppercase; callers normalize before asking (see
+  // recordAppearsAvailable in src/task-board/routing.js).
+  assert.equal(isTerminalLetter('d'), false);
+});
+
+test('live-letter membership: CLASSIFY_STATES is the parser\'s own output range', () => {
+  assert.deepEqual([...CLASSIFY_STATES].sort(), ['B', 'D', 'E', 'P', 'W']);
+  // Everything the parser can still emit is a member — the set cannot drift
+  // below the parser without this failing.
+  for (const input of ['D', 'W', 'B', 'E', 'P']) {
+    const state = parseClassifyResult(`目标\n实现中\n${input}`).state;
+    assert.ok(CLASSIFY_STATES.has(state), `parser output ${state} is not a live letter`);
+  }
+  // C is not live (retirement is `parseClassifyResult`, not a second decision
+  // here), yet the predicates still tolerate a legacy persisted C.
+  assert.equal(CLASSIFY_STATES.has('C'), false);
+  assert.equal(isProcessingLetter('C'), true);
+  // The set and the display map cover the same alphabet, minus retired C.
+  const display = Object.keys(CLASSIFY_DISPLAY).filter(l => l !== 'C').sort();
+  assert.deepEqual([...CLASSIFY_STATES].sort(), display);
+});
+
+test('predicates agree with the display projection they replaced (no re-lettering drift)', () => {
+  // cardStatus is the render-side projection of the same letter. Tying the two
+  // together is what makes a future re-lettering (B's split from `waiting` was
+  // the last one) impossible to half-apply: a letter that is `processing` must
+  // render `running`, a parked one must render `waiting`/`background`, and an
+  // outcome must render `succeeded`/`error`.
+  const EXPECT = {
+    running: isProcessingLetter,
+    waiting: isWaitForUserLetter,
+    background: isBackgroundLetter,
+    succeeded: isTerminalLetter,
+    error: isAbnormalLetter,
+  };
+  for (const letter of Object.keys(CLASSIFY_DISPLAY)) {
+    const status = runStateForClassify(letter);
+    const match = Object.entries(EXPECT).find(([canvas]) => canvas === status);
+    assert.ok(match, `${letter} renders as unknown run state ${status}`);
+    assert.equal(match[1](letter), true,
+      `${letter} renders as ${status} but its ${match[0]} predicate disagrees`);
+  }
+});
+
+// ── The static guard: no fresh inline letter comparison outside vocab.js ────
+//
+// vocab.js says downstream code MUST use the predicates. That only holds if a
+// new site cannot quietly reintroduce `classifyState === 'D'` — which is how
+// every past drift started (a re-lettered B leaving one subsystem behind). This
+// test is what makes the comment above enforceable.
+test('src/ has no inline classify-letter comparison outside the vocabulary', () => {
+  // Patterns are deliberately narrow: a *comparison* against a classify letter,
+  // or a hand-written letter list serving as one. They are not a hunt for the
+  // letter D anywhere in the tree — CLI capability tables, push types and
+  // comments legitimately carry letters of their own.
+  const PATTERNS = [
+    /[=!]==?\s*['"][DPWEB]['"]/g,                  // classifyState === 'D'
+    /['"][DPWEB]['"]\s*[=!]==?/g,                  // 'D' === classifyState
+    /\[\s*(?:['"][A-Z]['"]\s*,\s*)+['"][A-Z]['"]\s*\]\s*\.includes\(/g, // ['W','B'].includes(x)
+    /\.includes\(\s*['"][DPWEB]['"]\s*\)/g,        // [...].includes('D')
+  ];
+  // Prove the guard catches the shapes it claims — including the two historic
+  // ones. A guard that quietly matches nothing is worse than no guard.
+  const HISTORY = [
+    "if (classifyState === 'D') return;",
+    "const done = 'D' !== schedule.classifyState;",
+    "if (['A','P'].includes(classifyState)) continue;",
+    "if (['P','B','W'].includes(row.taskState?.classifyState)) return;",
+    "if (letters.includes('D')) return;",
+  ];
+  for (const sample of HISTORY) {
+    assert.ok(
+      PATTERNS.some(re => { re.lastIndex = 0; return re.test(sample); }),
+      `the guard no longer catches a known inline comparison: ${sample}`,
+    );
+  }
+  // Files allowed to keep a comparison, with the reason it is not a classify
+  // question. Empty today; an entry here is a claim that must still be true (the
+  // test fails if it no longer violates), so the list cannot rot.
+  const ALLOWED = {};
+
+  // Comments are stripped before matching (a comment quoting the old check is
+  // documentation). The `[^:'"]` guard keeps `https://…` and `'//'` intact.
+  const stripComments = (src) => src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"])\/\/[^\n]*/g, '$1');
+
+  const root = path.join(__dirname, '..');
+  const files = [path.join(root, 'server.js')];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith('.js')) files.push(full);
+    }
+  };
+  walk(path.join(root, 'src'));
+
+  const offenders = [];
+  for (const file of files) {
+    const rel = path.relative(root, file);
+    if (rel === path.join('src', 'classify', 'vocab.js')) continue;   // the vocabulary itself
+    const src = stripComments(fs.readFileSync(file, 'utf8'));
+    for (const re of PATTERNS) {
+      for (const m of src.matchAll(re)) {
+        const line = src.slice(0, m.index).split('\n').length;
+        const hit = `${rel}:${line}: ${m[0].trim()}`;
+        offenders.push({ rel, hit });
+      }
+    }
+  }
+
+  const unexpected = offenders.filter(o => !Object.hasOwn(ALLOWED, o.rel));
+  assert.deepEqual(unexpected.map(o => o.hit), [],
+    'inline classify-letter comparisons must go through the vocab predicates');
+  // No rotting allowlist: every exemption must still be needed.
+  for (const [rel, reason] of Object.entries(ALLOWED)) {
+    assert.ok(!offenders.some(o => o.rel === rel),
+      `${rel} no longer needs its exemption (${reason}) — remove it`);
+  }
 });
 
 test('optimistic completion cannot overwrite a pending structured question', () => {

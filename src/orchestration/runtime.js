@@ -12,6 +12,7 @@ const { createOutbox } = require('../outbox');
 const { createWaitService } = require('../wait/service');
 const { deliveryClassForItem } = require('./delivery-classes');
 const { createSessionWorkScheduler } = require('../session-work/scheduler');
+const { isWaitForUserLetter } = require('../classify/vocab');
 const {
   TERMINAL_OPERATION_STATES,
   TERMINAL_TASK_STATES,
@@ -512,7 +513,7 @@ function createOrchestrationRuntime({
           && (operation.ownerSessionId === id || operation.spec?.chatId === id || operation.spec?.targetId === id))) return true;
       if (Object.values(draft.tasks).some(task => task.parentSessionId === id && !TERMINAL_TASK_STATES.has(task.status) && fresh(task))) return true;
       const schedule = draft.sessionSchedules[id];
-      const waitingOnly = schedule?.active && (schedule.classifyState === 'W'
+      const waitingOnly = schedule?.active && (isWaitForUserLetter(schedule.classifyState)
         || ['awaiting_user_input', 'classify_waiting'].includes(schedule.freezeReason));
       return !!(schedule?.active && !waitingOnly && fresh(schedule));
     });

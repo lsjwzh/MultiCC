@@ -1,5 +1,7 @@
 'use strict';
 
+const { isProcessingLetter } = require('../classify/vocab');
+
 const DEFAULT_INTERVAL_MS = 5_000;
 const DEFAULT_START_GRACE_MS = 12_000;
 const DEFAULT_DEAD_CONFIRM_MS = 5_000;
@@ -36,7 +38,7 @@ function createProcessingWatchdog(deps = {}) {
 
   async function inspect(sessionId, record, at) {
     const task = deps.getTaskState(record) || {};
-    if (task.classifyState !== 'P') {
+    if (!isProcessingLetter(task.classifyState)) {
       clearSuspect(sessionId);
       return { sessionId, action: 'skip', reason: 'not_processing' };
     }

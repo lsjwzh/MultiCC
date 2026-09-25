@@ -9,10 +9,9 @@
 // here, and tests/test-notification-copy.js pins it against the vocab, so a new
 // letter or a reworded state cannot leave the push copy behind.
 //
-// zh comes straight from CLASSIFY_DISPLAY (the canonical wording). B is the one
-// exception: vocab reuses W's `pushTitle: '等待操作'` for it, which tells the
-// user to act while a background job is running and nothing is waiting on them.
-// B therefore reads vocab's own B label (the words the card badge shows).
+// zh comes straight from CLASSIFY_DISPLAY (the canonical wording), whose B
+// entry now carries its own background wording instead of the W wording it
+// borrowed. Every letter therefore reads the same field, `pushTitle`.
 //
 // Callers hand over either a classify LETTER (D/W/B/E/P/C) or a push TYPE
 // (succeeded/waiting/error): `notify()` is called with a type, the classify
@@ -26,7 +25,7 @@ const COPY = Object.freeze({
   succeeded: Object.freeze({ zh: classifyDisplay('D').pushTitle, en: 'Execution succeeded' }),
   waiting: Object.freeze({ zh: classifyDisplay('W').pushTitle, en: 'Action Required' }),
   // B — "nothing is waiting on you, a background job is". Its own words, never W's.
-  waiting_background: Object.freeze({ zh: classifyDisplay('B').label, en: 'Waiting in background' }),
+  waiting_background: Object.freeze({ zh: classifyDisplay('B').pushTitle, en: 'Waiting in background' }),
   error: Object.freeze({ zh: classifyDisplay('E').pushTitle, en: 'Error' }),
   // P (mid-turn) and C never reach the push path — their vocab `pushType` is
   // null. They still resolve to words rather than to `undefined` so no caller

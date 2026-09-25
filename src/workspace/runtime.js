@@ -1,7 +1,7 @@
 'use strict';
 
 const { createSessionStateService } = require('../session');
-const { classifyDisplay } = require('../classify/vocab');
+const { classifyDisplay, CLASSIFY_STATES } = require('../classify/vocab');
 
 const EMPTY_STATUS = Object.freeze({
   status: 'idle',
@@ -11,7 +11,7 @@ const EMPTY_STATUS = Object.freeze({
   runEndedAt: null,
 });
 const QUEUE_STATES = new Set(['idle', 'starting', 'running', 'assessing', 'frozen', 'queued']);
-const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
+// CLASSIFY_STATES (the live letters) comes from classify/vocab — declared once.
 
 function assertMap(name, value) {
   if (!value || typeof value.get !== 'function' || typeof value[Symbol.iterator] !== 'function') {

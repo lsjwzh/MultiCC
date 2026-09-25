@@ -19,6 +19,11 @@ const crypto = require('crypto');
 const {
   classifyDisplay,
   phaseLabel,
+  isProcessingLetter,
+  isWaitForUserLetter,
+  isBackgroundLetter,
+  isTerminalLetter,
+  isAbnormalLetter,
 } = require('./vocab');
 const { taskShortCode } = require('./task-short-code');
 const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board/core');
@@ -146,11 +151,11 @@ function createClassifyStateMachine(rawDeps) {
 
   function dispatchStateAction(result, ctx) {
     const { state, goal, phase } = result;
-    // The letter IS the state (single source). Derive the legacy error/background
-    // flags locally so the W/B/E branches below read naturally; future tranches
-    // drop them entirely. No other module derives these from a word+flags shape.
-    const error = state === 'E';
-    const background = state === 'B';
+    // The letter IS the state (single source). The legacy error/background flags
+    // below read the letter through vocab's predicates instead of re-testing it,
+    // so B and E cannot drift apart from what the display map says they mean.
+    const error = isAbnormalLetter(state);
+    const background = isBackgroundLetter(state);
     // An explicit cancellation arrives here as a structured result rather than a
     // ordinary rule verdict: same letter, same transition, same writer — the extra
     // envelope only records who asked and whether the runner actually stopped.
@@ -197,13 +202,13 @@ function createClassifyStateMachine(rawDeps) {
     // and side effects; persisting it early would poison scheduler guards.
     // A cancel is exempt: it *is* the turn boundary, and the runner it stopped
     // may not have flipped isStreaming yet on every adapter.
-    if (liveness.state !== 'inactive' && state !== 'P' && !cancel) {
+    if (liveness.state !== 'inactive' && !isProcessingLetter(state) && !cancel) {
       console.log(`[multicc/scan] ${sessionName} classify candidate held: state=${state}, liveness=${liveness.state}/${liveness.reason || 'unknown'}`);
       return;
     }
 
     // ── Dispatch per state ──────────────────────────────────────────────
-    if (state === 'P') {
+    if (isProcessingLetter(state)) {
       // P — still processing. Two sub-cases:
       if (cs && cs.isStreaming) {
         // (1) Genuinely mid-turn (a turn IS in flight) — just refresh labels.
@@ -250,7 +255,7 @@ function createClassifyStateMachine(rawDeps) {
         error: error?.message || String(error || ''),
       });
     });
-    if (state === 'D') {
+    if (isTerminalLetter(state)) {
       // D — this turn executed successfully. TaskBoard completion is a separate
       // user-owned lifecycle action and is never inferred here.
       const dismissedQuestion = result.evidence === 'user_dismissed_question';
@@ -330,7 +335,7 @@ function createClassifyStateMachine(rawDeps) {
     // Common waiting-state broadcast — driven by classifyState letter.
     // state is already the letter (W/B/E, or P falling through when exhausted);
     // preserve the old P-fallthrough→W rendering to avoid a behavior shift here.
-    const cls = state === 'P' ? 'W' : state;
+    const cls = isProcessingLetter(state) ? 'W' : state;
     const disp = classifyDisplay(cls);
     const pushType = disp.pushType || 'waiting';  // C/P have null pushType → default 'waiting'
     const policyMessage = error && cs?._lastApiErrorDecision
@@ -348,11 +353,15 @@ function createClassifyStateMachine(rawDeps) {
         : background ? disp.label : '等待交互');
     // The user just pressed Cancel — they are looking at the screen. Broadcast
     // (drives the bar and every card) but no lock-screen push.
+    //
+    // The push carries the LETTER, not just the coarse type: B and W both push
+    // `waiting`, so without it the lock screen would announce B with W's
+    // 「等待操作」 and tell the user to act on work nobody is waiting on them for.
     if (isTerminal) {
-      if (!cancel) triggerPush(sessionId, pushType, waitMsg);
+      if (!cancel) triggerPush(sessionId, pushType, waitMsg, { classifyState: cls });
       terminalBroadcast(sessionId, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     } else {
-      if (!cancel) triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`);
+      if (!cancel) triggerPush(sessionId, pushType, `[Chat] ${waitMsg}`, { classifyState: cls });
       chatBroadcast(sessionName, { type: 'notify', state: pushType, classifyState: cls, message: waitMsg });
     }
     const dirId2 = persistedSessions.get(sessionName)?.dirId;
@@ -375,8 +384,8 @@ function createClassifyStateMachine(rawDeps) {
         supersededByEntryId: cancel.supersededByEntryId || null,
       }
       : { classifyState: cls, endedAt: Date.now() });
-    // Reset auto-continue guard on a plain W (user is in charge now). B/E keep their own flow.
-    if (state === 'W') {
+    // Reset auto-continue guard when the user is in charge now. B/E keep their own flow.
+    if (isWaitForUserLetter(state)) {
       getWaitInjector().resetAuto(sessionName);
     }
   }
@@ -445,7 +454,7 @@ function createClassifyStateMachine(rawDeps) {
     // Explicit user/watchdog cancellation owns the turn boundary. An Aux job
     // already in flight may finish later; never let that stale verdict replace
     // the immediate E. The next real user turn clears cancelledAt before spawn.
-    if (currentState.classifyState === 'E' && currentState.cancelledAt) {
+    if (isAbnormalLetter(currentState.classifyState) && currentState.cancelledAt) {
       logger.info('classify_result_ignored_after_cancel', { sessionId: sessionName, source });
       return;
     }
@@ -477,7 +486,7 @@ function createClassifyStateMachine(rawDeps) {
       actionContext.taskId = options.taskId;
     }
     dispatchStateAction(res, actionContext);
-    console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${res.state === 'E' ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
+    console.log(`[${source}] Classify RESULT for ${sessionName}: state=${res.state} goal="${res.goal}" phase=${res.phase || '?'}${isAbnormalLetter(res.state) ? ' (API error)' : ''}${res.evidence ? ` evidence=${res.evidence}` : ''}`);
   }
 
   // Aux owns task identity only. It may rename/re-group the turn and attach its
@@ -684,7 +693,7 @@ function createClassifyStateMachine(rawDeps) {
       if (!p || p.type === 'aux' || p.type === 'gateway' || p.kind !== 'chat') continue;
       const ts = getTaskState(p);
 
-      if (ts.classifyState === 'E' && ts.cancelledAt) {
+      if (isAbnormalLetter(ts.classifyState) && ts.cancelledAt) {
         note(sid, ts.classifyState, 'skipped-cancelled', 'explicit cancellation remains authoritative until next user turn');
         continue;
       }
@@ -965,7 +974,7 @@ function createClassifyStateMachine(rawDeps) {
     // applyClassifyResult was only going to throw away. ensureCurrentTask clears
     // cancelledAt when the next real user turn starts, so this never sticks.
     const cancelledState = getTaskState(persistedSessions.get(sessionName));
-    if (cancelledState.classifyState === 'E' && cancelledState.cancelledAt && !cs._taskShellReceiptId) {
+    if (isAbnormalLetter(cancelledState.classifyState) && cancelledState.cancelledAt && !cs._taskShellReceiptId) {
       logger.info('classify_skipped_after_cancel', { sessionId: sessionName });
       return;
     }
@@ -1251,7 +1260,7 @@ function createClassifyStateMachine(rawDeps) {
     applyClassifyResult(cs, sessionName, sessionId, {
       ...verdict,
       goal: cs?.currentTask?.goal || getTaskState(persisted).goal || '',
-      phase: verdict.state === 'D'
+      phase: isTerminalLetter(verdict.state)
         ? 'done' : cs?.currentTask?.phase || getTaskState(persisted).phase || 'planning',
     }, applyOptions);
 
