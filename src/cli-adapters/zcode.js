@@ -25,7 +25,7 @@ const shellArg = value => JSON.stringify(String(value));
 function createZcodeAdapter({ cmd } = {}) {
   return {
     name: 'zcode',
-    createCompletionTracker: createStepCompletionTracker,
+    createCompletionTracker: () => createStepCompletionTracker({ streamBoundary: true }),
     cmd,
     // 终端/交互模式：打开引擎的 TUI（需 ZCODE_ENGINE 指向 zcode.cjs）。
     buildTerminalCmd(session) {
@@ -47,7 +47,23 @@ function createZcodeAdapter({ cmd } = {}) {
         ? `[Role prompt]\n${env.rolePrompt}\n[End of role prompt]\n\n${prompt}`
         : prompt;
       // cmd = bridge（带 shebang 的可执行 .cjs）；multicc 会把 payload 追加为末尾 argv。
-      return { cmd: BRIDGE, args, payload };
+      return {
+        cmd: BRIDGE,
+        args,
+        payload,
+        // 常驻车道（cli-capability: zcode = resident）：bridge 带 `--resident` 常驻，
+        // 引擎 app-server 与原生会话跨轮存活，prompt 每轮一行从 stdin 进（见
+        // zcode-bridge.cjs §6），不再追加末尾 argv。
+        streamArgs: [...args, '--resident'],
+        streamBackend: 'zcode-app-server',
+        // 原生会话 id 由引擎分配（sess_…），宿主从事件的 sessionID 学到后存在
+        // cliSessionId —— 与一次性路径同一字段，所以两条路径可以互相续轮。
+        nativeKey: 'cliSessionId',
+        clientAllocatesNativeId: false,
+        // 模型随轮下发，bridge 每轮按厂商配置校验（provider/模型切换改写配置文件，
+        // 宿主按配置摘要重起子进程）。
+        turnOptions: { model: env.spawnOpts.rawModel || null },
+      };
     },
     // bridge 输出 opencode raw 事件 shape，按 opencode-like 同款逻辑解码。
     decodeEvent(event) {

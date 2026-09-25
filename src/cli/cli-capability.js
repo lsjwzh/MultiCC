@@ -37,6 +37,12 @@ const CAPABILITIES = Object.freeze({
   // claude. The thread survives a reap, so cancel/recycle re-attach rather than
   // losing the conversation.
   'codex-exp': Object.freeze({ protocol: 'codex-app-server', lifecycle: 'resident', cancel: 'process' }),
+  // `zcode.cjs app-server` holds its native session across turns and keeps
+  // run_in_background work alive after a turn ends (it wakes itself when that
+  // work completes), so the bridge keeps it resident (`--resident`) and holds
+  // the host turn open while background work runs. Cancel stops the child; the
+  // session resumes by id on the next spawn.
+  zcode: Object.freeze({ protocol: 'zcode-app-server', lifecycle: 'resident', cancel: 'process' }),
   // ACP is a per-turn local agent protocol: the bridge spawns the agent for the
   // turn and exits with it, so cancelling reaps the child. opencode was the
   // first CLI on this lane; gemini and grok ride the same bridge (acp.js).

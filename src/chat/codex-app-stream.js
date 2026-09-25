@@ -1,5 +1,8 @@
 'use strict';
 
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { releaseResidentRoute, retainResidentRoute } = require('../codex/resident-route');
 
@@ -28,9 +31,16 @@ const { releaseResidentRoute, retainResidentRoute } = require('../codex/resident
 //   • There is no in-process interrupt. The app-server's turn/interrupt is not
 //     reachable through the bridge, so cancel() stops the CHILD; the thread
 //     survives on disk and the next turn re-attaches with `--thread-id`.
-//   • Background-task notifications do not exist on this protocol (the codex-exp
-//     adapter decodes none), so there is no shadow-tail hold: idle reclaim is
-//     unconditional.
+//   • Background-task notifications do not exist on the codex protocol (the
+//     codex-exp adapter decodes none), so idle reclaim is unconditional there.
+//
+// The zcode lane (`streamBackend: 'zcode-app-server'`) rides the same machinery
+// with its own wire protocol: its bridge (zcode-bridge.cjs `--resident`) emits
+// the opencode-shaped events its adapter decodes, plus two private lines — a
+// turn-end sentinel and the live background-task count. Background work lives
+// inside the engine process, so while any is running this child is never
+// reclaimed or recycled (the bridge holds the host turn open over self-wake
+// turns; after that, the child simply stays up until the work ends).
 
 // session name -> state
 //   { proc, cmd, baseArgs, cwd, env, threadId, started, busy,
@@ -70,18 +80,85 @@ function routeFingerprint(env) {
     .join('\n');
 }
 
+// ZCode reads its route from files, not env: the private HOME's settings file and
+// the engine's provider_config.json. A provider switch rewrites them in place, so
+// only their content digest can show that the live engine is on the old route.
+// Digest only — the contents carry credentials and never leave this function.
+function fileDigest(file) {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 16); }
+  catch (_) { return '-'; }
+}
+
+function zcodeFingerprint(env) {
+  if (!env || typeof env !== 'object') return '';
+  const keys = Object.keys(env).filter((k) => k === 'HOME' || k.startsWith('ZCODE_')).sort();
+  const lines = keys.map((k) => `${k}=${env[k]}`);
+  const dataDir = env.ZCODE_DATA_BASE_DIR || env.HOME;
+  if (env.ZCODE_SETTINGS) lines.push(`settings#${fileDigest(env.ZCODE_SETTINGS)}`);
+  if (dataDir) lines.push(`provider#${fileDigest(path.join(dataDir, '.zcode', 'v2', 'provider_config.json'))}`);
+  return lines.join('\n');
+}
+
+const ZCODE_TURN_END = 'multicc_turn_end';
+const ZCODE_BACKGROUND = 'multicc_background';
+
+// Per-protocol wire facts. `read(evt)` classifies one stdout line:
+//   forward — hand it to the turn's onEvent (the adapter decodes it)
+//   nativeId — the server-allocated conversation id, if the line announces one
+//   done — the line ends the current turn
+//   background — the live background-task count, if the line reports one
+const PROTOCOLS = {
+  codex: {
+    fingerprint: routeFingerprint,
+    resumeArgs: (baseArgs, id) => (id ? [...baseArgs, '--thread-id', id] : [...baseArgs]),
+    retainsHome: true,
+    read(evt) {
+      if (!evt || !evt.method) return null;
+      const nativeId = evt.method === 'thread/started'
+        ? (evt.params?.thread?.id || evt.params?.thread?.sessionId || null) : null;
+      return { forward: true, nativeId, done: evt.method === 'turn/completed' };
+    },
+  },
+  zcode: {
+    fingerprint: zcodeFingerprint,
+    // The adapter already puts `--session <id>` on non-first turns; the id the
+    // child learned wins so a respawn never forks a fresh conversation.
+    resumeArgs(baseArgs, id) {
+      const args = [];
+      for (let i = 0; i < baseArgs.length; i += 1) {
+        if (baseArgs[i] === '--session') { i += 1; continue; }
+        args.push(baseArgs[i]);
+      }
+      return id ? ['--session', id, ...args] : args;
+    },
+    retainsHome: false,
+    read(evt) {
+      if (!evt || typeof evt.type !== 'string') return null;
+      if (evt.type === ZCODE_TURN_END) return { forward: false, done: true };
+      if (evt.type === ZCODE_BACKGROUND) {
+        return { forward: false, background: Math.max(0, Number(evt.active) || 0) };
+      }
+      const nativeId = typeof evt.sessionID === 'string' && evt.sessionID.startsWith('sess_')
+        ? evt.sessionID : null;
+      return { forward: true, nativeId, done: false };
+    },
+  },
+};
+const protocolOf = (backend) => (backend === 'zcode-app-server' ? 'zcode' : 'codex');
+
 function spawnProc(name, s) {
   s.beforeSpawn?.({ sessionId: s.threadId });
-  const args = s.threadId ? [...s.baseArgs, '--thread-id', s.threadId] : [...s.baseArgs];
+  const protocol = PROTOCOLS[s.protocol];
+  const args = protocol.resumeArgs(s.baseArgs, s.threadId);
   const proc = spawn(s.cmd, args, {
     cwd: s.cwd,
     env: s.env && Object.keys(s.env).length ? s.env : { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   s.proc = proc;
-  const releaseHome = retainResidentRoute(s.env?.CODEX_HOME);
-  proc.once('close', releaseHome);
-  s.spawnedFingerprint = routeFingerprint(s.env);
+  if (protocol.retainsHome) proc.once('close', retainResidentRoute(s.env?.CODEX_HOME));
+  s.spawnedFingerprint = protocol.fingerprint(s.env);
+  s.backgroundActive = 0;
   s.lineBuf = '';
   s.stderrTail = '';
   s.jsonlParseErrors = 0;
@@ -129,22 +206,41 @@ function onStdout(name, chunk) {
       }
       continue;
     }
-    if (!evt || !evt.method) continue;
-    if (s.current) s.current.eventCount += 1;
-    if (s.current && typeof s.current.onEvent === 'function') {
-      try { s.current.onEvent(evt); } catch (_) {}
+    const read = PROTOCOLS[s.protocol].read(evt);
+    if (!read) continue;
+    if (read.forward) {
+      if (s.current) s.current.eventCount += 1;
+      if (s.current && typeof s.current.onEvent === 'function') {
+        try { s.current.onEvent(evt); } catch (_) {}
+      }
     }
-    // Learn the server-allocated thread id as soon as the app-server announces
-    // it, so a respawn (crash, recycle, idle reclaim) resumes this conversation
-    // instead of silently starting an empty one.
-    if (evt.method === 'thread/started') {
-      const id = evt.params?.thread?.id || evt.params?.thread?.sessionId || null;
-      if (id) s.threadId = id;
-    }
-    // A `turn/completed` notification marks the END of the turn. The app-server
-    // and the thread stay alive, ready for the next line on stdin.
-    if (evt.method === 'turn/completed') finishTurn(name, evt);
+    // Learn the server-allocated id as soon as the server announces it, so a
+    // respawn (crash, recycle, idle reclaim) resumes this conversation instead
+    // of silently starting an empty one.
+    if (read.nativeId) s.threadId = read.nativeId;
+    if (read.background !== undefined) onBackground(name, read.background);
+    // The turn boundary. The server and the conversation stay alive, ready for
+    // the next line on stdin.
+    if (read.done) finishTurn(name, evt);
   }
+}
+
+// Background work lives in the child: while any runs, idle reclaim and recycles
+// wait. When the last one ends on an idle child, apply what waited.
+function onBackground(name, active) {
+  const s = sessions.get(name);
+  if (!s) return;
+  const was = s.backgroundActive;
+  s.backgroundActive = active;
+  if (s.busy || s.recycling || !isAlive(name)) return;
+  if (active > 0) { clearIdle(s); return; }
+  if (!was) return;
+  if (s.recycleRequested && s.queue.length === 0) {
+    s.recycleRequested = false;
+    killForRecycle(name, s);
+    return;
+  }
+  armIdle(name);
 }
 
 function finishTurn(name, evt) {
@@ -170,6 +266,7 @@ function onExit(name, code, signal, err) {
   s.current = null;
   s.recycling = false;
   s.spawnedFingerprint = null;
+  s.backgroundActive = 0;
   if (wasBusy && cur && typeof cur.reject === 'function') {
     cur.reject(new Error(err
       ? err.message
@@ -222,15 +319,23 @@ function pump(name) {
   // Routing env changed since this child spawned: the live app-server still
   // talks to the OLD upstream. Recycle at this turn boundary — safe by
   // construction, because we only get here when no turn is in flight, and the
-  // thread survives the respawn.
+  // thread survives the respawn. Live background work owns the child, though:
+  // the turn is refused (as chat-stream does) rather than run on the old route
+  // or kill the work.
   if (isAlive(name) && s.spawnedFingerprint !== null &&
-      routeFingerprint(s.env) !== s.spawnedFingerprint) {
+      PROTOCOLS[s.protocol].fingerprint(s.env) !== s.spawnedFingerprint) {
+    if (s.backgroundActive > 0) {
+      next.reject(Object.assign(new Error('Background work still owns the process'), { code: 'CHAT_BACKGROUND_ACTIVE' }));
+      return;
+    }
     s.queue.unshift(next);
     s.recycleRequested = false;
     killForRecycle(name, s);
     return;
   }
-  if (isAlive(name) && s.recycleRequested) {
+  // An explicit recycle waits past live background work (see onBackground);
+  // the turn runs on the current child meanwhile.
+  if (isAlive(name) && s.recycleRequested && !(s.backgroundActive > 0)) {
     s.queue.unshift(next);
     s.recycleRequested = false;
     killForRecycle(name, s);
@@ -273,7 +378,7 @@ function armIdle(name) {
 // next send re-attaches with `--thread-id`.
 function reclaimIfIdle(name) {
   const s = sessions.get(name);
-  if (!s || !isAlive(name) || s.busy || s.queue.length > 0) return;
+  if (!s || !isAlive(name) || s.busy || s.queue.length > 0 || s.backgroundActive > 0) return;
   s.recycling = true;
   try { s.proc.stdin.end(); } catch (_) {}
   armKillEscalation(s.proc, CLOSE_KILL_GRACE_MS);
@@ -301,13 +406,22 @@ function ensure(name, cfg) {
       onExit: cfg.onExit || null,
       onDispose: cfg.onDispose || null,
       beforeSpawn: cfg.beforeSpawn || null,
-      proc: null, started: !!cfg.sessionId, busy: false,
+      protocol: protocolOf(cfg.streamBackend),
+      proc: null, started: !!cfg.sessionId, busy: false, backgroundActive: 0,
       queue: [], current: null, lineBuf: '', stderrTail: '',
       idleTimer: null, jsonlParseErrors: 0,
       recycling: false, spawnedFingerprint: null, recycleRequested: false,
     };
     sessions.set(name, s);
   } else {
+    const protocol = protocolOf(cfg.streamBackend);
+    if (protocol !== s.protocol) {
+      // Another CLI took the session over: its conversation id and child are
+      // not this protocol's. Replace the child at the next boundary.
+      s.protocol = protocol;
+      s.threadId = null;
+      s.recycleRequested = isAlive(name);
+    }
     if (cfg.baseArgs !== undefined) s.baseArgs = cfg.baseArgs;
     if (cfg.env !== undefined) s.env = cfg.env;
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
@@ -342,7 +456,7 @@ function inject(name, text, onEvent, opts = {}) {
 /**
  * Replace the child so it picks up a new routing env / spawn args. Applied at a
  * turn boundary, never mid-turn. Returns how the request landed:
- *   now | deferred-boundary | not-running | kill-failed
+ *   now | deferred-boundary | deferred-background | not-running | kill-failed
  */
 function recycle(name, reason) {
   const s = sessions.get(name);
@@ -352,6 +466,10 @@ function recycle(name, reason) {
   if (s.busy || s.queue.length > 0 || s.recycling) {
     s.recycleRequested = true;
     return { ok: true, applied: 'deferred-boundary' };
+  }
+  if (s.backgroundActive > 0) {
+    s.recycleRequested = true;
+    return { ok: true, applied: 'deferred-background' };
   }
   s.recycleRequested = false;
   return killForRecycle(name, s)
@@ -419,6 +537,8 @@ function status(name) {
     threadId: s.threadId,
     recycling: s.recycling,
     recycleRequested: s.recycleRequested,
+    backend: s.protocol,
+    backgroundActive: s.backgroundActive > 0,
   };
 }
 

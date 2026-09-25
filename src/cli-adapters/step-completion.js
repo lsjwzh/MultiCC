@@ -6,7 +6,9 @@ const { completion, createCompletionTracker } = require('./completion');
 // the provider says stop. run.ts ends on idle and separately tracks errors.
 // The JSON CLI exposes steps, not an authoritative whole-turn success event:
 // retain a candidate until the process ends. Unknown/missing reasons stay unknown.
-function createStepCompletionTracker() {
+// A resident lane (zcode --resident) has no per-turn process: its bridge ends a
+// turn with an explicit turn-end line, which settles the stream boundary instead.
+function createStepCompletionTracker({ streamBoundary = false } = {}) {
   let reason = null;
   let hasTools = false;
   return createCompletionTracker({
@@ -20,7 +22,7 @@ function createStepCompletionTracker() {
       return null;
     },
     close(boundary, evidence, facts) {
-      if (boundary.kind !== 'process') return evidence;
+      if (boundary.kind !== 'process' && !(streamBoundary && boundary.kind === 'stream')) return evidence;
       if (reason === 'stop' && !hasTools && !facts.sawError && facts.pendingTools === 0) {
         return completion('completed', 'final_step_stop', 'protocol_and_exit');
       }

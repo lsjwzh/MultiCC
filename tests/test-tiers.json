@@ -5098,6 +5098,15 @@
       ]
     },
     {
+      "path": "tests/test-zcode-resident.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-zcode-session-recovery-isolated.js",
       "tier": "core",
       "lane": "isolated",

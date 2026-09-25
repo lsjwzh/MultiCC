@@ -118,13 +118,16 @@ const REASONING_MIN_GROWTH = 4_000;
 // multicc 的 step-completion 只在「最后一个 step 以 reason=stop 收尾、且该 step 内
 // 没有工具事件」时才判 completed，所以这里在每次 assistant 消息切换时补发 step_start，
 // 让工具后的收尾 step 干净；真的只剩工具事件时在收尾前再补一个 step_start。
-function createZcodeTurnMapper({ sessionId, now = () => Date.now() } = {}) {
+//
+// separateFirstText：常驻 hold 里的自唤醒轮接在同一条宿主回答后面，首段文字前补
+// 一个 `\n\n`，否则会和上一轮的尾巴粘成一句。
+function createZcodeTurnMapper({ sessionId, now = () => Date.now(), separateFirstText = false } = {}) {
   let turnSeen = false;   // 见过这一轮的 turn.started 才算「我们这一轮」
   let stepOpen = false;
   let stepHasTools = false;
   let currentMessageId = null;
   let emittedText = false;
-  let separatorPending = false;
+  let separatorPending = !!separateFirstText;
   const toolNames = new Map();
   const toolInputs = new Map();
   const toolInputBuffers = new Map();
@@ -336,6 +339,43 @@ function createZcodeTurnMapper({ sessionId, now = () => Date.now() } = {}) {
   };
 }
 
+// 常驻引擎的后台任务账本。信号来自 session.updated（payload 带 taskId/status/pid，
+// 2026-09-26 真引擎实测：run_in_background 的 Bash 先报 running，完成后报 completed）。
+// 只数「还在跑」的；终态一律移除。pid 探活是兜底：引擎漏报终态时别让 hold 白等到上限。
+const RUNNING_TASK_STATES = new Set(['running', 'pending', 'queued', 'starting']);
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { return !!(error && error.code === 'EPERM'); }
+}
+
+function createBackgroundTaskTracker({ isAlive = pidAlive } = {}) {
+  const running = new Map();   // taskId → pid | null
+  return {
+    // 一条 session/event → 运行中任务数是否变化。
+    observe(params) {
+      if (!params || params.type !== 'session.updated') return false;
+      const payload = params.payload;
+      if (!payload || typeof payload.taskId !== 'string' || !payload.taskId) return false;
+      if (typeof payload.status !== 'string') return false;
+      const before = running.size;
+      if (RUNNING_TASK_STATES.has(payload.status)) {
+        const pid = Number.isInteger(payload.pid) && payload.pid > 0 ? payload.pid : running.get(payload.taskId) || null;
+        running.set(payload.taskId, pid);
+      } else {
+        running.delete(payload.taskId);
+      }
+      return running.size !== before;
+    },
+    // 清掉进程已经不在的任务；返回数量是否变化。
+    prune() {
+      const before = running.size;
+      for (const [id, pid] of [...running]) { if (pid && !isAlive(pid)) running.delete(id); }
+      return running.size !== before;
+    },
+    get active() { return running.size; },
+  };
+}
+
 module.exports = {
   RUNTIME_PREFERENCES,
   DEFAULT_MODE,
@@ -346,4 +386,5 @@ module.exports = {
   tokensOfUsage,
   buildRuntimeModel,
   createZcodeTurnMapper,
+  createBackgroundTaskTracker,
 };
