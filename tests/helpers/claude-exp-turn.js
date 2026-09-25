@@ -35,6 +35,18 @@ module.exports = function prepareTurn({ record, cwd, history = [], connected = f
     savePersistedSessionsBestEffort: noop,
     chatTurnPreparationRuntime: { claim: ok, settle: noop, markMessageDurable: ok },
     turnProgressHeartbeat: { stop: noop, start: noop },
+    // Mirrors the host key composeMessage's deps reach for (takeBackgroundStopNote).
+    // Its absence is not tolerated: the engine calls the accessor itself, so an
+    // undefined one throws inside composeMessage and aborts the whole turn.
+    getBackgroundTaskRuntime: () => ({
+      hasProcessBackgroundTasks: () => false,
+      takeStoppedNote: () => '',
+      recordMainToolUseId: noop,
+      markTaskOutputAwaiting: noop,
+      handleEvent: noop,
+      reapSessionShadows: () => [],
+      listActiveBackgroundTasks: () => [],
+    }),
     logger: { warn: noop, info: noop, error: noop },
     chatBroadcast: (_id, event) => { if (event.type === 'error') errors.push(event.error); },
     emitTurnOutcome: noop, classifyTurnEnd: noop, cancelClassify: noop,
