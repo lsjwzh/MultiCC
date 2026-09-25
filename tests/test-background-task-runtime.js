@@ -623,27 +623,39 @@ async function test(name, fn) {
     assert.strictEqual(h.injections.length, 1, 'post-turn completion must still wake the session');
   });
 
-  await test('run_in_background completion in a newer active turn does not borrow the old tool result', () => {
+  for (const tool of [
+    { name: 'Bash', result: 'Command running in background with ID: bg-task.' },
+    { name: 'Agent', result: 'Async agent launched successfully.' },
+  ]) await test(`background ${tool.name} finishing in a newer live turn is left to that turn, idle hook as fallback`, () => {
     const h = makeHarness();
     h.runtime.recordMainToolUseId('s1', 'bg-tool');
     const originState = {
       cwd: '/repo', isStreaming: true, _activeTurn: { turnId: 'turn-old' },
-      currentToolCalls: [{
-        id: 'bg-tool', name: 'Bash', input: { run_in_background: true },
-        result: 'Command running in background with ID: bg-task.',
-      }],
+      currentToolCalls: [{ id: 'bg-tool', name: tool.name, input: { run_in_background: true }, result: tool.result }],
     };
     h.runtime.handleEvent('s1', originState, {
       subtype: 'task_started', task_id: 'bg-task', tool_use_id: 'bg-tool', session_id: 'native',
     });
-    const result = h.runtime.handleEvent('s1', {
-      ...originState, _activeTurn: { turnId: 'turn-new' },
-    }, {
-      subtype: 'task_notification', task_id: 'bg-task', tool_use_id: 'bg-tool', status: 'completed',
-    });
-    assert.strictEqual(result.decision, 'inject');
-    h.clock.advance(100);
-    assert.strictEqual(h.injections.length, 1);
+    const newer = { ...originState, _activeTurn: { turnId: 'turn-new' } };
+    const completion = { subtype: 'task_notification', task_id: 'bg-task', tool_use_id: 'bg-tool', status: 'completed' };
+    const prompt = { subtype: 'monitor_prompt', task_id: 'bg-task', tool_use_id: 'bg-tool', status: 'completed', summary: 'done' };
+    // The launch stub is not the result: after the launching turn it never counts as consumed.
+    const after = h.runtime.handleEvent('s1', { ...originState, isStreaming: false, _activeTurn: null }, completion);
+    assert.strictEqual(after.decision, 'inject');
+    const h2 = makeHarness();
+    h2.runtime.recordMainToolUseId('s1', 'bg-tool');
+    h2.runtime.handleEvent('s1', originState, { subtype: 'task_started', task_id: 'bg-task', tool_use_id: 'bg-tool', session_id: 'native' });
+    assert.strictEqual(h2.runtime.handleEvent('s1', newer, completion).decision, 'live-turn');
+    assert.strictEqual(h2.runtime.handleEvent('s1', newer, { ...prompt, probe: true }).handled, false);
+    h2.clock.advance(100);
+    assert.strictEqual(h2.injections.length, 0, 'the live turn receives it natively');
+    // The turn ended before the CLI attached it: its idle hook reports it once.
+    const idle = { ...newer, isStreaming: false };
+    assert.strictEqual(h2.runtime.handleEvent('s1', idle, { ...prompt, probe: true }).monitorOwned, true);
+    assert.strictEqual(h2.runtime.handleEvent('s1', idle, prompt).decision, 'inject');
+    assert.strictEqual(h2.runtime.handleEvent('s1', idle, prompt).decision, 'duplicate');
+    h2.clock.advance(100);
+    assert.strictEqual(h2.injections.length, 1);
   });
 
   await test('TaskOutput awaiting mark still expires on the short dedup TTL', () => {
@@ -724,6 +736,24 @@ async function test(name, fn) {
       assert.match(h.injections[0].text, /后台任务（Research data layout）/);
       assert.match(h.injections[0].text, /\nFINAL REPORT/);
       assert.doesNotMatch(h.injections[0].text, /isSidechain|tool_use/);
+    }
+    // The stream event can beat the transcript's last record; a long report
+    // keeps its opening instead of a mid-word tail.
+    const unfinished = transcript.split('\n').slice(0, 2).join('\n');
+    const long = `REPORT_HEAD ${'detail '.repeat(3000)}`;
+    for (const viaHook of [false, true]) {
+      const h = makeHarness();
+      h.files.set('/out/ag', unfinished);
+      h.runtime.recordMainToolUseId('s1', 'ag-tool');
+      h.runtime.handleEvent('s1', agentState, start);
+      h.runtime.handleEvent('s1', { ...agentState, _activeTurn: null }, viaHook
+        ? { subtype: 'monitor_prompt', task_id: 'ag', tool_use_id: 'ag-tool', status: 'completed',
+          summary: 'Agent "Research data layout" finished', result: long, output_file: '/out/ag' }
+        : { subtype: 'task_notification', task_id: 'ag', tool_use_id: 'ag-tool', status: 'completed',
+          summary: long, output_file: '/out/ag' });
+      h.clock.advance(100);
+      assert.strictEqual(h.injections.length, 1);
+      assert.match(h.injections[0].text, /\nREPORT_HEAD detail[\s\S]*…（报告已截断）/);
     }
   });
 
