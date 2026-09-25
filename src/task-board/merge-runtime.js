@@ -1,5 +1,7 @@
 'use strict';
 
+const { isOpenRunState } = require('../classify/vocab');
+
 function aggregateTaskUsages(taskId, usages) {
   const totals = {
     freshInput: 0, cacheRead: 0, cacheWrite: 0,
@@ -101,7 +103,11 @@ function createTaskMergeHandler({
       modules: board.modules,
       tasks: { [task.id]: task },
     }, getSessionRunState).tasks[0];
-    if (['queued', 'running', 'waiting', 'background'].includes(projection?.runState)) return true;
+    // An open run is not ours to merge. `background` counts: that turn is idle
+    // only because a job it started is still out there, so its tree can still
+    // change. The list lives in src/classify/vocab.js (OPEN_RUN_STATES), shared
+    // with the delete guard and both UIs.
+    if (isOpenRunState(projection?.runState)) return true;
     if (!taskRuns) return false;
     try {
       return taskIdentityIds(task).some(identityId => (

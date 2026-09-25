@@ -1,6 +1,7 @@
 'use strict';
 
 const { desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
+const { isChatStateBusy } = require('../session/runtime-busy');
 const cliUpstream = require('./cli-upstream-version');
 
 const crypto = require('node:crypto');
@@ -632,10 +633,9 @@ function createCliSwitchRuntime(options) {
   function cliSwitchBusyState(sessionId) {
     const chat = chatSessions.get(sessionId);
     const stream = options.getChatStream().status(sessionId);
-    const busy = !!(
-      (chat && (chat.isStreaming || chat.claudeProc))
-      || (stream && (stream.busy || stream.queued > 0))
-    );
+    // chat 运行时忙的唯一判定（src/session/runtime-busy.js）：切换 CLI 不能在
+    // 还在收尾的轮次下面动 chat state。stream 是另一条独立的轴。
+    const busy = !!(isChatStateBusy(chat) || (stream && (stream.busy || stream.queued > 0)));
     return { busy, cs: chat, stream };
   }
 
@@ -809,7 +809,7 @@ function createCliSwitchRuntime(options) {
       // Leave the usual admission policy in charge without changing its route.
       const chat = chatSessions.get(sessionId);
       return !!(turnOptions.originContinue && turnOptions.directUserInput
-        && (chat?.isStreaming || chat?._activeRunner));
+        && isChatStateBusy(chat));
     }
     if (!options.cliAvailabilitySummary()[pending.cli]?.available) return false;
     const target = JSON.parse(JSON.stringify(session));

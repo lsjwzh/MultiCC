@@ -82,6 +82,34 @@ void main() {
     expect(() => view.recentEventLabels.add('mutate'), throwsUnsupportedError);
   });
 
+  test('view model does not count a parked background turn as running', () {
+    final now = DateTime(2026, 7, 18, 12);
+    final session = Session(
+      id: 'parked',
+      dirId: 'dir-1',
+      label: 'Parker',
+      createdAt: now.subtract(const Duration(hours: 1)),
+    );
+    final view = DirectoryCardViewModel.fromModels(
+      directory: Directory(
+        id: 'dir-1',
+        name: 'Fleet',
+        path: '/tmp/fleet',
+        createdAt: now,
+      ),
+      sessions: [session],
+      statuses: const {
+        'parked': SessionStatus(status: 'background'),
+      },
+      events: const [],
+      now: now,
+    );
+
+    // `background` means the turn is parked on a background task; this process
+    // is not executing it, so the directory card must not read as busy.
+    expect(view.running, isFalse);
+  });
+
   test('view model keeps the previous fallback task wording', () {
     final now = DateTime(2026, 7, 18, 12);
     final session = Session(

@@ -166,9 +166,12 @@
 
   function taskMergeEligibility(task, options) {
     if (!task || !String(task.id || '').trim()) return { ok: false, reason: 'missing_task' };
-    // `background` is busy too: the turn is idle only because a job it started
-    // is still out there, so its tree is not ours to merge yet.
-    if (['running', 'queued', 'waiting', 'background'].includes(String(task.runState || ''))) {
+    // An open run blocks the merge, and "open" is one predicate for the whole
+    // product: registry.canStopRunState (mirror of src/classify/vocab.js
+    // OPEN_RUN_STATES, which the server's merge and delete guards read).
+    // `background` counts — that turn is idle only because a job it started is
+    // still out there, so its tree is not ours to merge yet.
+    if (statusRegistry()?.canStopRunState?.(task.runState) === true) {
       return { ok: false, reason: 'task_busy' };
     }
     if (task.moduleAssignment?.running === true) {

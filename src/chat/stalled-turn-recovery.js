@@ -114,6 +114,10 @@ function createStalledTurnRecovery(deps = {}) {
 
     const cs = deps.getChatSession(sessionId) || null;
     const stream = deps.getStreamStatus(sessionId) || null;
+    // Deliberately not the shared chat-runtime predicate
+    // (src/session/runtime-busy.js): this asks "is a STREAM in flight", i.e. can
+    // a stalled stream pump be why nothing is arriving. A turn in its teardown
+    // window (runner released last) is not something stall recovery may touch.
     const inFlight = !!(cs && cs.isStreaming) || !!(stream && stream.busy);
     if (!inFlight) {
       clearSuspect(sessionId);

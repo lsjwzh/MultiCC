@@ -2,6 +2,7 @@
 
 const { defaultRepoActor } = require('../repo-actor');
 const { gitWorktreeSnapshot } = require('../git/service');
+const { isChatStateBusy } = require('../session/runtime-busy');
 const { existsSync } = require('node:fs');
 const fail = (code, message = code) => Object.assign(new Error(message), { code, status: 409 });
 
@@ -15,13 +16,15 @@ function sharedWorkspace(records, ownerId, dirId) {
 function createShellWorkspaceHost(deps) {
   const forkLocks = new Set();
   function group(id) { return deps.records.get(id)?.workspaceOwnerSessionId || id; }
+  // 同组里任何一个会话的 chat 运行时忙，这个工作树就不是能动的：判定只有一处
+  // （src/session/runtime-busy.js）。isRunActive / hasBackground 是另外两条独立的轴。
   function busy(id) {
     const key = group(id);
     if (forkLocks.has(key)) return true;
     for (const record of deps.records.values()) {
       if (record.id === id || group(record.id) !== key) continue;
       const state = deps.getChatState(record.id);
-      if (state?.isStreaming || state?.claudeProc || state?._cancelledProc || state?._activeRunner
+      if (isChatStateBusy(state)
           || deps.getWorkHost()?.isRunActive(record.id) || deps.hasBackground?.(record.id)) return true;
     }
     return false;
@@ -40,7 +43,7 @@ function createShellWorkspaceHost(deps) {
     // Legacy per-task directories are never silently discarded or rebound
     // with live/unique work. Successful migration keeps a recoverable ledger.
     const state = deps.getChatState(record.id);
-    if (state?.isStreaming || state?.claudeProc || deps.getWorkHost()?.isRunActive(record.id) || deps.hasBackground?.(record.id)) throw fail('legacy_workspace_busy');
+    if (isChatStateBusy(state) || deps.getWorkHost()?.isRunActive(record.id) || deps.hasBackground?.(record.id)) throw fail('legacy_workspace_busy');
     const dir = deps.directories.get(task.dirId);
     await defaultRepoActor.run(dir.path, 'shell-workspace-migration', async ({ execGit }) => {
       const dirty = await execGit(record.worktreePath, ['status', '--porcelain', '--untracked-files=all']);
@@ -62,7 +65,7 @@ function createShellWorkspaceHost(deps) {
     forkLocks.add(key);
     try {
       const state = deps.getChatState(sid);
-      if (state?.isStreaming || state?.claudeProc || deps.getWorkHost()?.isRunActive(sid) || deps.hasBackground?.(sid)) throw fail('fork_source_busy');
+      if (isChatStateBusy(state) || deps.getWorkHost()?.isRunActive(sid) || deps.hasBackground?.(sid)) throw fail('fork_source_busy');
       let record = deps.records.get(sid);
       if (record?.workspaceState && record.workspaceState !== 'awake') {
         const result = await deps.ensureWorkspaceAwake?.(sid);

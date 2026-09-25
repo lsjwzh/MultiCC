@@ -145,6 +145,20 @@ const TURN_RUN_STATES = Object.freeze([
   'queued', 'running', 'waiting', 'background', 'succeeded', 'error', 'idle',
 ]);
 
+// The subset of TURN_RUN_STATES that means "a run is still open": executing,
+// queued, waiting for the user, or parked on a background job. `background`
+// counts — that turn is idle only because a job it started is still out there,
+// so nothing about the task has settled. This is the ONE list behind every
+// "may I touch this task?" guard: merging (task-board/merge-runtime.js),
+// deleting/relocating (task-board/lifecycle-host.js), and the stop affordance
+// the UIs draw (public/status-presentation.js canStopRunState, mirrored in
+// app/lib/utils/status_presentation.dart). Three hand-kept copies of this array
+// is how the app's ⏹ went missing for a queued or background task.
+const OPEN_RUN_STATES = Object.freeze(['queued', 'running', 'waiting', 'background']);
+
+/** Is this run state one whose run is still open (and therefore stoppable)? */
+function isOpenRunState(state) { return OPEN_RUN_STATES.includes(state); }
+
 // The live classify letters: exactly what parseClassifyResult can still return.
 // This answers "is this a state I recognize?" — a membership question, not a
 // question about meaning — so it is one set here rather than the
@@ -289,5 +303,7 @@ module.exports = {
   CLASSIFY_STATES,
   CLASSIFY_TURN_OUTCOME,
   TURN_RUN_STATES,
+  OPEN_RUN_STATES,
+  isOpenRunState,
   PHASE_LABELS,
 };

@@ -45,6 +45,15 @@
 
   const DOMAIN_STATUSES = Object.freeze({ session: SESSION_STATUSES, task: TASK_STATUSES });
 
+  // The subset of the run-state vocabulary that means "a run is still open":
+  // either executing, or parked (queued / waiting for the user / waiting on a
+  // background job). `background` counts — that turn is idle only because a job
+  // it started is still out there, so nothing about the task has settled and its
+  // worktree is not ours to touch yet. Mirrors src/classify/vocab.js
+  // OPEN_RUN_STATES, which the merge and delete guards read; canStopRunState()
+  // below answers the same question for the UIs.
+  const OPEN_RUN_STATES = Object.freeze(['queued', 'running', 'waiting', 'background']);
+
   // ── Presentation spec ───────────────────────────────────────────────────────
   //
   // icon      — the ONE glyph for this status everywhere. Status is never carried
@@ -301,6 +310,37 @@
     if (alias && allowed.includes(alias)) return alias;
     recordUnknown(domain, key);
     return 'unknown';
+  }
+
+  /**
+   * Is this WORKSPACE AGENT STATUS a busy one? "Busy" has exactly one meaning
+   * here: the agent is working this turn, i.e. the value folds onto `running`.
+   * thinking / editing / working / processing / starting / assessing are all
+   * `running` spelled differently (see STATUS_ALIASES) — that is the whole point
+   * of testing membership through coerceStatus() instead of a hand-kept set.
+   *
+   * Mirrors isRunningStatus()/RUNNING_STATUSES in src/session/state-transition.js
+   * (the server's own membership test, which is what actually drives the
+   * runStartedAt/leftRunning bookkeeping) and app/lib/utils/status_presentation.dart.
+   *
+   * `background` is deliberately NOT busy: the turn is parked on a callback or a
+   * dispatched worker, nothing is advancing here, and its own word is ⌛ rather
+   * than 🔄. "A run is still open" is a different question — see
+   * canStopRunState() below, where `background` DOES count.
+   */
+  function isBusyStatus(raw) {
+    return coerceStatus('session', raw) === 'running';
+  }
+
+  /**
+   * Could this task run state still be stopped? True while a run is open:
+   * executing, queued, waiting on the user, or parked on a background job
+   * (OPEN_RUN_STATES). The one question both the stop button and the guards that
+   * refuse to move a live task's tree ask — a run you can stop is exactly a run
+   * whose worktree must not be merged, deleted or relocated underneath it.
+   */
+  function canStopRunState(raw) {
+    return OPEN_RUN_STATES.includes(coerceStatus('task', raw));
   }
 
   /**
@@ -574,6 +614,7 @@
   const api = Object.freeze({
     SESSION_STATUSES,
     TASK_STATUSES,
+    OPEN_RUN_STATES,
     STATUS_PRESENTATION,
     STATUS_ALIASES,
     FREEZE_REASON_STATUS,
@@ -582,6 +623,8 @@
     RING_TINTS,
     ringTint,
     coerceStatus,
+    isBusyStatus,
+    canStopRunState,
     classifyStatus,
     airStatusLabel,
     airStatusLabels,

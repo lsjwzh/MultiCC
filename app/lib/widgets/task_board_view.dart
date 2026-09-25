@@ -2129,9 +2129,15 @@ class _TaskDetailSheetState extends State<_TaskDetailSheet> {
   Widget _actions({required bool canReclassify}) {
     final task = widget.task;
     // ⏹ mirrors the web task chat view's stop: offered while a run could be
-    // open (executing or parked on a question). cleanup mirrors the manage
-    // page 🧹 and is gated on the task owning a worktree (M3 ledger field).
-    final canStop = task.runState == 'running' || task.runState == 'waiting';
+    // open (queued / executing / parked on a question / parked on a background
+    // job). "Open" is one predicate for the product — registry.canStopRunState,
+    // the mirror of src/classify/vocab.js OPEN_RUN_STATES that the merge/delete
+    // guards read; the server's cancel route accepts exactly the runs the store
+    // still calls open, which is what those four words are the projection of.
+    // Keeping a local `running || waiting` here was how `queued` rendered a live
+    // run with no way to stop it. cleanup mirrors the manage page 🧹 and is
+    // gated on the task owning a worktree (M3 ledger field).
+    final canStop = canStopRunState(task.runState);
     final canCleanup = task.worktreePath != null;
     return Padding(
       padding: EdgeInsets.fromLTRB(

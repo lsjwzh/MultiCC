@@ -8,6 +8,7 @@ const zcodeAuth = require('../cli-adapters/zcode-auth');
 const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
 const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
+const { processAlive } = require('../session/runtime-busy');
 
 // Outbox id of a dispatch result (operation-service completeOperationDraft).
 const DISPATCH_RESULT_ENTRY = /^operation:[^:]+:result(?::\d+)?$/;
@@ -235,6 +236,11 @@ function createSessionWorkHost(deps = {}) {
     if (pending.resolved === true) return { ok: true, duplicate: true };
     const cs = deps.getChatSession(sessionId);
     const state = deps.getTaskState(record) || {};
+    // Deliberately not the shared chat-runtime predicate
+    // (src/session/runtime-busy.js): this gates on *this* turn — the one that
+    // asked the question — and it already carries two disqualifiers the shared
+    // predicate knows nothing about (a processing classify letter, a live queue
+    // entry). Widening it here would refuse answers it must accept.
     if (cs?.isStreaming || isProcessingLetter(state.classifyState)
         || (queue.active && queue.state !== 'frozen')) {
       return { ok: false, code: 'turn_still_active' };
@@ -686,23 +692,18 @@ function createSessionWorkHost(deps = {}) {
   // moment we signal (the close handler keys off `cs.claudeProc === proc` to know
   // the turn is no longer active), which made the old wait report "stopped" while
   // the CLI was still very much alive. The killed handle is kept separately and
-  // read directly — exitCode/signalCode are set by Node when the process is
-  // reaped, and stopRunner clears the handle on its 'exit' event. Deliberately no
-  // `process.kill(pid, 0)` probe: pids get reused, and a foreign match would be a
-  // false "still running" that never clears.
-  function processAlive(proc) {
-    if (!proc) return false;
-    if (proc.exitCode !== null && proc.exitCode !== undefined) return false;
-    if (proc.signalCode) return false;
-    return true;
-  }
-
+  // read directly via processAlive (shared: src/session/runtime-busy.js), and
+  // stopRunner clears the handle on its 'exit' event.
   function runnerStopped(sessionId) {
     const state = deps.getChatSession(sessionId);
     if (!state) return true;
     if (state.isStreaming) return false;
     if (state.claudeProc) return false;
     if (processAlive(state._cancelledProc)) return false;
+    // Deliberately NOT the shared chat-runtime busy predicate (src/session/
+    // runtime-busy.js): a cancelled resident turn keeps `_activeRunner` until
+    // this very wait completes, so counting it would make the loop never
+    // converge and every cancel would end in the timeout path.
     // Two ways a resident lane can still be running after a cancel: the child is
     // still alive (cancel reaps it) or a turn is still in flight (cancel
     // interrupts it in place and the child outlives the cancel).

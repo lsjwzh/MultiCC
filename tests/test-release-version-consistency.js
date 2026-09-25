@@ -99,14 +99,17 @@ test('core runner covers every selected path and expands declared variants', () 
   // likewise a static Node unit test that reads public/ and the Flutter source
   // and writes nothing. 297 + 3 = 300. 62119be9 then added
   // tests/test-proxy-stall-watch.js (pure in-memory unit test, registered as
-  // core on rebase): 301.
-  assert.equal(core.length, 301, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 301);
+  // core on rebase): 301. Re-audited again: this tranche registers
+  // tests/test-session-runtime-busy.js, which asserts a truth table over plain
+  // objects plus source-text invariants and touches no clock, port, FS or
+  // process — safe for the release core tier. 301 + 1 = 302.
+  assert.equal(core.length, 302, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 302);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 258);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 259);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 19,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -116,8 +119,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 285,
-    '282 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 286,
+    '283 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

@@ -210,6 +210,9 @@ function createClassifyStateMachine(rawDeps) {
     // ── Dispatch per state ──────────────────────────────────────────────
     if (isProcessingLetter(state)) {
       // P — still processing. Two sub-cases:
+      // Only the stream flag, on purpose (not src/session/runtime-busy.js): a
+      // turn whose stream already closed must fall into branch (2), where the
+      // runner boundary owns the single bounded retry.
       if (cs && cs.isStreaming) {
         // (1) Genuinely mid-turn (a turn IS in flight) — just refresh labels.
         const ph = phaseLabel(phase);

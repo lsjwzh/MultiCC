@@ -9,6 +9,7 @@ import '../services/settings_service.dart';
 import '../services/ui_layout_service.dart';
 import '../services/workspace_service.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/status_presentation.dart';
 import 'chat_provider.dart';
 
 class PendingChatOpen {
@@ -204,9 +205,11 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
         .where((entry) => entry.value.status == 'waiting')
         .map((entry) => entry.key)
         .toSet();
-    const busy = {'running', 'thinking', 'editing'};
+    // 「忙」只有一处定义（registry 的 isBusyStatus，镜像服务端
+    // state-transition.js isRunningStatus）：thinking / editing 是 running 的别名，
+    // 而 background（等后台任务）刻意不算 —— 本进程并没有在推进这一轮。
     final running = statuses.entries
-        .where((entry) => busy.contains(entry.value.status))
+        .where((entry) => isBusyStatus(entry.value.status))
         .map((entry) => entry.key)
         .toSet();
 

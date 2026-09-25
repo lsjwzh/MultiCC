@@ -267,6 +267,18 @@ const Set<CanonicalStatus> taskStatuses = {
   CanonicalStatus.unknown,
 };
 
+/// 「这一轮 run 还开着」的那几个状态：在跑、排队、等人回答、等后台任务。与 Web
+/// 的 public/status-presentation.js `OPEN_RUN_STATES` 是同一份，也是服务端
+/// src/classify/vocab.js `OPEN_RUN_STATES` 的镜像（合并 / 删除守卫读的是它）。
+/// background 也算：那一轮只是因为派出去的活还在外面才闲下来，任务没有结算，
+/// 它的工作树就还不是我们能动的。
+const Set<CanonicalStatus> openRunStates = {
+  CanonicalStatus.queued,
+  CanonicalStatus.running,
+  CanonicalStatus.waiting,
+  CanonicalStatus.background,
+};
+
 /// 历史 / 相邻词表的单点兼容映射。别在各页面自己写别名判断——那正是 `error`
 /// 在会话卡上渲染成记事本图标的成因。
 const Map<String, CanonicalStatus> statusAliases = {
@@ -420,6 +432,27 @@ CanonicalStatus coerceStatus(StatusDomain domain, Object? raw) {
   _recordUnknown(domain, key);
   return CanonicalStatus.unknown;
 }
+
+/// 这个 workspace agent status 算不算「忙」？「忙」在本仓只有一种含义：这个 agent
+/// 正在干这一轮的活，也就是折算成 canonical 之后是 running。thinking / editing /
+/// working / processing / starting / assessing 都只是 running 的另一种写法（见
+/// [statusAliases]）—— 走 coerceStatus 而不是各处自己手写集合，正是为了这一点。
+///
+/// 镜像：服务端 src/session/state-transition.js 的 isRunningStatus()
+/// （RUNNING_STATUSES = thinking/editing/running，真正驱动 runStartedAt/leftRunning
+/// 记账的那个判定），以及 public/status-presentation.js 的同名函数。
+///
+/// background 刻意**不算忙**：那一轮是在等回调 / 等派出去的 worker，本进程没有在
+/// 推进，注册表给它的词也不是「执行中」。那是另一个问题 ——「这一轮还开着吗」由
+/// [canStopRunState] 回答，那里 background 是要算的。
+bool isBusyStatus(Object? raw) =>
+    coerceStatus(StatusDomain.session, raw) == CanonicalStatus.running;
+
+/// 这一轮 run 还停得掉吗？开着（在跑 / 排队 / 等人回答 / 等后台任务，见
+/// [openRunStates]）就是还停得掉。停止按钮和那些「不许动一个活着的工作树」的守卫
+/// 问的是同一个问题：停得掉的 run，正是不能在其脚下合并 / 删除 / 搬迁工作树的 run。
+bool canStopRunState(Object? raw) =>
+    openRunStates.contains(coerceStatus(StatusDomain.task, raw));
 
 /// 会话状态。[runState] 来自服务端 getRunState()，[freezeReason] 是枚举键而非自
 /// 由文本，[active] 只用于在没有 runState 时区分「离线」与「未知」。

@@ -3,6 +3,7 @@
 const {
   classifyDisplay, isProcessingLetter, isBackgroundLetter,
 } = require('../classify/vocab');
+const { isChatStateBusy } = require('../session/runtime-busy');
 
 const LOADING_MERGE_STATE = Object.freeze({
   mergeReady: false,
@@ -263,16 +264,18 @@ function createSessionGitRuntime(rawDeps) {
     return rememberMergeState(mergeStateKey(session), value);
   }
 
+  // 「这个工作树上有活的东西吗」：判定只有一处（src/session/runtime-busy.js）。
+  // 这里曾经对同一个会话给出两种答案 —— 作为同组 member 看时读 `_activeRunner`，
+  // 作为被请求的那个 id 看时只读 claudeProc/isStreaming。
   function isWorktreeActive(sessionId) {
     if (deps.terminalSessions.has(sessionId)) return true;
     const owner = deps.records.get(sessionId)?.workspaceOwnerSessionId || sessionId;
     for (const member of deps.records.values()) {
       if (member.id === sessionId || (member.workspaceOwnerSessionId || member.id) !== owner) continue;
       const state = deps.chatSessions.get(member.id);
-      if (deps.terminalSessions.has(member.id) || state?.claudeProc || state?.isStreaming || state?._activeRunner) return true;
+      if (deps.terminalSessions.has(member.id) || isChatStateBusy(state)) return true;
     }
-    const chat = deps.chatSessions.get(sessionId);
-    return !!(chat && (chat.claudeProc || chat.isStreaming));
+    return isChatStateBusy(deps.chatSessions.get(sessionId));
   }
 
   function sessionSyncGate(sessionId) {

@@ -9,6 +9,7 @@ const { createWorkspaceRegistry } = require('./registry');
 const { createWriterEscalation } = require('./writer-escalation');
 const { WORKTREE_SUBDIR } = require('../git/service');
 const { captureCodeRevision } = require('../task-routing/code-revision');
+const { isChatStateBusy } = require('../session/runtime-busy');
 const BACKPRESSURE_CODES = new Set([
   'workspace_busy',
   'workspace_lease_unavailable',
@@ -21,7 +22,6 @@ const failure = code => Object.assign(new Error(code), {
   // use the bounded outbox retry path instead of cycling forever in FIFO.
   backpressure: BACKPRESSURE_CODES.has(code),
 });
-const processAlive = proc => !!proc && proc.exitCode == null && proc.signalCode == null;
 const ACTIVE_LEASE_STATES = new Set(['reserved', 'materializing', 'starting', 'running', 'uncertain']);
 
 const DEFAULT_STALE_UNCERTAIN_MS = 5 * 60 * 1000;
@@ -90,10 +90,12 @@ function createWorkspaceAdmission(deps) {
     registry.bind(id, workspace.id);
     return workspace;
   }
+  // 「这个会话还在写它自己的工作树吗」= chat 运行时忙（唯一判定，见
+  // src/session/runtime-busy.js）或有后台任务/常驻 stream 泵在跑。这三条是独立的轴，
+  // 所以在这里 OR 起来而不是塞进那个判定里。
   function isLive(id) {
     const state = deps.getState(id);
-    return !!(state?.isStreaming || processAlive(state?.claudeProc) || processAlive(state?._cancelledProc)
-      || state?._activeRunner || deps.hasBackground(id) || deps.streamBusy(id));
+    return isChatStateBusy(state) || deps.hasBackground(id) || deps.streamBusy(id);
   }
   function hasActiveLease(id) {
     const workspace = identify(id);

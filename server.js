@@ -411,7 +411,7 @@ app.get('/readyz', healthHandlers.readyz);
 app.get('/metrics', (req, res) => {
   let activeTurns = 0;
   for (const [name, cs] of chatSessions) {
-    if (cs && (cs.claudeProc || cs.isStreaming || (chatStream.status(name) && chatStream.status(name).busy))) activeTurns++;
+    if (cs && (isChatStateBusy(cs) || chatStream.status(name)?.busy)) activeTurns++;
   }
   const waitStats = waitInjector.stats();
   res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8').send(metrics.render({
@@ -1818,7 +1818,7 @@ function reportHostControlFailure(component, stage, category) {
 tunnel.setFailureReporter((stage, category) => {
   reportHostControlFailure('tunnel', stage, category);
 });
-const chatStream = require('./src/chat/chat-stream');
+const chatStream = require('./src/chat/chat-stream'); const { isChatStateBusy } = require('./src/session/runtime-busy');
 const waitInjector = require('./src/wait/injector');
 const sessionDelivery = require('./src/session/delivery').createSessionDelivery({
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
