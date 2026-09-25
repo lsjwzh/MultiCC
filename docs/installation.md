@@ -6,12 +6,12 @@
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.0/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.0/install.ps1 | iex
 ```
 
 The tag in the URL **is** the version. The script downloads that release's
@@ -20,8 +20,9 @@ production dependency, in one archive — verifies its SHA-256, unpacks it into
 `~/MultiCC` (`%USERPROFILE%\MultiCC` on Windows), clears macOS download quarantine,
 writes `ACCESS_TOKEN` and `PORT`, optionally asks about start-on-login (macOS
 `launchd` / Linux systemd user / Windows Startup), starts MultiCC and opens the browser. Nothing is
-compiled, no APK is built, and **the target machine needs no Node, npm, git,
-Homebrew or Xcode**.
+compiled, no APK is built, and **the target machine needs no Node, npm, Homebrew
+or Xcode**. MultiCC itself needs a working `git` for its per-session worktrees;
+the installer checks it and prints a platform-specific remedy when necessary.
 
 When the command returns MultiCC is already ready. The same command remains the
 day-to-day control surface:
@@ -172,6 +173,9 @@ Under the hood: `POST /api/update` with `{"force": true|false}` starts it, `GET
 
 Installed from the standalone package, the requirements are only these:
 
+- **A working `git`** — every session gets its own worktree. The installer checks
+  this after unpacking and tells you how to install git (or macOS Command Line
+  Tools) without blocking the package installation itself.
 - **tmux** (terminal mode only; chat mode works without it). The package does not ship or install `tmux` — install it yourself with Homebrew / your system package manager if you want the terminal page.
 - **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)). The package's runtime is prepended to `PATH`, so these Node-based CLIs run on the bundled Node and you never install Node yourself.
 - **On macOS, don't use a protected location for a workspace** — Desktop, Documents, Downloads, iCloud Drive, removable and network volumes. macOS gates those behind per-process disk-access grants, so registering a directory there can fail with `Operation not permitted` no matter what you authorize. Use something like `~/working`; a symlink from a protected folder to the real repo works too. See [macOS disk permissions](standalone.md#macos-磁盘权限tcc为什么给权限常常给不上).

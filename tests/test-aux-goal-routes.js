@@ -599,7 +599,7 @@ test('an unhealthy observation never suppresses the next Aux request', async () 
 
 test('Goal helpers keep clamping, framing and defensive verdict parsing', () => {
   assert.deepEqual(resolveGoalLimits({ maxRounds: 999, maxBudget: -2 }), { maxRounds: 200, maxBudget: 0 });
-  assert.match(buildGoalLimitNote({ maxRounds: 3, maxBudget: 50 }), /3 轮/);
+  assert.match(buildGoalLimitNote({ maxRounds: 3, maxBudget: 50 }), /cap of 3 agent turns/);
   assert.match(buildGoalLimitNote({ maxRounds: 3, maxBudget: 50 }), /50/);
   assert.deepEqual(normalizeGoalConfig({ dimensions: { scope: false }, minScore: 101 }), {
     dimensions: { objective: true, criteria: true, scope: false, executable: true },

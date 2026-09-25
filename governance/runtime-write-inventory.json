@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-09-18",
+  "reviewedAt": "2026-09-25",
   "entries": [
     {
       "id": "server-env",
@@ -166,6 +166,23 @@
         {
           "file": "src/cli-adapters/dsh.js",
           "anchor": "function dshProfileDir(homeDir) { return path.join(homeDir, '.dsh', 'profiles', DSH_PROFILE); }"
+        }
+      ]
+    },
+    {
+      "id": "macos-agent-runtime",
+      "classification": "external-owner",
+      "owner": "macOS desktop agent installer",
+      "rationale": "The per-user LaunchAgent owns its IPC socket, preserved user config/log, and stable client symlink outside a replaceable MultiCC checkout; both roots have explicit MULTICC_AGENT_* overrides.",
+      "migrationStrategy": "Keep the agent directory private and the client link derived/idempotent; uninstall removes the socket and link but preserves config/log. If either default ever moves, copy the config forward and retain a compatibility link before changing the LaunchAgent contract.",
+      "sources": [
+        {
+          "file": "scripts/install-agent.sh",
+          "anchor": "DIR=\"${MULTICC_AGENT_DIR:-$HOME/.multicc/agent}\""
+        },
+        {
+          "file": "scripts/install-agent.sh",
+          "anchor": "LINK=\"${MULTICC_AGENT_LINK:-$HOME/.multicc/bin/multicc-agent}\""
         }
       ]
     },
