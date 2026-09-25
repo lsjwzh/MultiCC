@@ -294,9 +294,9 @@ function sendWsMessage(port, sessionId, text) {
 
     // S3: verify callback instruction present in slave prompt
     assert.match(slaveEntry.prompt, /dispatch_slave/, 'S3: slave prompt must mention dispatch_slave');
-    assert.match(slaveEntry.prompt, /回传/, 'S3: slave prompt must contain callback keyword');
+    assert.match(slaveEntry.prompt, /Receipt required/, 'S3: slave prompt must contain callback keyword');
     assert.match(slaveEntry.prompt, /status:"completed"/, 'S3: must show completed example');
-    assert.match(slaveEntry.prompt, /master 无法收到结果/, 'S3: must warn about missing result');
+    assert.match(slaveEntry.prompt, /master never receives the result/, 'S3: must warn about missing result');
 
     // D1: verify register-and-return + backflow outbox emission
     // (a) Master's first turn output contains the admitted receipt
