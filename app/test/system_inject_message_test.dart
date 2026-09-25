@@ -109,6 +109,29 @@ void main() {
       expect(find.byIcon(Icons.expand_more), findsNothing);
     });
 
+    testWidgets('长按注入卡能删除（落库后），只读转录只给复制', (tester) async {
+      await tester.pumpWidget(host(
+        MessageBubble(message: injected('🔇 【后台任务完成】\n任务已结束')),
+      ));
+      await tester.longPress(find.text('后台任务完成'));
+      await tester.pumpAndSettle();
+      expect(find.text(t('msgCopyAction')), findsOneWidget);
+      expect(find.text(t('msgDeleteAction')), findsOneWidget);
+      Navigator.of(tester.element(find.text(t('msgCopyAction')))).pop();
+      await tester.pumpAndSettle();
+
+      await tester.pumpWidget(host(
+        MessageBubble(
+          message: injected('🔇 【后台任务完成】\n任务已结束'),
+          enableServerActions: false,
+        ),
+      ));
+      await tester.longPress(find.text('后台任务完成'));
+      await tester.pumpAndSettle();
+      expect(find.text(t('msgCopyAction')), findsOneWidget);
+      expect(find.text(t('msgDeleteAction')), findsNothing);
+    });
+
     testWidgets('注入卡不挂「本轮自动提交」勾选框', (tester) async {
       await tester.pumpWidget(host(
         MessageBubble(
