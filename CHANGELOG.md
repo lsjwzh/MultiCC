@@ -2,6 +2,20 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.1.2 — Upgrading from an installation the installer cannot see (2026-09-26)
+
+### Highlights
+
+- **An older installation that is not at the install path is found instead of ignored** — installers from before the standalone package put MultiCC wherever they were run from (`$PWD/MultiCC`), while this release installs to a fixed `~/MultiCC`, so the installation holding a user's history is routinely somewhere else entirely. The installer now looks where that installation can be evidenced — the directory the login service starts MultiCC from, and the directory this run was started in — and reports it.
+- **`--adopt-data <path>` brings the old data across** — sessions, chat history, task databases, memories and provider settings are copied into the new per-user data directory, and the old installation is left exactly as it was: not stopped, not renamed, not upgraded, its own token and port untouched.
+- **Nothing is copied from a directory the user did not name without an answer** — an installation the installer found on its own is reported and left alone; the copy happens only when the user names the path, confirms the question, or passes `--yes`. Where there is no terminal to ask on, the answer is the one that changes nothing, on both platforms.
+- **Windows has the same two paths** — `-AdoptData` and the same "found it, left it alone" report, with the copy verified against a real PowerShell run.
+
+### Installer
+
+- In-place upgrades of a pre-standalone installation (data root inside the package root) are unchanged: the old directory is stopped and kept as a backup, and its data is brought across.
+- The Windows data list and the POSIX one are still identical name-for-name, and both installers derive the destination from `multicc config path` rather than a hard-coded per-user path.
+
 ## Unreleased
 
 ## v2.1.0 — Smarter routing, full-history search, and one unified Air console (2026-09-25)

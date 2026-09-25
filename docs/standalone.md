@@ -25,12 +25,12 @@
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.ps1 | iex
 ```
 
 URL 里的 tag 就是安装的版本。两个脚本只负责各系统必须不同的下载、校验和解压；装好后全部进入同一个包内 `multicc` CLI。整条链路一次完成：下载对应平台的独立包 → 校验 `.sha256` → 解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）→ 在 macOS 清除下载隔离标记 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）→ 可选注册登录自启 → 启动并等待 `/readyz` → 打开浏览器。命令返回时界面已经能用；目标机器不需要 Node、npm、Homebrew、Visual Studio 或 Xcode。安装脚本本身不需要 git，但 MultiCC 会在解压后检查运行时必需的 git，缺少时给出安装指引。
@@ -48,7 +48,7 @@ curl -sSL .../install.sh | bash -s -- --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用本地的包离线安装（跳过下载，仍然校验 .sha256）
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.1.1-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.1.2-darwin-arm64.tar.gz
 
 # 自动化/服务器：只安装不启动，或启动但不打开浏览器
 curl -sSL .../install.sh | bash -s -- --no-start
@@ -65,13 +65,32 @@ curl -sSL .../install.sh | bash -s -- --no-open
 | `--no-service` | 关 | 不询问开机自启 |
 | `--no-start` | 关 | 只安装和配置，不启动；同时跳过开机自启设置 |
 | `--no-open` | 关 | 启动服务，但不打开浏览器 |
+| `--yes` | 关 | 原地升级旧安装前不再问一次，直接替换（旧目录仍然保留） |
+| `--no-data` | 关 | 把旧安装的数据留在备份里，不搬进新数据目录 |
+| `--adopt-data <path>` | 无 | 把**别处**的旧版安装的数据搬进来（只读源目录，见下） |
 | `--no-apk`、`--branch <tag>`、`--no-clone` | — | 旧命令行的兼容位：`--branch` 等价于 `--version`，`--no-clone` 等价于 `--from .`（从当前目录装），`--no-apk` 只打印一句提示（安装从来不构建 APK） |
 
 Windows 对应参数为 `-InstallDir`、`-Version`、`-From`、`-AccessToken`、
-`-Port`、`-NoService`、`-NoStart`、`-NoOpen`。无参数时使用上面的一行命令；
+`-Port`、`-Yes`、`-NoData`、`-AdoptData`、`-NoService`、`-NoStart`、`-NoOpen`。无参数时使用上面的一行命令；
 需要传参时下载 `install.ps1` 后在 PowerShell 里执行。
 
 脚本会拒绝非空的非 MultiCC 目录，也会拒绝校验和不匹配或缺少运行时的包（宁可失败，也不装一个装不起来的包）。重复安装同一个目录是**原地替换**：先停掉在跑的实例、把旧目录挪到 `.old-<pid>` 作为回滚点，再改名就位；失败会把旧目录还原。
+
+### 从旧版本升级（装成独立包之前）
+
+独立包之前的安装器把 MultiCC 装到**它当时被运行的目录**（默认 `$PWD/MultiCC`），而独立版固定在 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`），所以带历史的旧安装经常不在这次要装的路径上。两种情况都处理：
+
+- **旧安装就在安装路径上**：停下来、整棵目录保留为 `<目录>.legacy-<时间戳>` 备份（从不删除），把它的 `ACCESS_TOKEN`、`PORT` 以及数据（会话、聊天历史、任务库、memories、provider 设置）搬进新的每用户数据目录。
+- **旧安装在别处**：脚本会去找它——先看登录服务（macOS 的 launchd `com.multicc.server`、Linux 的 systemd user unit）记录的那个目录，再看这次运行所在的目录。找到后**只报告，不动它**：不停止、不改名、不升级；在没有终端可问的运行里（`curl | bash`）它只是打印出来，并给出唯一能把它搬进来的开关：
+
+  ```bash
+  curl -sSL .../install.sh | bash -s -- --adopt-data "$HOME/MultiCC"
+  ```
+
+  源目录始终只读：搬过去的是一份**拷贝**，旧安装原样留着，可以确认无误后再自行删除。旧安装的 token 和端口**不会**跟过来——每个安装有自己的配置。
+
+  已经装好之后还可以用旧目录里的 `multicc` 继续跑，或者把要的部分手工拷进新数据目录（`multicc config path` 的上一级就是它）。
+
 
 装完脚本会直接启动并打开界面，同时打印实际 URL、访问令牌和日常命令（都在安装目录下运行）。若启动未通过就绪检查，脚本会保留已安装文件、给出日志命令并返回失败，而不是把“解压成功”误报成“已经可用”。
 
