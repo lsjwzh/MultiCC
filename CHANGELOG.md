@@ -4,9 +4,53 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
-### Improvements and fixes
+## v2.1.0 — Smarter routing, full-history search, and one unified Air console (2026-09-25)
 
-- **Upgrade-time cleanup of cron fan-out residue** — `./multicc update` records the version it is upgrading from, and the new process archives the per-firing duplicate tasks that releases ≤ 2.0.2 left on the board (archive only: a rule's fixed task is task-shell identity and cannot be merged into). The cleanup runs once per data directory, prints its count in the update output, and never blocks readiness.
+### Highlights
+
+- **Difficulty-aware Auto Provider routing** — Auto pools can keep a fixed failover order or route each message by difficulty. Jev evaluates the request before admission and sends simple work to economical models while reserving stronger models for complex work. Vercel AI Gateway, OpenRouter, TypeSafe, and custom HTTPS endpoints are supported. Keys remain in the local secrets vault, route decisions are visible in chat, and unavailable or uncertain evaluations follow a configurable safe fallback.
+- **Search the conversation, not just the task title** — Air can search task metadata and the full text of chat history, with ranked and highlighted snippets. A derived FTS index warms incrementally without blocking startup, updates after live turns, and also gives automatic task attribution stronger retrieval evidence.
+- **The Control Center is now fully native in Air** — provider management, official-account switching, relay sharing, ZCode/Kimi native login, workspace hibernation, orphan reconciliation, ignored-file audit, schedules, memory, voice, secrets, and host operations now live in the Air shell. Existing `/manage` and `/manage.html` bookmarks redirect to the corresponding Air view.
+- **Faster, safer long-running sessions** — Codex app-server sessions join Claude in a bounded resident-process pool, preserving native continuity while avoiding unbounded idle processes. Workspace leases serialize writers, restore hibernated worktrees before delivery, and keep active or queued turns from being reclaimed.
+- **Durable task-first dispatch** — `route_task` and `dispatch_master` can create an independent task and its execution session atomically through `new_task`, with idempotent creation and delivery receipts. Existing dispatch-to-session calls remain supported.
+
+### Air, Web, and App improvements
+
+- Added full-history versus task-only search scopes, quick directory switching, drag-to-reorder directories, and server-persisted ordering.
+- Missing coding CLIs can now be installed directly from the CLI update panel; model pickers refresh their Claude and Codex catalogs more reliably.
+- Task rows now show when a worktree has uncommitted changes or commits still waiting to merge.
+- Auto Provider editors on Web and App now suggest local Claude models for provider lines without their own catalog, while retaining a custom-model escape hatch.
+- Provider quota and balance bars now behave consistently across Web and App, including relayed and experimental CLI families, cached last-known-good readings, provider switches, and expired reset windows.
+- Per-message token usage now presents main and separately routed sub-agent usage consistently on Web and App.
+- Task deletion failures now name the tasks retaining a conversation and no longer leave cards stuck in a permanent “deleting” state.
+- English README screenshots are generated from a deterministic mocked fixture.
+
+### Reliability and orchestration
+
+- Resident background and sub-agent work may finish after the main reply without being rejected as stale proxy traffic.
+- Monitor admission, process-close handling, watchdog recovery, queued-delivery reporting, and workspace backpressure were tightened so long-running work is not mistaken for completion.
+- A terminal turn ledger now runs in shadow mode, recording Claude/Codex hook evidence for diagnostics without taking over lifecycle decisions.
+- Provider routing rejects mismatched or stale capabilities more precisely and preserves retryable backpressure without consuming delivery budgets.
+- Task-history retention, stale task-run recovery, and worktree capacity reclamation received additional safeguards.
+- **Upgrade-time cleanup of cron fan-out residue** — `./multicc update` archives the per-firing duplicate tasks that releases ≤ 2.0.2 left on the board. The cleanup runs once per data directory, reports its count, and never blocks readiness.
+- Updated the bundled Claude Agent SDK from 0.3.278 to 0.3.280.
+
+### macOS onboarding
+
+- The installer now verifies that Git actually works. It distinguishes the `/usr/bin/git` Command Line Tools shim from a real Homebrew, MacPorts, Xcode, or git-scm installation.
+- When Git is unavailable, Air can open the macOS Command Line Tools installer directly.
+- Full Disk Access errors now offer a one-click jump to the correct System Settings pane and identify the exact app or executable that needs permission.
+- The optional lid-sleep helper is narrowly scoped to `pmset -a disablesleep`, validates its sudoers entry before installation, and still falls back to the normal administrator prompt.
+- Desktop builds include hardened-runtime entitlements for the required macOS access paths.
+
+### Compatibility
+
+- **No intended REST API or persisted task/provider format break.** Existing ordered Auto Provider pools continue to work unchanged; difficulty routing is opt-in.
+- The old `/manage` document and its private frontend modules were removed. `/manage` and `/manage.html?view=…` bookmarks redirect to Air, but custom tooling that imported legacy `public/manage-*.js` assets must move to supported APIs or Air panels.
+- MultiCC still ships its own Node runtime, but **a working Git installation is required at runtime** because every coding session owns a Git worktree. The installer continues when Git is missing and prints the exact remediation.
+- Full-history search creates a rebuildable derived SQLite index; chat history remains authoritative and no manual migration is required.
+- Jev makes an external evaluation request only when difficulty routing is enabled. Its API key stays in the local vault, and evaluation failure never drops the user message.
+- The Flutter app advances to `2.29.15+133`. Node.js remains `>=22.16`; existing desktop and standalone platform floors are unchanged.
 
 ## v2.0.1 — Task attribution you can see and steer (2026-09-19)
 

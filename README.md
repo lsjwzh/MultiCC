@@ -105,8 +105,10 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 
 - **Directory home** — every registered repo with its tasks and sessions in one list
 - **New-task composer** — describe a goal, pick a CLI / line / model (it remembers your last choice), and the task spins up a bound session
-- **⌘K search** — directories, tasks, and sessions from one palette
-- **Built-in console** — providers, schedules, AI Assistant, host operations, without leaving the page
+- **Full-history search** — search task titles and excerpts, or include complete conversation history with ranked, highlighted matches
+- **Fast directory switching** — hover the directory card to switch instantly, and drag directories into a persistent order
+- **Native control center** — providers, official accounts, relay connections, workspace reclamation, schedules, AI Assistant, and host operations all live in Air
+- **Delivery state at a glance** — task rows show worktrees with uncommitted changes or commits still waiting to merge
 - **Scheduled tasks** — cron-style recurring work bound to fixed Air tasks
 - **Task pins** — pin up to five tasks to the header tab row (sidebar top on mobile and in the app)
 - **Input target** — see and switch which task your next message lands in from the full-history index (the ◎ marker); in-flight turns stay durably queued
@@ -135,12 +137,12 @@ The picker shows which CLIs are installed, which already hold a saved session, a
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.0/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.7/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.0/install.ps1 | iex
 ```
 
 One line, no flags: the tag in the URL *is* the version. The script downloads that
@@ -150,7 +152,9 @@ stable `~/MultiCC` path (`%USERPROFILE%\MultiCC` on Windows), clears macOS downl
 `ACCESS_TOKEN`, starts the service and opens the browser, and optionally registers
 a login service (macOS `launchd` / Linux systemd user / Windows Startup). The UI is ready when
 the command returns. Nothing is compiled, and **the target machine needs no Node,
-npm, git, Homebrew or Xcode**.
+npm, Homebrew or Xcode**. MultiCC does require a working `git` at runtime because
+every session gets its own worktree; the installer checks it and prints the shortest
+platform-specific fix when it is missing.
 
 <details>
 <summary>Install options, and building from source</summary>
@@ -163,7 +167,7 @@ curl -sSL .../install.sh | bash -s -- --dir /opt/multicc --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # From a package you already downloaded
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.0.7-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.1.0-darwin-arm64.tar.gz
 
 # Server/automation installs: install without starting, or start without a browser
 curl -sSL .../install.sh | bash -s -- --no-start
@@ -185,8 +189,9 @@ cd MultiCC && npm install && node server.js
 
 </details>
 
-**Prerequisites:** `tmux` (terminal mode only) and at least one coding CLI on your
-`PATH`, already logged in. Node.js is **not** required — the package brings its own.
+**Prerequisites:** a working `git`, `tmux` (terminal mode only), and at least one
+coding CLI on your `PATH`, already logged in. Node.js is **not** required — the
+package brings its own.
 
 <details>
 <summary><strong>Not a terminal person? Install the desktop app instead</strong> (macOS / Windows / Linux)</summary>
@@ -313,6 +318,8 @@ keeps the full output and offers a force retry.
 - Per-session **git worktree** on `multicc/<sessionId>`
 - Merge back with **syntax-gated** validation; sibling worktrees auto-sync after a merge
 - **Cross-session dispatch** — one agent hands work to another
+- **Task-first MCP dispatch** — route work to an existing task or atomically create a new independent task with durable, idempotent receipts
+- **Resident Claude and Codex lanes** — bounded warm processes reduce turn startup overhead while preserving each CLI's native resumable session
 - **Agent Commander** — a fleet-conductor session seeded into every new directory
 - Shared **task board** with a **unified task chat view** — every task owns a bound chat session with live transcript, cancel/cleanup, and stable short codes
 - **Task attribution ladder** — each incoming message is matched to a task through escalating evidence, with every decision written to a durable journal you can audit and override
@@ -326,7 +333,7 @@ keeps the full output and offers a force retry.
 
 **Models & cost**
 - **Multi-provider**: bind any Anthropic- or OpenAI-compatible endpoint per CLI
-- **Auto Provider failover** — when an upstream fails on a retryable condition, switch to the next healthy candidate automatically
+- **Auto Provider routing & failover** — use ordered failover, or let Jev route simple and complex requests to different provider/model tiers before the first byte or tool side effect; evaluation failures follow a configurable safe fallback
 - **AI Assistant (aux)** — intent classification, task attribution, and auto-advance; configured from its own console page (a lightweight flash-tier model is enough)
 - Read-only import from **cc-switch**
 - **Subagent routing** — cheap models for the grunt work, via a local provider router
@@ -382,6 +389,7 @@ keeps the full output and offers a force retry.
 | [Features](docs/features.md) | The complete feature reference |
 | [Architecture](docs/architecture.md) | Repository layout, message flows, design decisions |
 | [API reference](docs/api-reference.md) | REST endpoints by domain + WebSocket protocol |
+| [Router tools](docs/router-tools.md) | Task-first MCP contracts for durable dispatch, `new_task`, waits, secrets, and artifacts |
 | [How MultiCC compares](docs/ecosystem-comparison.md) | 12-project landscape, head-to-head tables, what MultiCC is *worse* at |
 | [FAQ](docs/faq.md) | Troubleshooting and common questions |
 | [Tech stack](docs/tech-stack.md) | Runtime dependencies and what each one is for |
@@ -459,7 +467,7 @@ Surveyed: cc-switch, Ruflo, CLIProxyAPI, oh-my-claudecode, AionUi, vibe-kanban, 
                     per-session git worktree: multicc/<sessionId>
 ```
 
-Key decisions: vendor transcripts are never translated; state is flat JSON, not a database; each session owns a branch and worktree; the network bind is fail-closed. The desktop app adds one more client without adding a second UI — it embeds this same server and serves this same web page from a loopback port.
+Key decisions: vendor transcripts are never translated; authoritative conversation and provider records remain inspectable local files, while orchestration and rebuildable search indexes use `node:sqlite`; each session owns a branch and worktree; the network bind is fail-closed. The desktop app adds one more client without adding a second UI — it embeds this same server and serves this same web page from a loopback port.
 
 **Built with:** Node.js · Express · ws · node:sqlite (built into Node 22.16+, so there is no compiled SQLite addon) · sherpa-onnx (on-device ASR) · cli-provider-router · chokidar · tmux · Flutter · Electron (desktop shell). No frontend build step — the web client is plain JavaScript.
 

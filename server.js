@@ -2583,8 +2583,7 @@ require('./src/workspace/air-routes').mountAirRoutes(app, {
   clis: SUPPORTED_CHAT_CLIS,
   providerName: sessionProviderName,
   effectiveModel: effectiveSessionModel,
-  effectiveEffort: effectiveSessionEffort,
-  mergeStateCached,
+  effectiveEffort: effectiveSessionEffort, mergeStateCached,
   serializeSubagent, getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle',
 });
 
