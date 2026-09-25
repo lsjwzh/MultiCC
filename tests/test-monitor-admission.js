@@ -167,7 +167,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor reports only it
 });
 
 for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during a live turn reaches that turn natively`, { timeout: 30000 }, async t => {
-  const seen = [], injections = [], hooks = [];
+  const seen = [], injections = [], hooks = [], shown = [];
   const f = await sdkFixture(t, ({ index, input }) => {
     // The command text also contains the marker; only a delivered event counts.
     seen[index] = JSON.stringify(input.messages).split("printf 'MONITOR_LINE_A").join('').includes('<event>MONITOR_LINE_A</event>');
@@ -184,7 +184,8 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
   const stream = lane === 'sdk' ? createStreamRouter({}, createSdkStream()) : require('../src/chat/chat-stream');
   const state = { cwd: f.cwd, currentToolCalls: [], isStreaming: true, _activeTurn: { turnId: 'turn-1' } };
   const background = createBackgroundTaskRuntime({
-    broadcast() {}, observeTask() {}, noteBgResultInjected() {},
+    broadcast: (id, event) => { if (event.type === 'monitor_progress') shown.push(event.description); },
+    observeTask() {}, noteBgResultInjected() {},
     deliverSystem: (id, text) => { injections.push(text); },
     createCoalescer: coalescing.createCoalescer, buildNudge: coalescing.buildNudge,
     classifyCompletion: coalescing.classifyBgCompletion,
@@ -220,4 +221,5 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor progress during
   assert.deepEqual(seen.slice(1), [false, false, true], 'the running turn sees the Monitor event');
   assert.deepEqual(injections, [], 'no queued 🔇 duplicate');
   assert.ok(hooks.every(verdict => verdict.handled === false));
+  assert.deepEqual(shown, ['in-turn Monitor · MONITOR_LINE_A'], 'the page shows the event line once');
 });

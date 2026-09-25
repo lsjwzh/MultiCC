@@ -642,6 +642,15 @@ function createBackgroundTaskRuntime(deps = {}) {
     return `[Background tasks stopped] The user interrupted the previous turn with this message, which stopped these background tasks before they finished. Do not wait for their notifications; rerun one only if it is still needed.\n${tasks.map(line => `- ${line}`).join('\n')}\n\n`;
   }
 
+  // The page's task row shows the Monitor's latest event line next to its
+  // description; the full event still reaches only the model.
+  function showMonitorEvent(sessionName, event, watch) {
+    const lines = String(event.output || '').split('\n').map(line => line.trim()).filter(Boolean);
+    const label = safeDescription(watch.description || event.summary, 'Monitor');
+    broadcast(sessionName, { type: 'monitor_progress', task_id: event.task_id, background: true,
+      description: safeDescription(lines.length ? `${label} · ${lines.at(-1)}` : label) });
+  }
+
   function handleEvent(sessionName, chatState, event) {
     if (!sessionName || !event || typeof event !== 'object') return { handled: false };
     event = redactProviderRouteCapability(event);
@@ -654,7 +663,11 @@ function createBackgroundTaskRuntime(deps = {}) {
       // attaches it to that turn's next request, so leave it native. Between
       // turns it would start an unadmitted query; block that without queueing
       // a 🔇 turn per event — the terminal bookend below continues the task.
-      if (!event.status && chatState?.isStreaming === true) return { handled: false };
+      const inTurn = chatState?.isStreaming === true;
+      // An in-turn batch is only ever probed (the hook then leaves it native);
+      // an idle one is probed and then delivered — show each event once.
+      if (!event.status && (inTurn || !event.probe)) showMonitorEvent(sessionName, event, watch);
+      if (!event.status && inTurn) return { handled: false };
       if (event.probe) return { handled: true, monitorOwned: true };
       if (!event.status) return { handled: true, monitorOwned: true, decision: 'progress' };
       watch.terminalHandled = true;

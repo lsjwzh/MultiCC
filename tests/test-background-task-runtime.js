@@ -377,7 +377,7 @@ async function test(name, fn) {
     const h = makeHarness();
     const state = { cwd: '/repo', currentToolCalls: [{ id: 'tool', name: 'Monitor', input: { persistent: true } }] };
     h.runtime.recordMainToolUseId('s1', 'tool');
-    h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'watch', tool_use_id: 'tool', session_id: 'native' });
+    h.runtime.handleEvent('s1', state, { subtype: 'task_started', task_id: 'watch', tool_use_id: 'tool', session_id: 'native', description: 'watch the build' });
     h.clock.advance(25 * 60 * 60 * 1000);
     assert.strictEqual(h.runtime.hasProcessBackgroundTasks('s1'), true, 'even day-long silence cannot kill a live Monitor');
     const event = { subtype: 'monitor_prompt', task_id: 'watch', event_id: 'event-1', output: 'first' };
@@ -388,6 +388,10 @@ async function test(name, fn) {
     h.runtime.handleEvent('s1', {}, { ...event, event_id: 'event-2', output: 'second' });
     h.clock.advance(100);
     assert.strictEqual(h.injections.length, 0, 'progress stays inside the resident session: no queued 🔇 turn');
+    const inTurn = { ...event, event_id: 'event-3', output: 'noise\nthird\n', probe: true };
+    assert.strictEqual(h.runtime.handleEvent('s1', { isStreaming: true }, inTurn).handled, false, 'in-turn progress stays native');
+    assert.deepStrictEqual(h.broadcasts.filter(b => b.event.type === 'monitor_progress').map(b => b.event.description),
+      ['watch the build · first', 'watch the build · second', 'watch the build · third'], 'each event is shown once on the page');
     h.files.set('/out/terminal', 'final');
     const completion = { subtype: 'task_notification', task_id: 'watch', status: 'completed', output_file: '/out/terminal' };
     h.runtime.handleEvent('s1', {}, completion);
