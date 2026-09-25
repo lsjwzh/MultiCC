@@ -10,7 +10,7 @@
 # runtime and its own `multicc` command — no Node or npm required for install.
 # A working git is still required at runtime for per-session worktrees:
 #
-#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.0/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.1/install.sh | bash
 #
 # That command lives at <install dir>/multicc and is unrelated to this file
 # apart from the name. See docs/standalone.md.
