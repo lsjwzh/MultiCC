@@ -180,6 +180,25 @@ test('I01 I02: controls target exact turn/question; competing answers conflict, 
   await assert.rejects(f.runtime.send(f.a.id, input('cancel', a.taskId, { intent: 'cancel', turnId: 'old' })), { code: 'stale_control' });
 });
 
+test('a rejected answer releases its reservation so the question can still be answered', async t => {
+  let reject = true;
+  const f = fixture(t, { send: async (_id, _text, opts) => {
+    if (opts.userInputRequestId && reject) return { ok: false, code: 'stale_control' };
+    return { ok: true };
+  } });
+  const a = await f.runtime.send(f.a.id, input('one'));
+  const task = f.store.get('task', a.taskId);
+  f.statuses.set(task.sessionId, { busy: true, turnId: 'turn1', pending: { taskId: a.taskId, requestId: 'q1', turnId: 'turn1', question: 'Choose' } });
+  await assert.rejects(f.runtime.send(f.a.id, input('first-click', a.taskId, { intent: 'answer', requestId: 'q1', turnId: 'turn1' })), { code: 'stale_control' });
+  assert.equal(f.store.get('answer', `${a.taskId}:q1`) ?? null, null);
+  // A reservation leaked by an older build (receipt rejected, key kept) heals too.
+  const rejected = f.store.list('receipt').find(r => r.payload.clientMsgId === 'first-click');
+  f.store.set('answer', `${a.taskId}:q1`, { receiptId: rejected.id });
+  reject = false;
+  const retry = await f.runtime.send(f.a.id, input('second-click', a.taskId, { intent: 'answer', requestId: 'q1', turnId: 'turn1' }));
+  assert.equal(retry.taskId, a.taskId);
+});
+
 test('F01 F03: creation failure and restart retain target and error; same-key retry repairs', async t => {
   let fail = true;
   const f = fixture(t, { createExecution: async task => {

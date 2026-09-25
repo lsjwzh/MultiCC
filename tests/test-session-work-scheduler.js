@@ -147,6 +147,19 @@ test('task-shell controls reject stale turns atomically; an admitted answer repl
   assert.equal((await f.outbox.list()).length, 1);
 });
 
+test('an answer stays correlated after a background continuation advances the signal turn', async t => {
+  // The asking turn was turn1; a background-result continuation kept the open
+  // question but moved the signal turn to turn2. The answer targets turn1.
+  const pending = { requestId: 'q1', taskId: 'task1', turnId: 'turn1' };
+  const f = fixture(t, { getTurnId: () => 'turn2', getPendingUserInput: () => pending });
+  const answer = await f.scheduler.admit({ sessionId: 's1', text: 'A', requestId: 'q1', workKind: 'answer', idempotencyKey: 'r1',
+    options: { taskId: 'task1', taskShellReceiptId: 'r1', taskShellControl: { intent: 'answer', turnId: 'turn1' } } });
+  assert.equal(answer.ok, true);
+  const wrongTurn = await f.scheduler.admit({ sessionId: 's1', text: 'B', requestId: 'q1', workKind: 'answer', idempotencyKey: 'r2',
+    options: { taskId: 'task1', taskShellReceiptId: 'r2', taskShellControl: { intent: 'answer', turnId: 'turn0' } } });
+  assert.equal(wrongTurn.ok, false); assert.equal(wrongTurn.code, 'stale_control');
+});
+
 test('a correlated control turn resumes the TaskRun retained at a W/B boundary', async t => {
   const pending = { requestId: 'request-1', taskId: 'task-1', resolved: false };
   const h = fixture(t, { getPendingUserInput: () => pending });
