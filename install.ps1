@@ -9,6 +9,7 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 3000,
     [string]$From = '',
+    [switch]$Yes,
     [switch]$NoService,
     [switch]$NoStart,
     [switch]$NoOpen
@@ -100,6 +101,45 @@ function Test-StandaloneInstall([string]$Root) {
         (Test-Path -LiteralPath (Join-Path $Root 'Resources\runtime\node.exe') -PathType Leaf)
 }
 
+# An installation from before the standalone package. Windows never had a
+# source-checkout installer of its own, but the old POSIX installer was
+# documented for Git Bash and MSYS, and a user who ran it has a checkout at
+# this path with a `multicc` shell script in it — a real installation that the
+# check above refuses. Refusing it would strand that user on the old version;
+# the directory is upgraded instead, and kept as a backup. Identity is checked,
+# not just file names, so a directory that merely holds a file called `multicc`
+# is still refused.
+function Test-LegacyInstall([string]$Root) {
+    if (Test-StandaloneInstall $Root) { return $false }
+    $launcher = (Test-Path -LiteralPath (Join-Path $Root 'multicc.cmd') -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $Root 'multicc') -PathType Leaf)
+    if (-not $launcher) { return $false }
+    if (Test-Path -LiteralPath (Join-Path $Root 'Resources\bundle-manifest.json') -PathType Leaf) { return $true }
+    $package = Join-Path $Root 'package.json'
+    if (Test-Path -LiteralPath $package -PathType Leaf) {
+        try {
+            $name = [string](Get-Content -LiteralPath $package -Raw | ConvertFrom-Json).name
+            if ($name -eq 'multicc') { return $true }
+        } catch {
+            # An unreadable package.json is not evidence of anything.
+        }
+    }
+    return (Test-Path -LiteralPath (Join-Path $Root 'Resources\runtime') -PathType Container)
+}
+
+# The ACCESS_TOKEN and PORT the old installation was configured with. The old
+# installer wrote them into the install directory's own .env, and the user's
+# bookmarks, phone and other devices already carry that token — generating a
+# fresh one would silently lock them all out.
+function Read-LegacyEnv([string]$Root) {
+    $envFile = Join-Path $Root '.env'
+    if (-not (Test-Path -LiteralPath $envFile -PathType Leaf)) { return }
+    foreach ($line in (Get-Content -LiteralPath $envFile -ErrorAction SilentlyContinue)) {
+        if ($line -match '^ACCESS_TOKEN=(.*)$') { $script:legacyToken = $Matches[1].Trim() }
+        elseif ($line -match '^PORT=(.*)$') { $script:legacyPort = $Matches[1].Trim() }
+    }
+}
+
 function Assert-Bundle([string]$Root) {
     foreach ($relative in @(
         'multicc.cmd',
@@ -143,6 +183,9 @@ $extract = Join-Path $work 'extract'
 $staged = Join-Path $work 'staged'
 $SourceDirectory = ''
 $oldDir = ''
+$legacyDir = ''
+$legacyToken = ''
+$legacyPort = ''
 
 Write-Host ''
 Write-Host "MultiCC Windows One-Click Installer (v$ResolvedVersion)" -ForegroundColor Magenta
@@ -173,9 +216,50 @@ try {
     if (Test-Path -LiteralPath $InstallDir) {
         $children = @(Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue)
         if ($children.Count -gt 0 -and -not (Test-StandaloneInstall $InstallDir)) {
-            throw "$InstallDir is not empty and does not look like a MultiCC standalone installation. Nothing was changed."
-        }
-        if ($children.Count -gt 0) {
+            if (-not (Test-LegacyInstall $InstallDir)) {
+                throw "$InstallDir is not empty and does not look like a MultiCC standalone installation. Nothing was changed."
+            }
+            # A real older installation: upgrade it, and keep the old tree as a
+            # backup rather than deleting it. Ask first unless -Yes — the old
+            # installer worked from a checkout someone may still be developing in.
+            Write-Info 'An older MultiCC installation was found; it will be kept as a backup.'
+            Read-LegacyEnv $InstallDir
+            if (-not $Yes) {
+                $answer = Read-Host 'Upgrade it in place? The old directory is kept, never deleted. [Y/n]'
+                if (-not [string]::IsNullOrWhiteSpace($answer) -and $answer -notmatch '^[Yy]') {
+                    throw 'Upgrade cancelled. Nothing was changed.'
+                }
+            }
+            $legacyStop = Join-Path $InstallDir 'multicc.cmd'
+            if (Test-Path -LiteralPath $legacyStop -PathType Leaf) {
+                try { & $legacyStop stop 2>$null | Out-Null } catch { }
+            } else {
+                # The POSIX installer's launcher is a shell script: it runs only
+                # through bash, which is exactly what put it here in the first
+                # place. Failing to stop it is not fatal — the new install still
+                # lands — so this is wrapped and never allowed to abort.
+                $legacyStop = Join-Path $InstallDir 'multicc'
+                if ((Test-Path -LiteralPath $legacyStop -PathType Leaf) -and
+                    (Get-Command bash -ErrorAction SilentlyContinue)) {
+                    try {
+                        Write-Info 'Stopping the previous installation before replacing it.'
+                        & bash $legacyStop stop 2>$null | Out-Null
+                    } catch { }
+                }
+            }
+            $legacyDir = "$InstallDir.legacy-$([DateTime]::Now.ToString('yyyyMMddHHmmss'))"
+            Move-Item -LiteralPath $InstallDir -Destination $legacyDir
+            Write-Ok "Previous installation kept at $legacyDir"
+            if ((Test-Path -LiteralPath (Join-Path $legacyDir 'sessions.json') -PathType Leaf) -or
+                (Test-Path -LiteralPath (Join-Path $legacyDir 'chat_history') -PathType Container) -or
+                (Test-Path -LiteralPath (Join-Path $legacyDir 'task-shells.sqlite') -PathType Leaf)) {
+                Write-Warn 'Sessions, chat history and tasks from the old installation are still in the backup.'
+                Write-Host '       This release keeps them in a per-user data directory, so it starts with none of them.' -ForegroundColor Yellow
+            }
+        } elseif ($children.Count -gt 0) {
+            # The branch above ran means the directory is no longer there (it
+            # was renamed aside), so this must stay an elseif: falling through
+            # with a plain second `if` would try to delete a path that is gone.
             Write-Info 'Existing standalone installation found; stopping it before replacement.'
             $existingCommand = Join-Path $InstallDir 'multicc.cmd'
             & $existingCommand stop 2>$null | Out-Null
@@ -188,7 +272,12 @@ try {
     try {
         Move-Item -LiteralPath $staged -Destination $InstallDir
     } catch {
-        if (-not [string]::IsNullOrWhiteSpace($oldDir) -and (Test-Path -LiteralPath $oldDir)) {
+        # Whatever was moved aside goes back, so a failed install never leaves
+        # someone with neither the new installation nor the working old one.
+        if (-not [string]::IsNullOrWhiteSpace($legacyDir) -and (Test-Path -LiteralPath $legacyDir)) {
+            Move-Item -LiteralPath $legacyDir -Destination $InstallDir
+            Write-Warn "Your previous installation was put back at $InstallDir."
+        } elseif (-not [string]::IsNullOrWhiteSpace($oldDir) -and (Test-Path -LiteralPath $oldDir)) {
             Move-Item -LiteralPath $oldDir -Destination $InstallDir
             Write-Warn 'The previous installation was restored.'
         }
@@ -201,6 +290,41 @@ try {
     Write-Ok "Installed MultiCC $ResolvedVersion at $InstallDir"
 
     Write-Step 'Configuring'
+    if (-not [string]::IsNullOrWhiteSpace($legacyDir)) {
+        # A pre-standalone installation kept its settings in the install
+        # directory's own .env, and that file holds more than the token and the
+        # port: the push (VAPID) key pair and any ASR credentials the server
+        # generated live there too. Carry the whole file across — but never over
+        # one that already has content.
+        $legacyEnvFile = Join-Path $legacyDir '.env'
+        if (Test-Path -LiteralPath $legacyEnvFile -PathType Leaf) {
+            $targetEnv = (& $MultiCCCommand config path 2>$null | Out-String).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($targetEnv)) {
+                $targetEmpty = (-not (Test-Path -LiteralPath $targetEnv -PathType Leaf)) -or
+                    ((Get-Item -LiteralPath $targetEnv).Length -eq 0)
+                if ($targetEmpty) {
+                    $targetParent = Split-Path -Parent $targetEnv
+                    if (-not [string]::IsNullOrWhiteSpace($targetParent)) {
+                        New-Item -ItemType Directory -Path $targetParent -Force | Out-Null
+                    }
+                    Copy-Item -LiteralPath $legacyEnvFile -Destination $targetEnv -Force
+                    Write-Info 'Kept the settings from your previous installation'
+                }
+            }
+        }
+        # The token the older installation was configured with is the one the
+        # user's phone, bookmarks and other devices already carry, so it
+        # outranks a token that merely happens to be in the data directory.
+        if ([string]::IsNullOrWhiteSpace($AccessToken) -and -not [string]::IsNullOrWhiteSpace($legacyToken)) {
+            $AccessToken = $legacyToken
+        }
+        $legacyPortValue = 0
+        if (-not $PSBoundParameters.ContainsKey('Port') -and
+            [int]::TryParse($legacyPort, [ref]$legacyPortValue) -and
+            $legacyPortValue -ge 1 -and $legacyPortValue -le 65535) {
+            $Port = $legacyPortValue
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($AccessToken)) {
         Invoke-MultiCC @('config', 'set', 'ACCESS_TOKEN', $AccessToken) | Out-Null
         Write-Ok 'ACCESS_TOKEN saved'
