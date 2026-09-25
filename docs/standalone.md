@@ -252,7 +252,7 @@ Linux / Windows 用同一棵 `Resources/` 树（无 `.app`），入口是包根�
 
 ## 安装脚本的验收
 
-`.github/workflows/clean-install.yml` 会在**干净的 Docker 容器**里证明「傻瓜化」这句话：先把候选代码打成独立包，再用 `install.sh` 把包装进去（容器里没有 git、没有 node_modules），然后只通过装好的 `multicc` 走完启动/停止/重启/建目录/建会话/任务终端，最后才在源码树上跑应用回归。测试在 `tests/test-standalone-installer.js`（本地、无 Docker 也能跑）与 `docker/task-shell/`。
+`.github/workflows/clean-install.yml` 会在**干净的 Docker 容器**里证明「傻瓜化」这句话：先把候选代码打成独立包，再用 `install.sh` 把包装进去（容器里没有 git、没有 node_modules），然后只通过装好的 `multicc` 走完启动/停止/重启/建目录/建会话/任务终端。应用核心回归由独立的 core-tier 门禁执行，安装门不再暗中安装开发依赖或混跑 UI/CDP 流程测试。测试在 `tests/test-standalone-installer.js`（本地、无 Docker 也能跑）与 `docker/task-shell/`。
 
 ## 与桌面版的取舍
 

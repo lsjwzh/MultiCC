@@ -13,14 +13,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  core-tests:
+    uses: ./.github/workflows/core-tests.yml
+    permissions:
+      contents: read
+
   clean-install:
     uses: ./.github/workflows/clean-install.yml
     permissions:
       contents: read
 
   android-apk:
-    needs: clean-install
-    name: Test, sign, and publish Android APK
+    needs: [core-tests, clean-install]
+    name: Sign and publish Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: android-release
@@ -153,14 +158,13 @@ jobs:
             printf 'MULTICC_APK_EXPECTED_SIGNER_SHA256=%s\n' "$signer"
           } >> "$GITHUB_ENV"
 
-      - name: Run release gates
+      # Core tests and the clean-install test ran in the two reusable gate jobs.
+      # This runner only restores the dependencies needed to build the APK.
+      - name: Install Android build dependencies
         run: |
           set -euo pipefail
-          npm ci
-          npm run test:release
           cd app
           flutter pub get --enforce-lockfile
-          flutter test
 
       - name: Build and verify official APK
         shell: bash

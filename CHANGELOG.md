@@ -4,10 +4,6 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
-### Improvements and fixes
-
-- **`computer-use` → `multicc-computer-use`** — the bundled GUI-automation skill is renamed and now drives the optional MultiCC Agent (`scripts/install-agent.sh`: one app holds the Accessibility and Screen Recording grants, so it works from any CLI, any provider and `-p` sessions) through a single `scripts/mcu.sh` — element-level see / click / set / press ported from Peekaboo, an Esc emergency stop, one-session lease and locked-screen refusal, macOS 11+, installed and kept current automatically at MultiCC startup (release packages ship a prebuilt universal binary, so no Xcode tools are needed; `install-agent.sh uninstall` opts out) —, falling back to screencapture + cliclick when the agent is absent. The old bundled copy and its provider links are removed on startup; a same-named directory MultiCC did not install is left alone.
-
 ## v2.1.0 — Smarter routing, full-history search, and one unified Air console (2026-09-25)
 
 ### Highlights
@@ -31,6 +27,7 @@ All notable changes to MultiCC are documented in this file.
 
 ### Reliability and orchestration
 
+- Release qualification is now explicit and auditable: every test file is classified as core, flow-impacting, or other; stable releases require the exact core manifest plus a pristine standalone installation test, while broader UI, live, CDP, and optional-flow suites remain available without blocking a release.
 - Resident background and sub-agent work may finish after the main reply without being rejected as stale proxy traffic.
 - Monitor admission, process-close handling, watchdog recovery, queued-delivery reporting, and workspace backpressure were tightened so long-running work is not mistaken for completion.
 - A terminal turn ledger now runs in shadow mode, recording Claude/Codex hook evidence for diagnostics without taking over lifecycle decisions.
@@ -41,6 +38,7 @@ All notable changes to MultiCC are documented in this file.
 
 ### macOS onboarding
 
+- **`computer-use` → `multicc-computer-use`** — the bundled GUI-automation skill now drives the optional MultiCC Agent through one shared Accessibility and Screen Recording grant across every CLI, provider, and `-p` session. It adds element-level see/click/set/press actions, an Esc emergency stop, a one-session lease, locked-screen refusal, automatic install/update, and a fallback path when the agent is absent.
 - The installer now verifies that Git actually works. It distinguishes the `/usr/bin/git` Command Line Tools shim from a real Homebrew, MacPorts, Xcode, or git-scm installation.
 - When Git is unavailable, Air can open the macOS Command Line Tools installer directly.
 - Full Disk Access errors now offer a one-click jump to the correct System Settings pane and identify the exact app or executable that needs permission.

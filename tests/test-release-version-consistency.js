@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { buildPlan, parseArgs, RELEASE_CORE_LANES } = require('../scripts/run-test-tier');
 
 const root = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -52,19 +53,69 @@ test('public stable install commands use package.json as their version source', 
   assert.equal(windowsDeclared[1], pkg.version, 'Windows installer version drifted from package.json');
 });
 
-test('tag releases cannot bypass the relay-transparency regression gate', () => {
-  const relayGate = pkg.scripts && pkg.scripts['test:relay-transparency'];
+test('tag releases use the manifest core tier instead of the legacy full suite', () => {
+  const coreGate = pkg.scripts && pkg.scripts['test:release:core'];
+  const installGate = pkg.scripts && pkg.scripts['test:install'];
   const releaseGate = pkg.scripts && pkg.scripts['test:release'];
-  assert.match(String(relayGate || ''), /tests\/test-codex-official-relay\.js/);
-  assert.match(String(relayGate || ''), /tests\/test-claude-passthrough-hop\.js/);
-  assert.match(String(releaseGate || ''), /npm run test:relay-transparency/);
-  assert.match(String(releaseGate || ''), /npm test/);
+  assert.match(String(coreGate || ''), /npm run test:tiers:check/);
+  assert.match(String(coreGate || ''), /node scripts\/run-test-tier\.js core/);
+  assert.equal(installGate, 'npm run test:release:clean-install');
+  assert.equal(releaseGate, 'npm run test:release:core && npm run test:install');
+  assert.doesNotMatch(String(coreGate || ''), /(?:^|&&)\s*npm test(?:\s|$)/,
+    'the release gate must not fall back to the unclassified full suite');
 
-  const providerGate = pkg.scripts && pkg.scripts['test:provider-router'];
-  assert.match(String(providerGate || ''), /tests\/test-codex-official-relay\.js/);
-  assert.match(String(providerGate || ''), /tests\/test-claude-passthrough-hop\.js/);
+  const manifest = JSON.parse(read('tests/test-tiers.json'));
+  for (const path of [
+    'tests/test-codex-official-relay.js',
+    'tests/test-claude-passthrough-hop.js',
+  ]) {
+    const entry = manifest.tests.find(candidate => candidate.path === path);
+    assert.equal(entry?.tier, 'core', `${path} must stay in the release core tier`);
+  }
 
-  const workflow = read('.github/workflows/release.yml');
-  assert.match(workflow, /npm run test:release/,
-    'tag workflow must call the canonical release gate, not a weaker test command');
+  const coreWorkflow = read('.github/workflows/core-tests.yml');
+  assert.match(coreWorkflow, /npm run test:release:core/);
+  for (const workflow of ['.github/workflows/release.yml', '.github/workflows/desktop-release.yml']) {
+    assert.match(read(workflow), /core-tests:\s+uses: \.\/\.github\/workflows\/core-tests\.yml/,
+      `${workflow} must call the canonical core gate`);
+  }
+});
+
+test('core runner covers every selected path and expands declared variants', () => {
+  assert.deepEqual(parseArgs(['core', '--lane', 'isolated', '--dry-run']), {
+    tier: 'core', lane: 'isolated', dryRun: true,
+  });
+  assert.throws(() => parseArgs(['flow']), /only accepts the core tier/);
+  assert.throws(() => parseArgs(['core', '--lane']), /requires a value/);
+
+  const manifest = JSON.parse(read('tests/test-tiers.json'));
+  const core = manifest.tests.filter(entry => entry.tier === 'core');
+  const plan = buildPlan(manifest, { node: 'node', flutter: 'flutter', root });
+  assert.equal(core.length, 299, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 299);
+  assert.deepEqual(
+    [...new Set(plan.entries.map(entry => entry.lane))].sort(),
+    [...RELEASE_CORE_LANES].sort(),
+  );
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 256);
+  assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
+  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 19,
+    'the reviewed non-UI Flutter core set changed; re-audit it before release');
+
+  const expectedPaths = core.flatMap(entry => Array.from(
+    { length: entry.variants?.length || 1 }, () => entry.path,
+  )).sort();
+  const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
+  assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
+  assert.equal(plan.commands.length, 283,
+    '280 Node entries, two extra variant executions, and one batched Flutter command are expected');
+
+  const dispatchVariants = plan.commands
+    .filter(command => command.paths.includes('tests/test-dispatch-loop-isolated.js'))
+    .map(command => command.args.slice(1));
+  assert.deepEqual(dispatchVariants, [[], ['--new-task']]);
+  const taskFirstVariants = plan.commands
+    .filter(command => command.paths.includes('tests/test-task-first-isolated.js'))
+    .map(command => command.args.slice(1));
+  assert.deepEqual(taskFirstVariants, [[], ['--no-token']]);
 });
