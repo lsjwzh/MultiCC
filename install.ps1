@@ -106,7 +106,7 @@ function Test-StandaloneInstall([string]$Root) {
 # An installation from before the standalone package. Windows never had a
 # source-checkout installer of its own, but the old POSIX installer was
 # documented for Git Bash and MSYS, and a user who ran it has a checkout at
-# this path with a `multicc` shell script in it — a real installation that the
+# this path with a `multicc` shell script in it - a real installation that the
 # check above refuses. Refusing it would strand that user on the old version;
 # the directory is upgraded instead, and kept as a backup. Identity is checked,
 # not just file names, so a directory that merely holds a file called `multicc`
@@ -131,7 +131,7 @@ function Test-LegacyInstall([string]$Root) {
 
 # The ACCESS_TOKEN and PORT the old installation was configured with. The old
 # installer wrote them into the install directory's own .env, and the user's
-# bookmarks, phone and other devices already carry that token — generating a
+# bookmarks, phone and other devices already carry that token - generating a
 # fresh one would silently lock them all out.
 function Read-LegacyEnv([string]$Root) {
     $envFile = Join-Path $Root '.env'
@@ -145,7 +145,7 @@ function Read-LegacyEnv([string]$Root) {
 # Every state artifact a pre-standalone installation kept inside its own
 # directory: for those releases src/paths.js resolved the data root to the
 # package root, so this is what sat next to the code. The list is by name on
-# purpose — the same directory also held the sources, node_modules and .git, and
+# purpose - the same directory also held the sources, node_modules and .git, and
 # none of that is data. Anything absent is rebuilt on demand (caches) or already
 # lived under ~/.multicc even then (detached jobs, voice runtimes, samples).
 $script:LegacyDataItems = @(
@@ -210,14 +210,14 @@ function Assert-Bundle([string]$Root) {
     }
 }
 
-# ── An older installation that is somewhere else entirely ─────────────────
+# -- An older installation that is somewhere else entirely -----------------
 # Not every old installation is at the path this run installs into. The oldest
 # installer put MultiCC wherever it happened to be run from ($PWD/MultiCC by
 # default, $PWD itself with --no-clone), while this release installs to
 # %USERPROFILE%\MultiCC, so an installation that predates the standalone package
 # is routinely somewhere else. Two candidate directories are therefore checked
 # in addition to the install path, and each still has to pass the same
-# Test-LegacyInstall check — a directory that merely looks similar is never
+# Test-LegacyInstall check - a directory that merely looks similar is never
 # touched. Unlike macOS and Linux there is no login service to consult here: the
 # old installer registered nothing of its own on Windows, so these candidates
 # are the only evidence there is.
@@ -251,7 +251,7 @@ function Test-LegacyInstallRunning([string]$Root) {
 }
 
 # Something to say about an older installation that is not the one being
-# replaced, and — when the user is there to say yes — consent to copy its data.
+# replaced, and - when the user is there to say yes - consent to copy its data.
 # It is never started, stopped, renamed or written to. The copy is offered,
 # never assumed: a directory the user did not name is reported and left alone,
 # with the one switch that includes it printed. -Yes still counts as an answer,
@@ -269,16 +269,16 @@ function Show-AdoptOffer([string]$Root) {
     Write-Host "    $Root"
     Write-Host '  It is not the directory being installed into, so nothing in it is changed.'
     Write-Host "  It holds about $size of data: sessions, chat history, the task boards,"
-    Write-Host '  memories and provider settings. Its own token and port are not taken —'
+    Write-Host '  memories and provider settings. Its own token and port are not taken -'
     Write-Host '  what data is copied, nothing else; this installation is configured on its own.'
     if (Test-LegacyInstallRunning $Root) {
-        Write-Host '  It also looks like it is still running — it keeps writing those files,'
+        Write-Host '  It also looks like it is still running - it keeps writing those files,'
         Write-Host '  so a copy taken now is a snapshot of this moment.'
     }
     if ($script:adoptExplicit) {
         if (-not $script:adoptCopy) {
             $script:adoptDataLeftBehind = $true
-            Write-Warn 'Both -AdoptData and -NoData were given — nothing was copied.'
+            Write-Warn 'Both -AdoptData and -NoData were given - nothing was copied.'
             return
         }
         Write-Ok "Bringing your data across from $Root"
@@ -316,7 +316,7 @@ function Show-AdoptOffer([string]$Root) {
         # is the one place where guessing means writing someone else's data.
         $script:adoptCopy = $false
         $script:adoptDataLeftBehind = $true
-        Write-Warn "Could not read an answer ($($_.Exception.Message)) — nothing was copied."
+        Write-Warn "Could not read an answer ($($_.Exception.Message)) - nothing was copied."
         Write-Host "       Include it later with: -AdoptData '$Root'"
         return
     }
@@ -326,7 +326,7 @@ function Show-AdoptOffer([string]$Root) {
     }
     $script:adoptCopy = $false
     $script:adoptDataLeftBehind = $true
-    Write-Info 'Left where it is — this installation starts without it'
+    Write-Info 'Left where it is - this installation starts without it'
     Write-Host "       Include it later with: -AdoptData '$Root'"
 }
 
@@ -352,7 +352,7 @@ function Copy-LegacyDataAcross([string]$Command, [string]$Source) {
     $dataDir = Join-Path (Split-Path -Parent $envFile) 'data'
     if ((Test-Path -LiteralPath $dataDir) -and
         @(Get-ChildItem -LiteralPath $dataDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
-        Write-Warn 'This release already has data of its own — nothing was copied.'
+        Write-Warn 'This release already has data of its own - nothing was copied.'
         Write-Info "Your old data is untouched in $Source."
         return
     }
@@ -383,7 +383,7 @@ function Copy-LegacyDataAcross([string]$Command, [string]$Source) {
         Write-Warn "$failed item(s) could not be copied and are still only in $Source."
     }
     Write-Host '       Sessions, chat history, tasks and memories are read from there now.' -ForegroundColor Blue
-    Write-Host '       The source keeps its own copy — nothing was moved or deleted, so it' -ForegroundColor Blue
+    Write-Host '       The source keeps its own copy - nothing was moved or deleted, so it' -ForegroundColor Blue
     Write-Host "       is safe to delete $Source once the new installation looks right." -ForegroundColor Blue
 }
 
@@ -479,7 +479,7 @@ try {
                 throw "$InstallDir is not empty and does not look like a MultiCC standalone installation. Nothing was changed."
             }
             # A real older installation: upgrade it, and keep the old tree as a
-            # backup rather than deleting it. Ask first unless -Yes — the old
+            # backup rather than deleting it. Ask first unless -Yes - the old
             # installer worked from a checkout someone may still be developing in.
             Write-Info 'An older MultiCC installation was found; it will be kept as a backup.'
             if (-not [string]::IsNullOrWhiteSpace($adoptDir)) {
@@ -500,8 +500,8 @@ try {
             } else {
                 # The POSIX installer's launcher is a shell script: it runs only
                 # through bash, which is exactly what put it here in the first
-                # place. Failing to stop it is not fatal — the new install still
-                # lands — so this is wrapped and never allowed to abort.
+                # place. Failing to stop it is not fatal - the new install still
+                # lands - so this is wrapped and never allowed to abort.
                 $legacyStop = Join-Path $InstallDir 'multicc'
                 if ((Test-Path -LiteralPath $legacyStop -PathType Leaf) -and
                     (Get-Command bash -ErrorAction SilentlyContinue)) {
@@ -581,7 +581,7 @@ try {
         # A pre-standalone installation kept its settings in the install
         # directory's own .env, and that file holds more than the token and the
         # port: the push (VAPID) key pair and any ASR credentials the server
-        # generated live there too. Carry the whole file across — but never over
+        # generated live there too. Carry the whole file across - but never over
         # one that already has content.
         $legacyEnvFile = Join-Path $legacyDir '.env'
         if (Test-Path -LiteralPath $legacyEnvFile -PathType Leaf) {
@@ -629,7 +629,7 @@ try {
     Invoke-MultiCC @('config', 'set', 'PORT', [string]$Port) | Out-Null
     Write-Ok "PORT set to $Port"
 
-    # ── Bring an older installation's data across ─────────────────────────
+    # -- Bring an older installation's data across -------------------------
     # Before the server has ever started: the destination has to be empty for the
     # copy to be safe, and the first start is what makes it non-empty.
     if (-not [string]::IsNullOrWhiteSpace($legacyDir)) {
@@ -637,13 +637,13 @@ try {
         if ($legacyDataCopy) {
             Copy-LegacyDataAcross $MultiCCCommand $legacyDir
         } else {
-            Write-Info "Skipped — the previous installation's data stays in $legacyDir"
+            Write-Info "Skipped - the previous installation's data stays in $legacyDir"
         }
     } else {
         # Nothing was replaced here, which is not the same as there being nothing
         # to bring across: an installation from before the standalone package is
         # usually somewhere else on the machine (see Find-LegacyElsewhere). Only a
-        # first install looks — an upgrade in place already has the history that
+        # first install looks - an upgrade in place already has the history that
         # matters, and an installation named with -AdoptData is used either way.
         if ([string]::IsNullOrWhiteSpace($adoptDir) -and -not $targetHadInstall) {
             $adoptDir = Find-LegacyElsewhere $InstallDir
