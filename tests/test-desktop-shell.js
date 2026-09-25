@@ -720,6 +720,8 @@ test('desktop packaging config: pinned versions, stable names, user-scope instal
   const pkg = require(path.join(DESKTOP, 'package.json'));
   assert.equal(pkg.version, rootPkg.version, 'desktop version tracks the root package');
   assert.equal(pkg.devDependencies.electron, '44.1.1', 'electron pinned exactly: its bundled Node 24 is the storage runtime');
+  assert.equal(pkg.devDependencies['electron-builder'], '^26.16.1',
+    'electron-builder 26.16.1 fixes CSC_LINK temporary-keychain password handling (#10101)');
   const b = pkg.build;
   assert.equal(b.asar, true);
   assert.equal(pkg.main, 'main.js');
