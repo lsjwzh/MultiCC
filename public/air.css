@@ -659,11 +659,15 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-terminal-new { min-height: 36px; margin: 0 0 16px; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 10px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .directory-terminal-new:disabled { opacity: .55; cursor: default; }
 #directory-terminal-list { display: grid; gap: 8px; }
-.directory-terminal-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, .86); color: var(--text); text-decoration: none; }
+/* 一行终端 = 打开它的链接 + 一颗删除（`.task-delete`，同目录任务行那颗）。外层是
+   容器而不是 <a>：删除按钮不能嵌在链接里，否则点删除会先跟着跳走。 */
+.directory-terminal-row { display: flex; align-items: stretch; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, .86); }
 .directory-terminal-row:hover { border-color: #9cc4ea; }
+.directory-terminal-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; color: var(--text); text-decoration: none; }
+.directory-terminal-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .directory-terminal-mark { color: var(--faint); font-family: ui-monospace, monospace; font-size: 12px; }
-.directory-terminal-row strong { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
-.directory-terminal-row small { color: var(--muted); font-size: 11px; }
+.directory-terminal-open strong { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
+.directory-terminal-open small { color: var(--muted); font-size: 11px; }
 .directory-terminal-empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
 /* 「＋ 新终端」不再自己长一层选择 UI：它开的是 chat 那个配置对话框
    （`.air-config-dialog`，air-task-settings.js），样式也只有那一份。 */

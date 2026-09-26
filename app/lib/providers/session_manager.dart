@@ -682,8 +682,8 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── Session actions (REST) ─────────────────────────────────────────────────
 
-  Future<void> deleteSession(String id) async {
-    await _sessionService.deleteSession(id);
+  Future<void> deleteSession(String id, {bool force = false}) async {
+    await _sessionService.deleteSession(id, force: force);
     closeSession(id);
     loadDashboard();
   }
