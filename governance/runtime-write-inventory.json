@@ -290,7 +290,7 @@
       "sources": [
         {
           "file": "src/routes/session-bundle.js",
-          "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${newSid}-${Date.now()}.bundle`);"
+          "anchor": "const tmpBundle = path.join(os.tmpdir(), `multicc-import-${session.id}-${Date.now()}.bundle`);"
         },
         {
           "file": "src/ws/connection-router.js",

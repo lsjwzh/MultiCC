@@ -2277,6 +2277,7 @@ function shareRow(s) {
 // 填，全在 base-url-options.js 里：借道链接问的是同一个问题，两边不能各有各的
 // 答案，所以这里不再自己算一遍。
 const SHARE_BASE_SELECT_STYLE = 'flex:1;min-width:180px;background:var(--chat-canvas, #0d1117);border:1px solid var(--chat-line, #30363d);border-radius:6px;color:var(--chat-text, #c9d1d9);font-size:12px;padding:7px 9px;';
+const SHARE_MODE_BUTTON_STYLE = 'background:var(--chat-soft, #1b2330);border:1px solid var(--chat-line, #2d3a4f);border-radius:6px;color:var(--chat-blue, #79c0ff);font-size:12px;padding:6px 10px;cursor:pointer;';
 
 async function openShareDialog() {
   const overlay = document.createElement('div');
@@ -2286,7 +2287,7 @@ async function openShareDialog() {
   box.innerHTML = `
     <div style="font-size:15px;font-weight:600;margin-bottom:4px;">${tt('shareSession')}</div>
     <div style="font-size:12px;color:var(--chat-muted, #8b949e);line-height:1.6;margin-bottom:10px;">${tt('shareDesc')} <b style="color:var(--chat-warning, #f0883e);">${tt('shareOperateWarn')}</b></div>
-    <div style="margin-bottom:12px;"><button id="sh-msgmode" style="background:var(--chat-soft, #1b2330);border:1px solid var(--chat-line, #2d3a4f);border-radius:6px;color:var(--chat-blue, #79c0ff);font-size:12px;padding:6px 10px;cursor:pointer;">✂️ ${tt('shareSelectedMessages')}</button></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"><button id="sh-msgmode" style="${SHARE_MODE_BUTTON_STYLE}">✂️ ${tt('shareSelectedMessages')}</button><button id="sh-handoff" style="${SHARE_MODE_BUTTON_STYLE}">📦 ${tt('handoffExport')}</button><button id="sh-handoff-in" style="${SHARE_MODE_BUTTON_STYLE}">📥 ${tt('handoffImport')}</button></div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;">
       <span style="font-size:12px;color:var(--chat-muted, #8b949e);flex:none;">链接根域</span>
       <select id="sh-base" disabled data-hint-id="sh-base-hint" style="${SHARE_BASE_SELECT_STYLE}"><option>读取可用地址…</option></select>
@@ -2311,6 +2312,8 @@ async function openShareDialog() {
   const close = () => overlay.remove();
   box.querySelector('#sh-close').onclick = close;
   box.querySelector('#sh-msgmode').onclick = () => { close(); openMessagePicker(); };
+  box.querySelector('#sh-handoff').onclick = () => { close(); window.MultiCCChatHandoff?.openExportDialog({ sessionId: _sessionName }); };
+  box.querySelector('#sh-handoff-in').onclick = () => { close(); window.MultiCCChatHandoff?.openImportDialog({ currentSessionId: _sessionName }); };
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   const msg = box.querySelector('#sh-msg');
   const listEl = box.querySelector('#sh-list');

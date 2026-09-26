@@ -203,6 +203,7 @@ async function stopServer() {
   assert.equal(response.data.ok, true);
   assert.equal(response.data.meta.v, 2);
   assert.equal(response.data.meta.hasGitBundle, true);
+  assert.deepEqual(response.data.meta.layers, { env: true, context: true, code: true });
   assert.ok(response.data.meta.scopes.shared >= 1, JSON.stringify(response.data.meta.scopes));
 
   const { salt, iv, ct, tag } = response.data;
@@ -345,6 +346,7 @@ async function stopServer() {
   assert.equal(metaEntry.format, 'multicc-session-handoff');
   assert.equal(metaEntry.v, 3);
   assert.ok(metaEntry.counts.messages >= 1);
+  assert.deepEqual(metaEntry.layers, { env: true, context: true, code: true });
   // The v3 manifest is the same payload: no provider state, no env key names.
   const zipManifest = decryptBundle(
     JSON.parse(zipEntries.find(e => e.name === 'manifest.json').data.toString('utf8')), PASSPHRASE);
@@ -390,12 +392,131 @@ async function stopServer() {
   assert.match(await zipResp.text(), /passphrase|corrupt/);
 
 
+  // ── context layer into an EXISTING session (targetSessionId) ────────────
+  // A handoff does not have to mean adopting a new room: the receiver may want
+  // the transcript inside the session they are already working in.
+  const beforeMerge = (await api('GET',
+    `/api/sessions/${importedId}/history?limit=100`)).data.messages || [];
+  response = await api('POST', '/api/sessions/import', {
+    salt, iv, ct, tag, passphrase: PASSPHRASE, targetSessionId: importedId,
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  assert.equal(response.data.mode, 'merge');
+  assert.equal(response.data.sessionId, importedId, 'a merge import reports the receiving session');
+  assert.equal(response.data.restored.messages, 3);
+  const afterMerge = (await api('GET',
+    `/api/sessions/${importedId}/history?limit=100`)).data.messages || [];
+  assert.equal(afterMerge.length, beforeMerge.length + 3,
+    'the imported transcript is appended to the local one, not swapped in for it');
+  const mergedIds = afterMerge.map(m => m.id);
+  assert.equal(new Set(mergedIds).size, mergedIds.length,
+    'merged messages must get fresh local ids — source ids can collide with the target’s');
+  // The same commits were already replayed into this worktree by the first
+  // import, so the code layer must decline rather than duplicate them — and
+  // must leave the worktree clean while doing so.
+  assert.equal(response.data.restored.gitRestored, false, JSON.stringify(response.data.restored));
+  assert.equal(await git(importedWorktree, ['status', '--porcelain']), '');
+
+  // ── env layer alone (envOnly): no session, no directory ─────────────────
+  // The point of a handoff is replicating an execution environment, and that
+  // must not require adopting a conversation or picking a project. Machine- and
+  // CLI-global memory has to land where every session on this machine reads it,
+  // not inside one imported room's private folder.
+  const machineDir = path.join(memoryRoot, '_machine');
+  // The seeded room is a codex session (tests/helpers/legacy-task-session.js),
+  // so its per-CLI scope is _cli/codex.
+  const cliMemDir = path.join(memoryRoot, '_cli', 'codex');
+  await fs.promises.mkdir(machineDir, { recursive: true });
+  await fs.promises.mkdir(cliMemDir, { recursive: true });
+  await fs.promises.writeFile(path.join(machineDir, 'handoff-machine.md'), 'machine-global knowledge\n');
+  await fs.promises.writeFile(path.join(cliMemDir, 'handoff-cli.md'), 'codex-specific knowledge\n');
+  const envExport = await api('GET', `/api/sessions/${sourceId}/bundle`
+    + `?passphrase=${encodeURIComponent(PASSPHRASE)}&scopes=machine,cli,shared&context=0&git=0`);
+  assert.equal(envExport.status, 200, JSON.stringify(envExport.data));
+  assert.deepEqual(envExport.data.meta.layers, { env: true, context: false, code: false });
+  assert.equal(envExport.data.meta.messages, 0, 'an environment-only export carries no conversation');
+  assert.ok(envExport.data.meta.scopes.machine >= 1, JSON.stringify(envExport.data.meta.scopes));
+  assert.ok(!('session' in envExport.data.meta.scopes),
+    'session-private memory is context, so ?context=0 must not collect it');
+  const envPayload = decryptBundle(envExport.data, PASSPHRASE);
+  assert.deepEqual(envPayload.messages, []);
+  assert.deepEqual(envPayload.assets.files, [], 'referenced uploads belong to the context layer');
+  assert.deepEqual(envPayload.memoryFiles, {});
+  assert.equal(envPayload.gitBundleB64, null);
+  assert.ok(envPayload.memoryScopes.machine.files['handoff-machine.md']);
+  assert.ok(envPayload.memoryScopes.cli.files['handoff-cli.md']);
+
+  // Import it the way a different machine would: the global folders are empty
+  // here, and neither a dirId nor a session is offered.
+  await fs.promises.rm(machineDir, { recursive: true, force: true });
+  await fs.promises.rm(cliMemDir, { recursive: true, force: true });
+  const envEnc = envExport.data;
+  response = await api('POST', '/api/sessions/import', {
+    salt: envEnc.salt, iv: envEnc.iv, ct: envEnc.ct, tag: envEnc.tag,
+    passphrase: PASSPHRASE, envOnly: true,
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  assert.equal(response.data.mode, 'env');
+  assert.equal(response.data.sessionId, null, 'an environment-only import creates no session');
+  assert.ok(!('session' in response.data), 'and reports no session record');
+  assert.equal(response.data.restored.messages, 0);
+  assert.deepEqual(response.data.restored.memoryScopes.machine.written, ['handoff-machine.md']);
+  assert.deepEqual(response.data.restored.memoryScopes.cli.written, ['handoff-cli.md']);
+  // No target project was named, so the project-scoped memory says so instead
+  // of silently vanishing.
+  assert.ok(response.data.restored.memoryScopes.shared.skipped
+    .some(s => s.name === '*' && /not resolvable/.test(s.reason)),
+    JSON.stringify(response.data.restored.memoryScopes.shared));
+  const machineNote = await fs.promises.readFile(path.join(machineDir, 'handoff-machine.md'), 'utf8');
+  assert.match(machineNote, /<!-- multicc handoff: imported into the machine memory scope/);
+  assert.match(machineNote, /machine-global knowledge/);
+  assert.ok(fs.existsSync(path.join(cliMemDir, 'handoff-cli.md')));
+  assert.match(response.data.restored.gitNote, /environment-only/);
+  // Re-importing the same environment is a no-op: local files always win.
+  response = await api('POST', '/api/sessions/import', {
+    salt: envEnc.salt, iv: envEnc.iv, ct: envEnc.ct, tag: envEnc.tag,
+    passphrase: PASSPHRASE, envOnly: true,
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  assert.deepEqual(response.data.restored.memoryScopes.machine.written, []);
+  assert.ok(response.data.restored.memoryScopes.machine.skipped
+    .some(s => s.name === 'handoff-machine.md' && s.reason === 'already exists locally'),
+    JSON.stringify(response.data.restored.memoryScopes.machine));
+
+  // ── code layer: replayed only onto the repository it came from ──────────
+  // A bundle carries one project's commits. Dropping them into an unrelated
+  // checkout is never what the receiver meant, so a differing origin skips the
+  // replay outright; the same repo spelled over another transport still lands.
+  await git(project, ['remote', 'add', 'origin', 'git@github.com:acme/target-repo.git']);
+  const gatePayload = { ...exportedPayload,
+    contextDeps: { ...exportedPayload.contextDeps,
+                   repoRemote: 'https://github.com/acme/source-repo.git' } };
+  const gateEnc = encryptBundle(gatePayload, PASSPHRASE);
+  response = await api('POST', '/api/sessions/import',
+    { ...gateEnc, passphrase: PASSPHRASE, dirId, label: 'Cross repo' });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  assert.equal(response.data.restored.gitRestored, false);
+  assert.match(response.data.restored.gitNote, /different repository/);
+  assert.match(response.data.restored.gitNote, /acme\/source-repo/);
+  const crossId = response.data.sessionId;
+  assert.ok(!fs.existsSync(path.join(project, '.multicc-worktrees', crossId, 'session-feature.txt')),
+    'a different repository must not receive the source commits');
+
+  await git(project, ['remote', 'set-url', 'origin', 'ssh://git@github.com/acme/source-repo.git']);
+  response = await api('POST', '/api/sessions/import',
+    { ...gateEnc, passphrase: PASSPHRASE, dirId, label: 'Same repo other transport' });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  assert.equal(response.data.restored.gitRestored, true, JSON.stringify(response.data.restored));
+  const sameRepoId = response.data.sessionId;
+  assert.equal(await fs.promises.readFile(path.join(project, '.multicc-worktrees', sameRepoId,
+    'session-feature.txt'), 'utf8'), 'session feature\n');
+
   // The seeded room was adopted into a board task at boot, and task teardown
   // refuses an unmerged workspace — so release the fixture's branch first, then
-  // dispose every task this fixture produced (the room and both imports, which
+  // dispose every task this fixture produced (the room and the imports, which
   // attribution adopts once they have content), then the directory.
   await git(sourceWorktree, ['reset', '--hard', await git(project, ['rev-parse', 'HEAD'])]);
-  const fixtureSessionIds = new Set([sourceId, importedId, legacyId, zipId]);
+  const fixtureSessionIds = new Set([sourceId, importedId, legacyId, zipId, crossId, sameRepoId]);
   const board = await api('GET', '/api/task-board');
   const ownedTasks = Object.values(board.data.tasks || {})
     .filter(task => fixtureSessionIds.has(task.chatSessionId));
