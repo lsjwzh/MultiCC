@@ -39,6 +39,36 @@ const CHAT_HTML = read('chat.html');
 const STATUS_PRESENTATION = read('status-presentation.js');
 const COMPOSER_CSS = read('composer.css');
 
+// 壳上不许有动画，**除非在这里点名**。点名的那一条必须同时满足两件事：
+//   ① 挂在「只在过程中出现」的选择器上（不是常驻装饰 —— 常驻的东西动一下，屏幕上
+//      就永远有个东西在动，这正是这组用例存在的理由）；
+//   ② 关键帧里只碰 transform / opacity —— 那两样由合成器接管，不重排版也不重绘。
+// 目前只有 ops 那一步的转圈（一次操作期间那一步在跑，转完就没了）。
+const SHELL_ANIMATION_EXCEPTIONS = Object.freeze({
+  'air.css': Object.freeze({
+    names: Object.freeze(['ops-step-spin']),
+    appliedBy: /^\s*\.ops-step\.is-running\s+\.ops-step-icon\s*\{[^}]*animation:\s*ops-step-spin\b/m,
+    transient: '.ops-step.is-running',
+  }),
+});
+
+// 关键帧体（配平花括号）：`@keyframes x { to { … } }` 里那层嵌套不能靠一条正则切开。
+function keyframeBody(css, name) {
+  const at = css.indexOf(`@keyframes ${name}`);
+  if (at < 0) return null;
+  const start = css.indexOf('{', at);
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = start; i < css.length; i++) {
+    if (css[i] === '{') depth += 1;
+    else if (css[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return css.slice(start + 1, i);
+    }
+  }
+  return null;
+}
+
 test('Air 的壳不再常驻毛玻璃：每一层 backdrop-filter 都是 none', () => {
   // 这几层的底色本来就是 .82–.98 的不透明/近不透明填充（sidebar 是 .96/.92 的
   // 渐变，chat-layer 是 .94，task-details 是 .98），模糊在视觉上几乎看不出来，
@@ -127,14 +157,31 @@ test('聊天里的「工具在跑」不再逐帧改文字', () => {
 //   · 只允许「过程中才出现」的动画活着（工具在转、正在输入、正在录音、diff 正在
 //     加载），而且它们只能碰 transform / opacity —— 那两样由合成器接管，不重排版。
 
-test('Air 的壳上一条 animation 都没有', () => {
-  // 例外的只有 composer.css 的跑马灯（下面单独钉），其余一律不许出现 —— 壳是常驻
-  // 在屏幕上的那几层，它们动一下就是整屏一直在动。
+test('Air 的壳上只有点名过的动画，且都只碰 transform / opacity', () => {
+  // 例外的只有 composer.css 的跑马灯（下面单独钉）和上面登记的那一条，其余一律不许
+  // 出现 —— 壳是常驻在屏幕上的那几层，它们动一下就是整屏一直在动。
   for (const file of SHELL_CSS.concat(['status-badge.css'])) {
     const css = read(file);
+    const exception = SHELL_ANIMATION_EXCEPTIONS[file];
+    const allowed = exception ? exception.names : [];
     const decls = [...css.matchAll(/^\s*animation:\s*([^;}]+)/gm)].map(m => m[1].trim());
     assert.deepEqual(decls, [], `${file} 又出现了动画：${decls.join(' / ')}`);
-    assert.equal(/@keyframes/.test(css), false, `${file} 不该再有关键帧`);
+    const keyframes = [...css.matchAll(/@keyframes\s+([A-Za-z0-9_-]+)/g)].map(m => m[1]);
+    assert.deepEqual(keyframes.filter(name => !allowed.includes(name)), [],
+      `${file} 又出现了没登记的关键帧：${keyframes.join(' / ')}`);
+    if (!exception) continue;
+    // 登记了例外就得守住它为什么可以是例外：只在过程中出现 + 不碰布局属性。
+    assert.ok(exception.appliedBy.test(css),
+      `${file} 的例外动画必须挂在「只在过程中出现」的选择器上（${exception.transient}），不能落到常驻装饰上`);
+    for (const name of exception.names) {
+      const body = keyframeBody(css, name);
+      assert.ok(body && /(transform|opacity)\s*:/.test(body), `${name} 得真的动点什么：${body}`);
+      assert.equal(
+        /\b(width|height|margin|padding|top|left|right|bottom|font-size|content|filter|box-shadow)\s*:/.test(body),
+        false,
+        `${name} 只能碰 transform / opacity（别的属性每帧都要重排版/重绘）：${body}`,
+      );
+    }
   }
 });
 
