@@ -4657,6 +4657,15 @@
       ]
     },
     {
+      "path": "tests/test-terminal-proxy-route.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-token-global.js",
       "tier": "other",
       "lane": "deterministic",

@@ -109,13 +109,18 @@ test('core runner covers every selected path and expands declared variants', () 
   // it spawns only its own fixture app-server into a temp directory, binds no
   // port, and is green in 6s over repeated runs — so it stays in the release
   // tier; the lane it is filed under is the owner's call, not this assertion's.
-  assert.equal(core.length, 303, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 303);
+  // Re-audited: this tranche registers tests/test-terminal-proxy-route.js as core
+  // — the terminal route capability and its proxy-guard admission (the regression
+  // behind 「终端里 409 provider route attempt is no longer active」). It is a pure
+  // in-memory unit test: fake session Map, injected encoder/mint, no clock, port,
+  // FS or process — safe for the release core tier. 303 + 1 = 304.
+  assert.equal(core.length, 304, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 304);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 260);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 261);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 19,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -125,8 +130,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 287,
-    '284 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 288,
+    '285 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

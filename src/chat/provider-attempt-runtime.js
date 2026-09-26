@@ -408,6 +408,11 @@ function createProviderAttemptRuntime(options = {}) {
   const audit = typeof options.audit === 'function' ? options.audit : null;
   const resolveProviderRevision = typeof options.resolveProviderRevision === 'function'
     ? options.resolveProviderRevision : null;
+  // 终端会话（tmux 里的长活 CLI）没有回合，它的路由能力存在会话记录上，由宿主注入
+  // 一个只读反查（见 src/providers/terminal-route.js）。没有这个端口时，终端路由照旧
+  // 按「查不到 attempt」拒绝。
+  const resolveTerminalRoute = typeof options.resolveTerminalRoute === 'function'
+    ? options.resolveTerminalRoute : null;
   // A proxied request whose downstream CLI consumer died mid-stream never
   // emits the proxy 'end' that drains its producer. After this grace the
   // entry is provably orphaned (the attempt gate below already guarantees no
@@ -800,6 +805,9 @@ function createProviderAttemptRuntime(options = {}) {
     return {
       sessionId: decoded.sessionId,
       token: decoded.token,
+      // 段里到底有没有带能力令牌。`exact` 还要再对上内存里那条 attempt；终端没有
+      // attempt，它只能看这一位加会话记录上的令牌。
+      encoded: decoded.encoded === true,
       record,
       exact: !!(record && decoded.encoded && decoded.token === record.proxyRouteToken),
     };
@@ -853,8 +861,35 @@ function createProviderAttemptRuntime(options = {}) {
       });
       return Object.freeze({ ok: false, code, sessionId: sessionId || null });
     };
-    if (!sessionId || !context.exact) return reject('proxy_route_capability_mismatch');
     const role = clean(input.role || input.roleKind || 'main').toLowerCase();
+    // 终端会话没有回合：它在 currentBySession 里本来就没有记录，能力在会话记录上。
+    // 判定必须发生在 attempt 那套判断之前 —— 那些判断问的正是「有没有一条在跑的
+    // 回合」，对长活终端永远是否。放行的条件与常驻车道同一口径（主线路必须就是这条
+    // 会话自己的 provider，子线路必须在它声明的集合里），只是没有 revision 这一层：
+    // 终端的配置是进程启动时写死的一次性快照，拿它去比「当前 provider 配置」只会让
+    // 一个活着的终端在用户改完 provider 之后莫名失联。
+    if (!record && sessionId && resolveTerminalRoute) {
+      const terminal = resolveTerminalRoute(sessionId);
+      if (terminal) {
+        if (!context.encoded || clean(context.token) !== clean(terminal.token)) {
+          return reject('proxy_route_capability_mismatch');
+        }
+        const requested = clean(input.providerId);
+        if (role === 'main' && requested && requested !== clean(terminal.providerId)) {
+          return reject('provider_route_mismatch');
+        }
+        if (role !== 'main' && role !== 'aux' && requested
+            && !terminal.allowedSubProviderIds.includes(requested)) {
+          return reject('provider_subroute_not_allowed');
+        }
+        auditOnly(sessionId, {
+          type: 'provider_proxy_terminal_route_allowed', operation: 'proxy_preflight',
+          runtimeEpoch, providerId: requested || clean(terminal.providerId), role,
+        });
+        return Object.freeze({ ok: true, code: null, sessionId, attempt: null, terminal: true });
+      }
+    }
+    if (!sessionId || !context.exact) return reject('proxy_route_capability_mismatch');
     if (backgroundLingers(record)) {
       if (role === 'main' && clean(input.providerId)
           && clean(input.providerId) !== record.providerId) {
@@ -1270,6 +1305,9 @@ function createProviderAttemptRuntime(options = {}) {
     proxyFailure,
     proxySessionId,
     resolveProxySessionId,
+    // 终端那条路由（长活会话，没有回合）自己拼能力段：与 proxySessionId 同一种形状，
+    // 只是令牌来自会话记录而不是内存里的 attempt（见 src/providers/terminal-route.js）。
+    encodeProxyRoute: (sessionId, token) => encodeProxySessionId(clean(sessionId), clean(token)),
     snapshot: snapshotSession,
   });
 }

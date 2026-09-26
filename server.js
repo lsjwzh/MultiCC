@@ -70,7 +70,7 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
-const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
+const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { createTerminalProxyRoutes } = require('./src/providers/terminal-route');
 const { findProviderReferences } = require('./src/providers/references');
 const { createCliAdapters } = require('./src/cli-adapters');
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
@@ -1078,30 +1078,29 @@ async function createSession(id) {
   }
 
   const provider = providerFor(persisted);
-  // Per-session provider override is injected into tmux; Codex capture below
-  // also uses the selected CODEX_HOME.
+  // Per-session provider override goes into tmux (Codex capture uses the same
+  // CODEX_HOME). The route segment is the session's proxy capability, never a bare id.
+  const routeSession = terminalProxyRoutes.sessionSegment(persisted);
   const provEnv = providerRouterRuntime.resolveSpawnEnv(persisted);
   const termEnv = { ...provEnv.env, ...(persisted.loginEnv || {}) }; secretsVault.applyEnvOverlay(termEnv); // loginEnv: allowlisted login-terminal pins (sanitizeLoginEnv), e.g. CODEX_HOME=<account dir>; 保险箱条目按名注入 env（set-if-absent，见 src/secrets-vault.js）
   if (persisted.cli === 'claude') {
     for (const k of providers.CLAUDE_ROUTING_KEYS) {
       if (!(k in termEnv)) termEnv[k] = '';
     }
-    // Route interactive tmux claude through the per-session/per-role proxy too.
-    providers.applyClaudeProxyEnv(termEnv, {
-      providerId: persisted.provider, sessionId: id,
+    providers.applyClaudeProxyEnv(termEnv, { // 交互式 tmux claude 也走 per-session/per-role 代理
+      providerId: persisted.provider, sessionId: routeSession,
       subagent: persisted.subagent, port: PORT,
       officialOAuth: CLAUDE_OFFICIAL_VIA_PROXY,
     });
   } else if (persisted.cli === 'codex') {
     providers.applyCodexProxyConfig(termEnv, {
-      providerId: persisted.provider, sessionId: id,
+      providerId: persisted.provider, sessionId: routeSession,
       subagent: persisted.subagent, port: PORT,
     });
   }
 
-  // For Claude: pre-allocate a stable session UUID so chat-mode `--resume` works.
-  // For Codex: leave cliSessionId null on first launch and capture it asynchronously
-  // by scanning ~/.codex/sessions after the process boots.
+  // Claude: pre-allocate a stable UUID so chat-mode `--resume` works. Codex: capture
+  // cliSessionId by scanning ~/.codex/sessions after the process boots.
   if (provider.name === 'claude' && !persisted.cliSessionId) {
     persisted.cliSessionId = crypto.randomUUID();
     savePersistedSessionsBestEffort('runtime.terminal-session-id');
@@ -1325,7 +1324,8 @@ const livenessRuntime = createLivenessRuntime({
 const taskRunProviderBridge = createTaskRunProviderBridge({ records: persistedSessions,
   recordActivity: event => livenessRuntime.recordProxyActivity(event), recordLegacyUsage: recordUsageObserved,
   recordTaskRunUsage: event => taskRunHost?.recordObservedUsage(event) });
-const providerAttemptRuntime = createProviderAttemptRuntime({ emit: chatBroadcast, audit: (id, event) => turnEventJournal.note(id, event), resolveProviderRevision: attempt => createProviderRevision({ cli: attempt.cli, providerId: attempt.providerId, protocol: attempt.protocol, model: attempt.model, summary: attempt.providerId === '_default_' ? null : providerRouterRuntime.getProviderSummary(undefined, attempt.providerId) }) });
+const providerAttemptRuntime = createProviderAttemptRuntime({ emit: chatBroadcast, audit: (id, event) => turnEventJournal.note(id, event), resolveProviderRevision: attempt => createProviderRevision({ cli: attempt.cli, providerId: attempt.providerId, protocol: attempt.protocol, model: attempt.model, summary: attempt.providerId === '_default_' ? null : providerRouterRuntime.getProviderSummary(undefined, attempt.providerId) }), resolveTerminalRoute: sessionId => terminalProxyRoutes.lookup(sessionId) });
+const terminalProxyRoutes = createTerminalProxyRoutes({ persistedSessions, persist: savePersistedSessionsBestEffort, encode: (id, token) => providerAttemptRuntime.encodeProxyRoute(id, token) }); // 终端那条托管路由的能力：存在会话记录上，跨重启有效
 function handleProxyUsage(event) {
   const tagged = providerAttemptRuntime.attributeProxyUsage(event);
   if (tagged.routeAttribution === 'exact' || tagged.producerBound === true) {
