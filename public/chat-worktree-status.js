@@ -217,6 +217,36 @@
       }
     }
 
+    // Rebase the session's worktree onto the latest base branch, keeping this
+    // session's changes. The backend sync endpoint does exactly that: it commits
+    // any uncommitted work (with a safety backup), then `git rebase <base>`.
+    async function rebaseWorktree() {
+      const session = sessionId();
+      if (!session) { notice('无 session id，无法 rebase'); return; }
+      const btn = document.getElementById('merge-hint-rebase-btn');
+      if (btn) { btn.disabled = true; btn.textContent = tt('rebasingWorktree'); }
+      try {
+        const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(session)}/sync?force=1`), { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        const failure = res.ok ? null : api.errorFromPayload(data, { response: res });
+        if (res.ok) {
+          notice(data.merged
+            ? `✓ 已 rebase 到最新 ${data.baseBranch || '基分支'}（${data.commits} 个提交）${data.committed ? '，已自动提交未保存改动' : ''}`
+            : (data.message || '已是最新，无需 rebase'));
+          refreshMergeStatus();
+        } else if (res.status === 409 && data.conflicts) {
+          notice(`✗ rebase 冲突：${api.errorText(failure)}\n${data.conflicts.join(', ')}\n请用上方横幅的「继续 / 放弃」处理，或在 worktree 手动解决。`);
+          refreshMergeStatus();
+        } else {
+          notice(`✗ rebase 失败：${api.errorText(failure)}`);
+        }
+      } catch (e) {
+        notice(`✗ rebase 请求失败：${api.errorText(e)}`);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = tt('rebase'); }
+      }
+    }
+
     async function refreshMergeStatus({ fresh = false } = {}) {
       const session = sessionId();
       if (!session) return;
@@ -237,6 +267,11 @@
       // 只是白跑一趟接口。手动点 ↻ 走的是 refreshMergeStatus，不受这个开关影响。
       mergePollTimer = setInterval(() => { if (isActive() !== false) refreshMergeStatus(); }, 5000);
     }
+
+    // The rebase affordance rides the merge hint next to 合并: a one-click
+    // "pull latest base into this worktree" that keeps this session's changes.
+    const rebaseButton = document.getElementById('merge-hint-rebase-btn');
+    if (rebaseButton) rebaseButton.addEventListener('click', rebaseWorktree);
 
     return {
       get mergeReady() { return mergeReady; },

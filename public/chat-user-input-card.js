@@ -35,6 +35,8 @@
     let controls = [textInput, submitButton];
     let lastMessage = null;     // last rendered message, for re-expand after collapse
     let collapsed = false;      // true while the card is hidden and the fab is shown
+    let fabDragged = false;     // true between a drag gesture and its trailing click
+    let fabPos = null;          // persisted fixed position {left, top} for the fab
 
     // chat.html 里 #pending-user-input-text 是 <textarea>：它的 .type 是只读
     // getter，严格模式下赋值直接抛 TypeError。掩码因此在 textarea 上走 CSS
@@ -43,6 +45,96 @@
       if (textInput.tagName === 'INPUT') { textInput.type = masked ? 'password' : 'text'; return; }
       textInput.classList.toggle('secret-mask', masked);
       textInput.dataset.masked = masked ? '1' : '';
+    }
+
+    // ── Draggable collapsed bubble (mobile) ──
+    // The bubble is position:fixed at the bottom-right, which on phones lands
+    // right on top of the composer's send button. Make it draggable so it can
+    // be parked out of the way; the chosen position persists per page.
+    const FAB_SIZE = 50;
+    const FAB_MARGIN = 12;
+    const FAB_DRAG_SLOP = 6;
+
+    function fabViewportW() {
+      return global.innerWidth || doc.documentElement.clientWidth || 0;
+    }
+    function fabViewportH() {
+      return global.innerHeight || doc.documentElement.clientHeight || 0;
+    }
+    function clampFab(v, min, max) {
+      return Math.min(Math.max(v, min), Math.max(min, max));
+    }
+    function loadFabPos() {
+      try {
+        const raw = global.localStorage && global.localStorage.getItem('multicc.pendingInputFab.pos');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.left === 'number' && typeof parsed.top === 'number') fabPos = parsed;
+        }
+      } catch (_) { /* corrupted storage just falls back to the default position */ }
+    }
+    function saveFabPos() {
+      try {
+        if (global.localStorage && fabPos) {
+          global.localStorage.setItem('multicc.pendingInputFab.pos', JSON.stringify(fabPos));
+        }
+      } catch (_) {}
+    }
+    // Swap the default right/bottom CSS for left/top so the bubble can sit
+    // anywhere; re-clamped on resize so a rotation never strands it off-screen.
+    function applyFabPos() {
+      if (!fab || !fabPos || !fab.style) return;
+      const left = clampFab(fabPos.left, FAB_MARGIN, Math.max(FAB_MARGIN, fabViewportW() - FAB_SIZE - FAB_MARGIN));
+      const top = clampFab(fabPos.top, FAB_MARGIN, Math.max(FAB_MARGIN, fabViewportH() - FAB_SIZE - FAB_MARGIN));
+      fab.style.right = 'auto';
+      fab.style.bottom = 'auto';
+      fab.style.left = left + 'px';
+      fab.style.top = top + 'px';
+      fabPos.left = left;
+      fabPos.top = top;
+    }
+    function bindFabDrag() {
+      if (!fab || typeof fab.addEventListener !== 'function') return;
+      loadFabPos();
+      let pressing = false;
+      let startX = 0, startY = 0, offX = 0, offY = 0;
+      fab.addEventListener('pointerdown', function (e) {
+        pressing = true;
+        fabDragged = false;
+        startX = e.clientX || 0;
+        startY = e.clientY || 0;
+        const rect = typeof fab.getBoundingClientRect === 'function' ? fab.getBoundingClientRect() : null;
+        offX = startX - (rect ? rect.left : 0);
+        offY = startY - (rect ? rect.top : 0);
+        if (fab.setPointerCapture && e.pointerId != null) {
+          try { fab.setPointerCapture(e.pointerId); } catch (_) {}
+        }
+      });
+      fab.addEventListener('pointermove', function (e) {
+        if (!pressing) return;
+        const x = e.clientX || 0, y = e.clientY || 0;
+        if (!fabDragged && Math.abs(x - startX) + Math.abs(y - startY) < FAB_DRAG_SLOP) return;
+        fabDragged = true;
+        if (e.preventDefault) e.preventDefault();
+        fabPos = {
+          left: clampFab(x - offX, FAB_MARGIN, Math.max(FAB_MARGIN, fabViewportW() - FAB_SIZE - FAB_MARGIN)),
+          top: clampFab(y - offY, FAB_MARGIN, Math.max(FAB_MARGIN, fabViewportH() - FAB_SIZE - FAB_MARGIN)),
+        };
+        applyFabPos();
+      });
+      function endFabPress(e) {
+        if (!pressing) return;
+        pressing = false;
+        if (fab.releasePointerCapture && e && e.pointerId != null) {
+          try { fab.releasePointerCapture(e.pointerId); } catch (_) {}
+        }
+        if (fabDragged) saveFabPos();
+      }
+      fab.addEventListener('pointerup', endFabPress);
+      fab.addEventListener('pointercancel', endFabPress);
+      if (typeof global.addEventListener === 'function') {
+        global.addEventListener('resize', applyFabPos);
+      }
     }
 
     function setAvailability() {
@@ -135,7 +227,7 @@
       if (!requestId || collapsed) return false;
       collapsed = true;
       root.hidden = true;
-      if (fab) fab.hidden = false;
+      if (fab) { fab.hidden = false; applyFabPos(); }
       return true;
     }
     function expand() {
@@ -217,7 +309,12 @@
     });
     if (dismissButton) dismissButton.addEventListener('click', dismiss);
     if (collapseBtn) collapseBtn.addEventListener('click', collapse);
-    if (fab) fab.addEventListener('click', expand);
+    bindFabDrag();
+    if (fab) fab.addEventListener('click', function () {
+      // A drag gesture ends in a click too; swallow it so it cannot re-expand.
+      if (fabDragged) { fabDragged = false; return; }
+      expand();
+    });
 
     return Object.freeze({
       clear,
