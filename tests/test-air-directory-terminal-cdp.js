@@ -111,6 +111,8 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
     assert.deepEqual(choices, ['claude', 'codex', 'gemini', 'opencode'], '实验车道不是常规终端选项：' + JSON.stringify(choices));
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-cli-option.selected').dataset.cli`), 'codex', '默认落在最近用过的那套');
     assert.ok(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="模型"]').options.length > 1`), '模型也跟着这条线路给出来');
+    // 子 agent 线路是任务轮次的东西，终端的创建接口不收它 —— 不摆一行选了不生效的字段。
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-sub').hidden`), true, '终端这遍不摆子任务线路');
     screenshots.push(await page.screenshot('directory-terminal-config-dialog'));
 
     // 取消 = 什么都没建（不是「取消也照建」）。

@@ -177,12 +177,12 @@
       ? t(terminalDraft ? 'airTaskSettingsIntroTerminal' : 'airTaskSettingsIntroDraft')
       : t('airTaskSettingsIntroTask', { title: entry.task?.title || t('airTaskSettingsCurrentTask') }), 'air-config-intro'));
 
-    const cliSection = section('1 · CLI', t('airTaskSettingsCliNote'));
+    const cliSection = section('1 · CLI', t(terminalDraft ? 'airTaskSettingsCliNoteTerminal' : 'airTaskSettingsCliNote'));
     const cliGrid = node('div', null, 'air-cli-grid');
     cliGrid.setAttribute('role', 'radiogroup'); cliGrid.setAttribute('aria-label', 'CLI');
     cliSection.append(cliGrid); form.append(cliSection);
 
-    const providerSection = section('2 · Provider', t('airTaskSettingsProviderNote'));
+    const providerSection = section('2 · Provider', t(terminalDraft ? 'airTaskSettingsProviderNoteTerminal' : 'airTaskSettingsProviderNote'));
     const providerStatus = node('p', '', 'air-config-status');
     providerStatus.setAttribute('role', 'status');
     const providerField = node('label', null, 'air-config-field');
@@ -376,7 +376,9 @@
 
     function renderSub(initial) {
       subReady = false; subLineProvider = null;
-      subRow.hidden = !supportsSubagent();
+      // 终端那一遍不进子 agent 线路：那条尾巴是给任务轮次用的，终端的创建接口也
+      // 不收 subagent —— 摆一行选了不生效的东西比不摆更糟。
+      subRow.hidden = !supportsSubagent() || terminalDraft;
       if (subRow.hidden) {
         subProviderSelect.replaceChildren(); subModelSelect.replaceChildren();
         subCustomModel.hidden = true;
