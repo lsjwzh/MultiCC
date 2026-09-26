@@ -405,6 +405,205 @@ if (sessionLabel) {
   });
 }
 
+/* ── 信息条 + 同目录终端切换 ──
+   这一页认识自己的唯一途径是一条 WS 帧（session_id: {id, cli}）：cwd、分支、
+   provider·model 一概不知道，而在同目录几个终端之间跳来跳去时，「现在这条开在哪个
+   worktree、哪个模型上、落后基分支几个提交」正是要看的东西。
+   数据一次 `GET /api/sessions` 就够（列表里每条都带 cwd / mergeState / provider /
+   model / dirId），顺带把同目录的终端算出来 —— 不再逐条问详情。
+   也不轮询：终端页是长期挂着的，分支不会自己动；真要动，relocate 帧和切回前台各刷一次。 */
+const infoBar      = document.getElementById('term-info');
+const infoCwd      = document.getElementById('term-info-cwd');
+const infoWorktree = document.getElementById('term-info-worktree');
+const infoBranch   = document.getElementById('term-info-branch');
+const infoModel    = document.getElementById('term-info-model');
+const switchBox    = document.getElementById('term-switch');
+const switchPos    = document.getElementById('term-switch-pos');
+const termPrevBtn  = document.getElementById('term-prev');
+const termNextBtn  = document.getElementById('term-next');
+
+let _termCtx = null;    // 上屏的那份事实（也是测试读的口子）
+let _termCtxGen = 0;    // 只让最后一次刷新的结果上屏：慢的旧请求不该盖掉新的
+
+/** 托管 worktree 一律住在 `<repo>/.multicc-worktrees/<name>`（agent 的是
+ *  `.claude/worktrees/<name>`）。读不出来就是主检出 —— 不硬编一个名字。 */
+function worktreeNameOf(cwd) {
+  const match = /\/\.(?:multicc-worktrees|claude\/worktrees)\/([^/]+)/.exec(String(cwd || ''));
+  return match ? match[1] : null;
+}
+
+function _stamp(value) {
+  const n = typeof value === 'number' ? value : Date.parse(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** mergeState 有好几种「没有分支可说」的形状，各有各的实话：`{reason:'loading'}` 是
+ *  还没算出来（不等于没有分支）、`no-worktree` 是这条会话就没有 worktree、
+ *  `worktreeMissing` 是有记录但目录已被回收、`conflict` 是合不进去。一律不猜分支名。 */
+function describeMerge(state) {
+  const ms = (state && typeof state === 'object') ? state : {};
+  const said = {
+    branch: typeof ms.branch === 'string' && ms.branch ? ms.branch : null,
+    baseBranch: typeof ms.baseBranch === 'string' && ms.baseBranch ? ms.baseBranch : null,
+    behind: Number.isFinite(ms.behind) ? ms.behind : 0,
+    ahead: Number.isFinite(ms.ahead) ? ms.ahead : 0,
+    note: null,
+  };
+  if (ms.worktreeMissing) said.note = 'worktree 已回收';
+  else if (ms.reason === 'no-worktree') said.note = '无 worktree';
+  else if (ms.reason === 'hibernated') said.note = '工作区已休眠';
+  else if (ms.conflict) said.note = '有冲突';
+  return said;
+}
+
+function buildTermContext(self, merge, rows, id) {
+  const said = describeMerge(merge);
+  const dirId = self.dirId || null;
+  const sameDir = new Map();
+  for (const row of rows) {
+    if (!row || row.kind !== 'terminal' || ['aux', 'gateway'].includes(row.type)) continue;
+    // 自己这条连 dirId 都没有（老记录）：那就只认它自己，别把别的目录的终端塞进切换器。
+    if (dirId ? row.dirId !== dirId : row.id !== id) continue;
+    sameDir.set(row.id, { id: row.id, label: row.label || null, at: _stamp(row.createdAt) });
+  }
+  if (!sameDir.has(id)) sameDir.set(id, { id, label: self.label || null, at: _stamp(self.createdAt) });
+  const siblings = [...sameDir.values()]
+    .sort((a, b) => a.at - b.at || String(a.id).localeCompare(String(b.id)))
+    .map(entry => ({ id: entry.id, label: entry.label }));
+  return {
+    id,
+    cwd: typeof self.cwd === 'string' && self.cwd ? self.cwd : null,
+    dirId,
+    cli: self.cli || null,
+    worktree: worktreeNameOf(self.cwd),
+    worktreeNote: said.note,
+    branch: said.branch,
+    baseBranch: said.baseBranch,
+    behind: said.behind,
+    ahead: said.ahead,
+    provider: self.provider || null,
+    model: self.effectiveModel || self.model || null,
+    siblings,
+    index: siblings.findIndex(entry => entry.id === id),
+  };
+}
+
+function setChip(el, text, { warn = false, title = '' } = {}) {
+  if (!el) return;
+  if (!text) { el.hidden = true; el.textContent = ''; return; }
+  el.hidden = false;
+  el.textContent = text;
+  el.classList.toggle('warn', warn);
+  el.title = title || text;
+}
+
+function paintTermSwitch(ctx) {
+  if (!switchBox) return;
+  const list = (ctx && ctx.siblings) || [];
+  // 只有一条终端时不给切换器：切不出去的两颗按钮是噪音。
+  if (list.length < 2 || !ctx || ctx.index < 0) { switchBox.hidden = true; return; }
+  switchBox.hidden = false;
+  if (switchPos) {
+    switchPos.textContent = `${ctx.index + 1}/${list.length}`;
+    const name = entry => entry.label || entry.id;
+    switchPos.title = list.map((entry, i) => `${i === ctx.index ? '›' : ' '} ${name(entry)}`).join('\n');
+  }
+  const prev = siblingEntry(-1), next = siblingEntry(1);
+  if (termPrevBtn) termPrevBtn.title = `上一个终端：${prev ? (prev.label || prev.id) : ''}`;
+  if (termNextBtn) termNextBtn.title = `下一个终端：${next ? (next.label || next.id) : ''}`;
+}
+
+function paintTermInfo(ctx) {
+  _termCtx = ctx;
+  if (!infoBar) return;
+  if (!ctx) {
+    infoBar.hidden = true;
+    if (switchBox) switchBox.hidden = true;
+    return;
+  }
+  infoBar.hidden = false;
+  setChip(infoCwd, ctx.cwd || '未知目录', {
+    warn: !ctx.cwd,
+    title: ctx.cwd ? `工作目录：${ctx.cwd}` : '服务端没报上来这条会话的工作目录',
+  });
+  setChip(infoWorktree, ctx.worktree ? `worktree ${ctx.worktree}` : ctx.worktreeNote, {
+    warn: !ctx.worktree && !!ctx.worktreeNote,
+    title: ctx.worktree ? `托管 worktree：${ctx.cwd}` : (ctx.worktreeNote || ''),
+  });
+  const branch = ctx.branch
+    ? `⎇ ${ctx.branch}${ctx.behind ? ` ↓${ctx.behind}` : ''}${ctx.ahead ? ` ↑${ctx.ahead}` : ''}`
+    : null;
+  setChip(infoBranch, branch, {
+    warn: ctx.behind > 0,
+    title: branch
+      ? `分支 ${ctx.branch}${ctx.baseBranch ? `（基分支 ${ctx.baseBranch}）` : ''}：落后 ${ctx.behind}、领先 ${ctx.ahead}`
+      : '',
+  });
+  setChip(infoModel, [ctx.provider, ctx.model].filter(Boolean).join(' · '), {
+    title: `provider：${ctx.provider || '未指定'} · 模型：${ctx.model || '未指定'}`,
+  });
+  paintTermSwitch(ctx);
+}
+
+/** 环形走位：同目录终端就那几条，走到头再走一圈比按不动更符合手感。 */
+function siblingEntry(delta) {
+  const list = _termCtx ? _termCtx.siblings : [];
+  if (!_termCtx || _termCtx.index < 0 || list.length < 2) return null;
+  return list[(_termCtx.index + delta + list.length) % list.length] || null;
+}
+
+function siblingTarget(delta) {
+  const entry = siblingEntry(delta);
+  return entry ? entry.id : null;
+}
+
+function gotoSibling(delta) {
+  const id = siblingTarget(delta);
+  if (!id) return;
+  const params = new URLSearchParams(location.search);
+  params.set('id', id);
+  location.href = `${location.pathname}?${params.toString()}`;
+}
+
+if (termPrevBtn) termPrevBtn.onclick = () => gotoSibling(-1);
+if (termNextBtn) termNextBtn.onclick = () => gotoSibling(1);
+
+async function fetchJsonOrNull(url) {
+  try {
+    const response = await fetch(withToken(url));
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (_) {
+    return null;   // 信息条是附属信息：拿不到就不显示，不去打扰终端本身
+  }
+}
+
+async function loadTerminalContext() {
+  if (!currentSessionId) return null;
+  const gen = ++_termCtxGen;
+  const id = currentSessionId;
+  const listed = await fetchJsonOrNull('/api/sessions');
+  if (gen !== _termCtxGen) return null;
+  const rows = Array.isArray(listed) ? listed : [];
+  // 列表里通常就有自己；万一没有（fleet 隐藏的、刚建还没进表的），退回去单问一次详情。
+  const self = rows.find(row => row && row.id === id)
+    || await fetchJsonOrNull(`/api/sessions/${encodeURIComponent(id)}`);
+  if (gen !== _termCtxGen) return null;
+  if (!self || typeof self !== 'object') { paintTermInfo(null); return null; }
+  let merge = self.mergeState || null;
+  const cached = describeMerge(merge);
+  if (!cached.branch && !cached.note) {
+    // 列表带的是缓存的那份 mergeState，第一次读常常还是 {reason:'loading'}。补一次现算的
+    // —— 只补这一次，不轮询。
+    const fresh = await fetchJsonOrNull(`/api/sessions/${encodeURIComponent(id)}/merge-status?refresh=1`);
+    if (gen !== _termCtxGen) return null;
+    if (fresh && typeof fresh === 'object') merge = fresh;
+  }
+  const ctx = buildTermContext(self, merge, rows, id);
+  paintTermInfo(ctx);
+  return ctx;
+}
+
 /* ── Voice Notifications (task complete / waiting for action) ── */
 const notifyBtn = document.getElementById('notify-btn');
 const notifyToast = document.getElementById('notify-toast');
@@ -694,6 +893,9 @@ async function connect() {
         refreshNotifyPreference();
         updateSessionLabel(msg.id);
         updateTabIdentity(msg.id);
+        // 新建的终端 URL 里没有 ?id，id 是这一帧才给的 —— 信息条也是到这一刻才有
+        // 真东西可说，所以在这里刷（而不只在页面加载时刷）。
+        loadTerminalContext();
         // Badge: indicate which CLI is running (Claude orange / Codex green)
         if (msg.cli) {
           const logo = document.querySelector('#header .logo');
@@ -769,10 +971,17 @@ async function connect() {
         term.clear();
         term.write(`\x1b[33m[正在切换到: ${msg.cwd}]\x1b[0m\r\n`);
         filesBrowsePath = null; // reset so panel loads new cwd on next open/refresh
+        // 换了目录，信息条上那个 cwd 立刻就是错的。先用帧里带的顶上；分支和「无
+        // worktree」那类话是旧目录的事实，一律清掉等重连后整份刷 —— 猜不得。
+        if (_termCtx && msg.cwd) {
+          paintTermInfo({ ..._termCtx, cwd: msg.cwd, worktree: worktreeNameOf(msg.cwd),
+            worktreeNote: null, branch: null, baseBranch: null, behind: 0, ahead: 0 });
+        }
         _wsGen++;  // invalidate current onclose handler to prevent auto-reconnect
         ws.close();
         setTimeout(() => {
           connect();
+          loadTerminalContext();
           if (filesPanelOpen) setTimeout(() => loadFiles(null), 1000);
         }, 800);
       } else if (msg.type === 'file_saved') {
@@ -799,6 +1008,9 @@ async function connect() {
 // Immediately reconnect when page returns to foreground (mobile app switch)
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
+  // 挂着不动的这段时间里，目录/分支可能已经被别处动过了：信息条重读一次。放在
+  // _sessionExited 那道早退之前 —— 会话结束了也不等于那条 cwd 说的是别的目录。
+  loadTerminalContext();
   if (_sessionExited) return;
   if (ws && ws.readyState === WebSocket.OPEN) {
     // Connection is alive — force a resize to trigger tmux TUI redraw so the
@@ -2043,6 +2255,15 @@ window.MultiCCTerminal = Object.freeze({
   fontPx: () => fontSize,
   setFontPx: applyFontSize,
   isMac: IS_MAC,
+  // 信息条 / 同目录切换：读的是上屏那一份事实；切换只暴露「会去哪一条」这个纯函数
+  // —— 真的跳页会把测试自己这一页换掉，所以跳转留在 onclick 上。
+  termContext: () => _termCtx,
+  infoBarVisible: () => !!infoBar && !infoBar.hidden,
+  switcherVisible: () => !!switchBox && !switchBox.hidden,
+  siblingIds: () => (_termCtx ? _termCtx.siblings.map(entry => entry.id) : []),
+  siblingIndex: () => (_termCtx ? _termCtx.index : -1),
+  siblingTarget,
+  loadTerminalContext,
   constants: Object.freeze({ FONT_MIN, FONT_MAX, FONT_KEY }),
 });
 
@@ -2050,6 +2271,7 @@ window.MultiCCTerminal = Object.freeze({
 // If this is a new session (no id in URL), show directory picker first
 if (currentSessionId) {
   connect();
+  loadTerminalContext();   // 信息条：与 socket 无关，各自去拿各自的事实
 } else {
   showInitCwdPicker();
 }
