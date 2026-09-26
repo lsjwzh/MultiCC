@@ -16,15 +16,17 @@ const {
 } = require('../src/routes/host-write');
 
 const EXPECTED_PATHS = [
-  '/api/settings/notify',
-  '/api/settings/tunnel',
-  '/api/tunnel/restart/:provider',
-  '/api/tunnel/sakurafrp/install',
-  '/api/tunnel/sakurafrp/public-url',
-  '/api/tunnel/funnel',
-  '/api/settings/access-token',
-  '/api/settings/official-oauth',
-  '/api/settings/power',
+  'POST /api/settings/notify',
+  'POST /api/settings/tunnel',
+  'POST /api/tunnel/restart/:provider',
+  'POST /api/tunnel/sakurafrp/install',
+  'POST /api/tunnel/sakurafrp/public-url',
+  'POST /api/tunnel/funnel',
+  'POST /api/settings/access-token',
+  'POST /api/settings/official-oauth',
+  'POST /api/settings/power',
+  'POST /api/settings/power/unlock-password',
+  'DELETE /api/settings/power/unlock-password',
 ];
 
 function createResponse() {
@@ -44,8 +46,9 @@ function createResponse() {
 }
 
 async function invoke(routes, routePath, request = {}) {
-  const handler = routes.get(routePath);
-  assert.equal(typeof handler, 'function', `missing handler: ${routePath}`);
+  const method = request.method || 'POST';
+  const handler = routes.get(`${method} ${routePath}`);
+  assert.equal(typeof handler, 'function', `missing handler: ${method} ${routePath}`);
   const req = {
     body: {},
     params: {},
@@ -71,11 +74,14 @@ function presentSafely(error) {
 function createHarness(overrides = {}) {
   const routes = new Map();
   const app = {
-    post(routePath, handler) {
-      assert.equal(routes.has(routePath), false, `duplicate route: ${routePath}`);
-      routes.set(routePath, handler);
-    },
+    post(routePath, handler) { register('POST', routePath, handler); },
+    delete(routePath, handler) { register('DELETE', routePath, handler); },
   };
+  function register(method, routePath, handler) {
+    const key = `${method} ${routePath}`;
+    assert.equal(routes.has(key), false, `duplicate route: ${key}`);
+    routes.set(key, handler);
+  }
   const state = {
     env: {
       BARK_URL: 'https://api.day.app/device-old',
@@ -132,6 +138,17 @@ function createHarness(overrides = {}) {
     macosPower: {
       isAvailable: () => true,
       setLidSleepPrevention: async enabled => ({ available: true, enabled }),
+      getLidSleepPrevention: async () => ({ available: true, enabled: true }),
+    },
+    keepAwake: {
+      getStatus: () => ({ available: true, enabled: false, error: null }),
+      setEnabled: async enabled => ({ available: true, enabled }),
+    },
+    unlockPassword: {
+      isAvailable: () => true,
+      hasPassword: async () => false,
+      setPassword: async () => {},
+      clearPassword: async () => {},
     },
     log: message => state.events.push(['log', message]),
     reportFailure: (stage, category) => state.events.push(['failure', { stage, category }]),
@@ -613,11 +630,12 @@ test('power settings preserve success and validation responses and redact thrown
   assert.deepEqual((await invoke(routes, '/api/settings/power', {
     local: true,
     body: { enabled: 'true' },
-  })).body, { error: 'enabled must be a boolean' });
+  })).body, { error: 'enabled or keepAwake must be a boolean' });
   assert.deepEqual((await invoke(routes, '/api/settings/power', {
     local: true,
     body: { enabled: true },
-  })).body, { ok: true, available: true, enabled: true });
+  })).body, { ok: true, available: true, enabled: true, keepAwake: { available: true, enabled: false, error: null },
+    unlockPassword: { available: true, set: false } });
 
   const failure = createHarness({
     macosPower: {
@@ -630,6 +648,75 @@ test('power settings preserve success and validation responses and redact thrown
     body: { enabled: true },
   });
   assert.equal(presentSafely(response.nextError).body.error, 'internal_error');
+});
+
+test('power settings toggle keep-awake independently of lid-sleep', async () => {
+  const calls = [];
+  const { routes } = createHarness({
+    keepAwake: {
+      getStatus: () => ({ available: true, enabled: true, error: null }),
+      setEnabled: async enabled => { calls.push(enabled); return { available: true, enabled }; },
+    },
+  });
+  const response = await invoke(routes, '/api/settings/power', {
+    local: true,
+    body: { keepAwake: true },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(calls, [true]);
+  assert.equal(response.body.keepAwake.enabled, true);
+
+  // 不带 enabled 时不得再去碰合盖休眠
+  const off = await invoke(routes, '/api/settings/power', {
+    local: true,
+    body: { keepAwake: false },
+  });
+  assert.deepEqual(calls, [true, false]);
+  assert.equal(off.body.ok, true);
+});
+
+test('unlock password write requires a local socket and never leaks the value', async () => {
+  const writes = [];
+  const clears = [];
+  const { routes } = createHarness({
+    unlockPassword: {
+      isAvailable: () => true,
+      hasPassword: async () => true,
+      setPassword: async password => { writes.push(password); },
+      clearPassword: async () => { clears.push(1); },
+    },
+  });
+
+  // 远程请求被拒
+  const remote = await invoke(routes, '/api/settings/power/unlock-password', {
+    local: false,
+    body: { password: 'sekret' },
+  });
+  assert.equal(remote.statusCode, 403);
+  assert.deepEqual(writes, []);
+
+  const saved = await invoke(routes, '/api/settings/power/unlock-password', {
+    local: true,
+    body: { password: 'sekret' },
+  });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.body, { ok: true, set: true });
+  assert.deepEqual(writes, ['sekret']);
+
+  const invalid = await invoke(routes, '/api/settings/power/unlock-password', {
+    local: true,
+    body: { password: '' },
+  });
+  assert.equal(invalid.statusCode, 400);
+  assert.deepEqual(writes, ['sekret'], 'empty password is refused before writing');
+
+  const cleared = await invoke(routes, '/api/settings/power/unlock-password', {
+    local: true,
+    method: 'DELETE',
+  });
+  assert.equal(cleared.statusCode, 200);
+  assert.deepEqual(cleared.body, { ok: true, set: false });
+  assert.deepEqual(clears, [1]);
 });
 
 test('tunnel applyConfig requires durable save before publishing memory', () => {

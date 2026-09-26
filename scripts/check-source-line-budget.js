@@ -301,9 +301,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 2026-09-26 更新窗口改走 install.sh + 重启后轮询 version 确认：airOpsReloadAnyway
   // /airOpsUpdateConfirming/airOpsUpdateConfirmingBody/airOpsUpdateConfirmTimeout
   // 共 4 键，中英各 4 行 = +8，合流后重跑生成器实测按下方登记值为准。
+  // 2026-09-27 运行期防锁 + 自动解锁 13 键（airGlobalKeepAwake* / airGlobalUnlock*），
+  // 中英各 13 行 = +26，重跑生成器实测 7216 行 / 450572 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7188,
-    maxBytes: 448293,
+    maxLines: 7216,
+    maxBytes: 450572,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

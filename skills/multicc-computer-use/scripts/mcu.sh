@@ -21,6 +21,7 @@
 #   mcu.sh click|dclick|rclick|move X Y    logical coordinates, same as the snap
 #   mcu.sh scroll X Y N                    N<0 down, N>0 up
 #   mcu.sh type TEXT                       Unicode text into the focused field
+#   mcu.sh unlock                          auto-unlock a locked screen from the keychain password
 #   mcu.sh resume | release                clear an Esc stop (only when the user says so) / free the lease
 # MCU_BACKEND=legacy forces the fallback (useful to compare).
 set -euo pipefail
@@ -62,7 +63,7 @@ case "$cmd" in
   backend) backend ;;
   status) agent_call status ;;
 
-  see|click-el|rclick-el|dclick-el|click-text|set|type-el|resume|release)
+  see|click-el|rclick-el|dclick-el|click-text|set|type-el|resume|release|unlock)
     agent_only "$cmd"; agent_call "$cmd" "$@" ;;
 
   press|key)

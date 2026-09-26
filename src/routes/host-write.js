@@ -1,6 +1,8 @@
 'use strict';
 
 const { resolveNotifySettingsUpdates } = require('./host-read');
+const { getKeepAwake, getUnlockPassword } = require('../host-power-services');
+const { MAX_PASSWORD_LENGTH } = require('../macos-unlock-password');
 
 const LOCAL_ONLY_MESSAGE = '仅可在本机修改';
 const MAX_SECRET_TEXT_LENGTH = 4096;
@@ -362,16 +364,65 @@ function createPowerSettingsHandler(deps) {
       if (!deps.macosPower.isAvailable()) {
         return res.status(400).json({ error: 'This setting is only available on macOS' });
       }
-      if (typeof (req.body && req.body.enabled) !== 'boolean') {
-        return res.status(400).json({ error: 'enabled must be a boolean' });
+      const body = req.body || {};
+      const hasEnabled = typeof body.enabled === 'boolean';
+      const hasKeepAwake = typeof body.keepAwake === 'boolean';
+      if (!hasEnabled && !hasKeepAwake) {
+        return res.status(400).json({ error: 'enabled or keepAwake must be a boolean' });
       }
-      const status = await deps.macosPower.setLidSleepPrevention(req.body.enabled);
+      if (hasEnabled) {
+        await deps.macosPower.setLidSleepPrevention(body.enabled);
+      }
+      if (hasKeepAwake) {
+        const keepAwake = deps.keepAwake || getKeepAwake();
+        await keepAwake.setEnabled(body.keepAwake);
+      }
+      const status = await deps.macosPower.getLidSleepPrevention();
       // Mirror the read route: report the companion battery guard so the UI can
       // show what protection now applies after the toggle.
       if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
         status.batteryGuard = deps.batteryGuard.getStatus();
       }
+      const keepAwake = deps.keepAwake || getKeepAwake();
+      status.keepAwake = keepAwake.getStatus();
+      const unlockPassword = deps.unlockPassword || getUnlockPassword();
+      if (unlockPassword.isAvailable()) {
+        try {
+          status.unlockPassword = { available: true, set: await unlockPassword.hasPassword() };
+        } catch {
+          status.unlockPassword = { available: true, set: false, error: 'read-failed' };
+        }
+      } else {
+        status.unlockPassword = { available: false, set: false };
+      }
       return res.json({ ok: true, ...status });
+    } catch (error) {
+      return next(error);
+    }
+  };
+}
+
+function createUnlockPasswordHandler(deps, action) {
+  return async function unlockPasswordHandler(req, res, next) {
+    try {
+      if (!requireLocal(deps, req, res)) return undefined;
+      const unlockPassword = deps.unlockPassword || getUnlockPassword();
+      if (!unlockPassword.isAvailable()) {
+        return res.status(400).json({ error: 'This setting is only available on macOS' });
+      }
+      if (action === 'clear') {
+        await unlockPassword.clearPassword();
+        return res.json({ ok: true, set: false });
+      }
+      const password = req.body && req.body.password;
+      if (typeof password !== 'string' || password.length === 0) {
+        return res.status(400).json({ error: 'password is required' });
+      }
+      if (password.length > MAX_PASSWORD_LENGTH) {
+        return res.status(400).json({ error: 'password is too long' });
+      }
+      await unlockPassword.setPassword(password);
+      return res.json({ ok: true, set: true });
     } catch (error) {
       return next(error);
     }
@@ -434,6 +485,9 @@ function mountHostWriteRoutes(app, rawDeps) {
     logMessage: enabled => `[multicc/proxy] official-via-proxy (OAuth replay) ${enabled ? 'enabled' : 'disabled'} via UI`,
   }));
   app.post('/api/settings/power', createPowerSettingsHandler(deps));
+  // 自动解锁密码：只写本机登录钥匙串，本机专属设置一律要求 loopback。
+  app.post('/api/settings/power/unlock-password', createUnlockPasswordHandler(deps, 'set'));
+  app.delete('/api/settings/power/unlock-password', createUnlockPasswordHandler(deps, 'clear'));
   // 自动归属档位是主机策略：只在服务端持有的档位阶梯，改动只允许本机发起，
   // 并且先落 .env 再切运行时值（失败按 env 回滚）。
   if (deps.taskAttributionMode) app.post('/api/settings/task-attribution', (req, res) => {

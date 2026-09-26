@@ -122,6 +122,11 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
   const status = call('status').body;
   assert.equal(status.version, '2');
   assert.equal(typeof status.screenLocked, 'boolean');
+  assert.equal(typeof status.unlockPassword, 'boolean');
+  // 未锁屏时 unlock 必须拒绝，且绝不能因为钥匙串里有/没密码就副作用。
+  const unlock = call('call', '{"op":"unlock"}').body;
+  assert.equal(unlock.ok, false);
+  assert.match(unlock.error, /screen is not locked/);
   // Platform tiers: the legacy capture backend is always available as the
   // last resort; newer ones are listed first when this OS/build has them.
   assert.equal(status.platform.captureBackends.at(-1), 'screencapture');

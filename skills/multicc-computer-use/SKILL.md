@@ -59,7 +59,7 @@ $MCU press cmd+shift+g    # 组合键；press return 3 = 连按 3 次
 - `"outcome":"refused","dispatched":"none"`：**什么都没发出去**。看 `reason`：
   - `stale` / `not-found` → 重新 see；`timeout` / `busy`（别的会话正在用电脑）→ 稍后重试
   - `user-stopped` → **用户按了 Esc 叫停**：立即停手、向用户说明做到哪一步并询问；只有用户明确说继续，才运行 `$MCU resume`
-  - `screen-locked` → 屏幕锁着，输入会打进登录密码框：等用户回来，不要重试
+  - `screen-locked` → 屏幕锁着，输入会打进登录密码框：**先跑 `$MCU unlock` 自动解锁，再重试一次**；若 unlock 回 `no-password`（钥匙串里没存锁屏密码）→ 告诉用户在 Air 全局设置 › macOS 电源卡里保存锁屏密码（自动解锁）或开启「运行期防锁」（任务期间禁用锁屏）
   - `protected-app`（系统设置 / 密码弹窗 / 钥匙串）→ 这类必须用户亲手操作，告诉用户
   - `terminal`（往终端/VS Code 打字 = 执行 shell）→ 用你自己的 shell 工具；确需操作须征得用户同意
   - `system-surface`（控制中心/通知中心/Spotlight 等）→ 确有必要才加 allowSystem（`agent call` JSON）
@@ -69,7 +69,7 @@ $MCU press cmd+shift+g    # 组合键；press return 3 = 连按 3 次
 ### 安全机制（agent 自带）
 - **Esc 急停**：操作进行中或刚操作完 20 秒内，用户按 Esc，agent 立即停止并拒绝后续所有输入，直到 resume。`status` 里 `escMonitor:false` 表示急停没装上（缺输入监控授权），要告诉用户。
 - **一次一个会话**：同一时间只有一个 MultiCC 会话能操作键鼠（最后操作后保持 2 分钟，`$MCU release` 可提前释放）。
-- 锁屏、系统设置、密码弹窗一律拒绝；终端里打字需要用户同意。
+- 锁屏下普通操作一律拒绝，但 `$MCU unlock` 是唯一特例（用钥匙串密码自动解锁，走原生验证）；系统设置、密码弹窗、钥匙串仍拒绝；终端里打字需要用户同意。
 
 ### 坐标操作（agent / legacy 都可用）
 
