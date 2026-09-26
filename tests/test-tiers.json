@@ -2775,6 +2775,15 @@
       ]
     },
     {
+      "path": "tests/test-keep-awake.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-kimi-code.js",
       "tier": "core",
       "lane": "deterministic",
@@ -2882,6 +2891,15 @@
       "owner": "npm:test:state",
       "entrypoints": [
         "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-macos-unlock-password.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
       ]
     },
     {

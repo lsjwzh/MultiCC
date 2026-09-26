@@ -136,13 +136,17 @@ test('core runner covers every selected path and expands declared variants', () 
   // side, a plain test() with no widget tree). None of the three touches the
   // network, a simulator, a clock, a port, a live service or another process.
   // 306 + 3 = 309.
-  assert.equal(core.length, 309, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 309);
+  // 2026-09-27 运行期防锁 + 自动解锁：tests/test-keep-awake.js（caffeinate
+  // assertion 服务的纯 runtime 测试，注入 spawn，不碰真进程）与
+  // tests/test-macos-unlock-password.js（钥匙串存取，注入 security，不碰真
+  // 钥匙串）都是 hermetic 单测，注册为 core。309 + 2 = 311。
+  assert.equal(core.length, 311, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 311);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 264);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 266);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 21,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -152,8 +156,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 291,
-    '288 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 293,
+    '290 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

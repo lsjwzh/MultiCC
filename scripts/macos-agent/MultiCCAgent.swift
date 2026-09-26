@@ -42,6 +42,7 @@ import Foundation
 import CoreGraphics
 import ApplicationServices
 import AppKit
+import Security
 #if canImport(ScreenCaptureKit)
 import ScreenCaptureKit
 #endif
@@ -298,6 +299,99 @@ func appWindow(_ app: AXUIElement) -> AXUIElement? {
 // Input while locked lands in the login window's password field.
 func screenLocked() -> Bool {
   ((CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue ?? false
+}
+
+// MARK: - Lock-screen auto-unlock
+// The login password lives in the user's login keychain under a dedicated
+// service; the server writes it (Air global settings) and we only read it here,
+// at the moment of unlocking. It never appears in replies, logs or snapshots.
+let UNLOCK_KEYCHAIN_SERVICE = "com.multicc.agent.unlock"
+let UNLOCK_KEYCHAIN_ACCOUNT = NSUserName()
+
+func readUnlockPassword() -> String? {
+  let query: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecAttrService as String: UNLOCK_KEYCHAIN_SERVICE,
+    kSecAttrAccount as String: UNLOCK_KEYCHAIN_ACCOUNT,
+    kSecReturnData as String: true,
+    kSecMatchLimit as String: kSecMatchLimitOne,
+  ]
+  var item: CFTypeRef?
+  guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+        let data = item as? Data else { return nil }
+  return String(data: data, encoding: .utf8)
+}
+
+func loginwindowPid() -> pid_t? {
+  NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.loginwindow").first?.processIdentifier
+}
+
+// Bounded depth-first walk that stops at the first element matching `match`.
+// Used against loginwindow's tree while locked: the lock-screen password field
+// is LoginUIKit's UserPasswordTextField, falling back to any secure/text field.
+func findElement(_ root: AXUIElement, seconds: Double = 3, _ match: (AXUIElement) -> Bool) -> AXUIElement? {
+  var stack: [AXUIElement] = [root]
+  var seen = VisitSet()
+  var visited = 0
+  let deadline = Date().addingTimeInterval(seconds)
+  while let e = stack.popLast() {
+    guard seen.insert(e) else { continue }
+    if Date() > deadline || visited >= 2000 { break }
+    visited += 1
+    axPrepare(e)
+    if match(e) { return e }
+    for k in axChildren(e).prefix(250).reversed() { stack.append(k) }
+  }
+  return nil
+}
+
+func unlockScreen(_ req: [String: Any]) -> [String: Any] {
+  guard screenLocked() else { return ["ok": false, "error": "the screen is not locked"] }
+  if control.isHalted {
+    return refused("user-stopped", "the user pressed Esc to stop computer use", retrySafe: false)
+  }
+  guard let password = readUnlockPassword() else {
+    return refused("no-password", "no unlock password in the macOS keychain; set it in Air global settings (macOS 电源) -> 自动解锁", retrySafe: false)
+  }
+  guard let pid = loginwindowPid() else { return ["ok": false, "error": "loginwindow is not running"] }
+  let app = AXUIElementCreateApplication(pid)
+  axPrepare(app, 1)
+  let fieldMatch: (AXUIElement) -> Bool = { e in
+    if axStr(axCopy(e, kAXIdentifierAttribute)) == "UserPasswordTextField" { return true }
+    let role = axStr(axCopy(e, kAXRoleAttribute)) ?? ""
+    return role == "AXSecureTextField" || role == "AXTextField"
+  }
+  guard let field = findElement(app, fieldMatch) else {
+    return refused("no-password-field", "loginwindow password field not found (locked UI still settling); retry in a moment", retrySafe: true)
+  }
+  axPrepare(field)
+  var settable: DarwinBoolean = false
+  guard AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable) == .success, settable.boolValue else {
+    return refused("unsupported", "the password field does not accept an accessibility value")
+  }
+  let err = AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, password as CFString)
+  guard err == .success else { return indeterminate("ax_value", "AX set returned \(err.rawValue)") }
+  // Submit: press the lock screen's login button if present, otherwise post
+  // Return to loginwindow directly (Secure Input blocks reading, not posting).
+  let buttonMatch: (AXUIElement) -> Bool = { e in
+    guard axStr(axCopy(e, kAXRoleAttribute)) == "AXButton" else { return false }
+    let title = axStr(axCopy(e, kAXTitleAttribute))?.lowercased() ?? ""
+    return title.contains("log") || title.contains("unlock") || title.contains("登录") || title.contains("解锁")
+  }
+  var submitted = "return"
+  if let button = findElement(app, seconds: 1, buttonMatch), axActions(button).contains(kAXPressAction) {
+    submitted = "ax_press"
+    _ = performDetached(button, kAXPressAction, grace: 1.5)
+  } else {
+    postChord(KEYCODES["return"]!, [], pid: pid)
+  }
+  // Verify: poll until the session reports unlocked (up to 8s).
+  let deadline = Date().addingTimeInterval(8)
+  while Date() < deadline {
+    if !screenLocked() { return dispatched("ax_unlock", confirmed: true, ["submitted": submitted]) }
+    usleep(100_000)
+  }
+  return indeterminate("ax_unlock", "password submitted (\(submitted)) but the screen is still locked; the password may be wrong or the lock UI changed")
 }
 
 // One batched IPC per node; per-attribute fallback when the app rejects batching.
@@ -890,6 +984,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
             "listenAccess": CGPreflightListenEventAccess(),
             "escTaps": Dictionary(uniqueKeysWithValues: escTaps.map { ($0.name, $0.snapshot) }),
             "screenLocked": screenLocked(),
+            "unlockPassword": readUnlockPassword() != nil,
             "control": control.snapshot(),
             "snapshots": snapshots.count,
             "chrome": chrome.snapshot()]
@@ -990,6 +1085,8 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     var rect: [Int]?
     if let r = req["rect"] as? [NSNumber], r.count == 4 { rect = r.map { $0.intValue } }
     return capture(path, rect: rect, forced: req["backend"] as? String)
+  case "unlock":
+    return unlockScreen(req)
   default:
     return ["ok": false, "error": "unknown op: \(op)"]
   }
@@ -1287,6 +1384,7 @@ if argv.isEmpty || argv.first == "help" {
          click-text TEXT                     best text match from the latest see
          set ID VALUE | type-el ID TEXT      write/type into an element
          press CHORD [N]                     e.g. cmd+shift+g, return, escape
+         unlock                              auto-unlock the locked screen from the keychain password
          move|click|rclick|dclick X Y | scroll X Y N | type TEXT | snap /abs.png [x y w h] | call JSON
   """)
   exit(0)

@@ -60,6 +60,8 @@
         /* 免密助手是同一张卡里的附属选项，不是第二件事：靠一条细线和缩进把它
            归到关盖开关下面，而不是再画一张卡。 */
         .air-global-helper { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--hairline); }
+        .air-global-helper h4 { margin: 0; font-size: 12px; color: #2f536f; }
+        #air-global-unlock-password { width: auto; min-width: 0; flex: 1 1 240px; }
       `;
     }
     host.append(styleNode); // replaceChildren 会把它一起清掉，每次重绘都挂回去
@@ -184,6 +186,44 @@
     const foot = make('div', null, 'air-global-foot');
     foot.append(refresh, status);
 
+    // 运行期防锁（caffeinate，用户态，无需密码）—— 自动解锁不可用时的兜底。
+    const kaToggle = make('input');
+    kaToggle.type = 'checkbox';
+    kaToggle.id = 'air-global-keepawake-toggle';
+    kaToggle.disabled = true;
+    kaToggle.onchange = () => { void toggleKeepAwake(); };
+    const kaLabel = make('label', null, 'air-global-toggle');
+    kaLabel.append(kaToggle, make('span', t('airGlobalKeepAwakeToggle')));
+    const kaStatus = make('span', '', 'air-global-status');
+    kaStatus.id = 'air-global-keepawake-status';
+    const kaRow = make('div', null, 'air-global-row');
+    kaRow.append(kaLabel, kaStatus);
+
+    // 自动解锁（可选）：密码只进本机钥匙串，Agent 锁屏时用它走原生验证。
+    const unlockBlock = make('div', null, 'air-global-helper');
+    unlockBlock.id = 'air-global-unlock-block';
+    unlockBlock.hidden = true;
+    const unlockHead = make('h4', t('airGlobalUnlockTitle'));
+    const unlockDesc = make('p', t('airGlobalUnlockDesc'), 'air-global-desc');
+    const pwInput = make('input');
+    pwInput.type = 'password';
+    pwInput.id = 'air-global-unlock-password';
+    pwInput.placeholder = t('airGlobalUnlockPlaceholder');
+    pwInput.autocomplete = 'off';
+    const saveBtn = make('button', t('airGlobalUnlockSave'));
+    saveBtn.type = 'button';
+    saveBtn.id = 'air-global-unlock-save';
+    saveBtn.onclick = () => { void saveUnlockPassword(); };
+    const clearBtn = make('button', t('airGlobalUnlockClear'));
+    clearBtn.type = 'button';
+    clearBtn.id = 'air-global-unlock-clear';
+    clearBtn.onclick = () => { void clearUnlockPassword(); };
+    const unlockStatus = make('span', '', 'air-global-status');
+    unlockStatus.id = 'air-global-unlock-status';
+    const unlockRow = make('div', null, 'air-global-foot');
+    unlockRow.append(pwInput, saveBtn, clearBtn);
+    unlockBlock.append(unlockHead, unlockDesc, unlockRow, unlockStatus);
+
     // 免密助手这一行只在服务端说「这台机器适用」时才出现（loadHelper 里解禁），
     // 所以先整块藏起来：一个按了必然报错的按钮比没有这个按钮更糟。
     const helperRow = make('div', null, 'air-global-helper');
@@ -199,7 +239,7 @@
     helperFoot.append(helperBtn, helperStatus);
     helperRow.append(helperFoot, make('p', t('airGlobalHelperDesc'), 'air-global-desc'));
 
-    panel.append(head, label, make('p', t('airGlobalPowerDesc'), 'air-global-desc'), foot, helperRow);
+    panel.append(head, label, make('p', t('airGlobalPowerDesc'), 'air-global-desc'), foot, kaRow, unlockBlock, helperRow);
     return panel;
   }
 
@@ -283,6 +323,8 @@
       panel.hidden = false;
       toggle.disabled = false;
       toggle.checked = !!data.enabled;
+      paintKeepAwake(data.keepAwake);
+      paintUnlock(data.unlockPassword);
       // 先把关盖状态画好再问助手：助手读失败不该拖着开关一起显示不出来。
       void loadHelper();
       if (status) {
@@ -299,6 +341,102 @@
       // 连可用性都问不出来时也把卡收起来（同旧页）：留在屏幕上的是一个读不到真状态的开关。
       panel.hidden = true;
       if (status) status.textContent = '';
+    }
+  }
+
+  function paintKeepAwake(keepAwake) {
+    const toggle = el('air-global-keepawake-toggle');
+    const status = el('air-global-keepawake-status');
+    if (!toggle || !keepAwake) return;
+    toggle.disabled = false;
+    toggle.checked = !!keepAwake.enabled;
+    if (!status) return;
+    if (keepAwake.error) {
+      status.textContent = t('airGlobalKeepAwakeFailed', { message: keepAwake.error });
+      status.className = 'air-global-status err';
+    } else {
+      status.textContent = t(keepAwake.enabled ? 'airGlobalKeepAwakeOn' : 'airGlobalKeepAwakeOff');
+      status.className = `air-global-status${keepAwake.enabled ? ' ok' : ''}`;
+    }
+  }
+
+  function paintUnlock(unlockPassword) {
+    const block = el('air-global-unlock-block');
+    const status = el('air-global-unlock-status');
+    if (!block) return;
+    block.hidden = !(unlockPassword && unlockPassword.available);
+    if (!block.hidden && status && !status.textContent) {
+      status.textContent = unlockPassword.set ? t('airGlobalUnlockSaved') : '';
+      status.className = `air-global-status${unlockPassword.set ? ' ok' : ''}`;
+    }
+  }
+
+  async function toggleKeepAwake() {
+    const toggle = el('air-global-keepawake-toggle');
+    const status = el('air-global-keepawake-status');
+    if (!toggle) return;
+    const previous = !toggle.checked;
+    toggle.disabled = true;
+    if (status) { status.textContent = t('airGlobalPowerWaiting'); status.className = 'air-global-status'; }
+    try {
+      const data = await context.api('/api/settings/power', { keepAwake: toggle.checked });
+      toggle.checked = !!(data && data.keepAwake && data.keepAwake.enabled);
+      if (status) {
+        status.textContent = t(toggle.checked ? 'airGlobalKeepAwakeOn' : 'airGlobalKeepAwakeOff');
+        status.className = `air-global-status${toggle.checked ? ' ok' : ''}`;
+      }
+    } catch (error) {
+      toggle.checked = previous;
+      if (status) {
+        status.textContent = t('airGlobalKeepAwakeFailed', { message: error.message || String(error) });
+        status.className = 'air-global-status err';
+      }
+    } finally {
+      toggle.disabled = false;
+    }
+  }
+
+  async function saveUnlockPassword() {
+    const input = el('air-global-unlock-password');
+    const status = el('air-global-unlock-status');
+    const save = el('air-global-unlock-save');
+    if (!input || !save) return;
+    const password = input.value;
+    if (!password) { input.focus(); return; }
+    save.disabled = true;
+    if (status) { status.textContent = t('airGlobalPowerWaiting'); status.className = 'air-global-status'; }
+    try {
+      const data = await context.api('/api/settings/power/unlock-password', { password }, 'POST');
+      input.value = '';
+      if (status) {
+        status.textContent = t(data && data.set ? 'airGlobalUnlockSaved' : 'airGlobalUnlockCleared');
+        status.className = 'air-global-status ok';
+      }
+    } catch (error) {
+      if (status) {
+        status.textContent = t('airGlobalUnlockFailed', { message: error.message || String(error) });
+        status.className = 'air-global-status err';
+      }
+    } finally {
+      save.disabled = false;
+    }
+  }
+
+  async function clearUnlockPassword() {
+    const status = el('air-global-unlock-status');
+    const clear = el('air-global-unlock-clear');
+    if (!clear) return;
+    clear.disabled = true;
+    try {
+      await context.api('/api/settings/power/unlock-password', undefined, 'DELETE');
+      if (status) { status.textContent = t('airGlobalUnlockCleared'); status.className = 'air-global-status ok'; }
+    } catch (error) {
+      if (status) {
+        status.textContent = t('airGlobalUnlockFailed', { message: error.message || String(error) });
+        status.className = 'air-global-status err';
+      }
+    } finally {
+      clear.disabled = false;
     }
   }
 

@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { getKeepAwake, getUnlockPassword } = require('../host-power-services');
 
 const EMPTY_HEALTH = Object.freeze({
   successCount: 0,
@@ -219,6 +220,20 @@ function createPowerSettingsHandler(deps) {
       // when charge drops while lid-sleep prevention keeps it awake.
       if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
         status.batteryGuard = deps.batteryGuard.getStatus();
+      }
+      // 运行期防锁（caffeinate）与自动解锁（钥匙串里有没有密码）——这两个是
+      // 独立于「合盖休眠」的状态，只读探测，失败也不阻断整张卡。
+      const keepAwake = deps.keepAwake || getKeepAwake();
+      status.keepAwake = keepAwake.getStatus();
+      const unlockPassword = deps.unlockPassword || getUnlockPassword();
+      if (unlockPassword.isAvailable()) {
+        try {
+          status.unlockPassword = { available: true, set: await unlockPassword.hasPassword() };
+        } catch {
+          status.unlockPassword = { available: true, set: false, error: 'read-failed' };
+        }
+      } else {
+        status.unlockPassword = { available: false, set: false };
       }
       return res.json(status);
     } catch (error) {

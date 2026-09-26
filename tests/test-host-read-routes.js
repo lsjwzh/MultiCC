@@ -56,6 +56,13 @@ function createHarness(overrides = {}) {
       isAvailable: () => false,
       getLidSleepPrevention: async () => ({ available: true, enabled: true }),
     },
+    keepAwake: {
+      getStatus: () => ({ available: true, enabled: false, error: null }),
+    },
+    unlockPassword: {
+      isAvailable: () => true,
+      hasPassword: async () => false,
+    },
     ...overrides,
   };
   mountHostReadRoutes(app, deps);
@@ -362,7 +369,19 @@ test('power settings preserve success branches and delegate all errors', async (
     available: true,
     enabled: true,
     source: 'pmset',
+    keepAwake: { available: true, enabled: false, error: null },
+    unlockPassword: { available: true, set: false },
   });
+
+  const hasPassword = createHarness({
+    macosPower: {
+      isAvailable: () => true,
+      getLidSleepPrevention: async () => ({ available: true, enabled: true }),
+    },
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => true },
+  });
+  assert.deepEqual((await invoke(hasPassword.routes, '/api/settings/power')).body.unlockPassword,
+    { available: true, set: true });
 
   const operationError = new Error('pmset denied /Users/private token=secret');
   const failing = createHarness({
