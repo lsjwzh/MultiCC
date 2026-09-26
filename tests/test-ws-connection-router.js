@@ -296,7 +296,7 @@ function terminalHarness(t, capture) {
   const gate = new Promise(resolve => { releaseCapture = resolve; });
   const h = harness(t, { overrides: {
     sendWs: (_ws, message) => order.push(`send:${message.type}`),
-    tmuxCapturePane: async () => { order.push('capture'); await gate; return capture; },
+    tmuxCaptureSnapshot: async () => { order.push('capture'); await gate; return capture; },
     tmuxResize: () => order.push('tmuxResize'),
     applyMaxClientSize: () => order.push('applyMaxClientSize'),
     pushOnInput: () => {},
@@ -345,4 +345,18 @@ test('terminal attach: a client that leaves mid-capture is not left in the fan-o
     'only the detach from the close handler runs — no snapshot to a closed socket');
   assert.ok(!h.order.includes('send:snapshot'), 'nothing is sent to a closed socket');
   assert.equal(h.terminal.clients.size, 0, 'no dead socket left behind to leak the session');
+});
+
+// 真 tmux capture-pane -p 的行尾是裸 "\n"、末尾还拖一串空行（实测）。原样写给 xterm 会
+// 走成阶梯（LF 只下移不回车），末尾换行还会把最后一行屏幕顶出视口。
+test('terminal snapshot: capture-pane text is reshaped for replay', () => {
+  const { formatPaneSnapshot } = require('../src/tmux');
+  const captured = 'aaa\nbbb\nccc\n\n\n\n\n\n\n\n';
+  const out = formatPaneSnapshot(captured, { x: 0, y: 3, height: 10 });
+  assert.ok(!/[^\r]\n/.test(out), 'every LF is preceded by CR');
+  assert.ok(out.startsWith('aaa\r\nbbb\r\nccc\r\n'));
+  assert.equal(out.split('\r\n').length, 10, '10 screen rows → 9 line breaks, none after the last row');
+  assert.ok(out.endsWith('\x1b[0m\x1b[6A\x1b[1G'), 'cursor goes back to row 3 (6 up from the last of 10 rows), col 0');
+  assert.equal(formatPaneSnapshot('\n   \n\n', { x: 0, y: 0, height: 3 }), '', 'blank pane → no snapshot');
+  assert.ok(formatPaneSnapshot('x\n', {}).endsWith('x\x1b[0m'), 'missing cursor info → no cursor move');
 });

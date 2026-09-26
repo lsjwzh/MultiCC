@@ -217,7 +217,7 @@ function mountAirRoutes(app, deps) {
         .map(s => {
           const runtime = deps.sessions?.get(s.id);
           return { id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli,
-            state: s.provider && !s.proxyRouteToken ? 'route_dead' : runtime ? 'running' : 'stopped',
+            state: (runtime && runtime.spawnedProvider !== undefined ? runtime.spawnedProvider : s.provider) && !s.proxyRouteToken ? 'route_dead' : runtime ? 'running' : 'stopped',
             // 「多久没动」= 最后一次有输出的时刻。停了的终端没有运行时，也就没有这个
             // 时刻：给 null，客户端才不至于把一条死进程报成「刚刚」。
             lastActivityAt: runtime ? runtime.lastActivity.getTime() : null,

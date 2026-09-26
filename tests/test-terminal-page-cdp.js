@@ -245,11 +245,14 @@ test('终端页信息条：cwd / worktree / 分支 / provider·model，与同目
     const relocated = await page.evaluate(`(() => {
       window.MultiCCTerminal.applyServerMessage({ type: 'relocate', cwd: '/projects/other/.multicc-worktrees/task-xyz' });
       const chip = id => { const el = document.getElementById(id); return el.hidden ? null : el.textContent; };
-      return { cwd: chip('term-info-cwd'), worktree: chip('term-info-worktree'), branch: chip('term-info-branch') };
+      return { cwd: chip('term-info-cwd'), worktree: chip('term-info-worktree'), branch: chip('term-info-branch'),
+        switcher: !document.getElementById('term-switch').hidden, siblings: window.MultiCCTerminal.siblingIds() };
     })()`);
     assert.equal(relocated.cwd, '/projects/other/.multicc-worktrees/task-xyz', 'relocate 帧一到，cwd 立刻换成帧里带的');
     assert.equal(relocated.worktree, 'worktree task-xyz', 'worktree 名字跟着新路径重读');
     assert.equal(relocated.branch, null, '旧目录的分支是旧目录的事实，不跟着走');
+    assert.equal(relocated.switcher, false, '同目录切换器也是旧目录的事实：搬走后 ‹/› 不能再跳进旧目录的终端');
+    assert.deepEqual(relocated.siblings, ['t2']);
     assert.ok(
       await page.waitFor(`window.MultiCCTerminal.termContext()?.cwd === '/projects/multicc'`),
       '重连后整份刷新要把 t2 的真 cwd 刷回来',
