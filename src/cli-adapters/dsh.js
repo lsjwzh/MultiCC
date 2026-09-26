@@ -45,7 +45,7 @@ function ensureDshProfile({ homeDir, runnerSrcDir, fsImpl = fs } = {}) {
     name: DSH_PROFILE,
     version: '1.0.0',
     private: true,
-    dsh: { profile: { bundles: ['dsh-base', 'dsh-headless'] } },
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'] } },
   }, null, 2) + '\n';
   const patch = [
     '# multicc chat runner over dsh: disables the shipped one-shot headless',
