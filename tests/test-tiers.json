@@ -2649,6 +2649,15 @@
       ]
     },
     {
+      "path": "tests/test-global-lane-tier-alias.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-handoff-env.js",
       "tier": "core",
       "lane": "deterministic",
