@@ -1,0 +1,46 @@
+/* 人工辅助截图标注（chat-annotate.js）。独立文件：chat.html 是行数棘轮文件。 */
+#img-lightbox .lb-annotate {
+  position: absolute; top: 14px; left: 16px;
+  background: #ff3b30; color: #fff; border: 0; border-radius: 16px;
+  padding: 6px 14px; font-size: 14px; cursor: pointer;
+}
+.annotate-overlay {
+  position: fixed; inset: 0; z-index: 10000; display: flex; flex-direction: column;
+  background: #111; color: #eee; font: 14px/1.45 -apple-system, system-ui, sans-serif;
+  overflow-y: auto; padding-bottom: env(safe-area-inset-bottom);
+}
+.annotate-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #333; padding-top: max(8px, env(safe-area-inset-top)); }
+.annotate-title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.annotate-stale { font-size: 12px; color: #ffcc00; display: flex; align-items: center; gap: 6px; }
+.annotate-btn {
+  background: #2c2c2e; color: #eee; border: 1px solid #444; border-radius: 8px;
+  padding: 6px 10px; font-size: 13px; cursor: pointer;
+}
+.annotate-btn.on { background: #ff3b30; border-color: #ff3b30; color: #fff; }
+.annotate-btn.primary { background: #0a84ff; border-color: #0a84ff; color: #fff; }
+.annotate-close { font-size: 18px; line-height: 1; }
+.annotate-toolbar { display: flex; gap: 6px; padding: 8px 12px; flex-wrap: wrap; border-bottom: 1px solid #333; }
+.annotate-sep { width: 1px; background: #333; margin: 0 4px; }
+.annotate-stage { position: relative; overflow: hidden; flex: none; height: 56vh; background: #000; touch-action: none; }
+.annotate-canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.annotate-loupe {
+  position: absolute; width: 120px; height: 120px; border-radius: 50%; border: 2px solid #fff;
+  pointer-events: none; display: none; box-shadow: 0 2px 12px rgba(0,0,0,.6); background: #000;
+}
+.annotate-hint { padding: 6px 12px; color: #999; font-size: 12px; }
+.annotate-marks { padding: 0 12px; }
+.annotate-mark { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid #333; }
+.annotate-no {
+  width: 22px; height: 22px; border-radius: 50%; background: #ff3b30; color: #fff;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: none;
+}
+.annotate-kind { color: #999; font-size: 12px; width: 34px; flex: none; }
+.annotate-mark input, .annotate-note textarea {
+  flex: 1; background: #1c1c1e; color: #eee; border: 1px solid #444; border-radius: 6px;
+  padding: 6px 8px; font-size: 16px; /* ≥16px: iOS 不自动放大 */
+}
+.annotate-note { padding: 8px 12px; }
+.annotate-note textarea { width: 100%; min-height: 56px; box-sizing: border-box; }
+.annotate-warn { font-size: 12px; color: #ff9f0a; margin-top: 4px; }
+.annotate-actions { display: flex; gap: 8px; padding: 8px 12px 16px; }
+.annotate-spacer { flex: 1; }

@@ -28,7 +28,27 @@ function buildSubagentProviderHint(subagent) {
   ].join('\n');
 }
 
-function createHostPrompts(env = process.env) {
+// Human assist: when a page/desktop step needs a person, the agent posts a
+// screenshot, the user annotates it in the chat lightbox (web
+// public/chat-annotate.js, App image_annotate_screen.dart) and answers with an
+// [annotation] block. The block format is shared with those two editors and
+// pinned by tests/test-chat-annotate.js; change all three together.
+function buildHumanAssistPrompt(assistRoot) {
+  const root = String(assistRoot || '~/.multicc/assist').replace(/\/+$/, '');
+  return [
+    '[Human assist via annotated screenshots] When you are operating a web page or the desktop and a step needs a person (captcha, 2FA code, QR scan, a UI you cannot identify, or the same step failed twice), ask for help with a screenshot instead of guessing or giving up. This is not remote control: the user only annotates a still image and writes instructions.',
+    `  (1) Save every screenshot you show under \`${root}/$MULTICC_SESSION_ID/\` (create it; files there are deleted after 7 days) and note its coordinate base: for the desktop, the logical size the capture maps to (e.g. the LWxLH that mcu.sh snap prints); for a browser, CSS pixels of the viewport (Page.getLayoutMetrics). Never publish these as artifacts: artifact links need no login.`,
+    '  (2) Keep your last few snapshots of the stuck step (at most 5) as a frame strip; if the problem is a transition, show the 2-3 frames that matter, oldest first. Never record video.',
+    '  (3) Show them with `![step N](/absolute/path.png)`, say in one or two sentences what you tried and what you need, then call wait_for_user_answer. The user can open the image, press "Annotate", mark it and send the result back as the answer.',
+    '  (4) An answer that contains `[annotation] src=<path> size=WxH` ... `[/annotation]` carries marks in coordinates normalized to 0..1 of that image: `#n point x,y`, `#n box x1,y1-x2,y2`, `#n arrow x1,y1->x2,y2`, each optionally followed by ` — <note>`, then an optional `note: <overall instructions>`. An annotated PNG is attached as well; look at it.',
+    '      Map a coordinate to your target by multiplying by the coordinate base you recorded for that src (not by the PNG pixel size). Before acting, take a fresh snapshot and compare it with src; if the page changed, re-ask with the new screenshot instead of clicking stale coordinates.',
+    '      Prefer resolving the marked spot to a real element (re-inspect the page / accessibility tree and act by role or label); use raw coordinates only when nothing better exists. After acting, post a result screenshot so the user can confirm.',
+    '  (5) An answer starting with `[annotation-refresh] src=<path>` means the user says that screenshot is stale: capture again and re-ask.',
+    '  (6) If the answer says a sensitive value was stored in the vault under NAME, read it only from the environment variable NAME; never echo it. Slider/drag captchas, a locked screen, or anything needing the user\'s hands: ask the user to do that step themselves and tell you when done.',
+  ];
+}
+
+function createHostPrompts(env = process.env, { assistRoot } = {}) {
   const codexNoAskToolHint = env.CODEX_NO_ASK_TOOL_HINT ?? '1';
   const codexEnvConstraint = buildCodexUserInputConstraint(codexNoAskToolHint !== '0');
   const stayAliveHint = env.CODEX_STAY_ALIVE_HINT ?? '1';
@@ -52,6 +72,8 @@ function createHostPrompts(env = process.env) {
     '![caption](/absolute/path/to/image.png)',
     'The front end inlines local-path images automatically (click to enlarge); no upload or base64 conversion is needed.',
     'Only do this when the image file actually exists. Never invent a path.',
+    '',
+    ...buildHumanAssistPrompt(assistRoot),
     '',
     ...USER_INPUT_SIGNAL_PROMPT,
     '',
@@ -115,4 +137,4 @@ function createHostPrompts(env = process.env) {
   };
 }
 
-module.exports = { createHostPrompts, buildSubagentProviderHint };
+module.exports = { createHostPrompts, buildSubagentProviderHint, buildHumanAssistPrompt };

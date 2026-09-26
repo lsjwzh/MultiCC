@@ -8,6 +8,7 @@ import '../i18n.dart';
 import '../providers/chat_provider.dart';
 import '../providers/session_manager.dart';
 import '../models/message.dart';
+import '../services/annotation_inbox.dart';
 import '../services/attachment_picker.dart';
 import '../services/chat_service.dart';
 import '../services/goal_precheck.dart';
@@ -85,6 +86,8 @@ class _InputBarState extends State<InputBar> {
       final has = _ctrl.text.trim().isNotEmpty;
       if (has != _hasText) setState(() => _hasText = has);
     });
+    AnnotationInbox.draft.addListener(_onAnnotationDraft);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onAnnotationDraft());
   }
 
   void _onFocusChanged() {
@@ -93,6 +96,7 @@ class _InputBarState extends State<InputBar> {
 
   @override
   void dispose() {
+    AnnotationInbox.draft.removeListener(_onAnnotationDraft);
     _dictation?.removeListener(_onDictationChanged);
     _dictation?.dispose();
     // 谁建的谁销毁：外面传进来的还归外面，这里只摘掉自己挂的监听。
@@ -106,13 +110,14 @@ class _InputBarState extends State<InputBar> {
   // ── File attachment ──
 
   Future<void> _pickAndUpload() async {
-    final provider = context.read<ChatProvider>();
-    final settings = provider.settings;
-
     // iOS 弹「文件 / 相册」二选一（文档选择器够不到相册）；其它平台直接选文件。
     final picked = await pickChatAttachment(context);
-    if (picked == null) return;
+    if (picked == null || !mounted) return;
+    await _uploadPicked(picked);
+  }
 
+  Future<void> _uploadPicked(PickedAttachment picked) async {
+    final settings = context.read<ChatProvider>().settings;
     setState(() => _uploading = true);
     try {
       final uploaded = await uploadChatAttachment(
@@ -135,6 +140,47 @@ class _InputBarState extends State<InputBar> {
       }
     } finally {
       if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  // ── Screenshot annotation hand-off (image viewer → composer) ──
+
+  /// Consume-once: only a mounted input bar on the current, ticking route takes
+  /// the draft. The viewer pops before publishing, so the chat route may still
+  /// be settling — retry for a few frames before leaving it for someone else.
+  void _onAnnotationDraft([int attempt = 0]) {
+    if (!mounted || AnnotationInbox.draft.value == null) return;
+    final route = ModalRoute.of(context);
+    final visible =
+        (route == null || route.isCurrent) && TickerMode.of(context);
+    if (!visible) {
+      if (attempt < 30) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _onAnnotationDraft(attempt + 1),
+        );
+      }
+      return;
+    }
+    final draft = AnnotationInbox.take();
+    if (draft == null) return;
+    final cur = _ctrl.text;
+    final text = cur.trim().isEmpty
+        ? draft.text
+        : '${cur.trimRight()}\n\n${draft.text}';
+    _ctrl.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _focusNode.requestFocus();
+    final png = draft.png;
+    if (png != null) {
+      _uploadPicked(
+        PickedAttachment(
+          bytes: png,
+          filename: draft.filename,
+          mimeType: 'image/png',
+        ),
+      );
     }
   }
 

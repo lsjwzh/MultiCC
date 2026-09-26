@@ -444,7 +444,7 @@ const {
   codexStayAlivePrompt: CODEX_STAY_ALIVE_PROMPT,
   multiccImgHint: MULTICC_IMG_HINT,
   userInputReminder: USER_INPUT_REMINDER,
-} = createHostPrompts(process.env);
+} = createHostPrompts(process.env, { assistRoot: MULTICC_PATHS.assistDir });
 // Default-OFF, opt-in: route claude-official (OAuth-subscription) sessions THROUGH
 // the proxy by replaying the macOS Keychain OAuth token. OFF: official sessions
 // bypass the proxy and connect direct to api.anthropic.com (subagent routing
@@ -2977,7 +2977,7 @@ app.use(safeErrorHandler(logger));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
 const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, [...taskRunStore.listPinnedArtifactIds(), ...docsRegistry.listPinnedArtifactIds()]); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
-    trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000));
+    trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000)); require('./src/assist-snapshots').startAssistSweep({ assistDir: MULTICC_PATHS.assistDir, trackTimer: trackServiceTimer, log: (message) => logger.info('assist_snapshot_cleanup', { message }) });
     // Keep the official OAuth credential alive. The check is a credential read;
     // it only runs the CLI once the expiry is close, so the router never has to
     // report "run `claude` once to refresh the Keychain" to a user. Boot counts

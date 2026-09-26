@@ -12,11 +12,13 @@ import '../utils/format.dart';
 import '../models/message.dart';
 import '../models/role_tokens.dart';
 import '../providers/chat_provider.dart';
+import '../services/annotation_inbox.dart';
 import '../services/download_ticket_service.dart';
 import '../services/message_quote.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/code_highlight.dart';
+import 'image_annotate_screen.dart';
 import 'tool_card.dart';
 
 /// Resolve a markdown link href and open it externally.
@@ -1468,8 +1470,12 @@ class _InlineImage extends StatelessWidget {
       child: GestureDetector(
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) =>
-                _ImageZoomScreen(url: url, name: name, headers: headers),
+            builder: (_) => _ImageZoomScreen(
+              url: url,
+              name: name,
+              headers: headers,
+              sessionId: _currentSessionId(context),
+            ),
             fullscreenDialog: true,
           ),
         ),
@@ -1504,6 +1510,14 @@ class _InlineImage extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+String _currentSessionId(BuildContext context) {
+  try {
+    return context.read<ChatProvider>().executionSessionName;
+  } catch (_) {
+    return '';
   }
 }
 
@@ -1552,10 +1566,12 @@ class _ImageZoomScreen extends StatefulWidget {
   final String url;
   final String name;
   final Map<String, String> headers;
+  final String sessionId;
   const _ImageZoomScreen({
     required this.url,
     required this.name,
     required this.headers,
+    this.sessionId = '',
   });
 
   @override
@@ -1571,6 +1587,23 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
     super.dispose();
   }
 
+  /// Annotate → the draft goes to the composer via [AnnotationInbox]; pop
+  /// first so the chat route is current when the input bar picks it up.
+  Future<void> _annotate() async {
+    final draft = await Navigator.of(context).push<AnnotationDraft>(
+      MaterialPageRoute(
+        builder: (_) => ImageAnnotateScreen(
+          url: widget.url,
+          headers: widget.headers,
+          sessionId: widget.sessionId,
+        ),
+      ),
+    );
+    if (draft == null || !mounted) return;
+    Navigator.of(context).pop();
+    AnnotationInbox.publish(draft);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1584,6 +1617,11 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
           overflow: TextOverflow.ellipsis,
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_outlined, size: 20),
+            tooltip: t('annotAction'),
+            onPressed: _annotate,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh, size: 20),
             tooltip: '重置缩放',
