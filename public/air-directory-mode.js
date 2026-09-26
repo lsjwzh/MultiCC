@@ -93,59 +93,60 @@
     render();
   }
 
-  // 可选的 CLI：快照里服务端认的那一份（`/api/air` 的 `clis`），实验适配器不出现在
-  // 这里（终端是给人用的交互式会话，不该把 exp 车道当成常规选项），最近用过的那套
-  // 排最前面。
-  //
-  // 关键：这是**选择**，不是默认值。此前「＋ 新终端」直接拿最近用过的那套就建了，
-  // 用户明确说过不对 —— 所以只要有两个以上可选项就先弹一层问。
-  function cliOptions() {
-    const recent = String(ctx?.defaultCli?.() || '');
-    const all = (ctx?.data?.clis || [])
+  // 可选的 CLI：快照里服务端认的那一份（`/api/air` 的 `clis`）。实验车道不进
+  // ——那些是 chat 专用的适配器（app-server / Agent SDK），不是给人用的交互式终端。
+  function terminalClis() {
+    return [...new Set((ctx?.data?.clis || [])
       .map(cli => String(cli || ''))
-      .filter(cli => cli && cli !== 'codex-exp' && cli !== 'claude-exp');
-    const unique = [...new Set(all)];
-    const ordered = unique.filter(cli => cli !== recent);
-    return recent && unique.includes(recent) ? [recent, ...ordered] : ordered;
+      .filter(cli => cli && !cli.endsWith('-exp')))];
   }
 
-  function openCliPicker() {
+  function recentCli() { return String(ctx?.defaultCli?.() || ''); }
+
+  // 「＋ 新终端」：**和 chat 的「AI 配置」是同一个对话框**（`air-task-settings.js` 的
+  // `configuration(entry, clis, onApply)`，draft 模式）—— CLI、Provider、模型、推理
+  // 强度都在那一层挑。用户明确要求终端要能像 chat 一样选线路，不是只挑一个 CLI；
+  // 所以这里不再自己长一套选择 UI，把「选什么」交给那一份唯一实现。
+  function openCreateDialog() {
     if (creating || !dirId || !ctx) return;
-    const options = cliOptions();
-    // 没得选就不问（一个都答不出来时退回 CLAUDE，至少让这一下有个结果）。
-    if (options.length <= 1) {
-      void create(options[0] || 'claude');
-      return;
-    }
-    const dialog = el('terminal-cli-dialog');
-    const list = el('terminal-cli-options');
-    if (!dialog || !list) return;
-    list.replaceChildren(...options.map(cli => {
-      const button = node('button', cli, 'terminal-cli-option');
-      button.type = 'button';
-      button.dataset.cli = cli;
-      // 最近用过的那套只是排第一（省一次找），不是替用户选定。
-      if (cli === options[0] && cli === String(ctx?.defaultCli?.() || '')) button.classList.add('is-recent');
-      button.onclick = () => {
-        dialog.close();
-        void create(cli);
-      };
-      return button;
-    }));
-    dialog.showModal();
+    const settings = root.MultiCCAirSettings;
+    if (!settings?.configuration) return;
+    const clis = terminalClis();
+    settings.configuration(
+      {
+        // purpose 让那一层把抬头/说明换成终端口吻（同一份实现，只是不说「新任务」）。
+        purpose: 'terminal',
+        task: { title: translate('airNewTerminal') },
+        // 打开时的默认值 = 这个目录最近用过的那套（和 chat 那颗胶囊同一个口径），
+        // 但对话框里每一项都能改。
+        configuration: { ...(ctx.data?.lastRuntime || {}), cli: recentCli() || clis[0] || 'claude' },
+      },
+      clis,
+      runtime => void create(runtime),
+    );
   }
 
-  // 本目录新建终端：POST /api/directories/:id/sessions（kind=terminal），CLI 由
-  // [openCliPicker] 问出来。建好直接去那个终端页，回来的路是浏览器后退 —— 和点一行
-  // 已有终端是同一种跳转。
-  async function create(cli) {
+  // 本目录新建终端：POST /api/directories/:id/sessions（kind=terminal）。建好直接去
+  // 那个终端页，回来的路是浏览器后退 —— 和点一行已有终端是同一种跳转。
+  async function create(runtime) {
     const button = el('directory-terminal-new');
     if (creating || !dirId || !ctx) return;
+    const cli = String(runtime?.cli || '');
+    if (!cli) return;
     creating = true;
     if (button) button.disabled = true;
     try {
-      const session = await ctx.api(`/api/directories/${encodeURIComponent(dirId)}/sessions`,
-        { cli, kind: 'terminal', label: cli });
+      // 终端行的名字把 CLI 与模型写进去：列表里一眼看得出这一条是拿什么起的。
+      // 「没选」的字段一律不发明文空串（服务端把 '' 当「显式不指定」，和省略不是
+      // 一回事），所以逐项按需带上。
+      const label = [cli, runtime.model || null].filter(Boolean).join(' · ');
+      const session = await ctx.api(`/api/directories/${encodeURIComponent(dirId)}/sessions`, {
+        cli, kind: 'terminal', label,
+        ...(runtime.provider ? { provider: runtime.provider } : {}),
+        ...(runtime.providerSelection ? { providerSelection: runtime.providerSelection } : {}),
+        ...(runtime.model ? { model: runtime.model } : {}),
+        ...(runtime.effort ? { effort: runtime.effort } : {}),
+      });
       root.location.assign(`/?id=${encodeURIComponent(session.id)}`);
     } catch (error) {
       ctx.notice?.(translate('airTerminalCreateFailed', { error: error?.message || error }));
@@ -157,9 +158,7 @@
 
   el('directory-mode-chat')?.addEventListener('click', () => setMode('chat'));
   el('directory-mode-terminal')?.addEventListener('click', () => setMode('terminal'));
-  el('directory-terminal-new')?.addEventListener('click', openCliPicker);
-  el('terminal-cli-close')?.addEventListener('click', () => el('terminal-cli-dialog')?.close());
-  el('terminal-cli-cancel')?.addEventListener('click', () => el('terminal-cli-dialog')?.close());
+  el('directory-terminal-new')?.addEventListener('click', openCreateDialog);
 
   root.MultiCCAirDirectoryMode = { render, setMode, currentMode: () => mode };
 })(typeof window !== 'undefined' ? window : null);

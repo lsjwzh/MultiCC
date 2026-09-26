@@ -17,6 +17,7 @@ import '../screens/setup_screen.dart';
 import '../screens/task_graph_screen.dart';
 import '../screens/terminal_screen.dart';
 import '../services/air_service.dart';
+import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -34,6 +35,7 @@ import 'air/air_task_config.dart';
 import 'air/air_task_details.dart';
 import 'air/air_task_status.dart';
 import 'air/air_task_actions.dart';
+import 'create_session_dialog.dart';
 import 'task_board_view.dart';
 import 'tour_overlay.dart';
 import 'workspace_navigation_drawer.dart';
@@ -1666,40 +1668,89 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
-  /// 终端可选的 CLI：快照里那些，去掉这台客户端**认不出**的和实验适配器。
+  /// 「新建终端」：和 chat 走**同一个**配置对话框（[CreateSessionDialog]，kind 只是
+  /// 换成 terminal）—— CLI、Provider、模型、推理强度都在那一层挑。
   ///
-  /// 认不出不是小事：`parseCli` 对未知名字会静默落回 Claude，选「kimi」结果建出
-  /// 一个 Claude 终端，界面上还写着 kimi。Web 那份清单（`air-directory-mode.js`
-  /// 的 `cliOptions`）同样剔掉 exp 车道，两边保持同一套可选集合。
-  List<String> _terminalCliOptions() {
-    final clis = _data?.clis ?? const <String>[];
-    return [
-      for (final cli in clis)
-        if (tryParseCli(cli) != null && cli != 'claude-exp' && cli != 'codex-exp')
-          cli,
-    ];
-  }
-
-  /// 「新建终端」：一个目录下的终端就走这条路（`POST /api/directories/:id/sessions`
-  /// 的 `kind=terminal`）。用哪个 CLI 由 [_terminalCliOptions] 问出来（只有一个就不
-  /// 问），建好直接开终端页；下一次 4s 轮询里它就出现在这份列表上。
+  /// 用户明确要求终端要能像 chat 一样选线路，所以这里不再自己长一套只列 CLI 的表：
+  /// 默认值、可选集合、Provider→模型联动都由那一份实现给，两个入口不会各长一套。
+  /// 建好直接开终端页；下一次 4s 轮询里它就出现在这份列表上。
   Future<void> _createTerminal(String dirId) async {
-    final clis = _terminalCliOptions();
-    // 一个都没得选时不要假装建得出来：`_pickTerminalCli([])` 只会弹一层空壳。
-    if (clis.isEmpty) {
+    final initialCli = tryParseCli(_data?.clis.firstOrNull) ?? SessionCli.claude;
+
+    // 默认 CLI 的 Provider 池要先拿到，对话框才有一份可选的线路；换 CLI 时对话框
+    // 自己会按新 CLI 的 appType 重新拉（同 chat 那条路）。
+    List<Map<String, dynamic>> providers = [];
+    String? defaultProviderId;
+    try {
+      if (initialCli.supportsProvider) {
+        final d = await ManageService(
+          settings: widget.settings,
+        ).fetchProviders(initialCli.appType);
+        providers = (d['providers'] as List? ?? [])
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList();
+        final defaults = d['defaults'];
+        if (defaults is Map && defaults[initialCli.name] != null) {
+          defaultProviderId = defaults[initialCli.name].toString();
+        }
+      }
+    } catch (_) {}
+
+    Map<SessionCli, bool> cliAvailability = const {};
+    try {
+      final installInfo = await SessionService(
+        settings: widget.settings,
+      ).fetchCliInstallSpecs();
+      final availability = installInfo['availability'];
+      if (availability is Map) {
+        cliAvailability = {
+          for (final cli in SessionCli.values)
+            cli: availability[cli.name] is Map
+                ? availability[cli.name]['available'] == true
+                : false,
+        };
+      }
+    } catch (_) {}
+    if (!mounted) return;
+
+    // 整机一个可用 CLI 都没有时不必开一张只能空转的表（和 chat 那颗按钮同一句提示）。
+    if (cliAvailability.isNotEmpty &&
+        !SessionCli.values.any((cli) => cliAvailability[cli] == true)) {
       setState(() => _error = t('noCompatibleAi'));
       return;
     }
-    final cli = clis.length == 1 ? clis.first : await _pickTerminalCli(clis);
-    if (cli == null || cli.isEmpty || !mounted) return;
+
+    final result = await showDialog<CreateSessionResult>(
+      context: context,
+      builder: (_) => CreateSessionDialog(
+        kind: SessionKind.terminal,
+        defaultCli: initialCli,
+        providers: providers,
+        defaultProviderId: defaultProviderId,
+        cliAvailability: cliAvailability,
+        settings: widget.settings,
+        // 终端**始终**给完整那张表（CLI / Provider / 模型 / 推理强度）：chat 在基础
+        // 模式下会用「推荐」替你选一条线路，而终端要挑的正是「跑哪个 CLI、哪条
+        // 线路」——没有等价的可推荐项，选不了等于没得选。Web 那边也没有基础模式，
+        // 两端就此对齐。
+        basicMode: false,
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    final mgr = context.read<SessionManager>();
     setState(() => _creatingTerminal = true);
     try {
-      final mgr = context.read<SessionManager>();
       final session = await mgr.createSessionInDir(
         dirId: dirId,
-        cli: parseCli(cli),
+        cli: result.cli,
         kind: SessionKind.terminal,
-        label: '$cli 终端',
+        label: result.label,
+        model: result.model,
+        provider: result.provider,
+        effort: result.effort,
+        agent: result.agent,
+        rolePrompt: result.rolePrompt,
       );
       if (!mounted) return;
       await Navigator.of(context).push(
@@ -1714,49 +1765,6 @@ class _AirTasksViewState extends State<AirTasksView>
       if (mounted) setState(() => _creatingTerminal = false);
     }
   }
-
-  /// 多个 CLI 时装哪个：一问一答，不替用户猜。返回 null = 没选。
-  Future<String?> _pickTerminalCli(List<String> clis) =>
-      showModalBottomSheet<String>(
-        context: context,
-        backgroundColor: AppColors.panel,
-        showDragHandle: true,
-        builder: (sheetContext) => SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 0, 16, 6),
-                child: Text(
-                  '用哪个 CLI 开这个终端？',
-                  style: TextStyle(
-                    color: AppColors.text,
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              for (final cli in clis)
-                ListTile(
-                  key: ValueKey('air-terminal-cli-$cli'),
-                  dense: true,
-                  leading: const Icon(
-                    Icons.terminal_rounded,
-                    size: 18,
-                    color: AppColors.muted,
-                  ),
-                  title: Text(
-                    cli,
-                    style: const TextStyle(color: AppColors.text, fontSize: 14),
-                  ),
-                  onTap: () => Navigator.of(sheetContext).pop(cli),
-                ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
-      );
 
   Widget _buildTasks(
     AirSnapshot? data,

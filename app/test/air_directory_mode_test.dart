@@ -6,9 +6,11 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:multicc_app/i18n.dart';
+import 'package:multicc_app/models/message.dart';
 import 'package:multicc_app/services/onboarding_store.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
+import 'package:multicc_app/widgets/create_session_dialog.dart';
 
 /// 目录首页顶部那道 Chat / Terminal 切换（Web `public/air.html` 的
 /// `#directory-mode`）。
@@ -174,26 +176,32 @@ void main() {
     await closeView(tester);
   });
 
-  testWidgets('「新建终端」问 CLI，不替用户猜', (tester) async {
+  testWidgets('「新建终端」开的是 chat 那套配置对话框（kind=terminal）', (tester) async {
     await pumpView(tester);
     await switchTo(tester, 'terminal');
 
     await tester.tap(find.byKey(const ValueKey('air-new-terminal-button')));
     await tester.pumpAndSettle();
-    expect(find.text('用哪个 CLI 开这个终端？'), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-terminal-cli-claude')), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-terminal-cli-codex')), findsOneWidget);
-    // 认不出的（kimi）和实验车道（codex-exp）不进选项：前者会静默建出 claude 终端，
-    // 后者不是给人用的常规终端。
-    expect(find.byKey(const ValueKey('air-terminal-cli-kimi')), findsNothing);
-    expect(find.byKey(const ValueKey('air-terminal-cli-codex-exp')), findsNothing);
+
+    // 和 chat 同一个对话框、同一份实现：CLI / Provider / 模型 / 推理强度都在那一层
+    // 挑（用户要求终端能像 chat 一样选线路，不是只挑一个 CLI）。
+    final dialog = tester.widget<CreateSessionDialog>(
+      find.byType(CreateSessionDialog),
+    );
+    expect(dialog.kind, SessionKind.terminal);
+    // 默认是快照里的第一个 CLI。
+    expect(dialog.defaultCli, SessionCli.claude);
+    // 终端始终给完整那张表：基础模式下 chat 会用「推荐」替你选一条线路，终端要挑的
+    // 正是「跑哪个 CLI、哪条线路」，没有等价的可推荐项。
+    expect(dialog.basicMode, isFalse);
+    // 完整的表里 CLI 是可选的（不是一句只读的推荐摘要）。
+    expect(find.byType(DropdownButtonFormField<SessionCli>), findsWidgets);
     expect(tester.takeException(), isNull);
 
-    // 关掉这一层：选一个会去建会话并 push 真的终端页（见文件头）。
-    Navigator.of(
-      tester.element(find.byKey(const ValueKey('air-terminal-cli-claude'))),
-    ).pop();
+    // 取消 = 什么都不建（建会话并 push 终端页那段见文件头说明，这里不点）。
+    await tester.tap(find.text(t('cancel')));
     await tester.pumpAndSettle();
+    expect(find.byType(CreateSessionDialog), findsNothing);
     await closeView(tester);
   });
 
