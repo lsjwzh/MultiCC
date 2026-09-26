@@ -1664,6 +1664,28 @@ class _AirTasksViewState extends State<AirTasksView>
               ? _buildTerminals(data, directory)
               : _buildTasks(data, directory, tasks),
         ),
+        // 创建入口贴底常驻（同聊天页 InputBar 的位置语言）：空闲收成一行，
+        // 聚焦/有草稿才展开。Scaffold 默认 resize 会把它抬到键盘上方。
+        if (_dirMode != _DirectoryMode.terminal)
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: KeyedSubtree(
+                key: _tourComposerKey,
+                child: AirQuickComposer(
+                  docked: true,
+                  settings: widget.settings,
+                  service: _service,
+                  httpClient: widget.httpClient,
+                  clis: data?.clis ?? const [],
+                  busy: _submitting,
+                  // 参数表就是 [AirComposerSubmit] 那一份，不必再抄一遍转发。
+                  onSubmit: _createFromComposer,
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -1885,6 +1907,9 @@ class _AirTasksViewState extends State<AirTasksView>
       onRefresh: _refresh,
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        // 往下拖列表就收键盘：贴底输入条的焦点监听接着会把展开态收回去，
+        // 用户不必靠「提交」或开弹层才能把面板收掉。
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         children: [
           AirDirectoryStats(
             tasks: all,
@@ -1916,19 +1941,7 @@ class _AirTasksViewState extends State<AirTasksView>
             ),
             const SizedBox(height: 10),
           ],
-          KeyedSubtree(
-            key: _tourComposerKey,
-            child: AirQuickComposer(
-              settings: widget.settings,
-              service: _service,
-              httpClient: widget.httpClient,
-              clis: data?.clis ?? const [],
-              busy: _submitting,
-              // 参数表就是 [AirComposerSubmit] 那一份，不必再抄一遍转发。
-              onSubmit: _createFromComposer,
-            ),
-          ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 18),
           // Web `air.html` 的 `.section-heading`：左边两行（小字 `当前目录` + 粗体
           // `最近任务`），右边一个 `#directory-overview-count`。两条筛选 chip 换成了
           // 这一行 —— Web 那份默认就带着归档行，「未完成 / 全部」在这里没有对位。
