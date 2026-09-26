@@ -728,7 +728,10 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .task-sort-switch button { min-height: 0; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: #7a8c9e; font-size: 9.5px; line-height: 1.35; }
 .task-sort-switch button[aria-pressed="true"] { background: #fff; color: #2e73b8; box-shadow: 0 1px 4px #27496814; font-weight: 650; }
 #directory-task-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.directory-task-panel.expanded #directory-task-list { height: min(390px, 48dvh); overflow-y: auto; overscroll-behavior: contain; }
+/* 限高，不是定高：定高时任务少到不足一屏，多出来的空间会被网格按行等分——筛出两条
+   就得到两片半屏高的空卡（行内内容是垂直居中的）。限高让容器自己缩到内容高，行保持
+   自己的高度；align-content 是防回归的保险，将来谁再给它一个高度也不会把行拉开。 */
+.directory-task-panel.expanded #directory-task-list { max-height: min(390px, 48dvh); align-content: start; overflow-y: auto; overscroll-behavior: contain; }
 .directory-task-row { min-width: 0; display: flex; align-items: stretch; padding: 0; border: 0; border-right: 1px solid #e8eef5; border-bottom: 1px solid #e8eef5; border-radius: 0; background: transparent; text-align: left; }
 .directory-task-row:nth-child(2n) { border-right: 0; }
 .directory-task-row:hover, .directory-task-row:focus-within { background: #f2f8fe; }
@@ -1744,7 +1747,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #empty { padding: 19px 12px 30px; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
-  .directory-task-panel.expanded #directory-task-list { height: min(360px, 46dvh); }
+  .directory-task-panel.expanded #directory-task-list { max-height: min(360px, 46dvh); }
   /* 任务行的标题在手机上占两行：一行 11px 的标题在 390px 屏上只装得下十来个字，
      读不出这条任务是干什么的（目录首页由用户报的那张图就是这个）。标题是这一行
      里唯一必须读全的字段，字也给它放大到副行之上；徽标与阶段仍在它下面那行，徽标

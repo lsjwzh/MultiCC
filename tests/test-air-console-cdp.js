@@ -462,7 +462,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
   console.log('截图目录: ' + shots);
 });
 
-test('directory all-tasks expands in place with filters, fixed height and delete', async t => {
+test('directory all-tasks expands in place with filters, a height cap and delete', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const routes = {}, publicDir = path.resolve(__dirname, '../public');
   const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -512,7 +512,7 @@ test('directory all-tasks expands in place with filters, fixed height and delete
     assert.equal(await page.evaluate(`document.getElementById('directory-task-controls').hidden`), false);
     assert.deepEqual(await page.evaluate(`(() => { const l=document.getElementById('directory-task-list'),s=getComputedStyle(l);
       return [document.querySelectorAll('#directory-task-list .directory-task-row').length,s.overflowY,Math.round(l.getBoundingClientRect().height)]; })()`),
-      [12, 'auto', 390], 'default filter shows open rows inside a fixed-height scroller');
+      [12, 'auto', 390], 'default filter shows open rows inside a capped-height scroller');
 
     // 这 12 条都是观察型记录（没有 recordType，也没有阶段），徽标说「空闲」—— 行上
     // 那行小字不许再写一遍「进行中」：那是生命周期（active）的翻法，跟徽标说的不是
@@ -526,6 +526,15 @@ test('directory all-tasks expands in place with filters, fixed height and delete
 
     await page.evaluate(`(() => { const i=document.getElementById('directory-task-search');i.value='12';i.dispatchEvent(new Event('input')); })()`);
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#directory-task-list strong')].map(e=>e.textContent)`), ['目录任务 12']);
+    // 筛剩一条时列表得跟着缩回内容高。以前这里是定高 + 网格默认的 align-content，
+    // 空出来的空间按行等分：一条任务就撑成一整片半屏高的空卡（行内还是垂直居中的）。
+    const squeezed = await page.evaluate(`(() => {
+      const list = document.getElementById('directory-task-list');
+      const row = list.querySelector('.directory-task-row');
+      return { listHeight: Math.round(list.getBoundingClientRect().height),
+               rowHeight: Math.round(row.getBoundingClientRect().height) }; })()`);
+    assert.equal(squeezed.listHeight, squeezed.rowHeight, `筛剩一条时列表要缩回内容高：${JSON.stringify(squeezed)}`);
+    assert.ok(squeezed.rowHeight < 100, `行保持自己的高度，不被拉长：${JSON.stringify(squeezed)}`);
     await page.evaluate(`window.confirm=()=>true;document.querySelector('#directory-task-list .task-delete').click()`);
     assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('任务已删除')`));
     assert.deepEqual(deletes, ['t12']);
