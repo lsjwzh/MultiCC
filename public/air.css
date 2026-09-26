@@ -694,7 +694,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-terminal-empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
 /* 「＋ 新终端」不再自己长一层选择 UI：它开的是 chat 那个配置对话框
    （`.air-config-dialog`，air-task-settings.js），样式也只有那一份。 */
-#directory-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
+#directory-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 0 0 14px; }
 /* 统计卡是这一页的抬头，不是正文：扫一眼知道这个目录有多少活在跑就够了，
    再往下就是任务列表。所以它们按「一行字」而不是「一张卡片」来做 —— 填充、
    色条和数字都收了一档，说明文字也从继承来的 14px 落到 10.5px（原来它比标题
@@ -707,6 +707,8 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-stat::before { content: ""; display: block; width: 18px; height: 3px; margin-bottom: 6px; border-radius: 4px; background: #aebfd0; }
 .directory-stat.blue::before { background: #4d9bea; }
 .directory-stat.green::before { background: #43b88a; }
+.directory-stat.amber::before { background: #e3b341; }
+.directory-stat.red::before { background: #da3633; }
 .directory-stat span, .directory-stat small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .directory-stat span { color: #6d8094; font-size: 10px; }
 .directory-stat strong { display: block; margin: 2px 0; color: #2d4d68; font-size: 19px; line-height: 1.1; }

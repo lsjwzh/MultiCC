@@ -563,9 +563,14 @@
   function renderDirectoryOverview() {
     const dir = data?.directories.find(directory => directory.id === directoryId);
     const tasks = (data?.tasks || []).filter(task => task.dirId === directoryId);
-    const current = tasks.filter(task => !['done', 'archived'].includes(task.status));
-    const running = current.filter(isRunningTask);
-    const planned = current.filter(task => task.recordType === 'planned' && !running.includes(task));
+    // 统计口径与 filterTasks 完全同源：taskStatus 是 status-presentation 的权威
+    // 判定（archived/done 生命周期优先），点击卡片 = 按该状态筛选，两者不可能再
+    // 出现「卡片 2 个、列表 29 个」的分叉。
+    const taskStatusOf = task => window.MultiCCAirAdmin?.taskStatus?.(task) || 'unknown';
+    const running = tasks.filter(isRunningTask);
+    const waiting = tasks.filter(task => taskStatusOf(task) === 'waiting');
+    const errored = tasks.filter(task => taskStatusOf(task) === 'error');
+    const doneCount = tasks.filter(task => taskStatusOf(task) === 'done').length;
     // A stat card is a quick filter: clicking it jumps the list to that
     // category instead of leaving the numbers as dead digits.
     function quickFilter(status) {
@@ -582,16 +587,15 @@
         card.title = t('airDirStatClickFilter');
         card.addEventListener('click', () => quickFilter(status));
       }
-      card.append(node('span', name), node('strong', String(value)), node('small', detail));
+      card.append(node('span', name), node('strong', String(value)));
+      if (detail) card.append(node('small', detail));
       return card;
     };
-    // 主数字 = 真正「正在执行」的任务数（spinner 状态），而不是未归档记录总数——
-    // 后者是自动观察长期堆积的「进行中」历史，拿来当主数字会虚高得没有意义。
-    // 未归档记录总数仍然放在小字里给个上下文。
     $('directory-stats').replaceChildren(
-      stat(t('airStateActive'), running.length, t('airDirActiveDetail', { n: current.length }), 'blue', 'running'),
-      stat(t('airDirStatPlanned'), planned.length, t('airDirStatPlannedHint'), '', 'planned'),
-      stat(t('airStageDone'), tasks.filter(task => task.status === 'done').length, t('airDirStatDoneHint'), 'green', 'done'),
+      stat(t('airStatRunning'), running.length, '', 'blue', 'running'),
+      stat(t('airStatWaiting'), waiting.length, '', 'amber', 'waiting'),
+      stat(t('airStatError'), errored.length, '', 'red', 'error'),
+      stat(t('airStageDone'), doneCount, t('airDirStatDoneHint'), 'green', 'done'),
       stat(t('airStatusAllRecords'), tasks.length, t('airDirArchiveWorktrees', {
         archived: tasks.filter(task => task.status === 'archived').length,
         worktrees: dir?.worktreeCount || 0,
