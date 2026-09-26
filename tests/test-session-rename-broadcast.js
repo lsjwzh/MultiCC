@@ -61,7 +61,7 @@ function fixture(session, {
     homeDir: () => process.env.HOME,
   });
   const app = fakeApp();
-  createSessionProfileRoutes({
+  const mounted = createSessionProfileRoutes({
     persistedSessions,
     directories: new Map([['d1', { id: 'd1', path: '/tmp/d1' }]]),
     sessionPersistence: {
@@ -101,7 +101,8 @@ function fixture(session, {
     getFolderMemory: () => ({ sessionDir: () => path.join(tmpRoot, 'mem') }),
     getCliSwitchGitSnapshot: () => async () => ({}),
   }).mountRoutes(app);
-  return { session, handler: app.routes.get('PATCH /api/sessions/:id'), workspace, chat, effects };
+  return { session, handler: app.routes.get('PATCH /api/sessions/:id'), workspace, chat, effects,
+    applySessionPatch: mounted.applySessionPatch };
 }
 
 test('label PATCH broadcasts session_updated on both workspace and chat planes', () => {
@@ -247,4 +248,21 @@ test('server composition gives profile routes the live chat-state reader', () =>
   const composition = source.slice(start, end);
   assert.match(composition, /getChatStream: \(\) => chatStream, getChatState: id => chatSessions\.get\(id\),/);
   assert.match(composition, /hasLiveBackgroundTasks: id => backgroundTaskRuntime\?\.hasProcessBackgroundTasks\(id\) === true/);
+});
+
+test('in-process applySessionPatch (provider force-delete) runs the same PATCH path', () => {
+  const idle = fixture({ id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', provider: 'p1', subagent: null });
+  const applied = idle.applySessionPatch('s1', { provider: null });
+  assert.equal(applied.status, 200);
+  assert.equal(idle.session.provider, null);
+  assert.equal(applied.body.deferred, undefined);
+
+  const busy = fixture({ id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', provider: 'p1' }, { backgroundActive: true });
+  const staged = busy.applySessionPatch('s1', { provider: null });
+  assert.equal(staged.status, 200);
+  assert.equal(staged.body.deferred, true);
+  assert.equal(busy.session.provider, 'p1', 'a running turn keeps its route until the next turn');
+  assert.equal(busy.session.pendingConfiguration.profile.provider, null);
+
+  assert.equal(idle.applySessionPatch('missing', { provider: null }).status, 404);
 });

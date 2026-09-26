@@ -559,6 +559,18 @@ function createSessionProfileRoutes(rawDeps) {
         },
         forkedFrom: forkMeta.forkedFrom, replayedMessages: sliced.length });
     }));
+
+    // In-process PATCH for host-side edits (provider force-delete unwiring its
+    // references): same validation, staging and side effects as the HTTP route.
+    function applySessionPatch(sessionId, body) {
+      let status = 200, result;
+      patchSession({ params: { id: sessionId }, body: body || {}, query: {} }, {
+        status(code) { status = code; return this; },
+        json(value) { result = value; return this; },
+      });
+      return { status, body: result };
+    }
+    return { applySessionPatch };
   }
 
   return { mountRoutes };

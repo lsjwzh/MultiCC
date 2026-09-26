@@ -420,11 +420,98 @@ test('provider deletion retains the exact reference-protection 409 contract', as
     error: 'provider is still referenced',
     code: 'PROVIDER_IN_USE',
     references,
+    forceable: false,
   });
   assert.deepEqual(harness.deleted, []);
   assert.equal(referenceInput.sessions, harness.deps.persistedSessions);
   assert.deepEqual(referenceInput.defaults, { claude: 'claude-one', codex: null });
   assert.deepEqual(referenceInput.aux, { protocol: 'anthropic', providerId: null });
+});
+
+test('force deletion unwires every reference through the session PATCH path, then deletes', async () => {
+  const sessions = new Map([
+    ['s-main', { id: 's-main', label: 'Main', cli: 'claude', provider: 'claude-one' }],
+    ['s-auto', { id: 's-auto', label: 'Auto', cli: 'claude', provider: 'claude-one', providerSelection: {
+      version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 3,
+      candidates: [
+        { providerId: 'claude-one', enabled: true },
+        { providerId: 'claude-two', enabled: true },
+        { providerId: 'claude-three', enabled: true },
+      ],
+    } }],
+    ['s-sub', { id: 's-sub', label: 'Sub', cli: 'claude', provider: null, subagent: { providerId: 'claude-one', model: 'm' } }],
+  ]);
+  const patches = [];
+  const auxCleared = [];
+  const harness = createHarness({
+    persistedSessions: sessions,
+    findProviderReferences: () => [
+      { kind: 'main', sessionId: 's-main', sessionName: 'Main' },
+      { kind: 'main', sessionId: 's-auto', sessionName: 'Auto' },
+      { kind: 'auto_candidate', sessionId: 's-auto', sessionName: 'Auto' },
+      { kind: 'subagent', sessionId: 's-sub', sessionName: 'Sub' },
+      { kind: 'default', cli: 'claude' },
+      { kind: 'aux', protocol: 'anthropic' },
+    ],
+    applySessionPatch(sessionId, body) {
+      patches.push({ sessionId, body });
+      return { status: 200, body: sessionId === 's-main' ? { deferred: true } : {} };
+    },
+    clearAuxProvider(id) { auxCleared.push(id); return true; },
+    logger: { error() {}, warn() {} },
+  });
+  const response = await invoke(harness.app, 'DELETE', '/api/providers/:appType/:id', {
+    params: { appType: 'claude', id: 'claude-one' },
+    query: { force: '1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.forced, true);
+  assert.equal(response.body.detached.length, 5);
+  assert.equal(response.body.detached.filter(item => item.deferred).length, 1);
+  assert.deepEqual(patches.map(item => item.sessionId), ['s-main', 's-auto', 's-sub']);
+  assert.deepEqual(patches[0].body, { provider: null });
+  assert.deepEqual(patches[1].body.providerSelection.candidates.map(item => item.providerId), ['claude-two', 'claude-three']);
+  assert.equal(patches[1].body.providerSelection.maxAttempts, 2);
+  assert.deepEqual(patches[2].body, { subagent: null });
+  assert.deepEqual(auxCleared, ['claude-one']);
+  assert.deepEqual(harness.writes.at(-1).value, { claude: null, codex: null });
+  assert.deepEqual(harness.deleted, [{ appType: 'claude', id: 'claude-one' }]);
+});
+
+test('force deletion keeps the provider when a reference cannot be detached', async () => {
+  const harness = createHarness({
+    persistedSessions: new Map([['s1', { id: 's1', label: 'One', cli: 'claude', provider: 'claude-one' }]]),
+    findProviderReferences: () => [{ kind: 'main', sessionId: 's1', sessionName: 'One' }],
+    applySessionPatch: () => ({ status: 400, body: { error: 'invalid provider' } }),
+    clearAuxProvider: () => false,
+  });
+  const response = await invoke(harness.app, 'DELETE', '/api/providers/:appType/:id', {
+    params: { appType: 'claude', id: 'claude-one' },
+    query: { force: 'true' },
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.code, 'PROVIDER_DETACH_FAILED');
+  assert.deepEqual(response.body.references, [{ kind: 'session', sessionId: 's1', sessionName: 'One', error: 'invalid provider' }]);
+  assert.deepEqual(harness.deleted, []);
+});
+
+test('force detach plan falls back to manual when the trimmed Auto pool no longer validates', () => {
+  const { sessionDetachPlan } = require('../src/providers/force-detach');
+  const twoCandidates = sessionDetachPlan({ provider: 'a', providerSelection: {
+    mode: 'auto', candidates: [{ providerId: 'a', enabled: true }, { providerId: 'b', enabled: true }],
+  } }, 'a');
+  assert.deepEqual(twoCandidates, { body: { providerSelection: null, provider: 'b' }, fallback: null });
+  const threeCandidates = sessionDetachPlan({ provider: 'b', providerSelection: {
+    mode: 'auto', maxAttempts: 3, candidates: [
+      { providerId: 'a', enabled: true }, { providerId: 'b', enabled: true }, { providerId: 'c', enabled: true },
+    ],
+  }, subagent: { providerId: 'a', model: 'x' } }, 'a');
+  assert.equal(threeCandidates.body.subagent, null);
+  assert.deepEqual(threeCandidates.fallback, { providerSelection: null, provider: 'b' });
+  // A staged (next-turn) edit is the state being detached, not the live one.
+  const staged = sessionDetachPlan({ provider: 'a', pendingConfiguration: { cli: 'claude', profile: { provider: 'z' } } }, 'a');
+  assert.deepEqual(staged.body, {});
 });
 
 test('provider deletion revokes all credentials scoped to that provider', async () => {

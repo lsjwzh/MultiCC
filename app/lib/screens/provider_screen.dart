@@ -124,12 +124,112 @@ class _ProviderScreenState extends State<ProviderScreen> {
       ),
     );
     if (ok != true) return;
+    await _deleteProvider(p, force: false);
+  }
+
+  Future<void> _deleteProvider(Map<String, dynamic> p, {required bool force}) async {
     try {
-      await _manage.deleteProvider(p['appType'] as String, p['id'] as String);
+      final r = await _manage.deleteProvider(p['appType'] as String, p['id'] as String, force: force);
+      final detached = r['detached'] is List ? r['detached'] as List : const [];
+      final deferred = detached.where((e) => e is Map && e['deferred'] == true).length;
+      if (r['forced'] == true) {
+        _snack('已强制删除「${p['name']}」，解除了 ${detached.length} 处引用'
+            '${deferred > 0 ? '；$deferred 个运行中的会话下一轮才换线路' : ''}');
+      }
       await _refresh();
+    } on ProviderInUseException catch (e) {
+      if (e.detachFailed) await _refresh();
+      if (!mounted) return;
+      final forceIt = await _showReferences(p, e);
+      if (forceIt == true) await _deleteProvider(p, force: true);
     } catch (e) {
       _snack('删除失败：$e');
     }
+  }
+
+  // 与 Web(public/air-provider.js showReferences)同一口径：按类型分组，每组写明
+  // 强制删除时服务端(src/providers/force-detach.js)会怎么解除。
+  static const _refKinds = <String, (String, String?)>{
+    'main': ('会话主线路', '改回默认登录'),
+    'auto_candidate': ('Auto 候选线路', '从 Auto 候选中移除；剩不到两个候选时退回手动'),
+    'subagent': ('子代理线路', '子代理改回随主线路'),
+    'default': ('CLI 默认线路', '改回 CLI 原生登录'),
+    'aux': ('辅助模型（Aux）', 'Aux 解绑，需要到 Aux 设置里重新选线路'),
+    'session': ('会话', null),
+  };
+
+  String _refTitle(Map<String, dynamic> r) {
+    final kind = r['kind']?.toString() ?? '';
+    if (kind == 'default') return (r['cli'] ?? 'default').toString();
+    if (kind == 'aux') return (r['protocol'] ?? 'aux').toString();
+    final name = (r['sessionName'] ?? '').toString();
+    return name.isNotEmpty ? name : (r['sessionId'] ?? kind).toString();
+  }
+
+  Future<bool?> _showReferences(Map<String, dynamic> p, ProviderInUseException e) {
+    final groups = <Widget>[];
+    for (final entry in _refKinds.entries) {
+      final items = e.references.where((r) => r['kind'] == entry.key).toList();
+      if (items.isEmpty) continue;
+      final (label, effect) = entry.value;
+      groups.add(Container(
+        margin: const EdgeInsets.only(top: 10),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppColors.line),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('$label · ${items.length}',
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          if (!e.detachFailed && effect != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(effect, style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+            ),
+          const SizedBox(height: 6),
+          for (final r in items)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                r['error'] != null ? '${_refTitle(r)} — ${r['error']}' : _refTitle(r),
+                style: const TextStyle(fontSize: 12),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+        ]),
+      ));
+    }
+    final canForce = e.forceable && !e.detachFailed;
+    return showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('「${p['name']}」仍在使用中（${e.references.length} 处引用）'),
+        content: SingleChildScrollView(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Text(e.detachFailed
+                ? '以下引用没能自动解除，线路未删除：'
+                : '下面这些地方还指向这条线路。可以先去对应位置手动改掉；也可以强制删除——MultiCC 会先逐一解除引用，再删除线路。'),
+            ...groups,
+            if (canForce)
+              const Padding(
+                padding: EdgeInsets.only(top: 10),
+                child: Text('正在运行的会话会在下一轮才换线路；本轮还在用这条线路的请求可能失败。',
+                    style: TextStyle(color: AppColors.danger, fontSize: 12)),
+              ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消', style: TextStyle(color: AppColors.muted))),
+          if (canForce)
+            TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('强制删除', style: TextStyle(color: AppColors.danger))),
+        ],
+      ),
+    );
   }
 
   Future<void> _openEditor({Map<String, dynamic>? provider}) async {

@@ -713,10 +713,14 @@
     return refs.slice(0, 100).map((ref) => {
       if (!ref || typeof ref !== 'object') return null;
       const kind = text(ref.kind, 30).toLowerCase();
-      if (kind === 'main' || kind === 'subagent') {
+      // auto_candidate 以前被这里丢掉：弹窗说「3 处引用」却只列 2 条。session 是
+      // 强制删除没能解除的那一条（PROVIDER_DETACH_FAILED），带着服务端的原因。
+      if (kind === 'main' || kind === 'subagent' || kind === 'auto_candidate' || kind === 'session') {
         const sessionId = text(ref.sessionId, 180);
         const sessionName = text(ref.sessionName, 240);
-        return { kind, title: sessionName || sessionId || kind, detail: sessionId };
+        const item = { kind, title: sessionName || sessionId || kind, detail: sessionId };
+        if (kind === 'session') item.error = text(ref.error, 200);
+        return item;
       }
       if (kind === 'default') {
         const cli = text(ref.cli, 30);
@@ -732,10 +736,13 @@
 
   function deleteReferenceDisplayData(value) {
     const items = normalizeDeleteReferences(value);
+    const source = value && value.details ? value.details : value;
     return Object.freeze({
       count: items.length,
       kinds: Object.freeze(Array.from(new Set(items.map(item => item.kind)))),
       items: Object.freeze(items.map(Object.freeze)),
+      // 旧服务端不带这个字段：它没有 ?force=1，按钮不该出现。
+      forceable: !!(source && source.forceable === true),
     });
   }
 

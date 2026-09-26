@@ -149,6 +149,21 @@ test('provider-in-use references become bounded display data', () => {
   assert.deepEqual(data.items[1], { kind: 'subagent', title: 's2', detail: 's2' });
   assert.deepEqual(data.items[2], { kind: 'default', title: 'claude', detail: '' });
   assert.deepEqual(data.items[3], { kind: 'aux', title: 'openai', detail: '' });
+  assert.equal(data.forceable, false);
+});
+
+test('delete reference display keeps Auto candidates, detach failures and the force capability', () => {
+  const data = catalog.deleteReferenceDisplayData({
+    forceable: true,
+    references: [
+      { kind: 'auto_candidate', sessionId: 's3', sessionName: 'Auto chat' },
+      { kind: 'session', sessionId: 's4', sessionName: 'Busy', error: 'invalid provider' },
+    ],
+  });
+  assert.equal(data.count, 2);
+  assert.equal(data.forceable, true);
+  assert.deepEqual(data.items[0], { kind: 'auto_candidate', title: 'Auto chat', detail: 's3' });
+  assert.deepEqual(data.items[1], { kind: 'session', title: 'Busy', detail: 's4', error: 'invalid provider' });
 });
 
 test('Air loads the classic auth/API/catalog scripts in order and provider calls use the shared client', () => {
