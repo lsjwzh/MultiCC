@@ -789,6 +789,7 @@ class AirQuickComposer extends StatefulWidget {
     this.service,
     this.httpClient,
     this.autofocus = false,
+    this.docked = false,
   });
 
   /// 角色库（`/api/agent-presets`）要走服务地址和令牌，角色编辑器需要它。
@@ -796,6 +797,10 @@ class AirQuickComposer extends StatefulWidget {
   final List<String> clis;
   final bool busy;
   final AirService? service;
+
+  /// 贴底可伸缩模式（目录首页用）：空闲时收成一行贴底输入条（同聊天页 InputBar
+  /// 的形态），聚焦或有草稿/附件时才展开成整块创建面板；弹层里那一份保持常开。
+  final bool docked;
 
   /// 线路面板要先拉这个 CLI 的 Provider 池。宿主已经有客户端的就传进来，
   /// 测试拿它桩掉整条线。
@@ -842,15 +847,50 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   /// 那格整行掉到下面一行），这里跟着摆。
   String _voiceStatus = '';
 
+  /// 贴底模式的展开态。收起/展开跟着焦点和草稿走：聚焦或有字/有附件就展开，
+  /// 失焦且空草稿就收回去 —— 输入条不该在没人用时占着半屏。
+  bool _expanded = false;
+  final _focus = FocusNode();
+
   @override
   void initState() {
     super.initState();
     _cli = widget.clis.isEmpty ? 'claude' : widget.clis.first;
     _runtime = AirTaskRuntime(cli: _cli);
+    _focus.addListener(_onFocusChanged);
+    _controller.addListener(_onDraftChanged);
+  }
+
+  void _onFocusChanged() {
+    if (!widget.docked) return;
+    if (_focus.hasFocus) {
+      if (!_expanded) setState(() => _expanded = true);
+    } else if (_expanded &&
+        _controller.text.trim().isEmpty &&
+        _attachments.isEmpty) {
+      setState(() => _expanded = false);
+    }
+  }
+
+  /// 点收起条：先展开，等展开面板里那颗真输入框挂上之后再要焦点 —— 键盘走
+  /// 正常的「聚焦抬起」路径，而不是靠换组件时把焦点搬过去（那条路 iOS 不抬）。
+  void _expandAndFocus() {
+    setState(() => _expanded = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focus.requestFocus();
+    });
+  }
+
+  void _onDraftChanged() {
+    // 收起条上那一行字读的是草稿（🎙 写进来的也算），不在展开态才需要重建。
+    if (widget.docked && !_expanded) setState(() {});
   }
 
   @override
   void dispose() {
+    _focus.removeListener(_onFocusChanged);
+    _focus.dispose();
+    _controller.removeListener(_onDraftChanged);
     _controller.dispose();
     _roundsCtrl.dispose();
     _budgetCtrl.dispose();
@@ -910,6 +950,9 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   }
 
   Future<void> _pickCli() async {
+    // 开弹层前先收焦点：弹层关掉时焦点会还给输入框，贴底条就会莫名其妙
+    // 又展开一次。先 unfocus，焦点监听会把空草稿的展开态收回去。
+    _focus.unfocus();
     final choice = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: AppColors.panel,
@@ -957,6 +1000,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   /// 给新任务挑线路、模型和推理强度。结果先留在这一层，等创建任务时随
   /// `POST /api/air/tasks` 一起写下去 —— 第一条消息就按它执行（同 Web Air）。
   Future<void> _editRuntime() async {
+    _focus.unfocus();
     final picked = await showAirTaskRuntimeEditor(
       context,
       settings: widget.settings,
@@ -970,6 +1014,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   /// 建出任务、发第一条消息之前再写下去 —— 绑定说的是「下一条消息」，那条消息
   /// 正是紧接着要发的那条。
   Future<void> _editRoles() async {
+    _focus.unfocus();
     final edited = await showAirRoleEditor(
       context,
       settings: widget.settings,
@@ -979,8 +1024,127 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     if (edited != null && mounted) setState(() => _roles = edited);
   }
 
+  /// 提交草稿（收起条的发送键和展开面板的「创建并执行」走同一条流水线）。
+  Future<void> _submit() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    final rounds = _readLimit(_roundsCtrl, max: 200);
+    final budget = _readLimit(_budgetCtrl);
+    final sent = await widget.onSubmit(
+      text: _composedText(text),
+      cli: _cli,
+      runtime: _runtime,
+      roles: _roles,
+      goal: _goal,
+      goalRounds: _goal ? rounds : null,
+      goalBudget: _goal ? budget : null,
+    );
+    if (!sent || !mounted) return;
+    // 任务建出去了才清草稿；角色和线路也一起清 —— 一个任务
+    // 的上下文不该悄悄漏进下一个任务。附件同样清掉：它已经
+    // 随正文交出去了，留着会跟着下一个任务再发一遍。
+    setState(() {
+      _controller.clear();
+      _roles = const [];
+      _runtime = AirTaskRuntime(cli: _cli);
+      _goal = false;
+      _attachments.clear();
+      _attachError = '';
+      _roundsCtrl.text = '200';
+      _budgetCtrl.clear();
+    });
+    // 贴底模式交完就收键盘：焦点监听会把空草稿的展开态一起收回去。
+    if (widget.docked) _focus.unfocus();
+  }
+
+  /// 贴底收起态：一行输入条（形态同聊天页 InputBar）。聚焦即展开成整块面板，
+  /// 所以这里只留「写一句话 + 发送」和最少的状态提示（🎯 / 附件角标）。
+  Widget _buildCollapsedBar() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(AppColors.radiusPanel),
+        border: Border.all(color: AppColors.line),
+      ),
+      padding: const EdgeInsets.all(6),
+      child: Row(
+        children: [
+          IconButton(
+            key: const ValueKey('air-quick-attach'),
+            onPressed: widget.busy || _uploading ? null : _pickAttach,
+            iconSize: 19,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            visualDensity: VisualDensity.compact,
+            tooltip: '上传图片或文件',
+            icon: Icon(
+              _uploading
+                  ? Icons.hourglass_top_rounded
+                  : Icons.attach_file_rounded,
+              color: AppColors.faint,
+            ),
+          ),
+          Expanded(
+            // 收起条里不放真输入框：焦点落在它身上再换组件展开，iOS 的键盘
+            // 不会跟着新 EditableText 再抬起来。这里只做样子，点一下先展开、
+            // 再把焦点请求到展开面板里那颗真输入框上（常规路径，键盘正常）。
+            child: GestureDetector(
+              key: const ValueKey('air-quick-input'),
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.busy ? null : _expandAndFocus,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 9,
+                ),
+                child: Text(
+                  _controller.text.isEmpty ? '描述要完成的任务…' : _controller.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _controller.text.isEmpty
+                        ? AppColors.faint
+                        : AppColors.text,
+                    fontSize: 13.5,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          if (_goal)
+            const Padding(
+              padding: EdgeInsets.only(left: 6),
+              child: Text('🎯', style: TextStyle(fontSize: 15)),
+            ),
+          if (_attachments.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Icon(
+                Icons.attach_file_rounded,
+                size: 15,
+                color: AppColors.accent,
+              ),
+            ),
+          IconButton(
+            key: const ValueKey('air-quick-submit'),
+            onPressed: widget.busy ? null : _submit,
+            iconSize: 20,
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
+            visualDensity: VisualDensity.compact,
+            tooltip: '创建并执行',
+            icon: Icon(
+              Icons.send_rounded,
+              color: widget.busy ? AppColors.faint : AppColors.accentDark,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (widget.docked && !_expanded) return _buildCollapsedBar();
     return Container(
       decoration: BoxDecoration(
         color: AppColors.panel,
@@ -1053,6 +1217,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
           TextField(
             key: const ValueKey('air-quick-input'),
             controller: _controller,
+            focusNode: _focus,
             autofocus: widget.autofocus,
             maxLines: 4,
             minLines: 3,
@@ -1190,37 +1355,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
               const SizedBox(width: 4),
               FilledButton(
                 key: const ValueKey('air-quick-submit'),
-                onPressed: widget.busy
-                    ? null
-                    : () async {
-                        final text = _controller.text.trim();
-                        if (text.isEmpty) return;
-                        final rounds = _readLimit(_roundsCtrl, max: 200);
-                        final budget = _readLimit(_budgetCtrl);
-                        final sent = await widget.onSubmit(
-                          text: _composedText(text),
-                          cli: _cli,
-                          runtime: _runtime,
-                          roles: _roles,
-                          goal: _goal,
-                          goalRounds: _goal ? rounds : null,
-                          goalBudget: _goal ? budget : null,
-                        );
-                        if (!sent || !mounted) return;
-                        // 任务建出去了才清草稿；角色和线路也一起清 —— 一个任务
-                        // 的上下文不该悄悄漏进下一个任务。附件同样清掉：它已经
-                        // 随正文交出去了，留着会跟着下一个任务再发一遍。
-                        setState(() {
-                          _controller.clear();
-                          _roles = const [];
-                          _runtime = AirTaskRuntime(cli: _cli);
-                          _goal = false;
-                          _attachments.clear();
-                          _attachError = '';
-                          _roundsCtrl.text = '200';
-                          _budgetCtrl.clear();
-                        });
-                      },
+                onPressed: widget.busy ? null : _submit,
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.accentDark,
                   minimumSize: const Size(0, 36),
