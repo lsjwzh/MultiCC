@@ -1,0 +1,78 @@
+/* ── 本目录产物（public/artifacts.html）自己的样式表 ────────────────────────────
+   这一页是目录首页那颗 📦 按钮打开的独立页面（同 /memo.html 的关系），所以外壳
+   （页头 / 一行说明 / 列表）自己带，不蹭 air.css —— 那边是整壳应用的皮肤，
+   Air 一改版这里就跟着烂。行样式（.directory-artifact-*）是从 air.css 搬过来的：
+   目录页内联面板退场，这套行是给这一页的。 */
+
+:root {
+  --art-line: #dbe6f1;
+  --art-muted: #5f7c96;
+  --art-faint: #8ba0b4;
+  --art-accent: #2b6cb0;
+  --art-warning: #b45309;
+  --art-card: #fff;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  padding: 22px 24px 34px;
+  background: linear-gradient(145deg, #fff, #f7faff 60%, #eef5fd);
+  color: #3c5a72;
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#artifacts-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.caption { display: block; color: var(--art-faint); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+#artifacts-heading { margin: 2px 0 4px; color: #23405a; font-size: 19px; font-weight: 700; }
+#artifacts-heading span[aria-hidden] { margin-right: 2px; }
+#artifacts-workspace { margin: 0; max-width: 62ch; color: var(--art-muted); font-size: 12px; word-break: break-all; }
+#artifacts-tools { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+#artifacts-tools button,
+#artifacts-tools a {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px;
+  border: 1px solid #cfe0f0; border-radius: 10px; background: #fff; color: #2f668f;
+  font: inherit; font-size: 12.5px; font-weight: 600; text-decoration: none; cursor: pointer;
+}
+#artifacts-tools button:hover,
+#artifacts-tools a:hover { border-color: #a9cdea; background: #f4faff; }
+#artifacts-hint { margin: 14px 0 0; color: var(--art-faint); font-size: 11.5px; }
+#artifacts-status { margin: 10px 0 0; color: var(--art-warning); font-size: 12px; }
+
+#artifacts-list {
+  display: grid;
+  grid-auto-rows: min-content;
+  align-content: start;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.directory-artifact-row { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid #e2ebf4; border-radius: 12px; background: var(--art-card); box-shadow: 0 1px 2px #35577d0a; }
+.directory-artifact-row.is-expired { opacity: .62; }
+.directory-artifact-icon { flex: 0 0 26px; display: grid; place-items: center; height: 26px; color: #277ed2; border-radius: 8px; background: #edf6ff; font-size: 13px; }
+.directory-artifact-copy { min-width: 0; flex: 1; }
+.directory-artifact-copy a { display: block; overflow: hidden; color: #2f536f; font-size: 13px; font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
+.directory-artifact-copy small { display: block; overflow: hidden; margin-top: 2px; color: var(--art-muted); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.directory-artifact-tags { flex: 0 0 auto; display: flex; gap: 4px; }
+.directory-artifact-actions { flex: 0 0 auto; display: flex; gap: 5px; }
+.directory-artifact-actions button { min-height: 28px; padding: 3px 9px; color: #56718b; border: 1px solid transparent; border-radius: 8px; background: transparent; font: inherit; font-size: 11.5px; cursor: pointer; }
+.directory-artifact-actions button:hover { border-color: #d9e5f0; background: #f5f9fd; }
+.directory-artifacts-empty { padding: 14px 2px; color: var(--art-muted); font-size: 13px; }
+
+/* 行里的标记（🔒 永久保留 / 📌 置顶 / 已失效）—— 与 air-admin.js 那一格的 .air-doc-tag
+   同形，但这一页不加载 air.css，所以这里自带一份。 */
+.air-doc-tag { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border-radius: 999px; background: #eef4fa; color: #5b7b98; font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+.air-doc-tag.permanent { background: #fff3d6; color: #96690f; }
+.air-doc-tag.pin { background: #e6f2ff; color: #2b6cb0; }
+.air-doc-tag.expired { background: #fdeceb; color: #a9403a; }
+
+@media (max-width: 520px) {
+  .directory-artifact-row { flex-wrap: wrap; }
+  .directory-artifact-actions { flex: 1 1 100%; justify-content: flex-end; }
+}

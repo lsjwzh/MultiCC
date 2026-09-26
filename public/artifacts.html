@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f7faff" />
+  <title>📦 MultiCC</title>
+  <!-- 「本目录产物」是**一页**（同 /memo.html）：目录首页那颗按钮 window.open 打开它。
+       产物是一边看一边点开的东西（网页 / 文件 / 永久保留 / 置顶），嵌在目录页里展开
+       会把「最近任务 / Git / 新任务输入框」整段推走，也没有自己的地址可以单独留着。
+       脚本顺序：先 auth（把 ?token= 换成 cookie，之后所有 fetch 自动带凭证），再
+       i18n（en/zh 两本词典 + applyI18n），最后才是这一页自己的逻辑。 -->
+  <link rel="stylesheet" href="artifacts.css" />
+  <script src="error-envelope.js"></script>
+  <script src="auth-client.js"></script>
+  <script src="i18n-catalog.js"></script>
+  <script src="i18n.js"></script>
+</head>
+<body>
+  <header id="artifacts-header">
+    <div id="artifacts-titles">
+      <span class="caption" data-i18n="airCurrentDirectory">当前目录</span>
+      <h1 id="artifacts-heading"><span aria-hidden="true">📦</span> <span data-i18n="airDirArtifacts">本目录产物</span></h1>
+      <p id="artifacts-workspace"></p>
+    </div>
+    <div id="artifacts-tools">
+      <button id="artifacts-refresh" type="button" data-i18n="taskArtifactsRefresh">刷新</button>
+      <a id="artifacts-manage" href="/manage?view=docs" target="_blank" rel="noopener noreferrer"
+         data-i18n="taskArtifactsManage">全部服务与文档 ↗</a>
+    </div>
+  </header>
+  <!-- 排序是服务端给的（永久保留 → 置顶 → 最后生成时间），这行顺便当图例用。 -->
+  <p id="artifacts-hint" data-i18n="airDirArtifactsHint">永久保留的排最上，其次是置顶，其余按最后生成时间</p>
+  <p id="artifacts-status" role="status" hidden></p>
+  <ul id="artifacts-list"></ul>
+  <script src="air-artifacts-page.js"></script>
+</body>
+</html>

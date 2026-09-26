@@ -647,11 +647,10 @@
   <script src="air-worktrees.js"></script>
   <script src="air-directory-nav.js"></script>
   <!-- 目录首页「本目录产物」：入口按钮插在工具条的「备忘」旁边（可见性跟着它走），
-       面板自己建、数据自己按 URL 里的目录 id 拉（GET /api/docs-registry?dir=…）。
-       自持 DOM 与状态，不经 air.js —— air.js 卡在行数棘轮的天花板上，一行也加不了；
-       它盯 #directory-memo.hidden / #directory-name 的 DOM 变化来对齐，理由写在
-       public/air-artifacts.js 里。必须排在 air.js 前面：DOMContentLoaded 里挂载时
-       #directory-memo 与 #directory-worktrees 都已在静态 HTML 里。 -->
+       点开的是单独一页 /artifacts.html?dirId=…（列表、🔒 永久保留、📌 置顶都在那页里）。
+       自持 DOM，不经 air.js —— air.js 卡在行数棘轮的天花板上，一行也加不了；它盯
+       #directory-memo.hidden 对齐显隐，理由写在 public/air-artifacts.js 里。必须排在
+       air.js 前面：DOMContentLoaded 里挂载时 #directory-memo 已在静态 HTML 里。 -->
   <script src="air-artifacts.js"></script>
   <script src="air.js"></script>
   <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->

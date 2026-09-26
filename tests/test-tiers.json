@@ -718,6 +718,15 @@
       ]
     },
     {
+      "path": "tests/test-air-artifacts-page-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-air-bridges-cdp.js",
       "tier": "flow",
       "lane": "cdp",
