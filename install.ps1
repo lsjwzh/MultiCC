@@ -1,5 +1,5 @@
 # MultiCC Windows one-click installer (standalone package)
-# MultiCC version 2.1.2
+# MultiCC version 2.1.3
 
 [CmdletBinding()]
 param(
@@ -25,7 +25,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 # Keep this in sync with package.json when cutting a release. The stable raw
 # URL and the release asset are intentionally pinned to the same immutable tag.
-$InstallerVersion = '2.1.2'
+$InstallerVersion = '2.1.3'
 $Repository = 'lsjwzh/MultiCC'
 $ReleasesUrl = "https://github.com/$Repository/releases"
 $LatestApi = "https://api.github.com/repos/$Repository/releases/latest"

@@ -385,6 +385,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/image_annotate_format_test.dart",
+      "tier": "core",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/input_bar_keyboard_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -1161,6 +1166,15 @@
       ]
     },
     {
+      "path": "tests/test-assist-snapshots.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-attribution-mode.js",
       "tier": "core",
       "lane": "deterministic",
@@ -1389,6 +1403,15 @@
       "owner": "npm:test:cdp",
       "entrypoints": [
         "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-chat-annotate.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
       ]
     },
     {

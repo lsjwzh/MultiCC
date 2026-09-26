@@ -2,6 +2,25 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.1.3 — Terminals you can actually work in, and screenshots you can point at (2026-09-26)
+
+### Highlights
+
+- **Point at a screenshot instead of describing it** — a remote assist screenshot can be annotated in the web lightbox or in the App's annotation page: points, boxes and arrows with notes, serialized into a text block the agent reads. The block is byte-identical across the web editor, the App and the agent-side contract, so an annotation made on either end arrives with the same meaning. Screenshots are swept after 7 days per file, emptied session directories are dropped, and symlinks are left alone.
+- **The terminal page became a workspace** — an info bar names the cwd, worktree, branch and the provider·model the terminal runs on, with switching between terminals in the same directory. Sessions gain find, font zoom and shortcuts, and a reconnect or a return to the page replays the screen instead of doubling the scrollback.
+- **Every terminal row says whether it is still usable** — a status dot, how long it has been idle, rename and copy id, plus two repairs: delete (behind a second confirmation) and restart, which also heals a terminal whose managed route has died.
+- **New terminals are configured the way chat is** — pick the CLI first, then Provider and model, in the same dialog the chat composer uses.
+- **Entering a terminal no longer returns 409** — the managed route for a terminal session now carries the capability token.
+- **The CLI catalog is two layers** — family × scenario, with derived lanes. `claude-exp` is Claude and `codex-exp` is Codex again, and one-shot lanes left the chat picker.
+- **Deleting a referenced provider shows what references it** — a structured list of the sessions and configurations involved, with an explicit force delete, instead of a refusal with nothing to act on.
+- **The Air directory overview is five operational stat cards** — each one a quick filter. Active counts what is actually running rather than the unarchived backlog.
+- **The pending-answer bubble can be dragged**, and there is a rebase button next to merge.
+
+### Release integrity
+
+- The reviewed core set was re-audited and the tier manifest is complete again: the three human-assist annotation tests are registered as core, and the release core assertion — red on main since `tests/test-global-lane-tier-alias.js` was registered without moving it — is back in step with the manifest.
+- The monitor-admission core tests no longer race the CLI child they spawn: three of them probed the background hold with a fixed 500ms window, which a loaded machine misses while the child is still starting, so they failed a turn that was in fact held correctly. They now wait for the child's own output before asking whether the turn settled. The file was red on main — 5 of 17 failing on a clean checkout — before this release.
+
 ## v2.1.2 — Upgrading from an installation the installer cannot see (2026-09-26)
 
 ### Highlights

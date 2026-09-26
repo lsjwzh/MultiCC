@@ -120,15 +120,31 @@ test('core runner covers every selected path and expands declared variants', () 
   // scrollback. It is a plain test() over the transport with a fake WebSocketChannel
   // and a stubbed ticket HTTP client: no network, simulator, clock, port, FS or
   // process — safe for the release core tier. 304 + 1 = 305.
-  assert.equal(core.length, 305, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 305);
+  // Re-audited for the v2.1.3 release. tests/test-global-lane-tier-alias.js had
+  // been registered as core by an earlier tranche without moving these numbers,
+  // which left this assertion red on main: 305 + 1 = 306. It is a genuine core
+  // invariant (a tier alias must resolve inside the lane that owns the wire
+  // model, not globally) and it is hermetic — plain objects and source text, no
+  // clock, port, FS or process — so it stays in the release tier. This tranche
+  // then registers three more, all of them the human-assist annotation contract:
+  // tests/test-chat-annotate.js (the byte-exact block the web lightbox emits and
+  // the App must reproduce, checked against public/chat-annotate.js and the
+  // agent-side contract in src/chat/host-prompts.js), tests/test-assist-snapshots.js
+  // (the 7-day screenshot retention sweep: per-file window, emptied session dirs
+  // dropped, symlinks left alone, unbounded roots refused, data-dir isolation),
+  // and app/test/image_annotate_format_test.dart (the same contract on the Dart
+  // side, a plain test() with no widget tree). None of the three touches the
+  // network, a simulator, a clock, a port, a live service or another process.
+  // 306 + 3 = 309.
+  assert.equal(core.length, 309, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 309);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 261);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 264);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
-  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 20,
+  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 21,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
   const expectedPaths = core.flatMap(entry => Array.from(
@@ -136,8 +152,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 288,
-    '285 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 291,
+    '288 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

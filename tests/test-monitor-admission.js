@@ -75,12 +75,23 @@ test('background hold releases after quiet, waits out a busy self-wake at the ca
   assert.equal(idle.start(main), false, 'nothing to hold without background work');
 });
 
-async function until(predicate) {
+async function until(predicate, message = 'Monitor notification did not complete') {
   const deadline = Date.now() + 10000;
   while (!predicate()) {
-    if (Date.now() > deadline) throw new Error('Monitor notification did not complete');
+    if (Date.now() > deadline) throw new Error(message);
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+}
+
+// Every `real …` test drives a spawned CLI child. Its first request reaches the
+// fake upstream well after `send` returns, and how long that takes is the
+// machine's problem, not the contract's: on a loaded host the child needs more
+// than the 500ms `settled` window just to boot, so probing the hold before the
+// child has said anything reads an empty transcript and fails a turn that is
+// in fact held correctly. Wait for the child's own output first, then ask
+// whether the turn settled — the hold is then observed, not raced.
+async function untilRequests(s, count) {
+  await until(() => s.main.length >= count, `the CLI child never issued ${count} main requests`);
 }
 
 for (const lane of ['sdk', 'legacy']) test(`real ${lane} Monitor holds its turn open: events and end stream into that turn, never a 🔇`, { timeout: 30000 }, async t => {
@@ -340,6 +351,7 @@ const settled = promise => Promise.race([promise.then(() => true, () => true),
 for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Bash finishing after its answer continues that same turn`, { timeout: 40000 }, async t => {
   const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null });
   const turn = s.turn('Start the background job');
+  await untilRequests(s, 2);
   assert.equal(await settled(turn), false, 'the answer is held while the job runs');
   assert.equal(s.main.length, 2);
   s.go('bg-go');
@@ -354,6 +366,7 @@ for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Bash finishi
 for (const lane of ['sdk', 'legacy']) test(`real ${lane} background Agent finishing after its answer continues that same turn with its report`, { timeout: 40000 }, async t => {
   const s = await residentSession(t, lane, { main: n => n === 1 ? backgroundAgent : null, sub: subagentReply });
   const turn = s.turn('Research in the background');
+  await untilRequests(s, 2);
   assert.equal(await settled(turn), false, 'the answer is held while the agent runs');
   assert.equal(s.main.length, 2);
   s.go('agent-go');
@@ -395,7 +408,8 @@ test('real sdk turn released at the hold cap with a background agent mid-request
 for (const lane of ['sdk', 'legacy']) test(`real ${lane} cancelling a held turn keeps its answer and stops the background work`, { timeout: 40000 }, async t => {
   const s = await residentSession(t, lane, { main: n => n === 1 ? slowBash : null });
   const turn = s.turn('Start the background job');
-  assert.equal(await settled(turn), false);
+  await untilRequests(s, 2);
+  assert.equal(await settled(turn), false, 'the answer is held while the job runs');
   s.stream.cancel(s.name);
   const response = await turn;
   assert.equal((response.type === 'result' ? response : response.result).result, 'sdk-answer-2', 'the held answer completes the turn');
