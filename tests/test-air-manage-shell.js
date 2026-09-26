@@ -131,39 +131,79 @@ test('the docs panel switches 按时间 / 按目录 and toggles 永久保留 ind
   assert.match(css, /\.air-doc-group-head \{/);
 });
 
-// 目录首页那一格走独立模块（public/air-artifacts.js）：air.js 卡在行数棘轮的天花板上
+// 目录首页那个入口走独立模块（public/air-artifacts.js）：air.js 卡在行数棘轮的天花板上
 // （scripts/check-source-line-budget.js 登记的高水位就是它当前的行数），一行也加不了，
-// 所以入口按钮、面板与数据都由模块自己接线，可见性靠盯 #directory-memo.hidden 对齐。
-test('the directory home artifact panel is a self-wiring module that never touches air.js', () => {
+// 所以入口按钮由模块自己接线，可见性靠盯 #directory-memo.hidden 对齐。
+// 清单本身不在目录页里展开，而是**单独一页** /artifacts.html（同 /memo.html 的模式，
+// 也是 App 那边 directory_artifacts_screen.dart 的做法）：展开会把「最近任务 / Git /
+// 新任务输入框」整段推走，而且产物是需要一边看一边点开的东西，该有自己的地址。
+test('the directory home artifact entry is a self-wiring module that opens a standalone page', () => {
   const html = read('public/air.html');
   const js = read('public/air.js');
+  const css = read('public/air.css');
   const artifacts = read('public/air-artifacts.js');
   assert.match(html, /src="air-artifacts\.js"/);
   assert.ok(html.indexOf('src="air-artifacts.js"') < html.indexOf('src="air.js"'), '模块要先于 air.js 注册');
   // 入口按钮的形状：id / aria / 图标 + 内层标签（data-i18n 挂内层，applyI18n 才不会
   // 把图标一起冲掉 —— 同 #directory-terminal-new）。
   assert.match(artifacts, /toggle\.id = 'directory-artifacts'/);
-  assert.match(artifacts, /toggle\.setAttribute\('aria-controls', 'directory-artifacts-panel'\)/);
+  assert.match(artifacts, /toggle\.setAttribute\('data-i18n-aria-label', 'airDirArtifactsOpen'\)/);
   assert.match(artifacts, /node\('span', '📦'\)/);
   assert.match(artifacts, /label\.setAttribute\('data-i18n', 'airDirArtifacts'\)/);
   assert.match(artifacts, /memo\.after\(toggle\)/);
-  // 可见性：盯 #directory-memo 的 hidden，并顺带盯 #directory-name（air.js 换目录
-  // 走 pushState，不触发 popstate，但每次渲染都会重写侧栏目录名）。
-  assert.match(artifacts, /observer\.observe\(memo, \{ attributes: true, attributeFilter: \['hidden'\] \}\)/);
-  assert.match(artifacts, /observer\.observe\(name, \{ childList: true, characterData: true, subtree: true \}\)/);
-  // 数据：URL 里的目录 id → /api/air 里的绝对路径 → ?dir= 作用域的登记表。
+  // 点了是开一页，不是展开一块：URL 带目录 id（那一页自己会拿 /api/air 换成绝对路径）。
   assert.match(artifacts, /new URLSearchParams\(root\.location\.search\)\.get\('dir'\)/);
-  assert.match(artifacts, /fetchJson\('\/api\/air'/);
-  assert.match(artifacts, /\/api\/docs-registry\?dir=\$\{encodeURIComponent\(path\)\}/);
-  // 服务不在这格里（服务与文档那一格管），只留一扇到那里的门。
-  assert.match(artifacts, /entry\.kind !== 'service'/);
-  assert.match(artifacts, /manage\.href = '\/manage\?view=docs'/);
-  assertLocalized(artifacts, 'public/air-artifacts.js', 'taskArtifactsManage', '全部服务与文档 ↗');
-  assertLocalized(artifacts, 'public/air-artifacts.js', 'airDirArtifactsEmpty', '本目录还没有产物。');
-  assertLocalized(artifacts, 'public/air-artifacts.js', 'airDirArtifactsHint', '永久保留的排最上，其次是置顶，其余按最后生成时间');
-  // 两颗按钮各发各的 PATCH，与面板那一格同义。
-  assert.match(artifacts, /\{ permanent: !entry\.permanent \}/);
-  assert.match(artifacts, /\{ pinned: !entry\.pinned \}/);
+  assert.match(artifacts, /root\.open\(`\/artifacts\.html\?dirId=\$\{encodeURIComponent\(dirId\)\}`/);
+  // 目录页里不再有内联面板：面板的建法（ensurePanel）、那一页专属的行样式与那条
+  // docs-registry 请求都不该留下（行与请求都搬去了那一页）。
+  assert.doesNotMatch(artifacts, /directory-artifact-row|docs-registry|ensurePanel/);
+  assert.doesNotMatch(css, /directory-artifacts-panel|directory-artifact-row|directory-artifacts-manage/);
+  // 排版：两个入口成组贴右边界 —— 备忘吃掉左侧剩余空间，产物紧跟其后当最右那颗。
+  assert.match(css, /#directory-memo \{ flex-shrink: 0; margin-left: auto; \}/);
+  assert.match(css, /#directory-artifacts \{ flex-shrink: 0; \}/);
+  assert.doesNotMatch(css, /\.directory-toolbar \{[^}]*justify-content: space-between/);
+  // 可见性：盯 #directory-memo 的 hidden（air.js 每次渲染都写它）。
+  assert.match(artifacts, /observer\.observe\(memo, \{ attributes: true, attributeFilter: \['hidden'\] \}\)/);
   // 设计决定：air.js 里没有这个入口，一个字节都没动。
   assert.doesNotMatch(js, /directory-artifacts/);
+});
+
+// 那一页自己的骨架与数据：public/artifacts.html + artifacts.css + air-artifacts-page.js。
+// 数据与目录页里原来那块完全同源：URL 里的目录 id → /api/air 里的绝对路径 →
+// ?dir= 作用域的登记表，服务滤掉（服务与文档那一格管），只留一扇到那里的门。
+test('the standalone artifacts page owns the list, its two PATCH actions and the docs door', () => {
+  const html = read('public/artifacts.html');
+  const page = read('public/air-artifacts-page.js');
+  const css = read('public/artifacts.css');
+  assert.match(html, /<link rel="stylesheet" href="artifacts\.css"/);
+  assert.match(html, /src="air-artifacts-page\.js"/);
+  // 壳的顺序：auth（?token= 换 cookie）→ i18n（两本词典）→ 这一页自己的逻辑。
+  for (const name of ['error-envelope.js', 'auth-client.js', 'i18n-catalog.js', 'i18n.js']) {
+    assert.ok(html.indexOf(`src="${name}"`) < html.indexOf('src="air-artifacts-page.js"'), `${name} must load before the page module`);
+  }
+  for (const id of ['artifacts-list', 'artifacts-status', 'artifacts-workspace', 'artifacts-refresh', 'artifacts-manage']) {
+    assert.match(html, new RegExp(`id="${id}"`), `the page must own #${id}`);
+  }
+  assert.match(page, /new URLSearchParams\(root\.location\.search\)/);
+  assert.match(page, /params\.get\('dirId'\)/);
+  assert.match(page, /fetchJson\('\/api\/air'/);
+  assert.match(page, /\/api\/docs-registry\?dir=\$\{encodeURIComponent\(path\)\}/);
+  assert.match(page, /entry\.kind !== 'service'/);
+  // 两颗按钮各发各的 PATCH，与「服务与文档」那一格同义。
+  assert.match(page, /\{ permanent: !entry\.permanent \}/);
+  assert.match(page, /\{ pinned: !entry\.pinned \}/);
+  assertLocalized(page, 'public/air-artifacts-page.js', 'airDirArtifactsEmpty', '本目录还没有产物。');
+  assertLocalized(page, 'public/air-artifacts-page.js', 'airUnknownDirectory', '未知目录', "setStatus\\(path \\? null : 'airUnknownDirectory'\\)");
+  assert.match(page, /href = entry\.url \|\| '#'/);
+  // 标题、说明与那扇门是壳里的静态文案（applyI18n 按 data-i18n 填），所以这几条断在
+  // artifacts.html 上：词典里还写着这句中文，页面确实按 key 取它。
+  assertLocalized(html, 'public/artifacts.html', 'airCurrentDirectory', '当前目录', 'data-i18n="airCurrentDirectory"');
+  assertLocalized(html, 'public/artifacts.html', 'airDirArtifacts', '本目录产物', 'data-i18n="airDirArtifacts"');
+  assertLocalized(html, 'public/artifacts.html', 'airDirArtifactsHint', '永久保留的排最上，其次是置顶，其余按最后生成时间', 'data-i18n="airDirArtifactsHint"');
+  assertLocalized(html, 'public/artifacts.html', 'taskArtifactsManage', '全部服务与文档 ↗', 'data-i18n="taskArtifactsManage"');
+  assert.match(html, /href="\/manage\?view=docs"/);
+  // 排版：列表自己带行高（不被拉长），窄屏把两颗按钮折到下一行。
+  assert.match(css, /#artifacts-list \{[^}]*align-content: start/);
+  assert.match(css, /\.directory-artifact-actions \{ flex: 0 0 auto; display: flex; gap: 5px; \}/);
+  assert.match(css, /@media \(max-width: 520px\)/);
 });
