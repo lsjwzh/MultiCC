@@ -700,6 +700,10 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    色条和数字都收了一档，说明文字也从继承来的 14px 落到 10.5px（原来它比标题
    还大，是这张卡显胖的主要原因）。 */
 .directory-stat { min-width: 0; padding: 10px 12px; border: 1px solid #dbe6f1; border-radius: 12px; background: rgba(255, 255, 255, .86); box-shadow: 0 6px 20px #35577d08; }
+.directory-stat[type='button'] { font: inherit; text-align: left; cursor: pointer; }
+.directory-stat[type='button']:hover { border-color: #b7c9db; background: rgba(255, 255, 255, 1); }
+.directory-stat[type='button']:focus-visible { outline: 2px solid #4d9bea; outline-offset: 2px; }
+.directory-stat[type='button']:active { transform: translateY(1px); }
 .directory-stat::before { content: ""; display: block; width: 18px; height: 3px; margin-bottom: 6px; border-radius: 4px; background: #aebfd0; }
 .directory-stat.blue::before { background: #4d9bea; }
 .directory-stat.green::before { background: #43b88a; }
