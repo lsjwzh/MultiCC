@@ -70,14 +70,25 @@
   // 刚删掉的那些先在本机记一笔：`ctx.data` 是上一次快照，删完不等下一次轮询就把这一行
   // 抹掉，数字也跟着变。快照回头自然不会再带它们。
   const removed = new Set();
-  // 刚改的名字同理：改完立刻重画，不等下一轮快照把新 label 带回来。
+  // 刚改的名字同理：改完立刻重画，不等下一轮快照把新 label 带回来。它只是过桥：快照
+  // 一带回同样的名字、或过了 15s，就让快照说了算 —— 否则别的设备后来再改名，这里永远
+  // 盖着自己那份旧名字。
   const renamed = new Map();
+  const RENAME_BRIDGE_MS = 15000;
 
   function terminations() {
     const sessions = ctx?.data?.sessions || [];
     return sessions.filter(session => (session.kind || 'terminal') === 'terminal'
       && session.dirId === dirId && !removed.has(session.id))
-      .map(session => (renamed.has(session.id) ? { ...session, label: renamed.get(session.id) } : session));
+      .map(session => {
+        const bridge = renamed.get(session.id);
+        if (!bridge) return session;
+        if ((session.label || session.id) === bridge.label || Date.now() - bridge.at > RENAME_BRIDGE_MS) {
+          renamed.delete(session.id);
+          return session;
+        }
+        return { ...session, label: bridge.label };
+      });
   }
 
   // 状态点与那两句话都只翻译服务端折好的 `state`（/api/air 的 sessions[].state），
@@ -184,10 +195,12 @@
     const next = root.prompt(translate('airTerminalRenamePrompt', { label }), label === session.id ? '' : label);
     // prompt 取消是 null，清空是 ''：只有前者算「不改」。
     if (next === null) return;
+    // 服务端 label 上限 80（超了回一句英文 400）；App 输入框同样 maxLength 80。
+    const value = next.trim().slice(0, 80);
     if (button) button.disabled = true;
     try {
-      await ctx.api(`/api/sessions/${encodeURIComponent(session.id)}`, { label: next.trim() }, 'PATCH');
-      renamed.set(session.id, next.trim());
+      await ctx.api(`/api/sessions/${encodeURIComponent(session.id)}`, { label: value }, 'PATCH');
+      renamed.set(session.id, { label: value || session.id, at: Date.now() });
       paintTerminals();
       ctx.notice?.(translate('airTerminalRenamed'));
     } catch (error) {
@@ -210,16 +223,18 @@
       }
     } catch (_) {}
     if (!copied) {
+      const area = node('textarea');
       try {
-        const area = node('textarea');
         area.value = session.id;
         area.style.position = 'fixed';
         area.style.opacity = '0';
         document.body.append(area);
         area.select();
         copied = document.execCommand('copy');
+      } catch (_) {
+      } finally {
         area.remove();
-      } catch (_) {}
+      }
     }
     ctx?.notice?.(copied
       ? translate('airTerminalIdCopied', { id: session.id })

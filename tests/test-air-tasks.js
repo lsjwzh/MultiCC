@@ -586,6 +586,9 @@ test('Air folds terminal liveness on the server so a row cannot report a dead pa
     ['broken', { id: 'broken', dirId: 'd1', kind: 'terminal', cli: 'claude', provider: 'relay-a' }],
     // 同样绑了托管 provider，但令牌还在：路由有效，按进程在不在报。
     ['routed', { id: 'routed', dirId: 'd1', kind: 'terminal', cli: 'claude', provider: 'relay-a', proxyRouteToken: 'tok' }],
+    // 以原生登录起的进程，事后才 PATCH 上 provider：记录有 provider 没令牌，但进程里根本
+    // 没烤代理地址，请求不会被拒 —— 不能报 route_dead。
+    ['patched', { id: 'patched', dirId: 'd1', kind: 'terminal', cli: 'claude', provider: 'relay-a' }],
     // createdAt 缺失的老记录不能把 NaN 塞进快照。
     ['undated', { id: 'undated', dirId: 'd1', kind: 'terminal', cli: 'claude' }],
     ['chat', { id: 'chat', dirId: 'd1', kind: 'chat', cli: 'claude' }],
@@ -593,6 +596,7 @@ test('Air folds terminal liveness on the server so a row cannot report a dead pa
   const sessions = new Map([
     ['live', { id: 'live', lastActivity: new Date(1_800_000_000_000), cwd: '/repo' }],
     ['broken', { id: 'broken', lastActivity: new Date(1_800_000_000_000), cwd: '/repo' }],
+    ['patched', { id: 'patched', lastActivity: new Date(1_800_000_000_000), cwd: '/repo', spawnedProvider: null }],
   ]);
   mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
     records, sessions, directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
@@ -601,7 +605,7 @@ test('Air folds terminal liveness on the server so a row cannot report a dead pa
   await handlers.get('/api/air')({}, res);
   const rows = Object.fromEntries(JSON.parse(res.body).sessions.map(row => [row.id, row]));
 
-  assert.deepEqual(Object.keys(rows).sort(), ['broken', 'gone', 'live', 'routed', 'undated'],
+  assert.deepEqual(Object.keys(rows).sort(), ['broken', 'gone', 'live', 'patched', 'routed', 'undated'],
     'chat sessions never become terminal rows');
   assert.equal(rows.live.state, 'running');
   assert.equal(rows.live.lastActivityAt, 1_800_000_000_000);
@@ -617,4 +621,5 @@ test('Air folds terminal liveness on the server so a row cannot report a dead pa
 
   assert.equal(rows.broken.state, 'route_dead', 'a lost route token outranks a live process');
   assert.equal(rows.routed.state, 'stopped', 'an intact route still reports the process, not the token');
+  assert.equal(rows.patched.state, 'running', 'judge the route by what the process was spawned with, not the later record');
 });

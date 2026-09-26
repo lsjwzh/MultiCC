@@ -587,7 +587,7 @@ const { findCodexSessionId } = createCodexSessionFinder({
 // stateful recoverTmuxSessions() (below) stays — it rebuilds core session state.
 const {
   TMUX_PREFIX, tmuxSessionName, tmuxListSessions, tmuxHasSession, tmuxCreateSession, tmuxResize,
-  applyMaxClientSize, tmuxKillSession, tmuxCapturePane, tmuxPaneTty,
+  applyMaxClientSize, tmuxKillSession, tmuxCaptureSnapshot, tmuxPaneTty, tmuxPaneActivity,
   tmuxWriteInput, startOutputCapture, stopOutputCapture,
 } = require('./src/tmux');
 
@@ -1145,7 +1145,10 @@ async function createSession(id) {
     appliedCols: 0,
     appliedRows: 0,
     createdAt: persisted ? new Date(persisted.createdAt) : new Date(),
-    lastActivity: new Date(),
+    lastActivity: (isRecovery && await tmuxPaneActivity(id)) || new Date(),
+    // Provider this process was actually spawned with; undefined when we only re-attached
+    // (then the persisted record is the best we know). /api/air route_dead reads it.
+    spawnedProvider: isRecovery ? undefined : (persisted?.provider || null),
     cwd,
     exitCheckTimer: null,
   };
@@ -2790,7 +2793,7 @@ mountWsConnectionRouter(wss, {
   resolveCwd,
   tmuxWriteInput,
   tmuxResize,
-  tmuxCapturePane,
+  tmuxCaptureSnapshot,
   applyMaxClientSize,
   pushOnInput,
   handleChatWs: (ws, req, urlObj) => chatTurnEngine.handleChatWs(ws, req, urlObj),

@@ -449,9 +449,11 @@ function describeMerge(state) {
     ahead: Number.isFinite(ms.ahead) ? ms.ahead : 0,
     note: null,
   };
-  if (ms.worktreeMissing) said.note = 'worktree 已回收';
+  // hibernated 也带 worktreeMissing:true（src/git/service.js），所以它得先判：
+  // 休眠是可恢复的，别说成「已回收」。
+  if (ms.reason === 'hibernated') said.note = '工作区已休眠';
+  else if (ms.worktreeMissing) said.note = 'worktree 已回收';
   else if (ms.reason === 'no-worktree') said.note = '无 worktree';
-  else if (ms.reason === 'hibernated') said.note = '工作区已休眠';
   else if (ms.conflict) said.note = '有冲突';
   return said;
 }
@@ -490,7 +492,7 @@ function buildTermContext(self, merge, rows, id) {
 
 function setChip(el, text, { warn = false, title = '' } = {}) {
   if (!el) return;
-  if (!text) { el.hidden = true; el.textContent = ''; return; }
+  if (!text) { el.hidden = true; el.textContent = ''; el.title = ''; return; }
   el.hidden = false;
   el.textContent = text;
   el.classList.toggle('warn', warn);
@@ -973,8 +975,13 @@ async function connect() {
         filesBrowsePath = null; // reset so panel loads new cwd on next open/refresh
         // 换了目录，信息条上那个 cwd 立刻就是错的。先用帧里带的顶上；分支和「无
         // worktree」那类话是旧目录的事实，一律清掉等重连后整份刷 —— 猜不得。
+        // 同目录切换器也是旧目录的事实：收成只剩自己，免得 ‹/› 跳进旧目录的终端。帧里的
+        // gen 先加一：在途的旧刷新回来时不许再把旧目录画回去。
+        _termCtxGen++;
         if (_termCtx && msg.cwd) {
-          paintTermInfo({ ..._termCtx, cwd: msg.cwd, worktree: worktreeNameOf(msg.cwd),
+          const self = _termCtx.siblings[_termCtx.index] || { id: currentSessionId, label: null, at: 0 };
+          paintTermInfo({ ..._termCtx, cwd: msg.cwd, worktree: worktreeNameOf(msg.cwd), dirId: null,
+            siblings: [self], index: 0,
             worktreeNote: null, branch: null, baseBranch: null, behind: 0, ahead: 0 });
         }
         _wsGen++;  // invalidate current onclose handler to prevent auto-reconnect
@@ -982,6 +989,8 @@ async function connect() {
         setTimeout(() => {
           connect();
           loadTerminalContext();
+          // 服务端要等 worktree 搬完才改 dirId/分支，大仓库 800ms 常常不够：晚些再补一次。
+          setTimeout(loadTerminalContext, 4000);
           if (filesPanelOpen) setTimeout(() => loadFiles(null), 1000);
         }, 800);
       } else if (msg.type === 'file_saved') {

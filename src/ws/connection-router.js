@@ -33,7 +33,7 @@ function mountWsConnectionRouter(wss, deps) {
     resolveCwd,
     tmuxWriteInput,
     tmuxResize,
-    tmuxCapturePane,
+    tmuxCaptureSnapshot,
     applyMaxClientSize,
     pushOnInput,
     handleChatWs,
@@ -330,7 +330,7 @@ function mountWsConnectionRouter(wss, deps) {
     // is skipped so a brand-new pane is not pushed a screenful of blank lines.
     let snapshot = '';
     try {
-      if (typeof tmuxCapturePane === 'function') snapshot = (await tmuxCapturePane(sessionId)) || '';
+      if (typeof tmuxCaptureSnapshot === 'function') snapshot = (await tmuxCaptureSnapshot(sessionId)) || '';
     } catch (_) {}
     if (ws.readyState !== WebSocket.OPEN) return;
     if (snapshot.trim()) sendWs(ws, { type: 'snapshot', data: snapshot });
