@@ -143,6 +143,14 @@ class TerminalService {
         final data = msg['data'];
         if (data is String) terminal.write(data);
         break;
+      case 'snapshot':
+        // 服务端在 attach 时补的「现在屏幕上是这样」（含 500 行回看）。先清屏（3J 连回看
+        // 一起清）再写：重连 / 从后台切回来是**替换**而不是追加，否则每断一次就多一份
+        // 重复内容。（xterm.dart 没有 reset()，所以走 clear 那套转义序列。）
+        terminal.write('\x1b[2J\x1b[3J\x1b[H');
+        final data = msg['data'];
+        if (data is String) terminal.write(data);
+        break;
       case 'restart':
         terminal.write('\x1b[2J\x1b[H\x1b[33m[Restarting Claude…]\x1b[0m\r\n');
         break;

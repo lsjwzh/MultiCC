@@ -114,15 +114,21 @@ test('core runner covers every selected path and expands declared variants', () 
   // behind 「终端里 409 provider route attempt is no longer active」). It is a pure
   // in-memory unit test: fake session Map, injected encoder/mint, no clock, port,
   // FS or process — safe for the release core tier. 303 + 1 = 304.
-  assert.equal(core.length, 304, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 304);
+  // Re-audited: this tranche registers app/test/terminal_service_test.dart as core —
+  // the terminal attach snapshot must replace the screen rather than append to it,
+  // which is what keeps a reconnect or a return from background from doubling the
+  // scrollback. It is a plain test() over the transport with a fake WebSocketChannel
+  // and a stubbed ticket HTTP client: no network, simulator, clock, port, FS or
+  // process — safe for the release core tier. 304 + 1 = 305.
+  assert.equal(core.length, 305, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 305);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
   assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 261);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
-  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 19,
+  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 20,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
   const expectedPaths = core.flatMap(entry => Array.from(

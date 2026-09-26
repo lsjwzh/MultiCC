@@ -109,6 +109,25 @@ test('终端页：查找、字号缩放、快捷键与服务端消息落地', as
       '⌘K 之后第一行要空掉',
     );
 
+    // ── 快照：重连时服务端补的那一屏是「替换」不是「追加」 ──────────────────
+    // 放在最后：它会把上面查找/清屏依赖的那几行 alpha 冲掉。
+    const dumpScreen = () => page.evaluate(
+      `(()=>{const b=window.MultiCCTerminal.terminal.buffer.active;let s='';`
+      + `for(let i=0;i<b.length;i++)s+=b.getLine(i).translateToString(true)+'\\n';return s;})()`,
+    );
+    await page.evaluate(`window.MultiCCTerminal.applyServerMessage({ type: 'output', data: 'stale line\\r\\n' })`);
+    assert.ok(
+      await page.waitFor(`window.MultiCCTerminal.terminal.buffer.active.getLine(0)?.translateToString(true)==='stale line'`),
+      '重连前的内容先落到屏上',
+    );
+    await page.evaluate(`window.MultiCCTerminal.applyServerMessage({ type: 'snapshot', data: 'fresh screen\\r\\n' })`);
+    assert.ok(
+      await page.waitFor(`window.MultiCCTerminal.terminal.buffer.active.getLine(0)?.translateToString(true)==='fresh screen'`),
+      '快照要顶到第一行：' + await page.evaluate(`window.MultiCCTerminal.terminal.buffer.active.getLine(0)?.translateToString(true)`),
+    );
+    assert.ok(!(await dumpScreen()).includes('stale line'),
+      '快照是替换：刷新一次不该在屏上多留一份旧内容');
+
     assert.deepEqual(await page.evaluate(`window.__errors||[]`), [], '页面上不该有未捕获异常');
   });
   if (screenshots.length) console.log('screenshots:', screenshots.join(' '));

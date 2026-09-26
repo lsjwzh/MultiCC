@@ -723,6 +723,12 @@ async function connect() {
         if (location.search !== `?${_urlParams.toString()}`) {
           history.replaceState(null, '', newUrl);
         }
+      } else if (msg.type === 'snapshot') {
+        // 服务端在 attach 时补的「现在屏幕上是这样」（含 500 行回看）。先 reset 再写，
+        // 所以重连/刷新是**替换**而不是追加 —— 否则刷新一次就多一份重复内容。
+        _writeBuf = '';
+        term.reset();
+        term.write(msg.data, () => term.scrollToBottom());
       } else if (msg.type === 'output' || msg.type === 'error') {
         if (_redrawing) resetRedrawTimer();
         // Batch writes: accumulate data and flush via rAF to avoid flooding xterm.js
