@@ -13,7 +13,7 @@ import 'air_task_status.dart';
 /// Air 的侧栏（Web `public/air.html` 的 `#sidebar`）。
 ///
 /// 频次收敛和 Web 一样：每天点的（当前工作目录、控制台、定时任务、最近任务、
-/// 新任务）留在外面；偶尔点的（服务与文档、记忆图谱、设置中心、任务看板、开发者
+/// 新任务）留在外面；偶尔点的（服务与文档、记忆图谱、设置中心、开发者
 /// 选项）折进「更多与系统」。手机上没有 ⌘K，找全部目录的入口就是顶上那张目录
 /// 卡片。
 ///
@@ -35,7 +35,6 @@ class AirSidebar extends StatelessWidget {
     required this.onOpenSearch,
     required this.onOpenConsole,
     required this.onOpenSchedules,
-    required this.onOpenTaskBoard,
     required this.onCreateTask,
     required this.onOpenTask,
     required this.onOpenDocs,
@@ -76,7 +75,6 @@ class AirSidebar extends StatelessWidget {
   final VoidCallback onOpenSearch;
   final VoidCallback onOpenConsole;
   final VoidCallback onOpenSchedules;
-  final VoidCallback onOpenTaskBoard;
   final VoidCallback onCreateTask;
   final ValueChanged<AirTask> onOpenTask;
 
@@ -295,7 +293,6 @@ class AirSidebar extends StatelessWidget {
               onOpenMemory: onOpenMemory,
               onOpenTaskGraph: onOpenTaskGraph,
               onOpenSettings: onOpenSettings,
-              onOpenTaskBoard: onOpenTaskBoard,
               onOpenAllDestinations: onOpenAllDestinations,
               onOpenDestination: onOpenDestination,
               onOpenVoiceCall: onOpenVoiceCall,
@@ -723,7 +720,6 @@ class _MoreSection extends StatelessWidget {
     required this.onOpenMemory,
     required this.onOpenTaskGraph,
     required this.onOpenSettings,
-    required this.onOpenTaskBoard,
     required this.onOpenAllDestinations,
     required this.ops,
     required this.onOpenPush,
@@ -738,7 +734,6 @@ class _MoreSection extends StatelessWidget {
   final VoidCallback onOpenMemory;
   final VoidCallback onOpenTaskGraph;
   final VoidCallback onOpenSettings;
-  final VoidCallback onOpenTaskBoard;
   final VoidCallback onOpenAllDestinations;
   final AirOpsStore ops;
   final VoidCallback onOpenPush;
@@ -873,22 +868,16 @@ class _MoreSection extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          // App 独有三行：Web Air 的侧栏里没有它们（看板在 Web 是顶层入口、
+          // App 的额外入口：Web Air 的侧栏里没有它们（
           // 「全部功能」走别的路、语音通话是原生独占）。单开一格，不跟上面那四个
           // 全局页挤在同一个框里 —— 「服务与文档 / 记忆图谱 / 任务图谱 / 设置中心」
-          // 是一组，多塞三行进去，这一组的边界就说不清是哪四行了。
+          // 是一组，多塞额外入口进去，这一组的边界就说不清是哪四行了。
           _SideGroupBox(
             groupKey: 'air-group-entries',
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
               child: _Grid2(
                 children: [
-                  _CompactRow(
-                    semanticKey: 'air-more-board',
-                    icon: Icons.view_kanban_outlined,
-                    label: '查看任务看板',
-                    onTap: onOpenTaskBoard,
-                  ),
                   _CompactRow(
                     semanticKey: 'air-more-all',
                     icon: Icons.apps_rounded,

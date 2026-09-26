@@ -10,6 +10,8 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../screens/docs_registry_screen.dart';
+import '../screens/directory_artifacts_screen.dart';
+import '../screens/memo_screen.dart';
 import '../screens/aux_screen.dart';
 import '../screens/memory_graph_screen.dart';
 import '../screens/push_settings_screen.dart';
@@ -24,6 +26,7 @@ import '../services/settings_service.dart';
 import '../theme.dart';
 import '../utils/format.dart';
 import 'air/air_console.dart';
+import 'air/air_directory_search.dart';
 import 'air/air_destinations.dart';
 import 'air/air_fleet_sharing.dart';
 import 'air/air_new_task_sheet.dart';
@@ -38,7 +41,7 @@ import 'air/air_task_details.dart';
 import 'air/air_task_status.dart';
 import 'air/air_task_actions.dart';
 import 'create_session_dialog.dart';
-import 'task_board_view.dart';
+
 import 'tour_overlay.dart';
 import 'workspace_navigation_drawer.dart';
 
@@ -89,8 +92,6 @@ enum _AirMode { tasks, library }
 /// 只显示一种 —— 终端不混进任务清单，任务行也不混进终端列表。
 enum _DirectoryMode { chat, terminal }
 
-enum _DirectoryTaskStatus { open, all, archived }
-
 enum _DirectoryTaskSort { message, visit }
 
 class _AirTasksViewState extends State<AirTasksView>
@@ -128,8 +129,11 @@ class _AirTasksViewState extends State<AirTasksView>
   bool _reclaiming = false;
   bool _showAll = false;
   final _taskSearch = TextEditingController();
+  late final _directorySearch = AirDirectorySearch(_service)
+    ..addListener(_searchChanged);
+  bool _fullText = true;
   String _taskQuery = '';
-  _DirectoryTaskStatus _taskStatus = _DirectoryTaskStatus.open;
+  AirDirectoryTaskFilter _taskStatus = AirDirectoryTaskFilter.open;
   _DirectoryTaskSort _taskSort = _DirectoryTaskSort.message;
   _AirMode _mode = _AirMode.tasks;
 
@@ -163,6 +167,7 @@ class _AirTasksViewState extends State<AirTasksView>
 
   @override
   void dispose() {
+    _directorySearch.dispose();
     _timer?.cancel();
     _taskSearch.dispose();
     widget.settings.advancedMode.removeListener(_onAdvancedModeChanged);
@@ -249,6 +254,7 @@ class _AirTasksViewState extends State<AirTasksView>
   }
 
   void _selectDirectory(String dirId) {
+    _directorySearch.reset();
     _closeDrawer();
     setState(() {
       _directoryId = dirId;
@@ -257,7 +263,7 @@ class _AirTasksViewState extends State<AirTasksView>
       _dirMode = _DirectoryMode.chat;
       _showAll = false;
       _taskQuery = '';
-      _taskStatus = _DirectoryTaskStatus.open;
+      _taskStatus = AirDirectoryTaskFilter.open;
       _taskSearch.clear();
     });
   }
@@ -368,7 +374,9 @@ class _AirTasksViewState extends State<AirTasksView>
       await _refresh();
     } catch (error) {
       if (mounted) {
-        setState(() => _error = t('restartFailed', {'error': error.toString()}));
+        setState(
+          () => _error = t('restartFailed', {'error': error.toString()}),
+        );
       }
     }
   }
@@ -1260,33 +1268,6 @@ class _AirTasksViewState extends State<AirTasksView>
     await Navigator.of(context).push(MaterialPageRoute<void>(builder: builder));
   }
 
-  void _openTaskBoard() {
-    final dirId = _directoryId;
-    if (dirId == null) return;
-    final mgr = context.read<SessionManager>();
-    unawaited(
-      _push(
-        (_) => TaskBoardView(
-          settings: widget.settings,
-          dirId: dirId,
-          mgr: mgr,
-          onOpenSession: (sessionId, {String? focusMessageId}) {
-            final session = mgr.sessions
-                .where((s) => s.id == sessionId)
-                .firstOrNull;
-            if (session != null) {
-              mgr.openSessionWithFocus(
-                session,
-                focusMessageId: focusMessageId,
-                historyArchive: true,
-              );
-            }
-          },
-        ),
-      ),
-    );
-  }
-
   /// 全部功能：老首页抽屉里那张完整的表。侧栏只摆常用的几个，剩下的从这里进
   /// —— 侧栏变窄不该让任何一个页面变成打不开。
   Future<void> _openAllDestinations() async {
@@ -1379,12 +1360,15 @@ class _AirTasksViewState extends State<AirTasksView>
     });
     if (_showAll) {
       final needle = _taskQuery.trim().toLowerCase();
+      if (needle.isNotEmpty && _directorySearch.ids != null) {
+        final byId = {for (final task in rows) task.id: task};
+        return [
+          for (final id in _directorySearch.ids!)
+            if (byId[id] != null) byId[id]!,
+        ];
+      }
       return rows.where((task) {
-        final statusMatches = switch (_taskStatus) {
-          _DirectoryTaskStatus.all => true,
-          _DirectoryTaskStatus.archived => task.status == 'archived',
-          _DirectoryTaskStatus.open => !task.closed,
-        };
+        final statusMatches = needle.isNotEmpty || _taskStatus.matches(task);
         return statusMatches &&
             (needle.isEmpty || task.title.toLowerCase().contains(needle));
       }).toList();
@@ -1395,6 +1379,17 @@ class _AirTasksViewState extends State<AirTasksView>
   int _taskSortAt(AirTask task) => _taskSort == _DirectoryTaskSort.visit
       ? (_store?.visitedAt(task.id) ?? 0)
       : task.lastMessageAt;
+
+  void _searchChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _searchDirectory(String value) {
+    setState(() {
+      _taskQuery = value;
+      _directorySearch.search(value, _directoryId, _fullText);
+    });
+  }
 
   Widget _taskSortButton(_DirectoryTaskSort value, String label) {
     final selected = _taskSort == value;
@@ -1499,10 +1494,7 @@ class _AirTasksViewState extends State<AirTasksView>
         onOpenSearch: _openSearch,
         onOpenConsole: _openConsole,
         onOpenSchedules: _openSchedules,
-        onOpenTaskBoard: () {
-          _closeDrawer();
-          _openTaskBoard();
-        },
+
         onCreateTask: () {
           _closeDrawer();
           unawaited(_newTask());
@@ -1625,13 +1617,6 @@ class _AirTasksViewState extends State<AirTasksView>
           // 它们要的是一个**打开着的任务**，而 App 里打开任务是把聊天页升起来盖住
           // 整个 Air 首页的，工具条会被压在下面点不到。那五个动作因此落在聊天页
           // 自己的头部菜单里（`chat_header.dart` 的 `_HeaderOverflowMenu`）。
-          if (showToolbar && _mode == _AirMode.tasks)
-            _AirToolButton(
-              keyName: 'air-tool-board',
-              icon: Icons.grid_view_rounded,
-              tooltip: '打开完整任务看板',
-              onTap: _openTaskBoard,
-            ),
           if (showToolbar && _mode == _AirMode.library) ...[
             _AirToolButton(
               keyName: 'air-tool-add-directory',
@@ -1668,8 +1653,7 @@ class _AirTasksViewState extends State<AirTasksView>
                   unawaited(_addDirectory());
                 case 'import-fleet':
                   unawaited(_importExternal());
-                case 'board':
-                  _openTaskBoard();
+
                 case 'schedules':
                   _openDestination(WorkspaceDestination.cron);
                 case 'refresh':
@@ -1689,7 +1673,7 @@ class _AirTasksViewState extends State<AirTasksView>
                 value: 'import-fleet',
                 child: Text('导入共享工作区'),
               ),
-              const PopupMenuItem(value: 'board', child: Text('打开完整任务看板')),
+
               const PopupMenuItem(value: 'schedules', child: Text('定时任务')),
               const PopupMenuItem(value: 'refresh', child: Text('刷新')),
               // Web 那边是 manage 页右上角那颗 ❓（`onclick="startOnboarding()"`）。
@@ -1748,9 +1732,56 @@ class _AirTasksViewState extends State<AirTasksView>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _DirectoryModeSwitch(
-          mode: _dirMode,
-          onChanged: (mode) => setState(() => _dirMode = mode),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 12, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: _DirectoryModeSwitch(
+                  mode: _dirMode,
+                  onChanged: (mode) => setState(() => _dirMode = mode),
+                ),
+              ),
+              if (directory != null && !directory.external) ...[
+                IconButton(
+                  key: const ValueKey('air-directory-memo'),
+                  tooltip: '备忘',
+                  icon: const Icon(Icons.edit_note_rounded),
+                  onPressed: () {
+                    final mgr = context.read<SessionManager>();
+                    final dir = mgr.directories
+                        .where((d) => d.id == directory.id)
+                        .firstOrNull;
+                    if (dir == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('目录信息尚未加载，请稍后重试')),
+                      );
+                      return;
+                    }
+                    unawaited(
+                      _push((_) => MemoScreen(directory: dir, mgr: mgr)),
+                    );
+                  },
+                ),
+                IconButton(
+                  key: const ValueKey('air-directory-artifacts'),
+                  tooltip: '本目录产物',
+                  icon: const Icon(Icons.inventory_2_outlined),
+                  onPressed: () => unawaited(
+                    _push(
+                      (_) => DirectoryArtifactsScreen(
+                        dirId: directory.id,
+                        dirName: directory.name,
+                        dirPath: directory.path,
+                        settings: widget.settings,
+                        httpClient: widget.httpClient,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
         Expanded(
           child: _dirMode == _DirectoryMode.terminal
@@ -1891,7 +1922,8 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 默认值、可选集合、Provider→模型联动都由那一份实现给，两个入口不会各长一套。
   /// 建好直接开终端页；下一次 4s 轮询里它就出现在这份列表上。
   Future<void> _createTerminal(String dirId) async {
-    final initialCli = tryParseCli(_data?.clis.firstOrNull) ?? SessionCli.claude;
+    final initialCli =
+        tryParseCli(_data?.clis.firstOrNull) ?? SessionCli.claude;
 
     // 默认 CLI 的 Provider 池要先拿到，对话框才有一份可选的线路；换 CLI 时对话框
     // 自己会按新 CLI 的 appType 重新拉（同 chat 那条路）。
@@ -2009,6 +2041,13 @@ class _AirTasksViewState extends State<AirTasksView>
           AirDirectoryStats(
             tasks: all,
             worktreeCount: directory?.worktreeCount ?? 0,
+            onFilter: (filter) => setState(() {
+              _directorySearch.reset();
+              _showAll = true;
+              _taskStatus = filter;
+              _taskQuery = '';
+              _taskSearch.clear();
+            }),
           ),
           if (worktrees != null)
             AirWorktreePanel(
@@ -2099,39 +2138,48 @@ class _AirTasksViewState extends State<AirTasksView>
           ),
           const SizedBox(height: 12),
           if (_showAll) ...[
+            DropdownButton<bool>(
+              key: const ValueKey('air-directory-search-scope'),
+              value: _fullText,
+              isExpanded: true,
+              items: const [
+                DropdownMenuItem(value: true, child: Text('全部记录（含对话）')),
+                DropdownMenuItem(value: false, child: Text('仅任务标题与摘要')),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+                _fullText = value;
+                _searchDirectory(_taskQuery);
+              },
+            ),
+            if (_directorySearch.loading) const Text('搜索中…'),
+            if (_directorySearch.failed) const Text('全文搜索暂不可用，当前仅按标题匹配'),
             Row(
               children: [
                 Expanded(
                   child: TextField(
                     key: const ValueKey('air-directory-task-search'),
                     controller: _taskSearch,
-                    onChanged: (value) => setState(() => _taskQuery = value),
+                    onChanged: _searchDirectory,
                     style: const TextStyle(color: AppColors.text, fontSize: 13),
-                    decoration: sheetInputDecoration(hint: '搜索任务标题'),
+                    decoration: sheetInputDecoration(hint: '搜索当前目录任务'),
                   ),
                 ),
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 145,
-                  child: DropdownButtonFormField<_DirectoryTaskStatus>(
+                  child: DropdownButtonFormField<AirDirectoryTaskFilter>(
                     key: const ValueKey('air-directory-task-status'),
                     value: _taskStatus,
                     isExpanded: true,
                     decoration: sheetInputDecoration(hint: ''),
                     dropdownColor: AppColors.panel,
-                    items: const [
-                      DropdownMenuItem(
-                        value: _DirectoryTaskStatus.open,
-                        child: Text('进行中与待处理'),
-                      ),
-                      DropdownMenuItem(
-                        value: _DirectoryTaskStatus.all,
-                        child: Text('全部记录'),
-                      ),
-                      DropdownMenuItem(
-                        value: _DirectoryTaskStatus.archived,
-                        child: Text('已归档'),
-                      ),
+                    items: [
+                      for (final filter in AirDirectoryTaskFilter.values)
+                        DropdownMenuItem(
+                          value: filter,
+                          child: Text(filter.label),
+                        ),
                     ],
                     onChanged: (value) {
                       if (value != null) setState(() => _taskStatus = value);
@@ -2146,7 +2194,7 @@ class _AirTasksViewState extends State<AirTasksView>
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 28),
               child: Text(
-                '还没有任务。\n在上面的输入框里描述目标，就会创建第一个任务。',
+                '没有匹配的任务。可切换筛选条件，或在底部创建新任务。',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: AppColors.faint,
@@ -2181,8 +2229,9 @@ class _AirTasksViewState extends State<AirTasksView>
                 onPressed: () => setState(() {
                   _showAll = !_showAll;
                   if (!_showAll) {
+                    _directorySearch.reset();
                     _taskQuery = '';
-                    _taskStatus = _DirectoryTaskStatus.open;
+                    _taskStatus = AirDirectoryTaskFilter.open;
                     _taskSearch.clear();
                   }
                 }),
@@ -2331,7 +2380,6 @@ class _DirectoryModeSwitch extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       key: const ValueKey('air-directory-mode'),
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
       child: Container(
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
@@ -2404,14 +2452,20 @@ class _DirectoryModeButton extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 14, color: color),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
+              if (MediaQuery.sizeOf(context).width >= 400) ...[
+                Icon(icon, size: 14, color: color),
+                const SizedBox(width: 6),
+              ],
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ],

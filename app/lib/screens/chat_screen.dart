@@ -33,6 +33,7 @@ import '../widgets/chat_composer_fold.dart';
 import '../widgets/chat_handoff.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/chat_loading_view.dart';
+import '../widgets/chat_notice_scroller.dart';
 import '../widgets/chat_runtime_panels.dart';
 import '../widgets/chat_side_panels.dart';
 import '../widgets/conflict_diff_dialog.dart';
@@ -896,126 +897,149 @@ class _ChatViewState extends State<ChatView> {
                             : () => unawaited(_deleteBoundTask(provider)),
                         advancedMode: widget.settings.advancedMode.value,
                       ),
-                      if (provider.pendingUserInput != null &&
-                          !provider.pendingUserInputCollapsed)
-                        _CenteredChatLane(
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(
-                              maxHeight:
-                                  MediaQuery.sizeOf(context).height * 0.38,
-                            ),
-                            child: SingleChildScrollView(
-                              padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
-                              child: PendingUserInputPanel(
-                                input: provider.pendingUserInput!,
-                                enabled:
-                                    provider.connectionState ==
-                                    ChatConnectionState.connected,
-                                onAnswer: provider.sendMessage,
-                                onSecretSubmit:
-                                    (value) => provider.submitPendingSecret(
-                                      value,
+                      // The keyboard shortens this sheet without shortening its
+                      // notices. Let the notices scroll in the space left after
+                      // the header and composer, so a worktree warning cannot
+                      // push the focused input underneath the iOS keyboard.
+                      ChatNoticeScroller(
+                        children: [
+                              if (provider.pendingUserInput != null &&
+                                  !provider.pendingUserInputCollapsed)
+                                _CenteredChatLane(
+                                  child: ConstrainedBox(
+                                    constraints: BoxConstraints(
+                                      maxHeight:
+                                          MediaQuery.sizeOf(context).height *
+                                          0.38,
                                     ),
-                                onCollapse: provider.collapsePendingUserInput,
-                                onDismiss: () =>
-                                    _dismissPendingUserInput(provider),
+                                    child: SingleChildScrollView(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        10,
+                                        7,
+                                        10,
+                                        0,
+                                      ),
+                                      child: PendingUserInputPanel(
+                                        input: provider.pendingUserInput!,
+                                        enabled:
+                                            provider.connectionState ==
+                                            ChatConnectionState.connected,
+                                        onAnswer: provider.sendMessage,
+                                        onSecretSubmit: (value) =>
+                                            provider.submitPendingSecret(value),
+                                        onCollapse:
+                                            provider.collapsePendingUserInput,
+                                        onDismiss: () =>
+                                            _dismissPendingUserInput(provider),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              // Liveness pill: only working (🟢) and stalled (🔴) earn a
+                              // dedicated line — they say "a turn is running / stuck".
+                              // idle (🟡) and unknown (⚪) are the resting states; a
+                              // permanent "空闲" row under the header is pure noise.
+                              if (chatLivenessDeservesLine(
+                                _liveness?['state'] as String?,
+                              ))
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(
+                                      left: 12,
+                                      right: 12,
+                                      bottom: 2,
+                                    ),
+                                    child: livenessChip(_liveness),
+                                  ),
+                                ),
+                              if (provider.hasClassify)
+                                Builder(
+                                  builder: (_) {
+                                    // 显隐规则集中在 helper 里（web can-mark-done /
+                                    // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
+                                    final actions = classifyBarActions(
+                                      provider.classifyState,
+                                    );
+                                    return AuxClassifyBar(
+                                      goal: provider.classifyGoal,
+                                      phase: provider.classifyPhase,
+                                      classifyState: provider.classifyState,
+                                      stale: provider.classifyStale,
+                                      onMarkTurnSucceeded: actions.canMarkDone
+                                          ? () => _markTurnSucceeded(provider)
+                                          : null,
+                                      onCancelTurn: actions.canCancelTask
+                                          ? provider.cancel
+                                          : null,
+                                    );
+                                  },
+                                ),
+                              _CenteredChatLane(
+                                child: ChatRuntimeNoticePanel(
+                                  apiError: provider.apiErrorPolicy,
+                                  limit: provider.limitView,
+                                  balance: provider.balanceView,
+                                  arkUsage: provider.arkQuotaView,
+                                  kimiUsage: provider.kimiQuotaView,
+                                  claudeUsage: provider.claudeLimitView,
+                                  qoderUsage: provider.qoderQuotaView,
+                                  opencodeUsage: provider.opencodeQuotaView,
+                                  codexUsage: provider.codexQuotaView,
+                                  onClaudeQuotaTap: () =>
+                                      provider.handleClaudeQuotaTap(),
+                                  onQoderQuotaTap: () =>
+                                      provider.handleQoderQuotaTap(),
+                                  onOpenCodeQuotaTap: () =>
+                                      provider.handleOpenCodeQuotaTap(),
+                                  onCodexQuotaTap: () =>
+                                      provider.handleCodexQuotaTap(),
+                                  onArkQuotaTap: () =>
+                                      provider.handleArkQuotaTap(),
+                                  onKimiQuotaTap: () =>
+                                      provider.handleKimiQuotaTap(),
+                                  onRetry:
+                                      provider.apiErrorPolicy?.canManualRetry ==
+                                          true
+                                      ? () => _retryApiError(provider)
+                                      : null,
+                                ),
                               ),
-                            ),
-                          ),
-                        ),
-                      // Liveness pill: only working (🟢) and stalled (🔴) earn a
-                      // dedicated line — they say "a turn is running / stuck".
-                      // idle (🟡) and unknown (⚪) are the resting states; a
-                      // permanent "空闲" row under the header is pure noise.
-                      if (chatLivenessDeservesLine(
-                        _liveness?['state'] as String?,
-                      ))
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: Padding(
-                            padding: const EdgeInsets.only(
-                              left: 12,
-                              right: 12,
-                              bottom: 2,
-                            ),
-                            child: livenessChip(_liveness),
-                          ),
-                        ),
-                      if (provider.hasClassify)
-                        Builder(
-                          builder: (_) {
-                            // 显隐规则集中在 helper 里（web can-mark-done /
-                            // can-cancel-task 两个 class 的等价物），这里只负责把动作接上。
-                            final actions = classifyBarActions(
-                              provider.classifyState,
-                            );
-                            return AuxClassifyBar(
-                              goal: provider.classifyGoal,
-                              phase: provider.classifyPhase,
-                              classifyState: provider.classifyState,
-                              stale: provider.classifyStale,
-                              onMarkTurnSucceeded: actions.canMarkDone
-                                  ? () => _markTurnSucceeded(provider)
-                                  : null,
-                              onCancelTurn: actions.canCancelTask
-                                  ? provider.cancel
-                                  : null,
-                            );
-                          },
-                        ),
-                      _CenteredChatLane(
-                        child: ChatRuntimeNoticePanel(
-                          apiError: provider.apiErrorPolicy,
-                          limit: provider.limitView,
-                          balance: provider.balanceView,
-                          arkUsage: provider.arkQuotaView,
-                          kimiUsage: provider.kimiQuotaView,
-                          claudeUsage: provider.claudeLimitView,
-                          qoderUsage: provider.qoderQuotaView,
-                          opencodeUsage: provider.opencodeQuotaView,
-                          codexUsage: provider.codexQuotaView,
-                          onClaudeQuotaTap: () =>
-                              provider.handleClaudeQuotaTap(),
-                          onQoderQuotaTap: () => provider.handleQoderQuotaTap(),
-                          onOpenCodeQuotaTap: () =>
-                              provider.handleOpenCodeQuotaTap(),
-                          onCodexQuotaTap: () => provider.handleCodexQuotaTap(),
-                          onArkQuotaTap: () => provider.handleArkQuotaTap(),
-                          onKimiQuotaTap: () => provider.handleKimiQuotaTap(),
-                          onRetry:
-                              provider.apiErrorPolicy?.canManualRetry == true
-                              ? () => _retryApiError(provider)
-                              : null,
-                        ),
+                              // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
+                              // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
+                              // 谁更该先处理 —— 冲突没解决，同步就还没结束。
+                              if (_conflictFiles().isNotEmpty)
+                                WorktreeConflictBanner(
+                                  files: _conflictFiles(),
+                                  onHelp: () =>
+                                      _showConflictHelp(_conflictFiles()),
+                                  onContinue: () => _resolveRebase('continue'),
+                                  onAbort: () => _resolveRebase('abort'),
+                                  onForceSync: () =>
+                                      _forceSyncWorktree(provider),
+                                  forceSyncing: _forceSyncing,
+                                ),
+                              if (_worktreeReclaimed())
+                                WorktreeReclaimedBanner(
+                                  branch: _mergeStatus?['branch']?.toString(),
+                                  onForceSync: () =>
+                                      _forceSyncWorktree(provider),
+                                  forceSyncing: _forceSyncing,
+                                )
+                              else if (_behindCount() > 0)
+                                WorktreeBehindBanner(
+                                  behind: _behindCount(),
+                                  baseBranch: _baseBranchName(),
+                                  syncing: _syncing,
+                                  onSync: () => _syncWorktree(
+                                    provider.executionSessionName,
+                                  ),
+                                  onForceSync: () =>
+                                      _forceSyncWorktree(provider),
+                                  forceSyncing: _forceSyncing,
+                                ),
+                        ],
                       ),
-                      // 卡在冲突里的 rebase 优先于「落后基分支」：那种状态下 behind 是 0
-                      // （rebase 没走完，没得比），两个条不会同时出现，但顺序说明了
-                      // 谁更该先处理 —— 冲突没解决，同步就还没结束。
-                      if (_conflictFiles().isNotEmpty)
-                        WorktreeConflictBanner(
-                          files: _conflictFiles(),
-                          onHelp: () => _showConflictHelp(_conflictFiles()),
-                          onContinue: () => _resolveRebase('continue'),
-                          onAbort: () => _resolveRebase('abort'),
-                          onForceSync: () => _forceSyncWorktree(provider),
-                          forceSyncing: _forceSyncing,
-                        ),
-                      if (_worktreeReclaimed())
-                        WorktreeReclaimedBanner(
-                          branch: _mergeStatus?['branch']?.toString(),
-                          onForceSync: () => _forceSyncWorktree(provider),
-                          forceSyncing: _forceSyncing,
-                        )
-                      else if (_behindCount() > 0)
-                        WorktreeBehindBanner(
-                          behind: _behindCount(),
-                          baseBranch: _baseBranchName(),
-                          syncing: _syncing,
-                          onSync: () =>
-                              _syncWorktree(provider.executionSessionName),
-                          onForceSync: () => _forceSyncWorktree(provider),
-                          forceSyncing: _forceSyncing,
-                        ),
                       Expanded(
                         // 第 4 步「第一份结果已经完成」圈的整块消息区。
                         child: TourAnchor(
@@ -2193,7 +2217,9 @@ class _MessageListState extends State<_MessageList> {
     final provider = context.watch<ChatProvider>();
     final messages = provider.messages;
     if (!provider.historyApplied &&
-        !messages.any((m) => m.role == MessageRole.user || m.role == MessageRole.assistant)) {
+        !messages.any(
+          (m) => m.role == MessageRole.user || m.role == MessageRole.assistant,
+        )) {
       return ChatLoadingView(
         onRetry: provider.reconnect,
         status: provider.statusText,
