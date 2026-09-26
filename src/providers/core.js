@@ -296,6 +296,24 @@ function resolveSessionWireModel(sessionModel, { providerModel = null, providerM
   return (sessionModel && (ALIAS_TIER_REGEX.test(sessionModel) || served.includes(sessionModel))) ? sessionModel : providerModel;
 }
 
+// Expand a tier alias (opus/sonnet/haiku/fable/default) to the wire model the
+// provider maps it to. A tier is a Claude-CLI concept: there it becomes
+// ANTHROPIC_DEFAULT_<TIER>_MODEL and the CLI resolves it before the request
+// leaves. The global-pool lanes (OpenCode, ZCode) have no such indirection —
+// their generated provider config carries literal wire model ids — so a tier
+// left on the session (the picker offers them, and the PATCH guard accepts a
+// tier the provider maps) would be sent upstream as the bare word "opus" and
+// rejected with 400 invalid_request_error. Non-tier values pass through
+// untouched; an unmapped tier returns '' so the caller falls back to the
+// provider's primary model instead of guessing.
+function resolveTierWireModel(summary, model) {
+  const value = String(model || '').trim();
+  if (!value || !ALIAS_TIER_REGEX.test(value)) return value;
+  const entry = summary && summary.aliasMap && summary.aliasMap[value.toLowerCase()];
+  const mapped = typeof entry === 'string' ? entry : (entry && entry.model);
+  return mapped ? String(mapped).trim() : '';
+}
+
 // Strip a "[1m]"-style context suffix for model comparison —
 // "ark-code-latest[1M]" and "ark-code-latest" are the same wire model.
 function stripModelSuffix(m) {
@@ -1143,8 +1161,11 @@ function buildOpenCodeRoute(provider, session) {
   const cfg = parseConfig(provider.settingsConfig);
   const summary = summarize(provider);
   const format = summary.apiFormat;
-  const models = uniqueModels([session && session.model, summary.model, ...(summary.modelOptions || [])]);
-  const selected = (session && session.model) || summary.model || models[0] || '';
+  // Tier aliases must reach OpenCode as the mapped wire model id (see
+  // resolveTierWireModel) — this lane has no ANTHROPIC_DEFAULT_*_MODEL layer.
+  const sessionModel = resolveTierWireModel(summary, session && session.model);
+  const models = uniqueModels([sessionModel, summary.model, ...(summary.modelOptions || [])]);
+  const selected = sessionModel || summary.model || models[0] || '';
   const custom = !!summary.baseUrl;
   if (!custom) {
     const nativeId = format === API_FORMATS.ANTHROPIC ? 'anthropic' : 'openai';
@@ -1271,6 +1292,10 @@ function buildZcodeRoute(provider, session) {
   const id = zcodeProviderId(provider);
   let selected = String(session && session.model || summary.model || '').trim();
   if (selected.startsWith(`${id}/`)) selected = selected.slice(id.length + 1);
+  // Same tier-alias expansion as the OpenCode lane: ZCode's config.json only
+  // carries literal wire model ids, so an unmapped tier falls through to the
+  // provider's primary model (resolveTierWireModel returns '').
+  selected = resolveTierWireModel(summary, selected);
   const models = uniqueModels([
     selected,
     summary.model,
