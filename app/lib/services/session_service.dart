@@ -154,8 +154,11 @@ class SessionService {
   // ── CLI install (three-endpoint contract shared with web/CLI) ──────────────
 
   /// Fetch install specs for all supported CLIs. Returns the parsed response
-  /// map `{ok, specs:{<cli>:{auto, command?, display?, manual?}}}`. On HTTP
-  /// error sets `ok: false` + `error` so callers can degrade gracefully.
+  /// map `{ok, specs:{<family>:{auto, command?, display?, manual?}}, availability:{<lane>:{available}}}`
+  /// — `specs` is keyed by **family** (the upgrade unit is the family's CLI
+  /// artifact; see cli_display.dart's `cliFamilyOf`), `availability` by lane
+  /// (whether a given id can be spawned). On HTTP error sets `ok: false` +
+  /// `error` so callers can degrade gracefully.
   Future<Map<String, dynamic>> fetchCliInstallSpecs() async {
     final res = await http
         .get(Uri.parse(_url('/api/cli/install-specs')), headers: _headers)

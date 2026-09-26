@@ -13,7 +13,9 @@
 //
 //   claude 在 chat 里   大字 Claude、小字 Claude Agent SDK（外加一条 offered:false
 //                       的 `claude -p`，chat 里不再提供它）
-//   claude 在 terminal 里 `claude`（大字 Claude Code）—— 跑的就是这个可执行文件
+//   claude 在 terminal 里 大字 Claude、小字 `claude` —— 跑的就是这个可执行文件
+//   （2026-09-26 起终端的大字照实写家族名 Claude / Codex，不再另起 "Claude Code"
+//   "Codex Exec"：一个 CLI 只有两个名字就够了，多出来的那个没人能对上号。）
 //   对外（任务卡、线路位）只说家族名：Claude
 //
 // 车道的 id 永不改名（会话记录、Provider 池、wire 路由都存着它），改的只是叫法。
@@ -33,7 +35,7 @@ import '../theme.dart';
 
 /// 家族在某场景里的一条衍生车道 —— 只写这个场景特有的说法。
 class CliLane {
-  const CliLane(this.id, {this.label, this.mark, this.engine, this.offered = true, this.deprecated = false, this.replacedBy});
+  const CliLane(this.id, {this.label, this.mark, this.engine, this.offered = true, this.bundled = false, this.deprecated = false, this.replacedBy});
 
   /// 车道 id，也就是会话记录里的 `cli` 字段（[SessionCli.name]）。
   final String id;
@@ -51,14 +53,42 @@ class CliLane {
   /// chat，是产品不再在 chat 里提供它。
   final bool offered;
 
+  /// 这条车道的引擎不来自家族的 CLI 制品，而是随 MultiCC 走（今天只有
+  /// claude-exp：Agent SDK 是 MultiCC 自己的依赖）。任何安装/升级动作都装不了它。
+  final bool bundled;
+
   /// 这条衍生在这个场景里仍在用、但已在淘汰路上；[replacedBy] 是该换的那条。
   final bool deprecated;
   final String? replacedBy;
 }
 
+/// 家族的**升级单元**：这个家族的 CLI 制品。装/升级一行动作的就是它。
+///
+/// 这是家族事实而不是车道事实：codex 两条车道跑同一个二进制、同一条安装脚本；
+/// claude-exp 则根本没有制品（见 [CliLane.bundled]）。挂在车道上就是「CLI 更新」
+/// 里 codex 出现两行、claude-exp 出现一行却只会说「请升级 MultiCC」的原因。
+class CliUpdate {
+  const CliUpdate({this.package, this.command, this.manual});
+
+  /// 读上游版本用的 npm 包；没有可比对发布源的 CLI（qoder / zcode）为 null。
+  final String? package;
+
+  /// 官方安装/升级命令；没有安装脚本时为 null。
+  final String? command;
+
+  /// 没有命令时该对用户说的话（zcode 的 CLI 在桌面版里）。
+  final String? manual;
+
+  /// 有没有一键安装/升级。
+  bool get auto => command != null;
+
+  /// 界面上显示的那条命令。
+  String? get display => command;
+}
+
 /// 一个 CLI 家族：对外只说一次的名字/品牌色/角标，以及它在每个场景里的衍生。
 class CliFamily {
-  const CliFamily(this.name, this.color, {this.mark, this.providerless = false, this.lanes = const <String, List<CliLane>>{}});
+  const CliFamily(this.name, this.color, {this.mark, this.providerless = false, this.update, this.lanes = const <String, List<CliLane>>{}});
 
   /// 界面上显示的产品名，也是**对外**（任务卡、线路位）说的那个名字。
   final String name;
@@ -72,8 +102,11 @@ class CliFamily {
   /// 自持账号：厂商自己的账号/模型配置，不挂 MultiCC provider。
   final bool providerless;
 
-  /// 每个场景给哪些衍生。**没写 lanes 的家族**（claude / codex 之外的全部）就是
-  /// 它自己一条车道、两种场景都给。
+  /// 这个家族的 CLI 制品（装/升级行的对象）；null = 没有可安装的东西。
+  final CliUpdate? update;
+
+  /// 每个场景给哪些衍生。**没写 lanes 的家族**（claude / codex 之外除 ACP 三家
+  /// 外的全部）就是它自己一条车道、两种场景都给。
   final Map<String, List<CliLane>> lanes;
 }
 
@@ -116,7 +149,7 @@ class CliDisplay {
 
 /// 一个家族在某场景里的候选行：大小字与角标都已回落好，选择器拿到就能画。
 class CliLaneView {
-  const CliLaneView({required this.lane, required this.kind, required this.label, required this.engine, required this.mark, required this.color, required this.offered, required this.deprecated, this.replacedBy});
+  const CliLaneView({required this.lane, required this.kind, required this.label, required this.engine, required this.mark, required this.color, required this.offered, required this.bundled, required this.deprecated, this.replacedBy});
 
   final String lane;
   final String kind;
@@ -125,52 +158,93 @@ class CliLaneView {
   final String mark;
   final Color color;
   final bool offered;
+
+  /// 引擎随 MultiCC 走（见 [CliLane.bundled]）—— 这一行不能画「安装/升级」按钮。
+  final bool bundled;
   final bool deprecated;
   final String? replacedBy;
 }
 
 /// 家族表：一个 CLI 在每个场景里给哪些衍生。**唯一一份**。
 ///
-/// 2026-09-26：两条常驻车道扶正为产品名，两条一次性车道退出 chat。
+/// 2026-09-26：两条常驻车道扶正为产品名，两条一次性车道退出 chat；大字照实写
+/// claude / codex（终端里那行大字就是命令名，不再另起 "Claude Code"）。
 ///
-///   家族    场景       车道        大字           小字
-///   claude  chat      claude-exp  Claude         Claude Agent SDK
-///           chat      claude      Claude         claude -p     （offered: false）
-///           terminal  claude      Claude Code    claude
-///   codex   chat      codex-exp   Codex          Codex App Server
-///           chat      codex       Codex          codex exec    （offered: false）
-///           terminal  codex       Codex Exec     codex
+///   家族      场景       车道        大字       小字
+///   claude    chat      claude-exp  Claude     Claude Agent SDK  （bundled）
+///             chat      claude      Claude     claude -p         （offered: false）
+///             terminal  claude      Claude     claude
+///   codex     chat      codex-exp   Codex      Codex App Server
+///             chat      codex       Codex      codex exec        （offered: false）
+///             terminal  codex       Codex      codex
+///   opencode  chat      opencode    OpenCode   opencode acp
+///             terminal  opencode    OpenCode   opencode
+///   gemini    chat      gemini      Gemini     gemini acp
+///             terminal  gemini      Gemini     gemini
+///   grok      chat      grok        Grok       grok acp
+///             terminal  grok        Grok       grok
 ///
 /// `claude` 是 `claude -p`、`codex` 是 `codex exec`：chat 里已经没有它们的位置，但
-/// 终端真的要把这两个可执行文件跑起来，所以只退出 chat、留在终端。角标跟着名字走
-/// —— X 归 Codex，E 归 Codex Exec；同一张任务卡上两颗 X 分不出是哪条车道。
+/// 终端真的要把这两个可执行文件跑起来，所以只退出 chat、留在终端。
+///
+/// ACP 三家的 chat 小字是 `<id> acp` —— 那是 MultiCC 起的 acp-bridge 形态，终端里
+/// 却是原生命令 `<id>`，所以这行小字必须逐场景写，不能靠 id 回落。角标跟着名字走
+/// —— X 归 Codex，A 归 Claude Agent SDK；同一张任务卡上两颗 X 分不出是哪条车道。
+///
+/// 升级单元是**家族**（[CliFamily.update]），不是车道：装/升级一行动作的对象是这个
+/// 家族的 CLI 制品。claude-exp 没有制品（[CliLane.bundled]），所以「CLI 更新」里
+/// 只该出现一行 Claude，而不是 claude-exp / claude 各一行。
 const Map<String, CliFamily> kCliFamilies = <String, CliFamily>{
-  'claude': CliFamily('Claude', AppColors.claude, lanes: <String, List<CliLane>>{
-    'chat': <CliLane>[
-      CliLane('claude-exp', mark: 'A', engine: 'Claude Agent SDK'),
-      CliLane('claude', engine: 'claude -p', offered: false),
-    ],
-    'terminal': <CliLane>[
-      CliLane('claude', label: 'Claude Code', mark: 'C', engine: 'claude'),
-    ],
-  }),
-  'codex': CliFamily('Codex', AppColors.codex, lanes: <String, List<CliLane>>{
-    'chat': <CliLane>[
-      CliLane('codex-exp', mark: 'X', engine: 'Codex App Server'),
-      CliLane('codex', engine: 'codex exec', offered: false, deprecated: true, replacedBy: 'codex-exp'),
-    ],
-    'terminal': <CliLane>[
-      CliLane('codex', label: 'Codex Exec', mark: 'E', engine: 'codex'),
-    ],
-  }),
-  'opencode': CliFamily('OpenCode', AppColors.opencode, mark: 'O'),
-  'zcode': CliFamily('ZCode', AppColors.zcode, mark: 'Z'),
-  'qoder': CliFamily('Qoder CN', AppColors.qoder, mark: 'Q', providerless: true),
-  'kimi': CliFamily('Kimi Code', AppColors.kimi, mark: 'K'),
-  'codebuddy': CliFamily('WorkBuddy', AppColors.codebuddy, mark: 'W', providerless: true),
-  'dsh': CliFamily('DSH', AppColors.dsh, mark: 'D', providerless: true),
-  'gemini': CliFamily('Gemini', AppColors.gemini, mark: 'G', providerless: true),
-  'grok': CliFamily('Grok', AppColors.grok, mark: 'R', providerless: true),
+  'claude': CliFamily('Claude', AppColors.claude,
+      update: CliUpdate(package: '@anthropic-ai/claude-code', command: 'npm install -g @anthropic-ai/claude-code'),
+      lanes: <String, List<CliLane>>{
+        'chat': <CliLane>[
+          CliLane('claude-exp', mark: 'A', engine: 'Claude Agent SDK', bundled: true),
+          CliLane('claude', engine: 'claude -p', offered: false),
+        ],
+        'terminal': <CliLane>[
+          CliLane('claude', mark: 'C', engine: 'claude'),
+        ],
+      }),
+  'codex': CliFamily('Codex', AppColors.codex,
+      update: CliUpdate(package: '@openai/codex', command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh'),
+      lanes: <String, List<CliLane>>{
+        'chat': <CliLane>[
+          CliLane('codex-exp', mark: 'X', engine: 'Codex App Server'),
+          CliLane('codex', engine: 'codex exec', offered: false, deprecated: true, replacedBy: 'codex-exp'),
+        ],
+        'terminal': <CliLane>[
+          CliLane('codex', mark: 'E', engine: 'codex'),
+        ],
+      }),
+  'opencode': CliFamily('OpenCode', AppColors.opencode, mark: 'O',
+      update: CliUpdate(package: 'opencode-ai', command: 'npm install -g opencode-ai'),
+      lanes: <String, List<CliLane>>{
+        'chat': <CliLane>[CliLane('opencode', engine: 'opencode acp')],
+        'terminal': <CliLane>[CliLane('opencode')],
+      }),
+  'zcode': CliFamily('ZCode', AppColors.zcode, mark: 'Z',
+      update: CliUpdate(manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)')),
+  'qoder': CliFamily('Qoder CN', AppColors.qoder, mark: 'Q', providerless: true,
+      update: CliUpdate(command: 'curl -fsSL https://qoder.cn/install | bash')),
+  'kimi': CliFamily('Kimi Code', AppColors.kimi, mark: 'K',
+      update: CliUpdate(package: '@moonshot-ai/kimi-code', command: 'npm install -g @moonshot-ai/kimi-code')),
+  'codebuddy': CliFamily('WorkBuddy', AppColors.codebuddy, mark: 'W', providerless: true,
+      update: CliUpdate(package: '@tencent-ai/codebuddy-code', command: 'npm install -g @tencent-ai/codebuddy-code')),
+  'dsh': CliFamily('DSH', AppColors.dsh, mark: 'D', providerless: true,
+      update: CliUpdate(package: '@deepseek-ai/dsh', command: 'npm install -g @deepseek-ai/dsh')),
+  'gemini': CliFamily('Gemini', AppColors.gemini, mark: 'G', providerless: true,
+      update: CliUpdate(package: '@google/gemini-cli', command: 'npm install -g @google/gemini-cli'),
+      lanes: <String, List<CliLane>>{
+        'chat': <CliLane>[CliLane('gemini', engine: 'gemini acp')],
+        'terminal': <CliLane>[CliLane('gemini')],
+      }),
+  'grok': CliFamily('Grok', AppColors.grok, mark: 'R', providerless: true,
+      update: CliUpdate(package: '@xai-official/grok', command: 'npm install -g @xai-official/grok'),
+      lanes: <String, List<CliLane>>{
+        'chat': <CliLane>[CliLane('grok', engine: 'grok acp')],
+        'terminal': <CliLane>[CliLane('grok')],
+      }),
 };
 
 /// 这个 CLI 目录认识哪两种场景。
@@ -291,6 +365,7 @@ List<CliLaneView> cliLanesOf(String? familyOrLane, String kind) {
       mark: entry.mark ?? family.mark ?? _firstLetter(family.name),
       color: family.color,
       offered: entry.offered,
+      bundled: entry.bundled,
       deprecated: entry.deprecated,
       replacedBy: entry.deprecated ? entry.replacedBy : null,
     );
@@ -353,4 +428,60 @@ bool cliOffersIn(String? id, String kind) {
   final entry = kCliDisplays[_key(id)];
   final kinds = entry?.kinds ?? const ['chat', 'terminal'];
   return kinds.contains(kind.trim().toLowerCase());
+}
+
+/// 这个 id 所属家族的**升级单元**（CLI 制品），按车道 id 问也答同一份 —— 因为
+/// 升级的对象是家族，不是车道。没听说过、或这个家族没有可安装的制品时答 null。
+CliUpdate? cliUpdateOf(String? id) {
+  final family = cliFamilyOf(id);
+  if (family == null) return null;
+  return kCliFamilies[family]!.update;
+}
+
+/// 家族的升级单元，家族 id → [CliUpdate]；只有声明了 update 的家族在里面。
+Map<String, CliUpdate> cliUpdateSpecs() {
+  final out = <String, CliUpdate>{};
+  kCliFamilies.forEach((id, family) {
+    final update = family.update;
+    if (update != null) out[id] = update;
+  });
+  return out;
+}
+
+/// 这条车道的引擎是不是随 MultiCC 走（[CliLane.bundled]），也就是它有没有一个
+/// 可以单独装的 CLI 制品。装/升级按钮不该出现在这里，而该说「随 MultiCC 升级」。
+bool cliIsBundled(String? id) {
+  final family = cliFamilyOf(id);
+  if (family == null) return false;
+  final wanted = _key(id);
+  for (final kind in kCliKinds) {
+    for (final entry in _laneEntries(family, kCliFamilies[family]!, kind)) {
+      if (_key(entry.id) == wanted) return entry.bundled;
+    }
+  }
+  return false;
+}
+
+/// 一个家族里「随 MultiCC 走」的那些引擎，用来在升级行下面补一句说明。
+List<CliBundledEngine> cliBundledEnginesOf(String? id) {
+  final family = cliFamilyOf(id);
+  if (family == null) return const <CliBundledEngine>[];
+  final out = <CliBundledEngine>[];
+  for (final kind in kCliKinds) {
+    for (final entry in _laneEntries(family, kCliFamilies[family]!, kind)) {
+      if (!entry.bundled) continue;
+      final lane = _key(entry.id).isEmpty ? family : _key(entry.id);
+      out.add(CliBundledEngine(lane: lane, engine: entry.engine ?? lane, kind: kind));
+    }
+  }
+  return out;
+}
+
+/// 一条不随家族 CLI 制品走的车道：引擎名 + 它在哪个场景里。
+class CliBundledEngine {
+  const CliBundledEngine({required this.lane, required this.engine, required this.kind});
+
+  final String lane;
+  final String engine;
+  final String kind;
 }

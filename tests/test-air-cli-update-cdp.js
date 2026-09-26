@@ -113,7 +113,8 @@ test('the CLI update badge sits on the brand row and its popover lands on screen
     assert.ok(pop.left >= 0 && pop.right <= 1280, `浮层不能被挤出视口：${JSON.stringify(pop)}`);
     assert.ok(pop.top > geometry.rowBottom - 1, '浮层要贴在图标下方，而不是压在它身上');
     assert.equal(pop.rows, 4, '四个 CLI 都要列出来（可升级的排最前）');
-    assert.match(pop.firstRow, /Claude Code/);
+    // 行名是家族: 升级的对象是家族的 CLI 制品, 不是某条车道。
+    assert.match(pop.firstRow, /^Claude(?! Code)/);
     assert.match(pop.firstRow, /v2\.1\.251 → v2\.1\.278/);
     assert.match(pop.summary, /2/);
     assert.equal(pop.expanded, 'true');

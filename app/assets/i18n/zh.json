@@ -1647,6 +1647,7 @@
   "airCheckUpdate": "点击检查并安装更新",
   "airCheckoutSeparateSession": "签出到独立会话",
   "airCliUpdateAllCurrent": "所有 CLI 都是最新",
+  "airCliUpdateBundled": "内置 {engine}{version}，随 MultiCC 一起升级",
   "airCliUpdateCheckFailed": "检测失败",
   "airCliUpdateCheckedAt": "上次检测 {time}",
   "airCliUpdateChecking": "检测中…",

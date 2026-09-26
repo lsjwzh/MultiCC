@@ -110,17 +110,24 @@
   // 一张表，两层 —— 一个 CLI 是**家族**，家族在每个**场景**（chat / terminal）里
   // 给出一组**衍生车道**：
   //
-  //   CLI_FAMILIES[family]  name / colour / mark / providerless（对外只说一次）
+  //   CLI_FAMILIES[family]  name / colour / mark / providerless / update（对外只说一次）
   //                         lanes: { chat: [...], terminal: [...] }
   //   CLI_DISPLAY[lane]     上面这张表摊平后的**车道视图**，既有取词全读它
   //
   // 于是「一个 CLI，多种展示」是同一张表的两种读法：claude 在 chat 里是
   // 「Claude / Claude Agent SDK」（外加一条 offered:false 的 `claude -p`），在终端
-  // 里就是 `claude`（大字 Claude Code）；对外（任务卡、线路位）只说家族名 Claude。
+  // 里就是 `claude`；对外（任务卡、线路位）只说家族名 Claude。
   //
   // 车道的 id 不动（会话记录、Provider 池、wire 路由都存着它），改的只是叫法；
   // 缺省值也都在家族上：label 缺省 = 家族名，engine 缺省 = 车道的 id（终端里那行
   // 小字指的就是要跑的命令），offered 缺省 = 给，deprecated 缺省 = 不在淘汰路上。
+  //
+  // `update` 是家族的**升级单元** —— 这个家族的 CLI 制品（package 读上游版本、
+  // command 装/升级、没有脚本时写 manual）。它是家族事实而不是车道事实：codex 两条
+  // 车道跑同一个二进制、同一条安装脚本，而 claude-exp 的引擎根本不来自任何 CLI 制品
+  // （Agent SDK 是 MultiCC 自己的依赖，见车道上的 bundled）。把升级单元挂在车道上，
+  // 就是「CLI 更新」浮层里 codex 出现两行、claude-exp 出现一行却只会说「请升级
+  // MultiCC」的原因。
   //
   // 镜像之前，同样的列在页面上被抄了六七遍且各抄各的：chat.js 的 CLI_META、
   // air-task-settings.js 的 CLI_LABELS/CLI_MARKS、air-cli-update.js 的第三份标签表
@@ -134,34 +141,80 @@
     claude: {
       name: 'Claude',
       colour: '#ff9a76',
+      update: { package: '@anthropic-ai/claude-code', command: 'npm install -g @anthropic-ai/claude-code' },
       lanes: {
         chat: [
-          { id: 'claude-exp', mark: 'A', engine: 'Claude Agent SDK' },
+          { id: 'claude-exp', mark: 'A', engine: 'Claude Agent SDK', bundled: true },
           { id: 'claude', engine: 'claude -p', offered: false },
         ],
-        terminal: [{ id: 'claude', label: 'Claude Code', mark: 'C', engine: 'claude' }],
+        terminal: [{ id: 'claude', mark: 'C', engine: 'claude' }],
       },
     },
     codex: {
       name: 'Codex',
       colour: '#20a66a',
+      update: { package: '@openai/codex', command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
       lanes: {
         chat: [
           { id: 'codex-exp', mark: 'X', engine: 'Codex App Server' },
           // 计划淘汰只写在 chat 这条目上：终端里它仍是本来的 codex 命令。
           { id: 'codex', engine: 'codex exec', offered: false, deprecated: true, replacedBy: 'codex-exp' },
         ],
-        terminal: [{ id: 'codex', label: 'Codex Exec', mark: 'E', engine: 'codex' }],
+        terminal: [{ id: 'codex', mark: 'E', engine: 'codex' }],
       },
     },
-    opencode: { name: 'OpenCode', colour: '#388bfd', mark: 'O' },
-    zcode: { name: 'ZCode', colour: '#a371f7', mark: 'Z' },
-    qoder: { name: 'Qoder CN', colour: '#ff8a3d', mark: 'Q', providerless: true },
-    kimi: { name: 'Kimi Code', colour: '#13c2c2', mark: 'K' },
-    codebuddy: { name: 'WorkBuddy', colour: '#0052d9', mark: 'W', providerless: true },
-    dsh: { name: 'DSH', colour: '#4d6bfe', mark: 'D', providerless: true },
-    gemini: { name: 'Gemini', colour: '#4285f4', mark: 'G', providerless: true },
-    grok: { name: 'Grok', colour: '#8c8f96', mark: 'R', providerless: true },
+    // ACP：同一个可执行文件，chat 里由 acp.js 桥驱动（小字写出这层），终端里就是它自己。
+    opencode: {
+      name: 'OpenCode',
+      colour: '#388bfd',
+      mark: 'O',
+      update: { package: 'opencode-ai', command: 'npm install -g opencode-ai' },
+      lanes: { chat: [{ id: 'opencode', engine: 'opencode acp' }], terminal: [{ id: 'opencode' }] },
+    },
+    zcode: {
+      name: 'ZCode',
+      colour: '#a371f7',
+      mark: 'Z',
+      update: { manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)' },
+    },
+    qoder: {
+      name: 'Qoder CN',
+      colour: '#ff8a3d',
+      mark: 'Q',
+      providerless: true,
+      update: { command: 'curl -fsSL https://qoder.cn/install | bash' },
+    },
+    kimi: { name: 'Kimi Code', colour: '#13c2c2', mark: 'K', update: { package: '@moonshot-ai/kimi-code', command: 'npm install -g @moonshot-ai/kimi-code' } },
+    codebuddy: {
+      name: 'WorkBuddy',
+      colour: '#0052d9',
+      mark: 'W',
+      providerless: true,
+      update: { package: '@tencent-ai/codebuddy-code', command: 'npm install -g @tencent-ai/codebuddy-code' },
+    },
+    dsh: {
+      name: 'DSH',
+      colour: '#4d6bfe',
+      mark: 'D',
+      providerless: true,
+      update: { package: '@deepseek-ai/dsh', command: 'npm install -g @deepseek-ai/dsh' },
+    },
+    gemini: {
+      name: 'Gemini',
+      colour: '#4285f4',
+      mark: 'G',
+      providerless: true,
+      update: { package: '@google/gemini-cli', command: 'npm install -g @google/gemini-cli' },
+      lanes: { chat: [{ id: 'gemini', engine: 'gemini acp' }], terminal: [{ id: 'gemini' }] },
+    },
+    grok: {
+      name: 'Grok',
+      colour: '#8c8f96',
+      mark: 'R',
+      providerless: true,
+      update: { package: '@xai-official/grok', command: 'npm install -g @xai-official/grok' },
+      lanes: { chat: [{ id: 'grok', engine: 'grok acp' }], terminal: [{ id: 'grok' }] },
+    },
   };
   const CLI_KINDS = ['chat', 'terminal'];
   const CLI_DEFAULT_COLOUR = '#8b949e';
@@ -249,10 +302,70 @@
         colour: family.colour || CLI_DEFAULT_COLOUR,
         providerless: family.providerless === true,
         offered: entry.offered !== false,
+        bundled: entry.bundled === true,
         deprecated: entry.deprecated === true,
         replacedBy: entry.deprecated === true ? (entry.replacedBy || null) : null,
       };
     });
+  }
+
+  // 家族的**升级单元**：这个家族的 CLI 制品，形状与服务端 updateOf 一致
+  // （{auto, command, display, package} / 没脚本时 {auto:false, manual}）。按车道问
+  // 也答家族的那一份 —— 升级单元是家族事实，codex 的两条车道同一个制品。
+  function cliUpdateOf(cli) {
+    const family = cliFamilyOf(cli);
+    if (!family) return null;
+    const spec = CLI_FAMILIES[family].update;
+    if (!spec) return null;
+    const command = typeof spec.command === 'string' && spec.command ? spec.command : null;
+    return {
+      auto: command !== null,
+      command,
+      display: command,
+      manual: command ? null : (spec.manual || null),
+      package: spec.package || null,
+    };
+  }
+
+  // 可升级的家族（浮层逐行枚举的就是它）：没有 CLI 制品的家族不出现在这里。
+  function cliUpdateSpecs() {
+    const specs = {};
+    for (const familyId of Object.keys(CLI_FAMILIES)) {
+      const spec = cliUpdateOf(familyId);
+      if (spec) specs[familyId] = spec;
+    }
+    return specs;
+  }
+
+  // 这条车道的引擎不来自家族的 CLI 制品，而是随 MultiCC 走（今天只有 claude-exp）。
+  // 任何安装/升级动作都装不了它，所以那一行要说这句话而不是给一颗按钮。
+  function cliIsBundled(cli) {
+    const key = cliKey(cli);
+    for (const familyId of Object.keys(CLI_FAMILIES)) {
+      for (const kind of CLI_KINDS) {
+        for (const entry of cliLaneEntries(familyId, CLI_FAMILIES[familyId], kind)) {
+          if ((cliKey(entry.id) || familyId) === key) return entry.bundled === true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // 这个家族里随 MultiCC 内置的引擎（升级行下面那一句小字）。
+  function cliBundledEnginesOf(cli) {
+    const familyId = cliFamilyOf(cli);
+    if (!familyId) return [];
+    const family = CLI_FAMILIES[familyId];
+    const out = [];
+    for (const kind of CLI_KINDS) {
+      for (const entry of cliLaneEntries(familyId, family, kind)) {
+        if (entry.bundled !== true) continue;
+        const lane = cliKey(entry.id) || familyId;
+        if (out.some(item => item.lane === lane)) continue;
+        out.push({ lane, engine: entry.engine || lane, kind });
+      }
+    }
+    return out;
   }
 
   // 这个场景里有东西可给的家族。
@@ -989,6 +1102,10 @@
     cliFamilyName,
     cliLanesOf,
     cliFamiliesFor,
+    cliUpdateOf,
+    cliUpdateSpecs,
+    cliIsBundled,
+    cliBundledEnginesOf,
     providerlessClis,
     nativeRouteLabel,
     CLI_DISPLAY,

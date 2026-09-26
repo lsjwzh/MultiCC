@@ -5,8 +5,16 @@
 // `/api/cli/versions` answers "what is installed". This module answers the
 // other half of "is there an update?": what is published upstream. The npm
 // registry is the only uniform machine-readable source for that, and it is the
-// right one — the install command in OFFICIAL_INSTALL_SPECS is literally
-// `npm install -g <pkg>` for every entry in the map below.
+// right one for every CLI it can answer for — the vast majority of the install
+// commands in `cli-capability.js`'s family `update` column are literally
+// `npm install -g <pkg>`.
+//
+// The package map is **derived from that same column**, not written out here: a
+// package name is part of "how do you upgrade this CLI", so a second copy would
+// be the one that goes stale when a CLI is added. It is keyed by **family**,
+// which is the unit an upgrade acts on (see the `update` column's comment) —
+// so a lane id (`claude-exp`, `codex-exp`) has no package of its own, on
+// purpose: neither is a thing a user installs.
 //
 // qoder (`curl https://qoder.cn/install | bash`) and zcode (manual desktop
 // install) have no npm package and therefore no comparable source. They are
@@ -25,18 +33,9 @@ const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 
-const NPM_PACKAGES = Object.freeze({
-  claude: '@anthropic-ai/claude-code',
-  'claude-exp': '@anthropic-ai/claude-agent-sdk',
-  codex: '@openai/codex',
-  'codex-exp': '@openai/codex',
-  opencode: 'opencode-ai',
-  kimi: '@moonshot-ai/kimi-code',
-  codebuddy: '@tencent-ai/codebuddy-code',
-  dsh: '@deepseek-ai/dsh',
-  gemini: '@google/gemini-cli',
-  grok: '@xai-official/grok',
-});
+const { npmPackages } = require('./cli-capability');
+
+const NPM_PACKAGES = Object.freeze(npmPackages());
 
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org/';
 // 兜底源：只在「主源读不出结果」时才用。
@@ -233,7 +232,7 @@ function classifyUpdate(installed, latest) {
   };
 }
 
-// 供 runtime 使用：只对「有 npm 源」的 CLI 取最新版，其余直接 null。
+// 供 runtime 使用：只对「有 npm 源」的 CLI 取最新版，其余直接 null。键是家族。
 function npmPackageFor(cli) {
   return NPM_PACKAGES[String(cli || '').trim().toLowerCase()] || null;
 }

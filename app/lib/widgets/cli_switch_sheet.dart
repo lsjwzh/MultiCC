@@ -79,11 +79,26 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
   /// 知道自己正在用哪条。
   bool _offered(SessionCli cli) => cli == _target || cliOffersIn(cli.name, 'chat');
 
+  /// 安装/升级的单位是**家族的 CLI 制品**，所以服务端的 specs 是家族键，而这里拿
+  /// 到的是车道（选择器、会话记录都是车道）—— 先落到家族。
+  /// 家族里那条「引擎随 MultiCC 走」的车道（今天只有 claude-exp）没有制品可装，
+  /// 见 [cliIsBundled]：绝不能拿家族的 `npm install -g @anthropic-ai/claude-code`
+  /// 去修 Agent SDK，那会让人以为修好了。
   Map<String, dynamic>? _specFor(SessionCli cli) {
     final specs = widget.specs;
-    if (specs == null) return null;
-    final s = specs[cli.name];
+    if (specs == null || cliIsBundled(cli.name)) return null;
+    final s = specs[cliFamilyOf(cli.name) ?? cli.name];
     return s is Map<String, dynamic> ? s : null;
+  }
+
+  /// bundled 车道没有安装命令，说明白引擎跟谁走 —— 否则选到它的人只会看到
+  /// 「未安装或不可执行」，无处可去。
+  String? _bundledNote(SessionCli cli) {
+    if (!cliIsBundled(cli.name)) return null;
+    final engines = cliBundledEnginesOf(cli.name).map((e) => e.engine).join(' / ');
+    return engines.isEmpty
+        ? '引擎随 MultiCC 一起发布，请升级 MultiCC 本身'
+        : '引擎（$engines）随 MultiCC 一起发布，请升级 MultiCC 本身';
   }
 
   String _description(SessionCli cli) {
@@ -94,6 +109,8 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
       if (install.phase == 'error') return install.error ?? '安装失败';
     }
     if (!_available(cli)) {
+      final note = _bundledNote(cli);
+      if (note != null) return note;
       final spec = _specFor(cli);
       // auto!=true -> show the manual instructions; otherwise keep the default.
       if (spec != null && spec['auto'] != true) {

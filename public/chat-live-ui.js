@@ -1447,7 +1447,16 @@
             targetInfo.textContent = '正在加载安装信息...';
             return;
           }
-          const spec = specs?.[cli];
+          // 选中态是**车道**，而 specs 是**家族**键（升级/安装的对象是家族的 CLI 制品）:
+          // 先落到家族。bundled 车道（引擎随 MultiCC 走，今天只有 claude-exp）没有制品
+          // 可装 —— 拿家族的命令去装会让人以为修好了，所以如实说去哪儿升。
+          const catalog = window.MultiCCProviderCatalog;
+          if (catalog && catalog.cliIsBundled && catalog.cliIsBundled(cli)) {
+            const engines = catalog.cliBundledEnginesOf(cli).map(e => e.engine).join(' / ');
+            targetInfo.textContent = `${label} 的引擎${engines ? `（${engines}）` : ''}随 MultiCC 一起发布，请升级 MultiCC 本身。`;
+            return;
+          }
+          const spec = specs?.[(catalog && catalog.cliFamilyOf && catalog.cliFamilyOf(cli)) || cli];
           if (!spec) {
             targetInfo.textContent = `${label} 暂无可用的安装信息。`;
             return;

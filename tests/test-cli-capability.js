@@ -19,14 +19,17 @@ const {
   deprecationOf,
   displayNameOf,
   engineOf,
+  isBundled,
   isDeprecated,
   isResident,
   isResidentSession,
   kindsOf,
+  lanesOf,
   offersIn,
   protocolFamilyOf,
   protocolOf,
   transportOf,
+  updateOf,
 } = require('../src/cli/cli-capability');
 
 const ROOT = path.join(__dirname, '..');
@@ -161,7 +164,7 @@ test('the one-shot codex lane is marked as the fallback it now is', () => {
   assert.equal(isDeprecated('codex'), true);
   assert.deepEqual(deprecationOf('codex'), { replacedBy: 'codex-exp' });
   assert.equal(isDeprecated('codex-exp'), false, 'the promoted lane is the replacement, not deprecated');
-  assert.equal(displayNameOf('codex'), 'Codex Exec');
+  assert.equal(displayNameOf('codex'), 'Codex');
   assert.equal(displayNameOf('codex-exp'), 'Codex');
   // 角标跟名字走，且不能撞车：两颗 X 落在同一张任务卡上就分不出是哪条车道。
   assert.equal(CAPABILITIES && DISPLAY.codex.shortMark, 'E');
@@ -189,6 +192,11 @@ test('the chat lanes are the resident ones, and the terminal keeps the native co
   assert.equal(engineOf('claude-exp'), 'Claude Agent SDK');
   assert.equal(displayNameOf('codex-exp'), 'Codex');
   assert.equal(engineOf('codex-exp'), 'Codex App Server');
+  // 两条扶正车道的引擎是随 MultiCC 走的（Agent SDK 是库、app-server 是常驻子进程），
+  // 所以「装/升级这个 CLI」装不到它们 —— claude-exp 的引擎 multicc 自己带。
+  assert.equal(isBundled('claude-exp'), true);
+  assert.equal(isBundled('codex-exp'), false);
+  assert.equal(isBundled('claude'), false);
   assert.deepEqual(kindsOf('claude-exp'), ['chat']);
   assert.deepEqual(kindsOf('codex-exp'), ['chat']);
   assert.deepEqual(kindsOf('claude'), ['terminal']);
@@ -196,7 +204,14 @@ test('the chat lanes are the resident ones, and the terminal keeps the native co
   assert.equal(offersIn('claude', 'chat'), false);
   assert.equal(offersIn('claude', 'terminal'), true);
   // 其余车道没有引擎名，小字就是自己的 id —— 终端里那行小字写的就是要跑的命令。
-  for (const cli of ['claude', 'codex', 'opencode', 'zcode']) assert.equal(engineOf(cli), cli);
+  for (const cli of ['claude', 'codex', 'zcode']) assert.equal(engineOf(cli), cli);
+  // ACP 三家的 chat 小字是桥的形态（`<id> acp`），终端仍是原生命令：同一条车道在
+  // 两种场景里说的不是一件事，所以这一列必须逐场景写。
+  for (const cli of ['opencode', 'gemini', 'grok']) {
+    assert.equal(engineOf(cli), `${cli} acp`, `${cli}: DISPLAY keeps the chat engine`);
+    assert.equal(lanesOf(cli, 'chat')[0].engine, `${cli} acp`, `${cli}: chat`);
+    assert.equal(lanesOf(cli, 'terminal')[0].engine, cli, `${cli}: terminal runs the native command`);
+  }
   // 没写 kinds 的车道两端都给；表里没有的车道也不能因为分类而消失。
   assert.deepEqual(DEFAULT_KINDS, ['chat', 'terminal']);
   assert.deepEqual(kindsOf('opencode'), ['chat', 'terminal']);
@@ -206,6 +221,28 @@ test('the chat lanes are the resident ones, and the terminal keeps the native co
   assert.equal(offersIn(' CLAUDE ', ' CHAT '), false);
   assert.equal(offersIn(' Claude-Exp ', 'Chat'), true);
   assert.equal(engineOf(undefined), '');
+});
+
+test('the upgrade unit is the family, so a lane cannot own an install spec', () => {
+  // 「CLI 更新」列出的是 CLI，而 CLI 是家族：codex 的两条车道跑同一个二进制、同一条
+  // 安装脚本；claude-exp 的引擎（Agent SDK）是 multicc 的依赖，根本没有制品。按车道
+  // 挂升级规格，面板就会出现 codex 两行跑同一条命令、claude-exp 一行只会说「请升级
+  // MultiCC」。所以这一列是家族事实：按任一车道问，答的都是同一份。
+  assert.equal(updateOf('codex').command, updateOf('codex-exp').command);
+  assert.deepEqual(updateOf('codex-exp'), updateOf('codex'));
+  assert.deepEqual(updateOf('claude-exp'), updateOf('claude'));
+  assert.equal(updateOf('claude-exp').package, '@anthropic-ai/claude-code');
+  assert.equal(updateOf('claude-exp').auto, true, 'the family CLI is installable; its bundled engine is not');
+  assert.equal(updateOf('mystery-cli'), null);
+  assert.equal(updateOf(''), null);
+  // 没有命令的家族必须给出替代说法：一行装不了又说不出为什么的按钮就是假按钮。
+  assert.equal(updateOf('zcode').auto, false);
+  assert.ok(updateOf('zcode').manual);
+  for (const cli of Object.keys(CAPABILITIES)) {
+    const spec = updateOf(cli);
+    assert.ok(spec, `${cli} has no upgrade fact`);
+    if (!spec.auto) assert.ok(spec.manual, `${cli}: nothing to install and nothing to say`);
+  }
 });
 
 test('an adapter error label follows the display table, and the parsers accept every spelling', () => {

@@ -272,9 +272,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 7018 行 / 437112 字节。
   // 同日目录里的终端行加状态点、提示行、「多久没动」与重命名 / 复制 id：airTerminal*
   // 共 13 键，中英各 13 行 = +26，重跑生成器实测 7044 行 / 438951 字节。
+  // 同期 CLI 更新面板改按家族列行：内置引擎（Claude Agent SDK）挂在家族行下面说明
+  // 「随 MultiCC 一起升级」，新增 airCliUpdateBundled 中英各 1 行 = +2。两支合流后
+  // 按本树重跑生成器实测 7046 行 / 439114 字节（438951 + 163 = 两侧各自增量之和）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7044,
-    maxBytes: 438951,
+    maxLines: 7046,
+    maxBytes: 439114,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

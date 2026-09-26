@@ -1647,6 +1647,7 @@
   "airCheckUpdate": "Click to check for and install updates",
   "airCheckoutSeparateSession": "Check out into a separate session",
   "airCliUpdateAllCurrent": "All CLIs are up to date",
+  "airCliUpdateBundled": "Bundled {engine}{version} — updated with MultiCC",
   "airCliUpdateCheckFailed": "Check failed",
   "airCliUpdateCheckedAt": "Checked at {time}",
   "airCliUpdateChecking": "Checking…",

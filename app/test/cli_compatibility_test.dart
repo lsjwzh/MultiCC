@@ -111,19 +111,20 @@ void main() {
       expect(SessionCli.claudeExp.supportsSubagent, isTrue);
       expect(SessionCli.claudeExp.poolKey, 'claude');
       expect(SessionCli.claudeExp.defaultEffort, 'medium');
-      // 显示名跟产品走：扶正后的常驻 SDK 车道是 "Claude"（一次性 `claude -p` 那条
-      // 留 "Claude Code"），三端一致性见 tests/test-cli-display-parity.js）。
+      // 显示名跟产品走：扶正后的常驻 SDK 车道是 "Claude"，终端那条 `claude -p`
+      // 用的也是同一个产品名（区别在小字：Claude Agent SDK / claude -p），三端一致
+      // 性见 tests/test-cli-display-parity.js）。
       expect(SessionCli.claudeExp.displayName, 'Claude');
-      expect(SessionCli.claude.displayName, 'Claude Code');
+      expect(SessionCli.claude.displayName, 'Claude');
       // 小字写它底下的引擎，不写内部 id。
       expect(cliEngine(SessionCli.claudeExp.name), 'Claude Agent SDK');
       expect(cliEngine(SessionCli.codexExp.name), 'Codex App Server');
 
-      // 显示名同样跟产品走：扶正后的常驻车道 codex-exp 叫 Codex，兜底的
-      // codex exec（内部 id codex）叫 Codex Exec，并被标成计划淘汰 —— 选择器靠
-      // [isDeprecatedLane] 说出那句「兜底线路，计划淘汰 · Codex」。
+      // 显示名同样跟产品走：扶正后的常驻车道 codex-exp 叫 Codex，兜底的 codex exec
+      // （内部 id codex）也叫 Codex，并被标成计划淘汰 —— 选择器靠 [isDeprecatedLane]
+      // 说出那句「兜底线路，计划淘汰 · Codex」。
       expect(SessionCli.codexExp.displayName, 'Codex');
-      expect(SessionCli.codex.displayName, 'Codex Exec');
+      expect(SessionCli.codex.displayName, 'Codex');
       expect(SessionCli.codex.isDeprecatedLane, isTrue);
       expect(SessionCli.codex.replacedByLane, SessionCli.codexExp);
       for (final cli in SessionCli.values.where((c) => c != SessionCli.codex)) {
@@ -217,9 +218,9 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(_host(_configSheet(SessionCli.claude)));
-      // 标题取 CLI 的展示名（cli_display.dart）：claude 那一档是 "Claude Code"，
-      // 所以这里跟着变成 "Claude Code Agent"。
-      expect(find.text('Claude Code Agent'), findsOneWidget);
+      // 标题取 CLI 的展示名（cli_display.dart）：claude 那一档是 "Claude"，
+      // 所以这里跟着变成 "Claude Agent"。
+      expect(find.text('Claude Agent'), findsOneWidget);
       expect(find.text('子任务'), findsOneWidget);
       expect(find.text('Effort'), findsOneWidget);
     });

@@ -96,23 +96,52 @@ const FAMILIES = Object.freeze({
 //   offered     whether this kind's pickers offer the lane. Default: yes. This
 //               is policy, not capability: `claude -p` *can* chat, the product
 //               just does not offer it there any more.
+//   bundled     the lane's engine does not come from the family's own CLI
+//               artifact: it ships inside MultiCC. Only claude-exp today — the
+//               Agent SDK is a library multicc requires, not a binary a user
+//               installs. An update row can install the family's CLI; it can
+//               never install this, so it says so instead of offering a button.
 //   deprecated  the lane still works in this kind but is on its way out, and
 //   replacedBy  names the lane to use instead. Only ever present together.
 //
-// 2026-09-26：两条常驻车道扶正为产品名，两条一次性车道退出 chat。
+// `update` is the family's **own CLI artifact** — the one thing an install or
+// upgrade row acts on:
+//
+//   package     the npm package its published version is read from. Absent when
+//               the CLI has no comparable published source (qoder, zcode).
+//   command     the official install/upgrade command. Absent on a CLI that has
+//               no script (zcode ships inside a desktop app).
+//   manual      what to tell the user instead, when there is no command.
+//
+// This is a family fact and not a lane one: both of codex's lanes run the same
+// binary behind the same install script, and claude-exp has no artifact of its
+// own at all. Hanging it off lanes is what made the update panel show `codex`
+// and `codex-exp` as two rows running one command, and `claude-exp` as a row
+// that could only answer "upgrade MultiCC instead".
+//
+// 2026-09-26：两条常驻车道扶正为产品名，两条一次性车道退出 chat，终端大字照实写
+// 命令所属的产品。
 //
 //   家族    场景       车道        大字           小字
-//   claude  chat      claude-exp  Claude         Claude Agent SDK
+//   claude  chat      claude-exp  Claude         Claude Agent SDK   （bundled）
 //           chat      claude      Claude         claude -p        （offered: false）
-//           terminal  claude      Claude Code    claude
+//           terminal  claude      Claude         claude
 //   codex   chat      codex-exp   Codex          Codex App Server
 //           chat      codex       Codex          codex exec       （offered: false）
-//           terminal  codex       Codex Exec     codex
+//           terminal  codex       Codex          codex
+//   opencode chat     opencode    OpenCode       opencode acp
+//           terminal  opencode    OpenCode       opencode
 //
 // `claude` 是 `claude -p` 的一次性车道、`codex` 是 `codex exec`：chat 里已经没有
 // 它们的位置（扶正后的常驻车道才是 chat 的线路），但终端真要把这两个可执行文件
 // 跑起来，所以它们只退出 chat、留在终端。反过来 claude-exp / codex-exp 是进程内的
 // SDK / app-server 车道，没有可执行文件能丢进终端。
+//
+// 终端那行大字照实写：它就是 `claude` / `codex` 这个命令，不再叫 "Claude Code" /
+// "Codex Exec" —— 后者说的是 chat 里 `codex exec` 那条命令，本来就挂错了场景。
+//
+// ACP 家族的 chat 车道多写一截 ` acp`：同一个可执行文件在 chat 里是被 ACP 桥
+// 驱动的（acp.js），在终端里就是它自己。
 //
 // id 一律不动：会话记录、Provider 池、路由、适配器 label 全记着旧 id。
 //
@@ -140,19 +169,30 @@ const CLIS = deepFreeze({
   claude: {
     name: 'Claude',
     colour: '#ff9a76',
+    update: { package: '@anthropic-ai/claude-code', command: 'npm install -g @anthropic-ai/claude-code' },
     lanes: {
       // 常驻的 Agent SDK 车道就是 chat 里的 Claude（内部 id 仍是 claude-exp）。
+      // 它的引擎由 MultiCC 内置，没有可安装的制品 —— 所以是 bundled，不是一条
+      // 能升级的车道。
       chat: [
-        { id: 'claude-exp', mark: 'A', engine: 'Claude Agent SDK' },
+        { id: 'claude-exp', mark: 'A', engine: 'Claude Agent SDK', bundled: true },
         { id: 'claude', engine: 'claude -p', offered: false },
       ],
-      // 终端跑的是 `claude` 这个可执行文件本身，大字保留它自己的产品名。
-      terminal: [{ id: 'claude', label: 'Claude Code', mark: 'C', engine: 'claude' }],
+      // 终端跑的就是 `claude` 这个可执行文件，大字与家族同名。
+      terminal: [{ id: 'claude', mark: 'C', engine: 'claude' }],
     },
   },
   codex: {
     name: 'Codex',
     colour: '#20a66a',
+    // codex 走官方安装脚本, 不走 npm 全局 —— 这是修一次真实事故换来的选择。
+    // `@openai/codex` 的平台二进制(约 133MB)是 optionalDependency: 下载超时会被 npm
+    // 静默丢弃, 整条命令仍然 exit 0。留下的是一个能启动失败、却对外报"安装成功"的残废
+    // 安装, job 只看退出码, 无从分辨。实测同一个包同一台机器, 一次 27 秒装好, 另一次
+    // 卡满 5 分钟默认 fetch-timeout 后被丢 —— 是下载通道本身不稳, 加长超时只是压制。
+    // 官方脚本没有这条静默路径: 单一归档、sha256 对 codex-package_SHA256SUMS、set -eu
+    // 非零退出、版本化目录 + current 软链原子切换。
+    update: { package: '@openai/codex', command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
     lanes: {
       chat: [
         { id: 'codex-exp', mark: 'X', engine: 'Codex App Server' },
@@ -160,17 +200,63 @@ const CLIS = deepFreeze({
         // 本来的 codex 命令，所以这个标记只写在 chat 这条目上。
         { id: 'codex', engine: 'codex exec', offered: false, deprecated: true, replacedBy: 'codex-exp' },
       ],
-      terminal: [{ id: 'codex', label: 'Codex Exec', mark: 'E', engine: 'codex' }],
+      terminal: [{ id: 'codex', mark: 'E', engine: 'codex' }],
     },
   },
-  opencode: { name: 'OpenCode', colour: '#388bfd', mark: 'O' },
-  zcode: { name: 'ZCode', colour: '#a371f7', mark: 'Z' },
-  qoder: { name: 'Qoder CN', colour: '#ff8a3d', mark: 'Q', providerless: true },
-  kimi: { name: 'Kimi Code', colour: '#13c2c2', mark: 'K' },
-  codebuddy: { name: 'WorkBuddy', colour: '#0052d9', mark: 'W', providerless: true },
-  dsh: { name: 'DSH', colour: '#4d6bfe', mark: 'D', providerless: true },
-  gemini: { name: 'Gemini', colour: '#4285f4', mark: 'G', providerless: true },
-  grok: { name: 'Grok', colour: '#8c8f96', mark: 'R', providerless: true },
+  // ACP：同一个可执行文件，chat 里由 acp.js 桥驱动（小字写出这层），终端里就是它自己。
+  opencode: {
+    name: 'OpenCode',
+    colour: '#388bfd',
+    mark: 'O',
+    update: { package: 'opencode-ai', command: 'npm install -g opencode-ai' },
+    lanes: { chat: [{ id: 'opencode', engine: 'opencode acp' }], terminal: [{ id: 'opencode' }] },
+  },
+  zcode: {
+    name: 'ZCode',
+    colour: '#a371f7',
+    mark: 'Z',
+    // 协议是 zcode-app-server（常驻），但它没有官方 CLI 安装脚本：CLI 在桌面版里。
+    update: { manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)' },
+  },
+  qoder: {
+    name: 'Qoder CN',
+    colour: '#ff8a3d',
+    mark: 'Q',
+    providerless: true,
+    // curl 脚本安装，没有可比对的 npm 发布源。
+    update: { command: 'curl -fsSL https://qoder.cn/install | bash' },
+  },
+  kimi: { name: 'Kimi Code', colour: '#13c2c2', mark: 'K', update: { package: '@moonshot-ai/kimi-code', command: 'npm install -g @moonshot-ai/kimi-code' } },
+  codebuddy: {
+    name: 'WorkBuddy',
+    colour: '#0052d9',
+    mark: 'W',
+    providerless: true,
+    update: { package: '@tencent-ai/codebuddy-code', command: 'npm install -g @tencent-ai/codebuddy-code' },
+  },
+  dsh: {
+    name: 'DSH',
+    colour: '#4d6bfe',
+    mark: 'D',
+    providerless: true,
+    update: { package: '@deepseek-ai/dsh', command: 'npm install -g @deepseek-ai/dsh' },
+  },
+  gemini: {
+    name: 'Gemini',
+    colour: '#4285f4',
+    mark: 'G',
+    providerless: true,
+    update: { package: '@google/gemini-cli', command: 'npm install -g @google/gemini-cli' },
+    lanes: { chat: [{ id: 'gemini', engine: 'gemini acp' }], terminal: [{ id: 'gemini' }] },
+  },
+  grok: {
+    name: 'Grok',
+    colour: '#8c8f96',
+    mark: 'R',
+    providerless: true,
+    update: { package: '@xai-official/grok', command: 'npm install -g @xai-official/grok' },
+    lanes: { chat: [{ id: 'grok', engine: 'grok acp' }], terminal: [{ id: 'grok' }] },
+  },
 });
 
 // Neutral grey, matching the muted text both clients already draw with. Only
@@ -214,6 +300,7 @@ function presentationOf(familyId, family, kind, entry) {
     colour: family.colour || DEFAULT_COLOUR,
     providerless: family.providerless === true,
     offered: entry.offered !== false,
+    bundled: entry.bundled === true,
     deprecated: entry.deprecated === true,
     replacedBy: entry.deprecated === true ? (entry.replacedBy || null) : null,
   };
@@ -401,6 +488,89 @@ function knownClis() {
   return Object.keys(DISPLAY);
 }
 
+// ── The update unit: a family's own CLI artifact ───────────────────────────
+//
+// An install or upgrade row acts on one artifact. That artifact belongs to the
+// FAMILY, never to a lane: `codex` and `codex-exp` are two lanes running one
+// binary behind one install script, and `claude-exp` runs an engine that ships
+// inside MultiCC and has no artifact at all. Keying this by lane is what made
+// the panel show codex twice and offer to install the Agent SDK.
+//
+// The shape is the one switch-runtime and both clients already speak:
+// { auto, command, display, package } — or { auto: false, manual } when the CLI
+// has no install script (zcode ships inside a desktop app).
+function updateOf(cli) {
+  const family = familyOf(cli);
+  if (!family) return null;
+  const spec = CLIS[family].update;
+  if (!spec) return null;
+  const command = typeof spec.command === 'string' && spec.command ? spec.command : null;
+  return Object.freeze({
+    auto: command !== null,
+    command,
+    display: command,
+    manual: command ? null : (spec.manual || null),
+    package: spec.package || null,
+  });
+}
+
+// Every artifact an update row may act on, keyed by family — the roster the
+// update panel enumerates and the install/upgrade routes accept.
+function updateSpecs() {
+  const specs = {};
+  for (const familyId of Object.keys(CLIS)) {
+    const spec = updateOf(familyId);
+    if (spec) specs[familyId] = spec;
+  }
+  return Object.freeze(specs);
+}
+
+// family id → the npm package its published version is read from. Only families
+// with a comparable published source appear; a curl-script or desktop-only CLI
+// is absent rather than mapped to a package it does not install from.
+function npmPackages() {
+  const packages = {};
+  for (const familyId of Object.keys(CLIS)) {
+    const spec = CLIS[familyId].update;
+    if (spec && spec.package) packages[familyId] = spec.package;
+  }
+  return Object.freeze(packages);
+}
+
+// A lane whose engine ships inside MultiCC instead of coming from the family's
+// CLI artifact. Nothing can be installed for it, so a row that would otherwise
+// offer a button says this instead.
+function isBundled(cli) {
+  const key = nameOf(cli);
+  for (const familyId of Object.keys(CLIS)) {
+    for (const kind of KINDS) {
+      for (const entry of laneEntries(familyId, CLIS[familyId], kind)) {
+        if (nameOf(entry.id) === key) return entry.bundled === true;
+      }
+    }
+  }
+  return false;
+}
+
+// The bundled engine lanes of a family — what an update row for that family adds
+// as a second line ("内置引擎 Claude Agent SDK v0.1.x,随 MultiCC 升级"). Empty for
+// every family whose lanes all come from its own CLI artifact.
+function bundledEnginesOf(cli) {
+  const familyId = familyOf(cli);
+  if (!familyId) return [];
+  const family = CLIS[familyId];
+  const out = [];
+  for (const kind of KINDS) {
+    for (const entry of laneEntries(familyId, family, kind)) {
+      if (entry.bundled !== true) continue;
+      const lane = nameOf(entry.id) || familyId;
+      if (out.some(item => item.lane === lane)) continue;
+      out.push({ lane, engine: entry.engine || lane, kind });
+    }
+  }
+  return out;
+}
+
 // The resident lane. A resident CLI keeps one child across turns, so its turns
 // are cancelled and observed through the stream runtime, never through a
 // per-turn child process.
@@ -476,6 +646,7 @@ module.exports = {
   DEFAULT_KINDS,
   DISPLAY,
   KINDS,
+  bundledEnginesOf,
   cancelStopsProcess,
   capabilityOf,
   colourOf,
@@ -486,6 +657,7 @@ module.exports = {
   familiesFor,
   familyNameOf,
   familyOf,
+  isBundled,
   isDeprecated,
   isProviderless,
   isResident,
@@ -493,10 +665,13 @@ module.exports = {
   kindsOf,
   knownClis,
   lanesOf,
+  npmPackages,
   offersIn,
   protocolFamilyOf,
   protocolOf,
   providerlessClis,
   shortMarkOf,
   transportOf,
+  updateOf,
+  updateSpecs,
 };
