@@ -49,7 +49,15 @@ test('the CLI update badge sits on the brand row and its popover lands on screen
   const html = fs.readFileSync(path.join(publicDir, 'air.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
     .replace('</body>', '<script src="/i18n-catalog.js"></script><script src="/i18n.js"></script>'
+      + '<script src="/shared/format.js"></script><script src="/provider-catalog.js"></script>'
       + '<script src="/air-cli-update.js"></script></body>');
+  // provider-catalog.js 住在 public/shared 之外但依赖 shared/format.js（读目录只扫
+  // 顶层，所以这两条得手工挂上）。页面里它们先于 air-cli-update.js 加载：行名是家族
+  // 名，取自这份共享目录，少了它渲染到第一行就抛、行区是空的。
+  routes['/shared/format.js'] = {
+    body: fs.readFileSync(path.join(publicDir, 'shared', 'format.js')),
+    headers: { 'content-type': 'text/javascript' },
+  };
   routes['/'] = { body: html, headers: { 'content-type': 'text/html; charset=utf-8' } };
 
   let upgrades = 0;
