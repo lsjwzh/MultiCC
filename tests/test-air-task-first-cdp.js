@@ -2,6 +2,8 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
+// 注意别叫 t：这个文件的测试回调形参就是 t（测试上下文），会把它盖掉。
+const { t: translate } = require('./helpers/i18n-translator');
 
 // The console panel slides in over a 300ms CSS transition. The test target is a
 // background one — it never renders and never produces frames, so the document
@@ -597,9 +599,19 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     const successfulAttribution = entry.attribution;
     entry.execution.status = 'error'; entry.attribution = {};
     await reloadConversation();
-    assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent==='任务保持进行中'`));
+    // 这两句都是词典里的文案（不是夹具给的标题），所以都按词典取值断 —— 上一轮措辞
+    // 调整（失败→执行异常）就是在这条上过期的。
+    assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent===${JSON.stringify(translate('airAttrTurnFailedTitle'))}`));
     assert.equal(await page.evaluate(`document.getElementById('delivery-card').hidden`), false);
-    assert.equal(await page.evaluate(`document.getElementById('task-state').textContent.includes('本轮 失败')`), true);
+    // 状态条要说清「这一轮没成」——但具体措辞走词典：这行原本写死「本轮 失败」，
+    // 2026-09-25 那次措辞统一（失败→执行异常）之后它就一直红着。断言该钉的是
+    // 「状态条把失败那一轮说出来了」，不是某一次的具体用词。
+    const failedRun = translate('airSegExecution', { state: translate('airStateFailed') });
+    assert.equal(
+      await page.evaluate(`document.getElementById('task-state').textContent.includes(${JSON.stringify(failedRun)})`),
+      true,
+      `状态条要写出失败那一轮：${failedRun}`,
+    );
     entry.execution.status = 'idle'; entry.attribution = successfulAttribution;
     await reloadConversation();
     assert.ok(await page.waitFor(`document.getElementById('delivery-title').textContent.includes('任务体验收口')`));
@@ -718,9 +730,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       assert.equal(await page.evaluate(`document.getElementById('${id}').offsetParent===null`), true, `${id} 在终端模式下该让位`);
     }
     // 只列当前目录（d1）的终端：别的目录的、以及 chat-kind 的会话都不进来。
-    const termRows = await page.evaluate(`[...document.querySelectorAll('#directory-terminal-list .directory-terminal-row')].map(a=>[a.textContent, a.getAttribute('href')])`);
-    assert.equal(termRows.length, 1, 'd1 只有一条终端会话：' + JSON.stringify(termRows));
-    assert.equal(termRows[0][1], '/?id=term', '终端行指向终端页：' + JSON.stringify(termRows));
+    // 行是「容器 + 打开链接 + 重启/删除」（按钮不能嵌在链接里），所以 href 在链接上。
+    const termRows = await page.evaluate(`[...document.querySelectorAll('#directory-terminal-list .directory-terminal-open')].map(a=>a.getAttribute('href'))`);
+    assert.deepEqual(termRows, ['/?id=term'], '终端行指向终端页：' + JSON.stringify(termRows));
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list [data-action="restart-terminal"]').length`), 1, '行尾那颗重启');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list [data-action="delete-terminal"]').length`), 1, '行尾那颗删除');
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '1 个终端');
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-list').textContent.includes('FIXED_ROLE_MUST_NOT_SHOW')`), false, 'chat-kind 的角色会话不属于终端');
     screenshots.push(await page.screenshot('directory-terminal-mode-desktop'));
