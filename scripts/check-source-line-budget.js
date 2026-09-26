@@ -80,16 +80,18 @@ const MIGRATION_DEBT = Object.freeze({
   // 状态条目（含把 B 说成「等待回答」的那个）连同一条中间变量一起删掉，`label()` 只多
   // 一行去注册表折算别名。少掉的词换来一段解释「为什么规范状态不在这里再写一遍」的
   // 注释，行数刚好抵平（3118 不变），字节按重排后的实测降到 169154。
+  // 2026-09-26 车道扶正（接着上面 air.js 那格）：多了一层线路展示壳
+  // （cliDisplayName / cliOptionLabel / laneRouteLabel / cliOffersInChat / firstChatCli
+  // 五个小助手），快速开始、定时任务、任务气泡三处改走它们，chat 的下拉一律滤掉一次性
+  // 车道。laneRouteLabel 是自持账号车道那处「WorkBuddy · WorkBuddy」去重 —— 产品名
+  // 扶正之后，路由名和车道名同源时会重一遍。行数 3118 -> 3148、字节
+  // 169154 -> 171301，全是接线；下一次动目录页或 ⌘K，该拆的仍是
+  // renderSchedules / renderDirectoryOverview。
   'public/air.js': Object.freeze({
-    ceiling: 3141,
-    byteCeiling: 170888,
+    ceiling: 3148,
+    byteCeiling: 171301,
     target: 3000,
   }),
-  // 2026-09-26 车道扶正（接着上面 air.js 那格）：多了一层线路展示壳
-  // （cliDisplayName / cliOptionLabel / cliOffersInChat / firstChatCli 四个小助手），
-  // 快速开始、定时任务、任务气泡三处改走它们，chat 的下拉一律滤掉一次性车道。
-  // 行数 3118 -> 3141、字节 169154 -> 170888，全是接线；下一次动目录页或 ⌘K，
-  // 该拆的仍是 renderSchedules / renderDirectoryOverview。
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
   // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,

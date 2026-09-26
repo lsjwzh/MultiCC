@@ -3,20 +3,25 @@
 // CLI display parity: one name per id, on all three platforms.
 //
 // What this defends:
-//   1. `{id, displayName, shortMark, colour, providerless, deprecated,
-//      replacedBy, engine, kinds}` exists once per platform — server
-//      (src/cli/cli-capability.js DISPLAY, the authoritative one), web
-//      (public/provider-catalog.js CLI_DISPLAY) and app
-//      (app/lib/utils/cli_display.dart kCliDisplays) — and the three copies
-//      agree. Before this they were written out ten-plus times and had already
-//      drifted: the app's dashboard showed codebuddy / kimi / dsh / gemini / grok
-//      as "Claude", air-cli-update.js was missing claude-exp / codex-exp.
-//   2. An unknown id keeps its own spelling. The fallbacks this replaced
+//   1. One CLI catalogue exists once per platform — server
+//      (src/cli/cli-capability.js CLIS, the authoritative one), web
+//      (public/provider-catalog.js CLI_FAMILIES) and app
+//      (app/lib/utils/cli_display.dart kCliFamilies) — and the three agree.
+//      Before this they were written out ten-plus times and had already drifted:
+//      the app's dashboard showed codebuddy / kimi / dsh / gemini / grok as
+//      "Claude", air-cli-update.js was missing claude-exp / codex-exp.
+//   2. The catalogue is two-level — a CLI is a *family*, and each family lists,
+//      per session kind, the *lanes* that kind presents — and the flat lane
+//      table every consumer reads is derived from it, not a second copy. The
+//      three platforms must derive the same rows from the same structure:
+//      `claude` in chat is "Claude / Claude Agent SDK", `claude` in a terminal
+//      is the command itself, and both are one family.
+//   3. An unknown id keeps its own spelling. The fallbacks this replaced
 //      answered 'Claude' (Flutter) or 'WorkBuddy' (web AI config), so a CLI the
 //      table had never heard of was displayed as a completely different product.
-//   3. The consumers really point at the canonical module instead of carrying
+//   4. The consumers really point at the canonical module instead of carrying
 //      another copy.
-//   4. The two renames and what came with them — 2026-09-24: codex-exp is the
+//   5. The two renames and what came with them — 2026-09-24: codex-exp is the
 //      product's "Codex" and `codex exec` the fallback "Codex Exec"; 2026-09-26:
 //      claude-exp is the product's "Claude" with the engine line "Claude Agent
 //      SDK", and the two one-shot lanes (`claude -p`, `codex exec`) left the chat
@@ -24,7 +29,10 @@
 //      decision.
 //
 // The Dart file is parsed, not imported (same approach as
-// tests/test-status-presentation.js), so this stays in the plain node lane.
+// tests/test-status-presentation.js), so this stays in the plain node lane. Its
+// structure is compared with the server's and flattened by the rule the Dart
+// code implements; the values the App actually resolves are pinned by
+// app/test/cli_display_test.dart, which runs the real thing.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -37,44 +45,137 @@ const CATALOG = require('../public/provider-catalog.js');
 
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 
-/** kCliDisplays literal from the Dart source. */
-function dartTable() {
-  const src = read('app/lib/utils/cli_display.dart');
-  // Three positional args, then any number of `name: value` flags, in any order.
-  // A flag value is `true` / `false`, a quoted string, or a list — `providerless:
-  // true`, `deprecated: true, replacedBy: 'codex-exp'`, `engine: 'Claude Agent SDK',
-  // kinds: ['chat']` (const only where the analyzer wants it), or none at all.
-  const re = /'([^']+)':\s*CliDisplay\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*([A-Za-z0-9_.]+)\s*,\s*'((?:[^'\\]|\\.)*)'\s*((?:,\s*[A-Za-z]+\s*:\s*(?:true|false|'[^']*'|(?:const\s+)?\[[^\]]*\]))*)\s*\)/g;
-  const out = {};
-  for (const m of src.matchAll(re)) {
-    const flags = {};
-    for (const pair of m[5].matchAll(/([A-Za-z]+)\s*:\s*(true|false|'[^']*'|(?:const\s+)?\[[^\]]*\])/g)) {
-      const [, flag, raw] = pair;
-      if (raw === 'true') flags[flag] = true;
-      else if (raw === 'false') flags[flag] = false;
-      else if (raw.startsWith('[') || raw.startsWith('const')) flags[flag] = [...raw.matchAll(/'([^']*)'/g)].map(x => x[1]);
-      else flags[flag] = raw.slice(1, -1);
+/** `kCliFamilies` literal from the Dart source: family id → {name, colourSymbol,
+ *  mark, providerless, lanes: {kind: [lane]}}. Read line by line — the nesting is
+ *  real Dart, and a line-oriented read is steadier than one regex over it. */
+function dartFamilies() {
+  const families = {};
+  let current = null;
+  let kind = null;
+  for (const raw of read('app/lib/utils/cli_display.dart').split('\n')) {
+    const line = raw.trim();
+    const family = line.match(/^'([^']+)':\s*CliFamily\('((?:[^'\\]|\\.)*)'\s*,\s*(AppColors\.[A-Za-z0-9_]+)\s*(.*)$/);
+    if (family) {
+      current = family[1];
+      kind = null;
+      const flags = dartFlags(family[4]);
+      families[current] = {
+        name: family[2],
+        colourSymbol: family[3],
+        mark: typeof flags.mark === 'string' ? flags.mark : null,
+        providerless: flags.providerless === true,
+        declared: /\blanes:/.test(family[4]),
+        lanes: { chat: [], terminal: [] },
+      };
+      continue;
     }
-    out[m[1]] = {
-      displayName: m[2],
-      colourSymbol: m[3],
-      shortMark: m[4],
-      providerless: flags.providerless === true,
-      deprecated: flags.deprecated === true,
-      replacedBy: typeof flags.replacedBy === 'string' ? flags.replacedBy : null,
-      engine: typeof flags.engine === 'string' ? flags.engine : null,
-      kinds: Array.isArray(flags.kinds) ? flags.kinds : ['chat', 'terminal'],
-    };
+    if (!current) continue;
+    const scenario = line.match(/^'([^']+)':\s*<CliLane>\[/);
+    if (scenario) { kind = scenario[1]; continue; }
+    const lane = line.match(/^CliLane\('((?:[^'\\]|\\.)*)'\s*(.*)$/);
+    if (lane && kind) {
+      const flags = dartFlags(lane[2]);
+      families[current].lanes[kind].push({
+        id: lane[1],
+        label: typeof flags.label === 'string' ? flags.label : null,
+        mark: typeof flags.mark === 'string' ? flags.mark : null,
+        engine: typeof flags.engine === 'string' ? flags.engine : null,
+        offered: flags.offered !== false,
+        deprecated: flags.deprecated === true,
+        replacedBy: typeof flags.replacedBy === 'string' ? flags.replacedBy : null,
+      });
+    }
   }
-  assert.ok(Object.keys(out).length >= 10, 'kCliDisplays literal not found in app/lib/utils/cli_display.dart');
+  assert.ok(Object.keys(families).length >= 10, 'kCliFamilies literal not found in app/lib/utils/cli_display.dart');
+  // A family that lists no lanes is its own single lane in both kinds — the rule
+  // the Dart `_laneEntries` and the server's `laneEntries` both implement.
+  for (const [id, family] of Object.entries(families)) {
+    if (family.declared) continue;
+    family.lanes = { chat: [{ id, offered: true }], terminal: [{ id, offered: true }] };
+  }
+  return families;
+}
+
+/** `name: value` flag pairs out of a Dart constructor's tail. */
+function dartFlags(text) {
+  const flags = {};
+  for (const pair of text.matchAll(/([A-Za-z]+)\s*:\s*(true|false|'[^']*')/g)) {
+    const [, key, raw] = pair;
+    if (raw === 'true') flags[key] = true;
+    else if (raw === 'false') flags[key] = false;
+    else flags[key] = raw.slice(1, -1);
+  }
+  return flags;
+}
+
+/** The flat lane row the Dart `_flattenFamilies` builds, from the structure
+ *  parsed above — the same rule the server and the page implement, so agreement
+ *  here means all three turn the same structure into the same rows. */
+function dartFlatten(families) {
+  const out = {};
+  for (const [familyId, family] of Object.entries(families)) {
+    const order = [];
+    const seen = new Map();
+    const rowOf = id => {
+      if (!seen.has(id)) { seen.set(id, { labels: [], marks: [], engines: new Map(), kinds: [], dying: null }); order.push(id); }
+      return seen.get(id);
+    };
+    for (const kind of CAP.KINDS) {
+      for (const lane of family.lanes[kind] || []) {
+        const id = String(lane.id).trim().toLowerCase();
+        const row = rowOf(id);
+        if (lane.label && !row.labels.includes(lane.label)) row.labels.push(lane.label);
+        if (lane.mark && !row.marks.includes(lane.mark)) row.marks.push(lane.mark);
+        if (lane.engine) row.engines.set(kind, lane.engine);
+        if (lane.offered !== false && !row.kinds.includes(kind)) row.kinds.push(kind);
+        if (lane.deprecated && !row.dying) row.dying = lane;
+      }
+    }
+    for (const id of order) {
+      const row = seen.get(id);
+      const engineKind = row.kinds.find(k => row.engines.has(k)) || [...row.engines.keys()][0];
+      out[id] = {
+        displayName: row.labels[0] || family.name,
+        colourSymbol: family.colourSymbol,
+        shortMark: row.marks[0] || family.mark || family.name.slice(0, 1).toUpperCase(),
+        providerless: family.providerless,
+        deprecated: row.dying !== null,
+        replacedBy: row.dying ? (row.dying.replacedBy || null) : null,
+        engine: engineKind ? row.engines.get(engineKind) : null,
+        kinds: row.kinds.length === CAP.KINDS.length ? [...CAP.KINDS] : [...row.kinds],
+        family: familyId,
+      };
+    }
+  }
   return out;
 }
 
-const DART = dartTable();
+/** One Dart lane row with the defaults applied — the shape `lanesOf()` answers,
+ *  so the three platforms can be compared row for row. */
+function dartView(familyId, kind, lane) {
+  const family = DART_FAMILIES[familyId];
+  const id = String(lane.id).trim().toLowerCase();
+  return {
+    lane: id,
+    kind,
+    label: lane.label || family.name,
+    engine: lane.engine || id,
+    mark: lane.mark || family.mark || family.name.slice(0, 1).toUpperCase(),
+    colour: null, // the app's hexes are its own light-theme values; only the symbol is checked
+    providerless: family.providerless,
+    offered: lane.offered !== false,
+    deprecated: lane.deprecated === true,
+    replacedBy: lane.deprecated === true ? (lane.replacedBy || null) : null,
+  };
+}
+
+const DART_FAMILIES = dartFamilies();
+const DART = dartFlatten(DART_FAMILIES);
 const WEB = CATALOG.CLI_DISPLAY;
 const SERVER = CAP.DISPLAY;
 
 const ids = Object.keys(SERVER).sort();
+const families = Object.keys(CAP.CLIS);
 
 // ── 1. Same ids everywhere ──────────────────────────────────────────────────
 
@@ -252,6 +353,131 @@ test('colour is identical between server and web, and the app brands differ deli
       `${id}: AppColors.${name} is not defined in app/lib/theme.dart`,
     );
   }
+});
+
+// ── 2b. The catalogue is ONE structure, on all three platforms ──────────────
+//
+// 一个 CLI 是家族，家族在每个场景里给出衍生车道。上面那组测试比的是摊平后的
+// 车道行；这组比的是**结构本身** —— 谁属于哪个家族、每个场景给哪些衍生、每个
+// 衍生在那个场景里叫什么。摊平是这三份结构各自的投影，所以结构一致才意味着
+// 用户看到的一致。
+
+test('server / web / app carry the same CLI family set', () => {
+  assert.deepEqual(Object.keys(CATALOG.CLI_FAMILIES), families, 'web CLI_FAMILIES keys differ from server CLIS');
+  assert.deepEqual(Object.keys(DART_FAMILIES), families, 'app kCliFamilies keys differ from server CLIS');
+  assert.ok(families.length >= 10, 'the catalogue lost its CLIs');
+  assert.deepEqual([...CAP.KINDS], [...CATALOG.CLI_KINDS], 'the two kinds must be the same two kinds everywhere');
+});
+
+test('a family says its name, brand, mark and account once, on all three platforms', () => {
+  for (const familyId of families) {
+    const server = CAP.CLIS[familyId];
+    const web = CATALOG.CLI_FAMILIES[familyId];
+    const dart = DART_FAMILIES[familyId];
+    assert.equal(web.name, server.name, `${familyId}: web family name`);
+    assert.equal(dart.name, server.name, `${familyId}: app family name`);
+    assert.equal(web.colour, server.colour, `${familyId}: web family colour`);
+    assert.equal(web.mark, server.mark, `${familyId}: web family mark`);
+    assert.equal(dart.mark || null, server.mark || null, `${familyId}: app family mark`);
+    assert.equal(web.providerless === true, server.providerless === true, `${familyId}: web providerless`);
+    assert.equal(dart.providerless, server.providerless === true, `${familyId}: app providerless`);
+    // 一个家族的名字就是**对外**那个名字：车道行的 displayName 可以另起（终端那行
+    // 写 Claude Code），家族名不会。
+    assert.equal(CAP.familyNameOf(familyId), server.name, `${familyId}: familyNameOf`);
+    assert.equal(CATALOG.cliFamilyName(familyId), server.name, `${familyId}: web cliFamilyName`);
+    assert.ok(familyId === familyId.trim().toLowerCase(), `${familyId}: family ids are stored lowercase`);
+  }
+});
+
+test('每个场景给的衍生、顺序和叫法，三端逐行相同', () => {
+  const shape = row => [row.lane, row.label, row.engine, row.mark, row.offered, row.deprecated, row.replacedBy].join(' | ');
+  for (const familyId of families) {
+    for (const kind of CAP.KINDS) {
+      const server = CAP.lanesOf(familyId, kind);
+      const web = CATALOG.cliLanesOf(familyId, kind);
+      const dart = (DART_FAMILIES[familyId].lanes[kind] || []).map(lane => dartView(familyId, kind, lane));
+      assert.deepEqual(web.map(shape), server.map(shape), `${familyId}/${kind}: web lane rows`);
+      assert.deepEqual(dart.map(shape), server.map(shape), `${familyId}/${kind}: app lane rows`);
+      // 车道 id 是记录里存的那个，不分大小写地比对；家族里不该有两条同名衍生。
+      const lanes = server.map(row => row.lane);
+      assert.equal(new Set(lanes).size, lanes.length, `${familyId}/${kind}: two lanes share an id`);
+    }
+  }
+  // 摊平出来的车道表就是这些结构投影的结果：一行不多、一行不少。
+  const declared = new Set();
+  for (const familyId of families) {
+    for (const kind of CAP.KINDS) for (const row of CAP.lanesOf(familyId, kind)) declared.add(row.lane);
+  }
+  assert.deepEqual([...declared].sort(), ids, 'every lane in DISPLAY must be declared by a family, and every declared lane must have a row');
+});
+
+test('一条车道的家族归属三端一致，未知 id 不冒充任何家族', () => {
+  for (const id of ids) {
+    assert.ok(families.includes(CAP.familyOf(id)), `${id}: server familyOf must name a family`);
+    assert.equal(CATALOG.cliFamilyOf(id), CAP.familyOf(id), `${id}: web familyOf`);
+    assert.equal(DART[id].family, CAP.familyOf(id), `${id}: app flatten must keep the family`);
+  }
+  // 一个 CLI 的家族名是它的**产品**名，不是它在某个场景里的行名：终端那行叫
+  // Claude Code，家族仍叫 Claude。
+  assert.equal(CAP.familyOf('claude'), 'claude');
+  assert.equal(CAP.familyOf('claude-exp'), 'claude');
+  assert.equal(CAP.familyNameOf('claude'), 'Claude');
+  assert.equal(CAP.familyNameOf('claude-exp'), 'Claude');
+  assert.equal(CAP.displayNameOf('claude'), 'Claude Code', 'the lane row keeps its own name');
+  assert.equal(CATALOG.cliFamilyName('claude-exp'), 'Claude');
+  assert.equal(CATALOG.cliFamilyName('claude'), 'Claude');
+  // 大小写与空格不该改变归属（记录里带着的就是这些拼法）。
+  assert.equal(CAP.familyOf(' CLAUDE-EXP '), 'claude');
+  assert.equal(CATALOG.cliFamilyOf(' Codex '), 'codex');
+  // 没听说过的 id 没有家族 —— 回落成它自己的名字，不是邻居的。
+  for (const junk of ['mystery-cli', 'claude-next', '']) {
+    assert.equal(CAP.familyOf(junk), null, `server familyOf(${JSON.stringify(junk)})`);
+    assert.equal(CATALOG.cliFamilyOf(junk), null, `web cliFamilyOf(${JSON.stringify(junk)})`);
+    assert.equal(CAP.familyNameOf(junk), junk, `server familyNameOf(${JSON.stringify(junk)})`);
+    assert.equal(CATALOG.cliFamilyName(junk), junk, `web cliFamilyName(${JSON.stringify(junk)})`);
+  }
+});
+
+test('derivatives are a family fact, so a second surface cannot invent one', () => {
+  // claude 与 codex 是仅有的两个**一 CLI 多衍生**的家族：chat 一条常驻 + 一条
+  // 退出 chat 的一次性车道，terminal 一条原生命令。其余家族都是一条衍生、两种
+  // 场景都给 —— 表里没写 lanes 就是那个意思。
+  for (const familyId of families) {
+    if (familyId === 'claude' || familyId === 'codex') continue;
+    assert.equal(CAP.CLIS[familyId].lanes, undefined, `${familyId} declares lanes it does not need`);
+    assert.equal(CATALOG.CLI_FAMILIES[familyId].lanes, undefined, `${familyId}: web mirror disagrees`);
+    assert.deepEqual(CAP.lanesOf(familyId, 'chat').map(l => l.lane), [familyId], `${familyId}: chat lane`);
+    assert.deepEqual(CAP.lanesOf(familyId, 'terminal').map(l => l.lane), [familyId], `${familyId}: terminal lane`);
+    assert.deepEqual(CAP.lanesOf(familyId, 'chat').map(l => l.offered), [true], `${familyId}: offered in chat`);
+  }
+  // 两条扶正家族的 chat 各给两条衍生，其中一次性那条 offered:false —— 它仍然是
+  // 一条真实的车道（记录里存着这个 id），只是选择器不再提供。
+  assert.deepEqual(CAP.lanesOf('claude', 'chat').map(l => [l.lane, l.label, l.engine, l.offered]), [
+    ['claude-exp', 'Claude', 'Claude Agent SDK', true],
+    ['claude', 'Claude', 'claude -p', false],
+  ]);
+  assert.deepEqual(CAP.lanesOf('claude', 'terminal').map(l => [l.lane, l.label, l.engine, l.offered]), [
+    ['claude', 'Claude Code', 'claude', true],
+  ]);
+  assert.deepEqual(CAP.lanesOf('codex', 'chat').map(l => [l.lane, l.label, l.engine, l.offered]), [
+    ['codex-exp', 'Codex', 'Codex App Server', true],
+    ['codex', 'Codex', 'codex exec', false],
+  ]);
+  // 同一个家族在两种场景里的名字可以不同（终端是原生命令），但**对外**只有一个。
+  assert.equal(CAP.familyNameOf('claude'), 'Claude');
+  assert.equal(CAP.lanesOf('claude', 'terminal')[0].label, 'Claude Code');
+  assert.equal(CATALOG.cliLanesOf('claude', 'terminal')[0].engine, 'claude');
+  // 两种场景都能给的家族，两个场景里都列得出来。
+  for (const familyId of families) {
+    const offered = CAP.KINDS.filter(kind => CAP.lanesOf(familyId, kind).some(l => l.offered));
+    assert.deepEqual(offered, CAP.KINDS.filter(kind => CAP.familiesFor(kind).includes(familyId)), `${familyId}: familiesFor disagrees with its own lanes`);
+    assert.deepEqual(CATALOG.cliFamiliesFor('chat').includes(familyId), CAP.familiesFor('chat').includes(familyId), `${familyId}: web familiesFor(chat)`);
+  }
+  // 未知的家族名与未知的场景名都答空，不是抛错。
+  assert.deepEqual(CAP.lanesOf('mystery-cli', 'chat'), []);
+  assert.deepEqual(CAP.lanesOf('claude', 'nowhere'), []);
+  assert.deepEqual(CATALOG.cliLanesOf('mystery-cli', 'chat'), []);
+  assert.deepEqual(DART_FAMILIES.claude.lanes.nowhere || [], []);
 });
 
 // ── 3. Every CLI the server accepts can be displayed ────────────────────────

@@ -241,14 +241,16 @@
     actions.append(cancel, submit); foot.append(footCopy, actions);
     form.append(error, foot); d.append(form); document.body.append(d); d.showModal();
 
-    // 任务的线路是 chat 线路：一次性车道（`claude -p` / `codex exec`）不在这个列表里，
-    // 它们属于终端。当前这条无论如何都留着 —— 否则打开一个跑在旧线路上的任务，会连
-    // 自己正在用哪条都看不见。
+    // 可选线路按用途分：任务是 chat 线路（一次性车道 `claude -p` / `codex exec` 不在
+    // 这里），终端是 terminal 线路（常驻车道是没有可执行文件的 SDK / app-server，摆
+    // 在这儿选不出来）。当前这条无论如何都留着 —— 否则打开一个跑在旧线路上的会话，
+    // 连自己正在用哪条都看不见。
+    const laneKind = entry.purpose === 'terminal' ? 'terminal' : 'chat';
     const cliList = [...new Set([config.cli, ...(Array.isArray(clis) ? clis : [])]
       .filter(Boolean))]
-      .filter(cli => cli === config.cli || cliOffersIn(cli, 'chat'));
+      .filter(cli => cli === config.cli || cliOffersIn(cli, laneKind));
     const cache = new Map();
-    let currentCli = config.cli || cliList[0] || 'claude-exp';
+    let currentCli = config.cli || cliList[0] || (laneKind === 'terminal' ? 'claude' : 'claude-exp');
     let currentCatalog = null;
     let providers = [];
     let providerValue = '';

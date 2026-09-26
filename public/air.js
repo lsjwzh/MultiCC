@@ -19,6 +19,12 @@
     const engine = api && api.cliEngine ? api.cliEngine(cli) : cli;
     return engine && engine !== cli ? `${cliDisplayName(cli)} · ${engine}` : cliDisplayName(cli);
   };
+  // 单行文案里的「车道 + 线路」两段：自持账号的车道（providerless）路由名就是它的
+  // 产品名（nativeRouteLabel 与 cliDisplayName 同源），两个一模一样 —— 只说一遍。
+  const laneRouteLabel = (cli, route) => {
+    const name = cliDisplayName(cli);
+    return route && route !== name ? `${name} · ${route}` : name;
+  };
   // 这条车道能不能出现在 chat 的线路选择里（服务端 cli-capability 的 kinds 列）。
   const cliOffersInChat = cli => {
     const api = window.MultiCCProviderCatalog;
@@ -1061,7 +1067,7 @@
     const route = nativeRoute || (quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
       : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute'));
-    setPillText(ai, [cliDisplayName(cli), route, quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
+    setPillText(ai, [laneRouteLabel(cli, route), quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
     ai.title = t('airQuickAiTitle');
     role.textContent = quickRoles.length ? t('airQuickRoleCount', { n: quickRoles.length }) : t('airQuickAddRole');
     role.title = t('airQuickRoleTitle');
@@ -1222,7 +1228,8 @@
   }
 
   function scheduleRuntime(task) {
-    return [cliDisplayName(task.cli), task.provider, task.model, task.effort].filter(Boolean).join(' · ') || t('airScheduleFollowTask');
+    const lane = task.cli ? laneRouteLabel(task.cli, task.provider) : '';
+    return [lane, task.model, task.effort].filter(Boolean).join(' · ') || t('airScheduleFollowTask');
   }
 
   function scheduleAction(text, action, className = '') {
@@ -2648,7 +2655,7 @@
     // 等到下一次轮询才启动，看上去就是「卡了一下」。
     setComposerBand(doc, row, !ai.hidden || !role.hidden);
     setPillText(ai, shown
-      ? [cliDisplayName(shown.cli), routeName,
+      ? [laneRouteLabel(shown.cli, routeName),
         (pending ? shown.model : shown.effectiveModel || shown.model) || t('airQuickDefaultModel'),
         pending ? t('airTaskAiPending') : ''].filter(Boolean).join(' · ')
       : '');

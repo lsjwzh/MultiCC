@@ -31,10 +31,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     configuration: { cli: 'codex', provider: 'codex-lab', providerName: 'Lab Responses', providerSelection: null,
       model: 'gpt-5.5', effectiveModel: 'gpt-5.5', effort: 'medium' }, roleBindings: { version: 0, bindings: [] },
     messages: [] };
+  // compatibleClis 照服务端生成的那份抄（src/providers/core.js compatibleClisForFormat）：
+  // 一条 OpenAI 线路对两个 codex 车道都可用，常驻车道 codex-exp 不是另一条线。少写它
+  // 的话，「新建任务」那颗胶囊（默认落在第一条 chat 车道 = codex-exp）会一个 Provider
+  // 都列不出来 —— 那是 fixture 缺数据，不是面板挑不出来。
   const providerCatalog = { ok: true, available: true, defaults: { codex: 'codex-lab', claude: null }, providers: [
-    { id: 'codex-official', appType: 'codex', name: 'Codex Official', apiFormat: 'openai_responses', compatibleClis: ['codex'], isOfficial: true, model: 'gpt-5.5', modelOptions: ['gpt-5.5'], hasToken: true },
-    { id: 'codex-lab', appType: 'codex', name: 'Lab Responses', apiFormat: 'openai_responses', compatibleClis: ['codex'], model: 'gpt-5.5', modelOptions: ['gpt-5.5', 'gpt-5.6-sol'], hasToken: true },
-    { id: 'codex-backup', appType: 'codex', name: 'Backup Responses', apiFormat: 'openai_responses', compatibleClis: ['codex'], model: 'gpt-5.6-sol', modelOptions: ['gpt-5.6-sol', 'gpt-5.5'], hasToken: true },
+    { id: 'codex-official', appType: 'codex', name: 'Codex Official', apiFormat: 'openai_responses', compatibleClis: ['codex', 'codex-exp'], isOfficial: true, model: 'gpt-5.5', modelOptions: ['gpt-5.5'], hasToken: true },
+    { id: 'codex-lab', appType: 'codex', name: 'Lab Responses', apiFormat: 'openai_responses', compatibleClis: ['codex', 'codex-exp'], model: 'gpt-5.5', modelOptions: ['gpt-5.5', 'gpt-5.6-sol'], hasToken: true },
+    { id: 'codex-backup', appType: 'codex', name: 'Backup Responses', apiFormat: 'openai_responses', compatibleClis: ['codex', 'codex-exp'], model: 'gpt-5.6-sol', modelOptions: ['gpt-5.6-sol', 'gpt-5.5'], hasToken: true },
   ] };
   const configPatches = [], quickDispatches = [], quickCreates = [], syncRequests = [];
   let syncFailure = true;
@@ -60,7 +64,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
   routes['/air'] = routes['/air.html'];
   routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
   routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url+(url.includes('?')?'&':'?')+'ticket=fixture'` };
-  routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'claude'], migration: { errors: [] },
+  // 快照里两条家族都带上：一次性命令（`codex exec` / `claude -p`）走终端，常驻车道
+  // （codex-exp / claude-exp）走 chat —— 服务端发的就是这一整份名单，谁属于哪边由
+  // 车道自己的 kinds 列说（见 src/cli/cli-capability.js）。chat 那几个选择器要能从
+  // 这份名单里挑出常驻车道，所以 fixture 不能只有一次性那两条。
+  routes['/api/air'] = () => json({ ok: true, directories: [directory, otherDirectory], clis: ['codex', 'codex-exp', 'claude', 'claude-exp'], migration: { errors: [] },
     // 自动回收的策略：面板照着它把「多久没用会被收走」说准，客户端不猜默认值。
     worktreePolicy: { idleMs: 86400000, intervalMs: 900000, startupDelayMs: 30000, batchSize: 16, enabled: true },
     // The list snapshot and task-entry endpoint read the same runtime in production.
@@ -581,11 +589,13 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务线路"]').value`), 'codex-lab');
     assert.equal(await page.evaluate(`document.querySelector('dialog[open] select[aria-label="子任务模型"]').value`), 'gpt-5.5');
     await page.evaluate(`document.querySelector('dialog[open] .air-config-close').click()`);
-    // WorkBuddy 的待生效配置不能沿用当前 Codex 的线路名。
+    // WorkBuddy 的待生效配置不能沿用当前 Codex 的线路名。车道那段现在是产品名
+    // （codebuddy -> WorkBuddy），而自持账号车道的路由名与它是同一个 —— 两段合成
+    // 一段，不再重复说两遍。
     entry.configuration.pendingConfiguration = { cli: 'codebuddy', providerName: null,
       profile: { provider: null, model: null, effort: null } };
     await reloadConversation();
-    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('codebuddy · WorkBuddy · 默认模型 · 下轮生效')`));
+    assert.ok(await page.waitFor(`${composerPill('air-ai-pill')}.textContent.includes('WorkBuddy · 默认模型 · 下轮生效')`));
     assert.equal(await page.evaluate(`${composerPill('air-ai-pill')}.textContent.includes('Lab Responses')`), false);
     entry.configuration.pendingConfiguration = null;
     await page.evaluate(`${frame}.defaultView.MultiCCTaskArtifacts.setScope({shellId:'shell-a'})`);
@@ -763,10 +773,11 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // its own CLI/Provider selects: the AI 配置 pill opens the same dialog (with
     // 模型, which the old panel dropped) and hands the runtime back as a draft,
     // and the 角色 pill opens the same role editor.
-    assert.ok(await page.waitFor(`document.getElementById('quick-ai-pill').textContent.includes('codex')`));
+    // 车道那段是产品名（快照里第一条 chat 车道 = codex-exp，扶正后叫 Codex）。
+    assert.ok(await page.waitFor(`document.getElementById('quick-ai-pill').textContent.includes('Codex')`));
     // Nothing is resolved yet for a task that does not exist, so the pill names
     // the CLI default honestly instead of inventing a route.
-    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · 默认线路 · 默认模型');
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · 默认线路 · 默认模型');
     assert.equal(await page.evaluate(`document.querySelectorAll('#quick-task-form select').length`), 0, 'no second CLI/Provider copy on the panel');
     assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '＋ 角色');
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, 'both pills ride the composer card');
@@ -786,7 +797,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       q('select[aria-label="子任务模型"]').value='gpt-5.5';
       q('.air-config-form').requestSubmit()})()`);
     assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
-    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · Backup Responses · gpt-5.6-sol');
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · Backup Responses · gpt-5.6-sol');
     assert.equal(configPatches.length, 2, 'a task that does not exist yet is never PATCHed');
     await page.evaluate(`document.getElementById('quick-role-pill').click()`);
     assert.ok(await page.waitFor(`document.querySelector('dialog[open] select option[value=designer]')`));
@@ -885,7 +896,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     }, '弹窗默认当前目录，同时允许改选');
     assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').closest('.mc-composer')===document.getElementById('quick-task-form')`), true, '三颗胶囊跟着一起搬');
     // 搬动的是同一个节点，不是重新造一个：上面挑好的线路和角色必须原样还在。
-    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'codex · Backup Responses · gpt-5.6-sol');
+    assert.equal(await page.evaluate(`document.getElementById('quick-ai-pill').textContent`), 'Codex · Backup Responses · gpt-5.6-sol');
     assert.equal(await page.evaluate(`document.getElementById('quick-role-pill').textContent`), '1 个角色');
     assert.equal(await page.evaluate(`document.activeElement===document.getElementById('quick-task-input')`), true, '弹窗就是让人写字的，光标直接落下');
     screenshots.push(await page.screenshot('new-task-dialog-desktop'));
@@ -931,7 +942,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     const roleBody = page.requests.filter(r => r.path === '/api/air/tasks/tsk_new/roles').map(r => JSON.parse(r.body)).pop();
     assert.equal(createBody.dirId, 'd2');
     assert.equal(createBody.title, '从目录首页创建任务');
-    assert.equal(createBody.cli, 'codex');
+    // 新建的 chat 任务落在常驻车道（快照里第一条 chat 车道 = codex-exp），不再落到
+    // 一次性 `codex exec` 那条 —— 后者已经退出 chat，只在终端里跑。
+    assert.equal(createBody.cli, 'codex-exp');
     assert.equal(createBody.provider, 'codex-backup');
     assert.equal(createBody.model, 'gpt-5.6-sol', 'the panel no longer drops the model');
     // 草稿模式下尾巴交给调用方：它必须一路走到创建请求里，否则第一条消息执行时

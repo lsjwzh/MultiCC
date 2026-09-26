@@ -65,28 +65,58 @@ const FAMILIES = Object.freeze({
   grok: 'acp',
 });
 
-// ── Display facts ──────────────────────────────────────────────────────────
+// ── Display facts: the CLI catalogue ───────────────────────────────────────
 //
-//   displayName — the product name shown wherever the CLI is named.
-//   shortMark   — the single letter on a collapsed CLI chip (Air task cards).
-//   colour      — the CLI's brand colour on the web (hex, dark theme).
+// A CLI is a **family** first and a **lane** second.
+//
+// `claude` is ONE CLI. In chat it is the resident Agent SDK lane; in a terminal
+// it is the `claude` command itself. Those are two lanes of one family — two
+// ids, two presentations, one product. So the catalogue is keyed by family, and
+// each family lists, per session kind ('chat' / 'terminal'), the lanes that kind
+// offers. Family level holds what is said once about the product:
+//
+//   name        — the product name (the outward name: "Claude", "Codex").
+//   colour      — the brand colour on the web (hex, dark theme).
+//   shortMark   — the letter on a collapsed CLI chip (Air task cards).
 //   providerless— the CLI owns its account/model config, so a multicc provider
 //                 (and a subagent route) must not be bound to its sessions.
-//   deprecated  — the lane still works but is on the way out; pickers say so.
-//   replacedBy  — the lane to use instead, for a deprecated one. Only ever
-//                 present alongside deprecated: true (see deprecationOf).
-//   engine      — the engine under the lane, for the second (smaller) line of a
-//                 two-line CLI row. The two promoted resident lanes name their
-//                 engine product ("Claude Agent SDK" / "Codex App Server");
-//                 every other lane leaves it out, and the small line then shows
-//                 the id — which is exactly the command a terminal will run.
-//   kinds       — which session kinds may offer the lane in a CLI picker
-//                 ('chat' / 'terminal'). Omitted = both. This is a fact about
-//                 the lane, not about one screen: it used to be spelled out per
-//                 surface (Flutter's create-session dialog, Air's directory
-//                 page), and the two rules had already drifted apart.
+//   lanes       — { chat: [lane…], terminal: [lane…] }. A family that lists no
+//                 lanes is its own single lane, offered in both kinds — which
+//                 is every CLI here except claude and codex.
 //
-// This is the ONE table for all of them. Each of them used to be spelled out per
+// and each lane holds what that *kind* says differently:
+//
+//   id          the lane id — what a session record, a provider pool and a wire
+//               route persist. Lanes are never renamed, only re-presented.
+//   label       the big line in this kind. Default: the family name, which is
+//               why both of the chat lanes above are simply "Claude".
+//   engine      the small line in this kind. Default: the id — and on a
+//               terminal lane the id IS the command that will run.
+//   mark        the collapsed-chip letter, where this kind needs another one.
+//   offered     whether this kind's pickers offer the lane. Default: yes. This
+//               is policy, not capability: `claude -p` *can* chat, the product
+//               just does not offer it there any more.
+//   deprecated  the lane still works in this kind but is on its way out, and
+//   replacedBy  names the lane to use instead. Only ever present together.
+//
+// 2026-09-26：两条常驻车道扶正为产品名，两条一次性车道退出 chat。
+//
+//   家族    场景       车道        大字           小字
+//   claude  chat      claude-exp  Claude         Claude Agent SDK
+//           chat      claude      Claude         claude -p        （offered: false）
+//           terminal  claude      Claude Code    claude
+//   codex   chat      codex-exp   Codex          Codex App Server
+//           chat      codex       Codex          codex exec       （offered: false）
+//           terminal  codex       Codex Exec     codex
+//
+// `claude` 是 `claude -p` 的一次性车道、`codex` 是 `codex exec`：chat 里已经没有
+// 它们的位置（扶正后的常驻车道才是 chat 的线路），但终端真要把这两个可执行文件
+// 跑起来，所以它们只退出 chat、留在终端。反过来 claude-exp / codex-exp 是进程内的
+// SDK / app-server 车道，没有可执行文件能丢进终端。
+//
+// id 一律不动：会话记录、Provider 池、路由、适配器 label 全记着旧 id。
+//
+// This is the ONE table for all of them. Each column used to be spelled out per
 // surface and had drifted: web `CLI_META` (chat.js), `CLI_LABELS`/`CLI_MARKS`
 // (air-task-settings.js), a third label list in air-cli-update.js (missing
 // claude-exp/codex-exp), a four-entry one in air-provider.js, a ternary chain
@@ -104,40 +134,43 @@ const FAMILIES = Object.freeze({
 //
 // "Claude Code", not "Claude": one spelling for the product, and it is the one
 // the server already prints when it names a claude session.
-//
-// 2026-09-26：两条常驻车道扶正为产品名，两条一次性车道退出 chat。
-//
-//   内部 id        主名（大字）    小字（engine）        出现在
-//   claude         Claude Code     claude（= 要跑的命令） 仅终端
-//   claude-exp     Claude          Claude Agent SDK     仅 chat
-//   codex          Codex Exec      codex                 仅终端
-//   codex-exp      Codex           Codex App Server      仅 chat
-//
-// `claude` 是 `claude -p` 的一次性车道、`codex` 是 `codex exec`，两者在 chat 里
-// 已经没有存在意义（扶正后的常驻车道才是 chat 的线路），但终端真的要把这两个
-// 可执行文件跑起来，所以它们**只退出 chat、留在终端**。反过来 claude-exp /
-// codex-exp 是进程内的 SDK / app-server 车道，没有可执行文件能丢进终端。
-//
-// id 一律不动：会话记录、Provider 池、路由、适配器 label 全记着旧 id。
-const DISPLAY = Object.freeze({
-  claude: Object.freeze({ displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false, deprecated: false, kinds: Object.freeze(['terminal']) }),
-  // 产品名（不是文案）：Anthropic 的 Claude Agent SDK，内部 id 仍是 claude-exp。
-  'claude-exp': Object.freeze({ displayName: 'Claude', shortMark: 'A', colour: '#ff9a76', providerless: false, deprecated: false, engine: 'Claude Agent SDK', kinds: Object.freeze(['chat']) }),
-  // 一次性 `codex exec` 车道退成终端的原生命令，chat 里不再提供；标成计划淘汰是
-  // 记录「chat 那半条路已经交给 codex-exp」，终端上它仍是本来的 codex 命令。
-  //
-  // 两个 id 的角标跟着名字走：X 归扶正后的 Codex，E 归 Codex Exec（Exec）。
-  // 二者不能同用 X —— 同一张任务卡上两颗 X 分不出是哪条车道。
-  codex: Object.freeze({ displayName: 'Codex Exec', shortMark: 'E', colour: '#2ea043', providerless: false, deprecated: true, replacedBy: 'codex-exp', kinds: Object.freeze(['terminal']) }),
-  'codex-exp': Object.freeze({ displayName: 'Codex', shortMark: 'X', colour: '#20a66a', providerless: false, deprecated: false, engine: 'Codex App Server', kinds: Object.freeze(['chat']) }),
-  opencode: Object.freeze({ displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false, deprecated: false }),
-  zcode: Object.freeze({ displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false, deprecated: false }),
-  qoder: Object.freeze({ displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true, deprecated: false }),
-  kimi: Object.freeze({ displayName: 'Kimi Code', shortMark: 'K', colour: '#13c2c2', providerless: false, deprecated: false }),
-  codebuddy: Object.freeze({ displayName: 'WorkBuddy', shortMark: 'W', colour: '#0052d9', providerless: true, deprecated: false }),
-  dsh: Object.freeze({ displayName: 'DSH', shortMark: 'D', colour: '#4d6bfe', providerless: true, deprecated: false }),
-  gemini: Object.freeze({ displayName: 'Gemini', shortMark: 'G', colour: '#4285f4', providerless: true, deprecated: false }),
-  grok: Object.freeze({ displayName: 'Grok', shortMark: 'R', colour: '#8c8f96', providerless: true, deprecated: false }),
+const KINDS = Object.freeze(['chat', 'terminal']);
+
+const CLIS = deepFreeze({
+  claude: {
+    name: 'Claude',
+    colour: '#ff9a76',
+    lanes: {
+      // 常驻的 Agent SDK 车道就是 chat 里的 Claude（内部 id 仍是 claude-exp）。
+      chat: [
+        { id: 'claude-exp', mark: 'A', engine: 'Claude Agent SDK' },
+        { id: 'claude', engine: 'claude -p', offered: false },
+      ],
+      // 终端跑的是 `claude` 这个可执行文件本身，大字保留它自己的产品名。
+      terminal: [{ id: 'claude', label: 'Claude Code', mark: 'C', engine: 'claude' }],
+    },
+  },
+  codex: {
+    name: 'Codex',
+    colour: '#20a66a',
+    lanes: {
+      chat: [
+        { id: 'codex-exp', mark: 'X', engine: 'Codex App Server' },
+        // 标成计划淘汰记录的是「chat 那半条路已经交给 codex-exp」；终端上它仍是
+        // 本来的 codex 命令，所以这个标记只写在 chat 这条目上。
+        { id: 'codex', engine: 'codex exec', offered: false, deprecated: true, replacedBy: 'codex-exp' },
+      ],
+      terminal: [{ id: 'codex', label: 'Codex Exec', mark: 'E', engine: 'codex' }],
+    },
+  },
+  opencode: { name: 'OpenCode', colour: '#388bfd', mark: 'O' },
+  zcode: { name: 'ZCode', colour: '#a371f7', mark: 'Z' },
+  qoder: { name: 'Qoder CN', colour: '#ff8a3d', mark: 'Q', providerless: true },
+  kimi: { name: 'Kimi Code', colour: '#13c2c2', mark: 'K' },
+  codebuddy: { name: 'WorkBuddy', colour: '#0052d9', mark: 'W', providerless: true },
+  dsh: { name: 'DSH', colour: '#4d6bfe', mark: 'D', providerless: true },
+  gemini: { name: 'Gemini', colour: '#4285f4', mark: 'G', providerless: true },
+  grok: { name: 'Grok', colour: '#8c8f96', mark: 'R', providerless: true },
 });
 
 // Neutral grey, matching the muted text both clients already draw with. Only
@@ -147,6 +180,123 @@ const DEFAULT_COLOUR = '#8b949e';
 // A lane with no `kinds` is offered everywhere. Frozen so a picker that filters
 // by kind cannot accidentally mutate the shared default.
 const DEFAULT_KINDS = Object.freeze(['chat', 'terminal']);
+
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const key of Object.keys(value)) deepFreeze(value[key]);
+  return value;
+}
+
+function firstLetter(name) {
+  const text = String(name == null ? '' : name).trim();
+  return text ? text.slice(0, 1).toUpperCase() : '?';
+}
+
+// The lane entries a kind may offer. A family with no `lanes` at all is its own
+// single lane in both kinds; a family that lists `lanes` and then says nothing
+// about a kind does not appear in that kind.
+function laneEntries(familyId, family, kind) {
+  if (!family.lanes) return [{ id: familyId }];
+  return family.lanes[kind] || [];
+}
+
+// One lane, as *this kind* presents it. Everything a surface needs to draw a row
+// is here, so no caller has to fall back on a neighbour's name or a raw id.
+function presentationOf(familyId, family, kind, entry) {
+  const lane = nameOf(entry.id) || familyId;
+  return {
+    lane,
+    kind,
+    label: entry.label || family.name,
+    engine: entry.engine || lane,
+    mark: entry.mark || family.mark || firstLetter(family.name),
+    colour: family.colour || DEFAULT_COLOUR,
+    providerless: family.providerless === true,
+    offered: entry.offered !== false,
+    deprecated: entry.deprecated === true,
+    replacedBy: entry.deprecated === true ? (entry.replacedBy || null) : null,
+  };
+}
+
+// The lanes a family offers in one kind, in picker order.
+function lanesOf(familyOrLane, kind) {
+  const familyId = familyOf(familyOrLane);
+  const wanted = nameOf(kind);
+  if (!familyId || !KINDS.includes(wanted)) return [];
+  const family = CLIS[familyId];
+  return laneEntries(familyId, family, wanted).map(entry => presentationOf(familyId, family, wanted, entry));
+}
+
+// Which families have anything to offer in a kind.
+function familiesFor(kind) {
+  const wanted = nameOf(kind);
+  if (!KINDS.includes(wanted)) return [];
+  return Object.keys(CLIS).filter(id => lanesOf(id, wanted).some(lane => lane.offered));
+}
+
+// The flat view: one row per lane, which is what every existing caller reads.
+// Derived from CLIS, never a second copy — change the catalogue and this
+// follows. A lane's own row answers the questions that are about the *id*
+// (its name, its mark, the permission to bind a provider, whether it is on the
+// way out); the per-kind answers live in lanesOf().
+function buildDisplay(catalogue) {
+  const display = {};
+  const laneFamily = Object.create(null);
+  for (const familyId of Object.keys(catalogue)) {
+    const family = catalogue[familyId];
+    const lanes = new Map();
+    for (const kind of KINDS) {
+      for (const entry of laneEntries(familyId, family, kind)) {
+        const id = nameOf(entry.id) || familyId;
+        const owner = laneFamily[id];
+        if (owner && owner !== familyId) {
+          throw new Error(`CLI lane ${id} is listed under both ${owner} and ${familyId}`);
+        }
+        laneFamily[id] = familyId;
+        const lane = lanes.get(id)
+          || { labels: new Set(), marks: new Set(), engines: new Map(), kinds: [], deprecatedBy: null };
+        if (entry.label) lane.labels.add(entry.label);
+        if (entry.mark) lane.marks.add(entry.mark);
+        if (entry.engine) lane.engines.set(kind, entry.engine);
+        if (entry.offered !== false && !lane.kinds.includes(kind)) lane.kinds.push(kind);
+        if (entry.deprecated === true && !lane.deprecatedBy) lane.deprecatedBy = entry;
+        lanes.set(id, lane);
+      }
+    }
+    for (const [id, lane] of lanes) {
+      const label = single(lane.labels, `label of ${id}`);
+      const mark = single(lane.marks, `shortMark of ${id}`) || family.mark || firstLetter(family.name);
+      // The small line belongs to the kind that offers the lane; a lane offered
+      // in both kinds (every single-lane family) takes the first it declares.
+      const engineKind = lane.kinds.find(kind => lane.engines.has(kind)) || [...lane.engines.keys()][0];
+      const row = {
+        displayName: label || family.name,
+        shortMark: mark,
+        colour: family.colour || DEFAULT_COLOUR,
+        providerless: family.providerless === true,
+        deprecated: lane.deprecatedBy !== null,
+      };
+      if (lane.deprecatedBy && lane.deprecatedBy.replacedBy) row.replacedBy = lane.deprecatedBy.replacedBy;
+      if (engineKind) row.engine = lane.engines.get(engineKind);
+      if (lane.kinds.length !== KINDS.length) row.kinds = Object.freeze([...lane.kinds]);
+      display[id] = Object.freeze(row);
+    }
+  }
+  return { display: Object.freeze(display), laneFamily: Object.freeze(laneFamily) };
+}
+
+// Two entries naming the same lane differently in the same column is a mistake
+// in the catalogue, not a preference: one of them would silently win.
+function single(values, what) {
+  if (values.size === 0) return null;
+  if (values.size > 1) throw new Error(`the catalogue declares two different values for the ${what}: ${[...values].join(' / ')}`);
+  return [...values][0];
+}
+
+const DISPLAY_VIEW = buildDisplay(CLIS);
+const DISPLAY = DISPLAY_VIEW.display;
+const LANE_FAMILY = DISPLAY_VIEW.laneFamily;
 
 function nameOf(cli) {
   return String(cli == null ? '' : cli).trim().toLowerCase();
@@ -158,6 +308,25 @@ function capabilityOf(cli) {
 
 function displayOf(cli) {
   return DISPLAY[nameOf(cli)] || null;
+}
+
+// Which CLI family a lane belongs to — by family id, or by any of its lane ids.
+// Unknown answers null, so each caller keeps its own fallback.
+function familyOf(cli) {
+  const key = nameOf(cli);
+  if (!key) return null;
+  if (CLIS[key]) return key;
+  return LANE_FAMILY[key] || null;
+}
+
+// The outward name of the CLI: "Claude" for claude, claude-exp and any future
+// lane of that family alike. This is what a surface names when the lane itself
+// is not the point (a task card, a route slot); when two lanes of one family are
+// on screen at once, that is the moment to say the lane's own name too.
+function familyNameOf(cli) {
+  const family = familyOf(cli);
+  if (family) return CLIS[family].name;
+  return String(cli == null ? '' : cli).trim();
 }
 
 // An unknown id keeps its own spelling. The fallbacks this replaced answered
@@ -301,10 +470,12 @@ function protocolFamilyOf(cli, format = 'wire') {
 
 module.exports = {
   CAPABILITIES,
+  CLIS,
   DEFAULT_CAPABILITY,
   DEFAULT_COLOUR,
   DEFAULT_KINDS,
   DISPLAY,
+  KINDS,
   cancelStopsProcess,
   capabilityOf,
   colourOf,
@@ -312,12 +483,16 @@ module.exports = {
   displayNameOf,
   displayOf,
   engineOf,
+  familiesFor,
+  familyNameOf,
+  familyOf,
   isDeprecated,
   isProviderless,
   isResident,
   isResidentSession,
   kindsOf,
   knownClis,
+  lanesOf,
   offersIn,
   protocolFamilyOf,
   protocolOf,

@@ -7,6 +7,7 @@ import '../providers/session_manager.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../services/terminal_service.dart';
+import '../utils/cli_display.dart';
 import '../widgets/conflict_diff_dialog.dart';
 import 'memo_screen.dart';
 
@@ -347,19 +348,10 @@ void _openMemoFromTerminal(BuildContext context, String sessionId) {
 }
 
 Widget _cliBadge(SessionCli cli) {
-  final color = switch (cli) {
-    SessionCli.claude => const Color(0xFFc2622f),
-    SessionCli.claudeExp => const Color(0xFFdf7950),
-    SessionCli.codex => const Color(0xFF1e8a55),
-    SessionCli.codexExp => const Color(0xFF20a66a),
-    SessionCli.opencode => const Color(0xFF6d4fd1),
-    SessionCli.zcode => const Color(0xFF0e7fb8),
-    SessionCli.qoder => const Color(0xFFc25e1e),
-    SessionCli.codebuddy => const Color(0xFF2a5fd8),
-    SessionCli.dsh => const Color(0xFF2b44d6),
-    SessionCli.gemini => const Color(0xFF4285f4),
-    SessionCli.grok => const Color(0xFF8c8f96),
-  };
+  // 品牌色只有一份（utils/cli_display.dart 的家族表）。这里原先手抄了一张 11 个色值的
+  // 表，其中 claude-exp 是自造的 0xFFdf7950、codex-exp 用的是 Web 的十六进制值 ——
+  // 同一家族的徽标于是有两种橙、两种绿。
+  final color = cliDisplayColor(cli.name);
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
     decoration: BoxDecoration(

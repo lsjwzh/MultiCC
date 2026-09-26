@@ -119,6 +119,53 @@ void main() {
     expect(providerless, ['codebuddy', 'dsh', 'gemini', 'grok', 'qoder']);
   });
 
+  test('a lane answers its family name, and the family table is the only structure', () {
+    // 一个 CLI 是**家族**：claude 在 chat 里那行叫 Claude（小字 Claude Agent SDK），
+    // 在终端里那行叫 Claude Code，但**对外**只有一个名字。
+    expect(cliFamilyOf('claude'), 'claude');
+    expect(cliFamilyOf('claude-exp'), 'claude');
+    expect(cliFamilyName('claude'), 'Claude');
+    expect(cliFamilyName('claude-exp'), 'Claude');
+    expect(cliDisplayName('claude'), 'Claude Code', reason: '车道行保留自己的名字');
+    expect(cliFamilyOf(' CODEX '), 'codex');
+    expect(cliFamilyOf('mystery-cli'), isNull);
+    expect(cliFamilyName('mystery-cli'), 'mystery-cli');
+    expect(cliFamilyName(null), '');
+    // 家族在每个场景里给的衍生：claude 的 chat 是常驻那条 + 已退出 chat 的一次性
+    // 那条（offered: false，但它仍是一条真实车道），terminal 就是 claude 命令本身。
+    expect(
+      cliLanesOf('claude', 'chat').map((l) => '${l.lane}/${l.label}/${l.engine}/${l.offered}').toList(),
+      <String>['claude-exp/Claude/Claude Agent SDK/true', 'claude/Claude/claude -p/false'],
+    );
+    expect(
+      cliLanesOf('claude', 'terminal').map((l) => '${l.lane}/${l.label}/${l.engine}/${l.offered}').toList(),
+      <String>['claude/Claude Code/claude/true'],
+    );
+    // 没写 lanes 的家族：两种场景各一条自身，两边都提供。
+    for (final id in <String>['opencode', 'zcode', 'kimi']) {
+      expect(cliLanesOf(id, 'chat').single.lane, id);
+      expect(cliLanesOf(id, 'terminal').single.lane, id);
+      expect(cliLanesOf(id, 'chat').single.offered, isTrue);
+      expect(cliLanesOf(id, 'chat').single.label, cliFamilyName(id));
+    }
+    // 摊平的车道表不多不少，正好是家族表投影出来的那些车道。
+    final declared = <String>[];
+    for (final kind in kCliKinds) {
+      for (final id in kCliFamilies.keys) {
+        for (final lane in cliLanesOf(id, kind)) {
+          if (!declared.contains(lane.lane)) declared.add(lane.lane);
+        }
+      }
+    }
+    expect(declared..sort(), kCliDisplays.keys.toList()..sort());
+    // 场景名与家族名都容忍空格大小写；不认识的场景答空，不抛错。
+    expect(cliLanesOf(' CLAUDE ', ' Chat ').first.lane, 'claude-exp');
+    expect(cliLanesOf('claude', 'nowhere'), isEmpty);
+    expect(cliLanesOf('mystery-cli', 'chat'), isEmpty);
+    expect(cliFamiliesFor('chat'), contains('claude'));
+    expect(cliFamiliesFor('nowhere'), isEmpty);
+  });
+
   test('brand colours stay distinguishable per product family', () {
     // 每个 id 都有颜色，且同一家族的两档（claude/claude-exp、codex/codex-exp）共享
     // 品牌色是有意的 —— 名字分开，颜色不另造一个。
