@@ -119,6 +119,32 @@
     }
     .hdr-btn:hover { background: #30363d; }
 
+    /* ── Find bar (⌘F) ── 贴着终端上方的一条，浏览器查找条那种密度 */
+    #find-bar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+    }
+    #find-bar[hidden] { display: none; }
+    #find-input {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 10px;
+      background: #0d1117;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+    #find-input:focus { border-color: #58a6ff; }
+    #find-count { color: #8b949e; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+    #find-bar .hdr-btn { padding: 4px 9px; font-size: 12px; }
+
     /* ── Input Toolbar ── */
     #input-toolbar {
       flex-shrink: 0;
@@ -744,6 +770,9 @@
       <a href="/dashboard" class="hdr-btn" title="会话状态看板">📊</a>
       <button id="merge-btn" class="hdr-btn" title="把此会话 worktree 合并回基分支">🔀</button>
       <button id="restart-btn" class="hdr-btn" title="重启 Claude 命令">🔄</button>
+      <button id="find-btn" class="hdr-btn" title="在终端里查找 (⌘F / Ctrl+F)">🔍</button>
+      <button id="font-down-btn" class="hdr-btn" title="缩小字号 (⌘- / Ctrl+-)">A−</button>
+      <button id="font-up-btn" class="hdr-btn" title="放大字号 (⌘+ / Ctrl+=)">A+</button>
       <button id="reconnect-btn" onclick="connect()">Reconnect</button>
     </div>
   </div>
@@ -754,6 +783,15 @@
     <button id="attach-btn" class="toolbar-btn" title="附加文件">📎</button>
     <input id="file-input" type="file" style="display:none">
     <div id="attachments"></div>
+  </div>
+
+  <div id="find-bar" hidden>
+    <input id="find-input" type="text" placeholder="在终端输出里查找…" autocomplete="off" spellcheck="false">
+    <span id="find-count"></span>
+    <button id="find-prev" class="hdr-btn" title="上一个 (⇧Enter)">↑</button>
+    <button id="find-next" class="hdr-btn" title="下一个 (Enter)">↓</button>
+    <button id="find-case" class="hdr-btn" title="区分大小写" aria-pressed="false">Aa</button>
+    <button id="find-close" class="hdr-btn" title="关闭 (Esc)">✕</button>
   </div>
 
   <div id="terminal-wrap">
@@ -908,6 +946,7 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm-addon-fit/xterm-addon-fit.js"></script>
   <script src="/vendor/xterm-addon-web-links/xterm-addon-web-links.js"></script>
+  <script src="/vendor/xterm-addon-search/xterm-addon-search.js"></script>
   <script src="pwa.js"></script>
   <script src="voice-stream.js?v=hud20260718b"></script>
   <script src="error-envelope.js"></script>

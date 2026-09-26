@@ -222,12 +222,20 @@ if (_isMobile && window.visualViewport) {
   });
 }
 
+// 字号：10–24，记在 localStorage（刷新/重连后保持）。改完必须 fit + 把新的 cols/rows
+// 报给服务端，否则 tmux 那边还是旧宽度，行会折得乱七八糟。
+const FONT_MIN = 10, FONT_MAX = 24, FONT_KEY = 'multicc-terminal-font-size';
+let fontSize = (() => {
+  const saved = Number(localStorage.getItem(FONT_KEY));
+  return Number.isFinite(saved) && saved >= FONT_MIN && saved <= FONT_MAX ? saved : 14;
+})();
+
 const term = new Terminal({
   cursorBlink: true,
   allowProposedApi: true,
   scrollback: _isMobile ? 1000 : 5000,
   fontFamily: '"Cascadia Code", "Fira Code", "Jetbrains Mono", Consolas, "Courier New", monospace',
-  fontSize: 14,
+  fontSize,
   lineHeight: 1.25,
   theme: {
     background:          '#0d1117',
@@ -245,11 +253,98 @@ const term = new Terminal({
 
 const fitAddon     = new FitAddon.FitAddon();
 const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+const searchAddon  = new SearchAddon.SearchAddon();
 
 term.loadAddon(fitAddon);
 term.loadAddon(webLinksAddon);
+term.loadAddon(searchAddon);
 term.open(document.getElementById('terminal'));
 fitAddon.fit();
+
+/* ── Find in the buffer (⌘F / Ctrl+F) ──
+   终端输出动辄几千行，肉眼滚是找不动东西的。命中计数走 addon 自己的结果回调，
+   所以「3/17」这种数字是搜索项的真实命中数，不是我们另算的一份。 */
+const FIND_DECORATIONS = {
+  matchOverviewRuler: '#58a6ff', activeMatchColorOverviewRuler: '#f78166',
+  matchBackground: '#1f6feb55', activeMatchBackground: '#f7816655',
+};
+const findBar   = document.getElementById('find-bar');
+const findInput = document.getElementById('find-input');
+const findCount = document.getElementById('find-count');
+const findCase  = document.getElementById('find-case');
+let findCaseSensitive = false;
+
+function runFind(incremental, backwards) {
+  const query = findInput.value;
+  if (!query) { findCount.textContent = ''; searchAddon.clearDecorations?.(); return; }
+  const options = { incremental, caseSensitive: findCaseSensitive, decorations: FIND_DECORATIONS };
+  if (backwards) searchAddon.findPrevious(query, options);
+  else searchAddon.findNext(query, options);
+}
+
+function openFind() {
+  findBar.hidden = false;
+  findInput.focus();
+  findInput.select();
+  runFind(true, false);
+}
+
+function closeFind() {
+  findBar.hidden = true;
+  findCount.textContent = '';
+  if (document.activeElement === findInput) term.focus();
+}
+
+searchAddon.onDidChangeResults?.(({ resultIndex, resultCount }) => {
+  findCount.textContent = resultCount ? `${resultIndex + 1}/${resultCount}` : '无匹配';
+});
+document.getElementById('find-btn').onclick = () => (findBar.hidden ? openFind() : closeFind());
+document.getElementById('find-prev').onclick = () => runFind(false, true);
+document.getElementById('find-next').onclick = () => runFind(false, false);
+document.getElementById('find-close').onclick = closeFind;
+findCase.onclick = () => {
+  findCaseSensitive = !findCaseSensitive;
+  findCase.setAttribute('aria-pressed', String(findCaseSensitive));
+  findCase.style.color = findCaseSensitive ? '#f78166' : '';
+  runFind(false, false);
+};
+findInput.addEventListener('input', () => runFind(true, false));
+findInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); runFind(false, event.shiftKey); }
+  else if (event.key === 'Escape') { event.preventDefault(); closeFind(); }
+});
+
+/* ── Font size (A-/A+ 与 ⌘± / Ctrl±) ── */
+function applyFontSize(next) {
+  const size = Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(next)));
+  if (size === fontSize) return size;
+  fontSize = size;
+  term.options.fontSize = size;
+  try { localStorage.setItem(FONT_KEY, String(size)); } catch (_) {}
+  fitAddon.fit();   // cols/rows 变了 → term.onResize → 自动发一次 {type:'resize'}
+  return size;
+}
+document.getElementById('font-up-btn').onclick = () => applyFontSize(fontSize + 1);
+document.getElementById('font-down-btn').onclick = () => applyFontSize(fontSize - 1);
+
+/* ── 快捷键：在 xterm 之前拦一道（返回 false = xterm 不处理，也不发给 PTY） ──
+   只用**平台的主修饰键**：macOS 认 ⌘、其它认 Ctrl。这样 mac 上 Ctrl+K（shell 的
+   kill-line）照旧发给 CLI，只有 ⌘K 才是清屏。 */
+const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+term.attachCustomKeyEventHandler(event => {
+  if (event.type !== 'keydown') return true;
+  const mod = IS_MAC ? event.metaKey : event.ctrlKey;
+  const key = (event.key || '').toLowerCase();
+  if (key === 'escape' && !findBar.hidden) { closeFind(); return false; }
+  if (!mod || event.altKey) return true;
+  if (key === 'f') { event.preventDefault(); openFind(); return false; }
+  if (key === 'g') { event.preventDefault(); runFind(false, event.shiftKey); return false; }
+  if (key === '=' || key === '+') { event.preventDefault(); applyFontSize(fontSize + 1); return false; }
+  if (key === '-') { event.preventDefault(); applyFontSize(fontSize - 1); return false; }
+  if (key === '0') { event.preventDefault(); applyFontSize(14); return false; }
+  if (key === 'k') { event.preventDefault(); term.clear(); return false; }
+  return true;
+});
 
 /* ── Status helpers ── */
 const dot          = document.getElementById('status-dot');
@@ -593,6 +688,7 @@ async function connect() {
   ws.onmessage = ({ data }) => {
     try {
       const msg = JSON.parse(data);
+      if (!msg || typeof msg !== 'object') return;
       if (msg.type === 'session_id') {
         currentSessionId = msg.id;
         refreshNotifyPreference();
@@ -1922,6 +2018,26 @@ initCwdConfirm.addEventListener('click', () => {
 initCwdSkip.addEventListener('click', () => {
   initCwdModal.style.display = 'none';
   connect();
+});
+
+/* ── 对外契约 ──
+   终端页没有模块系统，CDP 测试要能驱动它（喂一条服务端消息、量字号、开查找），
+   所以这里显式暴露一层最小 API —— 与 Air 侧的 window.MultiCCAirXxx 同一个办法，
+   不是给生产代码用的后门。 */
+window.MultiCCTerminal = Object.freeze({
+  terminal: term,
+  search: searchAddon,
+  // 测试用：喂一条服务端消息 = 走真正的 ws.onmessage（不复制一份解析/渲染逻辑）。
+  applyServerMessage: msg => { if (typeof ws?.onmessage === 'function') ws.onmessage({ data: JSON.stringify(msg) }); },
+  openFind,
+  closeFind,
+  findVisible: () => !findBar.hidden,
+  findQuery: () => findInput.value,
+  findCount: () => findCount.textContent,
+  fontPx: () => fontSize,
+  setFontPx: applyFontSize,
+  isMac: IS_MAC,
+  constants: Object.freeze({ FONT_MIN, FONT_MAX, FONT_KEY }),
 });
 
 /* ── Start ── */
