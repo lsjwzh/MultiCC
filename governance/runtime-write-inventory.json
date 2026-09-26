@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedAt": "2026-09-25",
+  "reviewedAt": "2026-09-26",
   "entries": [
     {
       "id": "server-env",
@@ -239,6 +239,19 @@
         {
           "file": "src/paths.js",
           "anchor": "? path.join(os.homedir(), '.multicc', 'samples')"
+        }
+      ]
+    },
+    {
+      "id": "human-assist-screenshots",
+      "classification": "ephemeral",
+      "owner": "human-assist screenshot sweep (src/assist-snapshots)",
+      "rationale": "Screenshots taken for remote human assistance are posted into <assistDir>/<sessionId>/ and swept once they are older than the 7-day retention window; they can show logged-in pages, so the root deliberately stays outside the package checkout and is never served from the auth-free /artifacts route. Installs without MULTICC_DATA_DIR keep the historical ~/.multicc root, configured installs stay isolated below their own data root.",
+      "migrationStrategy": "Keep the root disposable and permission-restricted and enforce the 7-day per-file sweep (empty session directories dropped, symlinks left untouched) instead of copying anything forward; when the data root becomes mandatory, drop the historical-root branch rather than migrating the contents.",
+      "sources": [
+        {
+          "file": "src/paths.js",
+          "anchor": "? path.join(os.homedir(), '.multicc', 'assist')"
         }
       ]
     },
