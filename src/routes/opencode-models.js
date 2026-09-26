@@ -167,8 +167,8 @@ function listCliModels(callback) {
   next();
 }
 
-function listOpenCodeModels(callback) {
-  if (cache && (Date.now() - cache.at) < OPENCODE_TTL_MS) {
+function listOpenCodeModels(callback, opts = {}) {
+  if (!opts.refresh && cache && (Date.now() - cache.at) < OPENCODE_TTL_MS) {
     return setImmediate(() => callback(null, cache.models, 'cache'));
   }
   let configured = [];
@@ -185,11 +185,13 @@ function listOpenCodeModels(callback) {
 
 function mountOpenCodeModelRoutes(app) {
   if (!app || typeof app.get !== 'function') return;
+  // ?refresh=1 skips the 1-day cache (e.g. after adding a key to opencode.json unlocks paid models).
   app.get('/api/opencode/models', (req, res) => {
+    const refresh = String((req.query && req.query.refresh) || '') === '1';
     listOpenCodeModels((err, models, source) => {
       if (err) return res.status(503).json({ error: 'opencode models unavailable', models: [] });
       res.json({ models, source, cached: source === 'cache' });
-    });
+    }, { refresh });
   });
 }
 
