@@ -1,6 +1,10 @@
 'use strict';
 
-// ── Run `./multicc update` from the web UI ──
+// ── Run the updater from the web UI ──
+// A git checkout runs `./multicc update`; a standalone package runs install.sh
+// against its own install directory (see the "Standalone package" section
+// below) — either way the process this module starts is a detached shell that
+// stops the running server, replaces it, and starts the new one.
 //
 // The hard constraint here is that the update restarts the server: the process
 // that starts the run is not the process that can report how it ended. So the
@@ -18,6 +22,7 @@ const path = require('node:path');
 
 const BASH_PATH = '/bin/bash';
 const MANAGER_NAME = 'multicc';
+const INSTALL_REPO = 'lsjwzh/MultiCC';
 const UPDATE_LOG_RELATIVE = path.join('logs', 'update.log');
 // Distinctive enough that update output can never counterfeit it by accident.
 const EXIT_MARKER = '__MULTICC_UPDATE_EXIT__';
@@ -74,10 +79,13 @@ function buildUpdateShellCommand(options = {}) {
 // ── Standalone package ──
 // The standalone launcher runs the server from <resources>/app-server with the
 // desktop environment (MULTICC_DESKTOP=1) but no Electron. It has no git
-// checkout and no bash manager; its update is `multicc update` from the
-// bundled CLI, which downloads the new package and swaps the bundle directory.
-// The log therefore lives in the data directory: the bundle it would otherwise
-// sit in is the thing being replaced.
+// checkout and no bash manager; the web UI updates it by running install.sh
+// against the existing install directory (see buildInstallScriptShellCommand),
+// the same script a first install would have piped into bash. The bundled
+// CLI's own `multicc update` (scripts/standalone-cli.js) still exists as a
+// terminal-only fallback for platforms install.sh does not cover (Windows).
+// The log lives in the data directory either way: the bundle it would
+// otherwise sit in is the thing being replaced.
 function detectStandaloneUpdate(options = {}) {
   const { rootDir, env = process.env, fsImpl = fs, pathImpl = path, platform = process.platform } = options;
   if (!rootDir || !/^(1|true|yes|on)$/i.test(String(env.MULTICC_DESKTOP || '').trim())) return null;
@@ -93,10 +101,20 @@ function detectStandaloneUpdate(options = {}) {
     return null;
   }
   const dataDir = env.MULTICC_DATA_DIR ? pathImpl.resolve(env.MULTICC_DATA_DIR) : pathImpl.join(resources, '..');
+  // install.sh's `--dir` needs the true package root, not just "one level up
+  // from Resources": on macOS that layout is
+  // <root>/MultiCC.app/Contents/Resources, three levels down from <root>, not
+  // one. Mirrors scripts/standalone-cli.js's resolveLayout() bundleRoot.
+  const bundleRoot = env.MULTICC_STANDALONE_ROOT
+    ? pathImpl.resolve(env.MULTICC_STANDALONE_ROOT)
+    : resources.endsWith(pathImpl.join('MultiCC.app', 'Contents', 'Resources'))
+      ? pathImpl.resolve(resources, '..', '..', '..')
+      : pathImpl.resolve(resources, '..');
   return Object.freeze({
     resources,
     cliPath,
     runtimeNode,
+    bundleRoot,
     logPath: pathImpl.join(dataDir, UPDATE_LOG_RELATIVE),
     platform,
   });
@@ -107,13 +125,59 @@ function updateLogPath({ rootDir, env = process.env, fsImpl = fs, pathImpl = pat
   return standalone ? standalone.logPath : pathImpl.join(rootDir, UPDATE_LOG_RELATIVE);
 }
 
-function buildStandaloneUpdateShellCommand({ standalone }) {
+// The web UI's "upgrade" button now runs the same install.sh a first-time user
+// would pipe into bash, pointed back at the existing install directory. That
+// script already knows how to stop the running instance, back up the old
+// bundle, unpack the target release, carry the port/token config across, and
+// start the result — so this file no longer needs its own swap/restart logic
+// for the standalone package, only the plumbing to fetch and invoke it.
+// install.sh itself is not shipped inside the package (see
+// scripts/standalone-bundle.js), so it is fetched from the tag being installed
+// — pinning the installer to the same release it is installing, exactly as
+// the pinned-tag one-liner in install.sh's own usage text does.
+function buildInstallScriptShellCommand({ standalone, targetVersion, port }) {
+  const versionNumber = targetVersion ? String(targetVersion).replace(/^v/, '').trim() : '';
+  const versionTag = versionNumber ? `v${versionNumber}` : '';
+  // Unknown target: fetch the installer off main (its own `--version latest`
+  // one-liner does the same) and let it resolve "latest" itself.
+  const scriptRef = versionTag || 'main';
+  const versionArg = versionTag || 'latest';
+  const scriptUrl = `https://raw.githubusercontent.com/${INSTALL_REPO}/${scriptRef}/install.sh`;
   const quotedLog = shellQuote(standalone.logPath);
+  const quotedDir = shellQuote(standalone.bundleRoot);
+  const quotedPort = shellQuote(String(port || 3000));
+  const quotedUrl = shellQuote(scriptUrl);
+  const quotedVersionArg = shellQuote(versionArg);
   return [
     `mkdir -p ${shellQuote(path.dirname(standalone.logPath))}`,
-    `{ echo "${START_MARKER} $(date -u +%Y-%m-%dT%H:%M:%SZ) force=0";`,
-    `  ${shellQuote(standalone.runtimeNode)} ${shellQuote(standalone.cliPath)} update --restart;`,
-    `  echo "${EXIT_MARKER} $?"; } > ${quotedLog} 2>&1`,
+    '{',
+    // `target=` records the version this run is installing, so a client that
+    // reattaches after a page reload (or a second tab) can resume the same
+    // "wait for /api/version-check to report this exact version" check the
+    // client that started the run is doing — see parseUpdateLog's target group.
+    `  echo "${START_MARKER} $(date -u +%Y-%m-%dT%H:%M:%SZ) force=0 target=${versionNumber}";`,
+    '  TMP="$(mktemp 2>/dev/null || echo /tmp/multicc-install-$$.sh)";',
+    '  DL_RC=1;',
+    '  if command -v curl >/dev/null 2>&1; then',
+    `    curl -fsSL ${quotedUrl} -o "$TMP"; DL_RC=$?;`,
+    '  elif command -v wget >/dev/null 2>&1; then',
+    `    wget -q -O "$TMP" ${quotedUrl}; DL_RC=$?;`,
+    '  else',
+    '    echo "install.sh fetch failed: neither curl nor wget is available" >&2;',
+    '  fi;',
+    '  if [ "$DL_RC" -eq 0 ] && [ -s "$TMP" ]; then',
+    // Same reasoning as the git manager's own invocation below: run the
+    // downloaded script through sh explicitly rather than exec it, since a
+    // pipe/redirect download does not reliably preserve the executable bit.
+    `    /bin/sh "$TMP" --dir ${quotedDir} --version ${quotedVersionArg} --port ${quotedPort} --no-open;`,
+    '    RC=$?;',
+    '  else',
+    '    echo "install.sh fetch failed (exit $DL_RC)" >&2;',
+    '    RC=1;',
+    '  fi;',
+    '  rm -f "$TMP";',
+    `  echo "${EXIT_MARKER} $RC";`,
+    `} > ${quotedLog} 2>&1`,
   ].join('\n');
 }
 
@@ -203,10 +267,12 @@ function parseUpdateLog(content) {
   const text = String(content == null ? '' : content);
   let startedAt = null;
   let force = false;
-  const startMatch = text.match(new RegExp(`${START_MARKER} (\\S+) force=(\\d)`));
+  let targetVersion = null;
+  const startMatch = text.match(new RegExp(`${START_MARKER} (\\S+) force=(\\d)(?: target=(\\S*))?`));
   if (startMatch) {
     startedAt = startMatch[1];
     force = startMatch[2] === '1';
+    targetVersion = startMatch[3] || null;
   }
   // Last match wins: the manager itself can never emit this line, but a future
   // caller appending to the log would, and the newest terminator is the true one.
@@ -222,7 +288,7 @@ function parseUpdateLog(content) {
     .replace(new RegExp(`${EXIT_MARKER} \\d+\\n?`, 'g'), '')
     .replace(new RegExp(`^(?:${STEP_MARKER}|${PLAN_MARKER}) .*\\n?`, 'gm'), ''))
     .trim();
-  return { startedAt, force, exitCode, steps, tail };
+  return { startedAt, force, targetVersion, exitCode, steps, tail };
 }
 
 // git/npm progress rewrites one line with \r; a log file keeps every frame.
@@ -317,6 +383,7 @@ function readUpdateStatus(options = {}) {
       startedAt: parsed.startedAt,
       updatedAt,
       force: parsed.force,
+      targetVersion: parsed.targetVersion,
       steps: parsed.steps,
       tail,
       logPath,
@@ -335,6 +402,7 @@ function readUpdateStatus(options = {}) {
     startedAt: parsed.startedAt,
     updatedAt,
     force: parsed.force,
+    targetVersion: parsed.targetVersion,
     steps: parsed.steps,
     silentMs,
     tail,
@@ -347,6 +415,9 @@ function startDetachedUpdate(options = {}) {
     spawn,
     rootDir,
     force = false,
+    // Only consulted for the standalone (install.sh) path.
+    targetVersion = null,
+    port = null,
     env = process.env,
     log = console,
     onFailure = () => {},
@@ -361,24 +432,21 @@ function startDetachedUpdate(options = {}) {
   // manager must not be reported as started.
   const standalone = detectStandaloneUpdate({ rootDir, env, fsImpl, pathImpl });
   let command;
-  let childEnv = env;
   if (standalone) {
     preflightStandaloneUpdate({ standalone, fsImpl, pathImpl });
-    command = buildStandaloneUpdateShellCommand({ standalone });
-    // Markers on, and the log path for the swap helper that outlives the CLI.
-    childEnv = { ...env, MULTICC_UPDATE_MARKERS: '1', MULTICC_UPDATE_LOG: standalone.logPath };
+    command = buildInstallScriptShellCommand({ standalone, targetVersion, port });
   } else {
     preflightUpdate({ rootDir, fsImpl, pathImpl });
     command = buildUpdateShellCommand({ rootDir, force });
   }
   const child = spawn('/bin/sh', ['-c', command], {
-    cwd: standalone ? standalone.resources : rootDir,
-    // Detached is load-bearing, not hygiene: `./multicc update` restarts the
+    cwd: standalone ? standalone.bundleRoot : rootDir,
+    // Detached is load-bearing, not hygiene: the update stops and restarts the
     // server, and do_stop kills the server's process group. Sharing that group
     // would have the update kill itself halfway through.
     detached: true,
     stdio: 'ignore',
-    env: childEnv,
+    env,
   });
   if (!child || typeof child.once !== 'function' || typeof child.unref !== 'function') {
     throw new TypeError('update runner received an invalid child process');
@@ -398,7 +466,9 @@ function startDetachedUpdate(options = {}) {
 
   child.once('error', error => reportFailure('UPDATE_CHILD_ERROR', error));
   child.unref();
-  log.log(`[multicc] /api/update: detached ${standalone ? 'standalone ' : ''}update scheduled (force=${force ? 1 : 0})`);
+  log.log(standalone
+    ? `[multicc] /api/update: detached install.sh update scheduled (target=${targetVersion || 'latest'})`
+    : `[multicc] /api/update: detached update scheduled (force=${force ? 1 : 0})`);
   return child;
 }
 
@@ -412,10 +482,11 @@ module.exports = {
   PLAN_MARKER,
   UPDATE_STEPS,
   STALE_AFTER_MS,
+  INSTALL_REPO,
   UpdatePreflightError,
   shellQuote,
   buildUpdateShellCommand,
-  buildStandaloneUpdateShellCommand,
+  buildInstallScriptShellCommand,
   detectStandaloneUpdate,
   updateLogPath,
   preflightUpdate,
