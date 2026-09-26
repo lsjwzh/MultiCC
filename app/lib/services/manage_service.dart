@@ -19,6 +19,22 @@ class LocalOnlyException implements Exception {
   String toString() => message ?? 'local-only';
 }
 
+/// DELETE /api/providers/:appType/:id answered 409: the provider is still
+/// wired into sessions / CLI defaults / Aux (`PROVIDER_IN_USE`), or a force
+/// delete could not unwire all of them (`PROVIDER_DETACH_FAILED`, the provider
+/// was kept). [forceable] is false on servers without `?force=1`.
+class ProviderInUseException implements Exception {
+  final String code;
+  final List<Map<String, dynamic>> references;
+  final bool forceable;
+  const ProviderInUseException(this.code, this.references, this.forceable);
+
+  bool get detachFailed => code == 'PROVIDER_DETACH_FAILED';
+
+  @override
+  String toString() => 'provider is still referenced (${references.length})';
+}
+
 /// Thrown by the task-board dispatch endpoints (POST .../send) when the server
 /// rejects the route: 409 (no idle/relevant target, or the chosen session is
 /// busy) carries a human-readable `note` from the server; 503 (aux-AI
@@ -319,14 +335,38 @@ class ManageService {
     if (res.statusCode >= 400) _throw(res);
   }
 
-  Future<void> deleteProvider(String appType, String id) async {
+  /// [force] detaches every reference first (server-side, same rules as the
+  /// AI-config dialog). Returns the server body: `{ok}` or, when forced,
+  /// `{ok, forced: true, detached: [...]}`.
+  Future<Map<String, dynamic>> deleteProvider(String appType, String id,
+      {bool force = false}) async {
     final res = await http
         .delete(
-          Uri.parse(_url('/api/providers/$appType/$id')),
+          Uri.parse(_url('/api/providers/$appType/$id${force ? '?force=1' : ''}')),
           headers: _headers,
         )
-        .timeout(const Duration(seconds: 15));
+        .timeout(const Duration(seconds: 30));
+    if (res.statusCode == 409) {
+      try {
+        final j = jsonDecode(res.body);
+        if (j is Map && j['references'] is List) {
+          throw ProviderInUseException(
+            (j['code'] ?? 'PROVIDER_IN_USE').toString(),
+            (j['references'] as List)
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e))
+                .toList(),
+            j['forceable'] == true,
+          );
+        }
+      } on FormatException catch (_) {}
+    }
     if (res.statusCode >= 400) _throw(res);
+    try {
+      final j = jsonDecode(res.body);
+      if (j is Map) return Map<String, dynamic>.from(j);
+    } catch (_) {}
+    return const {};
   }
 
   // ── Aux (AI assistant) ─────────────────────────────────────────────────────

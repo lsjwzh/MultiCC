@@ -1595,7 +1595,7 @@ cliSwitchRuntime.startUpdateWatch();
 // PATCH + fork profile routes: label/model/effort/agent/rolePrompt/memory/provider/
 // subagent edits, and Happier-parity transcript fork. Handler logic lives in
 // src/routes/session-profile.js; only host wiring stays here.
-createSessionProfileRoutes({
+const { applySessionPatch } = createSessionProfileRoutes({
   persistedSessions,
   directories,
   sessionPersistence,
@@ -1930,7 +1930,7 @@ const {
   AUX_SESSION_ID,
   AUX_HISTORY_MAX,
   auxQueue,
-  getAuxConfig,
+  getAuxConfig, clearAuxProvider,
   resolveGoalLimits,
   buildGoalLimitNote,
 } = mountAuxGoalRoutes(app, {
@@ -2111,7 +2111,7 @@ const providerRoutes = createProviderRoutes({
   providerRouterRuntime,
   findProviderReferences,
   persistedSessions, providerRelayShares,
-  getAuxConfig,
+  getAuxConfig, clearAuxProvider, applySessionPatch,
   claudeCmd: CLAUDE_CMD,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,

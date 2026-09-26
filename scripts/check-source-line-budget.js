@@ -277,9 +277,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 按本树重跑生成器实测 7046 行 / 439114 字节（438951 + 163 = 两侧各自增量之和）。
   // 同日 App 截图标注（image_annotate_screen.dart）：annot* 共 26 键，中英各 26
   // 行 = +52，合流后重跑生成器实测 7098 行 / 441958 字节。
+  // 同日删除 Provider 的引用弹窗与强制删除（airProviderRef* / airProviderInUse* /
+  // airProviderForce*）共 19 键，中英各 19 行 = +38，合流后重跑生成器实测 7136 行 / 445045 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7098,
-    maxBytes: 441958,
+    maxLines: 7136,
+    maxBytes: 445045,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

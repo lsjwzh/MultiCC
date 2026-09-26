@@ -286,16 +286,76 @@
     renderCards();
   }
 
-  async function removeProvider(provider) {
-    if (!confirm(t('airProviderDeleteConfirm', { name: displayName(provider) }))) return;
+  const refKinds = ['main', 'auto_candidate', 'subagent', 'default', 'aux', 'session'];
+  const refKey = kind => kind.replace(/(^|_)([a-z])/g, (_, __, c) => c.toUpperCase());
+
+  // 409 PROVIDER_IN_USE / PROVIDER_DETACH_FAILED 的引用清单：按类型分组，每组写明
+  // 强制删除时会怎么解除（服务端 src/providers/force-detach.js 的口径）。
+  function showReferences(provider, refs, failed) {
+    const dialog = make('dialog', null, 'provider-dialog service-dialog air-provider-refs-dialog');
+    const form = make('form'); form.method = 'dialog';
+    const head = make('div', null, 'section-heading');
+    const title = make('div');
+    title.append(make('span', 'PROVIDER IN USE', 'eyebrow'), make('h2', t('airProviderInUseTitle', { name: displayName(provider), count: refs.count })));
+    head.append(title, button('×', () => dialog.close()));
+    form.append(head, make('p', failed ? t('airProviderInUseDetachFailed') : t('airProviderInUseBody')));
+    for (const kind of refKinds) {
+      const items = refs.items.filter(item => item.kind === kind);
+      if (!items.length) continue;
+      const group = make('section', null, 'air-provider-ref-group');
+      const groupHead = make('header');
+      groupHead.append(make('strong', `${t(`airProviderRefKind${refKey(kind)}`)} · ${items.length}`));
+      if (!failed && kind !== 'session') groupHead.append(make('small', t(`airProviderRefEffect${refKey(kind)}`)));
+      const list = make('ul');
+      for (const item of items) {
+        const row = make('li');
+        row.append(make('span', item.title));
+        if (item.error || (item.detail && item.detail !== item.title)) row.append(make('code', item.error || item.detail));
+        list.append(row);
+      }
+      group.append(groupHead, list); form.append(group);
+    }
+    const sessionRefs = refs.items.some(item => item.detail);
+    if (!failed && refs.forceable && sessionRefs) form.append(make('p', t('airProviderInUseRunningWarn'), 'air-provider-ref-warn'));
+    const actions = make('div', null, 'schedule-form-actions');
+    actions.append(button(t('airProviderInUseCancel'), () => dialog.close()));
+    if (!failed && refs.forceable) {
+      actions.append(button(t('airProviderForceDelete'), async (event) => {
+        event.currentTarget.disabled = true;
+        dialog.close();
+        await deleteProvider(provider, true);
+      }, 'danger'));
+    }
+    form.append(actions); dialog.append(form);
+    dialog.onclose = () => dialog.remove();
+    document.body.append(dialog); dialog.showModal();
+  }
+
+  async function deleteProvider(provider, force) {
+    const path = `/api/providers/${encodeURIComponent(provider.appType)}/${encodeURIComponent(provider.id)}${force ? '?force=1' : ''}`;
     try {
-      await context.api(`/api/providers/${encodeURIComponent(provider.appType)}/${encodeURIComponent(provider.id)}`, undefined, 'DELETE');
-      context.notice(t('airProviderDeleted', { name: displayName(provider) }));
+      const result = await context.api(path, undefined, 'DELETE');
+      const detached = Array.isArray(result.detached) ? result.detached : [];
+      const deferred = detached.filter(item => item && item.deferred).length;
+      context.notice(result.forced
+        ? `${t('airProviderForceDeleted', { name: displayName(provider), count: detached.length })}${deferred ? t('airProviderForceDeletedDeferred', { count: deferred }) : ''}`
+        : t('airProviderDeleted', { name: displayName(provider) }));
       await load();
     } catch (error) {
       const refs = catalogApi.deleteReferenceDisplayData(error);
+      if (refs.count && (error.code === 'PROVIDER_IN_USE' || error.code === 'PROVIDER_DETACH_FAILED')) {
+        context.notice('');
+        showReferences(provider, refs, error.code === 'PROVIDER_DETACH_FAILED');
+        if (error.code === 'PROVIDER_DETACH_FAILED') await load();
+        return;
+      }
       context.notice(`${error.message}${refs.count ? t('airProviderStillReferenced', { items: refs.items.map(item => item.title).join(t('airProviderListSeparator')) }) : ''}`);
     }
+  }
+
+  async function removeProvider(provider) {
+    if (!confirm(t('airProviderDeleteConfirm', { name: displayName(provider) }))) return;
+    await deleteProvider(provider, false);
   }
 
   async function importProviders() {

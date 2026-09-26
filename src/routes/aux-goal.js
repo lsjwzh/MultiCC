@@ -911,6 +911,13 @@ function mountAuxGoalRoutes(app, dependencies) {
     AUX_HISTORY_MAX,
     auxQueue,
     getAuxConfig: () => ({ ...auxConfig }),
+    // Provider force-delete: unbind Aux from a provider that is going away.
+    clearAuxProvider(providerId) {
+      if (!providerId || auxConfig.providerId !== providerId) return false;
+      auxConfig.providerId = null;
+      saveAuxConfig();
+      return true;
+    },
     resolveGoalLimits,
     buildGoalLimitNote,
   };

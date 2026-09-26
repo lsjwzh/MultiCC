@@ -10,6 +10,7 @@ const { runSpeedtestRequest } = require('../providers/speedtest-request');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
 const { officialAccountIdFromProvider } = require('../official-accounts');
 const { createRoutingTest } = require('./auto-provider-routing-test');
+const { detachProviderReferences } = require('../providers/force-detach');
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
@@ -291,16 +292,41 @@ function createProviderRoutes(rawDeps) {
           defaults: providerDefaults,
           aux: deps.getAuxConfig(),
         });
-        if (references.length) {
+        const force = ['1', 'true'].includes(String(req.query.force || '').toLowerCase());
+        const forceable = typeof deps.applySessionPatch === 'function' && typeof deps.clearAuxProvider === 'function';
+        if (references.length && !(force && forceable)) {
           return res.status(409).json({
             error: 'provider is still referenced',
             code: 'PROVIDER_IN_USE',
             references,
+            forceable,
           });
+        }
+        let detached = [];
+        if (references.length) {
+          const result = detachProviderReferences({
+            providerId: req.params.id,
+            references,
+            sessions: deps.persistedSessions,
+            applySessionPatch: deps.applySessionPatch,
+            clearDefault: (cli) => { if (providerDefaults[cli] === req.params.id) { providerDefaults[cli] = null; saveProviderDefaults(); } },
+            clearAuxProvider: deps.clearAuxProvider,
+          });
+          if (result.failed.length) {
+            return res.status(409).json({
+              error: 'provider references could not all be detached',
+              code: 'PROVIDER_DETACH_FAILED',
+              references: result.failed,
+              detached: result.detached,
+              forceable: false,
+            });
+          }
+          detached = result.detached;
+          log.warn?.(`[multicc] force-deleting provider ${req.params.appType}/${req.params.id}: detached ${detached.length} reference(s)`);
         }
         const ok = deps.providers.deleteProvider(req.params.appType, req.params.id);
         if (ok) deps.providerRelayShares.revokeProvider(req.params.appType, req.params.id);
-        res.json({ ok });
+        res.json(references.length ? { ok, forced: true, detached } : { ok });
       } catch (error) {
         res.status(400).json({ error: publicError(error, 'provider delete failed') });
       }
