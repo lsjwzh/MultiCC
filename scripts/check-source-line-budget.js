@@ -254,8 +254,8 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 按用途换抬头，补 airTaskSettingsHeading/Intro/FootTerminal 三键（中英各 3 行
   // = +6）。按本树重跑生成器实测 6938 行 / 430433 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6956,
-    maxBytes: 432535,
+    maxLines: 6964,
+    maxBytes: 433197,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

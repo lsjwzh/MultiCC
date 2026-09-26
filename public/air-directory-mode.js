@@ -80,9 +80,9 @@
       list.replaceChildren(node('p', translate('airTerminalsEmpty'), 'directory-terminal-empty'));
       return;
     }
-    // 一行 = 打开那条终端的链接 + 一颗删除。删除按钮不能放进 <a> 里（嵌套可交互元素
-    // 是无效 HTML，点删除会跟着跳走），所以外层是 div、里面两件并排 —— 和目录任务行
-    // （`directory-task-row`）同一种结构，样式也复用 `.task-delete`。
+    // 一行 = 打开那条终端的链接 + 重启 + 删除。按钮不能放进 <a> 里（嵌套可交互元素是
+    // 无效 HTML，点它们会跟着跳走），所以外层是 div、里面并排 —— 和目录任务行
+    // （`directory-task-row`）同一种结构，样式复用 `.task-delete`。
     list.replaceChildren(...sessions.map(session => {
       const label = session.label || session.id;
       const row = node('div', null, 'directory-terminal-row');
@@ -93,6 +93,17 @@
         node('strong', label),
         node('small', session.cli || ''),
       );
+      // 重启：杀掉 tmux 里的进程、按当前 provider/CLI 重新 spawn 一次。它也是那条
+      // 托管路由失联（改过 provider、或早于能力令牌那次修复建的终端）的愈合路径。
+      const restart = node('button', '↻', 'task-delete terminal-restart');
+      restart.type = 'button';
+      restart.dataset.action = 'restart-terminal';
+      restart.setAttribute('aria-label', translate('airTerminalRestartAria', { label }));
+      restart.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        void restartTerminal(session, restart);
+      };
       const remove = node('button', translate('delete'), 'task-delete danger');
       remove.type = 'button';
       remove.dataset.action = 'delete-terminal';
@@ -102,9 +113,27 @@
         event.stopPropagation();
         void removeTerminal(session, remove);
       };
-      row.append(link, remove);
+      row.append(link, restart, remove);
       return row;
     }));
+  }
+
+  // 重启一条终端（`POST /api/sessions/:id/restart`，只对终端有效）：杀掉 tmux 里的
+  // 进程、按这条会话当前的 CLI/Provider 重新 spawn。CLI 会以**全新对话**重开
+  // （服务端会清掉 cliSessionId），所以先问一句。
+  async function restartTerminal(session, button) {
+    if (!ctx || !session?.id) return;
+    const label = session.label || session.id;
+    if (!root.confirm(translate('airTerminalRestartConfirm', { label }))) return;
+    if (button) button.disabled = true;
+    try {
+      await ctx.api(`/api/sessions/${encodeURIComponent(session.id)}/restart`, {});
+      ctx.notice?.(translate('airTerminalRestarted'));
+    } catch (error) {
+      ctx.notice?.(translate('airTerminalRestartFailed', { error: error?.message || error }));
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   // 删一条终端会话（`DELETE /api/sessions/:id`）。worktree 里还有未提交改动 / 未合入

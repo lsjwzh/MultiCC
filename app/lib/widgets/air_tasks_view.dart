@@ -349,6 +349,28 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
+  /// 重启一条终端（`POST /api/sessions/:id/restart`，只对终端有效）：杀掉 tmux 里的
+  /// 进程、按这条会话当前的 CLI/Provider 重新 spawn。CLI 以全新对话重开（服务端会清
+  /// cliSessionId），所以先问一句。它也是托管路由失联时的愈合路径。
+  Future<void> _restartTerminal(AirSession session) async {
+    final label = session.label;
+    final confirmed = await _confirmTerminalAction(
+      title: t('restart'),
+      body: t('airTerminalRestartConfirm', {'label': label}),
+      confirmLabel: t('restart'),
+    );
+    if (confirmed != true || !mounted) return;
+    final mgr = context.read<SessionManager>();
+    try {
+      await mgr.restartSession(session.id);
+      await _refresh();
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = t('restartFailed', {'error': error.toString()}));
+      }
+    }
+  }
+
   /// 删一条终端会话（`DELETE /api/sessions/:id`）。
   ///
   /// 工作区里还有未提交改动 / 未合入的提交时，服务端按安全规则先拒绝（409 +
@@ -356,9 +378,10 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 以及目录任务行那颗删除同一个规矩。
   Future<void> _deleteTerminal(AirSession session) async {
     final label = session.label;
-    final confirmed = await _confirmTerminalDelete(
+    final confirmed = await _confirmTerminalAction(
       title: t('deleteSessionConfirm'),
       body: t('deleteSessionBody', {'id': label}),
+      confirmLabel: t('delete'),
     );
     if (confirmed != true || !mounted) return;
     final mgr = context.read<SessionManager>();
@@ -371,9 +394,10 @@ class _AirTasksViewState extends State<AirTasksView>
         if (blocked.dirty) t('airDeleteRiskDirty'),
         if (blocked.unmerged) t('airDeleteRiskUnmerged'),
       ].join('\n');
-      final forced = await _confirmTerminalDelete(
+      final forced = await _confirmTerminalAction(
         title: t('deleteTerminalRiskTitle'),
         body: t('deleteTerminalRiskBody', {'id': label, 'findings': findings}),
+        confirmLabel: t('delete'),
       );
       if (forced != true || !mounted) return;
       try {
@@ -387,9 +411,10 @@ class _AirTasksViewState extends State<AirTasksView>
     }
   }
 
-  Future<bool?> _confirmTerminalDelete({
+  Future<bool?> _confirmTerminalAction({
     required String title,
     required String body,
+    required String confirmLabel,
   }) => showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
@@ -413,7 +438,7 @@ class _AirTasksViewState extends State<AirTasksView>
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(true),
           child: Text(
-            t('delete'),
+            confirmLabel,
             style: const TextStyle(color: AppColors.danger),
           ),
         ),
@@ -1734,6 +1759,7 @@ class _AirTasksViewState extends State<AirTasksView>
               _DirectoryTerminalRow(
                 session: session,
                 onTap: () => unawaited(_openTerminal(session)),
+                onRestart: () => unawaited(_restartTerminal(session)),
                 onDelete: () => unawaited(_deleteTerminal(session)),
               ),
         ],
@@ -2294,11 +2320,13 @@ class _DirectoryTerminalRow extends StatelessWidget {
   const _DirectoryTerminalRow({
     required this.session,
     required this.onTap,
+    required this.onRestart,
     required this.onDelete,
   });
 
   final AirSession session;
   final VoidCallback onTap;
+  final VoidCallback onRestart;
   final VoidCallback onDelete;
 
   @override
@@ -2331,14 +2359,28 @@ class _DirectoryTerminalRow extends StatelessWidget {
                 session.cli,
                 style: const TextStyle(color: AppColors.faint, fontSize: 11),
               ),
-        trailing: IconButton(
-          key: ValueKey('air-terminal-delete-${session.id}'),
-          onPressed: onDelete,
-          iconSize: 18,
-          visualDensity: VisualDensity.compact,
-          tooltip: t('airDeleteTerminalAria', {'label': session.label}),
-          icon: const Icon(Icons.delete_outline_rounded),
-          color: AppColors.danger,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              key: ValueKey('air-terminal-restart-${session.id}'),
+              onPressed: onRestart,
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              tooltip: t('airTerminalRestartAria', {'label': session.label}),
+              icon: const Icon(Icons.refresh_rounded),
+              color: AppColors.muted,
+            ),
+            IconButton(
+              key: ValueKey('air-terminal-delete-${session.id}'),
+              onPressed: onDelete,
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              tooltip: t('airDeleteTerminalAria', {'label': session.label}),
+              icon: const Icon(Icons.delete_outline_rounded),
+              color: AppColors.danger,
+            ),
+          ],
         ),
       ),
     );
