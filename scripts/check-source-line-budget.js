@@ -249,11 +249,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 共 9 个键，中英各 9 行 = +18，重跑生成器实测 6922 行 / 429053 字节。
   // 同日独立包也能从左下角更新：下载/校验/解压三个步骤名 + 独立包说明共 4 键，
   // 中英各 4 行 = +8，实测 6930 行 / 429730 字节。
-  // 新建终端改成先问用哪个 CLI（airTerminalPickTitle/PickHint/CreateFailed 共 3 键，
-  // 中英各 3 行 = +6），按本树重跑生成器实测 6936 行 / 430180 字节。
+  // 新建终端改成先问用哪个 CLI，随后又改成复用 chat 那套配置对话框（自建的选择层
+  // 撤掉，只留 airNewTerminalHint 文案 + airTerminalCreateFailed 两条）；那一层还要
+  // 按用途换抬头，补 airTaskSettingsHeading/Intro/FootTerminal 三键（中英各 3 行
+  // = +6）。按本树重跑生成器实测 6938 行 / 430433 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6936,
-    maxBytes: 430180,
+    maxLines: 6938,
+    maxBytes: 430433,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

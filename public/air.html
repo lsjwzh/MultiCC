@@ -245,10 +245,11 @@
               <span id="directory-terminal-count"></span>
             </div>
             <!-- 本目录新建终端走 POST /api/directories/:id/sessions（kind=terminal）。
-                 先弹一层问「用哪个 CLI」（`#terminal-cli-dialog`，见下面），选项就是
-                 /api/air 的 clis、最近用过的那套排在第一个 —— 但不许替用户定死：
-                 只默认开最近的那一套是用户明确否掉的做法。 -->
-            <button id="directory-terminal-new" class="directory-terminal-new" type="button" title="在本目录新建终端（可选 CLI）" data-i18n-title="airNewTerminalHint"><span aria-hidden="true">＋</span> <span data-i18n="airNewTerminal">新终端</span></button>
+                 点它先开 **chat 用的那个配置对话框**（air-task-settings.js 的 draft
+                 模式）：CLI / Provider / 模型 / 推理强度都在那一层挑，选完才建。
+                 终端要能像 chat 一样选线路 —— 这是用户明确要求的，所以这里不再自己
+                 长一套选择 UI。 -->
+            <button id="directory-terminal-new" class="directory-terminal-new" type="button" title="在本目录新建终端（可选 CLI、Provider、模型）" data-i18n-title="airNewTerminalHint"><span aria-hidden="true">＋</span> <span data-i18n="airNewTerminal">新终端</span></button>
             <nav id="directory-terminal-list" aria-label="本目录终端列表" data-i18n-aria-label="airTerminalsList"></nav>
           </section>
           <!-- 首启配置卡：/api/aux/config 还没有 providerId 时由 air.js 亮出来。
@@ -469,21 +470,6 @@
         <select id="quick-task-dialog-directory" aria-label="选择新任务所在目录" data-i18n-aria-label="airPickTaskDirectory"></select>
       </label>
       <div id="quick-task-slot"></div>
-    </div>
-  </dialog>
-
-  <!-- 「＋ 新终端」先问用哪个 CLI。之前是先建再开、CLI 沿用最近用过的那套，用户明确
-       说过那不对；App 侧一直是问的（`air_tasks_view.dart` 的 `_pickTerminalCli`），
-       这里补齐成同一套规矩。选项由 air-directory-mode.js 从 /api/air 的 clis 填。 -->
-  <dialog id="terminal-cli-dialog" class="terminal-cli-dialog" aria-labelledby="terminal-cli-title">
-    <div class="section-heading">
-      <div><span class="eyebrow">NEW TERMINAL</span><h2 id="terminal-cli-title" data-i18n="airTerminalPickTitle">用哪个 CLI 开这个终端？</h2></div>
-      <button type="button" id="terminal-cli-close" aria-label="关闭" data-i18n-aria-label="airDlgClose">×</button>
-    </div>
-    <p data-i18n="airTerminalPickHint">终端开在当前工作目录；选一个就立即创建并打开。</p>
-    <nav id="terminal-cli-options" class="terminal-cli-options"></nav>
-    <div class="schedule-form-actions">
-      <button type="button" id="terminal-cli-cancel" data-i18n="cancel">取消</button>
     </div>
   </dialog>
 

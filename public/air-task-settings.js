@@ -153,6 +153,9 @@
     // the caller, which pins it onto the task at creation. One dialog, one
     // implementation, two surfaces.
     const draft = !entry.sessionId;
+    // 这层对话框也被目录里的「＋ 新终端」用（draft + purpose=terminal）。同一份实现、
+    // 同一套字段，只有几句抬头/说明按用途换个说法 —— 给终端说「新任务」是错的。
+    const terminalDraft = draft && entry.purpose === 'terminal';
     const storedConfig = entry.configuration || {};
     const pending = storedConfig.pendingConfiguration;
     // The editor always opens on the user's desired next-turn route. This keeps
@@ -165,12 +168,13 @@
     const form = node('form', null, 'air-config-form');
     const header = node('header', null, 'air-config-head');
     const heading = node('div');
-    heading.append(node('span', 'TASK ROUTING', 'eyebrow'), node('h2', t('airTaskSettingsHeading')));
+    heading.append(node('span', terminalDraft ? 'TERMINAL ROUTING' : 'TASK ROUTING', 'eyebrow'),
+      node('h2', t(terminalDraft ? 'airTaskSettingsHeadingTerminal' : 'airTaskSettingsHeading')));
     const close = node('button', '×', 'air-config-close');
     close.type = 'button'; close.setAttribute('aria-label', t('airTaskSettingsCloseAria')); close.onclick = () => d.close();
     header.append(heading, close);
     form.append(header, node('p', draft
-      ? t('airTaskSettingsIntroDraft')
+      ? t(terminalDraft ? 'airTaskSettingsIntroTerminal' : 'airTaskSettingsIntroDraft')
       : t('airTaskSettingsIntroTask', { title: entry.task?.title || t('airTaskSettingsCurrentTask') }), 'air-config-intro'));
 
     const cliSection = section('1 · CLI', t('airTaskSettingsCliNote'));
@@ -222,7 +226,9 @@
 
     const error = node('p', '', 'air-config-error'); error.setAttribute('role', 'alert');
     const foot = node('footer', null, 'air-config-footer');
-    const footCopy = node('p', draft ? t('airTaskSettingsFootDraft') : t('airTaskSettingsFootTask'));
+    const footCopy = node('p', draft
+      ? t(terminalDraft ? 'airTaskSettingsFootTerminal' : 'airTaskSettingsFootDraft')
+      : t('airTaskSettingsFootTask'));
     const actions = node('div');
     const cancel = node('button', t('airTaskSettingsCancel')); cancel.type = 'button'; cancel.onclick = () => d.close();
     const submit = node('button', draft ? t('airTaskSettingsUseConfig') : t('airTaskSettingsSaveConfig'), 'primary'); submit.type = 'submit';
