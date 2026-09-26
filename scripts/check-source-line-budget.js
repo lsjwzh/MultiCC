@@ -87,9 +87,13 @@ const MIGRATION_DEBT = Object.freeze({
   // 扶正之后，路由名和车道名同源时会重一遍。行数 3118 -> 3148、字节
   // 169154 -> 171301，全是接线；下一次动目录页或 ⌘K，该拆的仍是
   // renderSchedules / renderDirectoryOverview。
+  // 2026-09-26 目录概览统计卡改版：四卡（进行中/计划/完成/全部）改为五卡可点击
+  // （运行中/等待回复/异常/完成/全部），renderDirectoryOverview 换成 taskStatus 统一
+  // 口径 + quickFilter。行数 3148 -> 3169、字节 171301 -> 172349，仍在同一段
+  // renderDirectoryOverview；下一次动目录页或 ⌘K，该拆的仍是这里。
   'public/air.js': Object.freeze({
-    ceiling: 3148,
-    byteCeiling: 171301,
+    ceiling: 3169,
+    byteCeiling: 172349,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -279,9 +283,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 行 = +52，合流后重跑生成器实测 7098 行 / 441958 字节。
   // 同日删除 Provider 的引用弹窗与强制删除（airProviderRef* / airProviderInUse* /
   // airProviderForce*）共 19 键，中英各 19 行 = +38，合流后重跑生成器实测 7136 行 / 445045 字节。
+  // 2026-09-26 又加键：rebase 三键 + 目录概览五卡（airStatRunning/Waiting/Error、
+  // airDirStatClickFilter、airStatusRunning、airAdminActiveDetail）等，重跑生成器实测
+  // 7154 行 / 445972 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7136,
-    maxBytes: 445045,
+    maxLines: 7154,
+    maxBytes: 445972,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

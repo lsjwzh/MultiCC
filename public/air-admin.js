@@ -250,17 +250,16 @@
     const status = filter.status || 'open';
     const dir = filter.dir || 'all';
     const needle = String(filter.query || '').trim().toLowerCase();
+    // 状态口径与目录概览的统计卡同源：taskStatus 是权威判定（archived/done 生命周期
+    // 优先），所以「运行中/等待回复/异常/完成」四张卡与这里的筛选永远不会分叉。
     const rows = (tasks || [])
       .filter(task => status === 'all' ? true
         : status === 'archived' ? task.status === 'archived'
-          : status === 'done' ? task.status === 'done'
-            // 「计划任务」= 手动创建、尚未归档、又没在跑的计划 —— 与目录概览那张
-            // 统计卡完全同口径（在跑的计划归「进行中」，已 done/archived 不进计划）。
-            : status === 'planned' ? task.recordType === 'planned'
-                && !['done', 'archived'].includes(task.status)
-                && !isRunning(task)
-              : status === 'running' ? isRunning(task)
-                : !['done', 'archived'].includes(task.status))
+          : status === 'done' ? taskStatus(task) === 'done'
+            : status === 'running' ? isRunning(task)
+              : status === 'waiting' ? taskStatus(task) === 'waiting'
+                : status === 'error' ? taskStatus(task) === 'error'
+                  : !['done', 'archived'].includes(task.status))
       .filter(task => dir === 'all' || task.dirId === dir);
     if (keepOrder) return rows;
     // 本地过滤按标题（和目录名）匹配：它仍是即时反馈，也是全文检索不可用时的退路。
