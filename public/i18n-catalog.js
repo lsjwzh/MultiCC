@@ -1772,7 +1772,6 @@ window.MULTICC_I18N_CATALOG = {
     "airStatRunning": "运行中",
     "airStatWaiting": "等待回复",
     "airStatError": "异常",
-    "airDirStatDoneHint": "仍保留在本目录",
     "airDirStatPlanned": "计划任务",
     "airDirStatPlannedHint": "待开始或继续规划",
     "airDirTaskCount": "{total} 个任务",
@@ -2387,7 +2386,6 @@ window.MULTICC_I18N_CATALOG = {
     "airSidebarNav": "工作目录与任务导航",
     "airSidebarNoTasks": "还没有打开过任务。这个目录里的任务会出现在这里。",
     "airSidebarPlanned": "计划 · {stage}",
-    "airStageDone": "已完成",
     "airStageInbox": "待处理",
     "airStageReady": "待执行",
     "airStageReview": "待验收",
@@ -3586,7 +3584,9 @@ window.MULTICC_I18N_CATALOG = {
     "annotSecretFailed": "保存失败：{error}",
     "annotInsert": "放进输入框",
     "annotLoadFailed": "图片加载失败：{error}",
-    "annotExportFailed": "标注图导出失败，只放入了文字"
+    "annotExportFailed": "标注图导出失败，只放入了文字",
+    "airStatSucceeded": "执行成功",
+    "airDirStatSucceededHint": "仍保留在本目录"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -5360,7 +5360,6 @@ window.MULTICC_I18N_CATALOG = {
     "airStatRunning": "Running",
     "airStatWaiting": "Waiting for reply",
     "airStatError": "Error",
-    "airDirStatDoneHint": "Still kept in this workspace",
     "airDirStatPlanned": "Planned tasks",
     "airDirStatPlannedHint": "Not started or still being planned",
     "airDirTaskCount": "{total} tasks",
@@ -5975,7 +5974,6 @@ window.MULTICC_I18N_CATALOG = {
     "airSidebarNav": "Workspace and task navigation",
     "airSidebarNoTasks": "No task opened yet. Tasks in this workspace will show up here.",
     "airSidebarPlanned": "Planned · {stage}",
-    "airStageDone": "Completed",
     "airStageInbox": "Inbox",
     "airStageReady": "Ready",
     "airStageReview": "In review",
@@ -7174,6 +7172,8 @@ window.MULTICC_I18N_CATALOG = {
     "annotSecretFailed": "Save failed: {error}",
     "annotInsert": "Put in input box",
     "annotLoadFailed": "Failed to load image: {error}",
-    "annotExportFailed": "Could not export the annotated image; only the text was inserted"
+    "annotExportFailed": "Could not export the annotated image; only the text was inserted",
+    "airStatSucceeded": "Succeeded",
+    "airDirStatSucceededHint": "Still kept in this workspace"
   }
 };

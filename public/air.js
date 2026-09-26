@@ -570,7 +570,10 @@
     const running = tasks.filter(isRunningTask);
     const waiting = tasks.filter(task => taskStatusOf(task) === 'waiting');
     const errored = tasks.filter(task => taskStatusOf(task) === 'error');
-    const doneCount = tasks.filter(task => taskStatusOf(task) === 'done').length;
+    // 「执行成功」量的是这一轮的结局（runState 折出来的 succeeded），不是生命周期那个
+    // done —— 后者只剩计划看板时代留下的少量记录，卡片常年是个位数，而真正跑成功的
+    // 任务全在 succeeded 上，却一档也筛不出来。
+    const succeededCount = tasks.filter(task => taskStatusOf(task) === 'succeeded').length;
     // A stat card is a quick filter: clicking it jumps the list to that
     // category instead of leaving the numbers as dead digits.
     function quickFilter(status) {
@@ -595,7 +598,7 @@
       stat(t('airStatRunning'), running.length, '', 'blue', 'running'),
       stat(t('airStatWaiting'), waiting.length, '', 'amber', 'waiting'),
       stat(t('airStatError'), errored.length, '', 'red', 'error'),
-      stat(t('airStageDone'), doneCount, t('airDirStatDoneHint'), 'green', 'done'),
+      stat(t('airStatSucceeded'), succeededCount, t('airDirStatSucceededHint'), 'green', 'succeeded'),
       stat(t('airStatusAllRecords'), tasks.length, t('airDirArchiveWorktrees', {
         archived: tasks.filter(task => task.status === 'archived').length,
         worktrees: dir?.worktreeCount || 0,

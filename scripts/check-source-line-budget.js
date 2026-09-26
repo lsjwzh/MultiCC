@@ -91,9 +91,13 @@ const MIGRATION_DEBT = Object.freeze({
   // （运行中/等待回复/异常/完成/全部），renderDirectoryOverview 换成 taskStatus 统一
   // 口径 + quickFilter。行数 3148 -> 3169、字节 171301 -> 172349，仍在同一段
   // renderDirectoryOverview；下一次动目录页或 ⌘K，该拆的仍是这里。
+  // 2026-09-26 五卡里那张「完成」改口径：量的是这一轮的结局（taskStatus 的 succeeded
+  // = runState 折出来的执行成功），不再量生命周期 done（旧看板遗留，全库只剩个位数，
+  // 真正跑成功的任务一档也筛不出来）。滤值同步 'done' -> 'succeeded'，行数
+  // 3169 -> 3172、字节 172349 -> 172681，仍只在 renderDirectoryOverview 里。
   'public/air.js': Object.freeze({
-    ceiling: 3169,
-    byteCeiling: 172349,
+    ceiling: 3172,
+    byteCeiling: 172681,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -291,9 +295,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 7178 行 / 447138 字节。
   // 2026-09-26 再 +1 键（airDirArtifactsStaleServer：「服务端没按目录过滤」那句话，
   // 中英各 1 行 = +2），重跑生成器实测 7180 行 / 447499 字节。
+  // 2026-09-26 目录「完成」卡改口径：airStageDone 退场、airStatSucceeded 进场、提示行
+  // airDirStatDoneHint 改名 airDirStatSucceededHint（键数不变 = 行数不变，只有键名变长
+  // 撑了字节），重跑生成器实测 7180 行 / 447520 字节。
   'public/i18n-catalog.js': Object.freeze({
     maxLines: 7180,
-    maxBytes: 447499,
+    maxBytes: 447520,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
