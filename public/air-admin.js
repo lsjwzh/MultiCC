@@ -389,9 +389,11 @@
 
     const content = panel || el('admin-content');
     const stats = make('div', null, 'admin-stats');
+    // 主数字 = 真正「正在执行」的任务数，而不是未归档记录总数（后者被自动观察
+    // 长期堆积，当主数字会虚高得没有意义）；未归档总数放小字给个上下文。
     stats.append(
       statCard(t('airAdminWorkDirectories'), directories.length, running.size ? t('airAdminDirectoriesRunning', { n: running.size }) : t('airAdminUnifiedLibrary'), 'blue', () => setMode('library')),
-      statCard(t('airAdminActiveTasks'), active.length, t('airAdminTasksExecuting', { n: executing.length }), 'green', () => setMode('tasks')),
+      statCard(t('airAdminActiveTasks'), executing.length, t('airAdminActiveDetail', { n: active.length }), 'green', () => setMode('tasks')),
       statCard(t('airAdminNeedsAttention'), waiting.length, waiting.length ? t('airAdminWaitingDetail') : t('airAdminNothingPending'), waiting.length ? 'amber' : ''),
       statCard(t('airAdminScheduledTasks'), enabledSchedules.length, t('airAdminScheduleRules', { n: (scheduleTasks || []).length }), 'purple', () => setMode('schedules')),
     );
