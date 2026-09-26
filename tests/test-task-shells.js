@@ -240,6 +240,17 @@ test('I03: unmanaged delivery is rejected; original-task host continuations and 
   assert.equal(f.runtime.guardAdmission(first.sessionId, 'modified', delivered.opts).code, 'task_shell_route_required');
 });
 
+test('a durable scheduled message is admitted to a shell-owned session and bound to its task', async t => {
+  const f = fixture(t), first = await f.runtime.send(f.a.id, input('work'));
+  const scheduledOpts = { scheduledMessageId: `wait:scheduled:${first.taskId}` };
+  assert.equal(f.runtime.guardAdmission(first.sessionId, '到点后的追问', scheduledOpts), null,
+    'scheduled future work must not dead-letter with task_shell_route_required');
+  assert.equal(scheduledOpts.taskId, first.taskId,
+    'the timer-delivered message must be attributed to the owned task');
+  assert.equal(f.runtime.guardAdmission(first.sessionId, 'live bypass', {}).code, 'task_shell_route_required',
+    'a live client message without a shell receipt stays rejected');
+});
+
 test('F02: lost acceptance uses the same downstream idempotency key across restart', async t => {
   const accepted = new Set(), attempts = [];
   let lost = true;

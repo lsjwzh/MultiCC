@@ -152,6 +152,39 @@ test('a pending schedule survives process restart and is delivered exactly once'
   await rebuilt.runtime.stop();
 });
 
+test('a schedule restarted before its due time stays listed and fires only when due', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-scheduled-restart-early-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'orchestration.json');
+  const databaseFile = path.join(dir, 'orchestration.sqlite');
+  const clock = { value: 1_000 };
+  const history = new Map();
+  const injections = [];
+  const first = createFixture(t, { dir, file, databaseFile, clock, history, injections });
+  const scheduled = await first.runtime.scheduleMessage({
+    sessionId: 'session-E', message: '重启后仍在待办', delaySeconds: 60,
+    clientScheduleId: 'early-restart',
+  });
+  await first.runtime.stop();
+
+  // Restart while the schedule is still in the future: it must survive, remain
+  // visible as pending, and NOT fire early.
+  const rebuilt = createFixture(t, { dir, file, databaseFile, clock, history, injections });
+  await rebuilt.runtime.start();
+  assert.deepEqual(injections, [], 'nothing may fire before the due time');
+  assert.deepEqual(
+    (await rebuilt.runtime.listScheduledMessages('session-E')).map(item => item.id),
+    [scheduled.id],
+    'the pending schedule must still be listed after restart',
+  );
+
+  clock.value = scheduled.dueAt;
+  await rebuilt.runtime.tick();
+  assert.deepEqual(injections.map(item => item.text), ['重启后仍在待办']);
+  assert.equal((await rebuilt.runtime.listScheduledMessages('session-E')).length, 0);
+  await rebuilt.runtime.stop();
+});
+
 test('scheduled message validation bounds delay and payload size', async t => {
   const { runtime } = createFixture(t);
   await assert.rejects(runtime.scheduleMessage({ sessionId: 's', message: '', delaySeconds: 1 }), /message is required/);
