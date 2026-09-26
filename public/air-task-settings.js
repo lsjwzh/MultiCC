@@ -434,6 +434,13 @@
         const head = node('option', nativeTitle); head.value = '';
         options.push(head);
       }
+      // OpenCode 自己的线路（Zen 网关 / Go 订阅 / auth login 的）不是 MultiCC Provider：
+      // 以 opencode-native:<id> 行出现，只筛模型表，保存时 provider 仍为空（原生配置）。
+      if (currentCli === 'opencode') {
+        for (const native of aiApi.openCodeNativeProviders()) {
+          const option = node('option', native.label); option.value = native.value; options.push(option);
+        }
+      }
       if (!isProviderless(currentCli)) {
         for (const auto of autoApi.availableProtocols(providers)) {
           if (!autoApi.defaultSelection(providers, auto.protocol)
@@ -451,6 +458,8 @@
         ? autoApi.optionValue(config.providerSelection.protocol) : '';
       let desired = initialAuto || (initial ? config.provider || '' : currentCatalog?.defaults?.[currentCli] || '');
       if (!desired && official) desired = official.id;
+      const nativeFromModel = currentCli === 'opencode' && initial && !desired && String(config.model || '').split('/')[0];
+      if (nativeFromModel && options.some(option => option.value === 'opencode-native:' + nativeFromModel)) desired = 'opencode-native:' + nativeFromModel;
       if (!options.some(option => option.value === desired)) desired = official?.id || '';
       const desiredProvider = providers.find(provider => provider.id === desired);
       chooseProvider(desired, initial ? config.model || '' : desiredProvider?.model || '');
@@ -478,6 +487,10 @@
         currentCatalog = catalog;
         providers = catalogApi.providersForCli(catalog, cli);
         renderProviders(initial); renderSub(initial); renderEffort(initial ? config.effort : null);
+        // 模型表缓存还没有（Air 页没开过 opencode 会话）：拉到后重画一次，原生线路才出现。
+        if (cli === 'opencode' && !aiApi.openCodeNativeProviders().length) {
+          aiApi.refreshOpenCodeModels(() => { if (epoch === loadEpoch) renderProviders(initial); });
+        }
       } catch (cause) {
         if (epoch !== loadEpoch) return;
         currentCatalog = null; providers = [];
@@ -508,7 +521,7 @@
       try {
         const autoProtocol = autoApi.protocolFromValue(providerValue);
         let providerSelection = null;
-        let provider = providerValue || null;
+        let provider = (!aiApi.openCodeNativeProviderOf(providerValue) && providerValue) || null;
         let model = modelSelect.value === '__custom__' ? customModel.value.trim() : modelSelect.value;
         if (autoProtocol) {
           const selection = autoEditor?.read();
