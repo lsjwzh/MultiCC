@@ -1342,9 +1342,19 @@ class ManageService {
     }
   }
 
-  /// List entries, newest first (server-side sort).
-  Future<List<DocsRegistryEntry>> fetchDocsRegistry() async {
-    final res = await _req('GET', Uri.parse(_url('/api/docs-registry')));
+  /// List entries: permanent first, then pinned, then newest-first (all
+  /// server-side). [dir] scopes the list to one absolute working directory —
+  /// the 目录首页 artifact panel asks only for its own directory, and the
+  /// server normalizes the value the same way it normalizes a stored `dir`
+  /// (task-worktree paths fold into their project). Omitted when blank.
+  Future<List<DocsRegistryEntry>> fetchDocsRegistry({String? dir}) async {
+    final scope = (dir ?? '').trim();
+    final res = await _req(
+      'GET',
+      Uri.parse(
+        _url('/api/docs-registry'),
+      ).replace(queryParameters: scope.isEmpty ? null : {'dir': scope}),
+    );
     if (res.statusCode >= 400) _throw(res);
     final list = jsonDecode(utf8.decode(res.bodyBytes));
     if (list is! List) return const [];
@@ -1379,10 +1389,14 @@ class ManageService {
     );
   }
 
-  /// PATCH a row (pin toggle and other editable fields).
+  /// PATCH a row (pin / permanent toggles and other editable fields). Every
+  /// argument is optional and only the ones actually passed are sent — the
+  /// server preserves the rest, so 置顶 and 永久保留 can be toggled
+  /// independently without clobbering each other.
   Future<DocsRegistryEntry> updateDocsEntry(
     String id, {
     bool? pinned,
+    bool? permanent,
     String? title,
     String? note,
     int? port,
@@ -1391,6 +1405,7 @@ class ManageService {
   }) async {
     final body = <String, dynamic>{};
     if (pinned != null) body['pinned'] = pinned;
+    if (permanent != null) body['permanent'] = permanent;
     if (title != null) body['title'] = title;
     if (note != null) body['note'] = note;
     if (port != null) body['port'] = port;

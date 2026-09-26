@@ -72,6 +72,74 @@ void main() {
       expect(svc('down').canStart, isFalse);
     });
 
+    // permanent (永久保留 / never reclaimed) and pinned (置顶 / ordering only)
+    // are two independent flags: the server's keep-list reads permanent alone,
+    // so the model must never derive one from the other.
+    test('permanent and dir parse independently of pinned', () {
+      final both = DocsRegistryEntry.fromJson({
+        'id': 'doc_p',
+        'kind': 'page',
+        'title': '报告',
+        'url': '/artifacts/art_1/report.html',
+        'pinned': true,
+        'permanent': true,
+        'dir': '/Users/me/proj',
+      });
+      expect(both.pinned, isTrue);
+      expect(both.permanent, isTrue);
+      expect(both.dir, '/Users/me/proj');
+      expect(both.dirName, 'proj');
+
+      // 只有永久保留、没有置顶：反过来也必须成立。
+      final permanentOnly = DocsRegistryEntry.fromJson({
+        'id': 'doc_q',
+        'kind': 'file',
+        'title': 'f',
+        'url': '/artifacts/art_2/f.csv',
+        'permanent': true,
+      });
+      expect(permanentOnly.permanent, isTrue);
+      expect(permanentOnly.pinned, isFalse);
+    });
+
+    test('permanent and dir default to off/empty when absent', () {
+      final e = DocsRegistryEntry.fromJson({
+        'id': 'doc_x',
+        'kind': 'page',
+        'title': 't',
+        'url': '/x',
+      });
+      expect(e.permanent, isFalse);
+      expect(e.dir, '');
+      expect(e.dirName, '');
+    });
+
+    test('dirName is the basename of an absolute path', () {
+      expect(DocsRegistryEntry.basename('/Users/me/proj'), 'proj');
+      expect(DocsRegistryEntry.basename('/Users/me/proj/'), 'proj');
+      expect(DocsRegistryEntry.basename('proj'), 'proj');
+      // 没有名字的边角值（'' 就是「未归属目录」，'/' 是 normalizeDir 的兜底）。
+      expect(DocsRegistryEntry.basename(''), '');
+      expect(DocsRegistryEntry.basename('/'), '');
+    });
+
+    test('toJson carries permanent and dir through a round trip', () {
+      final out = DocsRegistryEntry.fromJson({
+        'id': 'doc_r',
+        'kind': 'page',
+        'title': 't',
+        'url': '/x',
+        'permanent': true,
+        'dir': '/Users/me/proj',
+      }).toJson();
+      expect(out['permanent'], isTrue);
+      expect(out['dir'], '/Users/me/proj');
+      final back = DocsRegistryEntry.fromJson(out);
+      expect(back.permanent, isTrue);
+      expect(back.dir, '/Users/me/proj');
+      expect(back.dirName, 'proj');
+    });
+
     test('numeric fields tolerate string payloads', () {
       final e = DocsRegistryEntry.fromJson({
         'id': 's',

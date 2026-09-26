@@ -654,6 +654,7 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #empty.is-terminal-mode > #setup-card,
 #empty.is-terminal-mode > #directory-stats,
 #empty.is-terminal-mode > #directory-worktrees,
+#empty.is-terminal-mode > #directory-artifacts-panel,
 #empty.is-terminal-mode > .directory-task-panel,
 #empty.is-terminal-mode > #directory-git,
 #empty.is-terminal-mode > #quick-task-form { display: none; }
@@ -725,6 +726,30 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #directory-worktree-body { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .directory-worktrees p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
 .directory-worktrees .worktree-policy { color: var(--faint); }
+/* ── 目录首页「本目录产物」面板（public/air-artifacts.js）──────────────────
+   入口按钮紧跟工具条里的「备忘」，可见性也跟它走（模块用 MutationObserver 盯
+   #directory-memo.hidden，理由写在那个模块里）。面板本身和 #directory-worktrees
+   同一种「目录页内联区块」：默认 hidden，按目录 id 取数据。 */
+#directory-artifacts { flex-shrink: 0; }
+#directory-artifacts[aria-expanded="true"] { color: var(--accent-strong); border-color: #bcd8f2; background: var(--blue-soft); }
+#directory-artifacts-panel { margin: 0 0 14px; padding: 11px 14px; border: 1px solid #dbe6f1; border-radius: 12px; background: rgba(255, 255, 255, .86); }
+#directory-artifacts-panel .section-heading { margin-bottom: 4px; }
+#directory-artifacts-panel .section-heading strong { font-size: 12px; }
+#directory-artifacts-hint { margin: 0 0 10px; color: var(--faint); font-size: 11px; line-height: 1.5; }
+#directory-artifacts-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.directory-artifact-row { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid #e2ebf4; border-radius: 10px; background: #fff; }
+.directory-artifact-row.is-expired { opacity: .62; }
+.directory-artifact-icon { flex: 0 0 22px; display: grid; place-items: center; color: #277ed2; border-radius: 7px; background: #edf6ff; font-size: 12px; }
+.directory-artifact-copy { min-width: 0; flex: 1; }
+.directory-artifact-copy a { display: block; overflow: hidden; color: #2f536f; font-size: 12px; font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
+.directory-artifact-copy small { display: block; overflow: hidden; margin-top: 2px; color: var(--muted); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.directory-artifact-tags { flex: 0 0 auto; display: flex; gap: 4px; }
+.directory-artifact-actions { flex: 0 0 auto; display: flex; gap: 5px; }
+.directory-artifact-actions button { min-height: 27px; padding: 3px 7px; color: #56718b; border: 1px solid transparent; border-radius: 8px; background: transparent; font: inherit; font-size: 10px; cursor: pointer; }
+.directory-artifact-actions button:hover { border-color: #d9e5f0; background: #f5f9fd; }
+.directory-artifacts-manage { display: inline-block; margin-top: 10px; color: #2376c9; font-size: 11px; }
+#directory-artifacts-status { margin: 0 0 8px; color: var(--warning); font-size: 11px; }
+.directory-artifacts-empty { padding: 2px 0; color: var(--muted); font-size: 11.5px; }
 .worktree-reclaim { min-height: 30px; margin-left: auto; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 9px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .worktree-reclaim:disabled { opacity: .5; cursor: default; }
 .directory-task-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
@@ -1043,6 +1068,23 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .air-doc-actions button, .air-doc-actions a { min-height: 29px; padding: 4px 7px; color: #56718b; border: 1px solid transparent; border-radius: 8px; background: transparent; font-size: 9px; }
 .air-doc-actions button:hover, .air-doc-actions a:hover { border-color: #d9e5f0; background: #f5f9fd; }
 .air-doc-actions .danger { color: #a6533c; }
+/* ── 服务与文档：排列方式与永久保留 ────────────────────────────────────────
+   两件事回答的是两个问题，界面上也分成两处：
+   `.air-doc-tag.permanent`（🔒 永不回收）是**状态**，和 `.air-doc-tag.pin`
+   （📌 只是排到最前）并列摆在标题行，颜色分开 —— 一颗是承诺，一颗是排序；
+   `.air-docs-scope` 是面板顶部的排列方式切换（按时间 / 按目录），形状照抄目录
+   首页那道 Chat / Terminal 切换，但它是这一页自己的控件，不共用那个类。 */
+.air-doc-tag.permanent { color: #7a5a1f; background: #fdf3dd; }
+.air-docs-scope { display: flex; gap: 3px; width: fit-content; margin: 12px 17px 0; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); }
+.air-docs-scope button { min-height: 30px; padding: 0 16px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.air-docs-scope button[aria-selected="true"] { background: var(--panel); color: var(--accent-strong); box-shadow: 0 1px 4px #35577d14; }
+/* 按目录视图：一行一条的是同一张卡片（.air-doc-card），只是被分进了区块。 */
+.air-doc-group { display: grid; border-bottom: 1px solid #e6edf4; }
+.air-doc-group:last-child { border-bottom: 0; }
+.air-doc-group-head { display: flex; align-items: baseline; gap: 8px; padding: 11px 17px 7px; border-bottom: 1px solid #e6edf4; background: #f7fafd; }
+.air-doc-group-head strong { color: #3f6e97; font-size: 11px; }
+.air-doc-group-head small { min-width: 0; overflow: hidden; color: var(--muted); font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.air-doc-group .air-doc-card:last-child { border-bottom: 0; }
 
 /* ── 敏感信息（保险箱）：Air 原生面板 ────────────────────────────────── */
 /* 一行是一条「会按同名环境变量注入子进程」的配置，所以行里最重的是名字（等宽）；
