@@ -666,12 +666,29 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-terminal-open { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; color: var(--text); text-decoration: none; }
 .directory-terminal-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .directory-terminal-mark { color: var(--faint); font-family: ui-monospace, monospace; font-size: 12px; }
-.directory-terminal-open strong { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
-.directory-terminal-open small { color: var(--muted); font-size: 11px; }
-/* 重启那颗借 `.task-delete` 的尺寸，但它是中性动作（不是危险动作）：灰色、悬停变深。
-   选择器比 `.task-delete:hover` 多一层，免得被那条红配色盖掉。 */
+/* 一行两排：上排「状态点 + 名字」，下排「CLI · 状态 · 多久没动」，坏态再多一排说怎么办。
+   `strong` 不再是 <a> 的直接 flex 子级，省略号那套跟着搬进 `.directory-terminal-title`。 */
+.directory-terminal-text { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.directory-terminal-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.directory-terminal-title strong { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
+/* 状态点：绿 = 进程在，灰 = 进程退了，红 = 托管路由失效。颜色只在这里定，语义在
+   air-directory-mode.js 的 STATE_LABEL_KEY / STATE_HINT_KEY（服务端折好的那一列取值）。 */
+.directory-terminal-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.directory-terminal-dot[data-state="running"] { background: var(--green); }
+.directory-terminal-dot[data-state="route_dead"] { background: var(--danger); }
+.directory-terminal-meta { color: var(--muted); font-size: 11px; }
+.directory-terminal-hint { color: var(--warning); font-size: 11px; }
+.directory-terminal-hint[data-state="route_dead"] { color: var(--danger); }
+/* 重命名 / 复制 id / 重启三颗都借 `.task-delete` 的尺寸，但它们是中性动作（不是危险
+   动作）：灰色、悬停变深。选择器比 `.task-delete:hover` 多一层，免得被那条红配色盖掉。 */
+.directory-terminal-row .terminal-rename,
+.directory-terminal-row .terminal-copy,
 .directory-terminal-row .terminal-restart { color: var(--muted); font-size: 13px; }
+.directory-terminal-row .terminal-rename:hover,
+.directory-terminal-row .terminal-copy:hover,
 .directory-terminal-row .terminal-restart:hover,
+.directory-terminal-row .terminal-rename:focus-visible,
+.directory-terminal-row .terminal-copy:focus-visible,
 .directory-terminal-row .terminal-restart:focus-visible { color: var(--text); border-color: var(--line); background: var(--panel-soft); }
 .directory-terminal-empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
 /* 「＋ 新终端」不再自己长一层选择 UI：它开的是 chat 那个配置对话框
@@ -1822,6 +1839,11 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .admin-stat { padding: 8px 10px; }
   .directory-stat { padding: 9px 10px; }
   .directory-stat strong { font-size: 17px; }
+  /* 一行终端现在挂着四颗动作钮（重命名 / 复制 id / 重启 / 删除）：按 `.task-delete`
+     的默认尺寸（34px + 4px 外边距）四颗就吃掉 168px，360px 的手机上名字先被挤没。
+     所以窄屏这里各收一档 —— 触达面积仍有 28px，没有小到点不准。 */
+  .directory-terminal-row .task-delete { min-width: 28px; min-height: 28px; margin: 2px; padding: 3px 4px; }
+  .directory-terminal-open { gap: 7px; padding: 9px 8px; }
   .quick-task-actions > label:last-of-type { order: 3; }
   .admin-tool-grid, .air-settings-grid { grid-template-columns: 1fr; }
   .air-docs-meta { align-items: flex-start; flex-direction: column; }

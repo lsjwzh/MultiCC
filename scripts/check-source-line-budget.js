@@ -256,9 +256,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 2026-09-26 会话交接包上界面（public/chat-handoff.js 的导出/导入弹窗 + 分享
   // 卡片里那两个入口按钮）：handoff* 共 27 键，中英各 27 行 = +54，重跑生成器实测
   // 7018 行 / 437112 字节。
+  // 同日目录里的终端行加状态点、提示行、「多久没动」与重命名 / 复制 id：airTerminal*
+  // 共 13 键，中英各 13 行 = +26，重跑生成器实测 7044 行 / 438951 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7018,
-    maxBytes: 437112,
+    maxLines: 7044,
+    maxBytes: 438951,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

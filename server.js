@@ -2565,6 +2565,9 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
 require('./src/workspace/air-routes').mountAirRoutes(app, {
   admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
   records: persistedSessions,
+  // 运行时那张表（不是落盘的那张）：终端行要说准「进程还在不在、多久没动」，只有它
+  // 知道。按引用传，所以每轮快照读到的都是当下的事实。
+  sessions,
   directories,
   shell: taskShellHost,
   getBoard: () => taskBoardRuntime.getBoard(),

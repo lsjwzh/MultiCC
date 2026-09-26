@@ -572,3 +572,49 @@ test('a task pinned at creation keeps its sub-agent route in the runtime', async
   await assert.rejects(f.runtime.createStandalone({ dirId: 'd1', title: 'Routed', clientMsgId: 'route-1',
     cli: 'claude', subagent: { providerId: 'relay-a', model: 'glm-5.2' } }), { code: 'idempotency_conflict' });
 });
+
+test('Air folds terminal liveness on the server so a row cannot report a dead pane as alive', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  const records = new Map([
+    // 有运行时会话（tmux 活着）的普通终端：直连登录，没有托管 provider。
+    ['live', { id: 'live', dirId: 'd1', kind: 'terminal', cli: 'claude', createdAt: '2026-09-20T08:00:00.000Z' }],
+    // 没有运行时会话：进程退了，或服务重启后没被恢复。
+    ['gone', { id: 'gone', dirId: 'd1', kind: 'terminal', cli: 'codex', label: 'Build box' }],
+    // 绑了托管 provider 却没有能力令牌：进程可能还在，但它烤死的 base URL 带着明文 id，
+    // 每个请求都会 409。这一条必须压过「进程还在」—— 唯一修法是重启，不是重新 attach。
+    ['broken', { id: 'broken', dirId: 'd1', kind: 'terminal', cli: 'claude', provider: 'relay-a' }],
+    // 同样绑了托管 provider，但令牌还在：路由有效，按进程在不在报。
+    ['routed', { id: 'routed', dirId: 'd1', kind: 'terminal', cli: 'claude', provider: 'relay-a', proxyRouteToken: 'tok' }],
+    // createdAt 缺失的老记录不能把 NaN 塞进快照。
+    ['undated', { id: 'undated', dirId: 'd1', kind: 'terminal', cli: 'claude' }],
+    ['chat', { id: 'chat', dirId: 'd1', kind: 'chat', cli: 'claude' }],
+  ]);
+  const sessions = new Map([
+    ['live', { id: 'live', lastActivity: new Date(1_800_000_000_000), cwd: '/repo' }],
+    ['broken', { id: 'broken', lastActivity: new Date(1_800_000_000_000), cwd: '/repo' }],
+  ]);
+  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records, sessions, directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'], shell: { taskAccess: () => ({}) } });
+  const res = airResponse();
+  await handlers.get('/api/air')({}, res);
+  const rows = Object.fromEntries(JSON.parse(res.body).sessions.map(row => [row.id, row]));
+
+  assert.deepEqual(Object.keys(rows).sort(), ['broken', 'gone', 'live', 'routed', 'undated'],
+    'chat sessions never become terminal rows');
+  assert.equal(rows.live.state, 'running');
+  assert.equal(rows.live.lastActivityAt, 1_800_000_000_000);
+  assert.equal(rows.live.createdAt, Date.parse('2026-09-20T08:00:00.000Z'));
+  assert.equal(rows.live.label, 'live', 'an unlabelled terminal still falls back to its id');
+
+  assert.equal(rows.gone.state, 'stopped');
+  assert.equal(rows.gone.label, 'Build box');
+  // 停了的终端没有「最后一次输出」这个时刻。给 null 而不是一个旧时间戳，客户端才不会
+  // 把一条死进程渲染成「刚刚」。createdAt 缺失同样是 null，不是 NaN。
+  assert.equal(rows.gone.lastActivityAt, null);
+  assert.equal(rows.undated.createdAt, null);
+
+  assert.equal(rows.broken.state, 'route_dead', 'a lost route token outranks a live process');
+  assert.equal(rows.routed.state, 'stopped', 'an intact route still reports the process, not the token');
+});
