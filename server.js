@@ -1001,7 +1001,7 @@ const {
 } = gatewayHost;
 
 // ── Session management ──
-// { id, tmuxName, ttyPath, outputStream, fifoPath, buffer: string[], clients: Set<ws>, createdAt, lastActivity, cwd, exitCheckTimer }
+// { id, tmuxName, ttyPath, outputStream, fifoPath, clients: Set<ws>, createdAt, lastActivity, cwd, exitCheckTimer }
 const sessions = new Map();
 
 // Publish the three core Maps to the shared state registry (same references).
@@ -1128,13 +1128,6 @@ async function createSession(id) {
   // Start output capture via pipe-pane → FIFO
   const { stream, fifoPath } = await startOutputCapture(id);
 
-  // Pre-fill buffer with current terminal content for recovered sessions
-  const initialBuffer = [];
-  if (isRecovery) {
-    const captured = await tmuxCapturePane(id);
-    if (captured) initialBuffer.push(captured);
-  }
-
   const session = {
     id,
     cli: provider.name,
@@ -1144,7 +1137,6 @@ async function createSession(id) {
     ttyPath,
     outputStream: stream,
     fifoPath,
-    buffer: initialBuffer,
     clients: new Set(),
     primaryClient: null,
     // Tmux pane size = max(cols) × max(rows) across all attached clients.
@@ -1185,8 +1177,6 @@ async function createSession(id) {
   stream.on('data', (data) => {
     const str = utf8Decoder.write(data);
     if (!str) return; // partial UTF-8 character buffered, wait for more bytes
-    session.buffer.push(str);
-    if (session.buffer.length > 500) session.buffer.shift();
     session.lastActivity = new Date();
     broadcastTo(session.clients, { type: 'output', data: str });
     // Server-side push notification detection
@@ -1227,8 +1217,6 @@ async function createSession(id) {
           newStream.on('data', (data) => {
             const str = newDecoder.write(data);
             if (!str) return;
-            session.buffer.push(str);
-            if (session.buffer.length > 500) session.buffer.shift();
             session.lastActivity = new Date();
             broadcastTo(session.clients, { type: 'output', data: str });
             pushOnOutput(id, str);
@@ -2799,6 +2787,7 @@ mountWsConnectionRouter(wss, {
   resolveCwd,
   tmuxWriteInput,
   tmuxResize,
+  tmuxCapturePane,
   applyMaxClientSize,
   pushOnInput,
   handleChatWs: (ws, req, urlObj) => chatTurnEngine.handleChatWs(ws, req, urlObj),

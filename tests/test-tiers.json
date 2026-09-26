@@ -25,6 +25,11 @@
   },
   "tests": [
     {
+      "path": "app/integration_test/keyboard_occlusion_repro_test.dart",
+      "tier": "other",
+      "lane": "device"
+    },
+    {
       "path": "app/integration_test/ui_tour_test.dart",
       "tier": "flow",
       "lane": "device"
@@ -622,6 +627,11 @@
     {
       "path": "app/test/task_separation_prompt_test.dart",
       "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/terminal_service_test.dart",
+      "tier": "core",
       "lane": "flutter"
     },
     {

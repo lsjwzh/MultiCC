@@ -33,6 +33,7 @@ function mountWsConnectionRouter(wss, deps) {
     resolveCwd,
     tmuxWriteInput,
     tmuxResize,
+    tmuxCapturePane,
     applyMaxClientSize,
     pushOnInput,
     handleChatWs,
@@ -238,14 +239,13 @@ function mountWsConnectionRouter(wss, deps) {
       }
     }
 
-    session.clients.add(ws);
     sendWs(ws, { type: 'session_id', id: sessionId, cli: session.cli || 'claude' });
 
     // The most recent input client owns resize; the pane uses the maximum
     // dimensions requested by all clients.
     let inputBuf = '';
     let firstResize = true;
-    ws.on('message', raw => {
+    const onClientMessage = raw => {
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.type === 'input') {
@@ -298,7 +298,7 @@ function mountWsConnectionRouter(wss, deps) {
       } catch (error) {
         console.error('[multicc] Bad message:', error.message, error.stack);
       }
-    });
+    };
 
     function detach() {
       session.clients.delete(ws);
@@ -306,6 +306,15 @@ function mountWsConnectionRouter(wss, deps) {
       applyMaxClientSize(session);
     }
 
+    // Attach order is deliberate: the snapshot has to be the first thing this client
+    // sees, and the client's own resize — which is what makes the TUI repaint — has to
+    // land after it. Otherwise the repaint races the snapshot and the loser is a stale
+    // or half-wiped screen. So messages arriving mid-capture are held, not handled, and
+    // close/error are wired up front so a client that leaves mid-capture is not added
+    // to the fan-out with nothing left to remove it.
+    let attached = false;
+    const heldMessages = [];
+    ws.on('message', raw => { if (attached) onClientMessage(raw); else heldMessages.push(raw); });
     ws.on('close', () => {
       detach();
       console.log(`[multicc] Client left session ${sessionId} (${session.clients.size} remaining)`);
@@ -314,6 +323,20 @@ function mountWsConnectionRouter(wss, deps) {
       console.error('[multicc] WebSocket error:', error.message);
       detach();
     });
+
+    // After a refresh, a return from background, or a network blip the terminal must
+    // not be blank: those screens are work the user cannot see otherwise. capture-pane
+    // already carries 500 lines of scrollback (src/tmux.js). An all-whitespace capture
+    // is skipped so a brand-new pane is not pushed a screenful of blank lines.
+    let snapshot = '';
+    try {
+      if (typeof tmuxCapturePane === 'function') snapshot = (await tmuxCapturePane(sessionId)) || '';
+    } catch (_) {}
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (snapshot.trim()) sendWs(ws, { type: 'snapshot', data: snapshot });
+    session.clients.add(ws);
+    attached = true;
+    for (const raw of heldMessages.splice(0)) onClientMessage(raw);
   });
 
   const wsPingInterval = setInterval(() => {
