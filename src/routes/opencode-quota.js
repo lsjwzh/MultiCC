@@ -1,38 +1,46 @@
 'use strict';
 
 // GET /api/opencode/quota — fetch the user's OpenCode Go subscription usage
-// (5h rolling / weekly / monthly limits) from the opencode.ai Zen console.
+// (5h rolling / weekly / monthly limits).
 //
-// OpenCode Go does NOT expose usage in API responses (verified: /v1/chat/
-// completions and /v1/messages both return only per-request tokens). The only
-// authoritative source is the Zen console UI at
-// https://opencode.ai/workspace/<workspaceId>/go, which is server-rendered:
-// SolidStart inlines the usage data directly into the initial HTML as a
-// hydrated JS object literal:
+// Two sources, tried in this order:
 //
-//   lite.subscription.get["<workspaceId>"] = {
-//     rollingUsage:  { status:"ok", resetInSec:..., usagePercent:... },
-//     weeklyUsage:   { status:"ok", resetInSec:..., usagePercent:... },
-//     monthlyUsage: { status:"ok", resetInSec:..., usagePercent:... },
-//     useBalance:false, region:["us","eu","sg"], ...
-//   }
+// 1. The Zen gateway API, `GET https://opencode.ai/zen/go/v1/usage`, with a
+//    subscription key read off disk (../quota/opencode-zen.js). Per-request
+//    responses carry no window data — /v1/chat/completions and /v1/messages
+//    return only per-request tokens — but this dedicated endpoint returns all
+//    three windows, and a key does not silently expire the way a browser
+//    session does.
+// 2. The Zen console UI at https://opencode.ai/workspace/<workspaceId>/go, for
+//    accounts that have no key on disk. SolidStart server-renders the usage
+//    data into the initial HTML as a hydrated JS object literal:
 //
-// So we drive a browser that holds the user's session — see ../chrome-cdp.js
-// for what reaching one requires — opening a throwaway tab at /auth
-// (auto-redirects to /workspace/<wsid>/go), reading the SSR HTML, regexing out
-// the three usage triplets, and closing the tab again. We do NOT call any
-// client-side REST API because there is none. Unlike the qoder route, there is
-// no cookie shortcut here: the numbers exist only in the rendered page.
+//      lite.subscription.get["<workspaceId>"] = {
+//        rollingUsage:  { status:"ok", resetInSec:..., usagePercent:... },
+//        weeklyUsage:   { status:"ok", resetInSec:..., usagePercent:... },
+//        monthlyUsage: { status:"ok", resetInSec:..., usagePercent:... },
+//        useBalance:false, region:["us","eu","sg"], ...
+//      }
+//
+//    So we drive a browser that holds the user's session — see ../chrome-cdp.js
+//    for what reaching one requires — opening a throwaway tab at /auth
+//    (auto-redirects to /workspace/<wsid>/go), reading the SSR HTML, regexing
+//    out the three usage triplets, and closing the tab again. We do NOT call any
+//    client-side REST API from that page because there is none: on the console
+//    path the numbers exist only in the rendered markup. Unlike the qoder route,
+//    there is no cookie shortcut here either.
 //
 // Failure modes we surface to the frontend so the rate-limit bar can prompt
 // the user instead of silently degrading:
-//   chrome_unavailable — no browser we can reach over CDP
+//   no_auth           — a Zen key was found but the gateway rejected it
+//   chrome_unavailable — no browser we can reach over CDP (fallback path only)
 //   needs_login       — page redirected to the /authorize login screen
 //                        (no session in that browser)
 //   unavailable       — any other error / parse timeout
 
 const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome-cdp');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
+const { fetchZenGoUsage } = require('../quota/opencode-zen');
 const { renderQuotaBar } = require('../quota/quota-bar-view');
 
 const CDP_TIMEOUT_MS = Number(process.env.OPENCODE_QUOTA_TIMEOUT_MS || 10000);
@@ -168,7 +176,7 @@ async function readUsageFromPage(page) {
   };
 }
 
-async function fetchOpenCodeUsage() {
+async function fetchUsageFromBrowsers() {
   const managed = getManagedQuotaBrowser();
   const sources = [
     {
@@ -211,6 +219,24 @@ async function fetchOpenCodeUsage() {
   return lastUnavailable || { status: 'unavailable', error: '所有浏览器来源都未能取得用量' };
 }
 
+async function fetchOpenCodeUsage() {
+  // The subscription key on disk is the cheap, non-expiring source: one
+  // authenticated GET versus a 10s browser drive against a cookie that dies on
+  // the server weeks before it dies in the profile. It returns null only when
+  // OpenCode has no official subscription configured at all.
+  const viaApi = await fetchZenGoUsage();
+  if (viaApi && viaApi.status === 'ok') return viaApi;
+
+  const viaBrowser = await fetchUsageFromBrowsers();
+  if (viaBrowser.status === 'ok') return viaBrowser;
+  // Both sources failed. The browser's needs_login / chrome_unavailable carry a
+  // working "open login window" action, so they win over a bare key rejection —
+  // a stale key on disk must not trap the bar in a state the user cannot click
+  // out of. With no key at all, viaApi is null and the browser diagnosis stands.
+  if (viaBrowser.status === 'needs_login' || viaBrowser.status === 'chrome_unavailable') return viaBrowser;
+  return viaApi || viaBrowser;
+}
+
 function mountOpenCodeQuotaRoutes(app) {
   if (!app || typeof app.get !== 'function') return;
   app.get('/api/opencode/quota', async (req, res) => {
@@ -218,7 +244,7 @@ function mountOpenCodeQuotaRoutes(app) {
       const result = await fetchOpenCodeUsage();
       const status = (result && result.status) || 'unavailable';
       const httpStatus = status === 'ok' ? 200
-        : (status === 'needs_login' ? 401
+        : (status === 'needs_login' || status === 'no_auth' ? 401
           : (status === 'chrome_unavailable' ? 503 : 500));
       // The bar is rendered here, once, so the web and the app display the same
       // string rather than each formatting this JSON their own way.
