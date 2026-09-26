@@ -615,6 +615,16 @@
     el('admin-content').replaceChildren(panel);
   }
 
+  // ── 服务与文档：排列方式（按时间 / 按目录）────────────────────────────
+  // 两个视图吃的是同一份服务端列表：永久保留 → 置顶 → 最新。切换只重画 DOM，
+  // 不重新拉数据 —— 顺序是服务端的事，这里只决定「平铺」还是「按目录分组」。
+  // 选择存在本机，写法同 air.js 的 air:task-sort（读取失败一律退回按时间）。
+  const DOCS_SCOPE_KEY = 'air:docs-scope';
+  let docsScope = 'time';
+  try { if (localStorage.getItem(DOCS_SCOPE_KEY) === 'dir') docsScope = 'dir'; } catch (_) {}
+  // 最近一次拉到的条目：两个视图都从这里画，切换视图时才有东西可画。
+  let docsEntries = [];
+
   function isLoopback(hostname) {
     return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(String(hostname || '').toLowerCase());
   }
@@ -644,6 +654,17 @@
     } catch (error) { currentContext.notice(error.message); }
   }
 
+  // 永久保留与置顶是两件互不相关的事：置顶只改排序，永久保留才是「永不被回收」
+  // 那句承诺（7 天清理与登记表淘汰都只看它）。所以两颗按钮、两次独立 PATCH，
+  // 谁都不顺带改另一个。
+  async function togglePermanent(entry) {
+    try {
+      await currentContext.api(`/api/docs-registry/${encodeURIComponent(entry.id)}`, { permanent: !entry.permanent }, 'PATCH');
+      currentContext.notice(t(entry.permanent ? 'docsregPermanentOff' : 'docsregPermanentOn'));
+      await loadDocs();
+    } catch (error) { currentContext.notice(error.message); }
+  }
+
   async function removeEntry(entry) {
     if (!confirm(t('airAdminConfirmDeleteEntry', { name: entry.title }))) return;
     try {
@@ -663,6 +684,7 @@
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
     titleRow.append(link);
+    if (entry.permanent) titleRow.append(make('span', `🔒 ${t('artifactKeepForever')}`, 'air-doc-tag permanent'));
     if (entry.pinned) titleRow.append(make('span', t('airAdminPinned'), 'air-doc-tag pin'));
     if (entry.expired) titleRow.append(make('span', t('airAdminExpired'), 'air-doc-tag expired'));
     const status = entry.kind === 'service' ? `${entry.status === 'up' ? t('airAdminStatusUp') : entry.status === 'starting' ? t('airAdminStatusStarting') : entry.status === 'down' ? t('airAdminStatusDown') : t('airAdminStatusUnknown')} · ` : '';
@@ -680,9 +702,89 @@
         actions.append(start);
       }
     }
-    actions.append(action(entry.pinned ? t('airAdminUnpin') : t('airAdminPinned'), () => togglePin(entry), 'subtle'), action(t('airAdminDelete'), () => removeEntry(entry), 'danger'));
+    actions.append(
+      action(`${entry.permanent ? '🔒 ' : ''}${t(entry.permanent ? 'artifactKeepForeverOff' : 'artifactKeepForever')}`, () => togglePermanent(entry), 'subtle'),
+      action(entry.pinned ? t('airAdminUnpin') : t('airAdminPinned'), () => togglePin(entry), 'subtle'),
+      action(t('airAdminDelete'), () => removeEntry(entry), 'danger'),
+    );
     card.append(icon, copy, actions);
     return card;
+  }
+
+  function renderDocGroup(group) {
+    const section = make('section', null, 'air-doc-group');
+    const head = make('div', null, 'air-doc-group-head');
+    head.append(make('strong', group.name));
+    // 绝对路径是次要信息：目录名重名时（同名项目放在不同父目录下）靠它分辨。
+    if (group.path) head.append(make('small', group.path));
+    section.append(head, ...group.entries.map(renderDocEntry));
+    return section;
+  }
+
+  // 按目录分组：组顺序 = 条目在服务端响应里**第一次出现**的顺序，组内也保持服务端
+  // 顺序。所以永久保留那条所在的组天然在最前面（置顶同理），而不是按目录名的字母序
+  // ——字母序会把「置顶的那条所在的目录」排到一个跟它毫无关系的位置去。
+  // dir 为 null 的条目（旧登记、没有工作目录归属）单独成一组，永远排最后。
+  function docsDirGroups() {
+    const groups = new Map();
+    for (const entry of docsEntries) {
+      const key = entry.dir || '';
+      let group = groups.get(key);
+      if (!group) {
+        group = { key, name: entry.dir ? (entry.dirName || entry.dir) : t('docsNoDir'), path: entry.dir || '', entries: [] };
+        groups.set(key, group);
+      }
+      group.entries.push(entry);
+    }
+    const ordered = [...groups.values()].filter(group => group.key);
+    const unassigned = groups.get('');
+    if (unassigned) ordered.push(unassigned);
+    return ordered;
+  }
+
+  // 只重画列表，不重新拉数据（排列方式不属于服务端那一层的选择）。
+  function paintDocs() {
+    const list = el('air-doc-list');
+    if (!list) return;
+    list.replaceChildren(...(docsScope === 'dir' ? docsDirGroups().map(renderDocGroup) : docsEntries.map(renderDocEntry)));
+    if (!docsEntries.length) list.append(make('p', t('airAdminNoDocs'), 'admin-empty'));
+  }
+
+  function setDocsScope(scope) {
+    const next = scope === 'dir' ? 'dir' : 'time';
+    if (next === docsScope) return;
+    docsScope = next;
+    try { localStorage.setItem(DOCS_SCOPE_KEY, next); } catch (_) {}
+    const switchEl = el('air-docs-scope');
+    if (switchEl) {
+      for (const button of switchEl.querySelectorAll('button[data-scope]')) {
+        button.setAttribute('aria-selected', String(button.dataset.scope === docsScope));
+      }
+    }
+    paintDocs();
+  }
+
+  // 形状抄目录首页那道 Chat / Terminal 切换（#directory-mode，air.html）：role=tablist
+  // + button role=tab + aria-selected。不共用那个类，免得改一处动两页。
+  function docsScopeSwitch() {
+    const wrap = make('div', null, 'air-docs-scope');
+    wrap.id = 'air-docs-scope';
+    wrap.setAttribute('role', 'tablist');
+    wrap.setAttribute('data-i18n-aria-label', 'docsScopeLabel');
+    wrap.setAttribute('aria-label', t('docsScopeLabel'));
+    // 文案与 key 同时写：data-i18n 让 applyI18n() 在切语言时能重取，t() 让这一屏
+    // 一画出来就是对的（面板不经过整页重绘）。
+    for (const [scope, key] of [['time', 'docsScopeTime'], ['dir', 'docsScopeDir']]) {
+      const button = make('button', t(key));
+      button.type = 'button';
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', String(docsScope === scope));
+      button.setAttribute('data-i18n', key);
+      button.dataset.scope = scope;
+      button.onclick = () => setDocsScope(scope);
+      wrap.append(button);
+    }
+    return wrap;
   }
 
   async function loadDocs() {
@@ -691,13 +793,13 @@
     list.replaceChildren(make('p', t('airAdminLoadingDocs'), 'admin-empty'));
     try {
       const entries = await currentContext.api('/api/docs-registry');
+      docsEntries = Array.isArray(entries) ? entries : [];
       const summary = el('air-doc-summary');
       if (summary) {
-        const services = entries.filter(entry => entry.kind === 'service');
-        summary.textContent = t('airAdminDocsSummary', { total: entries.length, up: services.filter(entry => entry.status === 'up').length, services: services.length });
+        const services = docsEntries.filter(entry => entry.kind === 'service');
+        summary.textContent = t('airAdminDocsSummary', { total: docsEntries.length, up: services.filter(entry => entry.status === 'up').length, services: services.length });
       }
-      list.replaceChildren(...entries.map(renderDocEntry));
-      if (!entries.length) list.append(make('p', t('airAdminNoDocs'), 'admin-empty'));
+      paintDocs();
     } catch (error) {
       list.replaceChildren(make('p', t('airAdminLoadFailed', { message: error.message }), 'admin-empty error'));
     }
@@ -714,7 +816,7 @@
     top.lastChild.id = 'air-doc-summary';
     const list = make('div', null, 'air-doc-list');
     list.id = 'air-doc-list';
-    wrap.append(top, list);
+    wrap.append(top, docsScopeSwitch(), list);
     el('admin-content').replaceChildren(wrap);
     void loadDocs();
   }

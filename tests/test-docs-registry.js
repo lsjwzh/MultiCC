@@ -28,14 +28,14 @@ function fakeApp() {
   };
 }
 
-function invoke(handler, { body, params } = {}) {
+function invoke(handler, { body, params, query } = {}) {
   const res = {
     statusCode: 200,
     body: undefined,
     status(c) { this.statusCode = c; return this; },
     json(v) { this.body = v; return this; },
   };
-  handler({ body: body || {}, params: params || {} }, res);
+  handler({ body: body || {}, params: params || {}, query: query || {} }, res);
   return res;
 }
 
@@ -63,28 +63,103 @@ test('validation rejects bad urls and empty titles', () => {
   assert.equal(ok.created, true);
 });
 
-test('pinned artifact-backed entries feed the artifact cleanup pin list', () => {
+test('only `permanent` feeds the artifact cleanup keep-list; 置顶 alone does not', () => {
   reset();
-  reg.register({ kind: 'file', title: 'd.csv', url: '/artifacts/xyz789/data.csv?download=1', pinned: true });
+  reg.register({ kind: 'file', title: 'd.csv', url: '/artifacts/xyz789/data.csv?download=1', permanent: true, pinned: true });
   reg.register({ kind: 'page', title: 'p', url: '/artifacts/unpinned1/index.html' });
-  reg.register({ kind: 'service', title: 'vite', url: 'http://127.0.0.1:5173/', pinned: true });
-  assert.deepEqual(reg.listPinnedArtifactIds(), ['xyz789']);
+  reg.register({ kind: 'page', title: 'pin only', url: '/artifacts/pinonly1/index.html', pinned: true });
+  reg.register({ kind: 'service', title: 'vite', url: 'http://127.0.0.1:5173/', permanent: true });
+  assert.deepEqual(reg.listPermanentArtifactIds(), ['xyz789']);
 });
 
-test('a full registry evicts the oldest unpinned row instead of failing a publish', () => {
+test('a full registry evicts the oldest row that was not promised forever', () => {
   const filler = [];
-  for (let i = 0; i < 498; i++) filler.push({ id: 'f' + i, kind: 'page', title: 'f' + i, url: '/u/' + i, createdAt: '2020-01-03T00:00:00Z' });
+  for (let i = 0; i < 497; i++) filler.push({ id: 'f' + i, kind: 'page', title: 'f' + i, url: '/u/' + i, createdAt: '2020-01-03T00:00:00Z' });
   reg._resetForTests([
-    { id: 'pin1', kind: 'page', title: 'pinned', url: '/artifacts/p1/index.html', pinned: true, createdAt: '2020-01-01T00:00:00Z' },
-    { id: 'old1', kind: 'page', title: 'old', url: '/artifacts/o1/index.html', createdAt: '2020-01-02T00:00:00Z' },
+    { id: 'perm1', kind: 'page', title: 'permanent', url: '/artifacts/p1/index.html', permanent: true, createdAt: '2020-01-01T00:00:00Z' },
+    { id: 'pin1', kind: 'page', title: 'pinned', url: '/artifacts/pin1/index.html', pinned: true, createdAt: '2020-01-02T00:00:00Z' },
+    { id: 'old1', kind: 'page', title: 'old', url: '/artifacts/o1/index.html', createdAt: '2020-01-04T00:00:00Z' },
     ...filler,
   ]);
   const r = reg.register({ kind: 'page', title: 'new', url: '/artifacts/new1/index.html' });
   assert.equal(r.created, true);
   const all = reg._entriesForTests();
   assert.equal(all.length, 500);
-  assert.equal(all.some(e => e.id === 'pin1'), true, 'pinned row survives eviction');
-  assert.equal(all.some(e => e.id === 'old1'), false, 'oldest unpinned row evicted');
+  assert.equal(all.some(e => e.id === 'perm1'), true, 'permanent row survives eviction');
+  assert.equal(all.some(e => e.id === 'pin1'), false, 'a pin-only row is still evictable');
+  assert.equal(all.some(e => e.id === 'old1'), true, 'newer non-permanent rows are untouched');
+  reset();
+});
+
+test('rows pinned before `permanent` existed are upgraded instead of losing their exemption', () => {
+  fs.writeFileSync(path.join(tmp, 'docs_registry.json'), JSON.stringify([
+    { id: 'legacy', kind: 'page', title: 'legacy', url: '/artifacts/legacy1/index.html', pinned: true, createdAt: '2020-01-01T00:00:00Z' },
+    { id: 'plain', kind: 'page', title: 'plain', url: '/artifacts/plain1/index.html', createdAt: '2020-01-01T00:00:00Z' },
+  ]));
+  reg._loadForTests();
+  assert.deepEqual(reg.listPermanentArtifactIds(), ['legacy1']);
+  const onDisk = JSON.parse(fs.readFileSync(path.join(tmp, 'docs_registry.json'), 'utf8'));
+  assert.equal(onDisk[0].permanent, true, 'the upgrade is persisted');
+  assert.equal(onDisk[1].permanent, undefined, 'untouched rows stay untouched');
+  assert.equal(onDisk[0].pinned, true, '置顶 is kept as its own flag');
+  reset();
+});
+
+test('permanent sorts above 置顶 and both above the rest, each group newest-first', () => {
+  reset();
+  reg._resetForTests([
+    { id: 'a', kind: 'page', title: 'a', url: '/a', createdAt: '2026-01-03T00:00:00Z' },
+    { id: 'b', kind: 'page', title: 'b', url: '/b', pinned: true, createdAt: '2026-01-02T00:00:00Z' },
+    { id: 'c', kind: 'page', title: 'c', url: '/c', permanent: true, createdAt: '2020-01-01T00:00:00Z' },
+    { id: 'd', kind: 'page', title: 'd', url: '/d', permanent: true, pinned: true, createdAt: '2020-01-02T00:00:00Z' },
+    { id: 'e', kind: 'page', title: 'e', url: '/e', createdAt: '2026-01-01T00:00:00Z' },
+  ]);
+  const app = fakeApp();
+  reg.mount(app, { artifactExists: () => true });
+  const list = invoke(app.handlers.find(h => h.method === 'GET').h).body;
+  assert.deepEqual(list.map(x => x.id), ['d', 'c', 'b', 'a', 'e']);
+  reset();
+});
+
+test('directory grouping normalizes task worktrees and ?dir= scopes the list', () => {
+  reset();
+  const app = fakeApp();
+  const root = path.join(tmp, 'project');
+  reg.mount(app, {
+    artifactExists: () => true,
+    resolveDir: id => (id === 'exec-a' ? path.join(tmp, 'project2') : null),
+  });
+  const get = app.handlers.find(h => h.method === 'GET').h;
+  const post = app.handlers.find(h => h.method === 'POST').h;
+  const worktree = path.join(root, '.multicc-worktrees', 'task-abc12345');
+  invoke(post, { body: { kind: 'page', title: 'wt', url: '/artifacts/w1/index.html', cwd: worktree } });
+  invoke(post, { body: { kind: 'page', title: 'sess', url: '/artifacts/s1/index.html', sessionId: 'exec-a' } });
+  invoke(post, { body: { kind: 'page', title: 'other', url: '/artifacts/o1/index.html', cwd: path.join(tmp, 'elsewhere') } });
+
+  const all = invoke(get).body;
+  const wt = all.find(e => e.title === 'wt');
+  assert.equal(wt.dir, root, 'a worktree publication belongs to its project');
+  assert.equal(wt.dirName, 'project');
+  assert.equal(all.find(e => e.title === 'sess').dir, path.join(tmp, 'project2'), 'no cwd → the session directory');
+  assert.equal(all.find(e => e.title === 'other').dir, path.join(tmp, 'elsewhere'));
+  assert.equal(all.find(e => e.title === 'other').dirName, 'elsewhere');
+
+  assert.deepEqual(invoke(get, { query: { dir: root } }).body.map(e => e.title), ['wt']);
+  assert.deepEqual(invoke(get, { query: { dir: worktree } }).body.map(e => e.title), ['wt'], 'a worktree path scopes to its project');
+  assert.deepEqual(invoke(get, { query: { dir: path.join(tmp, 'project2') } }).body.map(e => e.title), ['sess']);
+  assert.deepEqual(invoke(get, { query: { dir: path.join(tmp, 'nope') } }).body, []);
+  assert.deepEqual(invoke(get, { query: { dir: 'relative/path' } }).body, [],
+    'an unscopable ?dir= answers [] instead of the whole registry');
+  assert.equal(invoke(get).body.length, 3, 'no ?dir= lists everything');
+  reset();
+});
+
+test('a relative or over-long working directory is refused, never stored', () => {
+  reset();
+  const r = reg.register({ kind: 'page', title: 'x', url: '/artifacts/r1/index.html', cwd: 'relative/path' });
+  assert.equal(r.entry.dir, undefined);
+  const r2 = reg.register({ kind: 'page', title: 'y', url: '/artifacts/r2/index.html', dir: 'nope' });
+  assert.equal(r2.entry.dir, undefined);
   reset();
 });
 

@@ -286,9 +286,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 2026-09-26 又加键：rebase 三键 + 目录概览五卡（airStatRunning/Waiting/Error、
   // airDirStatClickFilter、airStatusRunning、airAdminActiveDetail）等，重跑生成器实测
   // 7154 行 / 445972 字节。
+  // 2026-09-26 产物按目录分类 + 永久保留：docsScope*/docsNoDir/artifactKeepForever*
+  // /docsregPermanent*/airDirArtifacts* 共 12 键，中英各 12 行 = +24，重跑生成器实测
+  // 7178 行 / 447138 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7154,
-    maxBytes: 445972,
+    maxLines: 7178,
+    maxBytes: 447138,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

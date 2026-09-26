@@ -4,6 +4,7 @@ import '../i18n.dart';
 import '../models/message.dart';
 import '../services/workspace_service.dart';
 import '../theme.dart';
+import '../screens/directory_artifacts_screen.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
 import 'git_status_row.dart';
@@ -412,6 +413,36 @@ class DirectoryCard extends StatelessWidget {
                                   ),
                                 GitStatusRow(pushState: view.pushState),
                               ],
+                            ),
+                          ),
+                          // 本目录产物：和备忘不同，这颗按钮自己 push 路由，
+                          // 不走 DirectoryCardCallbacks —— 每加一个回调都要在
+                          // main_shell.dart 里写一行接线，而那个文件顶在源码行
+                          // 长闸的天花板上（3167/122298，加一行就红）。这里只
+                          // 需要 view 上的 id/name/path，Navigator 就地可取，
+                          // 所以把行长留给产品本身。唯一的生产构造点就是
+                          // main_shell 的目录卡，不会推出重复或悬空的路由。
+                          IconButton(
+                            key: ValueKey('directory-card-artifacts-${view.id}'),
+                            icon: const Icon(
+                              Icons.inventory_2_outlined,
+                              size: 19,
+                              color: AppColors.muted,
+                            ),
+                            tooltip: t('airDirArtifactsOpen'),
+                            onPressed: () => Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => DirectoryArtifactsScreen(
+                                  dirId: view.id,
+                                  dirName: view.name,
+                                  dirPath: view.path,
+                                ),
+                              ),
+                            ),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 44,
+                              minHeight: 44,
                             ),
                           ),
                           IconButton(

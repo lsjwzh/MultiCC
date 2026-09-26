@@ -98,3 +98,72 @@ test('regional tunnel onboarding is native and self-contained in Air', () => {
   assert.match(css, /\.air-tunnel-route-grid \{ display: grid; grid-template-columns: repeat\(2/);
   assert.match(css, /\.air-tunnel-compat-grid/);
 });
+
+// 产物面板与「服务与文档」那一格的两件新东西：排列方式（按时间 / 按目录）与
+// 永久保留。两件是独立的 —— 置顶只改排序，永久保留才是「永不被回收」那句承诺
+// （7 天清理与登记表淘汰都只看它，见 src/docs-registry.js 的 rank/listPermanentArtifactIds）。
+test('the docs panel switches 按时间 / 按目录 and toggles 永久保留 independently of 置顶', () => {
+  const admin = read('public/air-admin.js');
+  const css = read('public/air.css');
+  // 两个视图的选择存本机，读取失败退回按时间（同 air.js 的 air:task-sort）。
+  assert.match(admin, /const DOCS_SCOPE_KEY = 'air:docs-scope'/);
+  assert.match(admin, /let docsScope = 'time'/);
+  assertLocalized(admin, 'public/air-admin.js', 'docsScopeTime', '按时间', "\\['time', 'docsScopeTime'\\]");
+  assertLocalized(admin, 'public/air-admin.js', 'docsScopeDir', '按目录', "\\['dir', 'docsScopeDir'\\]");
+  assertLocalized(admin, 'public/air-admin.js', 'docsScopeLabel', '排列方式', "setAttribute\\('data-i18n-aria-label', 'docsScopeLabel'\\)");
+  // 按目录视图按 entry.dir 分组，dir 为 null 的归到「未归属目录」且排最后。
+  assert.match(admin, /function docsDirGroups\(\)/);
+  assertLocalized(admin, 'public/air-admin.js', 'docsNoDir', '未归属目录');
+  assert.match(admin, /const ordered = \[\.\.\.groups\.values\(\)\]\.filter\(group => group\.key\)/);
+  // 永久保留是独立的一次 PATCH，只带 permanent，不带 pinned。
+  // 两颗文案按当前状态二选一（同一处写死两个 key，同 airLidSleepOn/Off 那种写法）。
+  const keepForeverRef = "'artifactKeepForeverOff' : 'artifactKeepForever'";
+  assertLocalized(admin, 'public/air-admin.js', 'artifactKeepForever', '永久保留', keepForeverRef);
+  assertLocalized(admin, 'public/air-admin.js', 'artifactKeepForeverOff', '取消永久保留', keepForeverRef);
+  assert.match(admin, /function togglePermanent\(entry\)/);
+  assert.match(admin, /\{ permanent: !entry\.permanent \}, 'PATCH'\)/);
+  // 置顶那条不能被顺带改成 permanent（两件事分开是这次改动的全部要点）。
+  assert.match(admin, /\{ pinned: !entry\.pinned \}, 'PATCH'\)/);
+  assert.doesNotMatch(admin, /permanent: !entry\.permanent, pinned|pinned: !entry\.pinned, permanent/);
+  // 状态标记与切换控件各有自己的样式。
+  assert.match(css, /\.air-doc-tag\.permanent \{/);
+  assert.match(css, /\.air-docs-scope button\[aria-selected="true"\]/);
+  assert.match(css, /\.air-doc-group-head \{/);
+});
+
+// 目录首页那一格走独立模块（public/air-artifacts.js）：air.js 卡在行数棘轮的天花板上
+// （scripts/check-source-line-budget.js 登记的高水位就是它当前的行数），一行也加不了，
+// 所以入口按钮、面板与数据都由模块自己接线，可见性靠盯 #directory-memo.hidden 对齐。
+test('the directory home artifact panel is a self-wiring module that never touches air.js', () => {
+  const html = read('public/air.html');
+  const js = read('public/air.js');
+  const artifacts = read('public/air-artifacts.js');
+  assert.match(html, /src="air-artifacts\.js"/);
+  assert.ok(html.indexOf('src="air-artifacts.js"') < html.indexOf('src="air.js"'), '模块要先于 air.js 注册');
+  // 入口按钮的形状：id / aria / 图标 + 内层标签（data-i18n 挂内层，applyI18n 才不会
+  // 把图标一起冲掉 —— 同 #directory-terminal-new）。
+  assert.match(artifacts, /toggle\.id = 'directory-artifacts'/);
+  assert.match(artifacts, /toggle\.setAttribute\('aria-controls', 'directory-artifacts-panel'\)/);
+  assert.match(artifacts, /node\('span', '📦'\)/);
+  assert.match(artifacts, /label\.setAttribute\('data-i18n', 'airDirArtifacts'\)/);
+  assert.match(artifacts, /memo\.after\(toggle\)/);
+  // 可见性：盯 #directory-memo 的 hidden，并顺带盯 #directory-name（air.js 换目录
+  // 走 pushState，不触发 popstate，但每次渲染都会重写侧栏目录名）。
+  assert.match(artifacts, /observer\.observe\(memo, \{ attributes: true, attributeFilter: \['hidden'\] \}\)/);
+  assert.match(artifacts, /observer\.observe\(name, \{ childList: true, characterData: true, subtree: true \}\)/);
+  // 数据：URL 里的目录 id → /api/air 里的绝对路径 → ?dir= 作用域的登记表。
+  assert.match(artifacts, /new URLSearchParams\(root\.location\.search\)\.get\('dir'\)/);
+  assert.match(artifacts, /fetchJson\('\/api\/air'/);
+  assert.match(artifacts, /\/api\/docs-registry\?dir=\$\{encodeURIComponent\(path\)\}/);
+  // 服务不在这格里（服务与文档那一格管），只留一扇到那里的门。
+  assert.match(artifacts, /entry\.kind !== 'service'/);
+  assert.match(artifacts, /manage\.href = '\/manage\?view=docs'/);
+  assertLocalized(artifacts, 'public/air-artifacts.js', 'taskArtifactsManage', '全部服务与文档 ↗');
+  assertLocalized(artifacts, 'public/air-artifacts.js', 'airDirArtifactsEmpty', '本目录还没有产物。');
+  assertLocalized(artifacts, 'public/air-artifacts.js', 'airDirArtifactsHint', '永久保留的排最上，其次是置顶，其余按最后生成时间');
+  // 两颗按钮各发各的 PATCH，与面板那一格同义。
+  assert.match(artifacts, /\{ permanent: !entry\.permanent \}/);
+  assert.match(artifacts, /\{ pinned: !entry\.pinned \}/);
+  // 设计决定：air.js 里没有这个入口，一个字节都没动。
+  assert.doesNotMatch(js, /directory-artifacts/);
+});

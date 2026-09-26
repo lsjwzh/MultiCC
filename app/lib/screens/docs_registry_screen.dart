@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n.dart';
@@ -34,6 +35,37 @@ String rewriteLoopbackUrl(String rawUrl, String currentHost) {
   return uri.replace(host: host).toString();
 }
 
+/// 打开一个登记条目，返回是否成功交给系统浏览器。相对路径（/docs/…、
+/// /artifacts/…）拼到当前服务器 origin 并附 token（同源凭据安全）；绝对
+/// http(s) URL 打开前做 loopback host 改写，绝不附带 token，避免把服务器凭据
+/// 泄露给第三方 host。
+///
+/// 服务与文档页与「本目录产物」页共用这一份实现 —— 两个页面点同一条登记
+/// 必须得到同一种打开行为（改写规则只写一次）。
+Future<bool> openDocsRegistryEntry(
+  SettingsService settings,
+  DocsRegistryEntry e,
+) async {
+  Uri uri;
+  if (e.url.startsWith('http://') || e.url.startsWith('https://')) {
+    final serverHost = Uri.tryParse(settings.buildHttpUrl('/'))?.host ?? '';
+    uri = Uri.parse(rewriteLoopbackUrl(e.url, serverHost));
+  } else {
+    final token = settings.token.trim();
+    uri = Uri.parse(settings.buildHttpUrl(e.url)).replace(
+      queryParameters: {
+        ...?Uri.tryParse(e.url)?.queryParameters,
+        if (token.isNotEmpty) 'token': token,
+      },
+    );
+  }
+  try {
+    return await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } catch (_) {
+    return false;
+  }
+}
+
 /// 服务与文档 (Docs & web-services registry)。镜像网页管理台 /manage 的同名
 /// 面板：agent 发布的网页/文件（7 天清理，置顶豁免）+ 手动登记的本地 Web
 /// 服务（探活状态、启停、日志）。后端契约见 src/docs-registry.js。
@@ -48,7 +80,13 @@ class DocsRegistryScreen extends StatefulWidget {
   State<DocsRegistryScreen> createState() => _DocsRegistryScreenState();
 }
 
+/// 列表的排列方式：按时间（服务端的永久→置顶→最新）或按目录分组。
+enum DocsScope { time, dir }
+
 class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
+  /// 排列方式是个纯 UI 选择，落盘在本地（同一个 key 跨启动沿用）。
+  static const String _scopePrefsKey = 'multicc_docs_scope';
+
   late final ManageService _manage = ManageService(
     settings: widget.settings,
     httpClient: widget.httpClient,
@@ -57,6 +95,7 @@ class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
   List<DocsRegistryEntry> _entries = [];
   bool _loading = true;
   String? _error;
+  DocsScope _scope = DocsScope.time;
 
   /// Ids with an in-flight action (start/stop/log) — their buttons disable.
   final Set<String> _busyIds = {};
@@ -68,6 +107,7 @@ class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
   void initState() {
     super.initState();
     _refresh();
+    _restoreScope();
     // 服务状态是活的：页面在栈顶时每 5s 静默重拉（服务端 30s TCP 探活的
     // 读取端），与 web 面板「可见才拉」一致。
     _poll = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -81,6 +121,25 @@ class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
   void dispose() {
     _poll?.cancel();
     super.dispose();
+  }
+
+  /// 读回上次选的排列方式。prefs 不可用（测试/平台限制）就保持默认的按时间，
+  /// 绝不因为一个展示偏好让整页起不来。
+  Future<void> _restoreScope() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_scopePrefsKey);
+      if (!mounted || saved != 'dir') return;
+      setState(() => _scope = DocsScope.dir);
+    } catch (_) {}
+  }
+
+  void _setScope(DocsScope next) {
+    if (_scope == next) return;
+    setState(() => _scope = next);
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setString(_scopePrefsKey, next.name))
+        .catchError((_) => false);
   }
 
   Future<void> _refresh({bool silent = false}) async {
@@ -123,35 +182,27 @@ class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
     );
   }
 
-  /// 打开条目。相对路径（/docs/…、/artifacts/…）拼到当前服务器 origin 并附
-  /// token（同源凭据安全）；绝对 http(s) URL 打开前做 loopback host 改写
-  /// （见文件头 rewriteLoopbackUrl），绝不附带 token，避免把服务器凭据
-  /// 泄露给第三方 host。
+  /// 打开条目 —— 见 [openDocsRegistryEntry]（与「本目录产物」页同一份实现）。
   Future<void> _open(DocsRegistryEntry e) async {
-    Uri uri;
-    if (e.url.startsWith('http://') || e.url.startsWith('https://')) {
-      final serverHost = Uri.tryParse(widget.settings.buildHttpUrl('/'))?.host ?? '';
-      uri = Uri.parse(rewriteLoopbackUrl(e.url, serverHost));
-    } else {
-      final token = widget.settings.token.trim();
-      uri = Uri.parse(widget.settings.buildHttpUrl(e.url)).replace(
-        queryParameters: {
-          ...?Uri.tryParse(e.url)?.queryParameters,
-          if (token.isNotEmpty) 'token': token,
-        },
-      );
-    }
-    try {
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok) _snack(t('openBrowserFailed'), isError: true);
-    } catch (_) {
-      _snack(t('openBrowserFailed'), isError: true);
-    }
+    final ok = await openDocsRegistryEntry(widget.settings, e);
+    if (!ok) _snack(t('openBrowserFailed'), isError: true);
   }
 
   Future<void> _togglePin(DocsRegistryEntry e) async {
     try {
       await _manage.updateDocsEntry(e.id, pinned: !e.pinned);
+      await _refresh(silent: true);
+    } catch (err) {
+      _snack('$err', isError: true);
+    }
+  }
+
+  /// 永久保留开关。与置顶完全独立：置顶只影响排序，永久保留是唯一的
+  /// 「永不被回收」承诺（后端 src/docs-registry.js 的 keep-list 只认它）。
+  Future<void> _togglePermanent(DocsRegistryEntry e) async {
+    try {
+      await _manage.updateDocsEntry(e.id, permanent: !e.permanent);
+      _snack(t(e.permanent ? 'docsregPermanentOff' : 'docsregPermanentOn'));
       await _refresh(silent: true);
     } catch (err) {
       _snack('$err', isError: true);
@@ -290,42 +341,87 @@ class _DocsRegistryScreenState extends State<DocsRegistryScreen> {
             )
           : _error != null
           ? _ErrorView(message: _error!, onRetry: () => _refresh())
-          : RefreshIndicator(
-              color: AppColors.accent,
-              backgroundColor: AppColors.panel,
-              onRefresh: () => _refresh(),
-              child: _entries.isEmpty
-                  ? ListView(
-                      children: const [
-                        SizedBox(height: 120),
-                        _EmptyView(icon: Icons.travel_explore_outlined),
-                      ],
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-                      itemCount: _entries.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 10),
-                      itemBuilder: (_, i) {
-                        final e = _entries[i];
-                        return _DocsEntryCard(
-                          entry: e,
-                          busy: _busyIds.contains(e.id),
-                          onOpen: () => _open(e),
-                          onTogglePin: () => _togglePin(e),
-                          onDelete: () => _delete(e),
-                          onSvcAction: (action) => _svcAction(e, action),
-                          onLog: () => _showLog(e),
-                        );
-                      },
-                    ),
+          : Column(
+              children: [
+                _DocsScopeSwitch(scope: _scope, onChanged: _setScope),
+                // RefreshIndicator 仍然包着真正滚动的那一层（切排列方式只是
+                // 换里面的列表，下拉刷新与 5s 静默轮询都不受影响）。
+                Expanded(
+                  child: RefreshIndicator(
+                    color: AppColors.accent,
+                    backgroundColor: AppColors.panel,
+                    onRefresh: () => _refresh(),
+                    child: _list(),
+                  ),
+                ),
+              ],
             ),
     );
+  }
+
+  Widget _entryCard(DocsRegistryEntry e) => _DocsEntryCard(
+    entry: e,
+    busy: _busyIds.contains(e.id),
+    onOpen: () => _open(e),
+    onTogglePin: () => _togglePin(e),
+    onTogglePermanent: () => _togglePermanent(e),
+    onDelete: () => _delete(e),
+    onSvcAction: (action) => _svcAction(e, action),
+    onLog: () => _showLog(e),
+  );
+
+  Widget _list() {
+    if (_entries.isEmpty) {
+      return ListView(
+        children: const [
+          SizedBox(height: 120),
+          _EmptyView(icon: Icons.travel_explore_outlined),
+        ],
+      );
+    }
+    if (_scope == DocsScope.time) {
+      // 按时间：服务端顺序原样（永久 → 置顶 → 最新），不在这里重排。
+      return ListView.separated(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
+        itemCount: _entries.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (_, i) => _entryCard(_entries[i]),
+      );
+    }
+    // 按目录：分组带标题，标题不能当分隔符跳过，所以这里换成一条拍平的
+    // [组头条, 卡片…, 组头条, 卡片…] 列表 —— 间距由组头和卡片自己的
+    // padding 出，不再用 separatorBuilder。
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
+      children: _groupedRows(),
+    );
+  }
+
+  /// 按 entry.dir 分组。组序 = 服务端响应里首次出现的顺序（永久保留的条目
+  /// 本来就在最前，含它的组自然靠前）；组内保持服务端顺序；dir 为空的行
+  /// 垫底，归到「未归属目录」。
+  List<Widget> _groupedRows() {
+    final groups = <String, List<DocsRegistryEntry>>{};
+    for (final e in _entries) {
+      (groups[e.dir] ??= []).add(e);
+    }
+    final keys = groups.keys.where((k) => k.isNotEmpty).toList();
+    if (groups.containsKey('')) keys.add('');
+    return [
+      for (final dir in keys) ...[
+        _DirGroupHeader(dir: dir, count: groups[dir]!.length),
+        for (final e in groups[dir]!)
+          Padding(padding: const EdgeInsets.only(bottom: 10), child: _entryCard(e)),
+      ],
+    ];
   }
 }
 
 // ── Entry card ───────────────────────────────────────────────────────────────
 
-String _fmtTs(String iso) {
+/// 条目时间戳的展示格式（MM/DD HH:MM，本地时区）。与「本目录产物」页共用，
+/// 两个页面上的同一时刻必须长得一样。
+String docsEntryTimeLabel(String iso) {
   if (iso.isEmpty) return '';
   final d = DateTime.tryParse(iso)?.toLocal();
   if (d == null) return iso;
@@ -340,17 +436,195 @@ Color? _statusColor(String? status) => switch (status) {
   _ => AppColors.muted,
 };
 
-IconData _kindIcon(String kind) => switch (kind) {
+/// 条目种类的图标。与「本目录产物」页共用一份表（那里过滤掉 service，
+/// 但仍要有 page / file 两种区分）。
+IconData docsEntryKindIcon(String kind) => switch (kind) {
   'file' => Icons.attach_file_rounded,
   'service' => Icons.language_rounded,
   _ => Icons.description_outlined,
 };
+
+// ── 排列方式切换（按时间 / 按目录）────────────────────────────────────────────
+
+/// 列表顶部那道排列方式切换。形状与目录首页的 Chat / Terminal 切换
+/// （`_DirectoryModeSwitch`，air_tasks_view.dart）一致：同一层描边容器里放
+/// 两个等宽的选中态按钮，选中项用面板色 + 阴影浮起。
+class _DocsScopeSwitch extends StatelessWidget {
+  const _DocsScopeSwitch({required this.scope, required this.onChanged});
+
+  final DocsScope scope;
+  final ValueChanged<DocsScope> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      container: true,
+      label: t('docsScopeLabel'),
+      child: Container(
+        key: const ValueKey('docs-scope'),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        child: Container(
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(
+            color: AppColors.bg,
+            border: Border.all(color: AppColors.line),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            children: [
+              _DocsScopeButton(
+                keyName: 'docs-scope-time',
+                icon: Icons.schedule_rounded,
+                label: t('docsScopeTime'),
+                selected: scope == DocsScope.time,
+                onTap: () => onChanged(DocsScope.time),
+              ),
+              const SizedBox(width: 3),
+              _DocsScopeButton(
+                keyName: 'docs-scope-dir',
+                icon: Icons.folder_outlined,
+                label: t('docsScopeDir'),
+                selected: scope == DocsScope.dir,
+                onTap: () => onChanged(DocsScope.dir),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DocsScopeButton extends StatelessWidget {
+  const _DocsScopeButton({
+    required this.keyName,
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String keyName;
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = selected ? AppColors.accent : AppColors.muted;
+    return Expanded(
+      child: InkWell(
+        key: ValueKey(keyName),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.panel : null,
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 6,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 按目录视图的组头：目录名 + 该组条数，绝对路径做副行。组头只写目录，
+/// 绝不重复组内某条目的标题（否则列表里会出现两处同样的文案）。
+class _DirGroupHeader extends StatelessWidget {
+  final String dir;
+  final int count;
+  const _DirGroupHeader({required this.dir, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    // 目录名取 dirName；空 dir（以及 normalizeDir 折成 '/' 这种没有名字的
+    // 极端值）落到「未归属目录」。
+    final base = DocsRegistryEntry.basename(dir);
+    final name = base.isEmpty ? t('docsNoDir') : base;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 8, 2, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                dir.isEmpty ? Icons.help_outline_rounded : Icons.folder_outlined,
+                size: 14,
+                color: AppColors.muted,
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textBright,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '$count',
+                style: const TextStyle(color: AppColors.faint, fontSize: 11),
+              ),
+            ],
+          ),
+          if (dir.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, left: 20),
+              child: Text(
+                dir,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.faint,
+                  fontSize: 10.5,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
 
 class _DocsEntryCard extends StatelessWidget {
   final DocsRegistryEntry entry;
   final bool busy;
   final VoidCallback onOpen;
   final VoidCallback onTogglePin;
+  final VoidCallback onTogglePermanent;
   final VoidCallback onDelete;
   final ValueChanged<String> onSvcAction;
   final VoidCallback onLog;
@@ -360,6 +634,7 @@ class _DocsEntryCard extends StatelessWidget {
     required this.busy,
     required this.onOpen,
     required this.onTogglePin,
+    required this.onTogglePermanent,
     required this.onDelete,
     required this.onSvcAction,
     required this.onLog,
@@ -380,7 +655,7 @@ class _DocsEntryCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(_kindIcon(e.kind), size: 18, color: AppColors.muted),
+              Icon(docsEntryKindIcon(e.kind), size: 18, color: AppColors.muted),
               if (e.isService) ...[
                 const SizedBox(width: 8),
                 Container(
@@ -441,6 +716,17 @@ class _DocsEntryCard extends StatelessWidget {
                     color: AppColors.amber,
                   ),
                 ),
+              // 🔒 永久保留：与置顶徽标、已过期徽标同排，用同一套描边 chip。
+              if (e.permanent)
+                Container(
+                  margin: const EdgeInsets.only(left: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Text('🔒', style: TextStyle(fontSize: 10.5)),
+                ),
               if (e.expired)
                 Container(
                   margin: const EdgeInsets.only(left: 6),
@@ -462,7 +748,7 @@ class _DocsEntryCard extends StatelessWidget {
               e.url,
               if (e.isService && e.port != null) ':${e.port}',
               if (e.sessionId.isNotEmpty) e.sessionId,
-              _fmtTs(e.createdAt),
+              docsEntryTimeLabel(e.createdAt),
             ].join(' · '),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -521,6 +807,20 @@ class _DocsEntryCard extends StatelessWidget {
                     ),
                   ),
               ],
+              // 永久保留与置顶是两个独立开关：前者是唯一的「永不被回收」
+              // 承诺（7 天清理 + 注册表淘汰都只认它），后者只管排序。
+              IconButton(
+                key: ValueKey('docsreg-permanent-${e.id}'),
+                onPressed: onTogglePermanent,
+                icon: Icon(
+                  e.permanent ? Icons.lock : Icons.lock_outline,
+                  size: 17,
+                  color: e.permanent ? AppColors.accent : AppColors.muted,
+                ),
+                tooltip: t(
+                  e.permanent ? 'artifactKeepForeverOff' : 'artifactKeepForever',
+                ),
+              ),
               IconButton(
                 onPressed: onTogglePin,
                 icon: Icon(

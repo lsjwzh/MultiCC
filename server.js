@@ -2855,7 +2855,7 @@ const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderP
 
 // Scheduled tasks (定时任务): every rule owns one fixed Air task and enters it through the
 // task-shell receipt protocol, complementing the lower-level per-session triggers.
-cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id) }); secretsVault.mount(app); // docs-registry/secrets-vault = /manage 管理表与敏感信息保险箱（同行以守 3000 行预算）
+cronTasks.mount(app); docsRegistry.mount(app, { resolveTaskId: id => taskShellHost.artifactTaskId(id), resolveDir: id => directories.get(persistedSessions.get(id)?.dirId)?.path || null }); secretsVault.mount(app); // docs-registry/secrets-vault = /manage 管理表与敏感信息保险箱（同行以守 3000 行预算）
 cronTasks.init({
   directories,
   clis: SUPPORTED_CHAT_CLIS,
@@ -2976,7 +2976,7 @@ app.use(safeErrorHandler(logger));
       .catch(error => logger.warn('provider_log_watchdog_sweep_failed', { error: error.message })), providerLogWatchdog.PROVIDER_LOG_WATCHDOG_INTERVAL_MS));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
-const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, [...taskRunStore.listPinnedArtifactIds(), ...docsRegistry.listPinnedArtifactIds()]); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
+const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, [...taskRunStore.listPinnedArtifactIds(), ...docsRegistry.listPermanentArtifactIds()]); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
     trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000)); require('./src/assist-snapshots').startAssistSweep({ assistDir: MULTICC_PATHS.assistDir, trackTimer: trackServiceTimer, log: (message) => logger.info('assist_snapshot_cleanup', { message }) });
     // Keep the official OAuth credential alive. The check is a credential read;
     // it only runs the CLI once the expiry is close, so the router never has to
