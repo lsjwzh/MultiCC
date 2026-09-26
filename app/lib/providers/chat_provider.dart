@@ -1141,7 +1141,7 @@ class ChatProvider extends ChangeNotifier {
             ? 'Connected · Auto'
             : model != null
             ? t('connectedModel', {'model': model})
-            : t('connectedCli', {'cli': _cli.name});
+            : t('connectedCli', {'cli': _cli.displayName});
 
         final serverStreaming = msg['is_streaming'] == true;
         if (serverStreaming && _folder.currentMsg == null) {
@@ -1830,7 +1830,7 @@ class ChatProvider extends ChangeNotifier {
         ? 'Connected · Auto'
         : model != null && model.isNotEmpty
         ? 'Connected · $model'
-        : 'Connected · ${config.cli.name}';
+        : 'Connected · ${config.cli.displayName}';
     if (_providerSelection == null) {
       _setProviderBaseUrl(config.providerBaseUrl ?? '');
     } else {

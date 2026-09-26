@@ -26,9 +26,13 @@ const MIGRATION_DEBT = Object.freeze({
   // re-registering, which turned this gate red on main. The ceiling is the exact
   // committed high-water mark, so it is re-registered here; the next main_shell
   // split must ratchet it down and retire this entry once the file is <= target.
+  // 2026-09-26 车道扶正：新建会话的默认线路按会话种类分流（chat 落 claude-exp，
+  // 终端落 claude），任务卡上的线路徽标改走 cliDisplayName —— 三行 + 一个 import。
+  // 高水位按实测登记到 3167/122298；下一位动 main_shell 该拆的仍是任务卡与目录
+  // 控制台那两块渲染。
   'app/lib/screens/main_shell.dart': Object.freeze({
-    ceiling: 3164,
-    byteCeiling: 121973,
+    ceiling: 3167,
+    byteCeiling: 122298,
     target: 3000,
   }),
   // public/air.js 和 src/chat/turn-engine.js 都在 0f276ebc（session
@@ -76,9 +80,16 @@ const MIGRATION_DEBT = Object.freeze({
   // 状态条目（含把 B 说成「等待回答」的那个）连同一条中间变量一起删掉，`label()` 只多
   // 一行去注册表折算别名。少掉的词换来一段解释「为什么规范状态不在这里再写一遍」的
   // 注释，行数刚好抵平（3118 不变），字节按重排后的实测降到 169154。
+  // 2026-09-26 车道扶正（接着上面 air.js 那格）：多了一层线路展示壳
+  // （cliDisplayName / cliOptionLabel / laneRouteLabel / cliOffersInChat / firstChatCli
+  // 五个小助手），快速开始、定时任务、任务气泡三处改走它们，chat 的下拉一律滤掉一次性
+  // 车道。laneRouteLabel 是自持账号车道那处「WorkBuddy · WorkBuddy」去重 —— 产品名
+  // 扶正之后，路由名和车道名同源时会重一遍。行数 3118 -> 3148、字节
+  // 169154 -> 171301，全是接线；下一次动目录页或 ⌘K，该拆的仍是
+  // renderSchedules / renderDirectoryOverview。
   'public/air.js': Object.freeze({
-    ceiling: 3118,
-    byteCeiling: 169154,
+    ceiling: 3148,
+    byteCeiling: 171301,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -115,9 +126,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-09-25 数字口径统一（shared/format.js ↔ utils/format.dart）：本文件的
   // `_fmtDuration` 换成对 format.dart 的调用，短了 8 行，按棘轮规则把天花板
   // 压回实测高水位 3012/121741（缩小同样是违约，不能只往下不改这里）。
+  // 2026-09-26 车道扶正：连接提示里的线路名改从 cli_display 的 cliDisplayName 取
+  // （旧写法把「Claude Exp」这种内部名当产品名发给用户），行数不变、字节 +14，
+  // 按实测登记到 3012/121755。这一格仍是那笔 ~200 行的 vendor-quota 集群该还的债。
   'app/lib/providers/chat_provider.dart': Object.freeze({
     ceiling: 3012,
-    byteCeiling: 121741,
+    byteCeiling: 121755,
     target: 3000,
   }),
 });
@@ -258,9 +272,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 7018 行 / 437112 字节。
   // 同日目录里的终端行加状态点、提示行、「多久没动」与重命名 / 复制 id：airTerminal*
   // 共 13 键，中英各 13 行 = +26，重跑生成器实测 7044 行 / 438951 字节。
+  // 同期 CLI 更新面板改按家族列行：内置引擎（Claude Agent SDK）挂在家族行下面说明
+  // 「随 MultiCC 一起升级」，新增 airCliUpdateBundled 中英各 1 行 = +2。两支合流后
+  // 按本树重跑生成器实测 7046 行 / 439114 字节（438951 + 163 = 两侧各自增量之和）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7044,
-    maxBytes: 438951,
+    maxLines: 7046,
+    maxBytes: 439114,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

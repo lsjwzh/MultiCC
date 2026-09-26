@@ -34,18 +34,19 @@ void main() {
   });
 
   test('ids are matched regardless of casing and padding', () {
-    expect(cliDisplayName(' CODEX '), 'Codex Exec');
+    expect(cliDisplayName(' CODEX '), 'Codex');
     expect(cliDisplayName('ZCode'), 'ZCode');
     expect(cliDisplayColor('codebuddy'), AppColors.codebuddy);
   });
 
   test('the app names match the server adapter label for the same id', () {
-    expect(cliDisplayName('claude'), 'Claude Code');
-    expect(cliDisplayName('claude-exp'), 'Claude Agent SDK');
-    // 2026-09-24 改名：常驻 app-server 车道（codex-exp）扶正为产品的 Codex，
-    // 一次性 `codex exec`（codex）退成兜底的 Codex Exec。角标跟着名字走。
-    expect(cliDisplayName('codex'), 'Codex Exec');
+    expect(cliDisplayName('claude'), 'Claude');
+    // 2026-09-26 扶正：两条常驻车道（claude-exp / codex-exp）拿产品名；两条一次性
+    // 车道（claude = `claude -p`、codex = `codex exec`）在终端里照实写家族名。
+    expect(cliDisplayName('claude-exp'), 'Claude');
+    expect(cliDisplayName('codex'), 'Codex');
     expect(cliDisplayName('codex-exp'), 'Codex');
+    expect(cliShortMark('claude-exp'), 'A');
     expect(cliShortMark('codex'), 'E');
     expect(cliShortMark('codex-exp'), 'X');
     expect(cliDisplayName('opencode'), 'OpenCode');
@@ -56,6 +57,44 @@ void main() {
     expect(cliDisplayName('dsh'), 'DSH');
     expect(cliDisplayName('gemini'), 'Gemini');
     expect(cliDisplayName('grok'), 'Grok');
+  });
+
+  test('the small line names the engine under the two promoted lanes', () {
+    // 小字：扶正的两条常驻车道写它们底下的引擎，其余车道写自己的 id —— 终端里那行
+    // 小字指的就是要跑的命令。
+    expect(cliEngine('claude-exp'), 'Claude Agent SDK');
+    expect(cliEngine('codex-exp'), 'Codex App Server');
+    expect(cliEngine('claude'), 'claude');
+    expect(cliEngine('codex'), 'codex');
+    // ACP 三家的 chat 小字是桥的形态，终端仍是原生命令。
+    expect(cliEngine('opencode'), 'opencode acp');
+    expect(cliEngine('gemini'), 'gemini acp');
+    expect(cliEngine('grok'), 'grok acp');
+    expect(cliEngine('mystery-cli'), 'mystery-cli');
+    expect(cliEngine(null), '');
+    expect(kCliDisplays['claude-exp']!.engine, 'Claude Agent SDK');
+    expect(kCliDisplays['codex-exp']!.engine, 'Codex App Server');
+  });
+
+  test('the one-shot lanes are terminal-only and the resident lanes chat-only', () {
+    // `claude` 是 `claude -p`、`codex` 是 `codex exec`：chat 的选择器里没有它们，
+    // 终端要把这两个可执行文件跑起来，所以它们只退出 chat。
+    expect(cliOffersIn('claude', 'chat'), isFalse);
+    expect(cliOffersIn('claude', 'terminal'), isTrue);
+    expect(cliOffersIn('codex', 'chat'), isFalse);
+    expect(cliOffersIn('codex', 'terminal'), isTrue);
+    expect(cliOffersIn('claude-exp', 'chat'), isTrue);
+    expect(cliOffersIn('claude-exp', 'terminal'), isFalse);
+    expect(cliOffersIn('codex-exp', 'chat'), isTrue);
+    expect(cliOffersIn('codex-exp', 'terminal'), isFalse);
+    // 两条车道都给的（如 opencode）与没听说过的 id 一样，两种会话都给。
+    expect(cliOffersIn('opencode', 'chat'), isTrue);
+    expect(cliOffersIn('opencode', 'terminal'), isTrue);
+    expect(cliOffersIn('mystery-cli', 'chat'), isTrue);
+    expect(cliOffersIn('mystery-cli', 'terminal'), isTrue);
+    // 记录里的空格与大小写不改变答案。
+    expect(cliOffersIn(' CLAUDE ', ' Terminal '), isTrue);
+    expect(kCliDisplays['claude']!.offersIn('chat'), isFalse);
   });
 
   test('only the one-shot codex lane is flagged as on its way out', () {
@@ -81,6 +120,85 @@ void main() {
         .toList()
       ..sort();
     expect(providerless, ['codebuddy', 'dsh', 'gemini', 'grok', 'qoder']);
+  });
+
+  test('a lane answers its family name, and the family table is the only structure', () {
+    // 一个 CLI 是**家族**：claude 在 chat 里那行叫 Claude（小字 Claude Agent SDK），
+    // 在终端里那行也叫 Claude（小字 `claude`），**对外**只有一个名字。
+    expect(cliFamilyOf('claude'), 'claude');
+    expect(cliFamilyOf('claude-exp'), 'claude');
+    expect(cliFamilyName('claude'), 'Claude');
+    expect(cliFamilyName('claude-exp'), 'Claude');
+    expect(cliDisplayName('claude'), 'Claude', reason: '终端那行照实写家族名');
+    expect(cliFamilyOf(' CODEX '), 'codex');
+    expect(cliFamilyOf('mystery-cli'), isNull);
+    expect(cliFamilyName('mystery-cli'), 'mystery-cli');
+    expect(cliFamilyName(null), '');
+    // 家族在每个场景里给的衍生：claude 的 chat 是常驻那条 + 已退出 chat 的一次性
+    // 那条（offered: false，但它仍是一条真实车道），terminal 就是 claude 命令本身。
+    expect(
+      cliLanesOf('claude', 'chat').map((l) => '${l.lane}/${l.label}/${l.engine}/${l.offered}').toList(),
+      <String>['claude-exp/Claude/Claude Agent SDK/true', 'claude/Claude/claude -p/false'],
+    );
+    expect(
+      cliLanesOf('claude', 'terminal').map((l) => '${l.lane}/${l.label}/${l.engine}/${l.offered}').toList(),
+      <String>['claude/Claude/claude/true'],
+    );
+    // 没写 lanes 的家族：两种场景各一条自身，两边都提供。
+    for (final id in <String>['zcode', 'kimi']) {
+      expect(cliLanesOf(id, 'chat').single.lane, id);
+      expect(cliLanesOf(id, 'terminal').single.lane, id);
+      expect(cliLanesOf(id, 'chat').single.offered, isTrue);
+      expect(cliLanesOf(id, 'chat').single.label, cliFamilyName(id));
+    }
+    // ACP 三家：同一个 id，两种场景的小字不同（chat 是桥，terminal 是原生命令），
+    // 所以它们必须逐场景写衍生，而不能靠「没写 lanes」那条默认规则。
+    for (final id in <String>['opencode', 'gemini', 'grok']) {
+      expect(cliLanesOf(id, 'chat').single.engine, '$id acp');
+      expect(cliLanesOf(id, 'terminal').single.engine, id);
+      expect(cliLanesOf(id, 'chat').single.label, cliFamilyName(id));
+    }
+    // 摊平的车道表不多不少，正好是家族表投影出来的那些车道。
+    final declared = <String>[];
+    for (final kind in kCliKinds) {
+      for (final id in kCliFamilies.keys) {
+        for (final lane in cliLanesOf(id, kind)) {
+          if (!declared.contains(lane.lane)) declared.add(lane.lane);
+        }
+      }
+    }
+    expect(declared..sort(), kCliDisplays.keys.toList()..sort());
+    // 场景名与家族名都容忍空格大小写；不认识的场景答空，不抛错。
+    expect(cliLanesOf(' CLAUDE ', ' Chat ').first.lane, 'claude-exp');
+    expect(cliLanesOf('claude', 'nowhere'), isEmpty);
+    expect(cliLanesOf('mystery-cli', 'chat'), isEmpty);
+    expect(cliFamiliesFor('chat'), contains('claude'));
+    expect(cliFamiliesFor('nowhere'), isEmpty);
+  });
+
+  test('the upgrade unit is the family, and a bundled engine says so', () {
+    // 「CLI 更新」列出的是 CLI 制品，而制品是家族的：按 codex 或 codex-exp 问，答的
+    // 是同一条命令；claude-exp 的引擎（Agent SDK）随 MultiCC 走，装不到它。
+    expect(cliUpdateOf('codex-exp')!.command, cliUpdateOf('codex')!.command);
+    expect(cliUpdateOf('claude-exp')!.package, '@anthropic-ai/claude-code');
+    expect(cliUpdateOf('claude-exp')!.auto, isTrue);
+    expect(cliUpdateOf('zcode')!.auto, isFalse);
+    expect(cliUpdateOf('zcode')!.manual, isNotEmpty);
+    expect(cliUpdateOf('mystery-cli'), isNull);
+    expect(cliUpdateSpecs().keys.toSet(), kCliFamilies.keys.toSet());
+    expect(cliIsBundled('claude-exp'), isTrue);
+    expect(cliIsBundled('claude'), isFalse);
+    expect(cliIsBundled('mystery-cli'), isFalse);
+    final bundled = cliBundledEnginesOf('claude');
+    expect(bundled.single.lane, 'claude-exp');
+    expect(bundled.single.engine, 'Claude Agent SDK');
+    expect(bundled.single.kind, 'chat');
+    expect(cliBundledEnginesOf('codex'), isEmpty);
+    expect(cliBundledEnginesOf('mystery-cli'), isEmpty);
+    // 一条车道是不是 bundled，逐场景问都答同一个值（它挂在车道上，不是场景上）。
+    for (final id in kCliDisplays.keys) {
+      expect(cliIsBundled(id), cliBundledEnginesOf(id).any((e) => e.lane == id));
+    }
   });
 
   test('brand colours stay distinguishable per product family', () {

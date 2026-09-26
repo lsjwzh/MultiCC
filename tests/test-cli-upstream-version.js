@@ -248,12 +248,16 @@ test('a redirecting registry is followed, but not forever', async () => {
 
 test('only CLIs that ship as an npm package have a comparable source', () => {
   assert.equal(upstream.npmPackageFor('claude'), '@anthropic-ai/claude-code');
-  assert.equal(upstream.npmPackageFor('claude-exp'), '@anthropic-ai/claude-agent-sdk');
   assert.equal(upstream.npmPackageFor('codex'), '@openai/codex');
-  assert.equal(upstream.npmPackageFor('codex-exp'), '@openai/codex');
   assert.equal(upstream.npmPackageFor('codebuddy'), '@tencent-ai/codebuddy-code');
   assert.equal(upstream.npmPackageFor('gemini'), '@google/gemini-cli');
   assert.equal(upstream.npmPackageFor('grok'), '@xai-official/grok');
+  // 键是**家族**(= 升级目标): 升级的单位是 CLI 制品, 而车道只是它的使用场景。
+  // 所以车道 id 一个包名都不该有 —— 尤其是 claude-exp: Agent SDK 是 multicc 自己的
+  // 依赖, 既不是「用户装的那个东西」, 升它也不是这条链路能做的事。
+  for (const lane of ['claude-exp', 'codex-exp']) {
+    assert.equal(upstream.npmPackageFor(lane), null, `${lane} 不该有自己的 npm 源`);
+  }
   // qoder 是 curl 脚本安装、zcode 是手动装桌面版: 没有可查的发布源
   assert.equal(upstream.npmPackageFor('qoder'), null);
   assert.equal(upstream.npmPackageFor('zcode'), null);

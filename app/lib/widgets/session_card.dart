@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../utils/session_status_helpers.dart';
+import '../utils/cli_display.dart';
 import '../utils/status_presentation.dart';
 import '../providers/session_manager.dart';
 import '../services/session_service.dart';
@@ -141,7 +142,7 @@ class SessionCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 6),
                     ],
-                    MiniBadge(label: session.cli.name, color: cliColor),
+                    MiniBadge(label: cliDisplayName(session.cli.name), color: cliColor),
                     if (cardStatus != CanonicalStatus.idle &&
                         cardStatus != CanonicalStatus.unknown) ...[
                       const SizedBox(width: 6),
@@ -635,7 +636,7 @@ class SessionCard extends StatelessWidget {
                       value: s.id,
                       child: Text(
                         '${s.label?.isNotEmpty == true ? s.label : s.id}'
-                        ' (${s.cli.name}/${s.kind.name})',
+                        ' (${cliDisplayName(s.cli.name)}/${s.kind.name})',
                       ),
                     ),
                 ],

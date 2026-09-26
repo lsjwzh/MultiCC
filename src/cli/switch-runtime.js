@@ -3,83 +3,29 @@
 const { desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
 const { isChatStateBusy } = require('../session/runtime-busy');
 const cliUpstream = require('./cli-upstream-version');
+const capability = require('./cli-capability');
 const homebrewTakeover = require('./homebrew-takeover');
 
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 
-// 官方 CLI 安装命令表(单一事实源, 三端共用 API 契约)。display 同 command。
-// 静态表无用户输入拼接, 命令直接喂给 bash -c。
-const OFFICIAL_INSTALL_SPECS = Object.freeze({
-  claude: {
-    auto: true,
-    command: 'npm install -g @anthropic-ai/claude-code',
-    display: 'npm install -g @anthropic-ai/claude-code',
-  },
-  'claude-exp': {
-    auto: false,
-      manual: 'Claude Agent SDK 由 MultiCC 内置；请升级 MultiCC 来更新 SDK',
-  },
-  // codex 走官方安装脚本, 不走 npm 全局 —— 这是修一次真实事故换来的选择。
-  // `@openai/codex` 的平台二进制(约 133MB)是 optionalDependency: 下载超时会被 npm
-  // 静默丢弃, 整条命令仍然 exit 0。留下的是一个能启动失败、却对外报"安装成功"的残废
-  // 安装, job 只看退出码, 无从分辨。实测同一个包同一台机器, 一次 27 秒装好, 另一次
-  // 卡满 5 分钟默认 fetch-timeout 后被丢 —— 是下载通道本身不稳, 加长超时只是压制。
-  // 官方脚本没有这条静默路径: 单一归档、sha256 对 codex-package_SHA256SUMS、set -eu
-  // 非零退出、版本化目录 + current 软链原子切换。装机位置 ~/.local/bin 与
-  // commands.js 的 resolveCodex() 首选候选一致(见那里的注释)。
-  // 代价: 首次安装多依赖 releases.openai.com(失败会退到 GitHub Releases), 且无重试。
-  codex: {
-    auto: true,
-    command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
-    display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
-  },
-  'codex-exp': {
-    auto: true,
-    command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
-    display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
-  },
-  opencode: {
-    auto: true,
-    command: 'npm install -g opencode-ai',
-    display: 'npm install -g opencode-ai',
-  },
-  qoder: {
-    auto: true,
-    command: 'curl -fsSL https://qoder.cn/install | bash',
-    display: 'curl -fsSL https://qoder.cn/install | bash',
-  },
-  zcode: {
-    auto: false,
-    manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)',
-  },
-  kimi: {
-    auto: true,
-    command: 'npm install -g @moonshot-ai/kimi-code',
-    display: 'npm install -g @moonshot-ai/kimi-code',
-  },
-  codebuddy: {
-    auto: true,
-    command: 'npm install -g @tencent-ai/codebuddy-code',
-    display: 'npm install -g @tencent-ai/codebuddy-code',
-  },
-  dsh: {
-    auto: true,
-    command: 'npm install -g @deepseek-ai/dsh',
-    display: 'npm install -g @deepseek-ai/dsh',
-  },
-  gemini: {
-    auto: true,
-    command: 'npm install -g @google/gemini-cli',
-    display: 'npm install -g @google/gemini-cli',
-  },
-  grok: {
-    auto: true,
-    command: 'npm install -g @xai-official/grok',
-    display: 'npm install -g @xai-official/grok',
-  },
-});
+// 官方 CLI 安装命令表(单一事实源: src/cli/cli-capability.js 的家族 update 列)。
+// display 同 command。静态表无用户输入拼接, 命令直接喂给 bash -c。
+//
+// **键是家族, 不是车道** —— 这一列原先按车道手写, 于是 codex 与 codex-exp 两条车道
+// 各占一行、跑同一条命令, 而 claude-exp 的引擎(Agent SDK)是 multicc 自己的依赖、根本
+// 没有制品, 只能挤出一行「请升级 MultiCC」。升级的对象是 CLI 制品, 而制品属于家族:
+// 两条车道一个二进制、一条安装脚本。所以这一列从目录里派生, 车道 id 需要先落到家族
+// (见 installTargetOf), 面板也就自然是「一行一个 CLI」。
+const OFFICIAL_INSTALL_SPECS = Object.freeze(Object.fromEntries(
+  Object.entries(capability.updateSpecs()).map(([family, spec]) => [
+    family,
+    Object.freeze(spec.auto
+      ? { auto: true, command: spec.command, display: spec.command }
+      : { auto: false, manual: spec.manual }),
+  ]),
+));
 
 // 15 分钟不是随手放宽, 是按最坏路径算的: codex 的官方安装脚本自己 metadata 30s +
 // asset 300s, 而它在 releases.openai.com 不可达时会退到 GitHub Releases 把整套再来
@@ -98,12 +44,20 @@ const CLI_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
 // 比 install 短得多: --version 是本地调用, 但个别 CLI 冷启动较慢, 给 8s 兜底。
 const CLI_VERSION_TIMEOUT_MS = Number(process.env.CLI_VERSION_TIMEOUT_MS || 8000);
 const CLI_VERSION_MAX_BUFFER = 64 * 1024;
-const CLAUDE_AGENT_SDK_VERSION = (() => {
-  try {
-    const value = require('../../package.json').dependencies?.['@anthropic-ai/claude-agent-sdk'];
-    return typeof value === 'string' ? value.replace(/^[~^]/, '') : null;
-  } catch (_) { return null; }
-})();
+// 随 MultiCC 走的引擎(目录里的 bundled 列)的版本。这类引擎不躺在家族的 CLI 制品
+// 里 —— npm 上没有它、安装脚本也不含它 —— 所以既没有 `--version` 可探, 也没有
+// 发布源可比: 版本就是 multicc 自己依赖里那一行, 升级它的唯一动作是升级 MultiCC。
+// 今天只有 claude-exp(src/chat/claude-sdk-stream.js 直接 import
+// '@anthropic-ai/claude-agent-sdk')。面板把这一行写成副标题, 而不是给它一颗装不了的
+// 按钮 —— 旧表按车道铺开时, claude-exp 就是这么挤出一行假动作的。
+const BUNDLED_ENGINE_VERSIONS = Object.freeze({
+  'claude-exp': (() => {
+    try {
+      const value = require('../../package.json').dependencies?.['@anthropic-ai/claude-agent-sdk'];
+      return typeof value === 'string' ? value.replace(/^[~^]/, '') : null;
+    } catch (_) { return null; }
+  })(),
+});
 
 // 最新版探测与本地版本探测分开缓存: 上游 registry 会超时/限流, 本地 `--version`
 // 不会。两者共用一个 TTL, 但互不覆盖 —— 上游挂了不该让「当前版本」这一栏也空掉。
@@ -274,9 +228,46 @@ function createCliSwitchRuntime(options) {
   }
 
   function installTargetKey(cli) {
-    const spec = installSpecs[cli];
+    const spec = installSpecs[installTargetOf(cli)];
     const command = spec && typeof spec.command === 'string' ? spec.command.trim() : '';
-    return command || `cli:${cli}`;
+    return command || `cli:${installTargetOf(cli)}`;
+  }
+
+  // 车道 id → 升级目标(家族)。升级的对象是家族的 CLI 制品; 车道只是它的一个使用
+  // 场景(令牌、会话记录、路由都持久化车道 id, 所以 id 不动, 只是落到同一个制品上)。
+  // 先在 spec 表里精确命中(表本身就是家族键, 也给测试注入的车道键留着这条路),
+  // 落不到再问目录。目录不认识的 id 原样返回, 由调用方判 400。
+  function installTargetOf(cli) {
+    const key = String(cli == null ? '' : cli).trim().toLowerCase();
+    if (installSpecs[key]) return key;
+    return capability.familyOf(key) || key;
+  }
+
+  // 探测/上报的计划: 一个家族一行。两个组成都由目录推导 ——
+  // ① 「谁代言家族的 CLI 制品」= 家族里第一条已支持的非 bundled 车道(它解析出的
+  //    二进制就是命令表里那一条);
+  // ② 「哪些引擎随 MultiCC 走」= 目录的 bundled 列。
+  // 手写过一版按车道铺开的表, 于是 codex 与 codex-exp 变成两行跑同一条命令,
+  // claude-exp 变成一行只能回「请升级 MultiCC」的假动作。
+  // 一个家族若只有 bundled 车道(今天没有), 它没有制品可升级, 也就不出现在这里。
+  function familyTargets() {
+    const targets = new Map();
+    for (const cli of supportedClis) {
+      const family = installTargetOf(cli);
+      if (targets.has(family) || capability.isBundled(cli)) continue;
+      targets.set(family, cli);
+    }
+    return targets;
+  }
+
+  // 随 MultiCC 走的引擎: 版本读本机依赖, 可用性沿用宿主的口径。面板把它写成
+  // 副标题, 好让用户知道这条车道的引擎由谁负责升 —— 升级面板不碰它。
+  function bundledEnginesOf(family, availability) {
+    return capability.bundledEnginesOf(family).map(engine => ({
+      ...engine,
+      available: !!(availability[engine.lane] && availability[engine.lane].available),
+      version: BUNDLED_ENGINE_VERSIONS[engine.lane] || null,
+    }));
   }
 
   function serializeInstallJob(job) {
@@ -334,7 +325,9 @@ function createCliSwitchRuntime(options) {
 
   // 「哪些 CLI 现在有会话在用」。升级是就地替换二进制: 正在跑的进程持有旧 inode,
   // 本身不受影响, 但升级瞬间新起的 turn 可能读到半写状态。前端拿这个数字把确认框
-  // 的文案说准 —— 只提示, 不阻断。逐会话 try: 读不出来就少报一个, 绝不抛。
+  // 的文案说准 —— 只提示, 不阻断。计数按家族: 升级换的是家族的制品, 用着这个家族
+  // 任一车道的会话(codex 与 codex-exp)都得算进去。
+  // 逐会话 try: 读不出来就少报一个, 绝不抛。
   function cliInUseCounts() {
     const counts = {};
     if (typeof records.values !== 'function') return counts;
@@ -344,7 +337,8 @@ function createCliSwitchRuntime(options) {
       if (!cli || !id) continue;
       try {
         if (chatSessions.has(id) || options.hasLiveBackgroundTasks(id)) {
-          counts[cli] = (counts[cli] || 0) + 1;
+          const family = installTargetOf(cli);
+          counts[family] = (counts[family] || 0) + 1;
         }
       } catch (_) { /* 只影响提示文案 */ }
     }
@@ -353,6 +347,7 @@ function createCliSwitchRuntime(options) {
 
   // 本地 `--version` 探测(原样保留: 不可用的 CLI 标记 available:false 且不 spawn,
   // 避免 ENOENT 噪声与无谓子进程; 并发进行, 单个失败不影响其它)。
+  // 按家族一行: 副标题里随 MultiCC 走的引擎只报版本, 不探测(bundledEnginesOf)。
   async function probeLocalVersions({ force }) {
     const now = clock();
     if (!force && versionCache.versions && (now - versionCache.at) < CLI_VERSION_TTL_MS) {
@@ -361,19 +356,16 @@ function createCliSwitchRuntime(options) {
     const commands = resolveCliCommandMap();
     const availability = options.cliAvailabilitySummary() || {};
     const next = {};
-    await Promise.all(supportedClis.map(async (cli) => {
-      const cmd = commands[cli] || null;
-      const avail = !!(availability[cli] && availability[cli].available);
+    await Promise.all([...familyTargets()].map(async ([family, lane]) => {
+      const cmd = commands[lane] || null;
+      const avail = !!(availability[lane] && availability[lane].available);
+      const bundled = bundledEnginesOf(family, availability);
       if (!cmd || !avail) {
-        next[cli] = { cmd: cmd || null, available: false, version: null, error: null };
-        return;
-      }
-      if (cli === 'claude-exp') {
-        next[cli] = { cmd, available: true, version: CLAUDE_AGENT_SDK_VERSION, error: null };
+        next[family] = { cmd: cmd || null, available: false, version: null, error: null, bundled };
         return;
       }
       const probed = await probeCliVersion(cmd);
-      next[cli] = { cmd, available: true, version: probed.version, error: probed.error };
+      next[family] = { cmd, available: true, version: probed.version, error: probed.error, bundled };
     }));
     versionCache.at = now;
     versionCache.versions = next;
@@ -393,18 +385,18 @@ function createCliSwitchRuntime(options) {
     const fetchLatest = resolveFetchLatestVersionWithSource();
     const next = {};
     const usedRegistry = {};
-    await Promise.all(supportedClis.map(async (cli) => {
-      const pkg = cliUpstream.npmPackageFor(cli);
-      const entry = versions[cli];
-      if (!pkg || !entry || !entry.available) { next[cli] = null; usedRegistry[cli] = null; return; }
+    await Promise.all([...familyTargets().keys()].map(async (family) => {
+      const pkg = cliUpstream.npmPackageFor(family);
+      const entry = versions[family];
+      if (!pkg || !entry || !entry.available) { next[family] = null; usedRegistry[family] = null; return; }
       try {
         const result = await fetchLatest(pkg);
         // 兼容两种注入: 老接口回版本号, 新接口回 {version, registry}。
-        next[cli] = typeof result === 'string' ? result : (result && result.version) || null;
-        usedRegistry[cli] = (result && typeof result === 'object' && result.registry) || null;
+        next[family] = typeof result === 'string' ? result : (result && result.version) || null;
+        usedRegistry[family] = (result && typeof result === 'object' && result.registry) || null;
       } catch (_) {
-        next[cli] = null;
-        usedRegistry[cli] = null;
+        next[family] = null;
+        usedRegistry[family] = null;
       }
     }));
     latestCache.at = now;
@@ -415,21 +407,23 @@ function createCliSwitchRuntime(options) {
 
   // 合并成对外契约。原有字段(cmd/available/version/error)一个不动, 只新增
   // latest/updateAvailable/updateSource/inUseCount/latestRegistry, 老客户端继续照旧读。
+  // 键是**家族**(= 升级目标): 一个 CLI 一行, 由它带出随 MultiCC 走的引擎(bundled)。
   function decorateVersions(versions, latest, inUse = {}, registry = {}) {
     const out = {};
-    for (const cli of supportedClis) {
-      const entry = versions[cli] || { cmd: null, available: false, version: null, error: null };
-      const pkg = cliUpstream.npmPackageFor(cli);
-      const verdict = cliUpstream.classifyUpdate(entry.version, latest ? latest[cli] : null);
-      out[cli] = {
+    for (const family of familyTargets().keys()) {
+      const entry = versions[family] || { cmd: null, available: false, version: null, error: null, bundled: [] };
+      const pkg = cliUpstream.npmPackageFor(family);
+      const verdict = cliUpstream.classifyUpdate(entry.version, latest ? latest[family] : null);
+      out[family] = {
         ...entry,
+        bundled: entry.bundled || [],
         latest: verdict.latest,
         updateAvailable: verdict.updateAvailable,
         updateSource: pkg ? 'npm' : null,
         // 这个 latest 是从哪个 registry 读到的(null = 没读到)。面板拿它解释「为什么
         // 走的是镜像」, 升级则用同一个源去装。
-        latestRegistry: (registry && registry[cli]) || null,
-        inUseCount: inUse[cli] || 0,
+        latestRegistry: (registry && registry[family]) || null,
+        inUseCount: inUse[family] || 0,
       };
     }
     return out;
@@ -485,16 +479,17 @@ function createCliSwitchRuntime(options) {
 
   // spawn 的 PATH 追加常见二进制目录(homebrew/local/user-local)。
   function buildInstallEnv(cli) {
+    const target = installTargetOf(cli);
     const extra = ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local/bin')];
     const env = { ...process.env, PATH: [process.env.PATH, ...extra].filter(Boolean).join(':') };
     // 「在哪个源上看到新版，就在哪个源上装」：检测走了兜底镜像（官方源不可达）时，
     // 必须把同一个源交给 npm，否则升级命令会去打一个连不上的官方源 —— 用户看到的
     // 就是「明明说有新版，升级却总是失败」。只作用于这次安装子进程，不写任何配置。
-    const registry = (latestCache.registry && latestCache.registry[cli]) || null;
+    const registry = (latestCache.registry && latestCache.registry[target]) || null;
     if (registry) env.npm_config_registry = registry;
     // 上面这条只对 npm 车道有效。codex 是 curl 车道(见 OFFICIAL_INSTALL_SPECS), 它没有
     // 「检测源 = 安装源」的问题, npm_config_registry 对它是个无害的空操作。
-    const installEnv = CLI_INSTALL_ENV[cli];
+    const installEnv = CLI_INSTALL_ENV[target];
     if (installEnv) Object.assign(env, installEnv);
     return env;
   }
@@ -505,11 +500,10 @@ function createCliSwitchRuntime(options) {
   // 卸掉现有的 npm 版 codex」、maybe_launch_codex_now 问「现在启动 codex 吗」。
   // 无 TTY 时 prompt_yes_no 已经默认答「否」, 所以不设也不会挂死; 但那是巧合, 显式
   // 声明才是契约 —— 尤其 get() 那个若答"是"会把 codex TUI 拉起来, 直接吊死 install job。
-  // 同一张表的内容必须让 command 字符串保持逐字符相同, 否则 installTargetKey 会把
-  // codex 与 codex-exp 判成两个目标, 串行保护失效(见 findRunningInstallJob)。
+  // 键是安装目标(家族): codex 与 codex-exp 派生同一个二进制、跑同一条命令, 所以只有
+  // 一行 —— 车道各占一行是旧表按车道铺开时的产物, 那也正是串行保护要额外兜的坑。
   const CLI_INSTALL_ENV = Object.freeze({
     codex: { CODEX_NON_INTERACTIVE: '1' },
-    'codex-exp': { CODEX_NON_INTERACTIVE: '1' },
   });
 
   // 各 CLI 用来覆盖可执行文件路径的环境变量(与 cli-adapters/commands.js 一致),
@@ -546,7 +540,8 @@ function createCliSwitchRuntime(options) {
   }
 
   function launchInstallJob(cli) {
-    const spec = installSpecs[cli];
+    const target = installTargetOf(cli);
+    const spec = installSpecs[target];
     const env = buildInstallEnv(cli);
     // 派生二进制归 Homebrew 管时先卸掉它再 npm 装(见 homebrew-takeover.js)。
     // 探测失败按「不归 brew 管」处理, 照旧只跑 npm。
@@ -561,15 +556,15 @@ function createCliSwitchRuntime(options) {
     // 升级前的基线: 派生二进制的当前版本 + 我们已知的上游最新版。两者都有时, 命令跑完
     // 才能判断「这次升级到底有没有作用到真正在用的那个二进制」(见 verifyInstallReachedBinary)。
     // 缓存是冷的就不下结论 —— 宁可少一次诊断, 不可误报一次失败。
-    const beforeEntry = (versionCache.versions && versionCache.versions[cli]) || null;
+    const beforeEntry = (versionCache.versions && versionCache.versions[target]) || null;
     const job = {
       id: jobId, cli, status: 'running', command, startedAt,
       endedAt: null, exitCode: null, error: null, _log: log, _timer: null,
       hint: null,
       _target: installTargetKey(cli),
-      _registry: (latestCache.registry && latestCache.registry[cli]) || null,
+      _registry: (latestCache.registry && latestCache.registry[target]) || null,
       _beforeVersion: (beforeEntry && beforeEntry.version) || null,
-      _expectedLatest: (latestCache.latest && latestCache.latest[cli]) || null,
+      _expectedLatest: (latestCache.latest && latestCache.latest[target]) || null,
     };
     if (installJobs.size >= INSTALL_JOB_CAPACITY) {
       const oldest = installJobs.keys().next().value;
@@ -955,25 +950,41 @@ function createCliSwitchRuntime(options) {
     app.get('/api/cli/install-specs', asyncHandler(async (req, res) => {
       return res.json({
         ok: true,
+        // 键是家族(= 升级目标)。客户端拿到的是车道 id(选择器、会话记录都是车道),
+        // 要问「这个车道怎么装」得先落到家族 —— web 侧用 provider-catalog 的
+        // cliFamilyOf, App 侧用 cli_display.dart 的 cliFamilyOf。
         specs: installSpecs,
         // Host-level availability lets a brand-new client choose a working
         // default before any session exists. Previously the App could only
         // discover this through an existing session and guessed "Claude" on
-        // an empty installation.
+        // an empty installation. 这一份仍是**车道**键: 可用性天然是「这个 id 能不能
+        // 被派生」, 而 claude-exp 与 claude 是两条不同的派生路径。
         availability: options.cliAvailabilitySummary(),
       });
     }));
+
+    // 面板/选择器只该给「家族的 CLI 制品」装东西。随 MultiCC 走的引擎(bundled 车道)
+    // 没有可安装的制品: npm 上没有它、安装脚本也不含它 —— 拿家族的命令糊弄过去,
+    // 用户会以为修好了。如实说去哪儿升。
+    function bundledRefusal(cli) {
+      const engines = capability.bundledEnginesOf(cli).map(engine => engine.engine).join(' / ');
+      return `${capability.familyNameOf(cli)} 的引擎(${engines || '内置引擎'})随 MultiCC 一起发布，`
+        + '请升级 MultiCC 本身来更新它';
+    }
 
     app.post('/api/cli/:cli/install', asyncHandler(async (req, res) => {
       const cli = String((req.params && req.params.cli) || '').trim().toLowerCase();
       if (!supportedClis.includes(cli)) {
         return res.status(400).json({ ok: false, error: 'unsupported cli' });
       }
+      if (capability.isBundled(cli)) {
+        return res.status(400).json({ ok: false, manual: true, error: bundledRefusal(cli) });
+      }
       const availability = options.cliAvailabilitySummary();
       if (availability && availability[cli] && availability[cli].available) {
         return res.json({ ok: true, alreadyInstalled: true, availability: { [cli]: availability[cli] } });
       }
-      const spec = installSpecs[cli];
+      const spec = installSpecs[installTargetOf(cli)];
       if (!spec) {
         return res.status(400).json({ ok: false, error: 'unsupported cli' });
       }
@@ -1028,7 +1039,11 @@ function createCliSwitchRuntime(options) {
       if (!supportedClis.includes(cli)) {
         return res.status(400).json({ ok: false, error: 'unsupported cli' });
       }
-      const spec = installSpecs[cli];
+      if (capability.isBundled(cli)) {
+        return res.status(400).json({ ok: false, manual: true, error: bundledRefusal(cli) });
+      }
+      const target = installTargetOf(cli);
+      const spec = installSpecs[target];
       if (!spec) {
         return res.status(400).json({ ok: false, error: 'unsupported cli' });
       }
@@ -1050,7 +1065,7 @@ function createCliSwitchRuntime(options) {
         jobId: job.id,
         cli: job.cli,
         command: job.command,
-        inUseCount: cliInUseCounts()[cli] || 0,
+        inUseCount: cliInUseCounts()[target] || 0,
       });
     }));
   }

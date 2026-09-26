@@ -7,6 +7,12 @@
   const cliMark = cli => window.MultiCCProviderCatalog.cliShortMark(cli);
   // 兜底车道（服务端 DISPLAY 的 deprecated 列）：车道还能跑，但在淘汰路上。
   const cliDeprecated = cli => window.MultiCCProviderCatalog.cliDeprecated(cli);
+  // 两行式 CLI 行的**小字**：这条车道底下的引擎。扶正的两条常驻车道写引擎产品名
+  // （Claude Agent SDK / Codex App Server），其余车道就是它自己的 id。
+  const cliEngine = cli => window.MultiCCProviderCatalog.cliEngine(cli);
+  // 这条车道能出现在哪种会话的线路选择里 —— 车道的属性（服务端 kinds 列），不是这一页
+  // 的规矩。任务的线路是 chat 线路，所以这里只取 chat 那一半。
+  const cliOffersIn = (cli, kind) => window.MultiCCProviderCatalog.cliOffersIn(cli, kind);
   const isProviderless = cli => window.MultiCCProviderCatalog.cliProviderless(cli);
   const EFFORT_LABELS = Object.freeze({
     claude: t('airTaskSettingsEffortClaude'), 'claude-exp': t('airTaskSettingsEffortClaude'), codex: t('airTaskSettingsEffortCodex'), 'codex-exp': t('airTaskSettingsEffortCodex'), opencode: t('airTaskSettingsEffortOpenCode'),
@@ -235,9 +241,16 @@
     actions.append(cancel, submit); foot.append(footCopy, actions);
     form.append(error, foot); d.append(form); document.body.append(d); d.showModal();
 
-    const cliList = [...new Set([config.cli || 'claude', ...(Array.isArray(clis) ? clis : [])].filter(Boolean))];
+    // 可选线路按用途分：任务是 chat 线路（一次性车道 `claude -p` / `codex exec` 不在
+    // 这里），终端是 terminal 线路（常驻车道是没有可执行文件的 SDK / app-server，摆
+    // 在这儿选不出来）。当前这条无论如何都留着 —— 否则打开一个跑在旧线路上的会话，
+    // 连自己正在用哪条都看不见。
+    const laneKind = entry.purpose === 'terminal' ? 'terminal' : 'chat';
+    const cliList = [...new Set([config.cli, ...(Array.isArray(clis) ? clis : [])]
+      .filter(Boolean))]
+      .filter(cli => cli === config.cli || cliOffersIn(cli, laneKind));
     const cache = new Map();
-    let currentCli = config.cli || cliList[0] || 'claude';
+    let currentCli = config.cli || cliList[0] || (laneKind === 'terminal' ? 'claude' : 'claude-exp');
     let currentCatalog = null;
     let providers = [];
     let providerValue = '';
@@ -273,12 +286,13 @@
         button.setAttribute('aria-checked', String(cli === currentCli));
         button.classList.toggle('selected', cli === currentCli);
         button.append(node('span', cliMark(cli), 'air-cli-mark'));
-        // 第二行本来是内部 id；兜底车道（服务端 DISPLAY 的 deprecated 列）在这里
-        // 明说一句计划淘汰 —— 角标和名字都看不出一条线路是不是过渡品。
+        // 第一行是产品名，第二行（小字）是这条车道底下的引擎 —— 扶正的两条常驻车道
+        // 写引擎产品名，其余车道写自己的 id。兜底车道（服务端 DISPLAY 的 deprecated
+        // 列）在这里明说一句计划淘汰 —— 角标和名字都看不出一条线路是不是过渡品。
         const copy = node('span');
         copy.append(
           node('strong', cliLabel(cli)),
-          node('small', cliDeprecated(cli) ? `${cli} · ${t('cliLaneDeprecatedNote')}` : cli),
+          node('small', cliDeprecated(cli) ? `${cliEngine(cli)} · ${t('cliLaneDeprecatedNote')}` : cliEngine(cli)),
         );
         button.append(copy);
         button.onclick = () => { if (cli !== currentCli && !loading) selectCli(cli, false); };

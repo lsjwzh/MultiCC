@@ -5,6 +5,13 @@
  * badge when a newer version of some chat CLI is published, and a popover that
  * names each one and upgrades it on demand.
  *
+ * One row per **CLI family**, not per lane: an upgrade replaces the family's CLI
+ * artifact, and that artifact is one thing per family — `codex` and `codex-exp`
+ * derive the same binary and run the same install command. A lane whose engine
+ * does not come from that artifact at all (today `claude-exp`: the Claude Agent
+ * SDK is a dependency of multicc itself) is not an installable row either; it is
+ * reported as a second line under its family, naming who upgrades it.
+ *
  * Where the numbers come from: `GET /api/cli/versions` reports both halves —
  * the version of the binary this host actually spawns (`<bin> --version`) and
  * the version published upstream (npm registry, cached server-side for a day).
@@ -26,11 +33,11 @@
   const POLL_MS = 2500;
   const MAX_WAIT_MS = 8 * 60 * 1000;
 
-  // 产品名，不是文案：中文界面里也是这几个词，所以不进 i18n 词典。这张表和服务端
-  // src/cli/cli-capability.js 的 DISPLAY 同源（web 侧走共享 CLI 目录
-  // public/provider-catalog.js）—— 原本这里是第三份手抄副本，漏了 claude-exp/codex-exp
-  // 两个车道，于是它们升级完在浮层里只剩内部 id。
-  const cliLabel = cli => window.MultiCCProviderCatalog.cliDisplayName(cli);
+  // 产品名，不是文案：中文界面里也是这几个词，所以不进 i18n 词典。名字按**家族**取
+  // （服务端的键也是家族）：面板行是 CLI 制品，不是车道 —— 车道名（Claude Code /
+  // Codex Exec）在这里会读成「有两三个可升级的 CLI」。这张表和服务端
+  // src/cli/cli-capability.js 同源（web 侧走共享目录 public/provider-catalog.js）。
+  const cliLabel = cli => window.MultiCCProviderCatalog.cliFamilyName(cli);
 
   let lastState = null;
   let lastError = false;
@@ -119,6 +126,17 @@
     return `v${entry.version} · ${t('airCliUpdateCurrent')}`;
   }
 
+  // 随 MultiCC 走的引擎（服务端 bundled 列）的说明行：「内置 Claude Agent SDK v0.60.0，
+  // 随 MultiCC 一起升级」。面板不碰它 —— 装不了、也升不了（npm 上没有它）—— 但不写出来
+  // 会让这一族看起来像「少了一条车道」。版本可能读不到（依赖被裁剪/包结构变了），那就
+  // 只说引擎，不编一个号。
+  function bundledLine(engine) {
+    return t('airCliUpdateBundled', {
+      engine: engine.engine,
+      version: engine.version ? ` v${engine.version}` : '',
+    });
+  }
+
   // 未安装的行给一颗「安装」按钮：点一下就跑 /api/cli/:cli/install 那条官方安装
   // 链路（和升级同一套 job/轮询/日志）。需要手动安装的 CLI（zcode 桌面版等）由
   // 服务端回 manual 文案，原样写进副标题。
@@ -134,6 +152,9 @@
     name.append(node('strong', null, cliLabel(cli)));
     const status = node('small', 'cli-update-versions', statusLine(entry));
     name.append(status);
+    for (const engine of entry.bundled || []) {
+      name.append(node('small', 'cli-update-bundled', bundledLine(engine)));
+    }
     row.append(name);
     if (!mode) return { row, status, button: null, mode };
     const button = node('button', mode === 'install' ? 'secondary' : 'primary',

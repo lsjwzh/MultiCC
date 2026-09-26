@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../theme.dart';
+import '../utils/cli_display.dart';
 import '../utils/session_status_helpers.dart';
 
 class CliSwitchRequest {
@@ -72,11 +73,32 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
   bool _available(SessionCli cli) =>
       _config.cliAvailability[cli] ?? cli == _config.cli;
 
+  /// 这张表是 chat 会话的换道面板：一次性车道（`claude -p` / `codex exec`）不列出来
+  /// ——「哪种会话给这条车道」是车道的事实（服务端 cli-capability 的 kinds 列）。
+  /// 当前这条无论如何都留着：一个跑在旧线路上的会话，选项里连自己都找不到就没法
+  /// 知道自己正在用哪条。
+  bool _offered(SessionCli cli) => cli == _target || cliOffersIn(cli.name, 'chat');
+
+  /// 安装/升级的单位是**家族的 CLI 制品**，所以服务端的 specs 是家族键，而这里拿
+  /// 到的是车道（选择器、会话记录都是车道）—— 先落到家族。
+  /// 家族里那条「引擎随 MultiCC 走」的车道（今天只有 claude-exp）没有制品可装，
+  /// 见 [cliIsBundled]：绝不能拿家族的 `npm install -g @anthropic-ai/claude-code`
+  /// 去修 Agent SDK，那会让人以为修好了。
   Map<String, dynamic>? _specFor(SessionCli cli) {
     final specs = widget.specs;
-    if (specs == null) return null;
-    final s = specs[cli.name];
+    if (specs == null || cliIsBundled(cli.name)) return null;
+    final s = specs[cliFamilyOf(cli.name) ?? cli.name];
     return s is Map<String, dynamic> ? s : null;
+  }
+
+  /// bundled 车道没有安装命令，说明白引擎跟谁走 —— 否则选到它的人只会看到
+  /// 「未安装或不可执行」，无处可去。
+  String? _bundledNote(SessionCli cli) {
+    if (!cliIsBundled(cli.name)) return null;
+    final engines = cliBundledEnginesOf(cli.name).map((e) => e.engine).join(' / ');
+    return engines.isEmpty
+        ? '引擎随 MultiCC 一起发布，请升级 MultiCC 本身'
+        : '引擎（$engines）随 MultiCC 一起发布，请升级 MultiCC 本身';
   }
 
   String _description(SessionCli cli) {
@@ -87,6 +109,8 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
       if (install.phase == 'error') return install.error ?? '安装失败';
     }
     if (!_available(cli)) {
+      final note = _bundledNote(cli);
+      if (note != null) return note;
       final spec = _specFor(cli);
       // auto!=true -> show the manual instructions; otherwise keep the default.
       if (spec != null && spec['auto'] != true) {
@@ -398,7 +422,7 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
               style: TextStyle(color: AppColors.muted, fontSize: 12, height: 1.45),
             ),
             const SizedBox(height: 14),
-            ...SessionCli.values.map(_option),
+            ...SessionCli.values.where((cli) => _offered(cli)).map(_option),
             const SizedBox(height: 6),
             CheckboxListTile(
               key: const Key('cli-switch-fresh'),
@@ -484,6 +508,19 @@ class _CliSwitchSheetState extends State<CliSwitchSheet> {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
+                    // 这条车道的小字（引擎）：扶正的两条常驻车道底下是一个引擎产品
+                    // （Claude Agent SDK / Codex App Server），得说出来。其余车道的
+                    // 小字就是自己的 id，跟名字重复，下面那行状态说明更有用。
+                    if (cliEngine(cli.name) != cli.name) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        cliEngine(cli.name),
+                        style: TextStyle(
+                          color: available ? AppColors.muted : AppColors.faint,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 2),
                     Text(
                       _description(cli),

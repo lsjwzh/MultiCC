@@ -226,6 +226,7 @@ small, .caption { color: var(--muted); font-size: 11px; }
 .cli-update-name { min-width: 0; flex: 1 1 auto; }
 .cli-update-name strong { display: block; font-size: 12.5px; }
 .cli-update-versions { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.cli-update-bundled { display: block; color: var(--muted); font-size: 10.5px; margin-top: 1px; }
 .cli-update-row button { flex: 0 0 auto; }
 .cli-update-log {
   margin: 6px 0 0;

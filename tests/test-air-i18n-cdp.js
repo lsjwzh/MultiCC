@@ -295,7 +295,9 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       };
     })()`);
     assert.equal(quickRoute.zhCodex, OFFICIAL_NAME_ZH, 'the catalog still holds the server-side name in Chinese');
-    assert.equal(quickRoute.label, ['codex', quickRoute.codex, quickRoute.model].join(' · '),
+    // 第一段是车道的产品名（服务端 DISPLAY 的 displayName），不是内部 id。扶正之后
+    // 它是家族名 Codex：一次性 `codex exec` 车道与常驻的 Codex App Server 同名。
+    assert.equal(quickRoute.label, ['Codex', quickRoute.codex, quickRoute.model].join(' · '),
       'the new-task band names the official route in English, not in the stored Chinese');
     assert.ok(!/[㐀-鿿]/.test(quickRoute.label), `the official route still renders Chinese: ${quickRoute.label}`);
 
@@ -455,7 +457,7 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
       label: document.getElementById('quick-ai-pill').textContent.trim(),
       codex: window.I18N.zh.providerOfficialCodex, model: window.I18N.zh.airQuickDefaultModel,
     }))()`);
-    assert.equal(quickZh.label, ['codex', quickZh.codex, quickZh.model].join(' · '),
+    assert.equal(quickZh.label, ['Codex', quickZh.codex, quickZh.model].join(' · '),
       'the official route is Chinese again — the mapping translates the name, it does not scrub it');
     assert.equal(quickZh.codex, OFFICIAL_NAME_ZH, 'Chinese mode still shows the stored name');
     assert.ok((await page.evaluate(SCAN)).length > 5, 'the Chinese shell must be back');
@@ -554,7 +556,10 @@ test('the embedded chat document is English too, including the composer band Air
         aiTitle: window.t('airTaskAiTitle') };
     })()`);
     assert.equal(band.hidden, false, 'the band must be showing — a hidden pill would make the next assertion vacuous');
-    assert.equal(band.text, ['codex', band.codex, band.model].join(' · '),
+    // 第一段是车道的产品名（服务端 DISPLAY 的 displayName），不是内部 id ——
+    // 扶正之后两条 codex 车道都叫家族名 Codex（小字才是 codex exec / Codex App
+    // Server）。名字是数据，这里只钉住它与 provider 那段一起出现在药丸上、且都是英文。
+    assert.equal(band.text, ['Codex', band.codex, band.model].join(' · '),
       'the official route in the composer band must be the English name');
     assert.ok(!/[㐀-鿿]/.test(band.text), `the composer band still renders Chinese: ${band.text}`);
     assert.equal(band.title, band.aiTitle, 'the pill talks through the dictionary too');

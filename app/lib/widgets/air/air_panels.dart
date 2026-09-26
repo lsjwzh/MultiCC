@@ -6,6 +6,7 @@ import '../../services/air_service.dart';
 import '../../services/attachment_picker.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
+import '../../utils/cli_display.dart';
 import '../marquee_text.dart';
 import '../voice_input_button.dart';
 import 'air_role_editor.dart';
@@ -855,7 +856,13 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   @override
   void initState() {
     super.initState();
-    _cli = widget.clis.isEmpty ? 'claude' : widget.clis.first;
+    // 任务的线路是 chat 线路：取列表里第一条能作 chat 的车道 —— 一次性
+    // `claude -p` / `codex exec` 已经不在 chat 的选择里了（服务端 cli-capability 的
+    // kinds 列），所以这里也不再默认到它们。
+    _cli = widget.clis.firstWhere(
+      (cli) => cliOffersIn(cli, 'chat'),
+      orElse: () => 'claude-exp',
+    );
     _runtime = AirTaskRuntime(cli: _cli);
     _focus.addListener(_onFocusChanged);
     _controller.addListener(_onDraftChanged);
@@ -976,9 +983,21 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                 ),
               ),
             ),
-            for (final cli in widget.clis)
+            // 名字走唯一那份 CLI 展示表；小字是这条车道底下的引擎（扶正的两条常驻
+            // 车道写引擎产品名，其余车道写自己的 id，跟名字重复就不重复画）。一次性
+            // 车道不在任务的候选里 —— 它们属于终端 —— 但当前那条永远留着。
+            for (final cli in widget.clis.where((c) => c == _cli || cliOffersIn(c, 'chat')))
               ListTile(
-                title: Text(cli, style: const TextStyle(color: AppColors.text)),
+                title: Text(
+                  cliDisplayName(cli),
+                  style: const TextStyle(color: AppColors.text),
+                ),
+                subtitle: cliEngine(cli) == cli
+                    ? null
+                    : Text(
+                        cliEngine(cli),
+                        style: const TextStyle(color: AppColors.muted, fontSize: 11),
+                      ),
                 trailing: cli == _cli
                     ? const Icon(Icons.check_rounded, color: AppColors.accent)
                     : null,

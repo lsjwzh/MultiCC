@@ -16,6 +16,7 @@ import '../services/claude_models_service.dart';
 import '../services/codex_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../theme.dart';
+import '../utils/cli_display.dart';
 import '../services/agent_preset_service.dart';
 import '../widgets/agent_preset_picker_sheet.dart';
 import '../widgets/provider_option.dart';
@@ -92,11 +93,13 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
 
   bool get _isClaude => _pickedCli.isClaudeFamily;
   bool get _isCodex => _pickedCli.isCodexFamily;
-  Iterable<SessionCli> get _selectableClis => SessionCli.values.where(
-    (cli) =>
-        widget.kind == SessionKind.chat ||
-        (cli != SessionCli.codexExp && cli != SessionCli.claudeExp),
-  );
+  /// 这张弹窗能给哪种会话挑哪条车道，是车道的事实（服务端 cli-capability 的 kinds
+  /// 列），不是这里的分支：chat 只给常驻车道（`claude -p` / `codex exec` 那两个
+  /// 一次性可执行文件归终端），终端反过来只给能真跑起来的原生命令。
+  Iterable<SessionCli> get _selectableClis {
+    final kind = widget.kind == SessionKind.chat ? 'chat' : 'terminal';
+    return SessionCli.values.where((cli) => cliOffersIn(cli.name, kind));
+  }
   bool get _isQoder => _pickedCli == SessionCli.qoder;
   String get _defaultEffort => _pickedCli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
@@ -114,14 +117,58 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   /// back to available so the user is never blocked from creating a session.
   bool _cliAvailable(SessionCli cli) => widget.cliAvailability[cli] ?? true;
 
-  /// 兜底车道（`codex exec`，计划淘汰）的说明：名字现在叫 Codex Exec，别和
-  /// 扶正后的 Codex 搞混，并指出该用哪条。文案与 web 选择器共用 i18n 词条。
+  /// 兜底车道（`codex exec`，计划淘汰）的说明：这条车道对外也叫 Codex（区别在小字
+  /// codex exec），所以这里必须点出该换到哪条，光说「计划淘汰」用户分不出该选谁。
+  /// 文案与 web 选择器共用 i18n 词条。
   String _deprecationNoteText(SessionCli cli) {
     final replacement = cli.replacedByLane?.displayName;
     return replacement == null
         ? t('cliLaneDeprecatedNote')
         : '${t('cliLaneDeprecatedNote')} · $replacement';
   }
+
+  /// 线路下拉里那一行大字：产品名（未安装时带后缀）。
+  String _cliOptionMain(SessionCli cli) => _cliAvailable(cli)
+      ? cli.displayName
+      : '${cli.displayName}${t('cliNotInstalledSuffix')}';
+
+  /// 大字配色：装了是正文色，没装是灰的（和列表里其它缺失项一致）。
+  Color _cliOptionColor(SessionCli cli) =>
+      _cliAvailable(cli) ? const Color(0xFF233249) : const Color(0xFF8a9aab);
+
+  /// 线路下拉的一项（**菜单里**的样子）：大字是产品名，下面那行小字是这条车道底下
+  /// 的引擎。扶正的两条常驻车道底下确实是一个引擎产品（Claude Agent SDK / Codex App
+  /// Server），得写出来；其余车道的小字就是自己的 id，跟名字重复，就不再画一行。
+  ///
+  /// 两行式交给 [ProviderOption]：它按「有没有竖向空间」决定画几行（开着的那张菜单
+  /// 里两行，收起的字段只有固定单行高，就只画大字）—— provider 的限额细节走的就是
+  /// 这条规则，这里不另写一份。
+  Widget _cliOptionLabel(SessionCli cli) {
+    final engine = cliEngine(cli.name);
+    return ProviderOption(
+      main: _cliOptionMain(cli),
+      detail: engine == cli.name ? '' : engine,
+      mainStyle: TextStyle(color: _cliOptionColor(cli), fontSize: 13),
+    );
+  }
+
+  /// 收起的那一格里的同一项：只有大字（那份两行式是菜单用的，见 [_cliOptionLabel]）。
+  Widget _cliOptionClosedLabel(SessionCli cli) => Text(
+        _cliOptionMain(cli),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: _cliOptionColor(cli), fontSize: 13),
+      );
+
+  static const TextStyle _providerOptionStyle =
+      TextStyle(color: Color(0xFF233249), fontSize: 13);
+
+  /// provider 那一行大字：默认前缀 + 名字 + 订阅标记 + 模型（限额摘要是第二行，
+  /// 不进这行）。菜单项与收起字段共用，免得两处各拼一遍又对不上。
+  String _providerMain(Map<String, dynamic> p) =>
+      '${p['id'] == _defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
+      '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
+      '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}';
 
   @override
   void initState() {
@@ -130,7 +177,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _roleCtrl = TextEditingController();
     _agentCtrl = TextEditingController();
     _presetSvc = AgentPresetService(settings: widget.settings);
-    _pickedCli = widget.defaultCli ?? SessionCli.claude;
+    _pickedCli = widget.defaultCli ??
+        (widget.kind == SessionKind.chat ? SessionCli.claudeExp : SessionCli.claude);
     // If the requested default CLI isn't installed on this host, fall back to
     // the first available one (or keep Claude when nothing is known).
     if (!_selectableClis.contains(_pickedCli) || !_cliAvailable(_pickedCli)) {
@@ -629,26 +677,25 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                       (cli) => DropdownMenuItem<SessionCli>(
                         value: cli,
                         enabled: _cliAvailable(cli),
-                        child: Text(
-                          _cliAvailable(cli)
-                              ? cli.displayName
-                              : '${cli.displayName}${t('cliNotInstalledSuffix')}',
-                          style: TextStyle(
-                            color: _cliAvailable(cli)
-                                ? const Color(0xFF233249)
-                                : const Color(0xFF8a9aab),
-                          ),
-                        ),
+                        child: _cliOptionLabel(cli),
                       ),
                     )
                     .toList(),
+                // 收起字段单独给一份单行文本：DropdownButton 把每个 item 的 child 都摆
+                // 进一个 IndexedStack，而 AlertDialog 用 IntrinsicWidth 量内容 —— 内在
+                // 尺寸这一问会一路问到 ProviderOption 里那个 LayoutBuilder，它答不了
+                // （LayoutBuilder does not support returning intrinsic dimensions），
+                // 于是整个弹窗 Layout 报错。菜单里那些两行项不在这条测量路径上。
+                selectedItemBuilder: (context) =>
+                    _selectableClis.map(_cliOptionClosedLabel).toList(),
                 onChanged: (v) {
                   if (v != null) _onCliChanged(v);
                 },
               ),
-              // 建会话时选到兜底车道（codex exec，计划淘汰）要说一句：它的名字
-              // 现在是 Codex Exec，别和扶正后的 Codex 搞混。
-              if (_pickedCli.isDeprecatedLane) ...[
+              // 建会话时选到兜底车道（codex exec，计划淘汰）要说一句：这条车道对外
+              // 也叫 Codex，只靠名字看不出它是要退役的那条。这句只在 chat 里成立
+              // —— 终端要跑的就是那个原生命令，那条车道在终端不是过渡品。
+              if (widget.kind == SessionKind.chat && _pickedCli.isDeprecatedLane) ...[
                 const SizedBox(height: 6),
                 Text(
                   _deprecationNoteText(_pickedCli),
@@ -726,16 +773,30 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                       (p) => DropdownMenuItem(
                         value: p['id'] as String,
                         child: ProviderOption(
-                          main:
-                              '${p['id'] == _defaultProviderId ? t('defaultProviderPrefix') : ''}${p['name']}'
-                              '${p['isOfficial'] == true ? t('subscriptionSuffix') : ''}'
-                              '${(p['model'] as String? ?? '').isNotEmpty ? ' · ${p['model']}' : ''}',
+                          main: _providerMain(p),
                           detail: providerLimitDetail(p),
-                          mainStyle: const TextStyle(
-                            color: Color(0xFF233249),
-                            fontSize: 13,
-                          ),
+                          mainStyle: _providerOptionStyle,
                         ),
+                      ),
+                    ),
+                  ],
+                  // 和上面 CLI 那一格同一个理由：收起字段只画一行，别把两行的
+                  // ProviderOption（内含 LayoutBuilder）留在 AlertDialog 的内在尺寸
+                  // 测量路径上。
+                  selectedItemBuilder: (context) => [
+                    if (!_hasConcreteDefaultProvider)
+                      Text(
+                        t('defaultLogin'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Color(0xFF233249)),
+                      ),
+                    ..._providers.map(
+                      (p) => Text(
+                        _providerMain(p),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: _providerOptionStyle,
                       ),
                     ),
                   ],

@@ -18,6 +18,7 @@ import '../services/voice_launch_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
 import '../utils/manual_order.dart';
+import '../utils/cli_display.dart';
 import '../utils/overlay_geometry.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
@@ -1545,7 +1546,7 @@ void _showSessionSheet(
                                   ),
                                 ),
                                 const SizedBox(width: 6),
-                                MiniBadge(label: s.cli.name, color: cliColor),
+                                MiniBadge(label: cliDisplayName(s.cli.name), color: cliColor),
                                 const SizedBox(width: 5),
                                 MiniBadge(
                                   label: s.kind.name,
@@ -1938,7 +1939,9 @@ class _FleetDetailSheetState extends State<_FleetDetailSheet>
   Future<void> _createSession(SessionKind kind, {SessionCli? defaultCli}) async {
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
-    final initialCli = defaultCli ?? SessionCli.claude;
+    // 没点名默认线路时，chat 落在扶正后的常驻车道上（`claude -p` 那两个一次性
+    // 命令已经不在 chat 的列表里），终端落在 `claude` —— 终端要跑的就是那个命令。
+    final initialCli = defaultCli ?? (kind == SessionKind.chat ? SessionCli.claudeExp : SessionCli.claude);
     List<Map<String, dynamic>> providers = [];
     String? defaultProviderId;
     try {

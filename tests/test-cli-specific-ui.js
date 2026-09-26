@@ -161,9 +161,10 @@ async function cleanup() {
   console.log('  checking Codex controls');
   await api('POST', `/api/sessions/${session.id}/switch-cli`, { cli: 'codex' });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
-  // cli 'codex' 是兜底的 `codex exec` 车道，产品名现在是 Codex Exec（扶正后的
-  // Codex 是 codex-exp）。
-  ui = await openConfig(page, 'Codex Exec');
+  // cli 'codex' 是兜底的 `codex exec` 车道。扶正之后两条 codex 车道的大字都是家族名
+  // Codex（小字才是 codex exec / Codex App Server），所以按钮名认不出是哪一条 ——
+  // 真正的区分在下面那组控件：兜底车道没有 agent、只有 subagent + Reasoning Level。
+  ui = await openConfig(page, 'Codex');
   if (ui.agentVisible || !ui.subagentVisible || ui.effortLabel !== 'Reasoning Level') {
     throw new Error(`Codex controls mismatch: ${JSON.stringify(ui)}`);
   }

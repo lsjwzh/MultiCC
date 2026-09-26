@@ -10,14 +10,17 @@ const autoEditor = require('../public/auto-provider-editor');
 const providerCatalog = require('../public/provider-catalog');
 
 const ROOT = path.join(__dirname, '..');
-// 显示名只有一个：Anthropic 的 Claude Agent SDK（内部 id 仍是 claude-exp）。这张表
+// 显示名只有一份（2026-09-26 扶正）：Anthropic 这条常驻车道的**大字**是产品名
+// Claude，**小字**才是引擎名 Claude Agent SDK（内部 id 仍是 claude-exp）。这张表
 // 原本在四个地方各有一份（chat.js 的 CLI_META、air-task-settings.js 的 CLI_LABELS…），
 // 现在 Web 侧只有 public/provider-catalog.js 一份，服务端权威表在
 // src/cli/cli-capability.js；三端一致性由 tests/test-cli-display-parity.js 锁。
-test('claude-exp is labelled "Claude Agent SDK" by the shared catalog, never "Claude Exp"', () => {
-  assert.equal(providerCatalog.cliDisplayName('claude-exp'), 'Claude Agent SDK');
-  assert.equal(providerCatalog.cliMeta('claude-exp').label, 'Claude Agent SDK');
-  assert.equal(providerCatalog.CLI_DISPLAY['claude-exp'].displayName, 'Claude Agent SDK');
+test('claude-exp shows as "Claude" with the engine line "Claude Agent SDK", never "Claude Exp"', () => {
+  assert.equal(providerCatalog.cliDisplayName('claude-exp'), 'Claude');
+  assert.equal(providerCatalog.cliMeta('claude-exp').label, 'Claude');
+  assert.equal(providerCatalog.CLI_DISPLAY['claude-exp'].displayName, 'Claude');
+  assert.equal(providerCatalog.cliEngine('claude-exp'), 'Claude Agent SDK');
+  assert.equal(providerCatalog.cliMeta('claude-exp').engine, 'Claude Agent SDK');
   assert.equal(providerCatalog.cliShortMark('claude-exp'), 'A');
   // 页面不再各持一份标签表：这些文件里不该再出现 claude-exp 的字面标签。
   const anyUi = ['public/chat.js', 'public/air-task-settings.js', 'src/cli-adapters/claude-exp.js', 'src/cli/switch-runtime.js'];

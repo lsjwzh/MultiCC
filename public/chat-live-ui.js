@@ -1274,7 +1274,14 @@
         // 兜底车道的标记由 cliMeta 带进来（catalog 从服务端 DISPLAY 的 deprecated 列
         // 生成）: 名字后面直接说出来, 选到它时下面还会再解释一句。
         const DEPRECATED_NOTE = tt('cliLaneDeprecatedNote', '兜底线路，计划淘汰');
-        const cliLabelText = meta => `${meta.label}${meta && meta.deprecated ? `（${DEPRECATED_NOTE}）` : ''}`;
+        // 小字（引擎）在 <option> 里没有第二行，所以附在名字后面 —— 只在这条车道真的
+        // 换了一个引擎产品名时才加（扶正的两条常驻车道：Claude Agent SDK / Codex App
+        // Server）；其余车道的小字就是它自己的 id，跟名字重复，不加。
+        const cliLabelText = (value, meta) => {
+          const label = meta?.label || value;
+          const engine = meta?.engine && meta.engine !== value ? ` · ${meta.engine}` : '';
+          return `${label}${engine}${meta?.deprecated ? `（${DEPRECATED_NOTE}）` : ''}`;
+        };
         // 选中兜底车道时在详情里再说一句, 并指出该用哪条 —— 列表里的角标只是
         // 提示, 这里才是「你正要切到一条过渡线路」的说明。
         const deprecationNoteNode = meta => {
@@ -1287,13 +1294,18 @@
           return note;
         };
         for (const [value, meta] of Object.entries(cliMeta || {})) {
+          // 一次性车道（`claude -p` / `codex exec`）不在这张列表里 —— chat 的线路是
+          // 常驻车道，那两个可执行文件属于终端。当前这条永远留着：否则一个跑在旧
+          // 线路上的会话打开这个面板，连自己正在用哪条都看不见。
+          const kinds = (meta && meta.kinds) || ['chat', 'terminal'];
+          if (value !== current && kinds.indexOf('chat') === -1) continue;
           const sessionState = states && states[value];
           const installed = availLocal[value]?.available !== false;
           const option = doc.createElement('option');
           option.value = value;
           // hooks 缺省时退化为旧行为: 未安装 option 禁用; 有 hooks 时可选, 文案仍带 "· 未安装"
           option.disabled = !installed && value !== current && !hasHooks;
-          option.textContent = `${cliLabelText(meta)}${value === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
+          option.textContent = `${cliLabelText(value, meta)}${value === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
           optionMap[value] = option;
           select.appendChild(option);
         }
@@ -1336,7 +1348,7 @@
           const meta = cliMeta?.[cli];
           const sessionState = states && states[cli];
           const installed = isInstalled(cli);
-          option.textContent = `${cliLabelText(meta)}${cli === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
+          option.textContent = `${cliLabelText(cli, meta)}${cli === current ? '（当前）' : ''}${installed ? (sessionState?.hasNativeSession ? ' · 继续上次对话' : ' · 开始新对话') : ' · 未安装'}`;
         };
 
         // 渲染进行中/完成/失败状态的安装面板(写入 targetInfo)
@@ -1435,7 +1447,16 @@
             targetInfo.textContent = '正在加载安装信息...';
             return;
           }
-          const spec = specs?.[cli];
+          // 选中态是**车道**，而 specs 是**家族**键（升级/安装的对象是家族的 CLI 制品）:
+          // 先落到家族。bundled 车道（引擎随 MultiCC 走，今天只有 claude-exp）没有制品
+          // 可装 —— 拿家族的命令去装会让人以为修好了，所以如实说去哪儿升。
+          const catalog = window.MultiCCProviderCatalog;
+          if (catalog && catalog.cliIsBundled && catalog.cliIsBundled(cli)) {
+            const engines = catalog.cliBundledEnginesOf(cli).map(e => e.engine).join(' / ');
+            targetInfo.textContent = `${label} 的引擎${engines ? `（${engines}）` : ''}随 MultiCC 一起发布，请升级 MultiCC 本身。`;
+            return;
+          }
+          const spec = specs?.[(catalog && catalog.cliFamilyOf && catalog.cliFamilyOf(cli)) || cli];
           if (!spec) {
             targetInfo.textContent = `${label} 暂无可用的安装信息。`;
             return;

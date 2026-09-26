@@ -403,11 +403,12 @@ test('install-specs returns the static official command table', async () => {
   const res = await invokeSpecs();
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.ok, true);
+  // 键是**家族**(= 升级目标), 不是车道: 升级的单位是 CLI 制品, 而 codex 与
+  // codex-exp 派生同一个二进制、跑同一条命令, claude-exp 更是一条没有制品的车道。
+  // 车道 → 家族由客户端用共享目录落(cliFamilyOf), 所以这里不该有车道行。
   assert.deepEqual(res.body.specs, {
     claude: { auto: true, command: 'npm install -g @anthropic-ai/claude-code', display: 'npm install -g @anthropic-ai/claude-code' },
-    'claude-exp': { auto: false, manual: 'Claude Agent SDK 由 MultiCC 内置；请升级 MultiCC 来更新 SDK' },
     codex: { auto: true, command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
-    'codex-exp': { auto: true, command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', display: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' },
     opencode: { auto: true, command: 'npm install -g opencode-ai', display: 'npm install -g opencode-ai' },
     qoder: { auto: true, command: 'curl -fsSL https://qoder.cn/install | bash', display: 'curl -fsSL https://qoder.cn/install | bash' },
     zcode: { auto: false, manual: 'ZCode 暂无官方 CLI 安装脚本, 请从官网 https://zcode.z.ai 下载安装 ZCode 桌面版(其内置 CLI)' },
@@ -417,6 +418,9 @@ test('install-specs returns the static official command table', async () => {
     gemini: { auto: true, command: 'npm install -g @google/gemini-cli', display: 'npm install -g @google/gemini-cli' },
     grok: { auto: true, command: 'npm install -g @xai-official/grok', display: 'npm install -g @xai-official/grok' },
   });
+  assert.equal(res.body.specs['claude-exp'], undefined);
+  assert.equal(res.body.specs['codex-exp'], undefined);
+  // availability 反过来仍是**车道**键: 「这个 id 能不能被派生」天然按派生路径分开。
   assert.equal(res.body.availability.codex.available, true);
 });
 
@@ -584,10 +588,15 @@ test('cli/versions reports the spawned binary version and parses noisy output', 
   assert.equal(res.body.versions.qoder.cmd, '/bin/qoderclicn');
   assert.equal(res.body.versions.qoder.available, true);
   assert.equal(res.body.versions.claude.version, '2.0.1');
-  // claude-exp 的版本来自 package.json 里的 SDK 依赖(见 CLAUDE_AGENT_SDK_VERSION),
-  // 跟着真实依赖走, 升级 SDK 不需要改这里。
+  // claude-exp 的引擎随 MultiCC 走, 不在升级范围里: 所以它没有自己的一行, 而是挂在
+  // 家族的 bundled 上(面板把这一行写成副标题, 不给装不了的按钮)。版本来自
+  // package.json 里的 SDK 依赖, 跟着真实依赖走, 升级 SDK 不需要改这里。
   const sdkDep = require('../package.json').dependencies['@anthropic-ai/claude-agent-sdk'];
-  assert.equal(res.body.versions['claude-exp'].version, String(sdkDep).replace(/^[~^]/, ''));
+  assert.deepEqual(res.body.versions.claude.bundled, [{
+    lane: 'claude-exp', engine: 'Claude Agent SDK', kind: 'chat',
+    available: true, version: String(sdkDep).replace(/^[~^]/, ''),
+  }]);
+  assert.equal(res.body.versions['claude-exp'], undefined);
   assert.equal(res.body.versions.codex.version, '0.20.0');
   assert.equal(res.body.versions.zcode.version, '1.2.3'); // 从 stderr 解析
   // 探测确实用的是 --version, 且解析出的正是注入的那个二进制路径
@@ -762,6 +771,35 @@ test('cli/versions reports inUseCount so the upgrade dialog can name the risk', 
   // 没有任何活动会话时不谎报占用
   const quiet = await createHarness({ ...options, chat: false }).invokeVersions();
   assert.equal(quiet.body.versions.claude.inUseCount, 0);
+});
+
+test('cli/versions counts a lane against its family, so one CLI is one row', async () => {
+  const exec = fakeExecFile({ '/bin/codex': '0.20.0' });
+  // 活动会话跑的是 codex-exp(Codex App Server) —— 但升级换的是家族的 codex 二进制,
+  // 所以占用必须记在 codex 上, 否则确认框会说「没有任何会话在用, 随便升」。
+  const harness = createHarness({
+    cliCommands: VERSION_CMDS,
+    execFileVersion: exec,
+    availability: { codex: { available: true }, 'codex-exp': { available: true } },
+  });
+  harness.records.get('s1').cli = 'codex-exp';
+  const res = await harness.invokeVersions();
+  assert.equal(res.body.versions.codex.inUseCount, 1);
+  assert.equal(res.body.versions['codex-exp'], undefined);
+});
+
+test('a bundled engine cannot be installed or upgraded — it rides with MultiCC', async () => {
+  // claude-exp 的引擎是 multicc 自己的依赖: 没有制品可装。绝不能拿家族的
+  // `npm install -g @anthropic-ai/claude-code` 糊弄过去 —— 用户会以为修好了。
+  const harness = createHarness({
+    availability: { 'claude-exp': { available: false } },
+  });
+  for (const invoke of [harness.invokeInstall, harness.invokeUpgrade]) {
+    const res = await invoke('claude-exp');
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.manual, true);
+    assert.match(res.body.error, /MultiCC/);
+  }
 });
 
 test('upgrade runs the official command even though the cli is already installed', async () => {
@@ -1048,8 +1086,8 @@ test('codex install job declares non-interactive env; npm lanes are untouched', 
 
   await harness.invokeUpgrade('codex');
   // codex-exp 与 codex 派生同一个二进制、跑同一条命令: 必须仍被判成同一个安装目标,
-  // 否则两条 curl 会同时抢安装脚本的 install.lock 与 current 软链。换成 curl 之后
-  // installTargetKey(逐字符比 command)依然成立, 这条就是它的守卫。
+  // 否则两条 curl 会同时抢安装脚本的 install.lock 与 current 软链。现在两条车道先
+  // 落到同一个家族(= 同一个 spec 条目), 所以这条守卫比逐字符比 command 更硬。
   const twin = await harness.invokeUpgrade('codex-exp');
   assert.equal(twin.statusCode, 409);
   assert.equal(twin.body.running, true);

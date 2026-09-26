@@ -261,8 +261,9 @@ test('浮层把可升级的排在前面，并说清「查不到最新版」与�
   const texts = rowTexts(context.registry);
   assert.equal(texts.length, 4);
   assert.match(context.registry['cli-update-summary'].textContent, /1/);
-  // Claude Code 在最前：打开浮层就是为了看要升级的那个
-  assert.match(texts[0], /Claude Code/);
+  // 行名是**家族**: 打开浮层就是为了看要升级的那个 CLI, 而升级换的是家族的制品
+  // (Claude Code 是车道名, 在这里会读成「另一个可升级的东西」)。
+  assert.match(texts[0], /^Claude(?! Code)/);
   assert.match(texts[0], /v2\.0\.1 → v2\.0\.2/);
   assert.match(texts.find(text => text.includes('Codex')), new RegExp(TXT.current));
   // qoder 是「无法检测最新版」，不是「已是最新」
@@ -286,9 +287,35 @@ test('升级前必须问过用户；有会话在用该 CLI 时把风险说清楚
   rowButtons(refused.registry)[0].onclick();
   await settle();
   assert.equal(refused.asked.length, 1);
-  assert.match(refused.asked[0], /Claude Code/);
+  assert.match(refused.asked[0], /Claude(?! Code)/);
   assert.match(refused.asked[0], /3/, '要说出有几个会话正在用它');
   assert.deepEqual(fetchImpl.calls.map(call => call.path), ['/api/cli/versions'], '用户拒绝时不能发出升级请求');
+});
+
+test('随 MultiCC 走的引擎挂在家族行下面，不是一行卖不出去的升级', async () => {
+  const context = buildContext({
+    fetchImpl: createFetch({
+      '/api/cli/versions': versionsBody({
+        claude: entry({
+          latest: '2.0.2', updateAvailable: true,
+          // 服务端的家族行: CLI 制品一个版本, 随 MultiCC 走的引擎另算(bundled 列)
+          bundled: [{ lane: 'claude-exp', engine: 'Claude Agent SDK', kind: 'chat', available: true, version: '0.60.4' }],
+        }),
+        codex: entry({ version: '0.20.0', latest: '0.20.0' }),
+      }, 1),
+    }),
+  });
+  await settle();
+  openPopover(context.registry);
+  const texts = rowTexts(context.registry);
+  // 一个 CLI 一行: 内置引擎不单独占一行(旧表按车道铺开时它就是一行假动作)
+  assert.equal(texts.length, 2);
+  const claudeRow = texts.find(text => text.startsWith('Claude'));
+  assert.match(claudeRow, /^Claude(?! Code)/);
+  assert.match(claudeRow, /Claude Agent SDK v0\.60\.4/, '要说出这个引擎是什么版本、跟谁走');
+  assert.match(claudeRow, /MultiCC/);
+  // 只有 CLI 制品的那个家族有可点的升级按钮
+  assert.equal(rowButtons(context.registry).length, 1);
 });
 
 test('确认后跑官方升级、轮询到完成，并用 ?refresh=1 让角标清零', async () => {
