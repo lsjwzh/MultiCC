@@ -1100,6 +1100,7 @@
   "airDirArtifactsOpen": "View this workspace's artifacts",
   "airDirArtifactsHint": "Permanent first, then pinned, then newest",
   "airDirArtifactsEmpty": "No artifacts in this workspace yet.",
+  "airDirArtifactsStaleServer": "The server did not apply the workspace filter (it may still be running an older version), so this list spans every workspace: restart the MultiCC service and try again.",
   "taskShellHistory": "View original conversation (read only)",
   "taskShellTitle": "Task conversations",
   "taskShellBack": "Back to manage",

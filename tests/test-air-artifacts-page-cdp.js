@@ -34,12 +34,23 @@ test('the directory artifacts entry sits with the memo and opens its own page', 
   routes['/api/cron'] = () => json([]);
   // 服务端给的顺序（永久保留 → 置顶 → 最后生成时间），服务（kind='service'）不在
   // 这一页里 —— 它归「服务与文档」那一格。
+  // 每一行都带 dir —— 服务端按 ?dir= 过滤后必然如此（只返回 dir 等于该路径的行），
+  // 也是这一页判定「过滤有没有生效」的依据。
   const artifacts = [
-    { id: 'art-file', kind: 'file', title: '巡检日志', url: '/artifacts/run.log', createdAt: '2026-09-25T02:00:00.000Z', permanent: true, pinned: true },
-    { id: 'art-web', kind: 'page', title: '巡检报告', url: '/artifacts/report.html', createdAt: '2026-09-26T02:00:00.000Z', permanent: false, pinned: false },
-    { id: 'art-svc', kind: 'service', title: '预览服务', url: '/artifacts/svc/' },
+    { id: 'art-file', kind: 'file', title: '巡检日志', url: '/artifacts/run.log', createdAt: '2026-09-25T02:00:00.000Z', permanent: true, pinned: true, dir: '/projects/multicc' },
+    { id: 'art-web', kind: 'page', title: '巡检报告', url: '/artifacts/report.html', createdAt: '2026-09-26T02:00:00.000Z', permanent: false, pinned: false, dir: '/projects/multicc' },
+    { id: 'art-svc', kind: 'service', title: '预览服务', url: '/artifacts/svc/', dir: '/projects/multicc' },
   ];
-  routes['/api/docs-registry'] = ({ url }) => json(url.searchParams.get('dir') === '/projects/multicc' ? artifacts : []);
+  // 旧版本的服务端：看见 ?dir= 也照旧把整张表发回来，而且行上没有 dir。
+  const unscoped = [
+    { id: 'old-1', kind: 'page', title: '别处的产物', url: '/artifacts/other.html', createdAt: '2026-09-26T03:00:00.000Z' },
+  ];
+  routes['/api/docs-registry'] = ({ url }) => {
+    const dir = url.searchParams.get('dir');
+    if (dir === '/projects/multicc') return json(artifacts);
+    if (dir === '/projects/legacy') return json(unscoped);
+    return json([]);
+  };
   routes['PATCH /api/docs-registry/art-web'] = ({ body }) => { Object.assign(artifacts[1], JSON.parse(body)); return json(artifacts[1]); };
 
   await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-air-artifacts-page') }, async page => {
@@ -97,6 +108,18 @@ test('the directory artifacts entry sits with the memo and opens its own page', 
     assert.ok(await page.waitFor(`document.querySelectorAll('.directory-artifact-row')[1].querySelectorAll('.air-doc-tag').length === 2`));
     assert.equal(artifacts[1].permanent, true, '📌 不顺手改永久保留');
     assert.equal(artifacts[1].pinned, true);
+
+    // 服务端没按目录过滤（进程还在跑旧版本）时不装作没事：列表照旧显示，但状态行
+    // 说明这一屏是全部目录的产物、重启服务即可。
+    await page.navigate('/artifacts.html?dir=/projects/legacy');
+    assert.ok(await page.waitFor(`document.getElementById('artifacts-status').textContent.includes('服务端没有按目录过滤')`),
+      JSON.stringify({ status: await page.evaluate(`document.getElementById('artifacts-status').textContent`) }));
+    await page.screenshot('artifacts-page-stale-server.png');
+    // 过滤生效时不能误报这句话。
+    await page.navigate('/artifacts.html?dir=/projects/multicc');
+    assert.ok(await page.waitFor(`document.querySelectorAll('#artifacts-list .directory-artifact-row').length === 2`));
+    assert.equal(await page.evaluate(`document.getElementById('artifacts-status').hidden`), true);
+    await page.screenshot('artifacts-page-scoped.png');
 
     // 没有产物的目录 / 认不出的目录 id：各有一句话，不留白屏。
     await page.navigate('/artifacts.html?dir=/projects/stock');

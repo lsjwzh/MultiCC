@@ -1211,7 +1211,7 @@
       border-radius: 50%; border: 1px solid var(--chat-warning, #d29922); background: var(--chat-warning-soft, #2d2108);
       color: var(--chat-warning, #f2cc60); font-size: 15px; font-weight: 700; line-height: 1;
       display: flex; align-items: center; justify-content: center;
-      box-shadow:var(--chat-shadow, 0 6px 18px #000000aa); cursor: pointer; opacity: .75;
+      box-shadow:var(--chat-shadow, 0 6px 18px #000000aa); cursor: grab; touch-action: none; opacity: .75;
       transition: opacity 160ms ease;
     }
     #merge-hint-fab:hover { opacity: 1; }
@@ -1890,7 +1890,7 @@
       pointer-events: none;            /* the outer box owns the gestures */
     }
     #diff-dock-fab:hover .diff-fab-circle { background: #2a7bf5; }
-    #diff-dock-fab.dragging { cursor: grabbing; }
+    #diff-dock-fab.dragging, #merge-hint-fab.dragging { cursor: grabbing; }
     #diff-dock-fab.dragging .diff-fab-circle { box-shadow:var(--chat-shadow, 0 10px 26px #000000cc); }
     #diff-dock-fab[hidden] { display: none; }
     #diff-dock-count {

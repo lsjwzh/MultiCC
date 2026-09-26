@@ -167,11 +167,17 @@
       // 只有「还是最新那一次刷新」才允许落盘：重复点刷新会 ++generation 把在飞的
       // 那次作废，晚到的响应不能盖回旧数据。
       if (current !== generation) return false;
-      items = Array.isArray(entries) ? entries.filter(entry => entry && entry.kind !== 'service') : [];
+      const rows = Array.isArray(entries) ? entries : [];
+      items = rows.filter(entry => entry && entry.kind !== 'service');
       if (signature() !== painted) paint();
+      // 服务端没按目录过滤时（进程还在跑旧版本），整张表都会原样回来，而且每行的 dir
+      // 都是空的 —— 那是过滤没生效，不是这一页不会过滤。`?dir=` 生效时服务端只可能
+      // 返回 dir 等于该路径的行（见 src/docs-registry.js），所以「每一行都没有 dir」
+      // 只可能是旧进程，不是误报。
+      const unscoped = Boolean(path) && rows.length > 0 && rows.every(entry => entry && !entry.dir);
       // 目录 id 查不到路径（目录被删了 / 链接是从别处抄来的）：空列表配一句话，
       // 别只留一片白。
-      setStatus(path ? null : 'airUnknownDirectory');
+      setStatus(!path ? 'airUnknownDirectory' : (unscoped ? 'airDirArtifactsStaleServer' : null));
       return true;
     } catch (error) {
       // 列表保留上一次的好数据，只在状态行说一句（同 task-artifacts.js 的失败处理）。

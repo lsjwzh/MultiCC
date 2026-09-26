@@ -193,7 +193,13 @@ test('the standalone artifacts page owns the list, its two PATCH actions and the
   assert.match(page, /\{ permanent: !entry\.permanent \}/);
   assert.match(page, /\{ pinned: !entry\.pinned \}/);
   assertLocalized(page, 'public/air-artifacts-page.js', 'airDirArtifactsEmpty', '本目录还没有产物。');
-  assertLocalized(page, 'public/air-artifacts-page.js', 'airUnknownDirectory', '未知目录', "setStatus\\(path \\? null : 'airUnknownDirectory'\\)");
+  assertLocalized(page, 'public/air-artifacts-page.js', 'airUnknownDirectory', '未知目录', "setStatus\\(!path \\? 'airUnknownDirectory'");
+  // 服务端把 ?dir= 当没看见（进程还在跑旧版本）时整张表都会回来、每行 dir 都是空的：
+  // 那是过滤没生效，不是这一页不会过滤 —— 说清楚，别让人以为列表坏了。
+  assertLocalized(page, 'public/air-artifacts-page.js', 'airDirArtifactsStaleServer',
+    '服务端没有按目录过滤（它可能仍在运行旧版本），这一屏是全部目录的产物：重启 MultiCC 服务后重试。',
+    "unscoped \\? 'airDirArtifactsStaleServer'");
+  assert.match(page, /rows\.every\(entry => entry && !entry\.dir\)/);
   assert.match(page, /href = entry\.url \|\| '#'/);
   // 标题、说明与那扇门是壳里的静态文案（applyI18n 按 data-i18n 填），所以这几条断在
   // artifacts.html 上：词典里还写着这句中文，页面确实按 key 取它。

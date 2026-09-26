@@ -143,3 +143,91 @@ test('the CLI update badge sits on the brand row and its popover lands on screen
     assert.deepEqual(await page.evaluate('window.__errors'), []);
   });
 });
+
+// 十个家族一起报时那块浮层比视口还高：它本来就是 overflow:auto 的，所以「滚不动、
+// 后面的 CLI 被截断」不是排版没做，而是滚它自己会把它关掉 —— open() 挂在 window
+// 捕获阶段的 scroll 监听分不清「侧栏滚了」和「浮层自己滚了」，而滚到头的继续滚动
+// 还会链到侧栏去。两处都得堵：浮层内部的滚动不算离开锚点，滚到边界也不再外溢。
+test('a long CLI update list scrolls to its last row instead of closing', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const publicDir = path.resolve(__dirname, '../public');
+  const routes = {};
+  for (const file of fs.readdirSync(publicDir).filter(name => /\.(css|js|svg)$/.test(name))) {
+    const extension = file.slice(file.lastIndexOf('.') + 1);
+    routes[`/${file}`] = {
+      body: fs.readFileSync(path.join(publicDir, file)),
+      headers: { 'content-type': CONTENT_TYPE[extension] || 'application/octet-stream' },
+    };
+  }
+  const html = fs.readFileSync(path.join(publicDir, 'air.html'), 'utf8')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
+    .replace('</body>', '<script src="/i18n-catalog.js"></script><script src="/i18n.js"></script>'
+      + '<script src="/shared/format.js"></script><script src="/provider-catalog.js"></script>'
+      + '<script src="/air-cli-update.js"></script></body>');
+  routes['/shared/format.js'] = {
+    body: fs.readFileSync(path.join(publicDir, 'shared', 'format.js')),
+    headers: { 'content-type': 'text/javascript' },
+  };
+  routes['/'] = { body: html, headers: { 'content-type': 'text/html; charset=utf-8' } };
+
+  // 十个家族全都在、都没有新版：这是「CLI 比较多」时最常见的一屏（没有角标）。
+  const families = ['claude', 'codex', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok'];
+  const versions = {};
+  for (const cli of families) {
+    versions[cli] = { cmd: `/bin/${cli}`, available: true, version: '1.0.0', error: null,
+      latest: '1.0.0', updateAvailable: false, updateSource: 'npm', inUseCount: 0 };
+  }
+  routes['/api/cli/versions'] = () => json({ ok: true, cached: false, checkedAt: '2026-09-26T10:00:00.000Z', updateCount: 0, versions });
+
+  await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-air-cli-update-long') }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/');
+    await page.evaluate(`(() => {
+      window.__errors = [];
+      addEventListener('error', event => __errors.push(String(event.message)));
+    })()`);
+    await page.evaluate('document.getElementById("cli-update-btn").click()');
+    assert.ok(await page.waitFor('document.getElementById("cli-update-pop").hidden === false'));
+
+    const box = () => page.evaluate(`(() => {
+      const pop = document.getElementById('cli-update-pop');
+      const rows = document.getElementById('cli-update-rows');
+      const last = rows.lastElementChild, first = rows.firstElementChild;
+      const p = pop.getBoundingClientRect();
+      const l = last.getBoundingClientRect();
+      return { rows: rows.children.length, hidden: pop.hidden,
+        clientHeight: pop.clientHeight, scrollHeight: pop.scrollHeight, scrollTop: pop.scrollTop,
+        bottom: Math.round(p.bottom), viewport: innerHeight,
+        lastBottom: Math.round(l.bottom), firstTop: Math.round(first.getBoundingClientRect().top) };
+    })()`);
+
+    const initial = await box();
+    assert.equal(initial.rows, families.length, '每个家族一行');
+    assert.ok(initial.scrollHeight > initial.clientHeight,
+      `这一屏本来就装不下，必须能滚：${JSON.stringify(initial)}`);
+    assert.ok(initial.bottom <= initial.viewport, `浮层本身不能顶出屏幕：${JSON.stringify(initial)}`);
+    assert.ok(initial.lastBottom > initial.bottom, `滚动前最后一行确实在框外：${JSON.stringify(initial)}`);
+
+    // 用真实的滚轮事件在浮层上滚：这里以前会把它关掉（窗口捕获阶段的 scroll 监听）。
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 160, y: 400, deltaX: 0, deltaY: 240 });
+    await page.waitFor(`document.getElementById('cli-update-pop').scrollTop > 0`).then(ok => {
+      assert.ok(ok, `滚轮要能滚它：${JSON.stringify(initial)}`);
+    });
+    assert.equal(await page.evaluate('document.getElementById("cli-update-pop").hidden'), false,
+      '滚浮层不该把它自己关掉');
+
+    // 滚到底：最后一行要真的看见，不是被裁在框外。
+    await page.evaluate(`(() => { const p = document.getElementById('cli-update-pop'); p.scrollTop = p.scrollHeight; return true; })()`);
+    const scrolled = await box();
+    assert.ok(scrolled.lastBottom <= scrolled.bottom + 1,
+      `滚到底后最后一行要在框内：${JSON.stringify(scrolled)}`);
+    assert.equal(scrolled.hidden, false, '滚到底也不该被关掉');
+    // 滚到边界后的继续滚动不能外溢到侧栏去（overscroll-behavior: contain）。
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 160, y: 400, deltaX: 0, deltaY: 600 });
+    assert.equal(await page.evaluate('document.getElementById("cli-update-pop").hidden'), false,
+      '滚过头不能把浮层甩掉');
+    assert.deepEqual(await page.evaluate('window.__errors'), []);
+    await page.screenshot('cli-update-long-list.png');
+  });
+});
+

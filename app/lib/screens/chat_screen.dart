@@ -42,6 +42,7 @@ import '../widgets/scheduled_send_store.dart';
 import '../widgets/session_diff_dialog.dart';
 import '../widgets/input_bar.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/merge_hint_dock.dart';
 import '../widgets/thinking_indicator.dart';
 import '../widgets/tour_overlay.dart';
 import '../widgets/worktree_status.dart';
@@ -170,6 +171,11 @@ class _ChatViewState extends State<ChatView> {
   // Same, for the background-tasks dock: the scheduled-send dock yields to
   // both, so three floaters can coexist without stacking.
   FloatingDockAnchor? _backgroundAnchor;
+
+  // 「有可合并内容」提示条收起成了悬浮球（web 的 `#merge-hint.collapsed`）：
+  // 收起态归这一层，因为两种形态挂在同一棵树的两个位置（列内横幅 / 悬浮球），
+  // 一个 widget 里换不了。只活到这次会话结束 —— 一次临时让位不该跨启动粘住。
+  bool _mergeHintCollapsed = false;
 
   // 定时发送（Web 的 chat-scheduled-send.js）：一份 store 喂两个入口 ——
   // 输入栏的 ⏱ 和待执行时出现的悬浮球。
@@ -1024,7 +1030,7 @@ class _ChatViewState extends State<ChatView> {
                       ),
                       if (widget.settings.advancedMode.value)
                         const _CenteredChatLane(child: _ContextUsageBar()),
-                      if (mergeReady)
+                      if (mergeReady && !_mergeHintCollapsed)
                         MergeHintBar(
                           text: _mergeStatusText(_mergeStatus),
                           onMerge: () => _mergeCurrent(
@@ -1036,6 +1042,8 @@ class _ChatViewState extends State<ChatView> {
                             settings: widget.settings,
                             sessionId: provider.executionSessionName,
                           ),
+                          onCollapse: () =>
+                              setState(() => _mergeHintCollapsed = true),
                         ),
                       // 手机上往回翻消息时输入区会跟着缩小（Web 的
                       // chat-composer-collapse.js）；桌面宽度下它原样不动。
@@ -1137,6 +1145,25 @@ class _ChatViewState extends State<ChatView> {
                       if (_backgroundAnchor != null) _backgroundAnchor!,
                     ],
                     leftMinBottom: 96,
+                    rightMinBottom: _dispatchRightReserve(provider),
+                  ),
+                // 「有可合并内容」收起后的悬浮球：与上面三个共用同一套 primitive，
+                // 优先级最低 —— 三个球的锚点一起递进去，同侧不互相压住。
+                if (mergeReady && _mergeHintCollapsed)
+                  MergeHintDock(
+                    key: ValueKey('merge-${provider.sessionName}'),
+                    text: _mergeStatusText(_mergeStatus),
+                    onMerge: () =>
+                        _mergeCurrent(context, provider.executionSessionName),
+                    onDiff: () => showSessionDiffDialog(
+                      context,
+                      settings: widget.settings,
+                      sessionId: provider.executionSessionName,
+                    ),
+                    obstacle: _dispatchAnchor,
+                    extraObstacles: [
+                      if (_backgroundAnchor != null) _backgroundAnchor!,
+                    ],
                     rightMinBottom: _dispatchRightReserve(provider),
                   ),
                 Positioned.fill(
@@ -1904,149 +1931,6 @@ String _mergeStatusText(Map<String, dynamic>? status) {
     'detail': detail,
     'base': '${status?['baseBranch'] ?? t('baseBranch')}',
   });
-}
-
-/// 「当前 worktree 有可合并内容」提示条 + 它的收起态（web 的 `#merge-hint`
-/// 与 `chat-merge-hint.js`）。
-///
-/// 琥珀色横幅正好浮在输入区上方那排按钮上，所以给它一个让开的路：收起后只剩
-/// 右边缘一颗贴边药丸，点回来即展开。收起状态由这个 widget 自己持有 —— web 也是
-/// 让 controller 自己管（sessionStorage `multicc.mergeHintCollapsed`），调用点不需要
-/// 知道「收没收起」。这里是页面存活期内的记忆，不落盘：一次临时让位不该跨启动粘住。
-class MergeHintBar extends StatefulWidget {
-  final String text;
-  final VoidCallback onMerge;
-  final VoidCallback onDiff;
-
-  const MergeHintBar({
-    super.key,
-    required this.text,
-    required this.onMerge,
-    required this.onDiff,
-  });
-
-  @override
-  State<MergeHintBar> createState() => _MergeHintBarState();
-}
-
-class _MergeHintBarState extends State<MergeHintBar> {
-  bool _collapsed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    if (_collapsed) {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-          child: Material(
-            key: const Key('merge-hint-fab'),
-            color: const Color(0xFFa85a25),
-            shape: const StadiumBorder(),
-            elevation: 6,
-            child: InkWell(
-              customBorder: const StadiumBorder(),
-              onTap: () => setState(() => _collapsed = false),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 7,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.merge_type_rounded,
-                      size: 15,
-                      color: Color(0xFFf4f8fd),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      t('mergeContentReady'),
-                      style: const TextStyle(
-                        color: Color(0xFFf4f8fd),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-    return Container(
-      margin: const EdgeInsets.fromLTRB(10, 0, 10, 6),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFFfff8eb),
-        border: Border.all(color: const Color(0xFFa85a25)),
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.28),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.merge_type_rounded,
-            size: 16,
-            color: Color(0xFFa85a25),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              widget.text,
-              style: const TextStyle(color: Color(0xFFa85a25), fontSize: 12),
-            ),
-          ),
-          TextButton(
-            onPressed: widget.onDiff,
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFa85a25),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              minimumSize: Size.zero,
-              side: const BorderSide(color: Color(0xFFa85a25)),
-            ),
-            child: Text(
-              t('viewDiff'),
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ),
-          const SizedBox(width: 6),
-          TextButton(
-            onPressed: widget.onMerge,
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFf4f8fd),
-              backgroundColor: const Color(0xFFa85a25),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              minimumSize: Size.zero,
-            ),
-            child: Text(
-              t('merge'),
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-          ),
-          IconButton(
-            key: const Key('merge-hint-collapse'),
-            onPressed: () => setState(() => _collapsed = true),
-            icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
-            tooltip: t('mergeHintCollapse'),
-            visualDensity: VisualDensity.compact,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-            color: const Color(0xFFa85a25),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 /// Change-working-directory dialog. Used to hang off the full-width cwd bar

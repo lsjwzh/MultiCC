@@ -208,6 +208,9 @@ small, .caption { color: var(--muted); font-size: 11px; }
   width: min(340px, calc(100vw - 24px));
   max-height: min(70vh, 520px);
   overflow: auto;
+  /* 清单比浮层高时用户要能读到后面几个 CLI：滚到头的余量不能再链给侧栏
+     （侧栏一滚，浮层就按「离开锚点」收起了，看起来还是「滚不动」）。 */
+  overscroll-behavior: contain;
   padding: 12px 14px 10px;
   border: 1px solid var(--line);
   border-radius: 16px;

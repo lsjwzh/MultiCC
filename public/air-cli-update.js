@@ -229,6 +229,17 @@
     close();
   }
 
+  // 侧栏自己滚（窄屏整条抽屉可滚）时浮层不会跟着锚点动，所以一滚就收起。
+  // 但滚**浮层自己**是用户在读这份清单：CLI 多的时候它本来就装不下（超过 10 行），
+  // 把那次滚动当成「离开锚点」会让列表一滚就消失，后面的 CLI 永远看不到 ——
+  // 捕获阶段的 scroll 监听拿到的 target 就是区分这两种滚动的唯一依据。
+  function onScroll(event) {
+    const panel = el('cli-update-pop');
+    const target = event.target;
+    if (panel && target && (target === panel || (typeof panel.contains === 'function' && panel.contains(target)))) return;
+    close();
+  }
+
   function close() {
     const panel = el('cli-update-pop');
     const button = el('cli-update-btn');
@@ -239,7 +250,7 @@
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('keydown', onKey, true);
     root.removeEventListener('resize', close);
-    root.removeEventListener('scroll', close, true);
+    root.removeEventListener('scroll', onScroll, true);
   }
 
   function open() {
@@ -255,9 +266,7 @@
     document.addEventListener('pointerdown', onOutside, true);
     document.addEventListener('keydown', onKey, true);
     root.addEventListener('resize', close);
-    // 浮层是 fixed 的：侧栏自己滚（窄屏整条抽屉可滚）时它不会跟着动，会悬在半空
-    // 指向别处，所以一滚就收起。
-    root.addEventListener('scroll', close, true);
+    root.addEventListener('scroll', onScroll, true);
   }
 
   // ── Upgrade ────────────────────────────────────────────────────────────
