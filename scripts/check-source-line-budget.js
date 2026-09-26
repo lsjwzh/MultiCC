@@ -289,9 +289,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 2026-09-26 产物按目录分类 + 永久保留：docsScope*/docsNoDir/artifactKeepForever*
   // /docsregPermanent*/airDirArtifacts* 共 12 键，中英各 12 行 = +24，重跑生成器实测
   // 7178 行 / 447138 字节。
+  // 2026-09-26 再 +1 键（airDirArtifactsStaleServer：「服务端没按目录过滤」那句话，
+  // 中英各 1 行 = +2），重跑生成器实测 7180 行 / 447499 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7178,
-    maxBytes: 447138,
+    maxLines: 7180,
+    maxBytes: 447499,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

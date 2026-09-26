@@ -1100,6 +1100,7 @@
   "airDirArtifactsOpen": "查看本目录产物",
   "airDirArtifactsHint": "永久保留的排最上，其次是置顶，其余按最后生成时间",
   "airDirArtifactsEmpty": "本目录还没有产物。",
+  "airDirArtifactsStaleServer": "服务端没有按目录过滤（它可能仍在运行旧版本），这一屏是全部目录的产物：重启 MultiCC 服务后重试。",
   "taskShellHistory": "查看原聊天记录（只读）",
   "taskShellTitle": "任务会话",
   "taskShellBack": "返回管理",
