@@ -316,14 +316,36 @@ function createHandoffEnvService(rawDeps) {
     return results;
   }
 
-  // Put a bundle's memory scopes back on disk. `shared` lands in the target
-  // project's shared folder (existing files win — the local team's knowledge
-  // is never overwritten by an import); the narrower scopes fold into the new
-  // session's private folder with a prefix so readMemoryFolder surfaces them
-  // on the next context build. The `session` scope is deliberately ignored
-  // here — v2 bundles still carry it as the flat memoryFiles payload, and the
-  // import route restores that path directly.
-  function restoreMemoryScopes(scopes, { sessionDir, sharedDir }) {
+  // Memory text is injected into every session's context as trusted
+  // instructions, and the machine/cli/shared scopes are read by sessions the
+  // importer never chose. A file arriving there from another machine must not
+  // be indistinguishable from one this machine wrote, so it carries a header.
+  // A markdown comment: invisible when rendered, visible to anything reading
+  // the raw text (which is what the context build does).
+  function memoryProvenanceHeader(provenance, scope) {
+    if (!provenance) return '';
+    const when = provenance.exportedAt || 'unknown time';
+    const who = provenance.label || provenance.sessionId || 'a source session';
+    const cli = provenance.cli || 'unknown cli';
+    return `<!-- multicc handoff: imported into the ${scope} memory scope from source session`
+      + ` "${who}" (${cli}), exported ${when}. It came from another machine — verify before relying on it. -->\n`;
+  }
+
+  // Put a bundle's memory scopes back on disk, each into the scope it came
+  // from: machine → this machine's global folder, cli → the source CLI's
+  // folder, shared → the target project's shared folder, and the narrower
+  // scopes (task, and anything else) → the imported session's private folder
+  // with a prefix so readMemoryFolder still surfaces them. Demoting machine/cli
+  // into one session's private folder would defeat the point of the handoff:
+  // those layers ARE the execution environment, and only the session that
+  // happened to receive the import could see them.
+  //
+  // Existing files always win, so a re-import is idempotent and local knowledge
+  // is never clobbered. The `session` scope is deliberately ignored here — v2
+  // bundles carry it as the flat memoryFiles payload, and the import route
+  // restores that path directly.
+  function restoreMemoryScopes(scopes, options = {}) {
+    const { folderMemory, cli, sessionDir, sharedDir, provenance } = options;
     const report = {};
     for (const [scope, payload] of Object.entries(scopes || {})) {
       if (scope === 'session') {
@@ -331,9 +353,25 @@ function createHandoffEnvService(rawDeps) {
         continue;
       }
       const entry = { written: [], skipped: [] };
-      const prefix = scope === 'shared' ? '' : (MEMORY_SCOPE_PREFIX[scope] || `${scope}-`);
-      const targetDir = scope === 'shared' ? sharedDir : sessionDir;
-      for (const [rawName, content] of Object.entries((payload && payload.files) || {})) {
+      const files = Object.entries((payload && payload.files) || {});
+      const globalScope = scope === 'machine' || scope === 'cli' || scope === 'shared';
+      let targetDir = null;
+      let prefix = '';
+      if (scope === 'machine') targetDir = (folderMemory && folderMemory.machineDir()) || null;
+      else if (scope === 'cli') targetDir = (cli && folderMemory && folderMemory.cliDir(cli)) || null;
+      else if (scope === 'shared') targetDir = sharedDir || null;
+      else { targetDir = sessionDir || null; prefix = MEMORY_SCOPE_PREFIX[scope] || `${scope}-`; }
+      if (!targetDir) {
+        if (files.length) {
+          entry.skipped.push({ name: '*', reason: globalScope
+            ? `${scope} scope is not resolvable on this machine`
+            : 'no session to fold this scope into' });
+        }
+        report[scope] = entry;
+        continue;
+      }
+      const header = globalScope ? memoryProvenanceHeader(provenance, scope) : '';
+      for (const [rawName, content] of files) {
         const base = safeMemoryFileName(rawName);
         if (!base) { entry.skipped.push({ name: rawName, reason: 'unsafe file name' }); continue; }
         const name = prefix + base;
@@ -344,7 +382,7 @@ function createHandoffEnvService(rawDeps) {
             entry.skipped.push({ name, reason: 'already exists locally' });
             continue;
           }
-          fs.writeFileSync(dest, String(content), 'utf8');
+          fs.writeFileSync(dest, header + String(content), 'utf8');
           entry.written.push(name);
         } catch (e) {
           entry.skipped.push({ name, reason: e.message });
@@ -353,6 +391,39 @@ function createHandoffEnvService(rawDeps) {
       report[scope] = entry;
     }
     return report;
+  }
+
+  // Normalize a git remote to `host/owner/repo` so one repository is recognized
+  // across transports: `git@github.com:a/b.git`, `ssh://git@github.com/a/b.git`
+  // and `https://github.com/a/b.git` all name the same repo. Returns null for a
+  // local path or anything without a recognizable host — "cannot tell", which
+  // callers must not read as "different".
+  function normalizeRepoRemote(remote) {
+    const raw = String(remote || '').trim();
+    if (!raw) return null;
+    if (raw.startsWith('/') || raw.startsWith('.') || /^[a-z]:[\\/]/i.test(raw)) return null;
+    let host = null;
+    let rest = null;
+    const url = raw.match(/^[a-z][a-z0-9+.-]*:\/\/(?:[^/@]*@)?([^/:?#]+)(?::\d+)?\/(.*)$/i);
+    const scp = url ? null : raw.match(/^(?:[^/@\s]*@)?([^:/\s]+):(.*)$/);
+    if (url) { host = url[1]; rest = url[2]; }
+    else if (scp) { host = scp[1]; rest = scp[2]; }
+    if (!host || !rest) return null;
+    const trimmed = rest.replace(/^\/+/, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+    if (!trimmed || trimmed.includes(' ')) return null;
+    return `${host.toLowerCase()}/${trimmed.toLowerCase()}`;
+  }
+
+  // Whether the code layer is meaningful: true/false only when both sides name
+  // a repository, null when either side has no origin to compare. Callers treat
+  // null as "attempt it" — git is the final arbiter there, and an unrelated
+  // history has no merge base, so the replay aborts and leaves a note instead
+  // of touching the worktree.
+  function sameRepository(sourceRemote, targetRemote) {
+    const source = normalizeRepoRemote(sourceRemote);
+    const target = normalizeRepoRemote(targetRemote);
+    if (!source || !target) return null;
+    return source === target;
   }
 
   // ── Chat-referenced assets ─────────────────────────────────────────────
@@ -477,7 +548,8 @@ function createHandoffEnvService(rawDeps) {
     lines.push('');
     lines.push('## Source repository / branch');
     lines.push(`- Project directory name: ${ctx.dirName || meta.dirId || 'unknown'} (path on the source machine: ${ctx.dirPath || 'unknown'})`);
-    lines.push(`- Source remote: ${ctx.repoRemote || '(no origin, or not exported)'} - the target machine must already have a directory registered for the same repository`);
+    lines.push(`- Source remote: ${ctx.repoRemote || '(no origin, or not exported)'} - the code layer replays only onto the same repository; `
+      + 'a directory with a different origin keeps its own history and the replay is skipped (see the Git recovery notes below)');
     lines.push(`- Source branch: ${meta.branch || 'unknown'} (base branch: ${ctx.baseBranch || 'unknown'})`);
     if (gitNote) lines.push(`- Git recovery notes: ${gitNote}`);
     lines.push('');
@@ -524,7 +596,8 @@ function createHandoffEnvService(rawDeps) {
     }
     lines.push('');
     lines.push('## Suggested next steps to rebuild context');
-    lines.push('1. Read the memory files in the folder containing this file first (including the transplanted files with task-/cli-/machine- prefixes).');
+    lines.push('1. Read the memory files in the folder containing this file first (narrow scopes such as task memory were folded in here with a prefix); '
+      + 'machine-, CLI- and project-shared memory went back to their own global folders, where every session on this machine reads them.');
     lines.push('2. Use `git log <base branch>..HEAD` to see the increments this session completed; unmerged work lives on this session\'s worktree branch.');
     lines.push('3. Missing project instruction files (listed above) can be requested from the source machine or restored from contextDeps.projectDocs in the bundle.');
     lines.push('4. The provider is decided by this machine: the bundle carries no source provider configuration or credentials, and the imported copy is already attached to a local provider; '
@@ -548,6 +621,8 @@ function createHandoffEnvService(rawDeps) {
     extractAssetPaths,
     restoreSkillFolders,
     restoreMemoryScopes,
+    normalizeRepoRemote,
+    sameRepository,
     renderHandoffDoc,
     safeRelativePath,
     safeMemoryFileName,

@@ -30,6 +30,7 @@ import '../widgets/task_separation_prompt.dart';
 import '../widgets/background_tasks_dock.dart';
 import '../widgets/floating_dock.dart';
 import '../widgets/chat_composer_fold.dart';
+import '../widgets/chat_handoff.dart';
 import '../widgets/chat_header.dart';
 import '../widgets/chat_loading_view.dart';
 import '../widgets/chat_runtime_panels.dart';
@@ -1355,6 +1356,14 @@ Future<void> _shareFromSession(
                       color: Color(0xFFb4701f),
                       fontSize: 12,
                     ),
+                  ),
+                  const SizedBox(height: 14),
+                  // ── 交接包入口（Web share 卡片的 📦 / 📥 mode row）──
+                  handoffShareDialogRow(
+                    context,
+                    ctx,
+                    sessionId: sessionId,
+                    settings: settings,
                   ),
                   const SizedBox(height: 14),
                   // ── Access type ──

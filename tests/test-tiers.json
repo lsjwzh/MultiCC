@@ -190,6 +190,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/chat_handoff_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/chat_header_title_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -1478,6 +1483,24 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-chat-handoff-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-chat-handoff.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
       ]
     },
     {

@@ -253,9 +253,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 撤掉，只留 airNewTerminalHint 文案 + airTerminalCreateFailed 两条）；那一层还要
   // 按用途换抬头，补 airTaskSettingsHeading/Intro/FootTerminal 三键（中英各 3 行
   // = +6）。按本树重跑生成器实测 6938 行 / 430433 字节。
+  // 2026-09-26 会话交接包上界面（public/chat-handoff.js 的导出/导入弹窗 + 分享
+  // 卡片里那两个入口按钮）：handoff* 共 27 键，中英各 27 行 = +54，重跑生成器实测
+  // 7018 行 / 437112 字节。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 6964,
-    maxBytes: 433197,
+    maxLines: 7018,
+    maxBytes: 437112,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

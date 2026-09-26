@@ -162,27 +162,53 @@ test('restoreSkillFolders installs fresh, skips identical, renames on conflict, 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('restoreMemoryScopes writes shared without overwriting and prefixes narrow scopes', () => {
+test('restoreMemoryScopes puts every scope back where it came from', () => {
   const root = tempRoot();
   const service = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills') });
   const sessionDir = path.join(root, 'own');
   const sharedDir = path.join(root, 'shared');
+  const machineDir = path.join(root, 'machine');
+  const cliDir = path.join(root, 'cli-claude');
+  const folderMemory = { machineDir: () => machineDir, cliDir: () => cliDir,
+                         sharedDir: () => sharedDir, sessionDir: () => sessionDir };
   writeTree(sessionDir, { 'CLAUDE.md': 'seed' });
   writeTree(sharedDir, { 'MEMORY.md': 'local wins' });
+  const provenance = { sessionId: 's1', label: '源会话', cli: 'claude',
+                       exportedAt: '2026-09-19T00:00:00Z' };
   const report = service.restoreMemoryScopes({
     session: { files: { 'notes.md': 'private' } },
     shared: { files: { 'MEMORY.md': 'incoming', 'team-facts.md': 'facts',
       '.handoff-provider.json': '{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-legacy-scope-token"}}' } },
+    machine: { files: { 'global-rules.md': 'machine knowledge' } },
+    cli: { files: { 'claude-tips.md': 'cli knowledge' } },
     task: { files: { 'MEMORY.md': 'task memory' } },
-  }, { sessionDir, sharedDir });
+  }, { folderMemory, cli: 'claude', sessionDir, sharedDir, provenance });
   // The session scope is the v1 memoryFiles payload's job — not written here.
   assert.ok(report.session.note);
   assert.ok(!fs.existsSync(path.join(sessionDir, 'notes.md')));
+  // Narrow scopes fold into the receiving session, prefixed so readMemoryFolder
+  // still surfaces them next to its own notes.
   assert.equal(fs.readFileSync(path.join(sessionDir, 'task-MEMORY.md'), 'utf8'), 'task memory');
+  // Global scopes go back to their own folders — this is the whole point of the
+  // handoff: machine-wide knowledge must not be demoted into one session's
+  // private folder where no other session can ever see it.
+  assert.match(fs.readFileSync(path.join(machineDir, 'global-rules.md'), 'utf8'),
+    /^<!-- multicc handoff: imported into the machine memory scope[\s\S]*-->\nmachine knowledge$/);
+  assert.match(fs.readFileSync(path.join(cliDir, 'claude-tips.md'), 'utf8'),
+    /^<!-- multicc handoff: imported into the cli memory scope[\s\S]*-->\ncli knowledge$/);
+  assert.ok(!fs.existsSync(path.join(sessionDir, 'machine-global-rules.md')));
+  assert.ok(!fs.existsSync(path.join(sessionDir, 'cli-claude-tips.md')));
+  // Shared: the local file wins (idempotent re-import never clobbers team
+  // memory), the incoming one is written.
   assert.equal(fs.readFileSync(path.join(sharedDir, 'MEMORY.md'), 'utf8'), 'local wins');
-  assert.equal(fs.readFileSync(path.join(sharedDir, 'team-facts.md'), 'utf8'), 'facts');
   assert.ok(report.shared.skipped.some(s => s.name === 'MEMORY.md'));
   assert.ok(report.shared.written.includes('team-facts.md'));
+  // What lands in a globally-injected scope says where it came from: memory text
+  // is trusted instructions, and a file from another machine must not be
+  // indistinguishable from one this machine wrote.
+  const facts = fs.readFileSync(path.join(sharedDir, 'team-facts.md'), 'utf8');
+  assert.match(facts, /^<!-- multicc handoff: imported into the shared memory scope from source session "源会话" \(claude\), exported 2026-09-19T00:00:00Z\./);
+  assert.ok(facts.endsWith('facts'));
   // A bundle exported by an older release can still carry the plaintext
   // provider file inside a memory scope. `shared` is the worst case: its
   // prefix is empty, so the dotfile would land bare in the project-level
@@ -190,6 +216,50 @@ test('restoreMemoryScopes writes shared without overwriting and prefixes narrow 
   assert.ok(!fs.existsSync(path.join(sharedDir, '.handoff-provider.json')));
   assert.ok(report.shared.skipped.some(s => s.name === '.handoff-provider.json'
     && s.reason === 'unsafe file name'), JSON.stringify(report.shared));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('restoreMemoryScopes reports an unresolvable scope instead of dropping it silently', () => {
+  const root = tempRoot();
+  const service = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills') });
+  // Environment-only import: no receiving session, no target project. The
+  // machine scope still resolves; everything that needed a session or a
+  // project says so in the report.
+  const machineDir = path.join(root, 'machine');
+  const report = service.restoreMemoryScopes({
+    machine: { files: { 'global-rules.md': 'machine knowledge' } },
+    shared: { files: { 'team-facts.md': 'facts' } },
+    task: { files: { 'MEMORY.md': 'task memory' } },
+  }, { folderMemory: { machineDir: () => machineDir } });
+  assert.deepEqual(report.machine.written, ['global-rules.md']);
+  // No provenance → no header: the machine folder is this install's own.
+  assert.equal(fs.readFileSync(path.join(machineDir, 'global-rules.md'), 'utf8'), 'machine knowledge');
+  assert.ok(report.shared.skipped.some(s => s.name === '*'
+    && /not resolvable/.test(s.reason)), JSON.stringify(report.shared));
+  assert.ok(report.task.skipped.some(s => s.name === '*'
+    && /no session/.test(s.reason)), JSON.stringify(report.task));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('sameRepository recognizes one repo across transports and refuses to guess', () => {
+  const root = tempRoot();
+  const service = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills') });
+  const scp = 'git@github.com:acme/widgets.git';
+  const ssh = 'ssh://git@github.com/acme/widgets.git';
+  const https = 'https://github.com/acme/widgets.git';
+  assert.equal(service.normalizeRepoRemote(scp), 'github.com/acme/widgets');
+  assert.equal(service.normalizeRepoRemote(ssh), service.normalizeRepoRemote(scp));
+  assert.equal(service.normalizeRepoRemote(https), service.normalizeRepoRemote(scp));
+  assert.equal(service.sameRepository(scp, https), true);
+  assert.equal(service.sameRepository(scp, 'git@gitlab.com:acme/widgets.git'), false);
+  assert.equal(service.sameRepository(scp, 'git@github.com:acme/other.git'), false);
+  // No origin on either side is "cannot tell", never "different" — the caller
+  // still attempts the replay and lets git arbitrate.
+  assert.equal(service.sameRepository(scp, null), null);
+  assert.equal(service.sameRepository(null, null), null);
+  assert.equal(service.normalizeRepoRemote('/srv/git/widgets.git'), null);
+  assert.equal(service.normalizeRepoRemote('../relative/widgets'), null);
+  assert.equal(service.normalizeRepoRemote(''), null);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
