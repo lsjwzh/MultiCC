@@ -73,6 +73,12 @@ function createPaths({ dataDir } = {}) {
     detachedDir: root === PKG_ROOT
       ? path.join(os.homedir(), '.multicc', 'detached')
       : path.join(root, 'detached'),
+    // Human-assist screenshots (<assistDir>/<sessionId>/*.png) the agent posts
+    // into chat for the user to annotate. They can show logged-in pages, so they
+    // stay out of the package checkout and the auth-free /artifacts route.
+    assistDir: root === PKG_ROOT
+      ? path.join(os.homedir(), '.multicc', 'assist')
+      : path.join(root, 'assist'),
     // Large, replaceable third-party runtimes do not belong in the source
     // checkout. Production keeps them under ~/.multicc while isolated tests
     // keep every byte below their MULTICC_DATA_DIR.
