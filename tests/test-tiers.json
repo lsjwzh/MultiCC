@@ -4657,6 +4657,15 @@
       ]
     },
     {
+      "path": "tests/test-terminal-page-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-terminal-proxy-route.js",
       "tier": "core",
       "lane": "deterministic",
