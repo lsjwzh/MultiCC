@@ -668,6 +668,11 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-terminal-mark { color: var(--faint); font-family: ui-monospace, monospace; font-size: 12px; }
 .directory-terminal-open strong { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
 .directory-terminal-open small { color: var(--muted); font-size: 11px; }
+/* 重启那颗借 `.task-delete` 的尺寸，但它是中性动作（不是危险动作）：灰色、悬停变深。
+   选择器比 `.task-delete:hover` 多一层，免得被那条红配色盖掉。 */
+.directory-terminal-row .terminal-restart { color: var(--muted); font-size: 13px; }
+.directory-terminal-row .terminal-restart:hover,
+.directory-terminal-row .terminal-restart:focus-visible { color: var(--text); border-color: var(--line); background: var(--panel-soft); }
 .directory-terminal-empty { margin: 0; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 12.5px; text-align: center; }
 /* 「＋ 新终端」不再自己长一层选择 UI：它开的是 chat 那个配置对话框
    （`.air-config-dialog`，air-task-settings.js），样式也只有那一份。 */

@@ -173,6 +173,28 @@ void main() {
     await closeView(tester);
   });
 
+  testWidgets('终端行也能重启：先确认，取消就不发请求', (tester) async {
+    final requests = await pumpView(tester);
+    await switchTo(tester, 'terminal');
+
+    expect(find.byKey(const ValueKey('air-terminal-restart-s1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-terminal-restart-s2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('air-terminal-restart-s1')));
+    await tester.pumpAndSettle();
+    // 说清楚后果：进程被杀、CLI 以全新对话重开（服务端会清 cliSessionId）。
+    expect(
+      find.text(t('airTerminalRestartConfirm', {'label': 'a 的巡检终端'})),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text(t('cancel')));
+    await tester.pumpAndSettle();
+    expect(requests.where((r) => r.contains('/restart')), isEmpty);
+    expect(tester.takeException(), isNull);
+    await closeView(tester);
+  });
+
   testWidgets('当前目录没有终端时给一句说明，不是空荡荡一片', (tester) async {
     await pumpView(tester);
     await openDirectory(tester, 'd3');

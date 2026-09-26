@@ -58,6 +58,11 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
       { id: 'role-a', dirId: 'd1', kind: 'chat', label: 'CHAT_KIND_MUST_NOT_SHOW' },
     ],
   });
+  const restarts = [];
+  routes['POST /api/sessions/term-a/restart'] = ({ url }) => {
+    restarts.push(url);
+    return json({ ok: true, cwd: '/projects/multicc' });
+  };
   const deletes = [];
   routes['DELETE /api/sessions/term-a'] = ({ url }) => {
     deletes.push(url);
@@ -103,6 +108,18 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-list').textContent.includes('CHAT_KIND_MUST_NOT_SHOW')`), false, 'chat-kind 的会话不属于终端');
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '2 个终端');
     screenshots.push(await page.screenshot('directory-terminal-list-with-delete'));
+    // 行尾那颗重启：托管路由失联（改过 provider / 早于能力令牌修复建的终端）的愈合
+    // 路径，也是「CLI 卡死了重开一个」的入口。同样先问一次。
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list [data-action="restart-terminal"]').length`), 2, '每行一颗重启');
+    await page.evaluate(`window.confirm=()=>false;document.querySelector('#directory-terminal-list [data-action="restart-terminal"]').click()`);
+    assert.deepEqual(restarts, [], '取消不重启');
+    await page.evaluate(`window.confirm=()=>true;document.querySelector('#directory-terminal-list [data-action="restart-terminal"]').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('notice').textContent.includes('终端已重启')`), '重启完给一句回执');
+    assert.equal(restarts.length, 1, '重启了一次：' + JSON.stringify(restarts));
+    assert.deepEqual(deletes, [], '重启不是删除');
+    // 行还在（重启不是替换会话）。
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list .directory-terminal-row').length`), 2);
+
     // 行尾那颗删除（用户要的）：两行各一颗，先问一次再删。
     assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list [data-action="delete-terminal"]').length`), 2, '每行一颗删除');
     // 取消 = 什么都不发（headless 里 confirm 默认就是 false）。
