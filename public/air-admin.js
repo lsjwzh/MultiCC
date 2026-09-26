@@ -251,11 +251,13 @@
     const dir = filter.dir || 'all';
     const needle = String(filter.query || '').trim().toLowerCase();
     // 状态口径与目录概览的统计卡同源：taskStatus 是权威判定（archived/done 生命周期
-    // 优先），所以「运行中/等待回复/异常/完成」四张卡与这里的筛选永远不会分叉。
+    // 优先），所以「运行中/等待回复/异常/执行成功」四张卡与这里的筛选永远不会分叉。
+    // 成功那档问的是这一轮的结局（succeeded），不是生命周期 done —— 后者只剩旧看板
+    // 时代的少量记录，拿它当「跑成功了吗」会筛出一个几乎空、且越用越旧的清单。
     const rows = (tasks || [])
       .filter(task => status === 'all' ? true
         : status === 'archived' ? task.status === 'archived'
-          : status === 'done' ? taskStatus(task) === 'done'
+          : status === 'succeeded' ? taskStatus(task) === 'succeeded'
             : status === 'running' ? isRunning(task)
               : status === 'waiting' ? taskStatus(task) === 'waiting'
                 : status === 'error' ? taskStatus(task) === 'error'

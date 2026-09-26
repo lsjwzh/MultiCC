@@ -1770,7 +1770,6 @@
   "airStatRunning": "Running",
   "airStatWaiting": "Waiting for reply",
   "airStatError": "Error",
-  "airDirStatDoneHint": "Still kept in this workspace",
   "airDirStatPlanned": "Planned tasks",
   "airDirStatPlannedHint": "Not started or still being planned",
   "airDirTaskCount": "{total} tasks",
@@ -2385,7 +2384,6 @@
   "airSidebarNav": "Workspace and task navigation",
   "airSidebarNoTasks": "No task opened yet. Tasks in this workspace will show up here.",
   "airSidebarPlanned": "Planned · {stage}",
-  "airStageDone": "Completed",
   "airStageInbox": "Inbox",
   "airStageReady": "Ready",
   "airStageReview": "In review",
@@ -3584,5 +3582,7 @@
   "annotSecretFailed": "Save failed: {error}",
   "annotInsert": "Put in input box",
   "annotLoadFailed": "Failed to load image: {error}",
-  "annotExportFailed": "Could not export the annotated image; only the text was inserted"
+  "annotExportFailed": "Could not export the annotated image; only the text was inserted",
+  "airStatSucceeded": "Succeeded",
+  "airDirStatSucceededHint": "Still kept in this workspace"
 }
