@@ -254,7 +254,11 @@
       .filter(task => status === 'all' ? true
         : status === 'archived' ? task.status === 'archived'
           : status === 'done' ? task.status === 'done'
+            // 「计划任务」= 手动创建、尚未归档、又没在跑的计划 —— 与目录概览那张
+            // 统计卡完全同口径（在跑的计划归「进行中」，已 done/archived 不进计划）。
             : status === 'planned' ? task.recordType === 'planned'
+                && !['done', 'archived'].includes(task.status)
+                && !isRunning(task)
               : status === 'running' ? isRunning(task)
                 : !['done', 'archived'].includes(task.status))
       .filter(task => dir === 'all' || task.dirId === dir);
