@@ -42,7 +42,8 @@ const Map<String, String> _airOnlyStateKeys = {
 /// `air.js` 的 `stateNames` + `airStatusWordFor()` 两次查找等价。取词一律走
 /// [airLabel]，这张表只给需要遍历的地方（和测试）用。
 Map<String, String> airStateNames() => {
-  for (final status in CanonicalStatus.values) status.name: airStatusWord(status),
+  for (final status in CanonicalStatus.values)
+    status.name: airStatusWord(status),
   for (final entry in _airOnlyStateKeys.entries) entry.key: t(entry.value),
   // 别名键（failed / completed / …）也进表，但取的是被折到的那个状态的词；表里
   // 已经有的键（done → statusAliases 说 succeeded、active → running）不覆盖它 ——
@@ -773,6 +774,49 @@ class AirService {
       );
     }
     return result;
+  }
+
+  /// Search all lifecycle states, including archived conversations.
+  Future<List<String>> searchTaskIds(
+    String query, {
+    required String dirId,
+    required bool fullText,
+  }) async {
+    final paths = [
+      Uri(
+        path: '/api/task-board/search',
+        queryParameters: {'q': query, 'dirId': dirId, 'limit': '20'},
+      ).toString(),
+      if (fullText)
+        Uri(
+          path: '/api/search/messages',
+          queryParameters: {'q': query, 'limit': '20'},
+        ).toString(),
+    ];
+    Future<Map<String, dynamic>?> read(String path) async {
+      try {
+        return await _get(path);
+      } catch (_) {
+        return null;
+      }
+    }
+    final replies = await Future.wait(paths.map(read));
+    if (replies.every((reply) => reply == null)) {
+      throw StateError('Task search unavailable');
+    }
+    final ids = <String>{};
+    for (var i = 0; i < replies.length; i++) {
+      for (final hit in (replies[i]?['results'] as List? ?? const [])) {
+        if (hit is! Map) continue;
+        final values = i == 0
+            ? [hit['taskId']]
+            : (hit['taskIds'] as List? ?? const []);
+        for (final id in values) {
+          if (id is String && id.isNotEmpty) ids.add(id);
+        }
+      }
+    }
+    return ids.toList();
   }
 
   Future<AirSnapshot> load() async {

@@ -17,6 +17,30 @@ import '../../utils/status_presentation.dart';
 CanonicalStatus airTaskStatus(AirTask task) =>
     taskStatusOf(status: task.status, runState: task.runState);
 
+/// Shared by directory counters and their result list (same rules as Web).
+enum AirDirectoryTaskFilter {
+  open('进行中与待处理'),
+  running('运行中'),
+  waiting('等待回复'),
+  error('异常'),
+  succeeded('执行成功'),
+  all('全部记录'),
+  archived('已归档');
+
+  const AirDirectoryTaskFilter(this.label);
+  final String label;
+
+  bool matches(AirTask task) => switch (this) {
+    open => task.status != 'done' && task.status != 'archived',
+    running => airTaskRunning(task),
+    waiting => airTaskStatus(task) == CanonicalStatus.waiting,
+    error => airTaskStatus(task) == CanonicalStatus.error,
+    succeeded => airTaskStatus(task) == CanonicalStatus.succeeded,
+    all => true,
+    archived => task.status == 'archived',
+  };
+}
+
 StatusSpec airTaskSpec(AirTask task) =>
     statusSpecOf(StatusDomain.task, airTaskStatus(task));
 

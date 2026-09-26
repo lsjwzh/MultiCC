@@ -106,7 +106,7 @@ void main() {
             onOpenSearch: () {},
             onOpenConsole: () {},
             onOpenSchedules: () {},
-            onOpenTaskBoard: () {},
+
             onCreateTask: () {},
             onOpenTask: (_) {},
             onOpenDocs: () {},

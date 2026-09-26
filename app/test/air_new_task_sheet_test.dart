@@ -141,6 +141,30 @@ void main() {
     );
   });
 
+  testWidgets('收起键盘保留新任务草稿，也能重新聚焦', (tester) async {
+    final settings = await _settings();
+    await tester.pumpWidget(
+      _host(settings: settings, onSubmit: _recorder(<String>[])),
+    );
+    await _open(tester);
+
+    final input = find.byKey(const ValueKey('air-quick-input'));
+    await tester.enterText(input, '仍需继续编辑的草稿');
+    final field = tester.widget<TextField>(input);
+    expect(field.focusNode!.hasFocus, isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('air-quick-hide-keyboard')));
+    await tester.pumpAndSettle();
+    expect(field.focusNode!.hasFocus, isFalse);
+    expect(field.controller!.text, '仍需继续编辑的草稿');
+    expect(find.byType(BottomSheet), findsOneWidget);
+
+    await tester.tap(input);
+    await tester.pump();
+    expect(field.focusNode!.hasFocus, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   /// 同一份模块在目录首页是常驻的：页面一进来就弹键盘会顶掉滚动位置，而它本来
   /// 就在最上面 —— 够不着才需要打字。焦点这一点是两处唯一的差别，单独盯住。
   testWidgets('目录首页那一份不抢焦点', (tester) async {
@@ -173,6 +197,45 @@ void main() {
           .autofocus,
       isFalse,
     );
+  });
+
+  testWidgets('目录首页贴底输入框收起键盘后保留草稿', (tester) async {
+    final settings = await _settings();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AirQuickComposer(
+            settings: settings,
+            clis: const ['claude'],
+            busy: false,
+            docked: true,
+            onSubmit:
+                ({
+                  required String text,
+                  required String cli,
+                  required AirTaskRuntime runtime,
+                  required List<AirRoleBinding> roles,
+                  required bool goal,
+                  int? goalRounds,
+                  int? goalBudget,
+                }) async => true,
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('air-quick-input')));
+    await tester.pump();
+    final input = find.byKey(const ValueKey('air-quick-input'));
+    await tester.enterText(input, '首页草稿');
+    final field = tester.widget<TextField>(input);
+    expect(field.focusNode!.hasFocus, isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('air-quick-hide-keyboard')));
+    await tester.pumpAndSettle();
+    expect(field.focusNode!.hasFocus, isFalse);
+    expect(field.controller!.text, '首页草稿');
+    expect(find.byKey(const ValueKey('air-quick-submit')), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('交出去的是那段话和当前线路，成了这一层自己收掉', (tester) async {
