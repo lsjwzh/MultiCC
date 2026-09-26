@@ -299,13 +299,13 @@ function resolveSessionWireModel(sessionModel, { providerModel = null, providerM
 // Expand a tier alias (opus/sonnet/haiku/fable/default) to the wire model the
 // provider maps it to. A tier is a Claude-CLI concept: there it becomes
 // ANTHROPIC_DEFAULT_<TIER>_MODEL and the CLI resolves it before the request
-// leaves. The global-pool lanes (OpenCode, ZCode) have no such indirection —
-// their generated provider config carries literal wire model ids — so a tier
-// left on the session (the picker offers them, and the PATCH guard accepts a
-// tier the provider maps) would be sent upstream as the bare word "opus" and
-// rejected with 400 invalid_request_error. Non-tier values pass through
-// untouched; an unmapped tier returns '' so the caller falls back to the
-// provider's primary model instead of guessing.
+// leaves. The global-pool lanes (OpenCode, ZCode, Kimi Code) have no such
+// indirection — the provider config/`--model` they materialize carries literal
+// wire model ids — so a tier left on the session (the picker offers them, and
+// the PATCH guard accepts a tier the provider maps) would be sent upstream as
+// the bare word "opus" and rejected with 400 invalid_request_error. Non-tier
+// values pass through untouched; an unmapped tier returns '' so the caller
+// falls back to the provider's primary model instead of guessing.
 function resolveTierWireModel(summary, model) {
   const value = String(model || '').trim();
   if (!value || !ALIAS_TIER_REGEX.test(value)) return value;
@@ -1366,7 +1366,17 @@ function kimiSessionHome(session) {
 function buildKimiCodeRoute(provider, session) {
   const cfg = parseConfig(provider.settingsConfig);
   const summary = summarize(provider);
-  const models = uniqueModels([session && session.model, summary.model, ...(summary.modelOptions || [])]);
+  // Kimi Code takes its wire model as a bare `--model <id>` (the adapter reads
+  // spawnOpts.rawModel), and this lane has no ANTHROPIC_DEFAULT_*_MODEL layer to
+  // expand a Claude tier — so the tier must be handled here, exactly as on the
+  // OpenCode/ZCode lanes (see resolveTierWireModel). In practice only a
+  // codex-appType provider can reach this lane, and those never carry an
+  // aliasMap, so the guard's usual job is to strip the tier and hand the
+  // provider's own model to `--model`. Reporting the result as qualifiedModel is
+  // what actually replaces the raw persisted session model in that argv.
+  const sessionModel = resolveTierWireModel(summary, session && session.model);
+  const models = uniqueModels([sessionModel, summary.model, ...(summary.modelOptions || [])]);
+  const selected = sessionModel || summary.model || models[0] || '';
   let key = '';
   let baseUrl = '';
   if (summary.apiFormat === API_FORMATS.ANTHROPIC) {
@@ -1390,7 +1400,10 @@ function buildKimiCodeRoute(provider, session) {
       KIMI_API_KEY: key,
       ...(baseUrl ? { KIMI_BASE_URL: baseUrl } : {}),
     },
-    qualifiedModel: null,
+    // Bare wire id, not the `<providerId>/<model>` namespace OpenCode/ZCode
+    // need: kimi's --model is passed straight to the CLI. Null only when the
+    // provider serves no model at all, leaving the caller's own default.
+    qualifiedModel: selected || null,
     providerModel: summary.model || null,
     providerModels: models,
     providerName: provider.name,
