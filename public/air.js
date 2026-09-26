@@ -566,8 +566,22 @@
     const current = tasks.filter(task => !['done', 'archived'].includes(task.status));
     const running = current.filter(isRunningTask);
     const planned = current.filter(task => task.recordType === 'planned' && !running.includes(task));
-    const stat = (name, value, detail, tone = '') => {
-      const card = node('article', null, `directory-stat ${tone}`);
+    // A stat card is a quick filter: clicking it jumps the list to that
+    // category instead of leaving the numbers as dead digits.
+    function quickFilter(status) {
+      directoryTaskFilter.query = '';
+      directoryTaskFilter.status = status;
+      directoryTaskFilter.fullText = true;
+      directoryTasksExpanded = true;
+      renderDirectoryOverview();
+    }
+    const stat = (name, value, detail, tone = '', status = '') => {
+      const card = status ? node('button', null, `directory-stat ${tone}`) : node('article', null, `directory-stat ${tone}`);
+      if (status) {
+        card.type = 'button';
+        card.title = t('airDirStatClickFilter');
+        card.addEventListener('click', () => quickFilter(status));
+      }
       card.append(node('span', name), node('strong', String(value)), node('small', detail));
       return card;
     };
@@ -575,13 +589,13 @@
     // 后者是自动观察长期堆积的「进行中」历史，拿来当主数字会虚高得没有意义。
     // 未归档记录总数仍然放在小字里给个上下文。
     $('directory-stats').replaceChildren(
-      stat(t('airStateActive'), running.length, t('airDirActiveDetail', { n: current.length }), 'blue'),
-      stat(t('airDirStatPlanned'), planned.length, t('airDirStatPlannedHint')),
-      stat(t('airStageDone'), tasks.filter(task => task.status === 'done').length, t('airDirStatDoneHint'), 'green'),
+      stat(t('airStateActive'), running.length, t('airDirActiveDetail', { n: current.length }), 'blue', 'running'),
+      stat(t('airDirStatPlanned'), planned.length, t('airDirStatPlannedHint'), '', 'planned'),
+      stat(t('airStageDone'), tasks.filter(task => task.status === 'done').length, t('airDirStatDoneHint'), 'green', 'done'),
       stat(t('airStatusAllRecords'), tasks.length, t('airDirArchiveWorktrees', {
         archived: tasks.filter(task => task.status === 'archived').length,
         worktrees: dir?.worktreeCount || 0,
-      })),
+      }), '', 'all'),
     );
     // 全文命中时保持相关度顺序，没有命中照旧按时间排；两条路的状态/目录筛选同属
     // filterTasks。「框里现在有没有词」是前提：面板被导航重置成空查询时，上一轮的

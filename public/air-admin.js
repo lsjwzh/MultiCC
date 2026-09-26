@@ -253,7 +253,10 @@
     const rows = (tasks || [])
       .filter(task => status === 'all' ? true
         : status === 'archived' ? task.status === 'archived'
-          : !['done', 'archived'].includes(task.status))
+          : status === 'done' ? task.status === 'done'
+            : status === 'planned' ? task.recordType === 'planned'
+              : status === 'running' ? isRunning(task)
+                : !['done', 'archived'].includes(task.status))
       .filter(task => dir === 'all' || task.dirId === dir);
     if (keepOrder) return rows;
     // 本地过滤按标题（和目录名）匹配：它仍是即时反馈，也是全文检索不可用时的退路。
