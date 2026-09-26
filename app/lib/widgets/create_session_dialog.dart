@@ -16,6 +16,7 @@ import '../services/claude_models_service.dart';
 import '../services/codex_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../theme.dart';
+import '../utils/cli_display.dart';
 import '../services/agent_preset_service.dart';
 import '../widgets/agent_preset_picker_sheet.dart';
 import '../widgets/provider_option.dart';
@@ -92,11 +93,13 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
 
   bool get _isClaude => _pickedCli.isClaudeFamily;
   bool get _isCodex => _pickedCli.isCodexFamily;
-  Iterable<SessionCli> get _selectableClis => SessionCli.values.where(
-    (cli) =>
-        widget.kind == SessionKind.chat ||
-        (cli != SessionCli.codexExp && cli != SessionCli.claudeExp),
-  );
+  /// 这张弹窗能给哪种会话挑哪条车道，是车道的事实（服务端 cli-capability 的 kinds
+  /// 列），不是这里的分支：chat 只给常驻车道（`claude -p` / `codex exec` 那两个
+  /// 一次性可执行文件归终端），终端反过来只给能真跑起来的原生命令。
+  Iterable<SessionCli> get _selectableClis {
+    final kind = widget.kind == SessionKind.chat ? 'chat' : 'terminal';
+    return SessionCli.values.where((cli) => cliOffersIn(cli.name, kind));
+  }
   bool get _isQoder => _pickedCli == SessionCli.qoder;
   String get _defaultEffort => _pickedCli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
@@ -123,6 +126,25 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
         : '${t('cliLaneDeprecatedNote')} · $replacement';
   }
 
+  /// 线路下拉的一项：大字是产品名（未安装时带后缀），下面那行小字是这条车道底下的
+  /// 引擎。扶正的两条常驻车道底下确实是一个引擎产品（Claude Agent SDK / Codex App
+  /// Server），得写出来；其余车道的小字就是自己的 id，跟名字重复，就不再画一行。
+  ///
+  /// 两行式交给 [ProviderOption]：它按「有没有竖向空间」决定画几行（开着的那张菜单
+  /// 里两行，收起的字段只有固定单行高，就只画大字）—— provider 的限额细节走的就是
+  /// 这条规则，这里不另写一份。
+  Widget _cliOptionLabel(SessionCli cli) {
+    final available = _cliAvailable(cli);
+    final label = available ? cli.displayName : '${cli.displayName}${t('cliNotInstalledSuffix')}';
+    final color = available ? const Color(0xFF233249) : const Color(0xFF8a9aab);
+    final engine = cliEngine(cli.name);
+    return ProviderOption(
+      main: label,
+      detail: engine == cli.name ? '' : engine,
+      mainStyle: TextStyle(color: color, fontSize: 13),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -130,7 +152,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _roleCtrl = TextEditingController();
     _agentCtrl = TextEditingController();
     _presetSvc = AgentPresetService(settings: widget.settings);
-    _pickedCli = widget.defaultCli ?? SessionCli.claude;
+    _pickedCli = widget.defaultCli ??
+        (widget.kind == SessionKind.chat ? SessionCli.claudeExp : SessionCli.claude);
     // If the requested default CLI isn't installed on this host, fall back to
     // the first available one (or keep Claude when nothing is known).
     if (!_selectableClis.contains(_pickedCli) || !_cliAvailable(_pickedCli)) {
@@ -629,16 +652,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                       (cli) => DropdownMenuItem<SessionCli>(
                         value: cli,
                         enabled: _cliAvailable(cli),
-                        child: Text(
-                          _cliAvailable(cli)
-                              ? cli.displayName
-                              : '${cli.displayName}${t('cliNotInstalledSuffix')}',
-                          style: TextStyle(
-                            color: _cliAvailable(cli)
-                                ? const Color(0xFF233249)
-                                : const Color(0xFF8a9aab),
-                          ),
-                        ),
+                        child: _cliOptionLabel(cli),
                       ),
                     )
                     .toList(),
@@ -647,8 +661,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 },
               ),
               // 建会话时选到兜底车道（codex exec，计划淘汰）要说一句：它的名字
-              // 现在是 Codex Exec，别和扶正后的 Codex 搞混。
-              if (_pickedCli.isDeprecatedLane) ...[
+              // 现在是 Codex Exec，别和扶正后的 Codex 搞混。这句只在 chat 里成立
+              // —— 终端要跑的就是那个原生命令，那条车道在终端不是过渡品。
+              if (widget.kind == SessionKind.chat && _pickedCli.isDeprecatedLane) ...[
                 const SizedBox(height: 6),
                 Text(
                   _deprecationNoteText(_pickedCli),

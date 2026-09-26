@@ -4,7 +4,7 @@
 //
 // What this defends:
 //   1. `{id, displayName, shortMark, colour, providerless, deprecated,
-//      replacedBy}` exists once per platform — server
+//      replacedBy, engine, kinds}` exists once per platform — server
 //      (src/cli/cli-capability.js DISPLAY, the authoritative one), web
 //      (public/provider-catalog.js CLI_DISPLAY) and app
 //      (app/lib/utils/cli_display.dart kCliDisplays) — and the three copies
@@ -16,9 +16,12 @@
 //      table had never heard of was displayed as a completely different product.
 //   3. The consumers really point at the canonical module instead of carrying
 //      another copy.
-//   4. The 2026-09-24 rename and the deprecation plan it came with (codex-exp is
-//      the product's "Codex"; `codex exec` is the fallback "Codex Exec", on its
-//      way out) are one fact per platform, not a per-picker decision.
+//   4. The two renames and what came with them — 2026-09-24: codex-exp is the
+//      product's "Codex" and `codex exec` the fallback "Codex Exec"; 2026-09-26:
+//      claude-exp is the product's "Claude" with the engine line "Claude Agent
+//      SDK", and the two one-shot lanes (`claude -p`, `codex exec`) left the chat
+//      pickers for the terminal — are one fact per platform, not a per-picker
+//      decision.
 //
 // The Dart file is parsed, not imported (same approach as
 // tests/test-status-presentation.js), so this stays in the plain node lane.
@@ -37,15 +40,20 @@ function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 /** kCliDisplays literal from the Dart source. */
 function dartTable() {
   const src = read('app/lib/utils/cli_display.dart');
-  // Three positional args, then any number of `name: value` flags (true/false or
-  // a quoted string), in any order — `providerless: true`, `deprecated: true,
-  // replacedBy: 'codex-exp'`, or none at all.
-  const re = /'([^']+)':\s*CliDisplay\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*([A-Za-z0-9_.]+)\s*,\s*'((?:[^'\\]|\\.)*)'\s*((?:,\s*[A-Za-z]+\s*:\s*(?:true|false|'[^']*'))*)\s*\)/g;
+  // Three positional args, then any number of `name: value` flags, in any order.
+  // A flag value is `true` / `false`, a quoted string, or a list — `providerless:
+  // true`, `deprecated: true, replacedBy: 'codex-exp'`, `engine: 'Claude Agent SDK',
+  // kinds: ['chat']` (const only where the analyzer wants it), or none at all.
+  const re = /'([^']+)':\s*CliDisplay\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*([A-Za-z0-9_.]+)\s*,\s*'((?:[^'\\]|\\.)*)'\s*((?:,\s*[A-Za-z]+\s*:\s*(?:true|false|'[^']*'|(?:const\s+)?\[[^\]]*\]))*)\s*\)/g;
   const out = {};
   for (const m of src.matchAll(re)) {
     const flags = {};
-    for (const pair of m[5].matchAll(/([A-Za-z]+)\s*:\s*(true|false|'([^']*)')/g)) {
-      flags[pair[1]] = pair[2] === 'true' ? true : pair[2] === 'false' ? false : pair[3];
+    for (const pair of m[5].matchAll(/([A-Za-z]+)\s*:\s*(true|false|'[^']*'|(?:const\s+)?\[[^\]]*\])/g)) {
+      const [, flag, raw] = pair;
+      if (raw === 'true') flags[flag] = true;
+      else if (raw === 'false') flags[flag] = false;
+      else if (raw.startsWith('[') || raw.startsWith('const')) flags[flag] = [...raw.matchAll(/'([^']*)'/g)].map(x => x[1]);
+      else flags[flag] = raw.slice(1, -1);
     }
     out[m[1]] = {
       displayName: m[2],
@@ -54,6 +62,8 @@ function dartTable() {
       providerless: flags.providerless === true,
       deprecated: flags.deprecated === true,
       replacedBy: typeof flags.replacedBy === 'string' ? flags.replacedBy : null,
+      engine: typeof flags.engine === 'string' ? flags.engine : null,
+      kinds: Array.isArray(flags.kinds) ? flags.kinds : ['chat', 'terminal'],
     };
   }
   assert.ok(Object.keys(out).length >= 10, 'kCliDisplays literal not found in app/lib/utils/cli_display.dart');
@@ -131,15 +141,84 @@ test('the deprecation plan is identical on all three platforms', () => {
   assert.equal(CATALOG.cliDeprecated('mystery-cli'), false);
   assert.equal(CATALOG.cliReplacedBy('mystery-cli'), null);
   // The picker hands a CLI's meta to the client, so the flags have to travel with
-  // it — a picker that only gets {label, color} cannot say "计划淘汰".
+  // it — a picker that only gets {label, color} cannot say "计划淘汰" nor draw the
+  // second line.
   assert.equal(CATALOG.cliMeta('codex').deprecated, true);
   assert.equal(CATALOG.cliMeta('codex').replacedBy, 'codex-exp');
   assert.equal(CATALOG.cliMeta('codex-exp').deprecated, undefined);
   assert.equal(CATALOG.cliMetaMap().codex.deprecated, true);
+  assert.equal(CATALOG.cliMeta('claude-exp').engine, 'Claude Agent SDK');
+  assert.equal(CATALOG.cliMeta('codex-exp').engine, 'Codex App Server');
+  // 没有引擎名的车道，meta 里的小字就是 id（= 终端要跑的命令）。
+  assert.equal(CATALOG.cliMeta('zcode').engine, 'zcode');
+  assert.equal(CATALOG.cliMeta('mystery-cli').engine, 'mystery-cli');
+  // 选择器拿到的就是 meta，所以「哪种会话给这条车道」也得跟着它走 —— 一个只拿到
+  // {label, color} 的选择器只能自己再判断一遍，那正是这次要收掉的东西。
+  assert.deepEqual([...CATALOG.cliMeta('claude').kinds], ['terminal']);
+  assert.deepEqual([...CATALOG.cliMeta('claude-exp').kinds], ['chat']);
+  assert.deepEqual([...CATALOG.cliMeta('opencode').kinds], ['chat', 'terminal']);
+  assert.deepEqual([...CATALOG.cliMeta('mystery-cli').kinds], ['chat', 'terminal']);
+});
+
+test('the engine line and the picker kinds are one fact on all three platforms', () => {
+  // 2026-09-26：两条常驻车道扶正 —— 大字是产品名（Claude / Codex），小字是它们底下
+  // 的引擎（Claude Agent SDK / Codex App Server）；两条一次性车道退出 chat、留在终端。
+  // 这两列和大字一样是「一条车道的事实」，各端一份，必须逐字相同。
+  for (const id of ids) {
+    const engine = SERVER[id].engine || null;
+    assert.equal(WEB[id].engine || null, engine, `${id}: web engine`);
+    assert.equal(DART[id].engine, engine, `${id}: app engine`);
+    assert.equal(CAP.engineOf(id), engine || id, `${id}: server engineOf()`);
+    assert.equal(CATALOG.cliEngine(id), engine || id, `${id}: web cliEngine()`);
+    assert.equal(DART[id].kinds.join(','), CAP.kindsOf(id).join(','), `${id}: app kinds`);
+    assert.equal((WEB[id].kinds || CATALOG.CLI_DEFAULT_KINDS).join(','), CAP.kindsOf(id).join(','), `${id}: web kinds`);
+    for (const kind of ['chat', 'terminal']) {
+      const offers = CAP.kindsOf(id).includes(kind);
+      assert.equal(CAP.offersIn(id, kind), offers, `${id}: server offersIn(${kind})`);
+      assert.equal(CATALOG.cliOffersIn(id, kind), offers, `${id}: web cliOffersIn(${kind})`);
+      assert.equal(DART[id].kinds.includes(kind), offers, `${id}: app kinds / ${kind}`);
+    }
+  }
+  // 小字写引擎名时，大字必须就是那条车道的产品名 —— 两行是同一个产品的上下两半。
+  assert.equal(CAP.displayNameOf('claude-exp'), 'Claude');
+  assert.equal(CAP.engineOf('claude-exp'), 'Claude Agent SDK');
+  assert.equal(CATALOG.cliEngine('claude-exp'), 'Claude Agent SDK');
+  assert.equal(CAP.displayNameOf('codex-exp'), 'Codex');
+  assert.equal(CAP.engineOf('codex-exp'), 'Codex App Server');
+  assert.equal(CATALOG.cliEngine('codex-exp'), 'Codex App Server');
+  // 其余车道没有引擎名，小字就是自己的 id —— 终端里那行小字指的就是要跑的命令。
+  assert.equal(CAP.engineOf('claude'), 'claude');
+  assert.equal(CAP.engineOf('codex'), 'codex');
+  assert.equal(CAP.engineOf('zcode'), 'zcode');
+  assert.equal(CAP.engineOf('mystery-cli'), 'mystery-cli');
+  assert.equal(CATALOG.cliEngine(''), '');
+  // The rule itself: `claude` is `claude -p`, `codex` is `codex exec`. Neither has
+  // a place in a chat picker; both are exactly what a terminal runs.
+  assert.deepEqual(CAP.kindsOf('claude'), ['terminal']);
+  assert.deepEqual(CAP.kindsOf('codex'), ['terminal']);
+  assert.deepEqual(CAP.kindsOf('claude-exp'), ['chat']);
+  assert.deepEqual(CAP.kindsOf('codex-exp'), ['chat']);
+  // A CLI this table has never heard of answers both — it must not vanish from a
+  // picker just because nobody added a row for it.
+  assert.equal(CAP.offersIn('mystery-cli', 'chat'), true);
+  assert.equal(CAP.offersIn('mystery-cli', 'terminal'), true);
+  assert.equal(CATALOG.cliOffersIn('mystery-cli', 'chat'), true);
+  assert.deepEqual(CATALOG.cliOffersIn('', 'chat'), true);
+  // 没写 kinds 的车道两端都答「两种都给」—— 这条默认值也必须一致，否则同一条
+  // 车道会在 Web 上出现、在 App 上消失。
+  assert.deepEqual([...CAP.DEFAULT_KINDS], [...CATALOG.CLI_DEFAULT_KINDS], 'the "offered everywhere" default must match across platforms');
+  assert.deepEqual([...CAP.DEFAULT_KINDS], ['chat', 'terminal']);
+  // ...and the casing a record or a wire payload carries must not decide it.
+  assert.equal(CAP.offersIn(' CLAUDE ', ' Terminal '), true);
+  assert.equal(CATALOG.cliOffersIn(' Codex ', 'CHAT'), false);
 });
 
 test('the promoted lane carries the product name, and the fallback says what it is', () => {
   // The rename, stated once: this is what every picker ends up showing.
+  assert.equal(CAP.displayNameOf('claude-exp'), 'Claude');
+  assert.equal(CAP.displayNameOf('claude'), 'Claude Code');
+  assert.equal(CATALOG.cliDisplayName('claude-exp'), 'Claude');
+  assert.equal(CATALOG.cliMetaMap()['claude'].label, 'Claude Code');
   assert.equal(CAP.displayNameOf('codex-exp'), 'Codex');
   assert.equal(CAP.displayNameOf('codex'), 'Codex Exec');
   assert.equal(CATALOG.cliDisplayName('codex-exp'), 'Codex');
@@ -150,6 +229,12 @@ test('the promoted lane carries the product name, and the fallback says what it 
   // 角标跟名字走，不是跟 id 走：X 归 Codex（codex-exp），E 归 Codex Exec（codex）。
   assert.equal(SERVER['codex-exp'].shortMark, 'X');
   assert.equal(SERVER.codex.shortMark, 'E');
+  // 两条扶正车道的名字不能与它们的一次性前身撞：chat 里点「Claude」，终端里跑
+  // `claude` —— 两行选项要是同名，用户就分不出自己选的是哪一条。
+  for (const [promoted, oneShot] of [['claude-exp', 'claude'], ['codex-exp', 'codex']]) {
+    assert.notEqual(SERVER[promoted].displayName, SERVER[oneShot].displayName, `${promoted} must not share a name with ${oneShot}`);
+    assert.notEqual(SERVER[promoted].shortMark, SERVER[oneShot].shortMark, `${promoted} must not share a mark with ${oneShot}`);
+  }
 });
 
 test('colour is identical between server and web, and the app brands differ deliberately', () => {  for (const id of ids) {
@@ -241,18 +326,27 @@ test('PROVIDERLESS_CLIS and NATIVE_ROUTE_LABELS are not written out again', () =
 test('no page file defines its own CLI id → label map', () => {
   // A map entry keyed by a CLI id whose value is exactly a display name, either
   // `claude: 'Claude Code'` or `claude: { displayName: 'Claude Code' }`. Three
-  // such entries in one file is a table; one or two is a coincidence (quota's
-  // VENDOR_LABEL shares codex/qoder but is a different axis — it also names
-  // non-CLIs like ark/zhipu, and spells `opencode: 'OpenCode Go'`).
+  // such entries in one file is a table; one or two is a coincidence.
   const nameAlt = ids.map(id => SERVER[id].displayName).join('|');
   const idAlt = ids.map(id => id.replace(/-/g, '\\-')).join('|');
   const entry = new RegExp(`['"]?(?:${idAlt})['"]?\\s*:\\s*(?:\\{[^}\\n]*\\b(?:displayName|label|name)\\s*:\\s*)?['"](?:${nameAlt})['"](?=\\s*[,}])`, 'g');
   const allow = new Set(['public/provider-catalog.js', 'src/cli/cli-capability.js', 'public/i18n-catalog.js']);
+  // quota's VENDOR_LABEL is a different axis that happens to key on the same
+  // words: it names the *provider behind a quota bar*, so it also has non-CLI
+  // keys (ark / zhipu), and it spells `opencode: 'OpenCode Go'` — the OpenCode
+  // subscription, not the CLI. It is exempt only as long as that stays true: if
+  // someone trims it down to a pure CLI id → name map, the assertion below takes
+  // the exemption away again.
+  const exempt = new Map([['src/quota/quota-bar-view.js', /ark\s*:\s*['"]/]]);
   const offenders = [];
   for (const dir of ['public', 'src']) {
     for (const rel of walk(dir)) {
       if (allow.has(rel) || /\.min\.js$/.test(rel)) continue;
-      const hits = [...fs.readFileSync(path.join(ROOT, rel), 'utf8').matchAll(entry)];
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      const reason = exempt.get(rel);
+      if (reason && reason.test(src)) continue;
+      if (reason && !reason.test(src)) offenders.push(`${rel} (exemption no longer justified)`);
+      const hits = [...src.matchAll(entry)];
       if (hits.length >= 3) offenders.push(`${rel} (${hits.length})`);
     }
   }

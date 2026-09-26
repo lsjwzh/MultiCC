@@ -6,6 +6,27 @@
     const api = window.MultiCCProviderCatalog;
     return api && api.providerDisplayName ? api.providerDisplayName(name) : name;
   };
+  // 车道名一律走共享 CLI 目录（权威表在 src/cli/cli-capability.js）：扶正后的两条
+  // 常驻车道叫 Claude / Codex，内部 id（claude-exp / codex-exp）不该出现在文案里。
+  const cliDisplayName = cli => {
+    const api = window.MultiCCProviderCatalog;
+    return api && api.cliDisplayName ? api.cliDisplayName(cli) : cli;
+  };
+  // 单行的 <option> 没有第二行可放小字：只在一条车道真的换了引擎产品名时，才把引擎
+  // 附在名字后面（扶正的两条常驻车道）；其余车道的小字就是它自己的 id，重复就不写。
+  const cliOptionLabel = cli => {
+    const api = window.MultiCCProviderCatalog;
+    const engine = api && api.cliEngine ? api.cliEngine(cli) : cli;
+    return engine && engine !== cli ? `${cliDisplayName(cli)} · ${engine}` : cliDisplayName(cli);
+  };
+  // 这条车道能不能出现在 chat 的线路选择里（服务端 cli-capability 的 kinds 列）。
+  const cliOffersInChat = cli => {
+    const api = window.MultiCCProviderCatalog;
+    return api && api.cliOffersIn ? api.cliOffersIn(cli, 'chat') : true;
+  };
+  // chat 的默认线路：列表里第一条 chat 车道。`claude -p` / `codex exec` 那两个一次性
+  // 命令已经不在这张列表里了，兜底也只兜到常驻车道。
+  const firstChatCli = () => (Array.isArray(data?.clis) ? data.clis : []).find(cliOffersInChat) || 'claude-exp';
   function readRouteParams() {
     const params = new URLSearchParams(location.search);
     if (params.get('view') === 'planner') {
@@ -977,7 +998,7 @@
   // One source of truth for the CLI the panel is about to use: the pill names it
   // and the AI 配置 dialog opens on it, so the two can never disagree about what
   // a task created from here will run.
-  function quickCli() { return quickRuntime.cli || data?.clis?.[0] || 'claude'; }
+  function quickCli() { return quickRuntime.cli || firstChatCli(); }
 
   // 线路胶囊上那一串（CLI · 线路 · 模型 · 状态）会随着 provider 名字变长，而它
   // 左边还压着「＋ 角色」——所以给它一个上限宽度，超出来的部分改成跑马灯一直走，
@@ -1040,7 +1061,7 @@
     const route = nativeRoute || (quickRuntime.providerSelection?.mode === 'auto'
       ? `Auto ${quickRuntime.providerSelection.protocol}`
       : providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute'));
-    setPillText(ai, [cli, route, quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
+    setPillText(ai, [cliDisplayName(cli), route, quickRuntime.model || t('airQuickDefaultModel')].join(' · '));
     ai.title = t('airQuickAiTitle');
     role.textContent = quickRoles.length ? t('airQuickRoleCount', { n: quickRoles.length }) : t('airQuickAddRole');
     role.title = t('airQuickRoleTitle');
@@ -1129,7 +1150,7 @@
     const text = typed + (paths.length ? t('airQuickAttachments', { paths: paths.join(' ') }) : '');
     // The pill's runtime is pinned onto the task at creation; the route it names
     // takes effect immediately, exactly as it does on the chat's own composer.
-    const runtime = { cli: quickRuntime.cli || data.clis[0] || 'claude' };
+    const runtime = { cli: quickRuntime.cli || firstChatCli() };
     for (const key of ['provider', 'providerSelection', 'model', 'effort', 'subagent']) {
       if (quickRuntime[key]) runtime[key] = quickRuntime[key];
     }
@@ -1201,7 +1222,7 @@
   }
 
   function scheduleRuntime(task) {
-    return [task.cli, task.provider, task.model, task.effort].filter(Boolean).join(' · ') || t('airScheduleFollowTask');
+    return [cliDisplayName(task.cli), task.provider, task.model, task.effort].filter(Boolean).join(' · ') || t('airScheduleFollowTask');
   }
 
   function scheduleAction(text, action, className = '') {
@@ -1325,10 +1346,12 @@
       option.selected = directory.id === (current?.dirId || directoryId || data.directories[0]?.id);
       return option;
     }));
-    form.elements.cli.replaceChildren(...data.clis.map(cli => {
-      const option = node('option', cli);
+    // 定时任务跑的是 chat 线路：一次性车道（`claude -p` / `codex exec`）不在这里。
+    // 已绑定某条线路的任务例外 —— 编辑它时得能看见自己在用哪条。
+    form.elements.cli.replaceChildren(...data.clis.filter(cli => cli === current?.cli || cliOffersInChat(cli)).map(cli => {
+      const option = node('option', cliOptionLabel(cli));
       option.value = cli;
-      option.selected = cli === (current?.cli || 'claude');
+      option.selected = cli === (current?.cli || firstChatCli());
       return option;
     }));
     form.elements.dirId.disabled = !!current?.taskId;
@@ -2625,7 +2648,7 @@
     // 等到下一次轮询才启动，看上去就是「卡了一下」。
     setComposerBand(doc, row, !ai.hidden || !role.hidden);
     setPillText(ai, shown
-      ? [shown.cli, routeName,
+      ? [cliDisplayName(shown.cli), routeName,
         (pending ? shown.model : shown.effectiveModel || shown.model) || t('airQuickDefaultModel'),
         pending ? t('airTaskAiPending') : ''].filter(Boolean).join(' · ')
       : '');

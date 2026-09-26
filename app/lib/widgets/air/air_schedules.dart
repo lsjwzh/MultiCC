@@ -7,6 +7,7 @@ import '../../services/manage_service.dart';
 import '../../services/session_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
+import '../../utils/cli_display.dart';
 import '../cron_run_history.dart';
 import 'air_task_status.dart';
 
@@ -813,13 +814,20 @@ class _ScheduleEditorDialog extends StatefulWidget {
 }
 
 class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
-  static const List<String> _clis = [
-    'claude',
-    'codex',
+  /// 这份列表的五个位置与 cron_screen 那份一致：定时任务跑的是 chat 线路，所以两个
+  /// 家族取扶正后的常驻车道（`claude -p` / `codex exec` 那两个一次性命令留给终端）。
+  static const List<String> _cliChoices = [
+    'claude-exp',
+    'codex-exp',
     'opencode',
     'zcode',
     'qoder',
   ];
+
+  /// 名字走唯一那份 CLI 展示表；绑在老车道上的规则仍然列出来，否则编辑它时看不见自己
+  /// 在用什么。
+  List<String> get _clis =>
+      _cliChoices.contains(_cli) ? _cliChoices : [_cli, ..._cliChoices];
 
   static const List<(String, String)> _presets = [
     ('0 9 * * *', '每天 09:00'),
@@ -848,7 +856,7 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
   @override
   void initState() {
     super.initState();
-    _cli = widget.task?.cli ?? 'claude';
+    _cli = widget.task?.cli ?? _cliChoices.first;
     _enabled = widget.task?.enabled ?? true;
     final ids = widget.directories.map((d) => d.id).toSet();
     final wanted = widget.task?.dirId ?? widget.initialDirectoryId;
@@ -1011,7 +1019,7 @@ class _ScheduleEditorDialogState extends State<_ScheduleEditorDialog> {
                       fieldKey: 'air-schedule-cli',
                       value: _cli,
                       enabled: !_bound,
-                      items: [for (final cli in _clis) (cli, cli)],
+                      items: [for (final cli in _clis) (cli, cliDisplayName(cli))],
                       onChanged: (v) => setState(() => _cli = v),
                     ),
                   ),

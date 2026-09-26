@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/models/message.dart';
+import 'package:multicc_app/utils/cli_display.dart';
 import 'package:multicc_app/widgets/ai_config_sheet.dart';
 import 'package:multicc_app/widgets/cli_switch_sheet.dart';
 
@@ -110,10 +111,13 @@ void main() {
       expect(SessionCli.claudeExp.supportsSubagent, isTrue);
       expect(SessionCli.claudeExp.poolKey, 'claude');
       expect(SessionCli.claudeExp.defaultEffort, 'medium');
-      // 显示名跟产品走：Claude 那一档是 "Claude Code"（服务端 cli-capability 与
-      // Web provider-catalog 同名，三端一致性见 tests/test-cli-display-parity.js）。
-      expect(SessionCli.claudeExp.displayName, 'Claude Agent SDK');
+      // 显示名跟产品走：扶正后的常驻 SDK 车道是 "Claude"（一次性 `claude -p` 那条
+      // 留 "Claude Code"），三端一致性见 tests/test-cli-display-parity.js）。
+      expect(SessionCli.claudeExp.displayName, 'Claude');
       expect(SessionCli.claude.displayName, 'Claude Code');
+      // 小字写它底下的引擎，不写内部 id。
+      expect(cliEngine(SessionCli.claudeExp.name), 'Claude Agent SDK');
+      expect(cliEngine(SessionCli.codexExp.name), 'Codex App Server');
 
       // 显示名同样跟产品走：扶正后的常驻车道 codex-exp 叫 Codex，兜底的
       // codex exec（内部 id codex）叫 Codex Exec，并被标成计划淘汰 —— 选择器靠
@@ -343,11 +347,12 @@ void main() {
   testWidgets(
     'CLI switch sheet reports resume state and disables missing CLI',
     (tester) async {
-      // The sheet renders every SessionCli.values entry and treats a CLI that
-      // is absent from cliAvailability as unavailable unless it is the
-      // session's current CLI. Deriving the map from the enum keeps "exactly
-      // one disabled row" true when a new CLI is added; a hand-written subset
-      // silently marks every omitted CLI unavailable instead.
+      // The sheet renders the chat-capable lanes (the server's `kinds` column)
+      // plus the session's own current lane, and treats a CLI that is absent
+      // from cliAvailability as unavailable unless it is the session's current
+      // CLI. Deriving the map from the enum keeps "exactly one disabled row"
+      // true when a new CLI is added; a hand-written subset silently marks
+      // every omitted CLI unavailable instead.
       final availability = <SessionCli, bool>{
         for (final cli in SessionCli.values) cli: true,
       };
@@ -355,7 +360,7 @@ void main() {
       final config = SessionCliConfig(
         cli: SessionCli.claude,
         cliStates: const {
-          SessionCli.codex: SessionCliState(hasNativeSession: true),
+          SessionCli.codexExp: SessionCliState(hasNativeSession: true),
         },
         cliAvailability: availability,
       );
@@ -363,6 +368,18 @@ void main() {
 
       expect(find.textContaining('可恢复上次原生会话'), findsOneWidget);
       expect(find.text('未安装或不可执行'), findsOneWidget);
+
+      // 一次性车道（`claude -p` / `codex exec`）退出 chat：codex 不是当前车道，
+      // 即使带着原生会话状态也不该出现在这张表里；claude 是当前车道，所以留着
+      // —— 跑在旧线路上的会话要能找到自己在哪。
+      expect(find.byKey(const Key('cli-switch-option-codex')), findsNothing);
+      expect(find.byKey(const Key('cli-switch-option-claude')), findsOneWidget);
+
+      // 小字写引擎：扶正的两条常驻车道底下是引擎产品名，其余车道的小字就是
+      // 自己的 id（跟大字重复），不画。
+      expect(find.text('Claude Agent SDK'), findsOneWidget);
+      expect(find.text('Codex App Server'), findsOneWidget);
+      expect(find.text('opencode'), findsNothing);
 
       final zcode = tester.widget<InkWell>(
         find.byKey(const Key('cli-switch-option-zcode')),

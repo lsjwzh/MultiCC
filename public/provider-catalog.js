@@ -104,9 +104,9 @@
   // ── CLI 目录（唯一的 web 侧副本）────────────────────────────────────────────
   //
   // 服务端 src/cli/cli-capability.js 的 DISPLAY 是权威表（displayName / shortMark
-  // / colour / providerless / deprecated / replacedBy 六列），这里是它在浏览器侧的
-  // 镜像；App 侧还有一份 app/lib/utils/cli_display.dart。tests/test-cli-display-
-  // parity.js 读这三份，任何一列漂移就红。
+  // / colour / providerless / deprecated / replacedBy / engine / kinds 八列），这里
+  // 是它在浏览器侧的镜像；App 侧还有一份 app/lib/utils/cli_display.dart。
+  // tests/test-cli-display-parity.js 读这三份，任何一列漂移就红。
   //
   // 镜像之前，同样的四列在页面上被抄了六七遍且各抄各的：chat.js 的 CLI_META、
   // air-task-settings.js 的 CLI_LABELS/CLI_MARKS、air-cli-update.js 的第三份标签表
@@ -116,14 +116,18 @@
   //
   // 未知 id 一律用原 id 显示：回落成别的 CLI 的名字（旧代码里是 Claude / WorkBuddy）
   // 会把新 CLI 显示成另一个产品。
+  //
+  // engine = 两行式 CLI 行里那行小字（引擎名；缺省就是 id）。kinds = 这条车道能出现
+  // 在哪种会话的选择里（缺省两种都行）：`claude`(-p) / `codex`(exec) 只留终端，
+  // 扶正后的 `claude-exp` / `codex-exp` 只服务 chat。
   const CLI_DISPLAY = {
-    claude: { displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false, deprecated: false },
-    'claude-exp': { displayName: 'Claude Agent SDK', shortMark: 'A', colour: '#ff9a76', providerless: false, deprecated: false },
-    // 2026-09-24 改名：常驻 app-server 车道（id 仍是 codex-exp）是产品的「Codex」，
-    // 一次性 `codex exec`（id 仍是 codex）是兜底的「Codex Exec」，计划淘汰。
+    claude: { displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false, deprecated: false, kinds: ['terminal'] },
+    'claude-exp': { displayName: 'Claude', shortMark: 'A', colour: '#ff9a76', providerless: false, deprecated: false, engine: 'Claude Agent SDK', kinds: ['chat'] },
+    // 2026-09-26：一次性 `codex exec`（id 仍是 codex）从 chat 退出、留在终端，
+    // 所以既标着计划淘汰、又只出现在终端；扶正后的常驻车道 codex-exp 只服务 chat。
     // 角标跟着名字走：X 归 Codex，E 归 Codex Exec —— 两个 id 不能同用 X。
-    codex: { displayName: 'Codex Exec', shortMark: 'E', colour: '#2ea043', providerless: false, deprecated: true, replacedBy: 'codex-exp' },
-    'codex-exp': { displayName: 'Codex', shortMark: 'X', colour: '#20a66a', providerless: false, deprecated: false },
+    codex: { displayName: 'Codex Exec', shortMark: 'E', colour: '#2ea043', providerless: false, deprecated: true, replacedBy: 'codex-exp', kinds: ['terminal'] },
+    'codex-exp': { displayName: 'Codex', shortMark: 'X', colour: '#20a66a', providerless: false, deprecated: false, engine: 'Codex App Server', kinds: ['chat'] },
     opencode: { displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false, deprecated: false },
     zcode: { displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false, deprecated: false },
     qoder: { displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true, deprecated: false },
@@ -145,11 +149,12 @@
 
   // chat-live-ui 的切换面板按 {label, color} 读每个 CLI（入口行、安装进度行、当前
   // 线路行三处），所以映射里就用它那两个字面 key。deprecated / replacedBy 也带上：
-  // 面板要在这个 CLI 的名字后面标注「计划淘汰」，并说明该换成哪条线路。
+  // 面板要在这个 CLI 的名字后面标注「计划淘汰」，并说明该换成哪条线路；engine 是
+  // 两行式 CLI 行的小字（引擎名）。
   function cliMeta(cli) {
     const entry = cliEntry(cli);
-    if (!entry) return { label: String(cli == null ? '' : cli).trim(), color: CLI_DEFAULT_COLOUR };
-    const meta = { label: entry.displayName, color: entry.colour };
+    if (!entry) return { label: String(cli == null ? '' : cli).trim(), color: CLI_DEFAULT_COLOUR, engine: cliEngine(cli), kinds: CLI_DEFAULT_KINDS };
+    const meta = { label: entry.displayName, color: entry.colour, engine: cliEngine(cli), kinds: cliKinds(cli) };
     if (entry.deprecated === true) {
       meta.deprecated = true;
       if (entry.replacedBy) meta.replacedBy = entry.replacedBy;
@@ -161,6 +166,28 @@
     const out = {};
     for (const id of Object.keys(CLI_DISPLAY)) out[id] = cliMeta(id);
     return out;
+  }
+
+  // 两行式 CLI 行的小字：扶正后的两条常驻车道写引擎产品名（Claude Agent SDK /
+  // Codex App Server），其余车道就是它自己的 id —— 终端里那行小字指的就是要跑的
+  // 命令，所以 id 在这里不是「内部实现泄漏」，而是最准确的答案。
+  function cliEngine(cli) {
+    const entry = cliEntry(cli);
+    if (entry && entry.engine) return entry.engine;
+    return String(cli == null ? '' : cli).trim();
+  }
+
+  // 这条车道能出现在哪种会话的 CLI 选择里（'chat' / 'terminal'）。没听说过的 id
+  // 两种都答 true：表里没有的 CLI 不该在选择器里凭空消失。
+  const CLI_DEFAULT_KINDS = ['chat', 'terminal'];
+
+  function cliKinds(cli) {
+    const entry = cliEntry(cli);
+    return entry && entry.kinds ? entry.kinds : CLI_DEFAULT_KINDS;
+  }
+
+  function cliOffersIn(cli, kind) {
+    return cliKinds(cli).indexOf(String(kind == null ? '' : kind).trim().toLowerCase()) !== -1;
   }
 
   // 车道还在用，但已在淘汰路上（服务端的 deprecated 列）。UI 拿它决定要不要说
@@ -830,6 +857,9 @@
     normalizeProvider,
     providerDisplayName,
     cliDisplayName,
+    cliEngine,
+    cliKinds,
+    cliOffersIn,
     cliMeta,
     cliMetaMap,
     cliShortMark,
@@ -841,6 +871,7 @@
     nativeRouteLabel,
     CLI_DISPLAY,
     CLI_DEFAULT_COLOUR,
+    CLI_DEFAULT_KINDS,
     officialProviderKind,
     normalizeCatalog,
     normalizeDefaults,

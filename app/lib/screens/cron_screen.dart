@@ -398,6 +398,15 @@ class _CronEditorState extends State<_CronEditor> {
     MapEntry('0 9 1 * *', '每月 1 号 9:00'),
   ];
 
+  /// This picker's curated five, with the two lanes by family: a scheduled task is a
+  /// chat session, so it runs the promoted resident lane (claude-exp / codex-exp) —
+  /// the one-shot `claude -p` / `codex exec` commands belong to the terminal. A rule
+  /// already bound to one of those still lists its own lane (see [_cronClis]).
+  static const _cliChoices = <String>['claude-exp', 'codex-exp', 'opencode', 'zcode', 'qoder'];
+
+  List<String> get _cronClis =>
+      _cliChoices.contains(_cli) ? _cliChoices : [_cli, ..._cliChoices];
+
   @override
   void initState() {
     super.initState();
@@ -405,7 +414,7 @@ class _CronEditorState extends State<_CronEditor> {
     _name = TextEditingController(text: t?.name ?? '');
     _cron = TextEditingController(text: t?.cron ?? '0 9 * * *');
     _prompt = TextEditingController(text: t?.prompt ?? '');
-    _cli = t?.cli ?? 'claude';
+    _cli = t?.cli ?? _cliChoices.first;
     // Default to the task's dir if it still exists, else the first directory.
     final ids = widget.dirs.map((d) => d.id).toSet();
     _dirId = (t != null && ids.contains(t.dirId))
@@ -528,8 +537,11 @@ class _CronEditorState extends State<_CronEditor> {
               runSpacing: 8,
               children: [
                 // 名字走唯一那份 CLI 展示表（app/lib/utils/cli_display.dart），
-                // 免得这里再抄一遍、和别处漂开。
-                for (final cli in const ['claude', 'codex', 'opencode', 'zcode', 'qoder'])
+                // 免得这里再抄一遍、和别处漂开。定时任务跑的也是 chat 线路，所以按
+                // 家族取扶正后的常驻车道（`claude -p` / `codex exec` 那两个一次性
+                // 命令留给终端）；旧规则绑着的那条无论如何都留着，否则编辑它时看不
+                // 见自己在用哪条。
+                for (final cli in _cronClis)
                   _cliChoice(cli, cliDisplayName(cli)),
               ],
             ),

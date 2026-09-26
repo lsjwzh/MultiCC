@@ -41,11 +41,12 @@ void main() {
 
   test('the app names match the server adapter label for the same id', () {
     expect(cliDisplayName('claude'), 'Claude Code');
-    expect(cliDisplayName('claude-exp'), 'Claude Agent SDK');
-    // 2026-09-24 改名：常驻 app-server 车道（codex-exp）扶正为产品的 Codex，
-    // 一次性 `codex exec`（codex）退成兜底的 Codex Exec。角标跟着名字走。
+    // 2026-09-26 扶正：两条常驻车道（claude-exp / codex-exp）拿产品名，两条一次性
+    // 车道（claude = `claude -p`、codex = `codex exec`）保留各自的名字。
+    expect(cliDisplayName('claude-exp'), 'Claude');
     expect(cliDisplayName('codex'), 'Codex Exec');
     expect(cliDisplayName('codex-exp'), 'Codex');
+    expect(cliShortMark('claude-exp'), 'A');
     expect(cliShortMark('codex'), 'E');
     expect(cliShortMark('codex-exp'), 'X');
     expect(cliDisplayName('opencode'), 'OpenCode');
@@ -56,6 +57,41 @@ void main() {
     expect(cliDisplayName('dsh'), 'DSH');
     expect(cliDisplayName('gemini'), 'Gemini');
     expect(cliDisplayName('grok'), 'Grok');
+  });
+
+  test('the small line names the engine under the two promoted lanes', () {
+    // 小字：扶正的两条常驻车道写它们底下的引擎，其余车道写自己的 id —— 终端里那行
+    // 小字指的就是要跑的命令。
+    expect(cliEngine('claude-exp'), 'Claude Agent SDK');
+    expect(cliEngine('codex-exp'), 'Codex App Server');
+    expect(cliEngine('claude'), 'claude');
+    expect(cliEngine('codex'), 'codex');
+    expect(cliEngine('opencode'), 'opencode');
+    expect(cliEngine('mystery-cli'), 'mystery-cli');
+    expect(cliEngine(null), '');
+    expect(kCliDisplays['claude-exp']!.engine, 'Claude Agent SDK');
+    expect(kCliDisplays['codex-exp']!.engine, 'Codex App Server');
+  });
+
+  test('the one-shot lanes are terminal-only and the resident lanes chat-only', () {
+    // `claude` 是 `claude -p`、`codex` 是 `codex exec`：chat 的选择器里没有它们，
+    // 终端要把这两个可执行文件跑起来，所以它们只退出 chat。
+    expect(cliOffersIn('claude', 'chat'), isFalse);
+    expect(cliOffersIn('claude', 'terminal'), isTrue);
+    expect(cliOffersIn('codex', 'chat'), isFalse);
+    expect(cliOffersIn('codex', 'terminal'), isTrue);
+    expect(cliOffersIn('claude-exp', 'chat'), isTrue);
+    expect(cliOffersIn('claude-exp', 'terminal'), isFalse);
+    expect(cliOffersIn('codex-exp', 'chat'), isTrue);
+    expect(cliOffersIn('codex-exp', 'terminal'), isFalse);
+    // 两条车道都给的（如 opencode）与没听说过的 id 一样，两种会话都给。
+    expect(cliOffersIn('opencode', 'chat'), isTrue);
+    expect(cliOffersIn('opencode', 'terminal'), isTrue);
+    expect(cliOffersIn('mystery-cli', 'chat'), isTrue);
+    expect(cliOffersIn('mystery-cli', 'terminal'), isTrue);
+    // 记录里的空格与大小写不改变答案。
+    expect(cliOffersIn(' CLAUDE ', ' Terminal '), isTrue);
+    expect(kCliDisplays['claude']!.offersIn('chat'), isFalse);
   });
 
   test('only the one-shot codex lane is flagged as on its way out', () {

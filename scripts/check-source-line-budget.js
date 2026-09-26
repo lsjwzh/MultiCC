@@ -26,9 +26,13 @@ const MIGRATION_DEBT = Object.freeze({
   // re-registering, which turned this gate red on main. The ceiling is the exact
   // committed high-water mark, so it is re-registered here; the next main_shell
   // split must ratchet it down and retire this entry once the file is <= target.
+  // 2026-09-26 车道扶正：新建会话的默认线路按会话种类分流（chat 落 claude-exp，
+  // 终端落 claude），任务卡上的线路徽标改走 cliDisplayName —— 三行 + 一个 import。
+  // 高水位按实测登记到 3167/122298；下一位动 main_shell 该拆的仍是任务卡与目录
+  // 控制台那两块渲染。
   'app/lib/screens/main_shell.dart': Object.freeze({
-    ceiling: 3164,
-    byteCeiling: 121973,
+    ceiling: 3167,
+    byteCeiling: 122298,
     target: 3000,
   }),
   // public/air.js 和 src/chat/turn-engine.js 都在 0f276ebc（session
@@ -77,10 +81,15 @@ const MIGRATION_DEBT = Object.freeze({
   // 一行去注册表折算别名。少掉的词换来一段解释「为什么规范状态不在这里再写一遍」的
   // 注释，行数刚好抵平（3118 不变），字节按重排后的实测降到 169154。
   'public/air.js': Object.freeze({
-    ceiling: 3118,
-    byteCeiling: 169154,
+    ceiling: 3141,
+    byteCeiling: 170888,
     target: 3000,
   }),
+  // 2026-09-26 车道扶正（接着上面 air.js 那格）：多了一层线路展示壳
+  // （cliDisplayName / cliOptionLabel / cliOffersInChat / firstChatCli 四个小助手），
+  // 快速开始、定时任务、任务气泡三处改走它们，chat 的下拉一律滤掉一次性车道。
+  // 行数 3118 -> 3141、字节 169154 -> 170888，全是接线；下一次动目录页或 ⌘K，
+  // 该拆的仍是 renderSchedules / renderDirectoryOverview。
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
   // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,
@@ -115,9 +124,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-09-25 数字口径统一（shared/format.js ↔ utils/format.dart）：本文件的
   // `_fmtDuration` 换成对 format.dart 的调用，短了 8 行，按棘轮规则把天花板
   // 压回实测高水位 3012/121741（缩小同样是违约，不能只往下不改这里）。
+  // 2026-09-26 车道扶正：连接提示里的线路名改从 cli_display 的 cliDisplayName 取
+  // （旧写法把「Claude Exp」这种内部名当产品名发给用户），行数不变、字节 +14，
+  // 按实测登记到 3012/121755。这一格仍是那笔 ~200 行的 vendor-quota 集群该还的债。
   'app/lib/providers/chat_provider.dart': Object.freeze({
     ceiling: 3012,
-    byteCeiling: 121741,
+    byteCeiling: 121755,
     target: 3000,
   }),
 });

@@ -75,6 +75,16 @@ const FAMILIES = Object.freeze({
 //   deprecated  — the lane still works but is on the way out; pickers say so.
 //   replacedBy  — the lane to use instead, for a deprecated one. Only ever
 //                 present alongside deprecated: true (see deprecationOf).
+//   engine      — the engine under the lane, for the second (smaller) line of a
+//                 two-line CLI row. The two promoted resident lanes name their
+//                 engine product ("Claude Agent SDK" / "Codex App Server");
+//                 every other lane leaves it out, and the small line then shows
+//                 the id — which is exactly the command a terminal will run.
+//   kinds       — which session kinds may offer the lane in a CLI picker
+//                 ('chat' / 'terminal'). Omitted = both. This is a fact about
+//                 the lane, not about one screen: it used to be spelled out per
+//                 surface (Flutter's create-session dialog, Air's directory
+//                 page), and the two rules had already drifted apart.
 //
 // This is the ONE table for all of them. Each of them used to be spelled out per
 // surface and had drifted: web `CLI_META` (chat.js), `CLI_LABELS`/`CLI_MARKS`
@@ -94,19 +104,32 @@ const FAMILIES = Object.freeze({
 //
 // "Claude Code", not "Claude": one spelling for the product, and it is the one
 // the server already prints when it names a claude session.
+//
+// 2026-09-26：两条常驻车道扶正为产品名，两条一次性车道退出 chat。
+//
+//   内部 id        主名（大字）    小字（engine）        出现在
+//   claude         Claude Code     claude（= 要跑的命令） 仅终端
+//   claude-exp     Claude          Claude Agent SDK     仅 chat
+//   codex          Codex Exec      codex                 仅终端
+//   codex-exp      Codex           Codex App Server      仅 chat
+//
+// `claude` 是 `claude -p` 的一次性车道、`codex` 是 `codex exec`，两者在 chat 里
+// 已经没有存在意义（扶正后的常驻车道才是 chat 的线路），但终端真的要把这两个
+// 可执行文件跑起来，所以它们**只退出 chat、留在终端**。反过来 claude-exp /
+// codex-exp 是进程内的 SDK / app-server 车道，没有可执行文件能丢进终端。
+//
+// id 一律不动：会话记录、Provider 池、路由、适配器 label 全记着旧 id。
 const DISPLAY = Object.freeze({
-  claude: Object.freeze({ displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false, deprecated: false }),
+  claude: Object.freeze({ displayName: 'Claude Code', shortMark: 'C', colour: '#f78166', providerless: false, deprecated: false, kinds: Object.freeze(['terminal']) }),
   // 产品名（不是文案）：Anthropic 的 Claude Agent SDK，内部 id 仍是 claude-exp。
-  'claude-exp': Object.freeze({ displayName: 'Claude Agent SDK', shortMark: 'A', colour: '#ff9a76', providerless: false, deprecated: false }),
-  // 2026-09-24：常驻 app-server 车道（id 仍叫 codex-exp）扶正为产品的「Codex」，
-  // 一次性 `codex exec` 车道（id 仍叫 codex）退成兜底，显示名改为「Codex Exec」，
-  // 并标成计划淘汰。**只有显示名和角标动了**：会话记录、Provider 池、路由、适配器
-  // label 全都记着旧 id，改名意味着改数据。
+  'claude-exp': Object.freeze({ displayName: 'Claude', shortMark: 'A', colour: '#ff9a76', providerless: false, deprecated: false, engine: 'Claude Agent SDK', kinds: Object.freeze(['chat']) }),
+  // 一次性 `codex exec` 车道退成终端的原生命令，chat 里不再提供；标成计划淘汰是
+  // 记录「chat 那半条路已经交给 codex-exp」，终端上它仍是本来的 codex 命令。
   //
-  // 两个 id 的角标跟着名字走：X 归扶正后的 Codex，E 归兜底的 Codex Exec（Exec）。
+  // 两个 id 的角标跟着名字走：X 归扶正后的 Codex，E 归 Codex Exec（Exec）。
   // 二者不能同用 X —— 同一张任务卡上两颗 X 分不出是哪条车道。
-  codex: Object.freeze({ displayName: 'Codex Exec', shortMark: 'E', colour: '#2ea043', providerless: false, deprecated: true, replacedBy: 'codex-exp' }),
-  'codex-exp': Object.freeze({ displayName: 'Codex', shortMark: 'X', colour: '#20a66a', providerless: false, deprecated: false }),
+  codex: Object.freeze({ displayName: 'Codex Exec', shortMark: 'E', colour: '#2ea043', providerless: false, deprecated: true, replacedBy: 'codex-exp', kinds: Object.freeze(['terminal']) }),
+  'codex-exp': Object.freeze({ displayName: 'Codex', shortMark: 'X', colour: '#20a66a', providerless: false, deprecated: false, engine: 'Codex App Server', kinds: Object.freeze(['chat']) }),
   opencode: Object.freeze({ displayName: 'OpenCode', shortMark: 'O', colour: '#388bfd', providerless: false, deprecated: false }),
   zcode: Object.freeze({ displayName: 'ZCode', shortMark: 'Z', colour: '#a371f7', providerless: false, deprecated: false }),
   qoder: Object.freeze({ displayName: 'Qoder CN', shortMark: 'Q', colour: '#ff8a3d', providerless: true, deprecated: false }),
@@ -120,6 +143,10 @@ const DISPLAY = Object.freeze({
 // Neutral grey, matching the muted text both clients already draw with. Only
 // for a CLI the table has never heard of — its own name is still what is shown.
 const DEFAULT_COLOUR = '#8b949e';
+
+// A lane with no `kinds` is offered everywhere. Frozen so a picker that filters
+// by kind cannot accidentally mutate the shared default.
+const DEFAULT_KINDS = Object.freeze(['chat', 'terminal']);
 
 function nameOf(cli) {
   return String(cli == null ? '' : cli).trim().toLowerCase();
@@ -179,6 +206,26 @@ function deprecationOf(cli) {
 
 function isDeprecated(cli) {
   return deprecationOf(cli) !== null;
+}
+
+// The second, smaller line of a two-line CLI row. Only the promoted resident
+// lanes name an engine; everything else answers its own id, which is the command
+// the lane actually runs (and is what those rows have always shown).
+function engineOf(cli) {
+  const entry = displayOf(cli);
+  if (entry && entry.engine) return entry.engine;
+  return String(cli == null ? '' : cli).trim();
+}
+
+// Which session kinds may offer this lane. Unknown ids answer both: a CLI this
+// table has never heard of must not silently vanish from a picker.
+function kindsOf(cli) {
+  const entry = displayOf(cli);
+  return entry && entry.kinds ? entry.kinds : DEFAULT_KINDS;
+}
+
+function offersIn(cli, kind) {
+  return kindsOf(cli).includes(String(kind == null ? '' : kind).trim().toLowerCase());
 }
 
 function knownClis() {
@@ -256,6 +303,7 @@ module.exports = {
   CAPABILITIES,
   DEFAULT_CAPABILITY,
   DEFAULT_COLOUR,
+  DEFAULT_KINDS,
   DISPLAY,
   cancelStopsProcess,
   capabilityOf,
@@ -263,11 +311,14 @@ module.exports = {
   deprecationOf,
   displayNameOf,
   displayOf,
+  engineOf,
   isDeprecated,
   isProviderless,
   isResident,
   isResidentSession,
+  kindsOf,
   knownClis,
+  offersIn,
   protocolFamilyOf,
   protocolOf,
   providerlessClis,

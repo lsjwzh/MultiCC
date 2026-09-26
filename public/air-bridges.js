@@ -42,6 +42,11 @@
   // 文案只在渲染时查。t() 由 air.html 的 i18n.js 提供；万一没挂上（缓存半套静态资源）
   // 只退化成 key 本身，不让整页因为文案层缺失而崩。
   const t = (key, params) => (typeof root.t === 'function' ? root.t(key, params) : key);
+  // 网关这两个 Agent 选项的名字走共享 CLI 目录（权威表在 src/cli/cli-capability.js）。
+  // 这里写死的两行原先一个直接叫 "Claude"、一个叫 "Codex Exec" —— 扶正之后 "Claude"
+  // 已经是常驻 SDK 车道的名字，而这两颗 radio 的值仍是一次性的 `claude -p` / `codex
+  // exec`（下面的 value 没动，网关跑的就是那两条），标签必须说出它们真是谁。
+  const cliLabel = cli => (root.MultiCCProviderCatalog?.cliDisplayName?.(cli)) || cli;
   // 五个字符与 shared/dom-helpers.js 的 escapeHtml 同一份语义。自包含 IIFE，不依赖页面顺序。
   const esc = value => String(value == null ? '' : value)
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -185,8 +190,8 @@
           <div class="setting-row" id="wx-gw-cli-row">
             <label>Agent</label>
             <div style="display:flex;gap:12px;">
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="claude" checked /> Claude</label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="codex" /> Codex Exec</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="claude" checked /> ${cliLabel('claude')}</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="wx-gw-cli" value="codex" /> ${cliLabel('codex')}</label>
             </div>
           </div>
           <div class="setting-row"><span>${t('airBridgesWechatGatewayHint')}</span></div>
@@ -248,8 +253,8 @@
           <div class="setting-row" id="fs-gw-cli-row">
             <label>Agent</label>
             <div style="display:flex;gap:12px;">
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="fs-gw-cli" value="claude" checked /> Claude</label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="fs-gw-cli" value="codex" /> Codex Exec</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="fs-gw-cli" value="claude" checked /> ${cliLabel('claude')}</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="fs-gw-cli" value="codex" /> ${cliLabel('codex')}</label>
             </div>
           </div>
           <div class="setting-row"><span>${t('airBridgesTokenGatewayHint', { session: '__feishu_gateway__' })}</span></div>
@@ -318,8 +323,8 @@
           <div class="setting-row" id="${idp}-gw-cli-row">
             <label>Agent</label>
             <div style="display:flex;gap:12px;">
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="${idp}-gw-cli" value="claude" checked /> Claude</label>
-              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="${idp}-gw-cli" value="codex" /> Codex Exec</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="${idp}-gw-cli" value="claude" checked /> ${cliLabel('claude')}</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;flex:none;"><input type="radio" name="${idp}-gw-cli" value="codex" /> ${cliLabel('codex')}</label>
             </div>
           </div>
           <div class="setting-row"><span>${t('airBridgesTokenGatewayHint', { session: `__${spec.platform}_gateway__` })}</span></div>

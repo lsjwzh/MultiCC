@@ -299,15 +299,29 @@
     render();
   }
 
-  // 可选的 CLI：快照里服务端认的那一份（`/api/air` 的 `clis`）。实验车道不进
-  // ——那些是 chat 专用的适配器（app-server / Agent SDK），不是给人用的交互式终端。
+  // 可选的 CLI：快照里服务端认的那一份（`/api/air` 的 `clis`）。哪条车道能进终端
+  // 是车道自己的事实（服务端 cli-capability 的 kinds 列，经共享 CLI 目录下发），
+  // 这里不自己维护一张排除表 —— 常驻车道（claude-exp / codex-exp）是进程内的
+  // SDK / app-server，没有可执行文件能丢进终端，目录里本来就说不支持 terminal；
+  // 目录还没加载时退回旧口径（`-exp` 后缀 = chat 专用适配器，不是给人用的终端）。
   function terminalClis() {
+    const api = root.MultiCCProviderCatalog;
+    const offersTerminal = cli =>
+      api?.cliOffersIn ? api.cliOffersIn(cli, 'terminal') : !cli.endsWith('-exp');
     return [...new Set((ctx?.data?.clis || [])
       .map(cli => String(cli || ''))
-      .filter(cli => cli && !cli.endsWith('-exp')))];
+      .filter(cli => cli && offersTerminal(cli)))];
   }
 
   function recentCli() { return String(ctx?.defaultCli?.() || ''); }
+
+  // 默认值 = 这个目录最近用过的那条，但它来自 chat 那颗胶囊（`air.js` 的 quickCli），
+  // 可能是条常驻车道 —— 终端起不来。不在候选里就退回第一条可用的。
+  function defaultTerminalCli() {
+    const recent = recentCli();
+    const clis = terminalClis();
+    return clis.includes(recent) ? recent : (clis[0] || 'claude');
+  }
 
   // 「＋ 新终端」：**和 chat 的「AI 配置」是同一个对话框**（`air-task-settings.js` 的
   // `configuration(entry, clis, onApply)`，draft 模式）—— CLI、Provider、模型、推理
@@ -325,7 +339,7 @@
         task: { title: translate('airNewTerminal') },
         // 打开时的默认值 = 这个目录最近用过的那套（和 chat 那颗胶囊同一个口径），
         // 但对话框里每一项都能改。
-        configuration: { ...(ctx.data?.lastRuntime || {}), cli: recentCli() || clis[0] || 'claude' },
+        configuration: { ...(ctx.data?.lastRuntime || {}), cli: defaultTerminalCli() },
       },
       clis,
       runtime => void create(runtime),

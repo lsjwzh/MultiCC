@@ -16,6 +16,7 @@ import '../services/settings_service.dart';
 import '../screens/file_browser_screen.dart';
 import '../screens/settings_screen.dart';
 import '../utils/context_level.dart';
+import '../utils/cli_display.dart';
 import '../screens/share_messages_screen.dart';
 import 'cli_switch_sheet.dart';
 import 'git_log_sheet.dart';
@@ -282,6 +283,10 @@ class ChatHeader extends StatelessWidget {
               const SizedBox(width: 6),
               _ChatCliBadge(
                 cli: provider.cli,
+                // 窄页头这一行是固定预算：名字留到页头的三分之一，多出来的部分
+                // 省略号，换道图标让位（tap 仍然打开换道面板）。
+                compact: narrow,
+                maxLabelWidth: narrow ? constraints.maxWidth / 3 : null,
                 onTap: () => openCliSwitchSheet(
                   context,
                   sessionId: provider.executionSessionName,
@@ -1485,7 +1490,22 @@ class _SessionTitle extends StatelessWidget {
 class _ChatCliBadge extends StatelessWidget {
   final SessionCli cli;
   final VoidCallback onTap;
-  const _ChatCliBadge({required this.cli, required this.onTap});
+
+  /// 窄页头：这一行只有 344px 的预算，装不下「名字 + 换道图标」两样 —— 图标是装饰
+  /// （点这颗角标本来就是去换道，tooltip 也写着），先让给它名字。同时给名字一个上
+  /// 限并允许省略号：产品名长短随语言/线路变（Claude Code / Qoder CN / WorkBuddy），
+  /// 一行固定宽度的 chrome 不该被一个名字顶出去。
+  final bool compact;
+
+  /// 名字的宽度上限（null = 按内容）。窄页头按页头宽度折算一个份额传进来。
+  final double? maxLabelWidth;
+
+  const _ChatCliBadge({
+    required this.cli,
+    required this.onTap,
+    this.compact = false,
+    this.maxLabelWidth,
+  });
   @override
   Widget build(BuildContext context) {
     final color = switch (cli) {
@@ -1516,16 +1536,27 @@ class _ChatCliBadge extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                cli.name,
-                style: TextStyle(
-                  color: color,
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700,
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: maxLabelWidth ?? double.infinity,
+                ),
+                child: Text(
+                  // 产品名，不是内部 id：这颗角标在 chat 页头上，写 claude-exp 等于把
+                  // 实现细节印在用户眼前（扶正后这条车道就叫 Claude）。
+                  cliDisplayName(cli.name),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
-              const SizedBox(width: 2),
-              Icon(Icons.swap_horiz_rounded, size: 11, color: color),
+              if (!compact) ...[
+                const SizedBox(width: 2),
+                Icon(Icons.swap_horiz_rounded, size: 11, color: color),
+              ],
             ],
           ),
         ),

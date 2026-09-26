@@ -12,14 +12,18 @@ const path = require('node:path');
 const {
   CAPABILITIES,
   DEFAULT_CAPABILITY,
+  DEFAULT_KINDS,
   DISPLAY,
   cancelStopsProcess,
   capabilityOf,
   deprecationOf,
   displayNameOf,
+  engineOf,
   isDeprecated,
   isResident,
   isResidentSession,
+  kindsOf,
+  offersIn,
   protocolFamilyOf,
   protocolOf,
   transportOf,
@@ -175,6 +179,33 @@ test('the one-shot codex lane is marked as the fallback it now is', () => {
     assert.equal(deprecationOf(unknown), null, `deprecationOf(${String(unknown)})`);
     assert.equal(isDeprecated(unknown), false, `isDeprecated(${String(unknown)})`);
   }
+});
+
+test('the chat lanes are the resident ones, and the terminal keeps the native commands', () => {
+  // 2026-09-26：两条常驻车道扶正 —— 大字是产品名、小字是它们底下的引擎；两条一次性
+  // 车道退出 chat。`claude` 是 `claude -p`、`codex` 是 `codex exec`：chat 里没有它们
+  // 的位置，但终端真要把这两个可执行文件跑起来，所以只退出 chat、留在终端。
+  assert.equal(displayNameOf('claude-exp'), 'Claude');
+  assert.equal(engineOf('claude-exp'), 'Claude Agent SDK');
+  assert.equal(displayNameOf('codex-exp'), 'Codex');
+  assert.equal(engineOf('codex-exp'), 'Codex App Server');
+  assert.deepEqual(kindsOf('claude-exp'), ['chat']);
+  assert.deepEqual(kindsOf('codex-exp'), ['chat']);
+  assert.deepEqual(kindsOf('claude'), ['terminal']);
+  assert.deepEqual(kindsOf('codex'), ['terminal']);
+  assert.equal(offersIn('claude', 'chat'), false);
+  assert.equal(offersIn('claude', 'terminal'), true);
+  // 其余车道没有引擎名，小字就是自己的 id —— 终端里那行小字写的就是要跑的命令。
+  for (const cli of ['claude', 'codex', 'opencode', 'zcode']) assert.equal(engineOf(cli), cli);
+  // 没写 kinds 的车道两端都给；表里没有的车道也不能因为分类而消失。
+  assert.deepEqual(DEFAULT_KINDS, ['chat', 'terminal']);
+  assert.deepEqual(kindsOf('opencode'), ['chat', 'terminal']);
+  assert.equal(offersIn('mystery-cli', 'chat'), true);
+  assert.equal(engineOf('mystery-cli'), 'mystery-cli');
+  // 记录里带着的空格与大小写不该改变答案。
+  assert.equal(offersIn(' CLAUDE ', ' CHAT '), false);
+  assert.equal(offersIn(' Claude-Exp ', 'Chat'), true);
+  assert.equal(engineOf(undefined), '');
 });
 
 test('an adapter error label follows the display table, and the parsers accept every spelling', () => {
