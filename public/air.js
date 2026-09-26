@@ -571,8 +571,11 @@
       card.append(node('span', name), node('strong', String(value)), node('small', detail));
       return card;
     };
+    // 主数字 = 真正「正在执行」的任务数（spinner 状态），而不是未归档记录总数——
+    // 后者是自动观察长期堆积的「进行中」历史，拿来当主数字会虚高得没有意义。
+    // 未归档记录总数仍然放在小字里给个上下文。
     $('directory-stats').replaceChildren(
-      stat(t('airStateActive'), current.length, t('airDirRunningNow', { n: running.length }), 'blue'),
+      stat(t('airStateActive'), running.length, t('airDirActiveDetail', { n: current.length }), 'blue'),
       stat(t('airDirStatPlanned'), planned.length, t('airDirStatPlannedHint')),
       stat(t('airStageDone'), tasks.filter(task => task.status === 'done').length, t('airDirStatDoneHint'), 'green'),
       stat(t('airStatusAllRecords'), tasks.length, t('airDirArchiveWorktrees', {
