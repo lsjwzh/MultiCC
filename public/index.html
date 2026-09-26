@@ -145,6 +145,50 @@
     #find-count { color: #8b949e; font-size: 12px; font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
     #find-bar .hdr-btn { padding: 4px 9px; font-size: 12px; }
 
+    /* ── Info bar: 这一页开着的是谁（cwd / worktree / 分支 / provider·model）──
+       终端页认识自己的唯一途径是一条 WS 帧（session_id: {id, cli}），cwd、分支、
+       模型一概不知道；在同目录几个终端之间跳来跳去时，这正是要看的东西。整条是
+       只读的，拿不到就整条 hidden —— 不拿猜的填。 */
+    #term-info {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 4px 12px;
+      background: #10151c;
+      border-bottom: 1px solid #21262d;
+      font-size: 11.5px;
+      color: #8b949e;
+    }
+    #term-info[hidden] { display: none; }
+    /* cwd 是这条里唯一会长的东西：让它省略号，别把右边那几颗芯片挤出屏。 */
+    #term-info-cwd {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      color: #c9d1d9;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    #term-info-cwd.warn { color: #d29922; }
+    .ti-chip {
+      flex: none;
+      padding: 1px 7px;
+      border: 1px solid #30363d;
+      border-radius: 9px;
+      background: #161b22;
+      white-space: nowrap;
+    }
+    .ti-chip[hidden] { display: none; }
+    .ti-chip.warn { color: #d29922; border-color: #d2992255; }
+    #term-info .ti-spacer { flex: 1 1 auto; min-width: 0; }
+    /* 同目录终端切换：只有真有第二条时才出现（切不出去的两颗按钮是噪音）。 */
+    #term-switch { flex: none; display: flex; align-items: center; gap: 4px; }
+    #term-switch[hidden] { display: none; }
+    #term-switch .hdr-btn { padding: 2px 8px; font-size: 12px; line-height: 1.5; }
+    #term-switch-pos { min-width: 32px; text-align: center; font-variant-numeric: tabular-nums; }
+
     /* ── Input Toolbar ── */
     #input-toolbar {
       flex-shrink: 0;
@@ -741,6 +785,12 @@
         flex-wrap: wrap;
         gap: 8px;
       }
+      /* 360px 的手机上 cwd + 三颗芯片 + 切换器挤不进一行：让它换行，别把信息省略掉。 */
+      #term-info {
+        flex-wrap: wrap;
+        padding: 4px 10px;
+        row-gap: 4px;
+      }
       #header-actions {
         margin-left: 0;
         width: 100%;
@@ -774,6 +824,20 @@
       <button id="font-down-btn" class="hdr-btn" title="缩小字号 (⌘- / Ctrl+-)">A−</button>
       <button id="font-up-btn" class="hdr-btn" title="放大字号 (⌘+ / Ctrl+=)">A+</button>
       <button id="reconnect-btn" onclick="connect()">Reconnect</button>
+    </div>
+  </div>
+
+  <!-- 信息条：内容全部由 client.js 从 /api/sessions 填（拿不到就整条 hidden）。 -->
+  <div id="term-info" hidden>
+    <span id="term-info-cwd"></span>
+    <span id="term-info-worktree" class="ti-chip" hidden></span>
+    <span id="term-info-branch" class="ti-chip" hidden></span>
+    <span id="term-info-model" class="ti-chip" hidden></span>
+    <span class="ti-spacer"></span>
+    <div id="term-switch" hidden>
+      <button id="term-prev" class="hdr-btn" title="同目录的上一个终端">‹</button>
+      <span id="term-switch-pos"></span>
+      <button id="term-next" class="hdr-btn" title="同目录的下一个终端">›</button>
     </div>
   </div>
 
