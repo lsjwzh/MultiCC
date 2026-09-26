@@ -12,6 +12,7 @@
 // child's first write — `_updateScheduled` covers exactly that window, and
 // expires so a child that died before writing anything cannot 409 forever.
 const { startDetachedUpdate, readUpdateStatus, detectStandaloneUpdate } = require('../update-runner');
+const { resolveVersionInfo } = require('./system');
 
 const UPDATE_FLAG_TTL_MS = 20000;
 
@@ -28,6 +29,11 @@ const UPDATE_FLAG_TTL_MS = 20000;
 //                     updates itself (bundled `multicc update`), so it is let
 //                     through — see detectStandaloneUpdate.
 //   isStandalone      () => boolean — defaults to detecting the standalone layout
+//   getPort           () => number — current listen port, forwarded to install.sh
+//                     as --port so a non-default port survives the update
+//                     (install.sh otherwise resets PORT to 3000)
+//   fs, path, https, gitRun — forwarded to resolveVersionInfo to resolve the
+//                     target version for the standalone/install.sh path
 function createUpdateRoute(deps) {
   const {
     chatSessions,
@@ -38,6 +44,11 @@ function createUpdateRoute(deps) {
     now = Date.now,
     isDesktopMode = () => /^(1|true|yes|on)$/i.test(String(process.env.MULTICC_DESKTOP || '').trim()),
     isStandalone = () => Boolean(detectStandaloneUpdate({ rootDir })),
+    getPort = () => null,
+    fs,
+    path,
+    https,
+    gitRun,
   } = deps || {};
   if (typeof spawn !== 'function') throw new TypeError('update route requires spawn');
   if (!rootDir) throw new TypeError('update route requires rootDir');
@@ -87,7 +98,7 @@ function createUpdateRoute(deps) {
       res.json({ ...admissionStatus(), kind: updateKind() });
     });
 
-    app.post('/api/update', (req, res) => {
+    app.post('/api/update', async (req, res) => {
       expireScheduledFlag();
       if (getShuttingDown()) return res.status(409).json({ error: 'server is shutting down' });
       if (isDesktopMode() && updateKind() !== 'standalone') {
@@ -102,6 +113,21 @@ function createUpdateRoute(deps) {
         return res.status(409).json({ error: 'update already in progress', status: current });
       }
       const force = Boolean(req.body && (req.body.force === true || req.body.force === 'true' || req.body.force === 1));
+      const kind = updateKind();
+
+      // The standalone path runs install.sh against a specific target release;
+      // resolve it up front so the client can poll /api/version-check for this
+      // exact version after the restart instead of guessing when "done" means.
+      let targetVersion = null;
+      if (kind === 'standalone' && fs && path && https && gitRun) {
+        try {
+          const info = await resolveVersionInfo({ fs, path, https, gitRun, rootDir });
+          targetVersion = info.latestVersion || info.current || null;
+        } catch (error) {
+          log.error('[multicc] /api/update: could not resolve target version', error && error.message);
+        }
+      }
+
       _updateScheduled = true;
       _updateScheduledAt = now();
       const scheduledAt = _updateScheduledAt;
@@ -120,6 +146,8 @@ function createUpdateRoute(deps) {
           spawn,
           rootDir,
           force,
+          targetVersion,
+          port: getPort(),
           env: process.env,
           log,
           onFailure: (error) => {
@@ -145,7 +173,7 @@ function createUpdateRoute(deps) {
         });
       }
 
-      return res.status(202).json({ ok: true, status: 'started', force, activeStreaming });
+      return res.status(202).json({ ok: true, status: 'started', force, activeStreaming, targetVersion });
     });
   }
 

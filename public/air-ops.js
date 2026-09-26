@@ -346,40 +346,109 @@
     }
   }
 
-  async function pollUntilDone({ force }) {
+  // Standalone (install.sh) runs have no step markers of their own, so the
+  // client does not pretend to show a checklist for them — just the script's
+  // raw output, verbatim, as it is written to the log. This is also what the
+  // user asked for explicitly: "更新窗口只是实时显示脚本的进展就好了".
+  function paintRawLog(dialog, state, { unreachable = false, note = '' } = {}) {
+    if (!dialog) return;
+    const lines = [note, state && state.tail].filter(Boolean).join('\n\n');
+    dialog.setLog(lines);
+  }
+
+  // install.sh restarts the server at its own end, so the exit marker in the
+  // log can be written by a process that is *about* to disappear — it proves
+  // the script finished, not that the new server is answering yet. So success
+  // for the standalone path is judged by /api/version-check, not by the log:
+  // keep polling it — tolerating the errors a still-booting server returns —
+  // until a response succeeds and reports exactly the version this run
+  // installed. Ported from the user's explicit spec: "页面在前端不断请求
+  // version接口...直到version成功，且返回目标版本号，才标记为升级成功".
+  async function confirmTargetVersion(targetVersion, { dialog, deadline } = {}) {
+    for (;;) {
+      try {
+        const result = await raw('/api/version-check');
+        if (result.ok && result.data && (!targetVersion || result.data.current === targetVersion)) {
+          return result.data;
+        }
+      } catch (_) {
+        // Server still restarting; keep polling.
+      }
+      if (dialog) dialog.setBody(t('airOpsUpdateConfirmingBody'));
+      if (Date.now() > deadline) return null;
+      await sleep(POLL_MS);
+    }
+  }
+
+  async function pollUntilDone({ force, kind = 'git', targetVersion = null }) {
     if (pollingUpdate) return;
     pollingUpdate = true;
     const startedAt = Date.now();
     let sawUnreachable = false;
     updateProgress = null;
+    const standalone = kind === 'standalone';
     try {
       for (;;) {
         const state = await fetchUpdateStatus();
         const dialog = activeDialog && activeDialog.isOpen() ? activeDialog : null;
-        const progress = attachProgress(dialog);
-        progress.update(state.unreachable ? null : state, { unreachable: !!state.unreachable });
+        const progress = standalone ? null : attachProgress(dialog);
+        if (progress) progress.update(state.unreachable ? null : state, { unreachable: !!state.unreachable });
+        if (standalone) paintRawLog(dialog, state.unreachable ? null : state, { unreachable: !!state.unreachable });
+
         if (state.unreachable) {
           sawUnreachable = true;
           setVersionHint(t('airOpsServerRestarting'), true);
           if (dialog) dialog.setBody(t('airOpsServerRestartingBody'));
         } else if (state.state === 'succeeded') {
-          setVersionHint(t('airOpsUpdateDoneReloading'), true);
+          if (progress) progress.stop();
+          if (!standalone) {
+            setVersionHint(t('airOpsUpdateDoneReloading'), true);
+            if (dialog) {
+              dialog.setTitle(t('airOpsUpdateDoneTitle'));
+              dialog.setBody(t('airOpsUpdateDoneBody'));
+              dialog.setLog(state.tail || '');
+              dialog.setButtons([]);
+            }
+            // Reaching this branch already proves the new server answers (the
+            // manager writes its exit marker only after wait_for_ready); the
+            // extra probe covers a proxy still holding the old connection.
+            for (let i = 0; i < 20 && !(await serverIsBack()); i += 1) await sleep(500);
+            location.reload();
+            return;
+          }
+          // install.sh: the exit marker only proves the script ran to
+          // completion, not that the version it installed is the one now
+          // answering requests — confirm that against /api/version-check
+          // before declaring success.
+          const resolvedTarget = targetVersion || state.targetVersion || null;
+          setVersionHint(t('airOpsUpdateConfirming'), true);
           if (dialog) {
             dialog.setTitle(t('airOpsUpdateDoneTitle'));
-            dialog.setBody(t('airOpsUpdateDoneBody'));
-            dialog.setLog(state.tail || '');
+            dialog.setBody(t('airOpsUpdateConfirmingBody'));
             dialog.setButtons([]);
           }
-          progress.stop();
-          // Reaching this branch already proves the new server answers (the
-          // manager writes its exit marker only after wait_for_ready); the
-          // extra probe covers a proxy still holding the old connection.
-          for (let i = 0; i < 20 && !(await serverIsBack()); i += 1) await sleep(500);
-          location.reload();
+          const confirmed = await confirmTargetVersion(resolvedTarget, {
+            dialog,
+            deadline: Date.now() + MAX_WAIT_MS,
+          });
+          if (confirmed) {
+            setVersionHint(t('airOpsUpdateDoneReloading'), true);
+            location.reload();
+            return;
+          }
+          setVersionHint(t('airOpsUpdateNoResponse'));
+          if (dialog) {
+            dialog.setTitle(t('airOpsUpdateLostTitle'));
+            dialog.setBody(t('airOpsUpdateConfirmTimeout', { version: resolvedTarget || t('airOpsUnknown') }));
+            dialog.setButtons([
+              { label: t('airOpsReloadAnyway'), kind: 'primary', onClick: () => location.reload() },
+              { label: t('airOpsClose'), onClick: () => dialog.close() },
+            ], () => dialog.close());
+          }
           return;
         } else if (state.state === 'failed' || state.state === 'stale') {
           const failed = state.state === 'failed';
-          progress.stop();
+          if (progress) progress.stop();
           setVersionHint(failed ? t('airOpsUpdateFailed') : t('airOpsUpdateNoResponse'));
           if (dialog) {
             dialog.setTitle(failed ? t('airOpsUpdateFailed') : t('airOpsUpdateLostTitle'));
@@ -391,7 +460,7 @@
             // The run's own record of whether it was forced beats this
             // closure's copy: the dialog may be re-attached from another tab.
             const wasForced = state.force != null ? !!state.force : !!force;
-            if (!wasForced && failed) {
+            if (!wasForced && failed && !standalone) {
               buttons.push({
                 label: t('airOpsForceRetry'),
                 kind: 'danger',
@@ -403,16 +472,21 @@
           }
           return;
         } else if (state.state === 'running') {
-          // The hint beside the version number: the download's own progress
-          // when there is one, else the newest log line.
-          const current = (state.steps || []).find(step => step.state === 'running' && step.progress);
-          const lastLine = current
-            ? `${t(STEP_LABEL_KEYS[current.id] || 'airOpsUpdating')} ${current.progress.percent != null ? `${current.progress.percent}%` : current.progress.text}`
-            : (String(state.tail || '').trim().split('\n').pop() || t('airOpsUpdating'));
-          setVersionHint(lastLine.slice(0, 40), true);
-          if (dialog) {
-            dialog.setBody(sawUnreachable ? t('airOpsServerBackFinishing') : t('airOpsUpdatingBody'));
-            dialog.setLog(state.tail || '');
+          if (standalone) {
+            setVersionHint((String(state.tail || '').trim().split('\n').pop() || t('airOpsUpdating')).slice(0, 40), true);
+            if (dialog) dialog.setBody(sawUnreachable ? t('airOpsServerBackFinishing') : t('airOpsUpdatingBody'));
+          } else {
+            // The hint beside the version number: the download's own progress
+            // when there is one, else the newest log line.
+            const current = (state.steps || []).find(step => step.state === 'running' && step.progress);
+            const lastLine = current
+              ? `${t(STEP_LABEL_KEYS[current.id] || 'airOpsUpdating')} ${current.progress.percent != null ? `${current.progress.percent}%` : current.progress.text}`
+              : (String(state.tail || '').trim().split('\n').pop() || t('airOpsUpdating'));
+            setVersionHint(lastLine.slice(0, 40), true);
+            if (dialog) {
+              dialog.setBody(sawUnreachable ? t('airOpsServerBackFinishing') : t('airOpsUpdatingBody'));
+              dialog.setLog(state.tail || '');
+            }
           }
         } else if (dialog) {
           // 'idle' / 'scheduled': no log yet (the child writes its first line
@@ -421,7 +495,7 @@
         }
 
         if (Date.now() - startedAt > MAX_WAIT_MS) {
-          progress.stop();
+          if (progress) progress.stop();
           setVersionHint(t('airOpsUpdateTimeout'));
           if (dialog) {
             dialog.setTitle(t('airOpsUpdateTimeout'));
@@ -440,7 +514,7 @@
 
   let pollingUpdate = false;
 
-  async function startUpdate(force) {
+  async function startUpdate(force, kind = 'git') {
     const dialog = openDialog();
     dialog.setTitle(t('airOpsUpdatingTitle'));
     dialog.setBody(t('airOpsStartingUpdate'));
@@ -462,7 +536,8 @@
       // Someone (or a previous tab) already started one — attach to it rather
       // than reporting an error the user can do nothing about.
       dialog.setBody(t('airOpsUpdateTakeover'));
-      await pollUntilDone({ force: !!(result.data && result.data.status && result.data.status.force) });
+      const runningStatus = (result.data && result.data.status) || {};
+      await pollUntilDone({ force: !!runningStatus.force, kind, targetVersion: runningStatus.targetVersion || null });
       return;
     }
     if (!result.ok) {
@@ -477,7 +552,7 @@
       status(`⚠️ ${t('airOpsStreamingBusyUpdate', { count: result.data.activeStreaming })}`, 'warn');
     }
     setVersionHint(t('airOpsUpdating'), true);
-    await pollUntilDone({ force: !!force });
+    await pollUntilDone({ force: !!force, kind, targetVersion: (result.data && result.data.targetVersion) || null });
   }
 
   // kind comes from /api/update/status: 'standalone' downloads a new package
@@ -508,7 +583,7 @@
       {
         label: updateAvailable ? t('airOpsUpdateNow') : t('airOpsUpdateAnyway'),
         kind: 'primary',
-        onClick: () => { const force = !standalone && input.checked; dialog.close(); startUpdate(force); },
+        onClick: () => { const force = !standalone && input.checked; dialog.close(); startUpdate(force, kind); },
       },
     ], () => dialog.close());
   }
@@ -531,8 +606,8 @@
         // Not awaited: the poll can run for many minutes, and holding the
         // guard that long would leave the version row unclickable — exactly
         // when the user who backgrounded the dialog wants it back.
-        pollUntilDone({ force: !!running.force });
-        attachProgress(dialog).update(running);
+        pollUntilDone({ force: !!running.force, kind: running.kind, targetVersion: running.targetVersion || null });
+        if (running.kind !== 'standalone') attachProgress(dialog).update(running);
         return;
       }
       const info = await checkVersion();

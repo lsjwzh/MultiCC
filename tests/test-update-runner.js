@@ -17,6 +17,7 @@ const {
   PLAN_MARKER,
   UPDATE_STEPS,
   detectStandaloneUpdate,
+  buildInstallScriptShellCommand,
   shellQuote,
   parseUpdateLog,
   parseUpdateSteps,
@@ -251,7 +252,7 @@ test('a standalone install is recognised, and its log lives outside the bundle i
   assert.equal(detectStandaloneUpdate({ rootDir: createFixture(), env: fixture.env }), null);
 });
 
-test('a standalone update runs the bundled CLI with markers on and is admitted in desktop mode', () => {
+test('a standalone update fetches install.sh and points it at the bundle root, and is admitted in desktop mode', () => {
   const fixture = createStandaloneFixture();
   const spawned = [];
   const spawn = (command, args, options) => { spawned.push({ command, args, options }); return createChild(); };
@@ -260,6 +261,7 @@ test('a standalone update runs the bundled CLI with markers on and is admitted i
     chatSessions: new Map(), spawn, rootDir: fixture.rootDir, log: { log() {}, error() {} },
     isDesktopMode: () => true,
     isStandalone: () => Boolean(detectStandaloneUpdate({ rootDir: fixture.rootDir, env: fixture.env })),
+    getPort: () => 4242,
   }).mountRoutes(app);
 
   const status = createRes();
@@ -270,19 +272,35 @@ test('a standalone update runs the bundled CLI with markers on and is admitted i
   Object.assign(process.env, fixture.env);
   try {
     const res = createRes();
+    // No fs/path/https/gitRun deps supplied — resolveVersionInfo is skipped and
+    // the handler completes synchronously (see server.js's real wiring for the
+    // version-resolving case, covered separately by the update-route tests).
     app.routes.post.get('/api/update')({ body: {} }, res);
     assert.equal(res.statusCode, 202, JSON.stringify(res.body));
+    assert.equal(res.body.targetVersion, null);
   } finally {
     for (const key of Object.keys(process.env)) if (!(key in previousEnv)) delete process.env[key];
     Object.assign(process.env, previousEnv);
   }
   assert.equal(spawned.length, 1);
   const script = spawned[0].args[1];
-  assert.match(script, /runtime\/bin\/node' '.*launcher\/standalone-cli\.js' update --restart/);
+  // Unknown target version: the installer is fetched off `main` and told to
+  // resolve `latest` itself, exactly as install.sh's own one-liner would.
+  assert.match(script, /curl -fsSL 'https:\/\/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/main\/install\.sh' -o "\$TMP"/);
+  assert.match(script, /\/bin\/sh "\$TMP" --dir '.*' --version 'latest' --port '4242' --no-open/);
+  assert.ok(script.includes(shellQuote(fixture.base)), 'install.sh is pointed at the true bundle root, not Resources');
   assert.ok(script.includes(shellQuote(path.join(fixture.dataDir, 'logs', 'update.log'))), 'the log path survives shell quoting');
-  assert.equal(spawned[0].options.env.MULTICC_UPDATE_MARKERS, '1');
-  assert.equal(spawned[0].options.env.MULTICC_UPDATE_LOG, path.join(fixture.dataDir, 'logs', 'update.log'));
+  assert.equal(spawned[0].options.cwd, fixture.base);
   assert.equal(spawned[0].options.detached, true);
+});
+
+test('a standalone update with a known target version pins the installer to that release tag', () => {
+  const fixture = createStandaloneFixture();
+  const standalone = detectStandaloneUpdate({ rootDir: fixture.rootDir, env: fixture.env, platform: 'darwin' });
+  const script = buildInstallScriptShellCommand({ standalone, targetVersion: '1.4.2', port: 3000 });
+  assert.match(script, /curl -fsSL 'https:\/\/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/v1\.4\.2\/install\.sh' -o "\$TMP"/);
+  assert.match(script, /--version 'v1\.4\.2'/);
+  assert.ok(script.includes('target=1.4.2'), 'the run records the version it is installing for later reattachment');
 });
 
 test('a declared plan replaces the default steps and download progress rides on the running step', () => {
@@ -461,7 +479,7 @@ test('the route starts one update, reports the turns it will interrupt, and reje
   const res = createRes();
   app.routes.post.get('/api/update')({ body: { force: true }, id: 'req-1' }, res);
   assert.equal(res.statusCode, 202);
-  assert.deepEqual(res.body, { ok: true, status: 'started', force: true, activeStreaming: 1 });
+  assert.deepEqual(res.body, { ok: true, status: 'started', force: true, activeStreaming: 1, targetVersion: null });
   assert.match(spawned[0].args[1], /multicc update --force/);
 
   // Second call within the debounce window: the log does not exist yet, so only

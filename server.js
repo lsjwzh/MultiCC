@@ -1736,6 +1736,11 @@ const updateRoute = createUpdateRoute({
   spawn,
   rootDir: __dirname,
   getShuttingDown: () => _shuttingDown,
+  getPort: () => PORT,
+  fs,
+  path,
+  https,
+  gitRun,
 }); updateRoute.mountRoutes(app);
 
 // ── Per-session metadata: inter-agent notes + liveness ──

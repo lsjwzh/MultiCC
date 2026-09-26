@@ -298,9 +298,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 2026-09-26 目录「完成」卡改口径：airStageDone 退场、airStatSucceeded 进场、提示行
   // airDirStatDoneHint 改名 airDirStatSucceededHint（键数不变 = 行数不变，只有键名变长
   // 撑了字节），重跑生成器实测 7180 行 / 447520 字节。
+  // 2026-09-26 更新窗口改走 install.sh + 重启后轮询 version 确认：airOpsReloadAnyway
+  // /airOpsUpdateConfirming/airOpsUpdateConfirmingBody/airOpsUpdateConfirmTimeout
+  // 共 4 键，中英各 4 行 = +8，合流后重跑生成器实测按下方登记值为准。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7180,
-    maxBytes: 447520,
+    maxLines: 7188,
+    maxBytes: 448293,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
