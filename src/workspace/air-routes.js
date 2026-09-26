@@ -200,8 +200,29 @@ function mountAirRoutes(app, deps) {
       // 自动回收的策略（闲置阈值/间隔）由运行时给出，面板据此把「多久没用会被收走」
       // 说准，而不是在客户端再猜一个默认值。
       worktreePolicy: hibernationPolicy,
+      // 终端行要回答的「这一条现在还能用吗」，和 tasks 那条 runState 一样是服务端
+      // 折出来的事实，客户端只读不推断。三个取值：
+      //   route_dead — 绑了托管 provider 却没有能力令牌：那个进程里烤死的 base URL
+      //                带着明文 id，每个请求都 409 proxy_route_capability_mismatch
+      //                （判据与 src/providers/terminal-route.js 的 lookup() 同一条）。
+      //                修法是重启，所以它排在最前 —— 进程在不在都改变不了这个结论。
+      //   running    — 内存里还有运行时会话（tmux 活着；进程退出后 3s 内被 sweep 掉）。
+      //   stopped    — 没有运行时会话：进程已退出，或服务重启后没被恢复。
+      // 不用 classifyState：终端不在 chatSessions 里，chat liveness 对它一律返回
+      // unknown/no_chat_runtime，持久化下来的字母会永远停在 P
+      // （docs/classify-state-machine-audit.md §4.3）—— 拿它当状态点就是撒谎。
+      // 也不逐行 tmuxHasSession()：这是 4s 一轮的接口，一行 spawn 一个 tmux 子进程
+      // 换不来比内存那张表更新的信息（那张表本身就是靠 has-session 维护的）。
       sessions: [...deps.records.values()].filter(s => s.kind === 'terminal' && !['aux', 'gateway'].includes(s.type))
-        .map(s => ({ id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli })) };
+        .map(s => {
+          const runtime = deps.sessions?.get(s.id);
+          return { id: s.id, dirId: s.dirId, label: s.label || s.id, kind: s.kind, cli: s.cli,
+            state: s.provider && !s.proxyRouteToken ? 'route_dead' : runtime ? 'running' : 'stopped',
+            // 「多久没动」= 最后一次有输出的时刻。停了的终端没有运行时，也就没有这个
+            // 时刻：给 null，客户端才不至于把一条死进程报成「刚刚」。
+            lastActivityAt: runtime ? runtime.lastActivity.getTime() : null,
+            createdAt: Date.parse(s.createdAt) || null };
+        }) };
   }
   app.get('/api/air', route(async (req, res) => conditionalBody(req, res, await airSnapshot())));
 

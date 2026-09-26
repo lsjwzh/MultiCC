@@ -1,12 +1,15 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/message.dart';
+import 'package:multicc_app/providers/session_manager.dart';
 import 'package:multicc_app/services/onboarding_store.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air_tasks_view.dart';
@@ -49,16 +52,56 @@ MockClient _client(List<String> requests) => MockClient((request) async {
           'resource': {'residency': 'planned', 'lease': 'idle'},
         },
       ],
-      'sessions': const [
-        {'id': 's1', 'dirId': 'd1', 'label': 'a 的巡检终端', 'cli': 'claude'},
-        {'id': 's2', 'dirId': 'd1', 'label': 'a 的另一个终端', 'cli': 'codex'},
-        {'id': 's3', 'dirId': 'd2', 'label': 'b 的终端', 'cli': 'claude'},
+      'sessions': [
+        // 三态由服务端折好给过来，行上画的只是这三个事实的翻译。五分钟是相对测试
+        // 假钟量的，所以「最后输出 5 分钟前」那句是稳的。
+        {
+          'id': 's1',
+          'dirId': 'd1',
+          'label': 'a 的巡检终端',
+          'cli': 'claude',
+          'state': 'running',
+          'lastActivityAt':
+              DateTime.now().millisecondsSinceEpoch - 5 * 60 * 1000,
+          'createdAt': 1700000000000,
+        },
+        {
+          'id': 's2',
+          'dirId': 'd1',
+          'label': 'a 的另一个终端',
+          'cli': 'codex',
+          'state': 'route_dead',
+          'lastActivityAt': null,
+        },
+        {
+          'id': 's3',
+          'dirId': 'd2',
+          'label': 'b 的终端',
+          'cli': 'claude',
+          'state': 'stopped',
+          'lastActivityAt': null,
+        },
       ],
     }),
     200,
     headers: {'content-type': 'application/json; charset=utf-8'},
   );
 });
+
+/// 只记改名调用、不发请求：真 SessionManager 的 renameSession 会 PATCH 到真主机，
+/// widget 测试关心的是「这一行把哪一对 (id, label) 交出去了」。
+class _RecordingManager extends SessionManager {
+  _RecordingManager({required super.settings});
+
+  final renamedIds = <String>[];
+  final renamedLabels = <String?>[];
+
+  @override
+  Future<void> renameSession(String id, String? label) async {
+    renamedIds.add(id);
+    renamedLabels.add(label);
+  }
+}
 
 Future<SettingsService> _settings() async {
   SharedPreferences.setMockInitialValues({
@@ -72,11 +115,21 @@ Future<SettingsService> _settings() async {
 void main() {
   setUpAll(() => I18n.init('zh'));
 
-  Future<List<String>> pumpView(WidgetTester tester) async {
+  _RecordingManager? liveManager;
+
+  Future<List<String>> pumpView(
+    WidgetTester tester, {
+    _RecordingManager? manager,
+  }) async {
     final settings = await _settings();
     final requests = <String>[];
     final client = _client(requests);
     addTearDown(client.close);
+    final mgr = manager ?? _RecordingManager(settings: settings);
+    // SessionManager 构造里就起一条 5s 轮询定时器，而 widget 测试不允许 body 结束
+    // 时还挂着定时器 —— 所以必须在 body 里 dispose（每个测试结尾都走 closeView），
+    // 不能丢给 addTearDown（那在不变量检查之后才跑）。
+    liveManager = mgr;
     // 手机竖屏那样高：默认 800×600 的测试视口里，顶部那道切换 + 输入框就把
     // 任务行/终端行挤出可见区，而 ListView 不会 build 看不见的孩子 —— 找不到
     // 不等于没渲染。
@@ -85,7 +138,12 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
-      MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
+      ChangeNotifierProvider<SessionManager>.value(
+        value: mgr,
+        child: MaterialApp(
+          home: AirTasksView(settings: settings, httpClient: client),
+        ),
+      ),
     );
     await tester.pumpAndSettle();
     return requests;
@@ -108,6 +166,8 @@ void main() {
 
   Future<void> closeView(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox());
+    liveManager?.dispose();
+    liveManager = null;
   }
 
   testWidgets('目录首页顶部有 Chat / Terminal 切换，默认停在 Chat', (tester) async {
@@ -191,6 +251,86 @@ void main() {
     await tester.tap(find.text(t('cancel')));
     await tester.pumpAndSettle();
     expect(requests.where((r) => r.contains('/restart')), isEmpty);
+    expect(tester.takeException(), isNull);
+    await closeView(tester);
+  });
+
+  testWidgets('终端行：状态点、元信息，与出问题时的提示行', (tester) async {
+    await pumpView(tester);
+    await switchTo(tester, 'terminal');
+
+    // 状态点与元信息只翻译服务端折好的 state / lastActivityAt，客户端不自己推。
+    expect(
+      find.textContaining('claude · 运行中 · 最后输出 5 分钟前'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('codex · 路由失效'), findsOneWidget);
+    // 路由失效的那条没有 lastActivityAt：「多久没动」整段不出现，全列表只有一处。
+    expect(find.textContaining('最后输出'), findsOneWidget);
+    // 出问题的状态要说清「怎么了、怎么办」；running 不给提示行（多一行字只是噪音）。
+    expect(find.text(t('airTerminalRouteDeadHint')), findsOneWidget);
+    expect(find.text(t('airTerminalStoppedHint')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await closeView(tester);
+  });
+
+  testWidgets('终端行重命名：先问一句，交出 (id, label)，取消什么都不发', (tester) async {
+    final mgr = _RecordingManager(settings: await _settings());
+    final requests = await pumpView(tester, manager: mgr);
+    await switchTo(tester, 'terminal');
+
+    await tester.tap(find.byKey(const ValueKey('air-terminal-rename-s1')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text(t('airTerminalRenamePrompt', {'label': 'a 的巡检终端'})),
+      findsOneWidget,
+    );
+
+    // 取消 = 不改名（也不能打成别的请求）。
+    await tester.tap(find.text(t('cancel')));
+    await tester.pumpAndSettle();
+    expect(mgr.renamedIds, isEmpty);
+    expect(requests.where((r) => r.startsWith('PATCH')), isEmpty);
+
+    await tester.tap(find.byKey(const ValueKey('air-terminal-rename-s1')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '  Build box  ');
+    await tester.tap(find.text(t('save')));
+    await tester.pumpAndSettle();
+    // 首尾空白不交给服务端：服务端拿它当名字存。
+    expect(mgr.renamedIds, ['s1']);
+    expect(mgr.renamedLabels, ['Build box']);
+    expect(find.text(t('airTerminalRenamed')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await closeView(tester);
+  });
+
+  testWidgets('终端行复制 id：剪贴板里就是那一行的 id', (tester) async {
+    final copied = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add('${(call.arguments as Map<Object?, Object?>)['text']}');
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+
+    await pumpView(tester);
+    await switchTo(tester, 'terminal');
+
+    await tester.tap(find.byKey(const ValueKey('air-terminal-copy-s1')));
+    await tester.pumpAndSettle();
+    // 「已复制」必须是真的：剪贴板里就是这一行的 id，不多不少。
+    expect(copied, ['s1']);
+    expect(find.text(t('airTerminalIdCopied', {'id': 's1'})), findsOneWidget);
     expect(tester.takeException(), isNull);
     await closeView(tester);
   });

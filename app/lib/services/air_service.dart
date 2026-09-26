@@ -570,9 +570,9 @@ class AirSnapshot {
 
 /// 目录首页 Terminal 模式里的一个终端会话。
 ///
-/// `/api/air` 的 `sessions` 只给移动端要用的四个字段（服务端已经滤掉
+/// `/api/air` 的 `sessions` 只给移动端要用的字段（服务端已经滤掉
 /// aux / gateway），打开时拿 id 去会话表里换一个完整的 [Session]；换不到
-/// （隐藏记录不在 `/api/sessions` 里）就退回这四个字段自己拼一个 ——
+/// （隐藏记录不在 `/api/sessions` 里）就退回这些字段自己拼一个 ——
 /// `TerminalScreen` 要的就是 id 和 label。
 class AirSession {
   const AirSession({
@@ -580,6 +580,9 @@ class AirSession {
     required this.dirId,
     required this.label,
     required this.cli,
+    this.state,
+    this.lastActivityAt,
+    this.createdAt,
   });
 
   final String id;
@@ -587,21 +590,39 @@ class AirSession {
   final String label;
   final String cli;
 
+  /// 服务端折好的三态（`running` / `stopped` / `route_dead`）。老快照没有这个
+  /// 字段：null 就不画状态点，也不编一个状态出来。
+  final String? state;
+
+  /// 最后一次有输出的时刻（epoch 毫秒）。停了的终端没有运行时，也就没有这个
+  /// 时刻 —— null，行上那截「多久没动」直接不出现。
+  final int? lastActivityAt;
+
+  final DateTime? createdAt;
+
   static AirSession fromJson(Map<String, dynamic> json) {
     final id = '${json['id'] ?? ''}';
     final label = '${json['label'] ?? ''}'.trim();
+    final state = '${json['state'] ?? ''}'.trim();
+    final activity = json['lastActivityAt'];
+    final created = json['createdAt'];
     return AirSession(
       id: id,
       dirId: json['dirId']?.toString(),
       // 服务端发的是 `s.label || s.id`，空 label 也兜回 id（同 Web 的行文案）。
       label: label.isEmpty ? id : label,
       cli: '${json['cli'] ?? ''}',
+      state: state.isEmpty ? null : state,
+      lastActivityAt: activity is num ? activity.toInt() : null,
+      createdAt: created is num && created.toInt() > 0
+          ? DateTime.fromMillisecondsSinceEpoch(created.toInt())
+          : null,
     );
   }
 
   /// 只够 TerminalScreen 用的最小会话（会话表里查不到时的兜底）。
   ///
-  /// 快照里没有 createdAt，用「现在」顶上：这个字段在终端页只当元数据看，
+  /// 快照现在带 createdAt；只有早于这个字段的服务端才用「现在」顶上 ——
   /// 拿不到真实值也不该让一整行终端打不开。
   Session toSession() => Session(
     id: id,
@@ -609,7 +630,7 @@ class AirSession {
     label: label,
     cli: parseCli(cli),
     kind: SessionKind.terminal,
-    createdAt: DateTime.now(),
+    createdAt: createdAt ?? DateTime.now(),
   );
 }
 
