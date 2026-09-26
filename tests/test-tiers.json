@@ -3067,6 +3067,15 @@
       ]
     },
     {
+      "path": "tests/test-opencode-zen-quota.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-operation-service.js",
       "tier": "core",
       "lane": "deterministic",

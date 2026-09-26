@@ -151,6 +151,10 @@ function openCodeBar(value) {
       '托管 Chrome 起不来，也没有可连的调试端点。点击会尝试拉起一个可见的 Chrome 登录窗口；也可以自己开一个带调试端点的 Chrome（--remote-debugging-port=0 即可，我们会从 DevToolsActivePort 找到它）并在其中登录 opencode.ai。',
       'login');
   }
+  if (value.status === 'no_auth') {
+    return view('OpenCode Go：订阅 key 失效 · ⟳ 重试', COLOR.red,
+      value.error || 'Zen/Go 订阅 key 被网关拒绝。请在 opencode.ai 控制台重新生成 key，并更新 ~/.config/opencode/opencode.json 里的 apiKey。');
+  }
   if (value.status !== 'ok' || !value.usage) {
     return view('OpenCode Go：用量暂不可用 · ⟳ 重试', COLOR.yellow,
       value.error || '无法从 opencode.ai 拉取 Go 用量');
@@ -160,9 +164,10 @@ function openCodeBar(value) {
     const r = Math.round(n);
     return Number.isInteger(r) ? String(r) : (Math.round(n * 10) / 10).toString();
   };
-  // `resetInSec` is a duration measured when the console was scraped. Anchoring
-  // it to fetchedAt turns it into a real deadline, so the countdown decays on
-  // screen instead of freezing at whatever it was when the scrape ran.
+  // `resetInSec` is a duration measured when the reading was taken (the Zen API
+  // reports an absolute resetsAt, which ../quota/opencode-zen.js converts).
+  // Anchoring it to fetchedAt turns it into a real deadline, so the countdown
+  // decays on screen instead of freezing at whatever it was when we fetched.
   const fetchedAt = finiteNumber(value.fetchedAt) || 0;
   const resetAt = (sec) => {
     const s = finiteNumber(sec);
@@ -188,7 +193,10 @@ function openCodeBar(value) {
   if (maxPct >= 90) color = COLOR.red;
   else if (maxPct >= 70) color = COLOR.yellow;
 
-  const lines = ['OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）'];
+  const viaZenApi = typeof value.source === 'string' && value.source.startsWith('zen-api');
+  const lines = [viaZenApi
+    ? 'OpenCode Go 订阅用量（Zen API /zen/go/v1/usage）'
+    : 'OpenCode Go 订阅用量（CDP 抓 opencode.ai Zen console）'];
   for (const [key, zh] of [['rolling', '5h'], ['weekly', '周'], ['monthly', '月']]) {
     const w = u[key];
     if (!w) continue;
