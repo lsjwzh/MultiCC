@@ -349,6 +349,78 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
+  /// 删一条终端会话（`DELETE /api/sessions/:id`）。
+  ///
+  /// 工作区里还有未提交改动 / 未合入的提交时，服务端按安全规则先拒绝（409 +
+  /// reasons）——这时把风险说清楚再问一次，同意才带 force 重来；和 Web 那条删除、
+  /// 以及目录任务行那颗删除同一个规矩。
+  Future<void> _deleteTerminal(AirSession session) async {
+    final label = session.label;
+    final confirmed = await _confirmTerminalDelete(
+      title: t('deleteSessionConfirm'),
+      body: t('deleteSessionBody', {'id': label}),
+    );
+    if (confirmed != true || !mounted) return;
+    final mgr = context.read<SessionManager>();
+    try {
+      await mgr.deleteSession(session.id);
+      await _refresh();
+    } on SessionDeleteBlockedException catch (blocked) {
+      if (!mounted) return;
+      final findings = [
+        if (blocked.dirty) t('airDeleteRiskDirty'),
+        if (blocked.unmerged) t('airDeleteRiskUnmerged'),
+      ].join('\n');
+      final forced = await _confirmTerminalDelete(
+        title: t('deleteTerminalRiskTitle'),
+        body: t('deleteTerminalRiskBody', {'id': label, 'findings': findings}),
+      );
+      if (forced != true || !mounted) return;
+      try {
+        await mgr.deleteSession(session.id, force: true);
+        await _refresh();
+      } catch (error) {
+        if (mounted) setState(() => _error = error.toString());
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    }
+  }
+
+  Future<bool?> _confirmTerminalDelete({
+    required String title,
+    required String body,
+  }) => showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: AppColors.panel,
+      title: Text(
+        title,
+        style: const TextStyle(color: AppColors.text, fontSize: 15),
+      ),
+      content: Text(
+        body,
+        style: const TextStyle(color: AppColors.text, fontSize: 13),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: Text(
+            t('cancel'),
+            style: const TextStyle(color: AppColors.muted),
+          ),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: Text(
+            t('delete'),
+            style: const TextStyle(color: AppColors.danger),
+          ),
+        ),
+      ],
+    ),
+  );
+
   /// Terminal 模式点开一行：先换出会话对象，再开终端页。
   ///
   /// 三级兜底，因为终端记录不在 `/api/sessions` 的常规可见列表里：先看已经加载
@@ -1662,6 +1734,7 @@ class _AirTasksViewState extends State<AirTasksView>
               _DirectoryTerminalRow(
                 session: session,
                 onTap: () => unawaited(_openTerminal(session)),
+                onDelete: () => unawaited(_deleteTerminal(session)),
               ),
         ],
       ),
@@ -2215,12 +2288,18 @@ class _DirectoryModeButton extends StatelessWidget {
   }
 }
 
-/// Terminal 模式下的一行终端会话（Web 侧栏那组 `›_ label` 链接的同款）。
+/// Terminal 模式下的一行终端会话（Web 那行 `›_ label` 的同款：点行打开，
+/// 行尾一颗删除）。
 class _DirectoryTerminalRow extends StatelessWidget {
-  const _DirectoryTerminalRow({required this.session, required this.onTap});
+  const _DirectoryTerminalRow({
+    required this.session,
+    required this.onTap,
+    required this.onDelete,
+  });
 
   final AirSession session;
   final VoidCallback onTap;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -2252,10 +2331,14 @@ class _DirectoryTerminalRow extends StatelessWidget {
                 session.cli,
                 style: const TextStyle(color: AppColors.faint, fontSize: 11),
               ),
-        trailing: const Icon(
-          Icons.chevron_right_rounded,
-          size: 18,
-          color: AppColors.faint,
+        trailing: IconButton(
+          key: ValueKey('air-terminal-delete-${session.id}'),
+          onPressed: onDelete,
+          iconSize: 18,
+          visualDensity: VisualDensity.compact,
+          tooltip: t('airDeleteTerminalAria', {'label': session.label}),
+          icon: const Icon(Icons.delete_outline_rounded),
+          color: AppColors.danger,
         ),
       ),
     );

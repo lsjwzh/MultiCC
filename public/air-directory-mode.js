@@ -58,9 +58,14 @@
     }
   }
 
+  // 刚删掉的那些先在本机记一笔：`ctx.data` 是上一次快照，删完不等下一次轮询就把这一行
+  // 抹掉，数字也跟着变。快照回头自然不会再带它们。
+  const removed = new Set();
+
   function terminations() {
     const sessions = ctx?.data?.sessions || [];
-    return sessions.filter(session => (session.kind || 'terminal') === 'terminal' && session.dirId === dirId);
+    return sessions.filter(session => (session.kind || 'terminal') === 'terminal'
+      && session.dirId === dirId && !removed.has(session.id));
   }
 
   function paintTerminals() {
@@ -75,16 +80,65 @@
       list.replaceChildren(node('p', translate('airTerminalsEmpty'), 'directory-terminal-empty'));
       return;
     }
+    // 一行 = 打开那条终端的链接 + 一颗删除。删除按钮不能放进 <a> 里（嵌套可交互元素
+    // 是无效 HTML，点删除会跟着跳走），所以外层是 div、里面两件并排 —— 和目录任务行
+    // （`directory-task-row`）同一种结构，样式也复用 `.task-delete`。
     list.replaceChildren(...sessions.map(session => {
-      const link = node('a', null, 'directory-terminal-row');
+      const label = session.label || session.id;
+      const row = node('div', null, 'directory-terminal-row');
+      const link = node('a', null, 'directory-terminal-open');
       link.href = `/?id=${encodeURIComponent(session.id)}`;
       link.append(
         node('span', '›_', 'directory-terminal-mark'),
-        node('strong', session.label || session.id),
+        node('strong', label),
         node('small', session.cli || ''),
       );
-      return link;
+      const remove = node('button', translate('delete'), 'task-delete danger');
+      remove.type = 'button';
+      remove.dataset.action = 'delete-terminal';
+      remove.setAttribute('aria-label', translate('airDeleteTerminalAria', { label }));
+      remove.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        void removeTerminal(session, remove);
+      };
+      row.append(link, remove);
+      return row;
     }));
+  }
+
+  // 删一条终端会话（`DELETE /api/sessions/:id`）。worktree 里还有未提交改动 / 未合入
+  // 的提交时，服务端默认拒绝（409 + reasons），这时再问一次「仍然删除？」，同意才带
+  // force 重来 —— 和目录任务行那条删除一个规矩（`deleteTaskById`）。
+  async function removeTerminal(session, button) {
+    if (!ctx || !session?.id) return;
+    const label = session.label || session.id;
+    if (!root.confirm(translate('airDeleteTerminalConfirm', { label }))) return;
+    const path = `/api/sessions/${encodeURIComponent(session.id)}`;
+    if (button) button.disabled = true;
+    try {
+      try {
+        await ctx.api(path, undefined, 'DELETE');
+      } catch (error) {
+        const reasons = new Set([error?.code, error?.message, ...(error?.reasons || [])]);
+        const findings = [
+          ...(reasons.has('dirty') ? [translate('airDeleteRiskDirty')] : []),
+          ...(reasons.has('unmerged') ? [translate('airDeleteRiskUnmerged')] : []),
+        ];
+        if (!findings.length || !root.confirm(translate('airDeleteTerminalRiskConfirm', { label, findings: findings.join('\n') }))) {
+          ctx.notice?.(translate('airTerminalDeleteFailed', { error: error?.message || error }));
+          return;
+        }
+        await ctx.api(path, { force: true }, 'DELETE');
+      }
+      removed.add(session.id);
+      paintTerminals();
+      ctx.notice?.(translate('airTerminalDeleted'));
+    } catch (error) {
+      ctx.notice?.(translate('airTerminalDeleteFailed', { error: error?.message || error }));
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function setMode(next) {

@@ -58,6 +58,11 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
       { id: 'role-a', dirId: 'd1', kind: 'chat', label: 'CHAT_KIND_MUST_NOT_SHOW' },
     ],
   });
+  const deletes = [];
+  routes['DELETE /api/sessions/term-a'] = ({ url }) => {
+    deletes.push(url);
+    return json({ ok: true, forced: /force=1/.test(url) });
+  };
   const creates = [];
   routes['POST /api/directories/d1/sessions'] = ({ body }) => {
     const value = JSON.parse(body);
@@ -92,11 +97,25 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
     for (const id of ['directory-stats', 'directory-git', 'quick-task-form']) {
       assert.equal(await page.evaluate(`document.getElementById('${id}').offsetParent===null`), true, `${id} 在终端模式下该让位`);
     }
-    const rows = await page.evaluate(`[...document.querySelectorAll('#directory-terminal-list .directory-terminal-row')].map(a=>[a.textContent,a.getAttribute('href')])`);
+    const rows = await page.evaluate(`[...document.querySelectorAll('#directory-terminal-list .directory-terminal-open')].map(a=>[a.textContent,a.getAttribute('href')])`);
     assert.deepEqual(rows.map(row => row[1]), ['/?id=term-a', '/?id=term-b'], '只列当前目录的终端：' + JSON.stringify(rows));
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-list').textContent.includes('Design terminal')`), false, '别的目录的终端不进来');
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-list').textContent.includes('CHAT_KIND_MUST_NOT_SHOW')`), false, 'chat-kind 的会话不属于终端');
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '2 个终端');
+    screenshots.push(await page.screenshot('directory-terminal-list-with-delete'));
+    // 行尾那颗删除（用户要的）：两行各一颗，先问一次再删。
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list [data-action="delete-terminal"]').length`), 2, '每行一颗删除');
+    // 取消 = 什么都不发（headless 里 confirm 默认就是 false）。
+    await page.evaluate(`window.confirm=()=>false;document.querySelector('#directory-terminal-list [data-action="delete-terminal"]').click()`);
+    assert.deepEqual(deletes, [], '取消不删');
+    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list .directory-terminal-row').length`), 2);
+    // 同意：DELETE /api/sessions/term-a，那一行与计数立刻更新（不等下一次轮询）。
+    await page.evaluate(`window.confirm=()=>true;document.querySelector('#directory-terminal-list [data-action="delete-terminal"]').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-terminal-list .directory-terminal-row').length===1`), '删掉的那行要立刻消失');
+    assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '1 个终端');
+    assert.equal(deletes.length, 1, '删了一次：' + JSON.stringify(deletes));
+    // 留下的那条不是被删的那条。
+    assert.equal(await page.evaluate(`document.querySelector('#directory-terminal-list .directory-terminal-open').getAttribute('href')`), '/?id=term-b');
     screenshots.push(await page.screenshot('directory-terminal-mode-down'));
 
     // ③ 新建终端：开的是 **chat 那套配置对话框**（CLI / Provider / 模型），不是只列

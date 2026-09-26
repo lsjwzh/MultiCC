@@ -72,9 +72,10 @@ Future<SettingsService> _settings() async {
 void main() {
   setUpAll(() => I18n.init('zh'));
 
-  Future<void> pumpView(WidgetTester tester) async {
+  Future<List<String>> pumpView(WidgetTester tester) async {
     final settings = await _settings();
-    final client = _client(<String>[]);
+    final requests = <String>[];
+    final client = _client(requests);
     addTearDown(client.close);
     // 手机竖屏那样高：默认 800×600 的测试视口里，顶部那道切换 + 输入框就把
     // 任务行/终端行挤出可见区，而 ListView 不会 build 看不见的孩子 —— 找不到
@@ -87,6 +88,7 @@ void main() {
       MaterialApp(home: AirTasksView(settings: settings, httpClient: client)),
     );
     await tester.pumpAndSettle();
+    return requests;
   }
 
   Future<void> switchTo(WidgetTester tester, String mode) async {
@@ -142,6 +144,32 @@ void main() {
     await switchTo(tester, 'chat');
     expect(find.text('登录页面'), findsOneWidget);
     expect(find.byKey(const ValueKey('air-terminals-heading')), findsNothing);
+    await closeView(tester);
+  });
+
+  testWidgets('终端行有删除按钮：先确认，取消就不发任何请求', (tester) async {
+    final requests = await pumpView(tester);
+    await switchTo(tester, 'terminal');
+
+    // 每一行一颗删除（用户报过这里没有删除入口）。
+    expect(find.byKey(const ValueKey('air-terminal-delete-s1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-terminal-delete-s2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('air-terminal-delete-s1')));
+    await tester.pumpAndSettle();
+    // 确认框和会话卡同一个口径（deleteSessionConfirm / deleteSessionBody）。
+    expect(find.text(t('deleteSessionConfirm')), findsOneWidget);
+    expect(
+      find.text(t('deleteSessionBody', {'id': 'a 的巡检终端'})),
+      findsOneWidget,
+    );
+
+    // 取消 = 一行都不发（删除是 DELETE，不能打成别的请求）。
+    await tester.tap(find.text(t('cancel')));
+    await tester.pumpAndSettle();
+    expect(requests.where((r) => r.startsWith('DELETE')), isEmpty);
+    expect(find.byKey(const ValueKey('air-terminal-delete-s1')), findsOneWidget);
+    expect(tester.takeException(), isNull);
     await closeView(tester);
   });
 
