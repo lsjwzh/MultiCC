@@ -837,6 +837,14 @@ function createTaskShellRuntime(ports) {
       return { ok: false, code: 'task_switching',
         message: '这个任务正在切换执行环境，请等这次切换结束后再发送。' };
     }
+    // A durable scheduled message is user-authored future work delivered by the
+    // orchestration timer, not a live client send. It never travels through the
+    // shell WebSocket, so there is no receipt to match. Without an exemption it
+    // dead-lettered with task_shell_route_required — the user's message was
+    // shown as pending and then vanished without ever executing. Bind it to the
+    // owned task like a host continuation so downstream attribution stays on the
+    // task and the turn actually runs.
+    if (options.scheduledMessageId) { options.taskId = task.id; return null; }
     return { ok: false, code: 'task_shell_route_required' };
   }
   // Task-level directory move (Air 任务「移动」): the board relocates the
