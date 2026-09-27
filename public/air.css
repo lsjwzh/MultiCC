@@ -1478,8 +1478,18 @@ body.console-open #console-panel { transform: none; visibility: visible; }
    不展开也知道。数字由 air-admin.js 的 urgentTasks 一份定义喂出来。 */
 .console-badge { margin-left: auto; min-width: 19px; padding: 1px 6px; color: #fff; border-radius: 20px; background: var(--accent); font-size: 10px; font-weight: 700; text-align: center; }
 
-.console-attention { margin-bottom: 15px; }
 .admin-panel-note { color: var(--muted); font-size: 10px; }
+/* 四格过滤项：点一格在它下面展开清单，选中的那格描边提亮、底色压一点，一眼看出
+   下面那张清单是谁的。目录数 / 定时任务数降成统计带下面这一行小字。 */
+.console-filter-tabs .admin-stat { cursor: pointer; }
+.console-filter-tabs .admin-stat.selected { border-color: var(--accent); background: #f3f8ff; box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow-1); }
+.console-overview-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -4px 2px 14px; color: var(--muted); font-size: 10.5px; }
+.console-overview-meta .console-meta-link { padding: 0; border: 0; color: inherit; background: none; font: inherit; cursor: pointer; }
+.console-overview-meta .console-meta-link:hover { color: var(--accent); text-decoration: underline; }
+.console-filter-panel { margin-bottom: 15px; }
+.console-filter-panel[hidden] { display: none; }
+.console-filter-panel .admin-task-controls[hidden] { display: none; }
+.console-filter-close { padding: 2px 8px; color: var(--muted); border: 0; background: none; font-size: 10.5px; cursor: pointer; }
 #console-task-list { max-height: min(350px, 44dvh); overflow-y: auto; overscroll-behavior: contain; padding-right: 3px; }
 
 .admin-assistant-card { width: 100%; min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 0 0 15px; padding: 13px 16px; color: #315675; border-color: #cfe1f4; border-radius: 16px; background: linear-gradient(135deg, rgba(240, 247, 255, .98), rgba(250, 247, 255, .98)); text-align: left; box-shadow: 0 10px 28px #416b9b0d; }
@@ -1625,12 +1635,12 @@ main { background: transparent; }
 #console-panel { border-right: 1px solid var(--hairline); background: #fff; box-shadow: 24px 0 80px rgba(43, 76, 109, .16); }
 #console-head { padding: 26px 34px 18px; border-bottom: 1px solid var(--hairline); }
 #console-body { padding: 24px 34px 40px; }
-/* 控制台顶上那四张卡是「读数带」，不是留白的地方：它的高度上限（桌面 84px、
-   手机 80px）写在 test-air-console-cdp.js 里 —— 这四个数字只是用来确认系统活着，
-   省下的高度全给下面的任务清单。所以这里只换皮（发丝边 + 白底 + 柔和阴影 +
-   18px 圆角），内边距和字号一律沿用原值，一个字都不放大。 */
+/* 控制台顶上那四张卡是过滤项（进行中 / 等我回复 / 今日完成 / 全部）：数字要大到
+   一眼读出，但整条带的高度上限（桌面 84px、手机 80px）仍写在 test-air-console-cdp.js
+   里 —— 只放大数字，内边距不动，省下的高度留给点开后的清单。 */
 .admin-stats { gap: 14px; }
 .admin-stat { border: 1px solid var(--hairline); border-radius: 18px; background: #fff; box-shadow: var(--shadow-1); }
+.console-filter-tabs .admin-stat strong { font-size: 24px; }
 .admin-assistant-card { padding: 18px 20px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1); }
 /* 面板自己已经是一张卡：里面的列表、网格不再画第二层边框，也不再自己撑一圈内边距，
    否则卡片套卡片只剩噪声。 */

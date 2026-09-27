@@ -3601,5 +3601,17 @@
   "annotLoadFailed": "Failed to load image: {error}",
   "annotExportFailed": "Could not export the annotated image; only the text was inserted",
   "airStatSucceeded": "Succeeded",
-  "airDirStatSucceededHint": "Still kept in this workspace"
+  "airDirStatSucceededHint": "Still kept in this workspace",
+  "airAdminTileRunning": "In progress",
+  "airAdminTileRunningIdle": "Nothing running right now",
+  "airAdminTileWaiting": "Waiting on me",
+  "airAdminTileToday": "Done today",
+  "airAdminTileTodayDetail": "Tasks finished today",
+  "airAdminTileAll": "All",
+  "airAdminTileAllDetail": "Unarchived · {n} records total, searchable",
+  "airAdminMetaDirectories": "{n} workspaces",
+  "airAdminMetaSchedules": "Scheduled tasks: {n}/{total} enabled",
+  "airAdminCollapse": "Collapse",
+  "airAdminNoRunningTasks": "No tasks are running right now.",
+  "airAdminNoDoneToday": "No tasks finished today yet."
 }
