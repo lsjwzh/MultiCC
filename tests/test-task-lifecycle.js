@@ -32,8 +32,8 @@ test('historical read-only tasks can archive, reject execution and restore', asy
   const f = harness(t);
   assert.equal((await f.call('post', '/status', { status: 'archived' })).statusCode, 200);
   assert.equal(f.board.tasks.old.status, 'archived');
-  assert.equal((await f.call('post', '/send', { text: 'continue' })).body.error, 'task_archived');
-  assert.equal((await f.call('post', '/answer', { text: 'answer' })).body.error, 'task_archived');
+  assert.equal((await f.call('post', '/status', { status: 'done' })).body.error, 'task_archived');
+  assert.equal((await f.call('post', '/relocate', { dirId: 'd' })).body.error, 'task_archived');
   assert.equal((await f.call('post', '/status', { status: 'active' })).statusCode, 200);
   assert.equal(f.board.tasks.old.status, 'active');
   assert.deepEqual(f.purged, []);
@@ -43,7 +43,6 @@ test('permanent deletion removes the task and prevents late messages recreating 
   const f = harness(t);
   assert.equal((await f.call('delete')).body.deleted, true);
   assert.equal(f.board.tasks.old, undefined);
-  assert.equal((await f.call('get')).statusCode, 404);
   assert.deepEqual(f.purged, [['old']]);
   assert.equal((await f.call('delete')).body.deleted, true);
   const restarted = createTaskBoardRuntime(f.deps);
@@ -188,7 +187,7 @@ test('busy tasks are unchanged and failed deletion stays blocked until cleanup r
   busy = false;
   assert.equal((await f.call('delete')).body.error, 'disk_failure');
   assert.equal(f.board.tasks.old.deleting, true);
-  assert.equal((await f.call('post', '/send', { text: 'no' })).body.error, 'task_deleting');
+  assert.equal((await f.call('post', '/relocate', { dirId: 'd' })).body.error, 'task_deleting');
   fail = false;
   assert.equal((await f.call('delete')).body.deleted, true);
 });

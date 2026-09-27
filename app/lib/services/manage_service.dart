@@ -3,11 +3,10 @@ import 'package:http/http.dart' as http;
 
 import '../models/docs_registry_entry.dart';
 import '../models/message.dart';
-import '../models/task_board.dart';
 import 'settings_service.dart';
 
-/// Version-skew fallback for task-board writes. Since 57bfe99 (2026-07) the
-/// server allows ANY authenticated client to mutate the task board; older
+/// Version-skew fallback for write endpoints. Since 57bfe99 (2026-07) the
+/// server allows ANY authenticated client to perform these writes; older
 /// servers rejected non-localhost callers with 403. Keep mapping that 403 so
 /// a phone talking to an outdated host still surfaces "该操作仅本机可用"
 /// instead of a generic HTTP error.
@@ -33,21 +32,6 @@ class ProviderInUseException implements Exception {
 
   @override
   String toString() => 'provider is still referenced (${references.length})';
-}
-
-/// Thrown by the task-board dispatch endpoints (POST .../send) when the server
-/// rejects the route: 409 (no idle/relevant target, or the chosen session is
-/// busy) carries a human-readable `note` from the server; 503 (aux-AI
-/// unhealthy) and 400 (empty text) carry only an `error` code, so `note` is
-/// left empty and the UI maps the `code` to a localized message. A 403 from
-/// an outdated pre-57bfe99 server still surfaces as [LocalOnlyException].
-class BoardRouteException implements Exception {
-  final String code;
-  final String note;
-  const BoardRouteException(this.code, this.note);
-
-  @override
-  String toString() => note.isEmpty ? code : note;
 }
 
 /// Thin REST client for the server-side management endpoints that the web
@@ -84,10 +68,10 @@ class ManageService {
   Never _throw(http.Response res) =>
       throw Exception(_tryParseError(res.body) ?? 'HTTP ${res.statusCode}');
 
-  /// Task-board writes are open to any authenticated client on current
-  /// servers; a 403 can only come from an outdated pre-57bfe99 host. Convert
-  /// it into a [LocalOnlyException] so the UI can surface "仅本机可用"; any
-  /// other failure falls through to the generic [_throw].
+  /// Writes are open to any authenticated client on current servers; a 403 can
+  /// only come from an outdated pre-57bfe99 host. Convert it into a
+  /// [LocalOnlyException] so the UI can surface "仅本机可用"; any other failure
+  /// falls through to the generic [_throw].
   void _throwWrite(http.Response res) {
     if (res.statusCode == 403) throw const LocalOnlyException();
     _throw(res);
@@ -108,18 +92,22 @@ class ManageService {
     final headers = _headers;
     final client = httpClient;
     final call = switch (method) {
-      'GET' => client == null
-          ? http.get(uri, headers: headers)
-          : client.get(uri, headers: headers),
-      'POST' => client == null
-          ? http.post(uri, headers: headers, body: body)
-          : client.post(uri, headers: headers, body: body),
-      'PATCH' => client == null
-          ? http.patch(uri, headers: headers, body: body)
-          : client.patch(uri, headers: headers, body: body),
-      'DELETE' => client == null
-          ? http.delete(uri, headers: headers)
-          : client.delete(uri, headers: headers),
+      'GET' =>
+        client == null
+            ? http.get(uri, headers: headers)
+            : client.get(uri, headers: headers),
+      'POST' =>
+        client == null
+            ? http.post(uri, headers: headers, body: body)
+            : client.post(uri, headers: headers, body: body),
+      'PATCH' =>
+        client == null
+            ? http.patch(uri, headers: headers, body: body)
+            : client.patch(uri, headers: headers, body: body),
+      'DELETE' =>
+        client == null
+            ? http.delete(uri, headers: headers)
+            : client.delete(uri, headers: headers),
       _ => throw ArgumentError.value(method, 'method', '不支持的方法'),
     };
     return call.timeout(timeout);
@@ -338,11 +326,16 @@ class ManageService {
   /// [force] detaches every reference first (server-side, same rules as the
   /// AI-config dialog). Returns the server body: `{ok}` or, when forced,
   /// `{ok, forced: true, detached: [...]}`.
-  Future<Map<String, dynamic>> deleteProvider(String appType, String id,
-      {bool force = false}) async {
+  Future<Map<String, dynamic>> deleteProvider(
+    String appType,
+    String id, {
+    bool force = false,
+  }) async {
     final res = await http
         .delete(
-          Uri.parse(_url('/api/providers/$appType/$id${force ? '?force=1' : ''}')),
+          Uri.parse(
+            _url('/api/providers/$appType/$id${force ? '?force=1' : ''}'),
+          ),
           headers: _headers,
         )
         .timeout(const Duration(seconds: 30));
@@ -868,441 +861,10 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
-  // ── Task board (AI-tagged module->task tree) ───────────────────────────────
-  // Mirrors /api/task-board/* (see src/routes/task-board.js). All endpoints are
-  // open to any authenticated client since 57bfe99 (2026-07); the 403 ->
-  // [LocalOnlyException] mapping remains only as a version-skew fallback for
-  // outdated hosts.
-
-  /// GET /api/task-board -> { ok, modules, tasks, sessionLabels, backfill }.
-  Future<TaskBoard> fetchTaskBoard() async {
-    final res = await http
-        .get(Uri.parse(_url('/api/task-board')), headers: _headers)
-        .timeout(const Duration(seconds: 12));
-    if (res.statusCode != 200) _throw(res);
-    return TaskBoard.fromJson(
-      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
-    );
-  }
-
-  /// GET `/api/task-board/tasks/<taskId>/messages` -> durable task detail.
-  /// Pages through the unified `messages` contract: no params returns the
-  /// tail page; [before] pages strictly older than that cursor and [limit]
-  /// is clamped server-side to 1..100. New servers include up to five
-  /// TaskRuns; old servers omit that field and parse as an empty run list.
-  Future<TaskBoardDetail> fetchTaskDetail(
-    String taskId, {
-    String? before,
-    int? limit,
-  }) async {
-    final query = <String, String>{
-      if (before != null && before.isNotEmpty) 'before': before,
-      if (limit != null) 'limit': limit.toString(),
-    };
-    final base = _url(
-      '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/messages',
-    );
-    final uri = Uri.parse(
-      query.isEmpty ? base : '$base?${Uri(queryParameters: query).query}',
-    );
-    final res = await http
-        .get(uri, headers: _headers)
-        .timeout(const Duration(seconds: 12));
-    if (res.statusCode != 200) _throw(res);
-    return TaskBoardDetail.fromJson(
-      (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>(),
-    );
-  }
-
-  /// Backwards-compatible message-only reader for callers that do not render
-  /// TaskRun history yet.
-  Future<List<TaskMessage>> fetchTaskMessages(String taskId) async {
-    return (await fetchTaskDetail(taskId)).messages;
-  }
-
-  /// P3 · task chat = ordinary chat. Get-or-create the task's 1:1 bound hidden
-  /// session (P1 server side) and return its id so the detail sheet can hand
-  /// off to the full session chat. Fails soft: ANY error (old server 501, gone
-  /// task 404, failed create 502, offline, malformed body) returns null and
-  /// the sheet keeps the legacy ledger projection.
-  Future<String?> ensureTaskChatSession(String taskId) async {
-    final uri = Uri.parse(
-      _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/chat-session'),
-    );
-    try {
-      final client = httpClient;
-      final res =
-          await (client != null
-                  ? client.post(uri, headers: _headers)
-                  : http.post(uri, headers: _headers))
-              .timeout(const Duration(seconds: 12));
-      if (res.statusCode != 200) return null;
-      final j = jsonDecode(utf8.decode(res.bodyBytes));
-      if (j is! Map || j['ok'] != true) return null;
-      final sid = j['sessionId'];
-      return sid is String && sid.isNotEmpty ? sid : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<Map<String, dynamic>> taskShellEntry(
-    String taskId, {
-    String? forkKey,
-  }) async {
-    final path =
-        '/api/task-shell-tasks/${Uri.encodeComponent(taskId)}${forkKey == null ? '' : '/fork'}';
-    final uri = Uri.parse(_url(path));
-    final client = httpClient;
-    final response =
-        await (forkKey == null
-                ? (client == null
-                      ? http.get(uri, headers: _headers)
-                      : client.get(uri, headers: _headers))
-                : (client == null
-                      ? http.post(
-                          uri,
-                          headers: _headers,
-                          body: jsonEncode({'clientMsgId': forkKey}),
-                        )
-                      : client.post(
-                          uri,
-                          headers: _headers,
-                          body: jsonEncode({'clientMsgId': forkKey}),
-                        )))
-            .timeout(const Duration(seconds: 30));
-    final data = (jsonDecode(utf8.decode(response.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-    if (response.statusCode != 200 || data['ok'] != true) {
-      throw BoardRouteException(
-        data['code']?.toString() ?? 'task_entry_failed',
-        data['message']?.toString() ?? '',
-      );
-    }
-    return data;
-  }
-
-  /// An explicit task tap selects that task in its shell, even if a cached
-  /// binding already exists. Merely opening the detail preview must not move it.
-  Future<String?> resolveTaskChatSession(
-    String taskId, {
-    String? boundSessionId,
-  }) async {
-    final sid = await ensureTaskChatSession(taskId);
-    if (sid == null || sid.isEmpty) return null;
-    Future<Map<String, dynamic>> post(
-      String path,
-      Map<String, dynamic> body,
-    ) async {
-      final uri = Uri.parse(_url(path));
-      final client = httpClient;
-      final response =
-          await (client == null
-                  ? http.post(uri, headers: _headers, body: jsonEncode(body))
-                  : client.post(uri, headers: _headers, body: jsonEncode(body)))
-              .timeout(const Duration(seconds: 12));
-      if (response.statusCode != 200) {
-        throw StateError('task shell unavailable');
-      }
-      return (jsonDecode(utf8.decode(response.bodyBytes)) as Map)
-          .cast<String, dynamic>();
-    }
-
-    try {
-      final shell = await post('/api/task-shells', {'sessionId': sid});
-      final id = shell['id'];
-      if (id is! String || id.isEmpty) return null;
-      final task = await post(
-        '/api/task-shells/${Uri.encodeComponent(id)}/tasks/resolve',
-        {'taskId': taskId},
-      );
-      // Return the stable entry; ChatService resolves its current execution.
-      return task['id'] == taskId ? sid : null;
-    } catch (_) {
-      // Failed selection must not silently open a different current task.
-      return null;
-    }
-  }
-
-  /// Answers the currently waiting question for a hidden TaskRun owned by
-  /// [taskId]. The client-generated id is stable across a retry of the same
-  /// text, allowing the server to deduplicate an uncertain HTTP outcome.
-  Future<Map<String, dynamic>> answerTaskQuestion(
-    String taskId, {
-    required String requestId,
-    required String text,
-    required String clientMsgId,
-  }) async {
-    final res = await http
-        .post(
-          Uri.parse(
-            _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/answer'),
-          ),
-          headers: _headers,
-          body: jsonEncode({
-            'requestId': requestId,
-            'text': text,
-            'clientMsgId': clientMsgId,
-          }),
-        )
-        .timeout(const Duration(seconds: 15));
-    if (res.statusCode != 200) _throwBoardSend(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  /// POST .../status body {status}. `status` ∈ active | done | archived.
-  /// Throws [LocalOnlyException] only against outdated pre-57bfe99 servers.
-  Future<void> setTaskStatus(String taskId, String status) async {
-    final res = await http
-        .post(
-          Uri.parse(
-            _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/status'),
-          ),
-          headers: _headers,
-          body: jsonEncode({'status': status}),
-        )
-        .timeout(const Duration(seconds: 10));
-    if (res.statusCode >= 400) _throwWrite(res);
-  }
-
-  /// POST .../reclassify -> re-queue this task's classification.
-  /// Throws [LocalOnlyException] only against outdated pre-57bfe99 servers.
-  Future<Map<String, dynamic>> reclassifyTask(String taskId) async {
-    final res = await http
-        .post(
-          Uri.parse(
-            _url(
-              '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/reclassify',
-            ),
-          ),
-          headers: _headers,
-          body: '{}',
-        )
-        .timeout(const Duration(seconds: 15));
-    if (res.statusCode >= 400) _throwWrite(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  /// POST /api/task-board/reclassify-pending body {dirId?} -> re-queue every
-  /// still-pending task, optionally scoped to one directory. Throws
-  /// [LocalOnlyException] only against outdated pre-57bfe99 servers.
-  /// Returns {ok, queued, archived, skipped}.
-  Future<Map<String, dynamic>> reclassifyPending({String? dirId}) async {
-    final res = await http
-        .post(
-          Uri.parse(_url('/api/task-board/reclassify-pending')),
-          headers: _headers,
-          body: jsonEncode({
-            if (dirId != null && dirId.isNotEmpty) 'dirId': dirId,
-          }),
-        )
-        .timeout(const Duration(seconds: 15));
-    if (res.statusCode >= 400) _throwWrite(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  // ── Task-board dispatch (派发) ─────────────────────────────────────────────
-  // POST /api/task-board/send (dir-level) and POST /api/task-board/tasks/:id/send
-  // (task-level) route a message into the task's execution pipeline. A 409
-  // carries the server's human note (no idle target / target busy); 503 means
-  // the aux-AI is unhealthy; 400 empty_text is a backstop the UI also guards
-  // client-side. 403 -> LocalOnlyException is a pre-57bfe99 skew fallback.
-
-  /// Converts a dispatch-endpoint failure into the right exception type. 409/400
-  /// become [BoardRouteException] (note from the server when present); 503
-  /// becomes a code-only [BoardRouteException] the UI localizes; 403 (outdated
-  /// hosts only) becomes [LocalOnlyException]; anything else falls through to
-  /// [_throw].
-  Never _throwBoardSend(http.Response res) {
-    if (res.statusCode == 403) throw const LocalOnlyException();
-    if (res.statusCode == 503) {
-      throw const BoardRouteException('aux_unhealthy', '');
-    }
-    if (res.statusCode == 409 || res.statusCode == 400) {
-      var code = res.statusCode == 400 ? 'bad_request' : 'route_failed';
-      var note = '';
-      try {
-        final j = jsonDecode(res.body);
-        if (j is Map) {
-          code = (j['error'] ?? code).toString();
-          note = (j['note'] ?? '').toString();
-        }
-      } catch (_) {}
-      throw BoardRouteException(code, note);
-    }
-    _throw(res);
-  }
-
-  /// POST /api/task-board/send -> open a fresh task virtual session in [dirId],
-  /// creating a pending task. Returns `{ok, taskId, taskRunId, commanderLabel,
-  /// ...}`. Throws [LocalOnlyException] / [BoardRouteException].
-  Future<Map<String, dynamic>> sendToBoard(
-    String dirId, {
-    required String text,
-    bool goal = false,
-    Map<String, dynamic>? goalLimits,
-  }) async {
-    final res = await http
-        .post(
-          Uri.parse(_url('/api/task-board/send')),
-          headers: _headers,
-          body: jsonEncode({
-            'text': text,
-            'dirId': dirId,
-            if (goal) 'goal': true,
-            if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
-          }),
-        )
-        .timeout(const Duration(seconds: 15));
-    if (res.statusCode != 200) _throwBoardSend(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  /// POST `/api/task-board/tasks/:taskId/send` -> continue [taskId]'s virtual
-  /// session. Returns `{ok, taskId, taskRunId, commanderLabel, ...}`.
-  /// Throws [LocalOnlyException] / [BoardRouteException].
-  Future<Map<String, dynamic>> sendToTask(
-    String taskId, {
-    required String text,
-    bool goal = false,
-    Map<String, dynamic>? goalLimits,
-  }) async {
-    final res = await http
-        .post(
-          Uri.parse(
-            _url('/api/task-board/tasks/${Uri.encodeComponent(taskId)}/send'),
-          ),
-          headers: _headers,
-          body: jsonEncode({
-            'text': text,
-            if (goal) 'goal': true,
-            if (goal) 'goalLimits': goalLimits ?? const <String, dynamic>{},
-          }),
-        )
-        .timeout(const Duration(seconds: 15));
-    if (res.statusCode != 200) _throwBoardSend(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  /// POST /api/task-board/archive-completed -> bulk-archive all done tasks.
-  /// Returns {ok, archivedCount, taskIds}. Throws [LocalOnlyException] only
-  /// against outdated pre-57bfe99 servers.
-  Future<Map<String, dynamic>> archiveCompletedTasks({String? dirId}) async {
-    final res = await http
-        .post(
-          Uri.parse(_url('/api/task-board/archive-completed')),
-          headers: _headers,
-          body: jsonEncode({
-            if (dirId != null && dirId.isNotEmpty) 'dirId': dirId,
-          }),
-        )
-        .timeout(const Duration(seconds: 15));
-    if (res.statusCode >= 400) _throwWrite(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  /// POST `/api/task-board/tasks/:taskId/cancel-run` -> stop the task's open
-  /// TaskRun only (web task chat view's ⏹ button; the card's lifecycle status
-  /// is untouched — marking done stays with .../status). Idempotent: no open
-  /// run returns `{ok, cancelled:false}` and is not an error. A 409 carries a
-  /// `task_run_*` / `queue_resolution_failed` code (optionally with a human
-  /// `note`) and is surfaced as [BoardRouteException]; 403 -> [LocalOnlyException]
-  /// is the pre-57bfe99 skew fallback.
-  Future<Map<String, dynamic>> cancelTaskRun(String taskId) async {
-    final res = await http
-        .post(
-          Uri.parse(
-            _url(
-              '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/cancel-run',
-            ),
-          ),
-          headers: _headers,
-          body: '{}',
-        )
-        .timeout(const Duration(seconds: 15));
-    if (res.statusCode != 200) _throwBoardSend(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  /// POST `/api/task-board/tasks/:taskId/cleanup-worktree` (mounted by
-  /// src/routes/session-git.js) -> merge the task branch back into the base
-  /// branch, then remove the task worktree and clear the ledger fields. Each
-  /// server-side step is idempotent; a refusal (409, `code` ∈ run_active /
-  /// merge_failed / worktree_remove_refused) leaves everything untouched and
-  /// surfaces as [BoardRouteException] so the UI can localize the reason.
-  /// Returns the result map ({ok, merged, ...}). 403 -> [LocalOnlyException].
-  Future<Map<String, dynamic>> cleanupTaskWorktree(
-    String taskId, {
-    bool force = false,
-  }) async {
-    final res = await http
-        .post(
-          Uri.parse(
-            _url(
-              '/api/task-board/tasks/${Uri.encodeComponent(taskId)}/cleanup-worktree',
-            ),
-          ),
-          headers: _headers,
-          body: jsonEncode({if (force) 'force': true}),
-        )
-        .timeout(const Duration(seconds: 30));
-    if (res.statusCode != 200) {
-      // 409 carries the structured refusal ({code, blocked:true, ...}) the web
-      // manage page maps to a human reason; keep the code for the UI.
-      if (res.statusCode == 409 || res.statusCode == 400) {
-        var code = 'cleanup_failed';
-        var note = '';
-        try {
-          final j = jsonDecode(res.body);
-          if (j is Map) {
-            code = (j['code'] ?? j['error'] ?? code).toString();
-            note = (j['note'] ?? '').toString();
-          }
-        } catch (_) {}
-        throw BoardRouteException(code, note);
-      }
-      _throwWrite(res);
-    }
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  /// POST /api/task-board/backfill -> enqueue historical archiving of chat
-  /// sessions into the board (the aux pool classifies them, several at a time;
-  /// progress is readable from the board payload's `backfill` state).
-  /// Returns {ok, queued, note}.
-  /// 409 = a backfill is already running (`backfill_running`), 503 = aux
-  /// unhealthy — both surface as [BoardRouteException]; 403 ->
-  /// [LocalOnlyException] is the pre-57bfe99 skew fallback.
-  Future<Map<String, dynamic>> backfillTaskBoard({
-    String? dirId,
-    int? turnLimit,
-  }) async {
-    final res = await http
-        .post(
-          Uri.parse(_url('/api/task-board/backfill')),
-          headers: _headers,
-          body: jsonEncode({
-            if (dirId != null && dirId.isNotEmpty) 'dirId': dirId,
-            if (turnLimit != null) 'turnLimit': turnLimit,
-          }),
-        )
-        .timeout(const Duration(seconds: 20));
-    if (res.statusCode != 200) _throwBoardSend(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
+  // ── Turn outcome ───────────────────────────────────────────────────────────
 
   /// Back-compatible endpoint: manually mark a waiting turn as succeeded.
-  /// It does not complete the TaskBoard lifecycle. Returns {ok, classifyState,
-  /// turnOutcome}.
+  /// Returns {ok, classifyState, turnOutcome}.
   /// 409 = session is streaming; 404 = session not found.
   Future<Map<String, dynamic>> markTurnSucceeded(String sessionId) async {
     final res = await http
@@ -1554,8 +1116,7 @@ class ManageService {
       Uri.parse(_url('/api/secrets/${Uri.encodeComponent(name)}/value')),
     );
     if (res.statusCode >= 400) _throw(res);
-    final decoded =
-        jsonDecode(utf8.decode(res.bodyBytes)) as Map;
+    final decoded = jsonDecode(utf8.decode(res.bodyBytes)) as Map;
     return (decoded['value'] ?? '') as String;
   }
 }

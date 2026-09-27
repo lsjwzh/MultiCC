@@ -376,6 +376,16 @@ async function tick() {
   }
 }
 
+// Includes disabled rules: their sessions are still automation, not a user-picked route.
+function sessionIds() {
+  const ids = new Set();
+  for (const task of tasks) {
+    const id = task.taskSessionId || task.lastSessionId;
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
 // ── Serialisation for the API (adds computed fields) ──
 function toView(task) {
   const dir = deps && deps.directories.get(task.dirId);
@@ -578,7 +588,7 @@ function stop() {
   timer = null;
 }
 
-module.exports = { init, stop, mount, cronValidate, cronNext, _fireTask: fireTask,
+module.exports = { init, stop, mount, sessionIds, cronValidate, cronNext, _fireTask: fireTask,
   _ensureTask: ensureTask, _rebindTask: rebindTask, _migrateTasks: migrateTasks,
   _runFanoutCleanup: runFanoutCleanup, _recentRuns: recentRuns,
   RUN_HISTORY_LIMIT, RUN_HISTORY_VIEW };

@@ -478,6 +478,63 @@ test('Air snapshot leaves lastRuntime null when no chat session has a cli', asyn
   assert.equal(response.lastRuntime, null);
 });
 
+// 「最近用过」= 用户最后用过的那套，不是「最后动过的那条记录」。两个反例会一起
+// 把它顶掉：上一轮以故障收尾的配置，和定时任务每小时自动跑出来的固定会话。
+test('Air snapshot skips a chat session whose last turn ended abnormally', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([
+      // 最近一轮是 E（API 异常或显式取消）：把这条线路钉回胶囊只会让用户再挂一次。
+      ['failed', { id: 'failed', dirId: 'd1', kind: 'chat', cli: 'claude', provider: 'p-glm',
+        model: 'glm-5.2', lastWorkAt: '2026-09-15T00:00:00.000Z', taskState: { classifyState: 'E' } }],
+      ['ok', { id: 'ok', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'p-new',
+        model: 'gpt-5.6', lastWorkAt: '2026-09-14T00:00:00.000Z', taskState: { classifyState: 'D' } }],
+    ]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  assert.equal(response.lastRuntime.cli, 'codex', '上一轮故障的那套不算「最近用过」');
+  assert.equal(response.lastRuntime.model, 'gpt-5.6');
+});
+
+test('Air snapshot skips the fixed sessions a scheduled task owns', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([
+      // 定时任务每小时自动跑一轮，lastWorkAt 几乎总是全场最新（实测 TTShop 那条
+      // 就是 claude + GLM）。用户什么也没挑，不该被告知「最近用的是这个」。
+      ['robot', { id: 'robot', dirId: 'd1', kind: 'chat', cli: 'claude', provider: 'p-glm',
+        model: 'glm-5.2', lastWorkAt: '2026-09-15T00:00:00.000Z', taskState: { classifyState: 'D' } }],
+      ['human', { id: 'human', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'p-new',
+        model: 'gpt-5.6', lastWorkAt: '2026-09-14T00:00:00.000Z', taskState: { classifyState: 'D' } }],
+    ]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'], shell: { taskAccess: () => ({ readOnly: true }) },
+    cronSessionIds: () => ['robot'] });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  assert.equal(response.lastRuntime.cli, 'codex', '自动化的运行时不算用户的选择');
+  assert.equal(response.lastRuntime.model, 'gpt-5.6');
+});
+
+test('Air snapshot leaves lastRuntime null when every chat session is unusable', async () => {
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  mountAirRoutes(app, { admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map([
+      ['failed', { id: 'failed', dirId: 'd1', kind: 'chat', cli: 'claude', provider: 'p-glm',
+        model: 'glm-5.2', lastWorkAt: '2026-09-15T00:00:00.000Z', taskState: { classifyState: 'E' } }],
+      ['robot', { id: 'robot', dirId: 'd1', kind: 'chat', cli: 'codex', provider: 'p-new',
+        model: 'gpt-5.6', lastWorkAt: '2026-09-14T00:00:00.000Z', taskState: { classifyState: 'D' } }],
+    ]),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ tasks: {} }), clis: ['claude', 'codex'], shell: { taskAccess: () => ({ readOnly: true }) },
+    cronSessionIds: () => ['robot'] });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  assert.equal(response.lastRuntime, null, '全都不可用时退回 null，前端自己画默认线路');
+});
+
 test('Air task entry exposes provider routing metadata without credentials', async () => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };

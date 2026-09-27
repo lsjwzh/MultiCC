@@ -149,8 +149,8 @@ const TURN_RUN_STATES = Object.freeze([
 // queued, waiting for the user, or parked on a background job. `background`
 // counts — that turn is idle only because a job it started is still out there,
 // so nothing about the task has settled. This is the ONE list behind every
-// "may I touch this task?" guard: merging (task-board/merge-runtime.js),
-// deleting/relocating (task-board/lifecycle-host.js), and the stop affordance
+// "may I touch this task?" guard: deleting/relocating
+// (task-board/lifecycle-host.js), and the stop affordance
 // the UIs draw (public/status-presentation.js canStopRunState, mirrored in
 // app/lib/utils/status_presentation.dart). Three hand-kept copies of this array
 // is how the app's ⏹ went missing for a queued or background task.

@@ -1,5 +1,12 @@
 'use strict';
 
+// Compiles the task context wall injected as a task-bound session's
+// first-turn prompt prefix (message-composer task-context layer). Everything
+// here is derived from the board record plus durable turn refs; credentials
+// and native session identities are redacted before anything is rendered.
+//
+// Lived with the retired pooled TaskRun ledger until that subsystem was
+// deleted; the bound-session cold start is the only remaining caller.
 const crypto = require('node:crypto');
 
 const DEFAULT_MAX_CHARS = 12_000;
@@ -9,15 +16,6 @@ const REDACTED = '[redacted]';
 
 function digest(value) {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
-}
-
-function stableTaskRunId(taskId, clientKey) {
-  const normalizedTaskId = String(taskId == null ? '' : taskId).trim();
-  const normalizedClientKey = String(clientKey == null ? '' : clientKey).trim();
-  if (!normalizedTaskId) throw new TypeError('taskId must be a non-empty string');
-  if (!normalizedClientKey) throw new TypeError('clientKey must be a non-empty string');
-  const material = JSON.stringify([normalizedTaskId, normalizedClientKey]);
-  return `tr_${crypto.createHash('sha256').update(material).digest('hex').slice(0, 32)}`;
 }
 
 function stableStringify(value) {
@@ -425,32 +423,4 @@ function buildTaskRunContext({
   };
 }
 
-// ── Transport-wrapper detection ─────────────────────────────────────────────
-// The compiled context wall and the Commander/manual routed wrappers are
-// transport-only: they carry context INTO the model, but they are not
-// conversation. One shared predicate guards every consumer — the ledger
-// writer (marks metadata.wrapper), the board message projection, and the
-// next-turn compile input — so the scaffold can never leak into the
-// conversation view or be replayed as something the user said.
-const CONTEXT_HEADER_MARK = '[MultiCC task run context';
-const COMMANDER_WRAPPER_MARK = '[Commander one-way routed task]';
-const ROUTED_WRAPPER_PREFIX = '【任务：';
-// Wrappers persisted before the 2026-09-24 English rewrite still carry the
-// Chinese marks; recognising them keeps old scaffold out of the conversation view.
-const LEGACY_CONTEXT_HEADER_MARK = '[MultiCC 任务运行上下文';
-const LEGACY_COMMANDER_WRAPPER_MARK = '【Commander 单向路由任务】';
-
-function isTaskRunWrapperText(text) {
-  const value = String(text == null ? '' : text);
-  if (!value.trim()) return false;
-  // Mid-string matches survive a goal-note prefix glued ahead of the wrapper.
-  if (value.includes(CONTEXT_HEADER_MARK) || value.includes(LEGACY_CONTEXT_HEADER_MARK)) return true;
-  if (value.includes(COMMANDER_WRAPPER_MARK) || value.includes(LEGACY_COMMANDER_WRAPPER_MARK)) return true;
-  return value.trimStart().startsWith(ROUTED_WRAPPER_PREFIX);
-}
-
-module.exports = {
-  buildTaskRunContext,
-  isTaskRunWrapperText,
-  stableTaskRunId,
-};
+module.exports = { buildTaskRunContext };

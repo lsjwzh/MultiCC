@@ -13,13 +13,12 @@
 // tasks and cannot change directory).
 
 function createTaskRelocate({
-  deps, taskRuns, isOpenTaskRun,
+  deps,
   resolveTask, taskIdentityIds, taskDirId, commit, notify, taskDto, isBusy,
   logger = console,
 }) {
   const { records, directories, relocateSessionWorkspace, gitRelocateWorktree } = deps;
   const relocateShellTask = typeof deps.relocateShellTask === 'function' ? deps.relocateShellTask : null;
-  const isOpenRun = id => (taskRuns ? taskRuns.listTaskRuns(id).some(isOpenTaskRun) : false);
   const fail = (res, body, status = 409) => res.status(status).json({ ok: false, ...body });
 
   async function relocate(req, res) {
@@ -37,7 +36,6 @@ function createTaskRelocate({
     if (currentDirId === targetDirId) return res.json({ ok: true, unchanged: true, task: taskDto(task) });
 
     const ids = taskIdentityIds(task);
-    if (ids.some(id => isOpenRun(id))) return fail(res, { error: 'task_busy' });
     try { await deps.assertTaskIdle?.(task, ids); }
     catch (error) { return fail(res, { error: error.code || 'task_busy' }); }
 
@@ -59,8 +57,8 @@ function createTaskRelocate({
       if (record) {
         // force: the Air detail page holds a WS client on the task's chat, so
         // the session is always "active" while the user looks at it. Real
-        // execution is already excluded by assertIdle/isOpenRun above; what
-        // force tears down here is the viewing connection, not a turn.
+        // execution is already excluded by assertIdle above; what force tears
+        // down here is the viewing connection, not a turn.
         const result = await relocateSessionWorkspace(record.id, targetDirId, { force: true, carry: true });
         if (!result.ok) return res.status(result.status || 500).json(result.body);
         carried = result.carried || null;

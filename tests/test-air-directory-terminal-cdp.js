@@ -38,7 +38,6 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
   };
   // 对话帧是另一个文档，这一份只管 Air 壳：给个空壳，省掉一堆无关请求。
   routes['/chat.html'] = { body: '<!doctype html><meta charset="utf-8"><title>frame</title>', headers: { 'content-type': 'text/html; charset=utf-8' } };
-  routes['/task-shell.html'] = routes['/chat.html'];
   routes['/api/air'] = () => json({
     ok: true,
     directories: [

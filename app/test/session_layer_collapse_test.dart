@@ -3,9 +3,9 @@ import 'package:multicc_app/providers/session_manager.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// 收起浮层（对话 / 目录详情）有两件事必须同时成立：① 先把滑落动画放完，再把浮层
-// 从状态里摘掉（摘早了这一层会「啪」地消失，不是滑下去）；② 摘完之后要叫醒等在
-// 那里的那个人 —— 首页 AppBar 的 ☰ 就是靠这一下，等浮层让开了才去拉抽屉。
+// 收起浮层（对话）有两件事必须同时成立：① 先把滑落动画放完，再把浮层从状态里
+// 摘掉（摘早了这一层会「啪」地消失，不是滑下去）；② 摘完之后要叫醒等在那里的
+// 那个人 —— Air 侧栏的 ☰ 就是靠这一下，等浮层让开了才去拉抽屉。
 // 这两个都是「看不见的时序」，靠读代码看不出来，所以在这里锁住。
 void main() {
   // SessionManager 构造时就要 WidgetsBinding（它注册成观察者），离开 widget 测试
@@ -42,17 +42,6 @@ void main() {
     expect(mgr.activeSessionId, isNull);
   });
 
-  test('目录详情走同一条路', () async {
-    final mgr = await manager();
-    var animated = 0;
-    mgr.fleetCollapseHandler = () => animated++;
-
-    final done = mgr.requestCloseFleetDir();
-    expect(animated, 1);
-    mgr.notifyLayerCollapsed();
-    await done;
-  });
-
   test('连着来两次（连点两下 ☰）：前一个也要落地，不留悬着的等待', () async {
     final mgr = await manager();
     var animated = 0;
@@ -72,7 +61,6 @@ void main() {
     var notified = 0;
     mgr.addListener(() => notified++);
     mgr.chatCollapseHandler = () {};
-    mgr.fleetCollapseHandler = () {};
     expect(notified, 0);
   });
 }

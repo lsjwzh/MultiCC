@@ -50,9 +50,6 @@ const REGISTRY = {
   'public/status-presentation.js': [
     { name: 'escapeHtml', mode: 'self-contained', reason: '状态字典是共享模块，manage/Air/App 都按它渲染' },
   ],
-  'public/task-board-ui.js': [
-    { name: 'escapeHtml', mode: 'self-contained', reason: '任务板行渲染器，被 meta.html 与测试单独加载' },
-  ],
   'public/chat-usage-readout.js': [
     { name: 'escapeHtml', mode: 'self-contained', reason: '用量读数渲染器，独立于 chat.js 加载' },
   ],
@@ -88,9 +85,6 @@ const REGISTRY = {
   ],
   'public/share.html': [
     { name: 'esc', mode: 'delegate', reason: 'inline 脚本前的 <script src="/shared/dom-helpers.js">' },
-  ],
-  'public/meta.html': [
-    { name: 'esc', mode: 'delegate', reason: 'inline 脚本前的 <script src="shared/dom-helpers.js">' },
   ],
   'public/manage-official-accounts.js': [
     { name: 'esc', mode: 'fallback', reason: 'Air 有 dom-helpers.js 就用它；单独加载（单元测试 / 旧页）时自己转全五个，绝不吐原文' },

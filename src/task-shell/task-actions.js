@@ -4,6 +4,9 @@ const { hash } = require('./context');
 const { historySnapshot, shellRecords } = require('./history-context');
 const { displayMessages, displayTask } = require('../task-display-attribution');
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
+// Air is the only task surface left. A task link is an Air task URL, and the
+// directory rides along so the page can name the task without a second lookup.
+const airTaskUrl = (id, dirId) => `/air?task=${encodeURIComponent(id)}${dirId ? `&dir=${encodeURIComponent(dirId)}` : ''}`;
 
 // Explicit task entry preserves identity; it never follows a conversation cursor.
 function createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope }) {
@@ -69,7 +72,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       planningRevision: lifecycle.planningRevision ?? task.planningRevision ?? null,
       priority: lifecycle.priority || task.priority || null, dueAt: lifecycle.dueAt || task.dueAt || null,
       ...a }, ports.taskShortCode), messages, execution,
-      sessionId: sid, ...a, url: `/task-shell.html?task=${encodeURIComponent(id)}&board=1`,
+      sessionId: sid, ...a, url: airTaskUrl(id, task.dirId),
       returnUrl: a.sourceSessionId ? `/chat.html?session=${encodeURIComponent(a.sourceSessionId)}` : null };
   }
   async function bindPlannedTask(id, options = {}) {
@@ -165,7 +168,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
         if (!indexed?.ok) throw fail('task_index_failed');
         receipt.status = 'ready';
         receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, shellId: task.ownerShellId,
-          url: `/task-shell.html?task=${encodeURIComponent(task.id)}&board=1` };
+          url: airTaskUrl(task.id, task.dirId) };
         store.set('fork', key, receipt);
         return receipt.result;
       } catch (error) {
@@ -212,7 +215,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       }
       if (!(await indexTask(task))?.ok) throw fail('task_index_failed');
       receipt.result = { ok: true, taskId: task.id, sessionId: task.sessionId, shellId: task.ownerShellId,
-        url: `/air?task=${encodeURIComponent(task.id)}&dir=${encodeURIComponent(task.dirId)}` };
+        url: airTaskUrl(task.id, task.dirId) };
       store.set('task-create', key, receipt); return receipt.result;
     })();
     forks.set(key, operation);

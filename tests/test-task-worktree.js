@@ -1,13 +1,12 @@
 'use strict';
 
 // M3 · per-task worktree (docs/chat-view-unification-design.md §3-M3, D2).
-// The worktree belongs to the TASK, not the pooled slot: branch
+// The worktree belongs to the TASK, not to any session: branch
 // `multicc/task-<shortCode>`, path `<dir>/.multicc-worktrees/task-<shortCode>`,
-// stable across runs. At a run boundary the slot's existing worktreePath/branch
-// fields are re-pointed at the task worktree (cwdForSession already prefers
-// them) and restored to the slot's deterministic own values when the run ends —
-// no new persisted session fields. A slot never owns (and therefore never
-// deletes) a task worktree: destroy is gated by slotOwnsWorktree.
+// created on demand by ensureForTask and merged back / cleaned up per task.
+// A session never owns (and therefore never deletes) a task worktree: the
+// legacy slot stamping is gone with the run boundary; destroy is gated by
+// slotOwnsWorktree, which stays the ownership predicate for slot records.
 
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -20,10 +19,6 @@ const {
   slotOwnsWorktree,
   createTaskWorktreeService,
 } = require('../src/task-worktree');
-
-function ownWorktree(dirPath, slotId) {
-  return { worktreePath: path.join(dirPath, '.multicc-worktrees', slotId), branch: `multicc/${slotId}` };
-}
 
 function fixture(overrides = {}) {
   const calls = { add: [], remove: [], merge: [], update: [] };
@@ -117,49 +112,6 @@ test('ensureForTask creates the worktree once, records it on the task, and reuse
   const bare = await h.service.ensureForTask('tsk-bare');
   assert.equal(bare.ok, false);
   assert.equal(bare.code, 'directory_not_found');
-});
-
-test('prepareForRun stamps the slot record and releaseSlot restores its own worktree deterministically', async () => {
-  const h = fixture();
-  const record = { id: 'slot-9', dirId: 'dir-1', ...ownWorktree('/repo', 'slot-9') };
-  const prepared = await h.service.prepareForRun({ record, taskId: 'tsk-1' });
-  assert.equal(prepared.ok, true);
-  assert.equal(record.branch, 'multicc/' + taskWorktreeToken('tsk-1'));
-  assert.equal(record.worktreePath, '/repo/.multicc-worktrees/' + taskWorktreeToken('tsk-1'));
-  assert.equal(slotOwnsWorktree(record), false, 'stamped slot does not own the task worktree');
-
-  // Idempotent re-stamp for the same task (duplicate delivery path).
-  const again = await h.service.prepareForRun({ record, taskId: 'tsk-1' });
-  assert.equal(again.ok, true);
-  assert.equal(record.branch, 'multicc/' + taskWorktreeToken('tsk-1'));
-
-  // Run boundary ends: restore recomputes the slot's own values — no persisted
-  // backup field, so the restore survives crashes and reloads.
-  assert.equal(h.service.releaseSlot({ record }), true);
-  assert.deepEqual(
-    { worktreePath: record.worktreePath, branch: record.branch },
-    ownWorktree('/repo', 'slot-9'),
-  );
-  assert.equal(slotOwnsWorktree(record), true);
-  // Restoring an unstamped slot is a no-op.
-  assert.equal(h.service.releaseSlot({ record }), false);
-});
-
-test('a second task on the same slot restamps at its own run boundary (no cross-task cwd)', async () => {
-  const h = fixture();
-  h.board.set('tsk-2', { id: 'tsk-2', title: '第二任务', status: 'active' });
-  const record = { id: 'slot-9', dirId: 'dir-1', ...ownWorktree('/repo', 'slot-9') };
-  await h.service.prepareForRun({ record, taskId: 'tsk-1' });
-  const firstPath = record.worktreePath;
-  assert.equal(h.service.releaseSlot({ record }), true);
-  await h.service.prepareForRun({ record, taskId: 'tsk-2' });
-  assert.equal(record.worktreePath, '/repo/.multicc-worktrees/' + taskWorktreeToken('tsk-2'));
-  assert.notEqual(record.worktreePath, firstPath);
-  await h.service.releaseSlot({ record });
-  assert.deepEqual(
-    { worktreePath: record.worktreePath, branch: record.branch },
-    ownWorktree('/repo', 'slot-9'),
-  );
 });
 
 test('info resolves the task worktree for parameterized diff/merge routes', async () => {

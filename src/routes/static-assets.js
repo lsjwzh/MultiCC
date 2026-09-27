@@ -111,10 +111,11 @@ function createStaticAssetsRoutes(rawDeps) {
       const airChatRenderer = req.query.air === '1'
         && ['chat', 'chat.html'].includes(rel)
         && ['task', 'session'].some(key => typeof req.query[key] === 'string' && req.query[key].length > 0);
-      const taskRenderer = req.query.air === '1' && req.query.board === '1'
-        && typeof req.query.task === 'string' && req.query.task.length > 0;
-      if ((['chat', 'chat.html'].includes(rel) && !airChatRenderer)
-          || (['task-shell', 'task-shell.html'].includes(rel) && !taskRenderer)) {
+      // The standalone task shell document is gone: its `board=1` renderer was
+      // never reachable from any link, and its remaining bookmarks are covered
+      // by the same task-entry hop the chat bookmarks already use
+      // (task-entry.html → /api/air/resolve → /air?task=…).
+      if (['chat', 'chat.html', 'task-shell', 'task-shell.html'].includes(rel) && !airChatRenderer) {
         return _serveVersionedHtml(path.join(_publicDir, 'task-entry.html'), res);
       }
       const cands = !rel || rel === '/' ? ['index.html']

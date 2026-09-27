@@ -1,8 +1,6 @@
 'use strict';
 
-const crypto = require('node:crypto');
 const { createChatHostCoordinator } = require('./host-coordinator');
-const { createProviderBinding } = require('../providers/binding');
 const { redactProviderRouteCapability } = require('../observability');
 const { protocolFamilyOf } = require('../cli/cli-capability');
 
@@ -22,9 +20,6 @@ function assertHostRuntimePorts(ports) {
   if (!ports || typeof ports !== 'object') throw new TypeError('chat host runtime ports are required');
   for (const name of REQUIRED_PORTS) {
     if (typeof ports[name] !== 'function') throw new TypeError(`chat host runtime port missing: ${name}`);
-  }
-  if (ports.persistTaskRunUsage != null && typeof ports.persistTaskRunUsage !== 'function') {
-    throw new TypeError('chat host runtime port invalid: persistTaskRunUsage');
   }
   return ports;
 }
@@ -46,49 +41,6 @@ function persistedRoleUsage(snapshotFn, sessionId) {
     sub: snap.sub,
     subByProvider: Array.isArray(snap.subByProvider) ? snap.subByProvider : [],
   };
-}
-
-function firstDefined(source, keys) {
-  for (const key of keys) {
-    if (source && source[key] != null) return source[key];
-  }
-  return undefined;
-}
-
-function tokenCount(value, label) {
-  const number = value == null ? 0 : Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) {
-    throw new TypeError(`${label} must be a non-negative safe integer`);
-  }
-  return number;
-}
-
-const TOKEN_FIELDS = Object.freeze({
-  input: Object.freeze(['input', 'inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'promptTokenCount']),
-  cacheRead: Object.freeze(['cacheRead', 'cache_read', 'cacheReadTokens', 'cache_read_input_tokens', 'cached_input_tokens']),
-  cacheWrite: Object.freeze(['cacheWrite', 'cache_write', 'cacheWriteTokens', 'cache_creation_input_tokens']),
-  output: Object.freeze(['output', 'outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens', 'candidatesTokenCount']),
-  reasoning: Object.freeze(['reasoning', 'reasoningTokens', 'reasoning_tokens', 'reasoning_output_tokens', 'thoughtsTokenCount']),
-});
-
-function normalizeUsage(rawUsage) {
-  const outer = rawUsage && typeof rawUsage === 'object' && !Array.isArray(rawUsage) ? rawUsage : {};
-  const source = outer.usage && typeof outer.usage === 'object' && !Array.isArray(outer.usage)
-    ? outer.usage
-    : outer;
-  const observed = Object.values(TOKEN_FIELDS)
-    .some(keys => keys.some(key => source[key] != null));
-  if (!observed) return Object.freeze({ coverage: 'unobservable', tokens: null });
-  return Object.freeze({
-    coverage: 'observed',
-    tokens: Object.freeze({
-      input: tokenCount(firstDefined(source, TOKEN_FIELDS.input), 'usage.input'),
-      cacheRead: tokenCount(firstDefined(source, TOKEN_FIELDS.cacheRead), 'usage.cacheRead'),
-      cacheWrite: tokenCount(firstDefined(source, TOKEN_FIELDS.cacheWrite), 'usage.cacheWrite'),
-      output: tokenCount(firstDefined(source, TOKEN_FIELDS.output), 'usage.output'),
-      reasoning: tokenCount(firstDefined(source, TOKEN_FIELDS.reasoning), 'usage.reasoning'),
-    }),
-  });
 }
 
 function protocolFor(cli, explicit) {
@@ -150,93 +102,12 @@ function attributionSnapshot(state, turn, runner, explicit = {}) {
   });
 }
 
-function taskRunCommitAcknowledged(result) {
-  if (result === true) return true;
-  if (!result || typeof result !== 'object' || result.ok === false) return false;
-  const flags = ['inserted', 'duplicate', 'corrected'].filter(key => result[key] === true);
-  return flags.length === 1
-    && clean(result.eventId).length > 0
-    && Number.isSafeInteger(Number(result.revision))
-    && Number(result.revision) >= 0;
-}
-
-function normalizeTaskRunUsagePayload(input = {}) {
-  const normalized = normalizeUsage(input.usage);
-  const attribution = input.attribution && typeof input.attribution === 'object'
-    ? input.attribution
-    : {};
-  const digest = crypto.createHash('sha256').update([
-    clean(input.taskRunId), clean(input.sessionId), clean(input.turnId),
-    clean(input.runnerId), clean(input.idempotencyKey),
-  ].join('\u0000')).digest('hex').slice(0, 32);
-  const eventId = `tru_${digest}`;
-  const providerBinding = createProviderBinding({
-    sessionId: clean(input.sessionId),
-    cli: clean(attribution.cli).toLowerCase(),
-    providerId: clean(attribution.providerId) || '_default_',
-    model: clean(attribution.model) || null,
-    roleKind: clean(attribution.roleKind).toLowerCase() || 'main',
-    routeName: clean(attribution.routeName).toLowerCase() || 'main',
-  });
-  const event = Object.freeze({
-    eventId,
-    sourceEventId: clean(input.idempotencyKey) || null,
-    occurredAt: attribution.occurredAt,
-    providerId: clean(attribution.providerId) || '_default_',
-    providerName: clean(attribution.providerName || attribution.providerId) || '_default_',
-    cli: clean(attribution.cli).toLowerCase(),
-    protocol: protocolFor(clean(attribution.cli).toLowerCase(), attribution.protocol),
-    model: clean(attribution.model),
-    roleKind: clean(attribution.roleKind).toLowerCase() || 'main',
-    routeName: clean(attribution.routeName).toLowerCase() || 'main',
-    source: 'reconciled',
-    coverage: normalized.coverage,
-    status: normalized.coverage === 'observed'
-      ? clean(attribution.status).toLowerCase() || 'success'
-      : 'unobservable',
-    tokens: normalized.tokens,
-    ...(attribution.routeAttemptId ? {
-      runtimeEpoch: attribution.runtimeEpoch,
-      turnId: attribution.turnId,
-      decisionId: attribution.decisionId,
-      routeAttemptId: attribution.routeAttemptId,
-      routeGeneration: attribution.routeGeneration,
-      attemptNo: attribution.attemptNo,
-      providerRevision: attribution.providerRevision,
-      routeAttribution: 'exact',
-    } : {}),
-  });
-  return Object.freeze({
-    runId: clean(input.taskRunId),
-    taskRunId: clean(input.taskRunId),
-    taskId: clean(input.taskId) || null,
-    leaseEpoch: Number(input.leaseEpoch),
-    taskRunLease: Object.freeze({
-      runId: clean(input.taskRunId),
-      leaseEpoch: Number(input.leaseEpoch),
-    }),
-    providerBinding,
-    sessionId: clean(input.sessionId),
-    turnId: clean(input.turnId),
-    runnerId: clean(input.runnerId),
-    idempotencyKey: clean(input.idempotencyKey),
-    eventId,
-    event,
-    usage: normalized.tokens,
-  });
-}
-
 function createChatHostRuntime(rawPorts) {
   const ports = assertHostRuntimePorts(rawPorts);
   const usagePort = {
     commit: ({ sessionId, usage, attribution }) => ports.persistUsage(sessionId, usage, attribution),
     afterCommit: ({ sessionId, attribution }) => ports.afterUsageCommit(sessionId, attribution),
   };
-  if (ports.persistTaskRunUsage) {
-    usagePort.commitTaskRun = input => taskRunCommitAcknowledged(
-      ports.persistTaskRunUsage(normalizeTaskRunUsagePayload(input)),
-    );
-  }
   const coordinator = createChatHostCoordinator({
     history: {
       appendFinal: ({ sessionId, message }) => ports.appendMessage(

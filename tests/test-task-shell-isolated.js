@@ -346,8 +346,6 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     'the rebuilt source turn never completed');
     assert.equal(readJson(paths.sessionsFile, { legacyIsArray: true }).data.find(record => record.id === first.sessionId).workspaceState,
       'awake', 'the rebuilt source checkout reports awake');
-    const protectedMerge = await api(`/api/task-board/tasks/${first.taskId}/merge-tasks`, { sourceTaskIds: [second.taskId] }, 409);
-    assert.equal(protectedMerge.error, 'task_shell_identity_immutable');
     // Freeze two sources as references in a fresh task. This is sharing, not a merge.
     await api(`/api/task-shells/${sa.id}/links`, { taskId: second.taskId });
     const third = await api(`/api/task-shells/${sa.id}/messages`, { text: 'USE_BOTH_CONTEXTS', newTask: true, clientMsgId: 'three', intent: 'work', contextTaskIds: [first.taskId, second.taskId] });

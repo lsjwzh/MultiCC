@@ -13,7 +13,6 @@ function createTaskContextHost(options = {}) {
     randomUUID,
     getRecord,
     runTurn,
-    recordTaskRunMessage = null,
     getTaskShells = () => null,
   } = options;
   for (const [name, value] of Object.entries({
@@ -21,9 +20,6 @@ function createTaskContextHost(options = {}) {
     containsDelivery, classifyDisplay, randomUUID, getRecord, runTurn,
   })) {
     if (typeof value !== 'function') throw new TypeError(`[task-context-host] ${name} port required`);
-  }
-  if (recordTaskRunMessage != null && typeof recordTaskRunMessage !== 'function') {
-    throw new TypeError('[task-context-host] recordTaskRunMessage port must be a function');
   }
 
   function restore(history) {
@@ -39,9 +35,6 @@ function createTaskContextHost(options = {}) {
   function dispatchSpec(opts = {}) {
     return {
       taskId: opts.taskId || null,
-      taskRunId: opts.taskRunId || null,
-      leaseEpoch: Number.isSafeInteger(Number(opts.leaseEpoch)) && Number(opts.leaseEpoch) > 0
-        ? Number(opts.leaseEpoch) : null,
       taskStart: opts.taskStart === true,
       taskSource: opts.taskSource || null,
       taskText: opts.taskStart === true ? String(opts.taskText || '') : null,
@@ -54,8 +47,6 @@ function createTaskContextHost(options = {}) {
   function turnOptions(opts = {}) {
     return {
       taskId: opts.taskId,
-      taskRunId: opts.taskRunId,
-      leaseEpoch: opts.leaseEpoch,
       taskStart: opts.taskStart,
       taskSource: opts.taskSource,
       taskText: opts.taskText,
@@ -75,28 +66,15 @@ function createTaskContextHost(options = {}) {
       || `tsk_${String(randomUUID()).replace(/-/g, '')}`;
     const boundaryChanged = detached || generated || (!!requested.id
       && (requested.start === true || requested.id !== previous));
-    const taskRunId = detached ? null : requested.runId || null;
-    const leaseEpoch = taskRunId && Number.isSafeInteger(Number(requested.leaseEpoch))
-      ? Number(requested.leaseEpoch) : null;
     if (state) {
       state._currentTaskId = taskId || null;
-      state._currentTaskRunId = taskRunId;
-      state._currentTaskLeaseEpoch = leaseEpoch;
     }
-    const result = { taskId, boundaryChanged, detached };
-    if (taskRunId) {
-      result.taskRunId = taskRunId;
-      result.leaseEpoch = leaseEpoch;
-    }
-    return result;
+    return { taskId, boundaryChanged, detached };
   }
 
   function messageMetadata(requested = {}, taskId = null, options = {}) {
     return {
       taskId: taskId || undefined,
-      taskRunId: requested.runId || undefined,
-      leaseEpoch: requested.runId && Number.isSafeInteger(Number(requested.leaseEpoch))
-        ? Number(requested.leaseEpoch) : undefined,
       taskStart: requested.start || undefined,
       taskSource: requested.source || undefined,
       taskText: requested.start ? requested.text : undefined,
@@ -107,18 +85,6 @@ function createTaskContextHost(options = {}) {
   function appendMessage(sessionId, message) {
     const state = getState(sessionId);
     if (!message.taskId && state?._currentTaskId) message.taskId = state._currentTaskId;
-    if (!message.taskRunId && state?._currentTaskRunId) {
-      message.taskRunId = state._currentTaskRunId;
-      message.leaseEpoch = state._currentTaskLeaseEpoch || undefined;
-    }
-    // The run-owned ledger is the durable source for Task Board history after
-    // an execution slot is scrubbed.  Write it first so a failed ledger write
-    // cannot leave an unrecoverable chat-only message.  The ledger append is
-    // idempotent, so a later delivery retry can safely finish the chat copy.
-    if (message.taskRunId && recordTaskRunMessage) {
-      const recorded = recordTaskRunMessage(sessionId, message);
-      if (recorded === false) return false;
-    }
     const saved = append(sessionId, message);
     const board = getTaskBoard();
     if (saved && board?.onMessagePersisted) board.onMessagePersisted(sessionId, message);
@@ -132,10 +98,7 @@ function createTaskContextHost(options = {}) {
     const event = state._currentTaskId && scoped?.taskId == null
       ? { ...scoped, taskId: state._currentTaskId }
       : scoped;
-    // The third argument lets the M1 task_run_stream emitter (wired as the
-    // emitClients port in server.js) attribute events to a session without
-    // changing any other emitClients consumer: they ignore extra args.
-    emitClients(state.clients, event, sessionId);
+    emitClients(state.clients, event);
   }
 
   function runState(classifyState) {
@@ -157,8 +120,6 @@ function createTaskContextHost(options = {}) {
     text,
     clientMsgId,
     taskId,
-    taskRunId,
-    leaseEpoch,
     taskStart = true,
     taskSource = 'commander',
     taskText,
@@ -168,8 +129,6 @@ function createTaskContextHost(options = {}) {
     const state = getState(sessionName);
     if (state && taskId) {
       state._currentTaskId = taskId;
-      state._currentTaskRunId = taskRunId || null;
-      state._currentTaskLeaseEpoch = leaseEpoch || null;
     }
     const deliveryKey = typeof clientMsgId === 'string' ? clientMsgId.trim().slice(0, 128) : '';
     const deduplicated = !!deliveryKey && containsDelivery(sessionName, deliveryKey);
@@ -180,8 +139,6 @@ function createTaskContextHost(options = {}) {
         ts: Date.now(),
         clientMsgId: deliveryKey || undefined,
         taskId: taskId || undefined,
-        taskRunId: taskRunId || undefined,
-        leaseEpoch: leaseEpoch || undefined,
         taskStart: taskStart || undefined,
         taskSource: taskSource || undefined,
         taskText: taskStart ? String(taskText == null ? text || '' : taskText) : undefined,
@@ -237,8 +194,6 @@ function createTaskContextHost(options = {}) {
       text: message.text,
       clientMsgId,
       taskId: routed.taskId,
-      taskRunId: routed.taskRunId,
-      leaseEpoch: routed.leaseEpoch,
       taskStart: routed.taskStart !== false,
       taskSource: source,
       taskText: routed.taskStart === false ? undefined : message.text,
@@ -324,9 +279,4 @@ function createTaskContextHost(options = {}) {
   });
 }
 
-module.exports = {
-  createTaskContextHost,
-  // Re-exported so server.js can wire the M1 forwarder without a second
-  // require (the line budget is exactly at its ceiling).
-  createTaskRunStreamEmitter: require('./task-run/stream-forwarder').createTaskRunStreamEmitter,
-};
+module.exports = { createTaskContextHost };

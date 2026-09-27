@@ -664,17 +664,8 @@ test('no surface keeps a hand copy of either set', () => {
     assert.ok(src.includes('utils/status_presentation.dart'), `${file} must import the registry`);
     assert.match(src, /isBusyStatus\(/, `${file} must ask the registry`);
   }
-  // App 的 ⏹：曾经是 runState == 'running' || 'waiting'，于是 queued / background
-  // 的任务显示「执行中」却停不掉。
-  const board = read('app/lib/widgets/task_board_view.dart');
-  assert.match(board, /final canStop = canStopRunState\(task\.runState\);/);
-  assert.doesNotMatch(board, /runState == 'waiting'/);
-  // Web：任务板的合并资格问 registry，不再自带那四条。
-  const web = read('public/task-board-ui.js');
-  assert.match(web, /statusRegistry\(\)\?\.canStopRunState\?\.\(task\.runState\) === true/);
-  assert.doesNotMatch(web, /'running',\s*'queued',\s*'waiting',\s*'background'/);
-  // 服务端两个守卫读 vocab 的同一个函数。
-  for (const file of ['src/task-board/merge-runtime.js', 'src/task-board/lifecycle-host.js']) {
+  // 服务端那个守卫读 vocab 的同一个函数。
+  for (const file of ['src/task-board/lifecycle-host.js']) {
     const src = read(file);
     assert.match(src, /require\('\.\.\/classify\/vocab'\)/);
     assert.match(src, /isOpenRunState\(/, `${file} must read the shared open-run list`);

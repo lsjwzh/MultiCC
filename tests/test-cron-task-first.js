@@ -363,3 +363,38 @@ test('every firing leaves an execution record the panel can read back', async t 
   await routes.get('GET /api/cron')({}, capped, error => { throw error; });
   assert.equal(capped.body[0].recentRuns.length, cron.RUN_HISTORY_VIEW);
 });
+
+// Air 的新任务胶囊把 lastRuntime 当成「用户最近用过的那套」，而定时任务的固定
+// 会话每小时都会自动跑一轮，lastWorkAt 几乎总是最新 —— 规则自己才是「哪些会话
+// 是自动化产物」的权威，所以由 cron 回答，Air 侧据此排除。
+test('a schedule publishes the fixed sessions it owns so Air can exclude them', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-session-ids-'));
+  const previous = process.env.MULTICC_DATA_DIR;
+  process.env.MULTICC_DATA_DIR = root;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MULTICC_DATA_DIR;
+    else process.env.MULTICC_DATA_DIR = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(root, 'scheduled_tasks.json'), JSON.stringify([
+    { id: 'cron_a', name: '甲', dirId: 'dir-1', cli: 'claude', cron: '0 9 * * *', prompt: 'p',
+      enabled: true, taskId: 'tsk_a', taskSessionId: 'task-a', taskBindingVersion: 1 },
+    // 停用的规则也算：它的历史会话同样是自动化产物，不是用户挑的路由。老规则只留了
+    // lastSessionId 时，那个 id 就是它的固定会话。
+    { id: 'cron_b', name: '乙', dirId: 'dir-1', cli: 'claude', cron: '0 9 * * *', prompt: 'p',
+      enabled: false, taskId: 'tsk_b', lastSessionId: 'chat-b', taskBindingVersion: 1 },
+  ]));
+  const modulePath = require.resolve('../plugins/cron/cron-tasks');
+  delete require.cache[modulePath];
+  const cron = require(modulePath);
+  cron.init({
+    directories: new Map([['dir-1', { id: 'dir-1', name: '项目一', path: root }]]),
+    clis: ['claude'],
+    getTask: async id => ({ ok: true, task: { id }, readOnly: false }),
+    createTask: async () => { throw new Error('已绑定的规则不该再建任务'); },
+    taskSummary: () => null,
+  });
+  t.after(() => cron.stop());
+  await cron._migrateTasks();
+  assert.deepEqual(cron.sessionIds().sort(), ['chat-b', 'task-a']);
+});

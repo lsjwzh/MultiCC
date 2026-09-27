@@ -56,8 +56,13 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
     assert.equal(response.status, 200, url); assert.match(html, /id="messages"/);
     assert.match(html, /chat-air\.css/); assert.doesNotMatch(html, /task-entry\.js/);
   }
+  // 独立的任务壳页面已退役：连它那条 board=1 渲染器书签也走同一个任务入口
+  // （task-entry.html → /api/air/resolve → /air?task=…），不再有第二份渲染器。
   const embedded = await fetch(base + '/task-shell.html?air=1&board=1&task=t');
-  assert.match(await embedded.text(), /task-board-entry.js/);
+  const embeddedHtml = await embedded.text();
+  assert.equal(embedded.status, 200);
+  assert.match(embeddedHtml, /task-entry\.js/);
+  assert.doesNotMatch(embeddedHtml, /task-board-entry\.js/);
 });
 
 test('legacy bookmark resolution retains explicit task identity and encodes its destination', async () => {

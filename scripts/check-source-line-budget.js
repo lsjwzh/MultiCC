@@ -21,20 +21,10 @@ const SOURCE_EXTENSIONS = new Set([
 // migration. Keep this map for explicit, reviewed debt only; ordinary feature
 // work must satisfy the default budget.
 const MIGRATION_DEBT = Object.freeze({
-  // app/lib/screens/main_shell.dart crossed 3000 in 039c6e43 (跨目录控制台), then
-  // grew to 3174 lines / 122149 bytes in 95c6d6a0 (打开对话改成浮层) without
-  // re-registering, which turned this gate red on main. The ceiling is the exact
-  // committed high-water mark, so it is re-registered here; the next main_shell
-  // split must ratchet it down and retire this entry once the file is <= target.
-  // 2026-09-26 车道扶正：新建会话的默认线路按会话种类分流（chat 落 claude-exp，
-  // 终端落 claude），任务卡上的线路徽标改走 cliDisplayName —— 三行 + 一个 import。
-  // 高水位按实测登记到 3167/122298；下一位动 main_shell 该拆的仍是任务卡与目录
-  // 控制台那两块渲染。
-  'app/lib/screens/main_shell.dart': Object.freeze({
-    ceiling: 3167,
-    byteCeiling: 122298,
-    target: 3000,
-  }),
+  // app/lib/screens/main_shell.dart was registered here (ceiling 3167/122298) after
+  // it crossed 3000 in 039c6e43 (跨目录控制台). 2026-09-27 删掉整块任务板 UI（老首页、
+  // 目录详情浮层、任务板标签页与其级联的渲染类）后降到 699 行，已回到默认 3k 目标
+  // 以内，于是这条登记按闸的要求退休 —— 别再把它加回来。
   // public/air.js 和 src/chat/turn-engine.js 都在 0f276ebc（session
   // multicc-claude-chat-06，2026-09-22T09:20）越过 3000：前者 3000 -> 3044，后者
   // 2997 -> 3002，两个都没回来登记，于是这道闸在 main 上红了。之所以没人发现，

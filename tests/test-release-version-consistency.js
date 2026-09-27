@@ -140,15 +140,18 @@ test('core runner covers every selected path and expands declared variants', () 
   // assertion 服务的纯 runtime 测试，注入 spawn，不碰真进程）与
   // tests/test-macos-unlock-password.js（钥匙串存取，注入 security，不碰真
   // 钥匙串）都是 hermetic 单测，注册为 core。309 + 2 = 311。
-  assert.equal(core.length, 311, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 311);
+  // 2026-09-27 dead-subsystem 拆除：task-run 台账/生产主机/转发器那 14 个 core
+  // 测试随 src/task-run 一起删除，另有 tests/test-task-board-{merge,cancel-run}.js
+  // 与 6 个 app/test/*.dart（task board UI 退役）也退出 core。311 - 20 = 291。
+  assert.equal(core.length, 291, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 291);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 266);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 250);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
-  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 21,
+  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 17,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
   const expectedPaths = core.flatMap(entry => Array.from(
@@ -156,8 +159,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 293,
-    '290 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 277,
+    '274 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

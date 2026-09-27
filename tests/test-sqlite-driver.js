@@ -65,7 +65,7 @@ test('db.open is a boolean that flips on close, because stores branch on it', ()
   assert.equal(db.open, true);
   db.exec('CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT)');
   db.close();
-  assert.equal(db.open, false, 'task-run/store.js throws CLOSED when db.open is falsy');
+  assert.equal(db.open, false, 'stores branch on db.open to skip a redundant close');
   db.close();
   assert.equal(db.open, false, 'a second close must not throw');
 });
