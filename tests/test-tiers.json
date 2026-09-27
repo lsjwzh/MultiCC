@@ -50,6 +50,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/air_directory_search_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/air_directory_stats_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -207,6 +212,11 @@
     {
       "path": "app/test/chat_message_replay_test.dart",
       "tier": "core",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/chat_notice_scroller_test.dart",
+      "tier": "other",
       "lane": "flutter"
     },
     {
@@ -806,6 +816,11 @@
       "entrypoints": [
         "npm:test:cdp"
       ]
+    },
+    {
+      "path": "tests/test-air-directory-status-filter-cdp.js",
+      "tier": "flow",
+      "lane": "cdp"
     },
     {
       "path": "tests/test-air-directory-terminal-cdp.js",
@@ -1607,6 +1622,11 @@
       "entrypoints": [
         "npm:test:cdp"
       ]
+    },
+    {
+      "path": "tests/test-chat-merge-hint-drag-cdp.js",
+      "tier": "flow",
+      "lane": "cdp"
     },
     {
       "path": "tests/test-chat-message-focus.js",
