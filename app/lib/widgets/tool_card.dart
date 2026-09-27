@@ -207,12 +207,19 @@ class _ToolCardWidgetState extends State<ToolCardWidget> {
 /// Turn-internal tool trajectory, matching the Web strip.
 ///
 /// Each measured tool is positioned at its real start offset and sized by its
-/// duration inside the earliest-start → latest-end wall-clock window. At least
-/// two fully measured tools are required: legacy history and partially settled
-/// turns stay hidden instead of fabricating a flat or zero-duration timeline.
+/// duration inside the wall-clock window. The window is the whole turn when a
+/// [turnDurationMs] is known (it includes the model's request/response time on
+/// both ends), falling back to the earliest-start → latest-end tool window for
+/// legacy history. At least two fully measured tools are required: legacy
+/// history and partially settled turns stay hidden instead of fabricating a
+/// flat or zero-duration timeline.
 class ToolTrajectory extends StatelessWidget {
   final List<ToolCall> toolCalls;
-  const ToolTrajectory({super.key, required this.toolCalls});
+
+  /// 整轮墙钟时长（用户发出 → AI 回复完成），包含大模型请求时间。缺省时退回
+  /// 工具自身最早开始 → 最晚结束那段窗口。
+  final int? turnDurationMs;
+  const ToolTrajectory({super.key, required this.toolCalls, this.turnDurationMs});
 
   @override
   Widget build(BuildContext context) {
@@ -227,7 +234,13 @@ class ToolTrajectory extends StatelessWidget {
         .map((tool) => tool.startedAt!)
         .reduce(math.min);
     final lastEndedAt = measured.map((tool) => tool.endedAt!).reduce(math.max);
-    final wallClockMs = lastEndedAt - firstStartedAt;
+    final toolSpanMs = lastEndedAt - firstStartedAt;
+    final wallClockMs = math.max(
+      toolSpanMs,
+      (turnDurationMs != null && turnDurationMs! > toolSpanMs)
+          ? turnDurationMs!
+          : 0,
+    );
     final layoutSpanMs = math.max(wallClockMs, 1);
     final duration = humanizeToolDuration(wallClockMs);
 

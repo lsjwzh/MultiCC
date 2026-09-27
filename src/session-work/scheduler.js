@@ -1326,6 +1326,69 @@ function createSessionWorkScheduler({
     return result;
   }
 
+  /// 改一条还没开始执行的暂存消息的正文。和 cancel/reorder 同一套守卫：已被
+  /// 领取的条目在跑了，正文不再是用户说了算。改的是 payload.message（所有
+  /// session.work 输入都落在这里），顺序、idempotency、clientMsgId 一律不动。
+  async function editQueued(sessionId, entryId, {
+    text = '',
+    actor = 'user',
+  } = {}) {
+    const cleanEntryId = String(entryId || '').trim();
+    if (!cleanEntryId) throw new TypeError('queued edit requires entryId');
+    const cleanText = String(text || '').trim();
+    if (!cleanText) return { ok: false, code: 'queued_entry_text_required' };
+    if (cleanText.length > MAX_PUBLIC_MESSAGE_LENGTH) {
+      return { ok: false, code: 'queued_entry_text_too_long' };
+    }
+    const result = await store.mutate(draft => {
+      const item = draft.outbox[cleanEntryId];
+      if (!item || item.sessionId !== sessionId) {
+        return { ok: false, code: 'queued_entry_not_found' };
+      }
+      const schedule = ensure(draft, sessionId, Number(now()));
+      const activeIds = new Set([
+        schedule.active?.entryId,
+        schedule.active?.deliveryId,
+      ].filter(Boolean));
+      if (activeIds.has(cleanEntryId) || item.state === 'leased') {
+        return { ok: false, code: 'queued_entry_already_claimed' };
+      }
+      if (item.state !== 'pending') {
+        return { ok: false, code: 'queued_entry_not_pending' };
+      }
+      const at = Number(now());
+      const previous = queuedText(item);
+      item.payload = { ...(item.payload || {}), message: cleanText };
+      item.updatedAt = at;
+      schedule.updatedAt = at;
+      const queue = queueForDraft(draft, sessionId);
+      return {
+        ok: true,
+        edited: {
+          entryId: cleanEntryId,
+          previous,
+          text: cleanText,
+          actor: String(actor || 'user').slice(0, 80),
+          at,
+        },
+        schedule: publicSchedule(schedule, queue, draft),
+      };
+    });
+    if (result.ok) {
+      emit('queued_edited', {
+        sessionId,
+        entryId: result.edited.entryId,
+        actor,
+        schedulerState: result.schedule.state,
+        queued: result.schedule.queued.length,
+        queuedItems: result.schedule.queued,
+        freezeReason: result.schedule.freezeReason,
+        schedule: result.schedule,
+      });
+    }
+    return result;
+  }
+
   async function noteQueued(entryId) {
     const info = await store.mutate(draft => {
       const item = draft.outbox[entryId];
@@ -1608,6 +1671,7 @@ function createSessionWorkScheduler({
     cancelQueued,
     insertQueued,
     reorderQueued,
+    editQueued,
     status,
     queueSummaries,
     noteQueued,

@@ -13,14 +13,20 @@ const _h2 = 'f6e5d4c3b2a1';
 
 Future<List<GitCommit>> _ok() async => [
   GitCommit(
-    hash: _h1, short: _h1.substring(0, 7),
-    author: '绿', date: '2026-08-16T09:41:02+08:00',
-    subject: 'fix(ui): wrap the usage line', refs: 'HEAD -> multicc/s1',
+    hash: _h1,
+    short: _h1.substring(0, 7),
+    author: '绿',
+    date: '2026-08-16T09:41:02+08:00',
+    subject: 'fix(ui): wrap the usage line',
+    refs: 'HEAD -> multicc/s1',
   ),
   GitCommit(
-    hash: _h2, short: _h2.substring(0, 7),
-    author: '蓝', date: '2026-08-15T18:02:00+08:00',
-    subject: 'docs: audit', refs: '',
+    hash: _h2,
+    short: _h2.substring(0, 7),
+    author: '蓝',
+    date: '2026-08-15T18:02:00+08:00',
+    subject: 'docs: audit',
+    refs: '',
   ),
 ];
 
@@ -37,7 +43,10 @@ void main() {
                 onPressed: () => showGitLogSheet(
                   context,
                   fetchLog: fetchLog,
-                  fetchDiff: (hash) async => GitCommitDiff(
+                  fetchFiles: (hash) async => const [
+                    GitCommitFile(status: 'M', path: 'foo'),
+                  ],
+                  fetchDiff: (hash, file) async => GitCommitDiff(
                     hash: hash,
                     stat: '1 file changed, 2 insertions(+)',
                     diff: 'diff --git a/foo b/foo\n+hello',
@@ -91,10 +100,14 @@ void main() {
     tester,
   ) async {
     var sawAll = false;
-    await tester.pumpWidget(host(fetchLog: (all) async {
-      sawAll = all;
-      return await _ok();
-    }));
+    await tester.pumpWidget(
+      host(
+        fetchLog: (all) async {
+          sawAll = all;
+          return await _ok();
+        },
+      ),
+    );
     await open(tester);
     // The first load must be branch-only, i.e. the flag comes through as false.
     expect(sawAll, isFalse);
@@ -103,12 +116,16 @@ void main() {
     expect(sawAll, isTrue);
   });
 
-  testWidgets('tapping a commit opens stat + colored diff', (tester) async {
+  testWidgets('tapping a commit opens files, then one file diff', (
+    tester,
+  ) async {
     await tester.pumpWidget(host(fetchLog: (all) async => await _ok()));
     await open(tester);
     await tester.tap(find.text('fix(ui): wrap the usage line'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('1 file changed, 2 insertions(+)'), findsOneWidget);
+    expect(find.text('foo'), findsOneWidget);
+    await tester.tap(find.text('foo'));
+    await tester.pumpAndSettle();
     expect(find.textContaining('+hello'), findsOneWidget);
   });
 }

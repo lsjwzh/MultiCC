@@ -142,7 +142,10 @@ class SessionCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 6),
                     ],
-                    MiniBadge(label: cliDisplayName(session.cli.name), color: cliColor),
+                    MiniBadge(
+                      label: cliDisplayName(session.cli.name),
+                      color: cliColor,
+                    ),
                     if (cardStatus != CanonicalStatus.idle &&
                         cardStatus != CanonicalStatus.unknown) ...[
                       const SizedBox(width: 6),
@@ -387,18 +390,28 @@ class SessionCard extends StatelessWidget {
                           case 'gitlog':
                             showGitLogSheet(
                               context,
-                              fetchLog: (all) => SessionService(
-                                settings: settings,
-                              ).fetchGitLog(
-                                sessionId: session.id,
-                                allBranches: all,
-                              ),
-                              fetchDiff: (hash) => SessionService(
-                                settings: settings,
-                              ).fetchGitCommitDiff(
-                                sessionId: session.id,
-                                hash: hash,
-                              ),
+                              fetchLog: (all) =>
+                                  SessionService(
+                                    settings: settings,
+                                  ).fetchGitLog(
+                                    sessionId: session.id,
+                                    allBranches: all,
+                                  ),
+                              fetchFiles: (hash) =>
+                                  SessionService(
+                                    settings: settings,
+                                  ).fetchGitCommitFiles(
+                                    sessionId: session.id,
+                                    hash: hash,
+                                  ),
+                              fetchDiff: (hash, file) =>
+                                  SessionService(
+                                    settings: settings,
+                                  ).fetchGitCommitDiff(
+                                    sessionId: session.id,
+                                    hash: hash,
+                                    file: file,
+                                  ),
                             );
                             break;
                           case 'rebase':
@@ -435,11 +448,7 @@ class SessionCard extends StatelessWidget {
                           Icons.difference_outlined,
                           t('viewDiff'),
                         ),
-                        _menuItem(
-                          'gitlog',
-                          Icons.history_rounded,
-                          t('gitLog'),
-                        ),
+                        _menuItem('gitlog', Icons.history_rounded, t('gitLog')),
                         _menuItem(
                           'rebase',
                           Icons.call_merge_rounded,

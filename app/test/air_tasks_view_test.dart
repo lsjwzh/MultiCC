@@ -726,6 +726,44 @@ void main() {
     client.close();
   });
 
+  // 同一份 pin-first 规矩也要落在目录首页的「最近任务」（Web `#directory-task-list`
+  // 的 `pinFirstInDirectory`）—— 手机上看目录页这份列表才是盯 pin 的主窗口。
+  testWidgets('Pin 住的任务排在目录首页最近任务的最前面', (tester) async {
+    final settings = await _settings();
+    final client = _pinsClient(<String>[], [], pins: const ['t5']);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 目录首页最近任务：updatedAt 最新的是 t1，但 pin 住的 t5 必须排在最前。
+    final pinnedTile = find.byKey(const ValueKey('air-directory-task-t5'));
+    final newestTile = find.byKey(const ValueKey('air-directory-task-t1'));
+    expect(pinnedTile, findsOneWidget);
+    expect(
+      tester.getTopLeft(pinnedTile).dy < tester.getTopLeft(newestTile).dy,
+      isTrue,
+      reason: 'pin 住的那条排在目录首页最近任务的最上面',
+    );
+    // 目录首页 tiles 行尾那颗 📌 也要变成「已钉」（实心 + accent）。
+    expect(
+      find.descendant(
+        of: pinnedTile,
+        matching: find.byIcon(Icons.push_pin_rounded),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
   testWidgets('点任务行上的 📌 会写服务端，顺序按服务端回来的清单走', (tester) async {
     final settings = await _settings();
     final calls = <String>[];
@@ -793,7 +831,11 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('air-task-pin-t1')));
+    // 五条已钉住的任务按 pin 顺序排最前，t1 被推到最近列表的第六条 —— 在懒加载
+    // 的 ListView 里落在视口外，先滚到它再点。
+    final pinButton = find.byKey(const ValueKey('air-task-pin-t1'));
+    await tester.scrollUntilVisible(pinButton, 200);
+    await tester.tap(pinButton);
     await tester.pumpAndSettle();
     expect(find.text('已 Pin 住「任务 1」'), findsOneWidget);
     expect(

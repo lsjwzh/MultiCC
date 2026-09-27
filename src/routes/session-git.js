@@ -54,6 +54,22 @@ function isMaxBuffer(cause) {
   return !!(cause && cause.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
 }
 
+function parseCommitFiles(raw) {
+  const parts = String(raw || '').replace(/^\0+/, '').split('\0');
+  const files = [];
+  for (let i = 0; i < parts.length - 1;) {
+    const status = parts[i++];
+    if (!/^[ACDMRTUXB][0-9]*$/.test(status)) break;
+    const oldPath = parts[i++];
+    if (!oldPath) break;
+    const renamed = status[0] === 'R' || status[0] === 'C';
+    const path = renamed ? parts[i++] : oldPath;
+    if (!path) break;
+    files.push({ status, path, ...(renamed ? { oldPath } : {}) });
+  }
+  return files;
+}
+
 function blockedGitResult(error) {
   return {
     ok: false,
@@ -606,6 +622,25 @@ function createSessionGitRuntime(rawDeps) {
       }
     });
 
+    app.get('/api/git/commit-files', async (req, res) => {
+      const { dirId, sessionId, hash } = req.query;
+      const persisted = sessionId ? deps.records.get(sessionId) : null;
+      const dir = dirId ? deps.directories.get(dirId) : null;
+      const repoPath = sessionId ? persisted?.worktreePath : dir?.path;
+      if (!repoPath || !deps.existsSync(repoPath)) return res.status(404).json({ error: 'repo not found' });
+      if (typeof hash !== 'string' || !/^[0-9a-f]{4,40}$/i.test(hash)) {
+        return res.status(400).json({ error: 'invalid hash' });
+      }
+      try {
+        const raw = await deps.gitRunQueued(repoPath,
+          ['show', '--format=', '--name-status', '-z', '--root', '--first-parent', '--no-color', hash],
+          { maxBuffer: 1024 * 1024 });
+        return res.json({ hash, files: parseCommitFiles(raw) });
+      } catch (error) {
+        return res.status(500).json({ error: errorText(error) });
+      }
+    });
+
     app.get('/api/git/commit-diff', async (req, res) => {
       // Same repo resolution as /api/git/log: a directory repo by dirId, or a
       // session's own worktree by sessionId (the mobile git-history view reads
@@ -631,6 +666,29 @@ function createSessionGitRuntime(rawDeps) {
       const hash = req.query.hash;
       if (typeof hash !== 'string' || !/^[0-9a-f]{4,40}$/i.test(hash)) {
         return res.status(400).json({ error: 'invalid hash' });
+      }
+      const filePath = req.query.file;
+      if (filePath !== undefined) {
+        if (typeof filePath !== 'string' || !filePath || filePath.length > 4096) {
+          return res.status(400).json({ error: 'invalid file' });
+        }
+        try {
+          const raw = await deps.gitRunQueued(repoPath,
+            ['show', '--format=', '--name-status', '-z', '--root', '--first-parent', '--no-color', hash],
+            { maxBuffer: 1024 * 1024 });
+          const changed = parseCommitFiles(raw).find(file => file.path === filePath);
+          if (!changed) return res.status(404).json({ error: 'file not found in commit' });
+          const paths = changed.oldPath ? [changed.oldPath, changed.path] : [changed.path];
+          const diff = await deps.gitRunQueued(repoPath,
+            ['show', '--format=', '--patch', '--root', '--first-parent', '--no-color',
+              '--no-ext-diff', '--no-textconv', hash, '--', ...paths.map(path => `:(literal)${path}`)],
+            { maxBuffer: maxDiffBytes + 16384 });
+          return res.json({ hash, path: filePath, stat: '',
+            diff: diff.slice(0, maxDiffBytes), truncated: diff.length > maxDiffBytes, error: null });
+        } catch (error) {
+          if (isMaxBuffer(error)) return res.json({ hash, path: filePath, stat: '', diff: '', truncated: true, error: null });
+          return res.status(500).json({ error: errorText(error) });
+        }
       }
       let diff = '';
       let truncated = false;
@@ -1034,4 +1092,4 @@ function createSessionGitRuntime(rawDeps) {
   });
 }
 
-module.exports = Object.freeze({ createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles });
+module.exports = Object.freeze({ createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles, parseCommitFiles });

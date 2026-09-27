@@ -3,11 +3,14 @@ import 'package:flutter/material.dart';
 import '../i18n.dart';
 import '../models/message.dart';
 import '../services/workspace_service.dart';
+import '../services/session_service.dart';
+import '../services/settings_service.dart';
 import '../theme.dart';
 import '../screens/directory_artifacts_screen.dart';
 import '../utils/session_status_helpers.dart';
 import '../utils/status_presentation.dart';
 import 'git_status_row.dart';
+import 'git_log_sheet.dart';
 import 'project_stat_pill.dart';
 import 'running_border.dart';
 
@@ -193,8 +196,14 @@ class DirectoryCardCallbacks {
 class DirectoryCard extends StatelessWidget {
   final DirectoryCardViewModel view;
   final DirectoryCardCallbacks callbacks;
+  final SettingsService? settings;
 
-  const DirectoryCard({super.key, required this.view, required this.callbacks});
+  const DirectoryCard({
+    super.key,
+    required this.view,
+    required this.callbacks,
+    this.settings,
+  });
 
   PopupMenuItem<String> _menuItem(
     String value,
@@ -423,7 +432,9 @@ class DirectoryCard extends StatelessWidget {
                           // 所以把行长留给产品本身。唯一的生产构造点就是
                           // main_shell 的目录卡，不会推出重复或悬空的路由。
                           IconButton(
-                            key: ValueKey('directory-card-artifacts-${view.id}'),
+                            key: ValueKey(
+                              'directory-card-artifacts-${view.id}',
+                            ),
                             icon: const Icon(
                               Icons.inventory_2_outlined,
                               size: 19,
@@ -439,6 +450,47 @@ class DirectoryCard extends StatelessWidget {
                                 ),
                               ),
                             ),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 44,
+                              minHeight: 44,
+                            ),
+                          ),
+                          IconButton(
+                            key: ValueKey('directory-card-git-${view.id}'),
+                            icon: const Icon(
+                              Icons.account_tree_outlined,
+                              size: 19,
+                              color: AppColors.muted,
+                            ),
+                            tooltip: t('gitManagerOpen'),
+                            onPressed: settings == null
+                                ? null
+                                : () => showGitLogSheet(
+                                    context,
+                                    fetchLog: (all) =>
+                                        SessionService(
+                                          settings: settings!,
+                                        ).fetchGitLog(
+                                          dirId: view.id,
+                                          allBranches: all,
+                                        ),
+                                    fetchFiles: (hash) =>
+                                        SessionService(
+                                          settings: settings!,
+                                        ).fetchGitCommitFiles(
+                                          dirId: view.id,
+                                          hash: hash,
+                                        ),
+                                    fetchDiff: (hash, file) =>
+                                        SessionService(
+                                          settings: settings!,
+                                        ).fetchGitCommitDiff(
+                                          dirId: view.id,
+                                          hash: hash,
+                                          file: file,
+                                        ),
+                                  ),
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(
                               minWidth: 44,
@@ -689,11 +741,13 @@ class _DirectoryPreview extends StatelessWidget {
                                         vertical: 1,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: const Color(0xFF1e8a55)
-                                            .withValues(alpha: 0.15),
+                                        color: const Color(
+                                          0xFF1e8a55,
+                                        ).withValues(alpha: 0.15),
                                         border: Border.all(
-                                          color: const Color(0xFF1e8a55)
-                                              .withValues(alpha: 0.4),
+                                          color: const Color(
+                                            0xFF1e8a55,
+                                          ).withValues(alpha: 0.4),
                                         ),
                                         borderRadius: BorderRadius.circular(4),
                                       ),

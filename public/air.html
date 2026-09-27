@@ -11,6 +11,7 @@
        Air 不自己写一套状态色，只提供浅色调色板（air.css 里的 --st-* 一组）。 -->
   <link rel="stylesheet" href="status-badge.css">
   <link rel="stylesheet" href="air.css">
+  <link rel="stylesheet" href="git-manager.css">
   <script src="auth-client.js"></script>
   <!-- i18n 必须早于所有 Air 模块：air.js / air-*.js 在初始化阶段就会调用 t()，
        而 t() 只从 window.MULTICC_I18N_CATALOG 现取（见 i18n.js）。 -->
@@ -323,15 +324,13 @@
           <!-- 目录的代码状态：主检出本身有多少提交没 push、有没有漂在任务
                worktree 之外的未提交文件。会话 worktree 的 ahead/dirty 在各自
                的任务页头（合并按钮）看；这里看的是它们共同的主人 —— 主检出。
-               提交列表与 diff 复用旧控制台那两条接口（/api/git/log、
-               /api/git/commit-diff），air.js 懒加载，首屏只取一份状态。 -->
+               提交历史在独立 Git 管理器窗口浏览，首屏只取一份状态。 -->
           <section id="directory-git" class="directory-git-panel" hidden aria-label="目录 Git 状态" data-i18n-aria-label="airDirectoryGitStatus">
             <div class="section-heading">
               <div><span class="caption">GIT</span><strong id="directory-git-title" data-i18n="airCodeStatus">代码状态</strong></div>
               <span id="directory-git-note" class="admin-panel-note"></span>
             </div>
             <div id="directory-git-brief"></div>
-            <div id="directory-git-list" hidden></div>
           </section>
           <!-- 全站唯一的那一个输入框模块。它在目录首页是常驻的，侧栏那颗
                「＋ 新任务」会把它临时搬进 #quick-task-dialog（air.js 的
@@ -658,6 +657,7 @@
        不改 air.js 一个字节，理由写在 public/air-dir-schedules.js 里。排在 air.js 前面：
        DOMContentLoaded 挂载时 #directory-memo / #directory-artifacts 已在静态 HTML 里。 -->
   <script src="air-dir-schedules.js"></script>
+  <script src="git-manager.js"></script>
   <script src="air.js"></script>
   <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->
   <script src="air-quick-fold.js"></script>

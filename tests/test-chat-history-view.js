@@ -453,6 +453,38 @@ test('turn trajectory places each measured tool at its real offset', () => {
   assert.ok(parseFloat(edgeSegs[1].style.width) < 0.76, 'right-edge sliver is clamped, not overflowing');
 });
 
+test('turn trajectory spans the whole turn when the server stamped LLM time', () => {
+  const { document, view } = fixture();
+  const content = document.createElement('div');
+
+  // Tools alone run 0–10s, but the server's durationMs says the turn (LLM
+  // request/response on both ends + tools) was 20s. The wall-clock window must
+  // widen to the full turn so the strip includes the model time, and the label
+  // must say 20s, not the tool-only 10s.
+  const strip = view.renderToolTrajectory(content, [
+    { name: 'Bash', startedAt: 0, endedAt: 5000 },
+    { name: 'Read', startedAt: 7500, endedAt: 10000 },
+  ], 20000);
+  assert.ok(strip, 'two measured tools + a turn duration render a strip');
+  const segs = strip.querySelectorAll('.tool-trajectory-seg');
+  assert.equal(segs[0].style.left, '0%');
+  assert.equal(segs[0].style.width, '25%');
+  assert.equal(segs[1].style.left, '37.5%');
+  assert.equal(segs[1].style.width, '12.5%');
+  assert.equal(strip.querySelector('.tool-trajectory-label').textContent,
+    '⏱ 2 tools · 20s wall-clock', 'wall-clock counts the model time, not just tools');
+
+  // A turn duration smaller than the tool window is ignored (never shrink the
+  // strip below the measured tools) — the fallback stays the tool window.
+  const shrunk = view.renderToolTrajectory(content, [
+    { name: 'A', startedAt: 0, endedAt: 5000 },
+    { name: 'B', startedAt: 7500, endedAt: 10000 },
+  ], 4000);
+  assert.equal(shrunk.querySelector('.tool-trajectory-label').textContent,
+    '⏱ 2 tools · 10s wall-clock');
+  assert.equal(shrunk.querySelectorAll('.tool-trajectory-seg')[1].style.left, '75%');
+});
+
 test('turn trajectory is absent unless two tools are measured', () => {
   const { document, view } = fixture();
   const content = document.createElement('div');
@@ -772,6 +804,11 @@ test('classic host delegates persisted and streaming DOM ownership to the view',
   assert.doesNotMatch(CHAT_SOURCE, /contentEl\.innerHTML\s*=\s*renderMarkdown/);
   assert.equal((VIEW_SOURCE.match(/\.innerHTML\s*=/g) || []).length, 1, 'one reviewed safe Markdown sink');
   assert.match(VIEW_SOURCE, /const safeHtml = safeMarkdown\.render\(text\)/);
+  // Assistant links to local files must be rewritten through /api/download so
+  // clicking them opens the file instead of a 404 server route.
+  assert.match(CHAT_SOURCE, /function fixupLocalFileLinks\(root\)/);
+  assert.match(CHAT_SOURCE, /fixupLocalFileLinks,\n\s+highlightCodeBlocks/);
+  assert.match(VIEW_SOURCE, /fixupLocalFileLinks\(markdownRoot\)/);
 });
 
 test('script order is local purifier, parser, safety boundary, state, quote, view, host', () => {

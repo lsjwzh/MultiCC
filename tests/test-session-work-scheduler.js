@@ -1187,6 +1187,43 @@ test('a pending queued entry can be cancelled individually but a leased entry ca
   assert.equal(tooLate.code, 'queued_entry_already_claimed');
 });
 
+test('a pending queued entry can be edited in place but a leased one cannot', async t => {
+  const h = fixture(t);
+  await h.scheduler.admit({
+    sessionId: 's1', text: 'active', idempotencyKey: 'active',
+  });
+  await startClaim(h, await claimOne(h));
+  const first = await h.scheduler.admit({
+    sessionId: 's1', text: 'old text', idempotencyKey: 'edit-me',
+  });
+
+  const edited = await h.scheduler.editQueued('s1', first.entry.id, {
+    text: 'new text',
+    actor: 'test',
+  });
+  assert.equal(edited.ok, true);
+  assert.deepEqual(edited.schedule.queued.map(item => item.text), ['new text']);
+  assert.equal(edited.edited.previous, 'old text');
+  assert.equal((await h.outbox.get(first.entry.id)).payload.message, 'new text');
+  assert.equal(h.events.at(-1).type, 'queued_edited');
+
+  // 空正文与超长正文被拒。
+  assert.equal((await h.scheduler.editQueued('s1', first.entry.id, { text: '  ' })).ok, false);
+  assert.equal((await h.scheduler.editQueued('s1', first.entry.id, { text: 'x'.repeat(20001) })).ok, false);
+
+  // 被领取的条目不能再改（守卫与 cancel/reorder 同一条）。
+  assert.equal((await h.scheduler.complete('s1')).ok, true);
+  const [leased] = await h.outbox.claim({
+    workerId: 'race-worker',
+    limit: 1,
+    selectSessionItem: h.scheduler.selectSessionItem,
+  });
+  assert.equal(leased.id, first.entry.id);
+  const tooLate = await h.scheduler.editQueued('s1', first.entry.id, { text: 'too late' });
+  assert.equal(tooLate.ok, false);
+  assert.equal(tooLate.code, 'queued_entry_already_claimed');
+});
+
 // Reordering is the one queue control that must not touch the admission
 // sequence: that column is UNIQUE across every session, so swapping two values
 // would collide in the store, and renumbering a whole session would push its

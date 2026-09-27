@@ -123,6 +123,8 @@
     const safeMarkdown = settings.safeMarkdown;
     const fixupLocalImages = typeof settings.fixupLocalImages === 'function'
       ? settings.fixupLocalImages : function noop() {};
+    const fixupLocalFileLinks = typeof settings.fixupLocalFileLinks === 'function'
+      ? settings.fixupLocalFileLinks : function noop() {};
     const highlightCodeBlocks = typeof settings.highlightCodeBlocks === 'function'
       ? settings.highlightCodeBlocks : function noop() {};
     const buildUsageLine = typeof settings.buildUsageLine === 'function'
@@ -204,6 +206,7 @@
       if (previous) previous.replaceWith(markdownRoot);
       else contentEl.insertBefore(markdownRoot, contentEl.firstElementChild || null);
       fixupLocalImages(markdownRoot);
+      fixupLocalFileLinks(markdownRoot);
       if (final) highlightCodeBlocks(markdownRoot);
       return markdownRoot;
     }
@@ -329,10 +332,13 @@
     // Turn-internal tool trajectory (DSH-style lightweight timeline): one strip
     // under the finished assistant bubble, each measured tool placed at its
     // real start offset and sized by its real duration within the turn's
-    // tool-active window. Only measured tools participate — replay has no tool
-    // timing, and a turn with no measured tool renders no strip at all (never a
-    // fabricated flat bar). Everything is textContent/style, no HTML parsing.
-    function renderToolTrajectory(contentEl, tools) {
+    // wall-clock window. The window is the whole turn when [turnDurationMs] is
+    // known (it includes the model's request/response time on both ends),
+    // falling back to the earliest-start → latest-end tool window. Only
+    // measured tools participate — replay has no tool timing, and a turn with
+    // no measured tool renders no strip at all (never a fabricated flat bar).
+    // Everything is textContent/style, no HTML parsing.
+    function renderToolTrajectory(contentEl, tools, turnDurationMs) {
       if (!contentEl || !contentEl.appendChild) return null;
       const measured = (Array.isArray(tools) ? tools : []).filter(t =>
         t && Number.isFinite(t.startedAt) && Number.isFinite(t.endedAt) && t.endedAt >= t.startedAt);
@@ -340,7 +346,11 @@
       for (const old of Array.from(contentEl.querySelectorAll('.tool-trajectory'))) old.remove();
       const t0 = Math.min(...measured.map(t => t.startedAt));
       const t1 = Math.max(...measured.map(t => t.endedAt));
-      const span = Math.max(t1 - t0, 1);
+      const toolSpan = t1 - t0;
+      const wallClock = Math.max(toolSpan,
+        Number.isFinite(Number(turnDurationMs)) && Number(turnDurationMs) > toolSpan
+          ? Number(turnDurationMs) : 0);
+      const span = Math.max(wallClock, 1);
       const wrap = document.createElement('div');
       wrap.className = 'tool-trajectory';
       const track = document.createElement('div');
@@ -360,7 +370,7 @@
       const label = document.createElement('div');
       label.className = 'tool-trajectory-label';
       label.textContent = '⏱ ' + measured.length + ' tools · '
-        + humanizeDuration(t1 - t0) + ' wall-clock';
+        + humanizeDuration(wallClock) + ' wall-clock';
       wrap.appendChild(label);
       contentEl.appendChild(wrap);
       return wrap;
@@ -504,8 +514,10 @@
       }
       const timing = buildTimingLine(message);
       if (timing) contentEl.appendChild(timing);
-      // Trajectory on replay too, whenever the persisted tools carry stamps.
-      renderToolTrajectory(contentEl, message.tools);
+      // Trajectory on replay too, whenever the persisted tools carry stamps. The
+      // wall-clock window spans the whole turn (LLM request + tools) when the
+      // server stamped durationMs; otherwise it falls back to the tool window.
+      renderToolTrajectory(contentEl, message.tools, message.durationMs);
       node.appendChild(contentEl);
       attachMessageActions(node, message);
       return node;

@@ -529,7 +529,7 @@ function createFleetSharing({
     catch (_) { return false; }
     const requestPath = requestUrl.pathname;
     if (verb === 'GET' && requestPath === `/api/fleet-shares/${token}/state`) return true;
-    if (verb === 'GET' && /^\/api\/git\/(?:log|commit-diff)$/.test(requestPath)) {
+    if (verb === 'GET' && /^\/api\/git\/(?:log|commit-files|commit-diff)$/.test(requestPath)) {
       return requestUrl.searchParams.get('dirId') === record.fleetId;
     }
     // Relocation accepts a destination Fleet in the request body. Authentication

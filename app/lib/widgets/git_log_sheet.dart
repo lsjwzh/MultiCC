@@ -1,6 +1,6 @@
 // Git 记录（提交历史）底部面板：会话 worktree 或目录仓库的提交列表
-// （短 hash / 主题 / 作者 / 时间 / refs），点开单条看 stat + diff。
-// 数据走 /api/git/log 与 /api/git/commit-diff--与 web manage 的 git tree 同源，
+// （短 hash / 主题 / 作者 / 时间 / refs），再按提交→文件→单文件 diff 逐层进入。
+// 数据走 /api/git/log、/api/git/commit-files 与 /api/git/commit-diff，
 // 是它缺失的移动端对应物。取数函数从外部注入，widget 测试无需真实网络。
 import 'package:flutter/material.dart';
 
@@ -9,13 +9,14 @@ import '../models/git_commit.dart';
 import 'session_diff_dialog.dart' show diffSpans;
 
 /// Open the commit-history sheet. [fetchLog] loads the list (it receives the
-/// sheet's all-branches flag), [fetchDiff] loads one commit's diff by hash -
+/// sheet's all-branches flag), [fetchFiles] and [fetchDiff] load on demand -
 /// callers close over SessionService with either a sessionId (session
 /// worktree) or a dirId (directory repo).
 Future<void> showGitLogSheet(
   BuildContext context, {
   required Future<List<GitCommit>> Function(bool allBranches) fetchLog,
-  required Future<GitCommitDiff> Function(String hash) fetchDiff,
+  required Future<List<GitCommitFile>> Function(String hash) fetchFiles,
+  required Future<GitCommitDiff> Function(String hash, String file) fetchDiff,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -24,15 +25,24 @@ Future<void> showGitLogSheet(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
     ),
-    builder: (_) => _GitLogSheet(fetchLog: fetchLog, fetchDiff: fetchDiff),
+    builder: (_) => _GitLogSheet(
+      fetchLog: fetchLog,
+      fetchFiles: fetchFiles,
+      fetchDiff: fetchDiff,
+    ),
   );
 }
 
 class _GitLogSheet extends StatefulWidget {
-  const _GitLogSheet({required this.fetchLog, required this.fetchDiff});
+  const _GitLogSheet({
+    required this.fetchLog,
+    required this.fetchFiles,
+    required this.fetchDiff,
+  });
 
   final Future<List<GitCommit>> Function(bool allBranches) fetchLog;
-  final Future<GitCommitDiff> Function(String hash) fetchDiff;
+  final Future<List<GitCommitFile>> Function(String hash) fetchFiles;
+  final Future<GitCommitDiff> Function(String hash, String file) fetchDiff;
 
   @override
   State<_GitLogSheet> createState() => _GitLogSheetState();
@@ -74,8 +84,9 @@ class _GitLogSheetState extends State<_GitLogSheet> {
   void _openCommit(GitCommit commit) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => _CommitDiffPage(
+        builder: (_) => _CommitFilesPage(
           commit: commit,
+          fetchFiles: widget.fetchFiles,
           fetchDiff: widget.fetchDiff,
         ),
       ),
@@ -118,8 +129,11 @@ class _GitLogSheetState extends State<_GitLogSheet> {
                   },
                 ),
                 IconButton(
-                  icon: const Icon(Icons.refresh_rounded,
-                      size: 18, color: Color(0xFF6f8096)),
+                  icon: const Icon(
+                    Icons.refresh_rounded,
+                    size: 18,
+                    color: Color(0xFF6f8096),
+                  ),
                   tooltip: t('retry'),
                   onPressed: _loading ? null : _load,
                 ),
@@ -165,10 +179,8 @@ class _GitLogSheetState extends State<_GitLogSheet> {
     }
     return ListView.separated(
       itemCount: commits.length,
-      separatorBuilder: (_, __) => const Divider(
-        height: 1,
-        color: Color(0xFFf8fbff),
-      ),
+      separatorBuilder: (_, __) =>
+          const Divider(height: 1, color: Color(0xFFf8fbff)),
       itemBuilder: (_, i) {
         final c = commits[i];
         return ListTile(
@@ -246,9 +258,7 @@ class _AllBranchesToggle extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              value
-                  ? Icons.toggle_on_rounded
-                  : Icons.toggle_off_rounded,
+              value ? Icons.toggle_on_rounded : Icons.toggle_off_rounded,
               size: 20,
               color: value ? const Color(0xFF1678e8) : const Color(0xFF8a9aab),
             ),
@@ -256,7 +266,9 @@ class _AllBranchesToggle extends StatelessWidget {
             Text(
               t('gitLogAllBranches'),
               style: TextStyle(
-                color: value ? const Color(0xFF1678e8) : const Color(0xFF6f8096),
+                color: value
+                    ? const Color(0xFF1678e8)
+                    : const Color(0xFF6f8096),
                 fontSize: 11,
               ),
             ),
@@ -267,19 +279,111 @@ class _AllBranchesToggle extends StatelessWidget {
   }
 }
 
-/// Full-screen commit diff: subject header, `--stat` block, then the raw patch
-/// colored line by line (same scheme as the worktree diff view).
-class _CommitDiffPage extends StatefulWidget {
-  const _CommitDiffPage({required this.commit, required this.fetchDiff});
+class _CommitFilesPage extends StatefulWidget {
+  const _CommitFilesPage({
+    required this.commit,
+    required this.fetchFiles,
+    required this.fetchDiff,
+  });
 
   final GitCommit commit;
-  final Future<GitCommitDiff> Function(String hash) fetchDiff;
+  final Future<List<GitCommitFile>> Function(String hash) fetchFiles;
+  final Future<GitCommitDiff> Function(String hash, String file) fetchDiff;
 
   @override
-  State<_CommitDiffPage> createState() => _CommitDiffPageState();
+  State<_CommitFilesPage> createState() => _CommitFilesPageState();
 }
 
-class _CommitDiffPageState extends State<_CommitDiffPage> {
+class _CommitFilesPageState extends State<_CommitFilesPage> {
+  List<GitCommitFile>? _files;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() { _files = null; _error = null; });
+    try {
+      final files = await widget.fetchFiles(widget.commit.hash);
+      if (mounted) setState(() => _files = files);
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: const Color(0xFFFFFFFF),
+    appBar: AppBar(
+      backgroundColor: const Color(0xFFF8FBFF),
+      actions: [IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: t('retry'), onPressed: _load)],
+      title: Text(
+        widget.commit.subject,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    ),
+    body: _error != null
+        ? Center(child: Text(t('gitManagerFilesFailed', {'msg': _error!})))
+        : _files == null
+        ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+        : _files!.isEmpty
+        ? Center(child: Text(t('gitManagerNoFiles')))
+        : ListView.builder(
+            itemCount: _files!.length,
+            itemBuilder: (context, index) {
+              final file = _files![index];
+              return ListTile(
+                leading: Text(
+                  file.status,
+                  style: const TextStyle(
+                    color: Color(0xFF218468),
+                    fontFamily: 'monospace',
+                  ),
+                ),
+                title: Text(
+                  file.path,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: file.oldPath == null
+                    ? null
+                    : Text('← ${file.oldPath}'),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => _FileDiffPage(
+                      commit: widget.commit,
+                      file: file,
+                      fetchDiff: widget.fetchDiff,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+  );
+}
+
+/// Third level: one file's patch, never the entire commit in a long scroll.
+class _FileDiffPage extends StatefulWidget {
+  const _FileDiffPage({
+    required this.commit,
+    required this.file,
+    required this.fetchDiff,
+  });
+
+  final GitCommit commit;
+  final GitCommitFile file;
+  final Future<GitCommitDiff> Function(String hash, String file) fetchDiff;
+
+  @override
+  State<_FileDiffPage> createState() => _FileDiffPageState();
+}
+
+class _FileDiffPageState extends State<_FileDiffPage> {
   GitCommitDiff? _diff;
   String? _error;
   bool _loading = true;
@@ -296,7 +400,7 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
       _error = null;
     });
     try {
-      final diff = await widget.fetchDiff(widget.commit.hash);
+      final diff = await widget.fetchDiff(widget.commit.hash, widget.file.path);
       if (!mounted) return;
       setState(() {
         _diff = diff;
@@ -328,22 +432,16 @@ class _CommitDiffPageState extends State<_CommitDiffPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              c.subject,
+              widget.file.path,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Color(0xFF20364d),
-                fontSize: 14,
-              ),
+              style: const TextStyle(color: Color(0xFF20364d), fontSize: 14),
             ),
             Text(
               '${c.short} · ${c.author} · ${c.dateLabel}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Color(0xFF6f8096),
-                fontSize: 11,
-              ),
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
             ),
           ],
         ),

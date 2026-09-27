@@ -221,6 +221,38 @@ function fixupLocalImages(root) {
   });
 }
 
+// Assistant output may also link to local files, either as a bare absolute path
+// (/Users/…/x.dart) or prefixed with the server origin (http://127.0.0.1:3000/Users/…)
+// because the agent knows MULTICC_BASE_URL. Opening such a link navigates to a
+// route the server does not have (404). Rewrite the href to stream the file
+// through /api/download instead, and drop the origin from the visible label so
+// the link reads as the file path it actually points at.
+const _LOCAL_LINK_RE = /^(?:file:\/\/|\/(?:tmp|Users|home|var|private|opt|Volumes|mnt|root|data)\/|[A-Za-z]:[\\/])/;
+function fixupLocalFileLinks(root) {
+  if (!root) return;
+  root.querySelectorAll('a[href]').forEach(link => {
+    if (link.dataset.fileFixed) return;
+    const raw = link.getAttribute('href') || '';
+    const p = stripServerOrigin(raw);
+    if (!_LOCAL_LINK_RE.test(p)) return;
+    link.dataset.fileFixed = '1';
+    const path = p.replace(/^file:\/\//, '');
+    link.href = withToken('/api/download?path=' + encodeURIComponent(path));
+    // If the link text is the whole origin-prefixed URL, trim it to the file path;
+    // an already-short label (file name) stays as-is.
+    if (link.textContent.includes('://')) link.textContent = path;
+    link.title = path;
+  });
+}
+function stripServerOrigin(value) {
+  if (!/^https?:\/\//i.test(value)) return value;
+  try {
+    const url = new URL(value);
+    if (url.origin === location.origin) return url.pathname + url.search;
+  } catch (_) { /* keep raw on malformed input */ }
+  return value;
+}
+
 /* ── DOM refs ── */
 const messagesEl  = document.getElementById('messages');
 let chatScrollController = null;
@@ -504,6 +536,7 @@ const chatHistoryView = window.MultiCCChatHistoryView.createHistoryView({
   messagesEl,
   safeMarkdown: window.MultiCCSafeMarkdown,
   fixupLocalImages,
+  fixupLocalFileLinks,
   highlightCodeBlocks,
   buildUsageLine,
   buildTimingLine,
@@ -2484,6 +2517,10 @@ const insertQueuedSessionEntry = window.MultiCCChatSessionQueue.createInsertHand
 const reorderQueuedSessionEntry = window.MultiCCChatSessionQueue.createReorderHandler(
   { fetch: window.fetch.bind(window), withToken, getSessionName: () => _sessionName, notify: showNotifyToast },
 );
+// 双击暂存消息弹输入框改正文（entryId, text）—— 同一条 queue/action 路由。
+const editQueuedSessionEntry = window.MultiCCChatSessionQueue.createEditHandler(
+  { fetch: window.fetch.bind(window), withToken, getSessionName: () => _sessionName, notify: showNotifyToast },
+);
 // Queue controls post to the owner-only queue-action endpoint. A share
 // recipient holds no credentials for it, so every one of these buttons would
 // only ever fail — the staged messages themselves stay readable, which is what
@@ -2492,6 +2529,7 @@ window.MultiCCChatSessionQueue.configure({
   onCancel: SHARE_MODE ? null : cancelQueuedSessionEntry,
   onInsert: SHARE_MODE ? null : insertQueuedSessionEntry,
   onReorder: SHARE_MODE ? null : reorderQueuedSessionEntry,
+  onEdit: SHARE_MODE ? null : editQueuedSessionEntry,
 });
 function consumeUserInputRequestId(requestId) {
   if (chatEventState.pendingUserInputRequestId !== requestId) return;

@@ -1,0 +1,41 @@
+.git-manager { width: min(1180px, calc(100vw - 32px)); max-width: none; height: min(780px, calc(100dvh - 40px)); max-height: none; padding: 0; border: 1px solid #dbe5ee; border-radius: 20px; background: #fff; color: #1e2935; box-shadow: 0 24px 70px #142e4b30; }
+.git-manager::backdrop { background: #172b4359; }
+.git-manager-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.git-manager-header { display: flex; align-items: center; gap: 12px; min-height: 54px; padding: 0 16px; border-bottom: 1px solid #e8eef4; }
+.git-manager-header strong { flex: 1; font-size: 15px; }
+.git-manager-header button { width: 32px; height: 32px; border: 1px solid #e3eaf1; border-radius: 10px; background: #fff; color: #38536a; font-size: 20px; cursor: pointer; }
+.git-manager-header button:hover, .git-manager-row:hover { background: #f0f7fd; }
+.git-manager-back { display: none; }
+.git-manager-toolbar { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid #e8eef4; }
+.git-manager-search { width: min(340px, 100%); min-height: 34px; padding: 6px 10px; border: 1px solid #dce6ef; border-radius: 10px; background: #f8fbfd; color: inherit; }
+.git-manager-all { display: inline-flex; align-items: center; gap: 5px; color: #647688; font-size: 12px; white-space: nowrap; }
+.git-manager-columns { display: grid; grid-template-columns: minmax(210px, 28%) minmax(190px, 26%) minmax(0, 1fr); flex: 1; min-height: 0; }
+.git-manager-pane { min-width: 0; overflow: auto; overscroll-behavior: contain; }
+.git-manager-pane + .git-manager-pane { border-left: 1px solid #e8eef4; }
+.git-manager-pane h3 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 12px 14px; border-bottom: 1px solid #e8eef4; background: #f8fbfd; font-size: 12px; overflow-wrap: anywhere; }
+.git-manager-row { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; padding: 11px 14px; border: 0; border-bottom: 1px solid #edf1f5; background: #fff; color: inherit; text-align: left; cursor: pointer; }
+.git-manager-row.selected { background: #eaf5ff; box-shadow: inset 3px 0 #73b7ee; }
+.git-manager-row strong { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.git-manager-row code { color: #3682bc; font-size: 11px; }
+.git-manager-row small, .git-manager-refs { color: #78899a; font-size: 10px; }
+.git-manager-file { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 4px 7px; font-size: 11px; overflow-wrap: anywhere; }
+.git-manager-file small { grid-column: 2; overflow-wrap: anywhere; }
+.git-manager-file-status { color: #218468; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.git-manager-message { margin: 0; padding: 28px 14px; color: #8292a2; font-size: 12px; text-align: center; }
+.git-manager-message.error, .git-manager-warning { color: #a6533c; }
+.git-manager-warning { padding: 8px 14px; background: #fdf3e4; font-size: 11px; }
+.git-manager-patch { margin: 0; padding: 14px; min-width: max-content; color: #31465a; font-size: 11px; line-height: 1.55; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 4; }
+@media (max-width: 700px) {
+  .git-manager { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+  .git-manager-header { padding: 0 12px; }
+  .git-manager-back { display: block; }
+  .git-manager[data-step="commits"] .git-manager-back { visibility: hidden; }
+  .git-manager-toolbar { padding: 8px 12px; }
+  .git-manager-search { min-width: 0; }
+  .git-manager-columns { display: block; }
+  .git-manager-pane { height: 100%; }
+  .git-manager-pane + .git-manager-pane { border-left: 0; }
+  .git-manager:not([data-step="commits"]) .git-manager-commits,
+  .git-manager:not([data-step="files"]) .git-manager-files,
+  .git-manager:not([data-step="diff"]) .git-manager-diff { display: none; }
+}

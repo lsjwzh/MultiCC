@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles } = require('../src/routes/session-git');
+const { createSessionGitRuntime, LOADING_MERGE_STATE, parseDiffFiles, parseCommitFiles } = require('../src/routes/session-git');
 
 function createFakeApp() {
   const routes = new Map();
@@ -102,7 +102,7 @@ function createFixture(overrides = {}) {
   };
 }
 
-test('mountRoutes installs the ten routes once per app', () => {
+test('mountRoutes installs the Git routes once per app', () => {
   const fixture = createFixture();
   fixture.runtime.mountRoutes(fixture.app);
   assert.deepEqual(Object.keys(fixture.runtime).sort(), [
@@ -110,6 +110,7 @@ test('mountRoutes installs the ten routes once per app', () => {
   ]);
   assert.deepEqual([...fixture.app.routes.keys()].sort(), [
     'GET /api/git/commit-diff',
+    'GET /api/git/commit-files',
     'GET /api/git/directory-status',
     'GET /api/git/log',
     'GET /api/sessions/:id/diff',
@@ -125,7 +126,7 @@ test('mountRoutes installs the ten routes once per app', () => {
 test('every Git route is registered through the shared async error boundary', () => {
   let wrapped = 0;
   createFixture({ asyncHandler: handler => { wrapped += 1; return handler; } });
-  assert.equal(wrapped, 10);
+  assert.equal(wrapped, 11);
 });
 
 test('production host delegates the complete Git route surface through narrow ports', () => {
@@ -138,7 +139,7 @@ test('production host delegates the complete Git route surface through narrow po
   for (const route of [
     '/api/sessions/:id/merge-status', '/api/sessions/:id/diff',
     '/api/sessions/:id/diff/files', '/api/sessions/:id/diff/file',
-    '/api/git/log', '/api/git/commit-diff', '/api/git/directory-status',
+    '/api/git/log', '/api/git/commit-files', '/api/git/commit-diff', '/api/git/directory-status',
     '/api/sessions/:id/merge', '/api/sessions/:id/sync', '/api/sessions/:id/rebase',
   ]) {
     assert.equal(server.includes(route), false, `${route} is no longer inline in the host`);
@@ -303,6 +304,39 @@ test('git log bounds limit, supports all branches, and parses NUL records', asyn
   const invalid = await invoke(fixture.app.routes.get('GET /api/git/log'));
   assert.equal(invalid.statusCode, 400);
   assert.deepEqual(invalid.body, { error: 'dirId or sessionId required' });
+});
+
+test('commit files retain rename paths and file diffs stay within the selected commit', async () => {
+  assert.deepEqual(parseCommitFiles('M\0README.md\0R100\0old name.txt\0new name.txt\0'), [
+    { status: 'M', path: 'README.md' },
+    { status: 'R100', path: 'new name.txt', oldPath: 'old name.txt' },
+  ]);
+  const fixture = createFixture({ implementations: {
+    gitRunQueued: async (repo, args) => {
+      fixture.calls.run.push({ repo, args });
+      if (args.includes('--name-status')) return 'M\0README.md\0R100\0old name.txt\0new name.txt\0';
+      return 'diff --git a/old name.txt b/new name.txt\n+hello';
+    },
+  } });
+  const files = await invoke(fixture.app.routes.get('GET /api/git/commit-files'), {
+    query: { dirId: 'd1', hash: 'abcdef0123' },
+  });
+  assert.equal(files.statusCode, 200);
+  assert.equal(files.body.files[1].path, 'new name.txt');
+  const diff = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'abcdef0123', file: 'new name.txt' },
+  });
+  assert.equal(diff.statusCode, 200);
+  assert.match(diff.body.diff, /hello/);
+  assert.deepEqual(fixture.calls.run.at(-1).args.slice(-3), ['--', ':(literal)old name.txt', ':(literal)new name.txt']);
+  const missing = await invoke(fixture.app.routes.get('GET /api/git/commit-diff'), {
+    query: { dirId: 'd1', hash: 'abcdef0123', file: 'secret.txt' },
+  });
+  assert.equal(missing.statusCode, 404);
+  const invalid = await invoke(fixture.app.routes.get('GET /api/git/commit-files'), {
+    query: { dirId: 'd1', hash: '--output=x' },
+  });
+  assert.equal(invalid.statusCode, 400);
 });
 
 test('commit-diff validates hash, resolves directory, and returns diff/stat', async () => {

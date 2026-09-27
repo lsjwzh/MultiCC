@@ -163,6 +163,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     { hash: 'c2'.repeat(20), short: 'c2c2c2c', author: 'green', date: '2026-09-17T10:00:00+08:00', subject: 'Air 目录首页加 Git 状态', refs: 'HEAD -> main' },
     { hash: 'c1'.repeat(20), short: 'c1c1c1c', author: 'green', date: '2026-09-16T09:00:00+08:00', subject: '上一条提交', refs: '' },
   ] });
+  routes['/api/git/commit-files'] = () => json({ hash: 'c2'.repeat(20), files: [
+    { status: 'M', path: 'public/air.js' },
+  ] });
   routes['/api/git/commit-diff'] = () => json({ hash: 'c2'.repeat(20), stat: ' air.js | 2 ++', diff: '+新增一行', truncated: false, error: null });
   routes['POST /api/task-shell-tasks/tsk_a/messages'] = async ({ body }) => {
     syncRequests.push(JSON.parse(body));
@@ -412,6 +415,21 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`(()=>{const d=${frame},w=d.defaultView,v=w.MultiCCChatHistoryView.createHistoryView({document:d,messagesEl:d.getElementById('messages'),safeMarkdown:w.MultiCCSafeMarkdown});v.clearMessages();d.getElementById('messages').append(...${JSON.stringify(taskMessages)}.map(m=>v.renderMessage(m)));w.MultiCCChatSessionQueue.render([{entryId:'fifo-1',position:1,state:'pending',text:'继续检查移动端布局'}],{state:'running'},d);w.renderAuxClassify('完善 Air 对话体验','verifying','W')})()`);
     assert.equal(await page.evaluate(`${frame}.querySelector('.tool-card .tool-name').textContent`), 'Read');
+    // Agent 输出的本地文件链接（裸绝对路径或带 server origin）要改写成
+    // /api/download：点开的是文件本身，不是服务器上不存在的那条 404 路由。
+    const localLinkFix = await page.evaluate(`(()=>{const d=${frame},w=d.defaultView;
+      const root=d.createElement('div');
+      const bare=d.createElement('a');bare.href='/Users/me/project/a.dart';bare.textContent='/Users/me/project/a.dart';
+      const prefixed=d.createElement('a');prefixed.href=location.origin+'/Users/me/project/b.dart';prefixed.textContent=location.origin+'/Users/me/project/b.dart';
+      const remote=d.createElement('a');remote.href='https://example.com/Users/x.dart';remote.textContent='https://example.com/Users/x.dart';
+      root.append(bare,prefixed,remote);
+      w.fixupLocalFileLinks(root);
+      return [...root.querySelectorAll('a[href]')].map(a=>({href:a.getAttribute('href'),text:a.textContent}));})()`);
+    assert.deepEqual(localLinkFix, [
+      { href: '/api/download?path=%2FUsers%2Fme%2Fproject%2Fa.dart', text: '/Users/me/project/a.dart' },
+      { href: '/api/download?path=%2FUsers%2Fme%2Fproject%2Fb.dart', text: '/Users/me/project/b.dart' },
+      { href: 'https://example.com/Users/x.dart', text: 'https://example.com/Users/x.dart' },
+    ], '本地文件链接改走 /api/download，外站链接原样保留');
     assert.ok(await page.evaluate(`${frame}.getElementById('chat-context-bar').getBoundingClientRect().height<=55`), 'desktop runtime controls fit one row even when disconnected');
     await page.evaluate(`${frame}.getElementById('messages').style.cssText='position:relative;z-index:99999';${frame}.getElementById('header-more-btn').click()`);
     assert.ok(await page.waitFor(`${frame}.getElementById('header-more-menu').matches(':popover-open')`));
@@ -663,13 +681,23 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.querySelector('.schedule-fixed-task').click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='完善任务协作体验'`));
     await page.navigate('/air?dir=d1');
-    assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===4`));
+    assert.ok(await page.waitFor(`!document.getElementById('empty').hidden && document.querySelectorAll('.directory-stat').length===5`));
     assert.equal(await page.evaluate(`document.getElementById('task-title').textContent.includes('MultiCC') && document.getElementById('task-state').textContent.includes('/projects/multicc')`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('.directory-task-row').length`), 1);
     assert.equal(await page.evaluate(`document.querySelector('.directory-task-row .worktree-change-badge')?.title`),
       'Worktree 有未提交改动，另有 2 个提交尚未合并');
     assert.equal(await page.evaluate(`document.querySelector('#tasks .worktree-change-badge')?.getAttribute('aria-label')`),
       'Worktree 有未提交改动，另有 2 个提交尚未合并');
+    // 目录首页这份任务列表也走 pin-first + 📌（同侧栏 `renderSidebarTasks` 的置顶
+    // 规矩）：pin 住的那条排最前，并在行上带钉标记。
+    taskPins = ['tsk_a'];
+    await page.evaluate(`document.getElementById('refresh').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-task-row').length===1 && document.querySelector('.directory-task-row .task-pin')?.textContent==='📌'`));
+    assert.equal(await page.evaluate(`document.querySelector('.directory-task-row .task-pin').textContent`), '📌',
+      '目录首页 pin 住的加标记');
+    taskPins = [];
+    await page.evaluate(`document.getElementById('refresh').click()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.directory-task-row .task-pin')`));
     // Worktree 生命周期：只报「几个」看不出这个数是怎么长的，所以本地 / 休眠 / 计划
     // 分开摆（口径来自服务端 registry 的 residency），右边跟一颗「现在回收」。
     assert.ok(await page.waitFor(`document.getElementById('directory-worktrees').hidden===false`));
@@ -691,11 +719,25 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // Git 状态卡：未推送提交数、主检出的脏文件，提交列表与 diff 懒加载。
     assert.ok(await page.waitFor(`document.getElementById('directory-git').textContent.includes('2 个提交未推送')`));
     assert.equal(await page.evaluate(`document.getElementById('directory-git').textContent.includes('2 个未提交文件')`), true);
-    assert.equal(await page.evaluate(`document.querySelectorAll('#directory-git-list .directory-git-commit').length`), 0, 'Git 记录默认折叠');
+    assert.equal(await page.evaluate(`document.querySelector('.git-manager')===null`), true, 'Git 管理器默认关闭');
     await page.evaluate(`document.getElementById('directory-git').querySelector('.directory-git-actions button').click()`);
-    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-git-list .directory-git-commit').length===2`));
-    await page.evaluate(`document.querySelectorAll('#directory-git-list .directory-git-commit-head')[0].click()`);
-    assert.ok(await page.waitFor(`document.getElementById('directory-git-list').textContent.includes('+新增一行')`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-commits .git-manager-row').length===2`));
+    await page.evaluate(`document.querySelector('.git-manager-commits .git-manager-row').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-files .git-manager-file').length===1`));
+    await page.evaluate(`document.querySelector('.git-manager-files .git-manager-file').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.git-manager-patch')?.textContent.includes('+新增一行')`));
+    await page.evaluate(`document.querySelector('.git-manager-close').click()`);
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page.evaluate(`document.getElementById('directory-git').querySelector('.directory-git-actions button').click()`);
+    assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-commits .git-manager-row').length===2`));
+    await page.evaluate(`document.querySelector('.git-manager-commits .git-manager-row').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.git-manager')?.dataset.step==='files' && document.querySelector('.git-manager-commits').offsetHeight===0`));
+    await page.evaluate(`document.querySelector('.git-manager-files .git-manager-file').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.git-manager')?.dataset.step==='diff' && document.querySelector('.git-manager-patch')`));
+    await page.evaluate(`document.querySelector('.git-manager-back').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('.git-manager').dataset.step`), 'files');
+    await page.evaluate(`document.querySelector('.git-manager-close').click()`);
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     // 「↑ 2 个提交未推送」那颗是能按的：点开确认框，取消不推，确认才 POST
     // /api/directories/:id/push，推完这颗自己变成「已与上游同步」。
     const pushChip = `document.querySelector('.directory-git-chips .directory-git-chip.is-action')`;
@@ -765,7 +807,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.getElementById('directory-terminal-count').textContent`), '0 个终端');
     assert.equal(await page.evaluate(`document.querySelectorAll('#directory-terminal-list .directory-terminal-row').length`), 0);
     await page.navigate('/air?dir=d1');
-    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-stat').length===4`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.directory-stat').length===5`));
     // 「＋ 新终端」选 CLI 那一路（弹窗/取消/选中的 CLI 就是建出来的那个）另有一份
     // 专项 CDP：tests/test-air-directory-terminal-cdp.js —— 它自带最小 fixture，
     // 不必等这一份长链路跑到目录页。

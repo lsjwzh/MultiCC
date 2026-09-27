@@ -1369,7 +1369,8 @@ class _AirTasksViewState extends State<AirTasksView>
   /// `!['done','archived'].includes(status)` 那道判断只用在抬头上面那四张统计卡
   /// 里。默认按最后消息倒序，也可以切到本机最后访问时间。
   List<AirTask> _visibleTasks(BuildContext context) {
-    final rows = (_data?.tasksOf(_directoryId) ?? const <AirTask>[]).toList();
+    final data = _data;
+    final rows = (data?.tasksOf(_directoryId) ?? const <AirTask>[]).toList();
     rows.sort((a, b) {
       final primary = _taskSortAt(b).compareTo(_taskSortAt(a));
       if (primary != 0) return primary;
@@ -1380,18 +1381,41 @@ class _AirTasksViewState extends State<AirTasksView>
       final needle = _taskQuery.trim().toLowerCase();
       if (needle.isNotEmpty && _directorySearch.ids != null) {
         final byId = {for (final task in rows) task.id: task};
-        return [
+        final ranked = [
           for (final id in _directorySearch.ids!)
             if (byId[id] != null) byId[id]!,
         ];
+        // 搜索命中照旧保持相关度顺序，但 pin 住的那几条仍然排最前（对齐 Web
+        // `renderDirectoryOverview`：`pinFirstInDirectory(filtered)` 对 ranked
+        // 结果同样生效）——「我在盯哪些」不因一次搜索而掉队。
+        return _pinFirstInDirectory(ranked);
       }
-      return rows.where((task) {
+      return _pinFirstInDirectory(rows).where((task) {
         final statusMatches = needle.isNotEmpty || _taskStatus.matches(task);
         return statusMatches &&
             (needle.isEmpty || task.title.toLowerCase().contains(needle));
       }).toList();
     }
-    return rows.take(_recentRowLimit(context)).toList();
+    return _pinFirstInDirectory(rows).take(_recentRowLimit(context)).toList();
+  }
+
+  /// 目录首页任务列表（Web `#directory-task-list`）的排序：pin 住的那几条照 pin
+  /// 顺序排最前，其余保持传入顺序。与侧栏 `_sidebarTasks` 同一条「置顶」规矩——
+  /// pin 清单住在服务端，手机和桌面看到的是同一份顺序。只对**当前这份列表里
+  /// 出现**的 pin 生效（web `pinFirstInDirectory` 同一条语义：跨目录搜索命中里
+  /// 若含别处 pin 住的任务，也只在命中那份列表里前移，不会把列表外的拉进来）。
+  List<AirTask> _pinFirstInDirectory(List<AirTask> rows) {
+    final data = _data;
+    if (data == null || data.taskPins.isEmpty || rows.isEmpty) return rows;
+    final pinned = <AirTask>[];
+    final taken = <String>{};
+    for (final id in data.taskPins) {
+      final task = rows.where((t) => t.id == id).firstOrNull;
+      if (task != null && taken.add(task.id)) pinned.add(task);
+    }
+    if (pinned.isEmpty) return rows;
+    final rest = rows.where((t) => !taken.contains(t.id)).toList();
+    return [...pinned, ...rest];
   }
 
   int _taskSortAt(AirTask task) => _taskSort == _DirectoryTaskSort.visit
