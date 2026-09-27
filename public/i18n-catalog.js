@@ -3603,7 +3603,19 @@ window.MULTICC_I18N_CATALOG = {
     "annotLoadFailed": "图片加载失败：{error}",
     "annotExportFailed": "标注图导出失败，只放入了文字",
     "airStatSucceeded": "执行成功",
-    "airDirStatSucceededHint": "仍保留在本目录"
+    "airDirStatSucceededHint": "仍保留在本目录",
+    "airAdminTileRunning": "进行中",
+    "airAdminTileRunningIdle": "现在没有在跑的任务",
+    "airAdminTileWaiting": "等我回复",
+    "airAdminTileToday": "今日完成",
+    "airAdminTileTodayDetail": "今天跑完的任务",
+    "airAdminTileAll": "全部",
+    "airAdminTileAllDetail": "未归档 · 共 {n} 条记录，可搜索",
+    "airAdminMetaDirectories": "{n} 个工作目录",
+    "airAdminMetaSchedules": "定时任务 {n}/{total} 条启用",
+    "airAdminCollapse": "收起",
+    "airAdminNoRunningTasks": "现在没有正在执行的任务。",
+    "airAdminNoDoneToday": "今天还没有完成的任务。"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -7208,6 +7220,18 @@ window.MULTICC_I18N_CATALOG = {
     "annotLoadFailed": "Failed to load image: {error}",
     "annotExportFailed": "Could not export the annotated image; only the text was inserted",
     "airStatSucceeded": "Succeeded",
-    "airDirStatSucceededHint": "Still kept in this workspace"
+    "airDirStatSucceededHint": "Still kept in this workspace",
+    "airAdminTileRunning": "In progress",
+    "airAdminTileRunningIdle": "Nothing running right now",
+    "airAdminTileWaiting": "Waiting on me",
+    "airAdminTileToday": "Done today",
+    "airAdminTileTodayDetail": "Tasks finished today",
+    "airAdminTileAll": "All",
+    "airAdminTileAllDetail": "Unarchived · {n} records total, searchable",
+    "airAdminMetaDirectories": "{n} workspaces",
+    "airAdminMetaSchedules": "Scheduled tasks: {n}/{total} enabled",
+    "airAdminCollapse": "Collapse",
+    "airAdminNoRunningTasks": "No tasks are running right now.",
+    "airAdminNoDoneToday": "No tasks finished today yet."
   }
 };
