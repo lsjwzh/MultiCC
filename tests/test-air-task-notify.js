@@ -275,6 +275,45 @@ test('two Air tabs: only the first to see a transition makes a sound', () => {
   assert.equal(two.ctrl.isUnseen('a'), true, 'the quiet tab still marks it');
 });
 
+test('two Air tabs: opening a task in one clears it in the other for good', () => {
+  const shared = new Map();
+  const store = {
+    getItem: k => (shared.has(k) ? shared.get(k) : null),
+    setItem: (k, v) => shared.set(k, String(v)),
+    removeItem: k => shared.delete(k),
+  };
+  const one = soundHarness({ away: false, store });
+  const two = soundHarness({ away: false, store });
+  const tasks = status => [{ id: 'a', status, updatedAt: 1 }, { id: 'b', status: 'running', updatedAt: 1 }];
+  for (const h of [one, two]) h.ctrl.onSnapshot(tasks('running'), '');
+  for (const h of [one, two]) h.ctrl.onSnapshot(tasks('done'), '');
+  one.ctrl.markOpened('a');
+  // the other tab keeps polling; it must not write its old mark back
+  two.ctrl.onSnapshot(tasks('done'), '');
+  assert.equal(two.ctrl.isUnseen('a'), false, 'cleared in the other tab too');
+  one.ctrl.onSnapshot(tasks('done'), '');
+  assert.equal(one.ctrl.isUnseen('a'), false, 'not put back by the other tab');
+});
+
+test('a tab frozen in the background does not re-report what another tab already did', () => {
+  const shared = new Map();
+  const store = {
+    getItem: k => (shared.has(k) ? shared.get(k) : null),
+    setItem: (k, v) => shared.set(k, String(v)),
+    removeItem: k => shared.delete(k),
+  };
+  const awake = soundHarness({ away: false, store });
+  const frozen = soundHarness({ away: false, store });
+  for (const h of [awake, frozen]) h.ctrl.onSnapshot([{ id: 'a', status: 'running', updatedAt: 1 }], '');
+  // only the awake tab polls while `a` finishes, and the user opens it there
+  awake.ctrl.onSnapshot([{ id: 'a', status: 'done', updatedAt: 2 }], '');
+  awake.ctrl.markOpened('a');
+  // the frozen tab wakes up: same `done`, but the transition was already reported
+  assert.equal(frozen.ctrl.onSnapshot([{ id: 'a', status: 'done', updatedAt: 2 }], ''), false);
+  assert.equal(frozen.ctrl.isUnseen('a'), false);
+  assert.equal(frozen.dings.length, 0);
+});
+
 test('waiting is an attention kind; answered elsewhere clears the mark', () => {
   const h = soundHarness({ away: false });
   h.ctrl.onSnapshot([{ id: 'q', status: 'running' }], '');
