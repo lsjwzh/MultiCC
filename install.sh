@@ -211,10 +211,15 @@ fi
 
 # Same download with either tool; -f/--fail turns an HTTP 404 into a failure
 # instead of a saved HTML error page that would later fail extraction.
+# curl's default meter is a wide stats table (mostly zeros during DNS/TLS,
+# easy to mistake for "stuck") — --progress-bar/-# instead prints a single
+# percentage that updates in place, the same \r-per-frame shape the web UI's
+# update.log tail already collapses down to one line. wget's non-tty default
+# already prints a plain "N% ... ETA" per line, so it is left as-is.
 download() {
   local url="$1" dest="$2"
   if [ "$DOWNLOADER" = "curl" ]; then
-    curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$dest" "$url"
+    curl -fL --progress-bar --retry 3 --retry-delay 2 --connect-timeout 20 -o "$dest" "$url"
   elif [ "$DOWNLOADER" = "wget" ]; then
     wget -O "$dest" "$url"
   else
