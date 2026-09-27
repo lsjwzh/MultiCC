@@ -13,7 +13,7 @@ test('a share link root is reduced to a bare http(s) origin', () => {
   assert.equal(share.normalizePublicBaseUrl(undefined), null);
   assert.equal(share.normalizePublicBaseUrl(''), null);
   assert.equal(share.normalizePublicBaseUrl('  '), null);
-  assert.equal(share.normalizePublicBaseUrl('  https://mac.tail94695a.ts.net/  '), 'https://mac.tail94695a.ts.net');
+  assert.equal(share.normalizePublicBaseUrl('  https://mac.example-host.ts.net/  '), 'https://mac.example-host.ts.net');
   assert.equal(share.normalizePublicBaseUrl('http://192.168.1.10:3000'), 'http://192.168.1.10:3000');
   // 带路径的地址要归到根：/share/<token> 是拼在根上的，照收会把链接指到
   // 「/manage/share/<token>」这种根本不存在的地方。

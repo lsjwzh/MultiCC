@@ -555,8 +555,8 @@ void main() {
           'http://192.168.1.5:8770/x?a=1');
       expect(
           rewriteLoopbackUrl('https://localhost:5173/',
-              'macbook.tail94695a.ts.net'),
-          'https://macbook.tail94695a.ts.net:5173/');
+              'macbook.example-host.ts.net'),
+          'https://macbook.example-host.ts.net:5173/');
       expect(rewriteLoopbackUrl('http://LOCALHOST:8770/', '192.168.1.5'),
           'http://192.168.1.5:8770/');
       expect(rewriteLoopbackUrl('http://[::1]:8770/', '192.168.1.5'),

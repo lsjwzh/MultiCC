@@ -80,7 +80,7 @@ test('the share-link root select preselects a reachable address in a real browse
       '/api/server-info': jsonRoute({ lanUrls: ['http://192.168.1.10:3000'] }),
       '/api/settings/tunnel': jsonRoute({
         // 尾斜杠、路径、非 http(s) 三种写法都要被收拾干净。
-        config: { tailscale: { url: 'https://mac.tail94695a.ts.net/' }, natapp: { url: 'ftp://bad-scheme' } },
+        config: { tailscale: { url: 'https://mac.example-host.ts.net/' }, natapp: { url: 'ftp://bad-scheme' } },
         providers: { cpolar: { publicUrl: 'https://abc.cpolar.cn' } },
       }),
     },
@@ -96,11 +96,11 @@ test('the share-link root select preselects a reachable address in a real browse
     assert.deepEqual(shown.options.map(option => option.value), [
       origin,
       'http://192.168.1.10:3000',
-      'https://mac.tail94695a.ts.net',
+      'https://mac.example-host.ts.net',
       'https://abc.cpolar.cn',
     ]);
     // 默认值不是第一项：第一项是本机地址，发出去对方打不开。
-    assert.equal(shown.value, 'https://mac.tail94695a.ts.net');
+    assert.equal(shown.value, 'https://mac.example-host.ts.net');
     assert.deepEqual(shown.options.map(option => option.selected), [false, false, true, false]);
     assert.equal(shown.hint, '', '有公网地址时不该提示「只有本机能打开」');
     // 每一项都要说清这个地址是怎么来的：同一台机器可能既配了穿透工具、又手填过

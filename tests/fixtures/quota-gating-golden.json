@@ -135,7 +135,7 @@
     },
     {
       "label": "relay-codex-tailscale",
-      "url": "https://mac.tail94695a.ts.net/codex-proxy/cx",
+      "url": "https://mac.example-host.ts.net/codex-proxy/cx",
       "why": "借道 codex 协议（Tailscale 域名）"
     },
     {
@@ -1572,7 +1572,7 @@
       "arkPlan": null
     },
     "relay-codex-tailscale": {
-      "host": "mac.tail94695a.ts.net",
+      "host": "mac.example-host.ts.net",
       "ark": false,
       "zhipu": false,
       "kimi": false,

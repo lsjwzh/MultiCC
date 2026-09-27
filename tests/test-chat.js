@@ -3,7 +3,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-const CLAUDE = process.env.CLAUDE_CMD || '/Users/Zhuanz/.local/bin/claude';
+const CLAUDE = process.env.CLAUDE_CMD || 'claude';
 const CWD = process.env.CWD || process.cwd();
 
 function testSpawn(label, args) {

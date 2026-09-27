@@ -151,7 +151,7 @@ test('base-url-options drops credentialed addresses and labels reachability', as
       }
       if (url === '/api/settings/tunnel') {
         return {
-          config: { tailscale: { url: 'https://mac.tail94695a.ts.net/' }, natapp: { url: 'ftp://bad-scheme' } },
+          config: { tailscale: { url: 'https://mac.example-host.ts.net/' }, natapp: { url: 'ftp://bad-scheme' } },
           providers: { cpolar: { publicUrl: 'https://abc.cpolar.cn' } },
         };
       }
@@ -161,7 +161,7 @@ test('base-url-options drops credentialed addresses and labels reachability', as
   assert.deepEqual(opts.map(o => o.origin), [
     'http://127.0.0.1:3000',
     'http://192.168.1.10:3000',
-    'https://mac.tail94695a.ts.net',
+    'https://mac.example-host.ts.net',
     'https://abc.cpolar.cn',
   ]);
   assert.deepEqual(opts.map(o => o.scope), ['local', 'lan', 'public', 'public']);

@@ -128,8 +128,8 @@ test('relayRouteFromBaseUrl recognizes lender relay endpoints on both protocols'
     { appType: 'claude', providerId: 'glm', url: 'http://192.168.1.9:3000/claude-proxy/glm/remote' },
   );
   assert.deepEqual(
-    relayRouteFromBaseUrl('https://macbook.tail94695a.ts.net/codex-proxy/official'),
-    { appType: 'codex', providerId: 'official', url: 'https://macbook.tail94695a.ts.net/codex-proxy/official' },
+    relayRouteFromBaseUrl('https://macbook.example-host.ts.net/codex-proxy/official'),
+    { appType: 'codex', providerId: 'official', url: 'https://macbook.example-host.ts.net/codex-proxy/official' },
   );
   // URL-encoded provider ids round-trip encoded.
   assert.deepEqual(

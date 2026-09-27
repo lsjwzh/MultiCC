@@ -62,7 +62,7 @@ const BASE_URLS = Object.freeze([
   { label: 'relay-claude-trailing', url: 'https://relay.example/claude-proxy/abc/remote/', why: '尾斜杠不得改变协议判定' },
   { label: 'relay-claude-incomplete', url: 'https://relay.example/claude-proxy/abc', why: '缺 /remote → 不是 claude 协议透传路径' },
   { label: 'relay-codex-lan', url: 'http://192.168.1.9:3000/codex-proxy/official', why: '借道 codex 协议（局域网 IP + http）' },
-  { label: 'relay-codex-tailscale', url: 'https://mac.tail94695a.ts.net/codex-proxy/cx', why: '借道 codex 协议（Tailscale 域名）' },
+  { label: 'relay-codex-tailscale', url: 'https://mac.example-host.ts.net/codex-proxy/cx', why: '借道 codex 协议（Tailscale 域名）' },
   { label: 'relay-codex-empty-id', url: 'https://relay.example/codex-proxy/', why: '借道路径缺 provider id → 不算借道' },
   { label: 'relay-loopback-ip', url: 'http://127.0.0.1:3000/claude-proxy/abc/remote', why: '回环是本机自己的转发管道，永远不是借道' },
   { label: 'relay-loopback-name', url: 'http://localhost:3000/codex-proxy/abc', why: 'localhost 同上' },

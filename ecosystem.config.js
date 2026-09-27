@@ -11,8 +11,8 @@ module.exports = {
       NODE_ENV: 'production',
       PORT: process.env.PORT || 3000,
       // edge-tts ships to a Python user-bin dir that isn't on pm2's PATH;
-      // point the TTS service at the absolute path so it spawns cleanly.
-      EDGE_TTS_CMD: '/Users/Zhuanz/Library/Python/3.9/bin/edge-tts',
+      // point the TTS service at a portable candidate so it spawns cleanly.
+      EDGE_TTS_CMD: process.env.EDGE_TTS_CMD || 'edge-tts',
     },
     error_file: './logs/pm2-error.log',
     out_file: './logs/pm2-out.log',

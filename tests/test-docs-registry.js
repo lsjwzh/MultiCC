@@ -304,7 +304,7 @@ const { rewriteLoopbackUrl: rewriteWeb, isLoopbackHost } = require('../public/do
 test('web rewriteLoopbackUrl swaps loopback host, keeps port/path/query/protocol', () => {
   assert.equal(rewriteWeb('http://127.0.0.1:8770/', '192.168.1.5'), 'http://192.168.1.5:8770/');
   assert.equal(rewriteWeb('http://127.0.0.1:8770/x?a=1', '192.168.1.5'), 'http://192.168.1.5:8770/x?a=1');
-  assert.equal(rewriteWeb('https://localhost:5173/', 'macbook.tail94695a.ts.net'), 'https://macbook.tail94695a.ts.net:5173/');
+  assert.equal(rewriteWeb('https://localhost:5173/', 'macbook.example-host.ts.net'), 'https://macbook.example-host.ts.net:5173/');
   assert.equal(rewriteWeb('http://LOCALHOST:8770/', '192.168.1.5'), 'http://192.168.1.5:8770/');
   assert.equal(rewriteWeb('http://[::1]:8770/', '192.168.1.5'), 'http://192.168.1.5:8770/');
 });

@@ -23,7 +23,7 @@ const CASES = [
   'http://localhost:3000/air',
   'http://192.168.1.9:3000/air',
   'http://100.118.172.84:3000/air',
-  'http://macbook-air-pwy.tail94695a.ts.net/air',
+  'http://macbook-air.example-host.ts.net/air',
   'http://主机.example:3000/air',
   `http://192.168.1.9:3000/air?task=${'x'.repeat(160)}`,
   'x'.repeat(400),
