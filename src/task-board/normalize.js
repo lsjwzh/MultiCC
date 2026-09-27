@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const planning = require('./planning');
+const attention = require('./attention');
 const { TURN_RUN_STATES } = require('../classify/vocab');
 // Task board core — pure logic for the AI-tagged module→task board. No I/O and
 // no host state: given a board object
@@ -160,6 +161,8 @@ function normalizeBoard(raw) {
     // Monotonic stamp of the queue event that produced runState. Survives a
     // reload so a heartbeat replayed after restart cannot un-cancel a card.
     if (Number(t.runStateAt) > 0) task.runStateAt = Number(t.runStateAt);
+    // Unseen-result mark (see task-board/attention.js).
+    attention.normalizeAttention(t, task);
     // M3 per-task worktree ledger: where the task's work lives between runs.
     // Absent until the first run creates it; non-strings are dropped.
     if (typeof t.worktreePath === 'string' && t.worktreePath.trim()) {

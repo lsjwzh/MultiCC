@@ -5,35 +5,37 @@
  * reminder only ever lives in one place (see chat-notifications.js for the same
  * idea on the standalone chat page).
  *
- *   task transitions into completed / error / waiting AND isn't currently open
- *        └─► ① sidebar row gets `.unseen` (always)
- *        └─► ② sound: ding always; + 朗读「任务…已完成」 only when the person is
- *              away (tab hidden, or visible but no input for 5 min — see
- *              shared/user-presence.js for the one presence rule + policy table)
+ *   the server marks a task (task.attention in /api/air) when its run moves into
+ *   completed / error / waiting, and clears it when anyone opens the task —
+ *   from any Air tab, PWA window or the App (see src/task-board/attention.js)
+ *        └─► ① sidebar row gets `.unseen` while the snapshot carries the mark
+ *        └─► ② sound for marks newer than the ones already rung: ding always;
+ *              + 朗读「任务…已完成」 only when the person is away (tab hidden, or
+ *              visible but no input for 5 min — see shared/user-presence.js)
  *        └─► ③ floating reminder deck, one card per task ([打开][✕]);
  *              several stack up and fan out on click (air-notify-deck.js)
- *   user opens the task
+ *   user opens the task (here, or anywhere else)
  *        └─► ① `.unseen` cleared  ② pending/ongoing voice cancelled  ③ its card leaves
+ *
+ * Whether a task is unseen is never decided here: this page only keeps what it
+ * has already rung (a watermark on the server's attention.at, shared by every
+ * tab through localStorage), so a reload, a second tab or a tab that slept in
+ * the background never re-announces a result that was already announced — and
+ * one opened elsewhere is simply no longer in the snapshot.
  *
  * Sound edge cases (the ones that used to read as contradictions):
  *   - several tasks finish in one poll, or within the cooldown → ONE ding and
  *     one sentence naming the most important task (+「另有 N 个」), never a
  *     burst, and never a silently swallowed second completion;
  *   - a task opened before its deferred announcement plays is dropped from it;
- *   - two Air tabs/PWA windows see the same transition → only the first one
- *     to claim it (localStorage) makes a sound, both still mark it;
+ *   - two Air tabs/PWA windows poll the same new mark → only one of them makes
+ *     a sound; each shows its own card;
  *   - coming back to a hidden tab cancels narration still queued from while it
  *     was hidden (it would describe something already on screen);
- *   - the open task is never announced here: its chat frame owns that sound;
- *   - several Air tabs/windows share ONE record (localStorage) of what was
- *     seen and what is unseen: opening a task in one clears it in all of them,
- *     and a tab that was frozen in the background does not re-announce a
- *     transition another tab already reported while it slept.
+ *   - the open task is never announced here: its chat frame owns that sound.
  *
- * `unseen` and the last-observed per-task status are persisted to localStorage,
- * so a task that finishes while the page is closed (or across a reload) is still
- * marked ① / prompted ③ the next time the page is open. "©" closing the floating
- * prompt only takes that card off the deck; the row stays marked until the task is opened.
+ * ✕ on a card only takes that card off the deck; the row stays marked until the
+ * task is opened.
  *
  * Kept a classic script (no module dep) so air.js can construct it before the
  * first snapshot and hand over the handful of callbacks it needs.
@@ -62,11 +64,12 @@
   // Which of several simultaneous outcomes the one sentence is about.
   const KIND_PRIORITY = { error: 3, waiting: 2, completed: 1 };
 
-  const LS_UNSEEN = 'air:notify-unseen';
-  const LS_PREV = 'air:notify-prev';
+  // Before the server kept the mark, each page kept its own copy here. Those
+  // copies disagreed between tabs (the cause of repeated reminders); dropped.
+  const LEGACY_KEYS = ['air:notify-unseen', 'air:notify-prev'];
+  const LS_HEARD = 'air:notify-heard';   // newest attention.at already rung, shared by tabs
   const LS_VOICE = 'air:notify-voice';
   const LS_CLAIM = 'air:notify-claim';
-  const PREV_CAP = 200;          // don't let the status watermark grow unbounded
   const VOICE_COOLDOWN = 8000;   // min gap between two sounds, mirrors chat-notifications
   const SPEAK_DELAY_MS = 260;    // let the ding finish before the narration starts
   const CLAIM_TTL_MS = 120000;   // cross-tab "someone already rang for this" window
@@ -108,17 +111,6 @@
     try { s.setItem(key, JSON.stringify(value)); } catch (_) { /* quota → drop silently */ }
   }
   function isCompleted(status) { return COMPLETED.has(String(status || '')); }
-
-  // The persisted unseen list used to be a bare array of ids; entries written
-  // before the error tone existed read as plain "completed" marks.
-  function readUnseen() {
-    const raw = readJson(LS_UNSEEN, []);
-    if (Array.isArray(raw)) return new Map(raw.map(id => [String(id), 'completed']));
-    if (raw && typeof raw === 'object') {
-      return new Map(Object.entries(raw).filter(([, kind]) => KINDS.has(kind)));
-    }
-    return new Map();
-  }
 
   // Voice was flagged on by default, but a user can silence it without losing
   // the sidebar mark or floating prompt (they are "notification", not "voice").
@@ -168,68 +160,23 @@
     const statusOf = typeof opts.statusOf === 'function'
       ? opts.statusOf : (task => task?.status);
 
-    // Persisted "terminal but not opened" rows (id → attention kind) + the
-    // last status we saw per task.
-    const unseen = readUnseen();
-    const prevStatus = new Map(Object.entries(readJson(LS_PREV, {})));
+    // The server's marks as of the last snapshot (id → { kind, at }), minus
+    // the task on screen and tasks opened here that the server has not caught
+    // up with yet (opened: id → the mark's `at` that was consumed).
+    let unseen = new Map();
+    const opened = new Map();
+    // Newest mark this tab has put on its deck; null until the first snapshot.
+    let tabHeard = null;
+    function sharedHeard() {
+      const raw = storage()?.getItem(LS_HEARD);
+      return raw == null ? null : Number(raw) || 0;
+    }
+    try { const s = storage(); for (const key of LEGACY_KEYS) s?.removeItem(key); } catch (_) {}
 
     let lastVoiceAt = -Infinity;
     let voiceTimer = null;
     let flushTimer = null;
     const pendingSound = new Map();  // id → { task, kind } waiting out the cooldown
-
-    // `unseen` is shared by every Air tab. Each tab only writes its own changes
-    // on top of what is stored (never its whole map), otherwise a tab still
-    // holding an old copy would put back marks another tab just cleared.
-    const unseenOps = new Map();     // id → kind to add, or null to drop
-    function setUnseen(id, kind) { unseen.set(id, kind); unseenOps.set(id, kind); }
-    function dropUnseen(id) {
-      if (!unseen.delete(id)) return false;
-      unseenOps.set(id, null);
-      return true;
-    }
-    function persistUnseen() {
-      if (!unseenOps.size) return;
-      const stored = storage() ? readUnseen() : new Map(unseen);
-      for (const [id, kind] of unseenOps) {
-        stored.delete(id);             // re-insert so the newest stays inside the cap
-        if (kind) stored.set(id, kind);
-      }
-      unseenOps.clear();
-      writeJson(LS_UNSEEN, Object.fromEntries([...stored].slice(-PREV_CAP)));
-    }
-    // Take in what other tabs did: a task opened there is no longer unseen
-    // here (its card leaves too); a mark they raised shows up here as well.
-    const taskById = new Map();      // last snapshot, to put cards up for marks from other tabs
-    function pullShared() {
-      if (!storage()) return;
-      const stored = readUnseen();
-      for (const id of [...unseen.keys()]) {
-        if (stored.has(id) || unseenOps.has(id)) continue;
-        unseen.delete(id);
-        pendingSound.delete(id);
-        deck?.remove(id);
-      }
-      for (const [id, kind] of stored) {
-        if (unseen.get(id) === kind || unseenOps.has(id)) continue;
-        unseen.set(id, kind);
-        const task = taskById.get(id);
-        if (task && String(getCurrentTaskId() || '') !== id) getDeck()?.upsert(task, kind);
-      }
-    }
-    // The status watermark is shared the same way: every tab writes the latest
-    // server state after each snapshot, so what is stored is never older than
-    // this tab's copy — a tab waking up from the background compares against
-    // it and does not re-report a transition another tab already reported.
-    function pullPrev() {
-      if (!storage()) return;
-      prevStatus.clear();
-      for (const [id, status] of Object.entries(readJson(LS_PREV, {}))) prevStatus.set(id, status);
-    }
-    function persistPrev() {
-      const pruned = [...prevStatus.entries()].slice(-PREV_CAP);
-      writeJson(LS_PREV, Object.fromEntries(pruned));
-    }
 
     // ── ③ Floating reminder deck (drawn by air-notify-deck.js) ────────────
     // One card per task that needs you; several stack and fan out on click.
@@ -286,8 +233,8 @@
       if (voiceTimer) { cancelSchedule(voiceTimer); voiceTimer = null; }
     }
 
-    // Cross-tab claim: the first Air tab/PWA window to announce a transition
-    // records it; the others stay quiet for that same transition.
+    // Cross-tab claim: two tabs polling the same new mark at once both see it
+    // above the shared watermark; the first to ring records it, the other stays quiet.
     function claimSound(items) {
       const s = storage();
       if (!s) return items;
@@ -296,9 +243,9 @@
       try { claims = JSON.parse(s.getItem(LS_CLAIM)) || {}; } catch (_) {}
       const fresh = {};
       for (const [key, ts] of Object.entries(claims)) if (at - Number(ts) < CLAIM_TTL_MS) fresh[key] = ts;
-      // updatedAt makes the key per-transition: the same task asking a second
+      // The mark's time makes the key per-event: the same task asking a second
       // question a minute later is a new event, not a duplicate.
-      const key = ({ task, kind }) => `${task.id}|${kind}|${task.updatedAt || ''}`;
+      const key = ({ task, kind, at }) => `${task.id}|${kind}|${at || ''}`;
       const mine = items.filter(item => !fresh[key(item)]);
       for (const item of mine) fresh[key(item)] = at;
       try { s.setItem(LS_CLAIM, JSON.stringify(fresh)); } catch (_) {}
@@ -334,32 +281,31 @@
       return true;
     }
 
-    function queueSound(task, kind) {
-      pendingSound.set(String(task.id), { task, kind });
+    function queueSound(task, kind, at) {
+      pendingSound.set(String(task.id), { task, kind, at });
       const wait = lastVoiceAt + VOICE_COOLDOWN - now();
       if (wait <= 0) return;           // caller flushes synchronously
       if (!flushTimer) flushTimer = schedule(flushSound, wait);
     }
 
     // ── ① ② ③ —— one trigger, three consumers ────────────────────────────
-    function fireAttention(fires) {
-      if (!fires.length) return;
-      for (const [task, kind] of fires) {
-        setUnseen(String(task.id), kind);
-        queueSound(task, kind);          // ② sound (batched)
-      }
-      persistUnseen();
-      if (!flushTimer) flushSound();
-      // ③ every task of the batch lands on the deck (① is live via isUnseen → CSS class)
-      for (const [task, kind] of fires) getDeck()?.upsert(task, kind);
+    function fireAttention(cards, sounds) {
+      for (const [task, kind, at] of sounds) queueSound(task, kind, at);   // ② sound (batched)
+      if (sounds.length && !flushTimer) flushSound();
+      // ③ every new mark lands on the deck (① is live via isUnseen → CSS class)
+      for (const [task, kind] of cards) getDeck()?.upsert(task, kind);
     }
 
     function markOpened(taskId) {
       const id = String(taskId || '').trim();
       if (!id) return;
       pendingSound.delete(id);
-      if (!dropUnseen(id)) return;
-      persistUnseen();
+      // The server clears the mark when the task entry is opened; until the
+      // next snapshot says so, this page already treats it as seen.
+      const mark = unseen.get(id);
+      if (!mark) return;
+      opened.set(id, mark.at);
+      unseen.delete(id);
       stopVoice();          // ② voice cancels
       deck?.remove(id);     // ③ its card leaves the deck
       // ① sidebar mark disappears on the next render (isUnseen returns false now)
@@ -368,63 +314,47 @@
     // Back on a tab that was hidden: narration queued by a throttled
     // background tab would now describe something already on screen.
     presence?.onReturn?.(reason => { if (reason === 'visible') stopVoice(); });
-    win.addEventListener?.('storage', event => { if (event?.key === LS_UNSEEN) pullShared(); });
 
-    // Diff the latest snapshot against the watermark; anything that moved into
-    // a completed / error / waiting state (from a different state) while not the
-    // task currently on screen is a reminder candidate. Only fires when the
-    // transition is OBSERVED (prev known), so a task that was already done
-    // before the feature/page ever saw it does not spam the page on first load.
-    // A `waiting` mark whose question got answered elsewhere (App, another
-    // tab) is dropped once the task leaves `waiting` — it no longer needs you.
-    // Any card whose task left the state it was raised for (someone continued
-    // it, from here or the App) leaves the deck; a later outcome raises a new one.
+    // Read the marks off the latest snapshot. A mark newer than anything this
+    // tab has shown becomes a card; newer than anything any tab has rung, a
+    // sound. The very first snapshot a browser ever sees only sets the
+    // watermark, so turning the feature on does not replay old results.
+    // A card whose task is no longer marked (opened elsewhere) or has moved on
+    // (someone continued it) leaves the deck.
     function onSnapshot(tasks, currentTaskId) {
-      if (Array.isArray(tasks)) {
-        taskById.clear();
-        for (const task of tasks) if (task?.id) taskById.set(String(task.id), task);
-      }
-      pullPrev();
-      pullShared();
-      // Board insertion order can put a recently rerun old task before hundreds
-      // of dormant records. Keep the watermark by activity, not insertion order.
-      const list = Array.isArray(tasks) ? [...tasks].sort((a, b) =>
-        Number(a.updatedAt || 0) - Number(b.updatedAt || 0)) : [];
-      const fires = [];
+      const list = Array.isArray(tasks) ? tasks : [];
+      const current = String(currentTaskId || '');
+      const heard = sharedHeard();
+      if (tabHeard == null) tabHeard = heard;
+      let newest = Math.max(heard || 0, tabHeard || 0);
+      const next = new Map();
+      const cards = [];
+      const sounds = [];
       for (const task of list) {
         const id = String(task?.id || '').trim();
         if (!id) continue;
-        const status = String(statusOf(task) || '');
-        const kind = attentionKind(status);
-        const prev = prevStatus.get(id);
-        const prevKind = prev != null ? attentionKind(prev) : null;
-        const isOpen = id === String(currentTaskId || '');
-        if (isOpen) {                     // on screen → not "unseen"
-          dropUnseen(id);
-          pendingSound.delete(id);
-          deck?.remove(id);
-        } else if (kind && kind !== prevKind && prev != null) {
-          // observed transition into an attention state, not currently open
-          fires.push([task, kind]);
-          setUnseen(id, kind);
-        } else if (!kind) {
-          if (unseen.get(id) === 'waiting') dropUnseen(id);
+        const mark = task.attention && KINDS.has(task.attention.kind) ? task.attention : null;
+        const at = Number(mark?.at) || 0;
+        if (mark) newest = Math.max(newest, at);
+        if (!mark || at > (opened.get(id) || 0)) opened.delete(id);
+        const live = mark && id !== current && !opened.has(id);
+        if (live) {
+          next.set(id, { kind: mark.kind, at });
+          if (tabHeard != null && at > tabHeard) cards.push([task, mark.kind]);
+          if (heard != null && at > heard) sounds.push([task, mark.kind, at]);
+        }
+        if (!live || !attentionKind(statusOf(task))) {
           pendingSound.delete(id);
           deck?.remove(id);
         }
-        prevStatus.delete(id);
-        prevStatus.set(id, status);
       }
-      if (prevStatus.size > PREV_CAP) {
-        for (const key of prevStatus.keys()) {
-          if (prevStatus.size <= PREV_CAP) break;
-          prevStatus.delete(key);
-        }
+      unseen = next;
+      tabHeard = newest;
+      if (heard == null || newest > heard) {
+        try { storage()?.setItem(LS_HEARD, String(newest)); } catch (_) {}
       }
-      persistPrev();
-      persistUnseen();
-      fireAttention(fires);
-      return fires.length > 0;
+      fireAttention(cards, sounds);
+      return cards.length > 0;
     }
 
     // Expose a couple of controls the Air toolbar may want (voice on/off).
@@ -442,7 +372,7 @@
       deckIds: () => deck?.ids() || [],
       toggleVoice,
       unseenCount: () => unseen.size,
-      unseenKind: id => unseen.get(String(id || '')) || null,
+      unseenKind: id => unseen.get(String(id || ''))?.kind || null,
       voiceEnabled,
     });
   }
@@ -479,7 +409,7 @@
     isCompleted,
     attentionKind,
     __resetForTest(storage) {
-      if (storage) { try { storage.removeItem(LS_UNSEEN); storage.removeItem(LS_PREV); } catch (_) {} }
+      if (storage) { try { storage.removeItem(LS_HEARD); storage.removeItem(LS_CLAIM); } catch (_) {} }
     },
   });
 })(typeof window !== 'undefined' ? window : globalThis);

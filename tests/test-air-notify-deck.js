@@ -206,18 +206,29 @@ test('notifier: a batch lands on the deck; opening or answering removes the card
     setTimeout: dom.win.setTimeout, clearTimeout: dom.win.clearTimeout,
     openTask() {},
   });
+  // the server's marks (task.attention) are what the notifier reads
+  const mark = (task, status, kind, at) => Object.assign(task, { status, attention: { kind, at } });
   const tasks = [
     { id: 'a', title: 'A', status: 'running' },
     { id: 'b', title: 'B', status: 'running' },
     { id: 'c', title: 'C', status: 'running' },
+    { id: 'd', title: 'D', status: 'running' },
   ];
   ctrl.onSnapshot(tasks, '');
-  tasks[0].status = 'done'; tasks[1].status = 'error'; tasks[2].status = 'waiting';
-  ctrl.onSnapshot(tasks, '');
+  mark(tasks[0], 'done', 'completed', 100);
+  mark(tasks[1], 'error', 'error', 101);
+  mark(tasks[2], 'waiting', 'waiting', 102);
+  ctrl.onSnapshot(tasks.slice(0, 3), '');
   assert.deepEqual(ctrl.deckIds(), ['b', 'c', 'a']);
   ctrl.markOpened('b');
   assert.deepEqual(ctrl.deckIds(), ['c', 'a']);
-  tasks[2].status = 'running';           // answered elsewhere
+  tasks[2].status = 'running'; delete tasks[2].attention;   // answered elsewhere
+  ctrl.onSnapshot(tasks, '');
+  assert.deepEqual(ctrl.deckIds(), ['a']);
+  mark(tasks[3], 'done', 'completed', 200);
+  ctrl.onSnapshot(tasks, '');
+  assert.deepEqual(ctrl.deckIds(), ['d', 'a']);
+  delete tasks[3].attention;             // opened in another tab / the App
   ctrl.onSnapshot(tasks, '');
   assert.deepEqual(ctrl.deckIds(), ['a']);
   ctrl.onSnapshot(tasks, 'a');           // now on screen

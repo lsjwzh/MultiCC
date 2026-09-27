@@ -4240,6 +4240,15 @@
       ]
     },
     {
+      "path": "tests/test-task-attention.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-task-attribution-backtest.js",
       "tier": "core",
       "lane": "deterministic",

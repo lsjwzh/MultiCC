@@ -1,14 +1,13 @@
 'use strict';
 // Unit tests for the Air page task-completion notifier (public/air-task-notify.js).
 //
-// Runs the browser IIFE inside a fake window so the persistence + transition
-// rules are tested deterministically without a browser:
-//   - a task only fires a reminder when its completion transition is *observed*
-//     (so pre-existing "done" tasks don't spam the page on first load);
-//   - completion while the page is closed is detected on the next snapshot
-//     because the last-observed status watermark is persisted;
-//   - opening a task clears the "unseen" mark and persists that;
-//   - error/cancelled are deliberately NOT "completed" reminders.
+// Runs the browser IIFE inside a fake window. Whether a task is unseen is the
+// server's call (task.attention in the /api/air snapshot, see
+// src/task-board/attention.js); what is tested here is how the page reads it:
+//   - the row mark follows the snapshot, so opening a task anywhere clears it;
+//   - only marks newer than what was already rung make a sound or a card, so
+//     a reload, a second tab or a tab that slept in the background is quiet;
+//   - the very first snapshot a browser ever sees is a baseline, not a replay.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -55,115 +54,99 @@ const createController = (win, api) => api.create({
   setTimeout: win.setTimeout, clearTimeout: win.clearTimeout,
 });
 
-test('baseline: tasks already "done" before the page ever saw them do not fire', () => {
+const KIND = { done: 'completed', succeeded: 'completed', error: 'error', waiting: 'waiting' };
+// A task as the snapshot carries it; `at` present → the server has a pending mark.
+const T = (id, status, at, extra = {}) => ({
+  id, status, ...(at ? { attention: { kind: KIND[status], at } } : {}), ...extra,
+});
+
+test('first snapshot a browser ever sees is a baseline: marks show, nothing rings', () => {
   const { win, api } = loadModule();
   const ctrl = createController(win, api);
-  const fired = ctrl.onSnapshot([
-    { id: 't1', status: 'done' },
-    { id: 't2', status: 'done' },
-    { id: 't3', status: 'running' },
-  ], '');
+  const fired = ctrl.onSnapshot([T('t1', 'done', 50), T('t2', 'done'), T('t3', 'running')], '');
   assert.equal(fired, false);
-  assert.equal(ctrl.unseenCount(), 0);
-  assert.equal(ctrl.isUnseen('t1'), false);
+  assert.equal(ctrl.isUnseen('t1'), true, 'the server says t1 was never opened');
+  assert.equal(ctrl.isUnseen('t2'), false);
+  assert.equal(ctrl.unseenCount(), 1);
+  assert.deepEqual(ctrl.deckIds(), []);
 });
 
-test('a recently rerun old task retains its watermark beyond the 200-task cap', () => {
+test('a new server mark fires once and marks the row unseen', () => {
   const { win, api } = loadModule();
   const ctrl = createController(win, api);
-  const active = { id: 'old-stock-task', status: 'running', updatedAt: 1000 };
-  const tasks = [active, ...Array.from({ length: 240 }, (_, i) => ({ id: 'dormant-' + i, status: 'done', updatedAt: i }))];
-  ctrl.onSnapshot(tasks, '');
-  ctrl.onSnapshot(tasks, '');
-  // Reload between snapshots, so the bound applies to persistence as well.
-  const restored = createController(win, api);
-  active.status = 'succeeded'; active.updatedAt = 1100;
-  assert.equal(restored.onSnapshot(tasks, ''), true);
-  assert.equal(restored.isUnseen(active.id), true);
-  assert.equal(Object.keys(JSON.parse(win.localStorage.getItem('air:notify-prev'))).length, 200);
-  assert.equal(restored.onSnapshot(tasks, ''), false);
-});
-
-test('observed running->succeeded transition for an unopened task fires and marks it unseen', () => {
-  const { win, api } = loadModule();
-  const ctrl = createController(win, api);
-  ctrl.onSnapshot([{ id: 't4', status: 'running' }], '');
-  const fired = ctrl.onSnapshot([{ id: 't4', status: 'succeeded' }], '');
-  assert.equal(fired, true);
+  ctrl.onSnapshot([T('t4', 'running')], '');
+  assert.equal(ctrl.onSnapshot([T('t4', 'succeeded', 100)], ''), true);
   assert.equal(ctrl.isUnseen('t4'), true);
-  // Already-done tasks never re-fire on later snapshots.
-  assert.equal(ctrl.onSnapshot([{ id: 't4', status: 'succeeded' }], ''), false);
+  assert.equal(ctrl.unseenKind('t4'), 'completed');
+  assert.equal(ctrl.onSnapshot([T('t4', 'succeeded', 100)], ''), false, 'same mark never re-fires');
 });
 
-test('a task that is currently open is never marked unseen', () => {
+test('the task on screen is never unseen and never fires', () => {
   const { win, api } = loadModule();
   const ctrl = createController(win, api);
-  win._cur = 't5';
-  ctrl.onSnapshot([{ id: 't5', status: 'running' }], 't5');
-  const fired = ctrl.onSnapshot([{ id: 't5', status: 'done' }], 't5');
-  assert.equal(fired, false);
+  ctrl.onSnapshot([T('t5', 'running')], 't5');
+  assert.equal(ctrl.onSnapshot([T('t5', 'done', 100)], 't5'), false);
   assert.equal(ctrl.isUnseen('t5'), false);
 });
 
-test('completion detected after a reload (page was closed during the run): watermark persisted', () => {
+test('reload: marks come back from the snapshot, but what was rung is not rung again', () => {
   const { win, api } = loadModule();
   const first = createController(win, api);
-  first.onSnapshot([{ id: 't7', status: 'running' }], ''); // seen as running earlier
-  // Simulate reload with a fresh controller: task flipped to done meanwhile.
-  const second = createController(win, api);
-  const fired = second.onSnapshot([{ id: 't7', status: 'done' }], '');
-  assert.equal(fired, true);
-  assert.equal(second.isUnseen('t7'), true);
-});
-
-test('onSnapshot persists "unseen" across controller instances and markOpened clears + persists it', () => {
-  const { win, api } = loadModule();
-  const first = createController(win, api);
-  first.onSnapshot([{ id: 't6', status: 'running' }], '');
-  first.onSnapshot([{ id: 't6', status: 'done' }], '');
+  first.onSnapshot([T('t6', 'running')], '');
+  assert.equal(first.onSnapshot([T('t6', 'done', 100)], ''), true);
   const reload = createController(win, api);
-  assert.equal(reload.isUnseen('t6'), true, 'unseen survives reload');
-  reload.markOpened('t6');
-  assert.equal(reload.isUnseen('t6'), false, 'opening clears the mark');
-  const reloadAgain = createController(win, api);
-  assert.equal(reloadAgain.isUnseen('t6'), false, 'opened state also survives reload');
+  assert.equal(reload.onSnapshot([T('t6', 'done', 100)], ''), false);
+  assert.equal(reload.isUnseen('t6'), true, 'still unseen after reload');
+  // finished while the page was closed → a newer mark → announced on reload
+  const again = createController(win, api);
+  assert.equal(again.onSnapshot([T('t6', 'done', 100), T('t7', 'done', 200)], ''), true);
 });
 
-test('error fires an unseen mark of kind error; cancelled still does not', () => {
+test('markOpened clears locally until the server catches up, then follows the server', () => {
   const { win, api } = loadModule();
   const ctrl = createController(win, api);
-  ctrl.onSnapshot([{ id: 't8', status: 'running' }], '');
-  assert.equal(ctrl.onSnapshot([{ id: 't8', status: 'error' }, { id: 't9', status: 'queued' }], ''), true);
-  assert.equal(ctrl.isUnseen('t8'), true);
+  ctrl.onSnapshot([], '');
+  ctrl.onSnapshot([T('t8', 'error', 100)], '');
   assert.equal(ctrl.unseenKind('t8'), 'error');
-  ctrl.onSnapshot([{ id: 't10', status: 'running' }], '');
-  assert.equal(ctrl.onSnapshot([{ id: 't10', status: 'cancelled' }], ''), false);
-  assert.equal(ctrl.isUnseen('t10'), false);
+  ctrl.markOpened('t8');
+  assert.equal(ctrl.isUnseen('t8'), false);
+  ctrl.onSnapshot([T('t8', 'error', 100)], '');     // /open not applied yet
+  assert.equal(ctrl.isUnseen('t8'), false, 'an in-flight open is not undone');
+  ctrl.onSnapshot([T('t8', 'error')], '');          // server cleared it
+  assert.equal(ctrl.onSnapshot([T('t8', 'error', 300)], ''), true, 'a later outcome is new again');
+  assert.equal(ctrl.isUnseen('t8'), true);
 });
 
-test('error unseen mark survives reload (kind persisted) and markOpened clears it', () => {
+test('opened elsewhere (another tab, the App): the mark leaves the row', () => {
   const { win, api } = loadModule();
-  const first = createController(win, api);
-  first.onSnapshot([{ id: 't11', status: 'running' }], '');
-  first.onSnapshot([{ id: 't11', status: 'error' }], '');
-  const reload = createController(win, api);
-  assert.equal(reload.unseenKind('t11'), 'error', 'error kind survives reload');
-  reload.markOpened('t11');
-  assert.equal(reload.isUnseen('t11'), false);
+  const ctrl = createController(win, api);
+  ctrl.onSnapshot([], '');
+  ctrl.onSnapshot([T('t9', 'done', 100)], '');
+  ctrl.onSnapshot([T('t9', 'done')], '');
+  assert.equal(ctrl.isUnseen('t9'), false);
 });
 
-test('statusOf fold decides attention, so lifecycle done + runState error reads as error', () => {
+test('marks of an unknown kind are ignored', () => {
   const { win, api } = loadModule();
   const ctrl = api.create({
-    getCurrentTaskId: () => null,
-    openTask: () => {},
+    getCurrentTaskId: () => null, openTask: () => {},
     window: win, document: win.document,
     setTimeout: win.setTimeout, clearTimeout: win.clearTimeout,
-    statusOf: task => (task.status === 'done' && task.runState === 'error' ? 'error' : task.status),
+    statusOf: task => (task.runState === 'running' ? 'running' : task.status),
   });
-  ctrl.onSnapshot([{ id: 't12', status: 'active', runState: 'running' }], '');
-  assert.equal(ctrl.onSnapshot([{ id: 't12', status: 'done', runState: 'error' }], ''), true);
-  assert.equal(ctrl.unseenKind('t12'), 'error');
+  ctrl.onSnapshot([], '');
+  ctrl.onSnapshot([{ id: 'x', status: 'done', attention: { kind: 'bogus', at: 100 } }, T('y', 'done', 100)], '');
+  assert.equal(ctrl.isUnseen('x'), false);
+  assert.equal(ctrl.isUnseen('y'), true);
+});
+
+test('legacy per-page copies are dropped on start', () => {
+  const { win, api } = loadModule();
+  win.localStorage.setItem('air:notify-unseen', '{"old":"completed"}');
+  win.localStorage.setItem('air:notify-prev', '{"old":"done"}');
+  createController(win, api);
+  assert.equal(win.localStorage.getItem('air:notify-unseen'), null);
+  assert.equal(win.localStorage.getItem('air:notify-prev'), null);
 });
 
 // ── Sound policy (see public/shared/user-presence.js for the table) ──────────
@@ -206,32 +189,32 @@ function soundHarness({ away = false, store } = {}) {
 
 test('present: a completion dings but is not narrated', () => {
   const h = soundHarness({ away: false });
-  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }], '');
-  h.ctrl.onSnapshot([{ id: 'a', status: 'done', title: 'Alpha' }], '');
+  h.ctrl.onSnapshot([T('a', 'running')], '');
+  h.ctrl.onSnapshot([T('a', 'done', 100, { title: 'Alpha' })], '');
   h.advance(1000);
   assert.equal(h.dings.length, 1);
   assert.deepEqual(h.spoken, []);
 });
 
-test('away: ding + one sentence; several completions in one poll are one announcement', () => {
+test('away: ding + one sentence; several outcomes in one poll are one announcement', () => {
   const h = soundHarness({ away: true });
-  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }, { id: 'c', status: 'running' }], '');
+  h.ctrl.onSnapshot([], '');
   h.ctrl.onSnapshot([
-    { id: 'a', status: 'done', title: 'Alpha' },
-    { id: 'b', status: 'error', title: 'Beta' },
-    { id: 'c', status: 'done', title: 'Gamma' },
+    T('a', 'done', 100, { title: 'Alpha' }),
+    T('b', 'error', 101, { title: 'Beta' }),
+    T('c', 'done', 102, { title: 'Gamma' }),
   ], '');
   h.advance(1000);
   assert.equal(h.dings.length, 1, 'one ding for the batch');
   assert.deepEqual(h.spoken, ['任务「Beta」出错了，另有 2 个任务有新结果'], 'errors lead the sentence');
 });
 
-test('a completion inside the cooldown is deferred and merged, never swallowed', () => {
+test('an outcome inside the cooldown is deferred and merged, never swallowed', () => {
   const h = soundHarness({ away: true });
-  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }], '');
-  h.ctrl.onSnapshot([{ id: 'a', status: 'done', title: 'Alpha' }, { id: 'b', status: 'running' }], '');
+  h.ctrl.onSnapshot([], '');
+  h.ctrl.onSnapshot([T('a', 'done', 100, { title: 'Alpha' }), T('b', 'running')], '');
   h.advance(4000);
-  h.ctrl.onSnapshot([{ id: 'a', status: 'done', title: 'Alpha' }, { id: 'b', status: 'done', title: 'Beta' }], '');
+  h.ctrl.onSnapshot([T('a', 'done', 100, { title: 'Alpha' }), T('b', 'done', 200, { title: 'Beta' })], '');
   assert.equal(h.dings.length, 1, 'still inside the cooldown');
   h.advance(5000);
   assert.equal(h.dings.length, 2, 'the deferred one rings after the cooldown');
@@ -241,9 +224,9 @@ test('a completion inside the cooldown is deferred and merged, never swallowed',
 
 test('opening a task before its deferred sound plays drops it', () => {
   const h = soundHarness({ away: true });
-  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }], '');
-  h.ctrl.onSnapshot([{ id: 'a', status: 'done' }, { id: 'b', status: 'running' }], '');
-  h.ctrl.onSnapshot([{ id: 'a', status: 'done' }, { id: 'b', status: 'done' }], '');
+  h.ctrl.onSnapshot([], '');
+  h.ctrl.onSnapshot([T('a', 'done', 100)], '');
+  h.ctrl.onSnapshot([T('a', 'done', 100), T('b', 'done', 200)], '');
   h.ctrl.markOpened('b');
   h.advance(10000);
   assert.equal(h.dings.length, 1);
@@ -251,79 +234,68 @@ test('opening a task before its deferred sound plays drops it', () => {
 
 test('away is read when the sound plays: coming back during the cooldown means ding only', () => {
   const h = soundHarness({ away: true });
-  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }], '');
-  h.ctrl.onSnapshot([{ id: 'a', status: 'done' }, { id: 'b', status: 'running' }], '');
-  h.ctrl.onSnapshot([{ id: 'a', status: 'done' }, { id: 'b', status: 'done', title: 'Beta' }], '');
+  h.ctrl.onSnapshot([], '');
+  h.ctrl.onSnapshot([T('a', 'done', 100)], '');
+  h.ctrl.onSnapshot([T('a', 'done', 100), T('b', 'done', 200, { title: 'Beta' })], '');
   h.presence.away = false;
   h.advance(10000);
   assert.equal(h.dings.length, 2);
   assert.equal(h.spoken.length, 1, 'only the first (away) one was narrated');
 });
 
-test('two Air tabs: only the first to see a transition makes a sound', () => {
+function sharedStore() {
   const shared = new Map();
-  const store = {
+  return {
     getItem: k => (shared.has(k) ? shared.get(k) : null),
     setItem: (k, v) => shared.set(k, String(v)),
     removeItem: k => shared.delete(k),
   };
+}
+
+test('two Air tabs: one sound, both mark the row', () => {
+  const store = sharedStore();
   const one = soundHarness({ away: true, store });
   const two = soundHarness({ away: true, store });
-  for (const h of [one, two]) h.ctrl.onSnapshot([{ id: 'a', status: 'running', updatedAt: 1 }], '');
-  for (const h of [one, two]) h.ctrl.onSnapshot([{ id: 'a', status: 'done', updatedAt: 2 }], '');
+  for (const h of [one, two]) h.ctrl.onSnapshot([T('a', 'running')], '');
+  for (const h of [one, two]) h.ctrl.onSnapshot([T('a', 'done', 100)], '');
   assert.equal(one.dings.length + two.dings.length, 1);
   assert.equal(two.ctrl.isUnseen('a'), true, 'the quiet tab still marks it');
 });
 
-test('two Air tabs: opening a task in one clears it in the other for good', () => {
-  const shared = new Map();
-  const store = {
-    getItem: k => (shared.has(k) ? shared.get(k) : null),
-    setItem: (k, v) => shared.set(k, String(v)),
-    removeItem: k => shared.delete(k),
-  };
+test('two tabs racing the same poll: the claim keeps it to one sound', () => {
+  const store = sharedStore();
   const one = soundHarness({ away: false, store });
   const two = soundHarness({ away: false, store });
-  const tasks = status => [{ id: 'a', status, updatedAt: 1 }, { id: 'b', status: 'running', updatedAt: 1 }];
-  for (const h of [one, two]) h.ctrl.onSnapshot(tasks('running'), '');
-  for (const h of [one, two]) h.ctrl.onSnapshot(tasks('done'), '');
-  one.ctrl.markOpened('a');
-  // the other tab keeps polling; it must not write its old mark back
-  two.ctrl.onSnapshot(tasks('done'), '');
-  assert.equal(two.ctrl.isUnseen('a'), false, 'cleared in the other tab too');
-  one.ctrl.onSnapshot(tasks('done'), '');
-  assert.equal(one.ctrl.isUnseen('a'), false, 'not put back by the other tab');
+  for (const h of [one, two]) h.ctrl.onSnapshot([], '');
+  // both read the shared watermark before either wrote it back
+  store.setItem('air:notify-heard', '0');
+  one.ctrl.onSnapshot([T('a', 'done', 100)], '');
+  store.setItem('air:notify-heard', '0');
+  two.ctrl.onSnapshot([T('a', 'done', 100)], '');
+  assert.equal(one.dings.length + two.dings.length, 1);
 });
 
 test('a tab frozen in the background does not re-report what another tab already did', () => {
-  const shared = new Map();
-  const store = {
-    getItem: k => (shared.has(k) ? shared.get(k) : null),
-    setItem: (k, v) => shared.set(k, String(v)),
-    removeItem: k => shared.delete(k),
-  };
+  const store = sharedStore();
   const awake = soundHarness({ away: false, store });
   const frozen = soundHarness({ away: false, store });
-  for (const h of [awake, frozen]) h.ctrl.onSnapshot([{ id: 'a', status: 'running', updatedAt: 1 }], '');
-  // only the awake tab polls while `a` finishes, and the user opens it there
-  awake.ctrl.onSnapshot([{ id: 'a', status: 'done', updatedAt: 2 }], '');
+  for (const h of [awake, frozen]) h.ctrl.onSnapshot([T('a', 'running')], '');
+  awake.ctrl.onSnapshot([T('a', 'done', 100)], '');
   awake.ctrl.markOpened('a');
-  // the frozen tab wakes up: same `done`, but the transition was already reported
-  assert.equal(frozen.ctrl.onSnapshot([{ id: 'a', status: 'done', updatedAt: 2 }], ''), false);
+  // the server applied the open before the frozen tab wakes up
+  assert.equal(frozen.ctrl.onSnapshot([T('a', 'done')], ''), false);
   assert.equal(frozen.ctrl.isUnseen('a'), false);
   assert.equal(frozen.dings.length, 0);
 });
 
-test('waiting is an attention kind; answered elsewhere clears the mark', () => {
+test('waiting: a question marks the row; answered elsewhere clears it; then done is new', () => {
   const h = soundHarness({ away: false });
-  h.ctrl.onSnapshot([{ id: 'q', status: 'running' }], '');
-  assert.equal(h.ctrl.onSnapshot([{ id: 'q', status: 'waiting' }], ''), true);
+  h.ctrl.onSnapshot([T('q', 'running')], '');
+  assert.equal(h.ctrl.onSnapshot([T('q', 'waiting', 100)], ''), true);
   assert.equal(h.ctrl.unseenKind('q'), 'waiting');
-  h.ctrl.onSnapshot([{ id: 'q', status: 'running' }], '');
+  h.ctrl.onSnapshot([T('q', 'running')], '');
   assert.equal(h.ctrl.isUnseen('q'), false);
-  // waiting → done is a new outcome, not a repeat
-  h.ctrl.onSnapshot([{ id: 'q', status: 'waiting' }], '');
-  assert.equal(h.ctrl.onSnapshot([{ id: 'q', status: 'done' }], ''), true);
+  assert.equal(h.ctrl.onSnapshot([T('q', 'done', 200)], ''), true);
   assert.equal(h.ctrl.unseenKind('q'), 'completed');
 });
 
