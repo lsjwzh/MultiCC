@@ -74,6 +74,7 @@ module.exports = {
   deadDispatchClaim: view.deadDispatchClaim,
   foreignRunSession: view.foreignRunSession,
   staleWorkerClaim: view.staleWorkerClaim,
+  soleRunSessionId: view.soleRunSessionId,
   sessionHasTurn: view.sessionHasTurn,
   normalizeTaskRouting: normalize.normalizeTaskRouting,
   setTaskRouting: normalize.setTaskRouting,

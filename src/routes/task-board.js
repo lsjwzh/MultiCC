@@ -1038,6 +1038,25 @@ function createTaskBoardRuntime(deps) {
     return resolvedTask(bound)?.id || '';
   }
 
+  // `claim_released` 是「调度器把一次占用交还回来」，不是「有东西在排队」——
+  // 两者被当成同一件事，就是卡片永远停在「排队中」的原因：delivery_deferred
+  // 的投递重试每分钟 claimed → claim_released 各一次，每次 release 都把卡片刷
+  // 成「排队中」，而事件自己写着 queued:0 / queuedItems:[]。重试停下之后没人再
+  // 写这张卡，它就把最后那一笔「排队」一直挂下去。
+  //
+  // 事件里带着 release 之后调度器的真实样子，所以这里不需要猜。
+  function runStateForClaimReleased(event) {
+    // 中途释放那一支不是清空而是冻结（调度器会继续往前推，对 UI 就是 running）；
+    // 原因→状态走和 `frozen` 事件同一张共享映射表。
+    if (event.freezeReason) return runStateForFreezeReason(event.freezeReason);
+    // 释放之后还压着东西 —— 那才叫排队。
+    const depth = Array.isArray(event.queuedItems) ? event.queuedItems.length : null;
+    // 读不到深度时保守退回旧投影，不猜。当前没有生产者会漏 queuedItems。
+    if (depth === null || depth > 0) return 'queued';
+    // 一条都不剩：卡片读这个会话真正落定的判定 —— 交还的占用不等于排队。
+    return runStateForClassify(event.queueSummary?.classifyState);
+  }
+
   function onQueueEvent(event = {}) {
     const taskId = String(event.taskId || '') || boundTaskId(event.sessionId);
     const task = taskId ? resolvedTask(taskId) : null;
@@ -1053,7 +1072,8 @@ function createTaskBoardRuntime(deps) {
     if (type === 'queued' && event.workKind !== 'task') {
       return { ok: true, changed: false };
     }
-    if (type === 'queued' || type === 'claim_released') runState = 'queued';
+    if (type === 'claim_released') runState = runStateForClaimReleased(event);
+    else if (type === 'queued') runState = 'queued';
     else if (type === 'claimed' || type === 'started' || type === 'resumed') runState = 'running';
     else if (type === 'completed') {
       // `completed` is scheduler bookkeeping: the active slot was released.

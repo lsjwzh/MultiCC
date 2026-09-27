@@ -791,6 +791,11 @@ function createSessionWorkScheduler({
       entryId: item.id,
       taskId: result.schedule.active?.taskId || taskIdForItem(item),
       reason,
+      // The mid-flight branch freezes the slot instead of emptying it, and the
+      // two outcomes read as different states. Carried here for the same reason
+      // the `queued` event carries it: the consumer projects a run state from
+      // this event, and `emit` drops the schedule it would otherwise read.
+      freezeReason: result.schedule.freezeReason,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       schedule: result.schedule,
