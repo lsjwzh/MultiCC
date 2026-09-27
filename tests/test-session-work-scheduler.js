@@ -1459,8 +1459,14 @@ test('structured questions and classify errors keep normal FIFO work staged', as
 });
 
 // ── E-at-rest vs Task Board run deliveries ───────────────────────────────────
-// The previous request's E verdict is diagnostic state only. Task Board
-// deliveries, direct input, callbacks and ordinary FIFO work remain eligible.
+// Only classify D drains the FIFO automatically (isTerminalLetter). E describes
+// the previous request's outcome, so an E-at-rest queue leaves ordinary Task
+// Board deliveries and plain FIFO work staged: admission still succeeds, but
+// nothing starts until direct input, a retry/resume control, an explicit
+// insert_queued, or the next D verdict releases it. Direct and control items
+// (CONTROL_KINDS: answer/approval/callback/continuation/retry/resume) carry
+// directRun and are selected exactly as before — see src/session-work/host.js
+// and src/routes/orchestration.js, which always documented D as the sole drain.
 
 async function settleToVerdict(harness, sessionId, classifyState) {
   await harness.scheduler.admit({
@@ -1493,11 +1499,12 @@ function dispatchRequestPayload({
   };
 }
 
-test('an E-at-rest queue selects Task Board run deliveries in FIFO order', async t => {
+test('an E-at-rest queue stages Task Board run deliveries instead of draining them', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 'slot-1', 'E');
-  // Both production shapes are later requests; the prior E verdict cannot
-  // suppress either of them.
+  // Both production shapes are later requests, but "later" is exactly what E
+  // holds back: task-run lineage is not a licence to start work behind a turn
+  // that never succeeded.
   await h.outbox.enqueue({
     id: 'operation:run-2:request',
     sessionId: 'slot-1',
@@ -1510,14 +1517,25 @@ test('an E-at-rest queue selects Task Board run deliveries in FIFO order', async
     payload: dispatchRequestPayload({ taskRunId: 'run-3', taskStart: true }),
     source: { type: 'operation', kind: 'dispatch', operationId: 'run-3' },
   });
-  const item = await claimOne(h, 'slot-1');
-  assert.ok(item, 'a task-run-lineage delivery must drain the E-at-rest queue');
-  assert.equal(item.id, 'operation:run-2:request',
-    'the oldest lineage delivery drains first');
-  assert.notEqual(item.id, enqueued.id);
+  assert.equal(await claimOne(h, 'slot-1'), null,
+    'E must not auto-drain a task-run-lineage delivery');
+  // Staged, not dropped: both deliveries are still pending and still in
+  // admission order, so a later release runs the oldest one first.
+  const staged = await h.outbox.list({ sessionId: 'slot-1', states: 'pending' });
+  assert.deepEqual(staged.map(item => item.id),
+    ['operation:run-2:request', 'operation:run-3:request']);
+  assert.notEqual(staged[0].id, enqueued.id);
+  // The documented escape hatch past an E verdict is an explicit insertion,
+  // which promotes exactly the selected delivery.
+  h.advance(1);
+  const released = await h.scheduler.insertQueued('slot-1', 'operation:run-3:request', { actor: 'user' });
+  assert.equal(released.ok, true);
+  const promoted = await claimOne(h, 'slot-1');
+  assert.ok(promoted, 'an explicitly inserted delivery claims past the E verdict');
+  assert.equal(promoted.id, 'operation:run-3:request');
 });
 
-test('an E-at-rest queue drains a later delivery without task-run lineage', async t => {
+test('an E-at-rest queue stages a later delivery without task-run lineage', async t => {
   const h = fixture(t);
   await settleToVerdict(h, 's1', 'E');
   await h.outbox.enqueue({
@@ -1530,9 +1548,17 @@ test('an E-at-rest queue drains a later delivery without task-run lineage', asyn
     },
     source: { type: 'operation', kind: 'dispatch', operationId: 'plain' },
   });
-  const claim = await claimOne(h, 's1');
-  assert.ok(claim, 'a prior request error must not gate this delivery');
-  assert.equal(claim.id, 'operation:plain:request');
+  assert.equal(await claimOne(h, 's1'), null,
+    'an outbox dispatch is ordinary FIFO work and stays staged behind E');
+  const staged = await h.outbox.list({ sessionId: 's1', states: 'pending' });
+  assert.deepEqual(staged.map(item => item.id), ['operation:plain:request']);
+  // Held rather than dead-lettered: an explicit insertion still releases it.
+  h.advance(1);
+  const released = await h.scheduler.insertQueued('s1', 'operation:plain:request', { actor: 'user' });
+  assert.equal(released.ok, true);
+  const promoted = await claimOne(h, 's1');
+  assert.ok(promoted, 'an explicit insert_queued releases the staged delivery');
+  assert.equal(promoted.id, 'operation:plain:request');
 });
 
 test('an E-at-rest queue drains a continuation staged before the error verdict', async t => {
@@ -1552,7 +1578,7 @@ test('an E-at-rest queue drains a continuation staged before the error verdict',
   });
   await h.scheduler.complete('s1', { expectedTaskId: 'task-1', classifyState: 'E' });
   const claim = await claimOne(h, 's1');
-  assert.ok(claim, 'bounded failure of the active request releases later FIFO work');
+  assert.ok(claim, 'a continuation is direct/control work, so the E verdict never gates it');
   assert.equal(claim.payload.message, 'typed while the failing turn was still running');
 });
 
@@ -1659,7 +1685,7 @@ test('a W-at-rest queue does not leak task-kind run deliveries past a pending qu
     source: { type: 'operation', kind: 'dispatch', operationId: 'run-3' },
   });
   assert.equal(await claimOne(h, 'slot-1'), null,
-    'W must keep waiting for the structured answer; task-run lineage only unlocks E');
+    'W must keep waiting for the structured answer; only D drains the FIFO automatically');
 });
 
 

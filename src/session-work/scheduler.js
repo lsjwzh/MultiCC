@@ -513,7 +513,9 @@ function createSessionWorkScheduler({
       // P is the sole input staging state. Once classify leaves P, a typed or
       // control message may start a fresh native turn even if it was admitted
       // before the previous process exited. E describes the previous turn's
-      // outcome only; it never gates this request or later FIFO work.
+      // outcome only: it never gates this typed/control request, but ordinary
+      // FIFO work stays staged behind it until a D verdict or an explicit
+      // insert_queued/retry/resume releases it.
       if (!isProcessingLetter(cls)) {
         const direct = ordered.find(it => it.directRun);
         if (direct) return direct;
