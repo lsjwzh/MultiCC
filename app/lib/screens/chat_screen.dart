@@ -835,6 +835,9 @@ class _ChatViewState extends State<ChatView> {
     bool dispatchExpanded,
     String? artifactsLabel,
   ) {
+    // Scaffold removes the bottom view inset from the MediaQuery it provides
+    // to its body, so capture keyboard visibility before entering it.
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return Scaffold(
       backgroundColor: const Color(0xFFf4f8fd),
       body: SafeArea(
@@ -902,6 +905,7 @@ class _ChatViewState extends State<ChatView> {
                       // the header and composer, so a worktree warning cannot
                       // push the focused input underneath the iOS keyboard.
                       ChatNoticeScroller(
+                        keyboardVisible: keyboardVisible,
                         children: [
                               if (provider.pendingUserInput != null &&
                                   !provider.pendingUserInputCollapsed)
