@@ -374,10 +374,39 @@
     return Number(task.updatedAt || 0) >= midnight.getTime();
   }
 
+  // 统计卡的小字放不下时不截成省略号，而是来回滚动（跑马灯）把整句露出来：
+  // 这行字往往是唯一说明「这个数字数的是什么」的地方，砍掉后半句就没意义了。
+  // 放不放得下只能量出来 —— 卡宽跟着视口和列数变，所以挂 ResizeObserver，每次
+  // 卡片尺寸变了重新量一次；放得下就撤掉动画，保持静止。
+  const marqueeObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(entries => { for (const entry of entries) fitMarquee(entry.target); })
+    : null;
+  function fitMarquee(box) {
+    // 控制台每次重画都换一批新卡，旧卡摘下来后就别再盯着了。
+    if (!box.isConnected) { marqueeObserver?.unobserve(box); return; }
+    const text = box.firstElementChild;
+    if (!text) return;
+    // 滚动时文字两侧各多 6px 内边距（给渐隐遮罩留位置）：量的是不含它的净宽，
+    // 否则每量一次就多算 12px。
+    const padding = box.classList.contains('marquee') ? 12 : 0;
+    const overflow = Math.ceil(text.scrollWidth - padding - box.clientWidth);
+    const scrolling = box.clientWidth > 0 && overflow > 1;
+    box.classList.toggle('marquee', scrolling);
+    if (!scrolling) return;
+    // 终点把那 12px 内边距算回去，最后一个字才能完整露出来。
+    box.style.setProperty('--marquee-shift', `-${overflow + 12}px`);
+    // 速度恒定（约 30px/s），外加两头各停一会儿，长句不会滚得飞快。
+    box.style.setProperty('--marquee-duration', `${Math.max(4, overflow / 30 + 2.5).toFixed(1)}s`);
+  }
+
   function statCard(label, value, detail, tone, onClick) {
     const card = make(onClick ? 'button' : 'article', null, `admin-stat ${tone || ''}`);
     if (onClick) { card.type = 'button'; card.onclick = onClick; }
-    card.append(make('span', label), make('strong', String(value)), make('small', detail));
+    const small = make('small', null, 'admin-stat-detail');
+    small.title = detail;
+    small.append(make('span', detail, 'admin-stat-detail-text'));
+    card.append(make('span', label), make('strong', String(value)), small);
+    if (marqueeObserver) marqueeObserver.observe(small);
     return card;
   }
 

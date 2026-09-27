@@ -956,6 +956,16 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .admin-stat span { color: #6a7d91; font-size: 9.5px; line-height: 1.2; }
 .admin-stat strong { margin: 2px 0 3px; color: #2d4b65; font-size: 19px; line-height: 1; }
 .admin-stat small { min-width: 0; overflow: hidden; color: #7c8da0; font-size: 10px; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
+/* 小字一行放不下时走跑马灯（air-admin.js 的 fitMarquee 量出溢出量写进
+   --marquee-shift）。卡片是 align-items:flex-start 的 flex 列，子项默认按内容撑宽，
+   所以这里要把它钉在卡宽以内，否则字直接溢出到隔壁卡上。 */
+.admin-stat small.admin-stat-detail { align-self: stretch; max-width: 100%; }
+.admin-stat .admin-stat-detail-text { display: inline-block; color: inherit; font: inherit; line-height: inherit; }
+.admin-stat small.marquee { text-overflow: clip; -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 6px), transparent 100%); mask-image: linear-gradient(90deg, transparent 0, #000 6px, #000 calc(100% - 6px), transparent 100%); }
+.admin-stat small.marquee .admin-stat-detail-text { padding: 0 6px; animation: admin-stat-marquee var(--marquee-duration, 6s) ease-in-out infinite alternate; }
+.admin-stat:hover small.marquee .admin-stat-detail-text { animation-play-state: paused; }
+@keyframes admin-stat-marquee { 0%, 15% { transform: translateX(0); } 85%, 100% { transform: translateX(var(--marquee-shift, 0)); } }
+@media (prefers-reduced-motion: reduce) { .admin-stat small.marquee .admin-stat-detail-text { animation: none; } }
 .admin-stat::before { content: ""; width: 18px; height: 2px; margin-bottom: 5px; border-radius: 5px; background: #adc4da; }
 .admin-stat.blue::before { background: #4d9bea; }
 .admin-stat.green::before { background: #43b88a; }

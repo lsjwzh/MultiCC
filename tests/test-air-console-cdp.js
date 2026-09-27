@@ -732,6 +732,25 @@ test('the console shows only the 5 most recently updated waits and hands the res
         overflow: document.documentElement.scrollWidth <= innerWidth }; })()`);
     assert.equal(mobile.overflow, true, '窄屏下控制台也不横向溢出');
     assert.ok(mobile.height <= 80, `窄屏下统计卡同样矮（实测 ${mobile.height}）`);
+    // 小字放不下时不溢出到隔壁卡，而是在卡内走跑马灯；放得下的保持静止。
+    await page.evaluate(`document.querySelector('.admin-stat .admin-stat-detail-text').textContent = '一段特别长特别长的说明文字，窄屏上一行绝对放不下，必须滚动才能看全'`);
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 844, deviceScaleFactor: 2, mobile: true });
+    assert.ok(await page.waitFor(`document.querySelector('.admin-stat .admin-stat-detail').classList.contains('marquee')`), '放不下的小字切成跑马灯');
+    const marquee = await page.evaluate(`(() => {
+      const box = document.querySelector('.admin-stat .admin-stat-detail'), card = box.closest('.admin-stat');
+      const text = box.firstElementChild;
+      return { contained: box.getBoundingClientRect().right <= card.getBoundingClientRect().right + 0.5,
+        animation: getComputedStyle(text).animationName,
+        shift: parseFloat(box.style.getPropertyValue('--marquee-shift')),
+        needed: text.scrollWidth - box.clientWidth,
+        others: [...document.querySelectorAll('.admin-stat-detail')].slice(1).map(el => el.classList.contains('marquee')
+          || el.firstElementChild.scrollWidth <= el.clientWidth + 1) };
+    })()`);
+    assert.equal(marquee.contained, true, '小字盒子不超出卡片');
+    assert.equal(marquee.animation, 'admin-stat-marquee');
+    assert.ok(Math.abs(-marquee.shift - marquee.needed) <= 2, `滚动终点正好露出最后一个字（shift ${marquee.shift} vs 溢出 ${marquee.needed}）`);
+    assert.ok(marquee.others.every(Boolean), '其余卡片要么放得下，要么也在滚');
+    await page.screenshot('10b-mobile-stat-marquee');
     await page.screenshot('10-mobile-console-stats');
   });
 
