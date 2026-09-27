@@ -652,6 +652,12 @@
        #directory-memo.hidden 对齐显隐，理由写在 public/air-artifacts.js 里。必须排在
        air.js 前面：DOMContentLoaded 里挂载时 #directory-memo 已在静态 HTML 里。 -->
   <script src="air-artifacts.js"></script>
+  <!-- 目录首页「本目录定时任务」：入口按钮接在「本目录产物」后面（可见性同样跟着
+       「备忘」走），点开是**页内弹层**，只列 ?dir= 这个目录自己的规则 —— 新建 / 编辑
+       仍点 air.js 那个唯一的编辑器，卡片复用 .schedule-* 那一族样式。同样自持 DOM、
+       不改 air.js 一个字节，理由写在 public/air-dir-schedules.js 里。排在 air.js 前面：
+       DOMContentLoaded 挂载时 #directory-memo / #directory-artifacts 已在静态 HTML 里。 -->
+  <script src="air-dir-schedules.js"></script>
   <script src="air.js"></script>
   <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->
   <script src="air-quick-fold.js"></script>

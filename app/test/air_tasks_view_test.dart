@@ -385,6 +385,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('air-directory-memo')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-directory-artifacts')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('air-directory-schedules')),
+      findsOneWidget,
+    );
     for (final status in ['running', 'waiting', 'error', 'succeeded']) {
       await tester.tap(find.byKey(ValueKey('air-stat-$status')));
       await tester.pumpAndSettle();
@@ -860,6 +864,36 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('air-console')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-console-urgent-t1')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('目录首页那颗「定时任务」开的是本目录的底部弹层，不是全局中心', (tester) async {
+    final settings = await _settings();
+    final client = _airAndCronClient();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AirTasksView(settings: settings, httpClient: client),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('air-directory-schedules')));
+    await tester.pumpAndSettle();
+    // 页内弹层：没有换页，铺的也只是这个目录那一列。
+    expect(
+      find.byKey(const ValueKey('air-dir-schedule-title')),
+      findsOneWidget,
+    );
+    expect(find.text('工作目录 A 的定时任务'), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-schedules')), findsNothing);
+    expect(find.text('每日巡检'), findsWidgets);
+
+    // 脚上那颗「全部定时任务」才把人送到全局那张表 —— 那一页是自己的路由。
+    await tester.tap(find.byKey(const ValueKey('air-dir-schedule-center')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-schedules')), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();

@@ -50,6 +50,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/air_directory_schedules_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/air_directory_search_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -771,6 +776,15 @@
     },
     {
       "path": "tests/test-air-console-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-dir-schedules-cdp.js",
       "tier": "flow",
       "lane": "cdp",
       "owner": "npm:test:cdp",
