@@ -2558,7 +2558,7 @@ require('./src/workspace/air-routes').mountAirRoutes(app, {
   sessions,
   directories,
   shell: taskShellHost,
-  getBoard: () => taskBoardRuntime.getBoard(),
+  getBoard: () => taskBoardRuntime.getBoard(), markTaskSeen: id => taskBoardRuntime.markTaskSeen(id),
   clis: SUPPORTED_CHAT_CLIS,
   providerName: sessionProviderName,
   effectiveModel: effectiveSessionModel,

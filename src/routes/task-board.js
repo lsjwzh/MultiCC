@@ -6,6 +6,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const core = require('../task-board/core');
 const planning = require('../task-board/planning');
+const attention = require('../task-board/attention');
 const { isVoiceRouterRecord } = require('../voice/router');
 const { runStateForFreezeReason } = require('../session-work/scheduler');
 const { runStateForClassify: runStateForLetter } = require('../classify/vocab');
@@ -1083,6 +1084,7 @@ function createTaskBoardRuntime(deps) {
       return { ok: true, changed: false };
     }
     const changed = task.runState !== runState;
+    if (changed) attention.noteRunState(task, task.runState, runState);
     task.runState = runState;
     task.runStateAt = Math.max(task.runStateAt || 0, at);
     task.updatedAt = Date.now();
@@ -1756,6 +1758,15 @@ function createTaskBoardRuntime(deps) {
       });
     },
     routeCommanderFollowup,
+    // Someone put the task on screen: its unseen result is consumed for every
+    // client. Writes (and broadcasts) only when that actually cleared a mark.
+    markTaskSeen: taskId => {
+      const task = resolvedTask(String(taskId || ''));
+      if (!attention.markSeen(task)) return false;
+      save();
+      notify(core.taskDirId(board, task) || null, [task.id]);
+      return true;
+    },
     // test/introspection surface
     getBoard: () => board,
     save,

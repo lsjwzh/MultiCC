@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const core = require('../task-board/core');
 const { isAbnormalLetter } = require('../classify/vocab');
 const { createAirPinRuntime } = require('./pins');
+const { pendingAttention } = require('../task-board/attention');
 
 // Air 是轮询页面：每 4 秒要把「任务板快照」（线上约 580KB、1069 张卡）和
 // 「当前任务详情」（实测 3.5MB，3.2MB 是消息正文）各拉一次，浏览器每轮都要
@@ -193,7 +194,9 @@ function mountAirRoutes(app, deps) {
         // 自愈：证明这一轮从没被受理过的卡片按空闲投影，而不是永久「执行中」。
         runState: core.deadDispatchClaim(t, core.taskRunSessionIds(t).some(hasTurnState), projectNow)
           ? 'idle' : (core.staleWorkerClaim(t, deps.getSessionRunState, projectNow) || t.runState || null),
-        resource: taskResource, worktreeChanges };
+        resource: taskResource, worktreeChanges,
+        // 未看过的结果（完成/出错/等回复）只在服务端记一份，所有客户端读同一个答案。
+        attention: pendingAttention(t) };
     });
     return { ok: true, directories: [...deps.directories.values()].map(d => ({
       id: d.id, name: d.name, path: d.path,
@@ -302,6 +305,8 @@ function mountAirRoutes(app, deps) {
   // delivery inspection. History remains paged by the chat transport.
   app.get('/api/air/tasks/:id/open', route(async req => {
     const entry = await deps.shell.taskEntry(req.params.id, { includeMessages: false });
+    // Web 与 App 把任务放上屏幕时都走这里：这就是「看过了」，未读提醒在所有端一起消掉。
+    try { deps.markTaskSeen?.(req.params.id); } catch (_) {}
     const targetId = entry.readOnly ? entry.sourceSessionId : entry.sessionId;
     const record = deps.records.get(targetId);
     const allowed = record?.kind === 'chat' && !record.taskExecutionSlot
