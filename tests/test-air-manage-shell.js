@@ -171,6 +171,60 @@ test('the directory home artifact entry is a self-wiring module that opens a sta
   assert.doesNotMatch(js, /directory-artifacts/);
 });
 
+// 目录首页那颗「本目录定时任务」（public/air-dir-schedules.js）：同样是自接线模块，
+// 同一套理由 —— air.js 卡在行数棘轮的天花板上，一行也加不了。
+// 它回答的问题和侧栏那颗「定时任务」不是同一个：那颗是**全局**的（这台机器上排了
+// 哪些活），这颗只看当前这个目录。所以过滤在客户端做（读地址栏的 ?dir=），服务端
+// 一个字节都不用改（dirId / dirName 早就在 /api/cron 的返回里）。
+test('the directory home scheduled-task entry is a modal module reusing the one rule editor', () => {
+  const html = read('public/air.html');
+  const js = read('public/air.js');
+  const css = read('public/air.css');
+  const module = read('public/air-dir-schedules.js');
+  assert.match(html, /src="air-dir-schedules\.js"/);
+  assert.ok(html.indexOf('src="air-dir-schedules.js"') < html.indexOf('src="air.js"'), '模块要先于 air.js 注册');
+  // 入口按钮的形状：id / 图标 / 内层标签（data-i18n 挂内层，applyI18n 才不会把图标
+  // 一起冲掉 —— 同 #directory-terminal-new、#directory-artifacts），插在「本目录
+  // 产物」后面当最右那颗。
+  assert.match(module, /toggle\.id = 'directory-schedules'/);
+  assert.match(module, /toggle\.setAttribute\('data-i18n-title', 'airDirSchedulesOpen'\)/);
+  assert.match(module, /node\('span', '⏰'\)/);
+  assert.match(module, /label\.setAttribute\('data-i18n', 'airScheduledTasks'\)/);
+  assert.match(module, /\(document\.getElementById\('directory-artifacts'\) \|\| memo\)\.after\(toggle\)/);
+  // 可见性同样盯「备忘」；藏起来就等于这一页没有目录，弹层不能比入口还长寿。
+  assert.match(module, /observer\.observe\(memo, \{ attributes: true, attributeFilter: \['hidden'\] \}\)/);
+  assert.match(module, /if \(toggle\.hidden\) close\(\)/);
+  // 页内弹层（top layer），不是新页面：地址栏上那个 ?dir= 一个字符都不动。
+  assert.match(module, /dialog\.id = 'dir-schedule-dialog'/);
+  assert.match(module, /shell\.dialog\.showModal\(\)/);
+  // 过滤在本层做：读地址栏的 dir，只留同一目录的规则。
+  assert.match(module, /new URLSearchParams\(root\.location\.search\)\.get\('dir'\)/);
+  assert.match(module, /\.filter\(rule => \(rule\.dirId \|\| ''\) === dirId\)/);
+  // 唯一的编辑器还是 air.js 那个：叫出来（新建态）+ 填字段，保存时 air.js 按表单里
+  // 那个隐藏 id 分 POST / PATCH —— 这个模块不自己写第二张表单、不自己发保存请求。
+  assert.match(module, /document\.getElementById\('schedule-create'\)/);
+  assert.match(module, /if \(!editor\.open\) return;/);
+  assert.match(module, /form\.elements\.id\.value = task\.id/);
+  assert.doesNotMatch(module, /createElement\('form'\)/);
+  // 两条出口：进那条固定 Air 任务（写同样的地址再派一次 popstate，落点和 air.js
+  // 内部那条路一致）、去全局中心（点侧栏那一行，不复刻它的逻辑）。
+  assert.match(module, /root\.history\.pushState\(\{\}, '', url\)/);
+  assert.match(module, /new root\.PopStateEvent\('popstate'\)/);
+  assert.match(module, /document\.getElementById\('schedules'\)/);
+  // 设计决定：air.js 里没有这颗入口，一个字节都没动。
+  assert.doesNotMatch(js, /dir-schedule|directory-schedules/);
+  // 排版：桌面居中一层，手机上从底部升起来 —— 滚的是清单那一段，头脚钉住不动
+  // （拇指不用先滚到底才够得着「新建 / 全部」）；三颗入口在 ≤560 平分第二行。
+  assert.match(css, /#directory-schedules \{ flex-shrink: 0; \}/);
+  assert.match(css, /\.directory-toolbar > #directory-schedules \{ flex: 1 1 0; min-width: 0; margin-left: 0;/);
+  assert.match(css, /\.dir-schedule-dialog \{ display: flex; flex-direction: column; overflow: hidden;/);
+  assert.match(css, /margin: auto auto 0; border-radius: 22px 22px 0 0/);
+  assert.match(css, /\.dir-schedule-list \{ flex: 1 1 auto; min-height: 0; max-height: none;/);
+  // 文案只在词典里：模块按 key 取那句带目录名的话。
+  assertLocalized(module, 'public/air-dir-schedules.js', 'airDirSchedulesTitle', '{dir} 的定时任务');
+  assertLocalized(module, 'public/air-dir-schedules.js', 'airDirSchedulesEmpty', '这个目录还没有定时任务');
+});
+
 // 那一页自己的骨架与数据：public/artifacts.html + artifacts.css + air-artifacts-page.js。
 // 数据与目录页里原来那块完全同源：URL 里的目录 id → /api/air 里的绝对路径 →
 // ?dir= 作用域的登记表，服务滤掉（服务与文档那一格管），只留一扇到那里的门。

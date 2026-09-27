@@ -651,11 +651,12 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-mode button[aria-selected="true"] { background: var(--panel); color: var(--accent-strong); box-shadow: 0 1px 4px #35577d14; }
 .directory-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
 .directory-toolbar .directory-mode { margin: 0; }
-/* 「备忘」与「本目录产物」是一对 —— 都是给这个目录开一张附加页面的入口
-   （/memo.html、/artifacts.html），该挨在一起贴住右边界。以前这里靠
-   space-between：三个孩子正好被摊成左中右三点，备忘孤零零悬在工具条正中。
-   margin-left:auto 把两个入口推成一组，谁左谁右由 DOM 顺序定（备忘在前，
-   产物在后 —— 产物是最右那颗）。 */
+/* 「备忘」「本目录产物」「本目录定时任务」是一组 —— 都是这个目录自己的附加入口
+   （/memo.html、/artifacts.html 和 air-dir-schedules.js 那层弹层），该挨在一起贴住
+   右边界。以前这里靠 space-between：三个孩子正好被摊成左中右三点，备忘孤零零悬在
+   工具条正中。margin-left:auto 把这一组推到一起，谁左谁右由 DOM 顺序定（备忘在前，
+   产物其次，定时任务最右 —— 两个模块各自 after() 挂上去）。
+   窄屏装不下这四个（切换器 + 三颗）：见本文件里 ≤560px 那条让它们换行的规则。 */
 #directory-memo { flex-shrink: 0; margin-left: auto; }
 #directory-terminals { display: none; }
 #empty.is-terminal-mode #directory-terminals { display: block; }
@@ -740,6 +741,40 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
    地址）。可见性跟「备忘」走 —— 模块用 MutationObserver 盯 #directory-memo.hidden，
    理由写在那个模块里。 */
 #directory-artifacts { flex-shrink: 0; }
+/* ── 目录首页「本目录定时任务」入口（public/air-dir-schedules.js）──────────────
+   侧栏那颗「定时任务」是**全局**中心（这台机器上排了哪些活），这颗只看当前这个
+   目录。点开是一层页内弹层，卡片复用上面 .schedule-* 那一族（跟中心里长一样），
+   这里只管弹层这件壳：抬头、一行摘要、列表的滚动区、底下两颗出口。
+   换行那条见下面 ≤560px：切换器 + 三颗入口在手机上排不下，切换器独占一行、
+   三颗平分第二行（这就是「移动端按移动的布局区分展示」那件事）。 */
+#directory-schedules { flex-shrink: 0; }
+.dir-schedule-dialog { width: calc(100% - 32px); max-width: 720px; padding: 0; background: #fbfdff; }
+.dir-schedule-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 21px 24px 15px; border-bottom: 1px solid #e1eaf3; background: rgba(251, 253, 255, .96); }
+.dir-schedule-head h2 { margin-top: 3px; color: #294760; font-size: 17px; line-height: 1.4; overflow-wrap: anywhere; }
+#dir-schedule-close { min-width: 38px; padding: 4px; color: #718398; border-color: transparent; background: transparent; font-size: 23px; }
+.dir-schedule-summary, .dir-schedule-status { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 12px 24px 0; font-size: 11px; }
+.dir-schedule-summary span { color: #58718b; }
+.dir-schedule-summary span.healthy { color: #247b5b; }
+.dir-schedule-summary span.warning { color: #a4512b; }
+.dir-schedule-status { color: #247b5b; }
+.dir-schedule-status.pending { color: #8b9bb0; }
+.dir-schedule-status.error { color: #b34128; }
+.dir-schedule-status:empty { display: none; }
+.dir-schedule-list { display: grid; gap: 12px; max-height: min(62dvh, 640px); padding: 14px 24px 4px; overflow: auto; overscroll-behavior: contain; }
+/* 弹层里的卡片不再自己投影：底下那层已经是阴影里的一块，卡再投影会像两张纸。 */
+.dir-schedule-list .schedule-card { box-shadow: none; }
+.dir-schedule-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 24px 18px; border-top: 1px solid #e1eaf3; }
+.dir-schedule-foot button { min-height: 36px; }
+/* 切换器 + 三颗入口一行要 450px 出头（实测：切换器约 150，备忘约 72，
+   本目录产物约 110，定时任务约 96，间距 24），手机上必然溢出。切点 560 是给
+   页边距留出余量的位置：再宽一点它自己排得下，再窄一点就必须让位。 */
+@media (max-width: 560px) {
+  .directory-toolbar { flex-wrap: wrap; row-gap: 8px; }
+  .directory-toolbar .directory-mode { flex: 1 1 100%; }
+  .directory-toolbar > #directory-memo,
+  .directory-toolbar > #directory-artifacts,
+  .directory-toolbar > #directory-schedules { flex: 1 1 0; min-width: 0; margin-left: 0; padding: 0 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+}
 .worktree-reclaim { min-height: 30px; margin-left: auto; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 9px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .worktree-reclaim:disabled { opacity: .5; cursor: default; }
 .directory-task-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
@@ -1860,6 +1895,17 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .air-config-error { margin-inline: 17px !important; }
   .air-config-footer { padding: 12px 17px 15px; }
   #schedule-list { grid-template-columns: 1fr; }
+  /* 目录首页那层「本目录定时任务」在手机上从底部升起来（桌面是居中的弹窗）：
+     手机上没有悬停、够不着屏幕中央，底部是拇指的地盘，也是这个产品里所有
+     「就地看一眼」的层的样子（air_new_task_sheet.dart 那张新建任务弹层）。
+     圆角只留上面两角、左右贴边，一眼认得出是盖上来的一层。 */
+  .dir-schedule-dialog { display: flex; flex-direction: column; overflow: hidden;
+    width: 100%; max-width: 100%; max-height: 88dvh; margin: auto auto 0; border-radius: 22px 22px 0 0; padding: 0; }
+  .dir-schedule-head, .dir-schedule-summary, .dir-schedule-status, .dir-schedule-foot { padding-left: 16px; padding-right: 16px; }
+  /* 手机上滚的还是那张清单，不是整个弹层：头（标题/统计）和脚（新建 / 全部）留着不动，
+     拇指不用先滚到底才够得着那两颗按钮。 */
+  .dir-schedule-list { flex: 1 1 auto; min-height: 0; max-height: none; padding: 12px 12px 4px; }
+  .dir-schedule-foot { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
   .air-doc-card { align-items: flex-start; flex-wrap: wrap; }
   .air-doc-actions { width: 100%; padding-left: 46px; flex-wrap: wrap; }
   .air-secret-card { flex-wrap: wrap; }

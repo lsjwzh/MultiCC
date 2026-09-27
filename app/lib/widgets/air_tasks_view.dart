@@ -26,6 +26,7 @@ import '../services/settings_service.dart';
 import '../theme.dart';
 import '../utils/format.dart';
 import 'air/air_console.dart';
+import 'air/air_directory_schedules.dart';
 import 'air/air_directory_search.dart';
 import 'air/air_destinations.dart';
 import 'air/air_fleet_sharing.dart';
@@ -1197,6 +1198,23 @@ class _AirTasksViewState extends State<AirTasksView>
     );
   }
 
+  /// **本目录**的定时任务 —— 从底部升起来的一张板子，不是新页面（同 Web 那边
+  /// 目录首页那颗入口开的是页内弹层）。里面是定时任务中心那一个面板，只按目录滤过
+  /// 一遍；「全部定时任务」那颗再把人送到全局中心去。
+  void _openDirectorySchedules(AirDirectory directory) {
+    unawaited(
+      showAirDirectorySchedules(
+        context,
+        directory: directory,
+        settings: widget.settings,
+        httpClient: widget.httpClient,
+        directories: _data?.directories ?? const <AirDirectory>[],
+        onOpenTask: _openTaskById,
+        onOpenAll: _openSchedules,
+      ),
+    );
+  }
+
   /// 按 id 打开一条任务：跨目录也认，先切目录再进对话。
   void _openTaskById(String dirId, String taskId) {
     final task = _data?.taskOf(taskId);
@@ -1778,6 +1796,12 @@ class _AirTasksViewState extends State<AirTasksView>
                       ),
                     ),
                   ),
+                ),
+                IconButton(
+                  key: const ValueKey('air-directory-schedules'),
+                  tooltip: '定时任务',
+                  icon: const Icon(Icons.alarm_rounded),
+                  onPressed: () => _openDirectorySchedules(directory),
                 ),
               ],
             ],

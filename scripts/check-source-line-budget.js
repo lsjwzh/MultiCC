@@ -297,9 +297,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // airTunnelDownloading / airTunnelFrpcInstalled）、增 2 键（airTunnelDownloadFrpc /
   // airTunnelRecheckClient），中英各 -1 行；改写的 3 条文案更长，重跑生成器实测
   // 7214 行 / 450751 字节（行数回落，字节涨 179）。
+  // 2026-09-27 目录首页加「本目录定时任务」入口：airDirSchedulesOpen / airDirSchedulesTitle
+  // / airDirSchedulesEmpty / airDirSchedulesOpenCenter 共 4 键（卡片上的动作与状态
+  // 全部复用 airSchedule* 那一批已有键），中英各 4 行 = +8，当时按实测登记成
+  // 7256 行 / 453069 字节。同日 rebase 到 main：task-run 子系统整体退场，这一批键
+  // 跟着被删（-98 行），合流后重跑生成器实测 7158 行 / 447092 字节 —— 缩小也得回来
+  // 改这一格，不然以后回涨 98 行都没人管。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7214,
-    maxBytes: 450751,
+    maxLines: 7158,
+    maxBytes: 447092,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
