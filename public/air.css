@@ -829,18 +829,6 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-git-files ul { margin: 0; padding: 2px 12px 10px 26px; color: #6d5a45; font-size: 10.5px; line-height: 1.7; word-break: break-all; }
 .directory-git-empty { padding: 18px; color: #8a9aab; font-size: 11px; text-align: center; }
 .directory-git-empty.error { color: #a6533c; }
-#directory-git-list { max-height: min(390px, 48dvh); overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid #e8eef5; }
-.directory-git-commit + .directory-git-commit { border-top: 1px solid #edf2f8; }
-.directory-git-commit-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 4px 10px; width: 100%; padding: 9px 15px; border: 0; background: transparent; text-align: left; }
-.directory-git-commit-head:hover { background: #f2f8fe; }
-.directory-git-commit-copy { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.directory-git-commit-copy code { color: #3b8edc; font-size: 10px; }
-.directory-git-commit-copy strong { overflow: hidden; color: #35536d; font-size: 11.5px; white-space: nowrap; text-overflow: ellipsis; }
-.directory-git-commit-head time { color: #8c9aaa; font-size: 9.5px; }
-.directory-git-commit-head small { grid-column: 1 / -1; color: #8c9aaa; font-size: 9.5px; }
-.directory-git-commit-detail { border-top: 1px dashed #e3ebf3; background: #f8fbfe; }
-.directory-git-stat { padding: 8px 15px 0; color: #6d8094; font-size: 10px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.directory-git-diff { margin: 0; padding: 10px 15px 14px; color: #43596e; font-size: 10px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* The new-task composer is the composer module (composer.css) in its panel
    placement; only where it sits in the column is decided here — floating a
    little above the bottom edge so it reads as part of the conversation column

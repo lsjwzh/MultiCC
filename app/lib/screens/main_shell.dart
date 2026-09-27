@@ -12,7 +12,6 @@ import '../services/dashboard_workspace_store.dart';
 import '../services/voice_launch_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
-import '../utils/overlay_geometry.dart';
 import '../widgets/directory_card.dart';
 import '../widgets/air_tasks_view.dart';
 import '../widgets/workspace_navigation_drawer.dart';
@@ -159,13 +158,6 @@ class _MainShellState extends State<MainShell> {
 //  drives the sheet, so the two never fight.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// 停位与内容区顶端的定义与「为什么」在 utils/overlay_geometry.dart —— 对话浮层的
-// 进场目标、拖动落点、遮罩边界都从这两个量来，写死一个比例就会和别处对不上。
-double _overlaySnapFraction(BuildContext context) =>
-    overlaySnapFraction(MediaQuery.of(context));
-double _overlayContentTop(BuildContext context) =>
-    overlayContentTop(MediaQuery.of(context));
-
 class _ChatSheet extends StatefulWidget {
   final SettingsService settings;
   final ChatProvider provider;
@@ -181,9 +173,8 @@ class _ChatSheetState extends State<_ChatSheet>
   late final AnimationController _anim;
   bool _collapsing = false;
 
-  // 展开态：连页头一起盖（真满屏）。默认态停在内容区顶端，页头留在外面 —— 所以
-  // 只有展开之后页头才是点不到的，控制条上的「收起」是那会儿的出口。
-  bool _expanded = false;
+  // 手机默认就展开（连页头一起盖）：顶部不留一条可拖的闲置区，把空间都留给聊天。
+  // 收起 = 标题左侧那颗 ⌄、标题区域往下拖、或 Android 返回键（见 _collapse）。
 
   // 收起时要用的 manager（`dispose` 里不能读 context，摘注册只能靠它）。
   SessionManager? _mgr;
@@ -205,13 +196,10 @@ class _ChatSheetState extends State<_ChatSheet>
       upperBound: 1,
       duration: const Duration(milliseconds: 260),
     );
-    // Entrance: 从屏幕下沿升到默认位（盖满内容区）。
+    // Entrance: 直接从屏幕下沿升到满屏（默认展开，没有「盖内容区」的中间位）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _anim.animateTo(
-          _overlaySnapFraction(context),
-          curve: Curves.easeOutCubic,
-        );
+        _anim.animateTo(1.0, curve: Curves.easeOutCubic);
       }
     });
     // 返回键、以及首页的 ☰ 要「先收对话再干下一件事」时走这条路（见
@@ -253,38 +241,14 @@ class _ChatSheetState extends State<_ChatSheet>
     _anim.value = (_anim.value - dy / height).clamp(0.0, 1.0);
   }
 
-  void _onDragEnd(double velocity, double height, double snapDefault) {
+  void _onDragEnd(double velocity, double height) {
     final v = velocity / height; // fraction/sec; +down, -up
-    double target;
-    if (v > 1.3) {
-      // 往下甩：默认位以上就停在默认位，否则一路落回首页。
-      target = _anim.value < snapDefault ? 0.0 : snapDefault;
-    } else if (v < -1.3) {
-      target = 1.0; // 往上甩 = 展开
-    } else if (_anim.value < _dismissBelow) {
-      target = 0.0;
-    } else if (_anim.value < (snapDefault + 1.0) / 2) {
-      target = snapDefault;
-    } else {
-      target = 1.0;
-    }
-    if (target == 0.0) {
+    if (v > 1.3 || _anim.value < _dismissBelow) {
       _collapse();
       return;
     }
-    // 拖出来的落点也要让控制条上的按钮跟着换（拖到底 ≠ 只在按钮上点过）。
-    if (_expanded != (target == 1.0)) setState(() => _expanded = target == 1.0);
-    _anim.animateTo(target, curve: Curves.easeOutCubic);
-  }
-
-  /// 展开 / 收起：默认位（盖满内容区，页头留着）与满屏（连页头一起盖）之间走一趟。
-  void _toggleExpanded() {
-    final next = !_expanded;
-    setState(() => _expanded = next);
-    _anim.animateTo(
-      next ? 1.0 : _overlaySnapFraction(context),
-      curve: Curves.easeOutCubic,
-    );
+    // 默认展开：不缩回中间位，没甩到底就弹回满屏。
+    _anim.animateTo(1.0, curve: Curves.easeOutCubic);
   }
 
   // Animate the sheet down, then drop the active session → back to the home.
@@ -305,39 +269,25 @@ class _ChatSheetState extends State<_ChatSheet>
     final mq = MediaQuery.of(context);
     final h = mq.size.height;
     final statusBar = mq.padding.top;
-    final contentTop = _overlayContentTop(context);
-    final snapDefault = _overlaySnapFraction(context);
 
     return AnimatedBuilder(
       animation: _anim,
       builder: (context, _) {
         final frac = _anim.value;
-        // 默认位往上到满屏这一段：展开态头一件事是把让出去的状态栏补回来（页头
-        // 被盖住了，聊天内容得退到状态栏下面，不然第一行顶到刘海里去）。
-        final fullProg = ((frac - snapDefault) / (1 - snapDefault)).clamp(
-          0.0,
-          1.0,
-        );
-        final topInset = statusBar * fullProg;
+        // 满屏时把让出的状态栏补回来（聊天内容退到状态栏下面，不顶到刘海）。
+        final topInset = statusBar * frac;
         final top = h * (1 - frac);
-        // 遮罩跟着升起来淡入，默认位时整块都在浮层底下（看不见），只在升降过程里
-        // 露一下。它永远不越过内容区顶端 —— 页头留着给人点，就不能被压暗、更不能
-        // 被它吃掉点击。点它 = 收起对话。
-        final scrimOp = (frac / snapDefault).clamp(0.0, 1.0) * 0.5;
 
         return Stack(
           children: [
-            Positioned(
-              top: contentTop,
-              left: 0,
-              right: 0,
-              bottom: 0,
+            // 遮罩只在收起/弹回的过程里露一下：满屏时它整块都在浮层底下。点它 = 收起。
+            Positioned.fill(
               child: IgnorePointer(
-                ignoring: scrimOp < 0.02,
+                ignoring: (frac * 0.4) < 0.02,
                 child: GestureDetector(
                   onTap: _collapse,
                   child: ColoredBox(
-                    color: Colors.black.withValues(alpha: scrimOp),
+                    color: Colors.black.withValues(alpha: (1 - frac) * 0.5),
                   ),
                 ),
               ),
@@ -348,8 +298,7 @@ class _ChatSheetState extends State<_ChatSheet>
               top: top,
               height: h - top,
               child: Container(
-                // 齐平的一条边压在页头下面（对齐 Web `#chat-layer` 的 border-top），
-                // 不再是「浮在半空的圆角卡片」—— 这一层现在盖满整个内容区。
+                // 齐平的一条边压在页头下面（对齐 Web `#chat-layer` 的 border-top）。
                 decoration: const BoxDecoration(
                   color: Color(0xFFffffff),
                   border: Border(top: BorderSide(color: AppColors.line)),
@@ -357,16 +306,10 @@ class _ChatSheetState extends State<_ChatSheet>
                 child: Column(
                   children: [
                     SizedBox(height: topInset),
-                    _ChatSheetBar(
-                      expanded: _expanded,
-                      onToggleExpand: _toggleExpanded,
-                      onDrag: (dy) => _onDrag(dy, h),
-                      onDragEnd: (v) => _onDragEnd(v, h, snapDefault),
-                    ),
                     Expanded(
-                      // Top inset is already handled by the bar above, so
-                      // neutralise ChatView's own SafeArea top (keep bottom
-                      // for the keyboard).
+                      // Top inset is already handled above, so neutralise
+                      // ChatView's own SafeArea top (keep bottom for the
+                      // keyboard).
                       child: MediaQuery(
                         data: mq.copyWith(padding: mq.padding.copyWith(top: 0)),
                         child: ChangeNotifierProvider<ChatProvider>.value(
@@ -374,6 +317,8 @@ class _ChatSheetState extends State<_ChatSheet>
                           child: ChatView(
                             settings: widget.settings,
                             onCollapse: _collapse,
+                            onSheetDragUpdate: (dy) => _onDrag(dy, h),
+                            onSheetDragEnd: (v) => _onDragEnd(v, h),
                             focusMessageId: _focusMessageId,
                           ),
                         ),
@@ -386,81 +331,6 @@ class _ChatSheetState extends State<_ChatSheet>
           ],
         );
       },
-    );
-  }
-}
-
-// 浮层顶上的控制条：中间那条拖柄（整条都能拖，往下甩 = 关掉对话），右边一颗
-// 「展开 / 收起」。默认态页头还在外面，所以这一条不需要「关闭」—— 收起是聊天页
-// 自己那颗 ⌄、这条拖柄、以及 Android 返回键的事。
-class _ChatSheetBar extends StatelessWidget {
-  final void Function(double dy) onDrag;
-  final void Function(double velocity) onDragEnd;
-  final bool expanded;
-  final VoidCallback onToggleExpand;
-  const _ChatSheetBar({
-    required this.onDrag,
-    required this.onDragEnd,
-    required this.expanded,
-    required this.onToggleExpand,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onVerticalDragUpdate: (d) => onDrag(d.delta.dy),
-      onVerticalDragEnd: (d) => onDragEnd(d.velocity.pixelsPerSecond.dy),
-      child: Container(
-        // 满宽要写明：这一条挂在 Column 底下（crossAxisAlignment 默认 center），
-        // 不给宽度它就缩成里面那条拖柄的 42px —— 白底和那条细线也跟着缩水。
-        width: double.infinity,
-        height: 36,
-        decoration: const BoxDecoration(
-          color: AppColors.panel,
-          border: Border(bottom: BorderSide(color: AppColors.line)),
-        ),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // 拖柄真居中（两边摆什么按钮都不影响它）。
-            Container(
-              width: 42,
-              height: 4,
-              decoration: BoxDecoration(
-                color: const Color(0xFF8b9cae),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Positioned(
-              right: 6,
-              child: TextButton.icon(
-                key: const ValueKey('chat-sheet-expand'),
-                onPressed: onToggleExpand,
-                icon: Icon(
-                  expanded
-                      ? Icons.close_fullscreen_rounded
-                      : Icons.open_in_full_rounded,
-                  size: 15,
-                ),
-                label: Text(
-                  expanded ? '收起' : '展开',
-                  style: const TextStyle(fontSize: 12),
-                ),
-                style: TextButton.styleFrom(
-                  foregroundColor: expanded
-                      ? AppColors.blue
-                      : const Color(0xFF47617c),
-                  backgroundColor: expanded ? const Color(0xFFe6f1fc) : null,
-                  minimumSize: const Size(0, 28),
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

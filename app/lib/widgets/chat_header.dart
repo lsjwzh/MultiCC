@@ -25,6 +25,12 @@ import 'model_chip.dart';
 class ChatHeader extends StatelessWidget {
   final SettingsService settings;
   final VoidCallback? onCollapse;
+
+  /// 手机端浮层：标题区域往下拖 = 收起对话。与 [onCollapse] 是同一个出口，但走
+  /// 拖拽（`onVerticalDragUpdate` / `onVerticalDragEnd`）而不是点击。独立页/测试
+  /// 宿主不传，标题区就不挂拖拽手势（双击改名照旧）。
+  final ValueChanged<double>? onSheetDragUpdate;
+  final ValueChanged<double>? onSheetDragEnd;
   final bool mergeReady;
   final VoidCallback onMerge;
   final VoidCallback onRole;
@@ -69,6 +75,8 @@ class ChatHeader extends StatelessWidget {
     super.key,
     required this.settings,
     this.onCollapse,
+    this.onSheetDragUpdate,
+    this.onSheetDragEnd,
     required this.mergeReady,
     required this.onMerge,
     required this.onRole,
@@ -240,6 +248,18 @@ class ChatHeader extends StatelessWidget {
               ],
             ],
           );
+          // 手机端浮层的收起手势挂在标题行上：整行往下拖 = 收起对话。它只拦纵向
+          // 拖动，双击改名、点标题其它动作不受影响。独立页不传回调就不挂。
+          final dragTitle = onSheetDragUpdate != null && onSheetDragEnd != null
+              ? GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onVerticalDragUpdate: (d) =>
+                      onSheetDragUpdate!(d.delta.dy),
+                  onVerticalDragEnd: (d) =>
+                      onSheetDragEnd!(d.velocity.pixelsPerSecond.dy),
+                  child: titleLine,
+                )
+              : titleLine;
           // On narrow screens the fixed chrome above alone was wider than the
           // row (brand + labelled clear-context button ≈ +170px), so the brand
           // wordmark is dropped — the collapse arrow and the CLI badge still
@@ -398,10 +418,16 @@ class ChatHeader extends StatelessWidget {
                       sessionId: provider.executionSessionName,
                       allBranches: all,
                     ),
-                fetchDiff: (hash) =>
+                fetchFiles: (hash) =>
+                    SessionService(settings: settings).fetchGitCommitFiles(
+                      sessionId: provider.executionSessionName,
+                      hash: hash,
+                    ),
+                fetchDiff: (hash, file) =>
                     SessionService(settings: settings).fetchGitCommitDiff(
                       sessionId: provider.executionSessionName,
                       hash: hash,
+                      file: file,
                     ),
               ),
               onRestart: () => _confirmRestartSpawn(context, provider),
@@ -423,7 +449,7 @@ class ChatHeader extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 // Full-width title line: never squeezed by the chrome above.
-                titleLine,
+                dragTitle,
               ],
             );
           }
@@ -433,7 +459,7 @@ class ChatHeader extends StatelessWidget {
               const SizedBox(width: 6),
               // Expanded (not Flexible) so the title always keeps whatever
               // space the fixed chrome leaves — never collapses to zero.
-              Expanded(child: titleLine),
+              Expanded(child: dragTitle),
               connectionDot,
               ...actions,
             ],

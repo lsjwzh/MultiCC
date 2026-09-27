@@ -29,6 +29,7 @@ class FakeNode {
     this.style = {};
     this.textContent = '';
     this.attributes = {};
+    this.dataset = {};
     this.listeners = new Map();
     this.parentNode = null;
     this.rect = { top: 0, height: ROW_HEIGHT };
@@ -300,5 +301,54 @@ test('insert receipt never claims execution without started proof', async () => 
     assert.equal(await run('entry-1'), started === true);
     assert.equal(notices[0][1], started === true ? 'completed' : 'info');
     if (started !== true) assert.match(notices[0][0], /尚未开始/);
+  }
+});
+
+test('the edit handler posts the confirmed text rewrite for the entry', async () => {
+  const requests = [];
+  const notices = [];
+  const handler = queueApi.createEditHandler({
+    fetch: async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, json: async () => ({ ok: true, edited: { entryId: 'entry-2' } }) };
+    },
+    withToken: url => `/tokenized${url}`,
+    getSessionName: () => 'session/1',
+    notify: (message, kind) => notices.push([message, kind]),
+  });
+
+  assert.equal(await handler('entry-2', '重写后的正文'), true);
+  assert.equal(requests[0].url, '/tokenized/api/sessions/session%2F1/queue/action');
+  assert.deepEqual(requests[0].body, {
+    action: 'edit_queued',
+    entryId: 'entry-2',
+    confirm: true,
+    text: '重写后的正文',
+  });
+  assert.deepEqual(notices, [['已修改暂存消息', 'completed']]);
+});
+
+test('double-clicking a pending staged message prompts for its new text', () => {
+  const previous = globalThis.prompt;
+  globalThis.prompt = () => '双击后的新正文';
+  try {
+    const edits = [];
+    queueApi.configure({
+      onEdit: async (entryId, text) => edits.push([entryId, text]),
+    });
+    const { documentRef, list } = dockFixture();
+    queueApi.render(queueItems(['原正文']), {}, documentRef);
+    const text = list.querySelector('.session-queue-text');
+    assert.ok(text.dataset.edit === '1', 'a pending entry is editable');
+    text.fire('dblclick');
+    assert.deepEqual(edits, [['entry-1', '双击后的新正文']]);
+
+    // A claimed (running) entry is not editable.
+    queueApi.render([
+      { entryId: 'leased', state: 'leased', position: 1, text: '执行中' },
+    ], {}, documentRef);
+    assert.equal(list.querySelector('.session-queue-text').dataset.edit, undefined);
+  } finally {
+    globalThis.prompt = previous;
   }
 });

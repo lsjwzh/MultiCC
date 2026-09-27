@@ -23,7 +23,10 @@ import 'tool_card.dart';
 
 /// Resolve a markdown link href and open it externally.
 ///
-/// Handles three forms:
+/// Handles four forms:
+///  - a local filesystem absolute path (`/Users/…/x.dart`, `file:///…`) — with
+///    or without the configured server origin prefix — is opened as the file
+///    itself (streamed through `/api/download`), never as a server URL
 ///  - absolute `http(s)://…` links → opened as-is
 ///  - root-relative links like `/artifacts/<id>/index.html` (multicc artifacts,
 ///    file downloads) → resolved against the configured server base URL
@@ -31,14 +34,24 @@ import 'tool_card.dart';
 Future<void> _handleLinkTap(BuildContext context, String? href) async {
   if (href == null || href.trim().isEmpty) return;
   var target = href.trim();
+  final settings = SettingsService.current;
+
+  // 本地文件链接：agent 可能写裸绝对路径，也可能因为知道 `MULTICC_BASE_URL`
+  // 而写 `http://<server>/Users/...`。两者都要打开**文件**本身，而不是在服务器上
+  // 找一个不存在的路由（点出去就是 404）。剥掉 origin 后走 `/api/download`。
+  final localPath = localFileLinkPath(target, settings);
+  if (localPath != null && settings != null) {
+    await _openLocalFile(context, localPath, settings);
+    return;
+  }
 
   // Root-relative path: resolve against the multicc server we're talking to.
   if (target.startsWith('/')) {
-    final base = SettingsService.current?.buildHttpUrl(target);
+    final base = settings?.buildHttpUrl(target);
     if (base != null) target = base;
   } else if (!target.contains('://') && !target.startsWith('mailto:')) {
     // Bare host or path without a scheme — assume http for the current server.
-    final base = SettingsService.current?.buildHttpUrl('/$target');
+    final base = settings?.buildHttpUrl('/$target');
     if (base != null) target = base;
   }
 
@@ -51,6 +64,82 @@ Future<void> _handleLinkTap(BuildContext context, String? href) async {
       SnackBar(
         content: Text('无法打开链接：$target'),
         duration: const Duration(milliseconds: 1600),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+}
+
+/// 把聊天里的本地文件链接解析成本机绝对路径；不是本地文件就返回 null。
+///
+/// 接受两种形态（与 Web `fixupLocalFileLinks` 同一条判定）：
+///   - 裸绝对路径：`/Users/…`、`/tmp/…`、`file:///…`（匹配 [_localImgRe]）
+///   - 带 server origin：`http://127.0.0.1:3000/Users/…` —— 只有 origin 与当前
+///     配置的服务器一致时才剥掉 origin，剩下就是文件路径；别把外站链接当成文件。
+@visibleForTesting
+String? localFileLinkPath(String target, SettingsService? settings) {
+  var path = target;
+  if (path.startsWith('file://')) path = path.substring('file://'.length);
+  if (_localImgRe.hasMatch(path)) return path;
+
+  final uri = Uri.tryParse(path);
+  if (uri == null ||
+      !uri.hasScheme ||
+      (uri.scheme != 'http' && uri.scheme != 'https')) {
+    return null;
+  }
+  final serverHost = settings?.host ?? '';
+  if (serverHost.isEmpty) return null;
+  final server = Uri.tryParse(
+    serverHost.startsWith('http') ? serverHost : 'http://$serverHost',
+  );
+  if (server == null) return null;
+  if (uri.scheme != server.scheme ||
+      uri.host.toLowerCase() != server.host.toLowerCase()) {
+    return null;
+  }
+  if ((uri.hasPort && !server.hasPort) ||
+      (!uri.hasPort && server.hasPort) ||
+      (uri.hasPort && uri.port != server.port)) {
+    return null;
+  }
+  final p = uri.path;
+  return _localImgRe.hasMatch(p) ? p : null;
+}
+
+/// 通过 `/api/download` 打开服务器上的一个本地文件（流式下载/预览）。鉴权走
+/// download-ticket，与文件浏览器打开文件是同一条路。
+Future<void> _openLocalFile(
+  BuildContext context,
+  String path,
+  SettingsService settings,
+) async {
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    final request = buildMulticcDownloadRequest(
+      host: settings.host,
+      path: path,
+      accessToken: settings.token,
+    );
+    final tickets = DownloadTicketClient();
+    final uri = await tickets.authorize(
+      request: request,
+      ticketEndpoint: Uri.parse(
+        settings.buildHttpUrl('/api/auth/download-ticket'),
+      ),
+    );
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+      return;
+    }
+  } catch (_) {
+    // Fall through to a stable snack error without leaking a token/ticket.
+  }
+  if (context.mounted) {
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('无法打开文件：$path'),
+        duration: const Duration(milliseconds: 1800),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -551,9 +640,15 @@ class _AssistantBubble extends StatelessWidget {
                   if (hasTools && advancedMode)
                     ToolCallGroup(toolCalls: message.toolCalls),
                   if (hasTools && advancedMode)
-                    ToolTrajectory(toolCalls: message.toolCalls),
+                    ToolTrajectory(
+                      toolCalls: message.toolCalls,
+                      turnDurationMs: message.durationMs,
+                    ),
                   if (hasTools && !advancedMode)
-                    _BasicToolSummary(toolCalls: message.toolCalls),
+                    _BasicToolSummary(
+                      toolCalls: message.toolCalls,
+                      durationMs: message.durationMs,
+                    ),
                   if (!hasText && !hasTools && message.isStreaming)
                     const _StreamingDot(),
                   // Token usage line
@@ -642,9 +737,9 @@ class _TaskAttributionTail extends StatelessWidget {
 }
 
 class _BasicToolSummary extends StatefulWidget {
-  const _BasicToolSummary({required this.toolCalls});
-
+  const _BasicToolSummary({required this.toolCalls, this.durationMs});
   final List<ToolCall> toolCalls;
+  final int? durationMs;
 
   @override
   State<_BasicToolSummary> createState() => _BasicToolSummaryState();
@@ -738,7 +833,10 @@ class _BasicToolSummaryState extends State<_BasicToolSummary> {
               child: Column(
                 children: [
                   ToolCallGroup(toolCalls: widget.toolCalls),
-                  ToolTrajectory(toolCalls: widget.toolCalls),
+                  ToolTrajectory(
+                    toolCalls: widget.toolCalls,
+                    turnDurationMs: widget.durationMs,
+                  ),
                 ],
               ),
             ),

@@ -1248,7 +1248,8 @@ class SessionService {
     return Session.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
-  String? _tryParseError(String body) => _tryParseJson(body)?['error']?.toString();
+  String? _tryParseError(String body) =>
+      _tryParseJson(body)?['error']?.toString();
 
   Map<String, dynamic>? _tryParseJson(String body) {
     try {
@@ -1291,6 +1292,28 @@ class SessionService {
         .toList();
   }
 
+  Future<List<GitCommitFile>> fetchGitCommitFiles({
+    String? dirId,
+    String? sessionId,
+    required String hash,
+  }) async {
+    final q = StringBuffer('hash=${Uri.encodeQueryComponent(hash)}');
+    if (dirId != null) q.write('&dirId=${Uri.encodeQueryComponent(dirId)}');
+    if (sessionId != null) {
+      q.write('&sessionId=${Uri.encodeQueryComponent(sessionId)}');
+    }
+    final res = await http
+        .get(Uri.parse(_url('/api/git/commit-files?$q')), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode >= 400) {
+      throw Exception(_tryParseError(res.body) ?? '${res.statusCode}');
+    }
+    final files = (jsonDecode(res.body) as Map)['files'] as List? ?? [];
+    return files
+        .map((e) => GitCommitFile.fromJson(Map<String, dynamic>.from(e as Map)))
+        .toList();
+  }
+
   /// Diff + stat of one commit, resolved against the same repo as
   /// [fetchGitLog]. `diff` is raw patch text (server caps it at 1MB and sets
   /// `truncated` when it had to cut).
@@ -1298,8 +1321,10 @@ class SessionService {
     String? dirId,
     String? sessionId,
     required String hash,
+    String? file,
   }) async {
     final q = StringBuffer('hash=${Uri.encodeQueryComponent(hash)}');
+    if (file != null) q.write('&file=${Uri.encodeQueryComponent(file)}');
     if (dirId != null) {
       q.write('&dirId=${Uri.encodeQueryComponent(dirId)}');
     }

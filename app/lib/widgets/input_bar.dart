@@ -723,6 +723,7 @@ class _InputBarState extends State<InputBar> {
     String action, {
     String? entryId,
     int? toIndex,
+    String? text,
   }) async {
     if (!await _confirmQueueChange(action)) return;
     try {
@@ -730,6 +731,7 @@ class _InputBarState extends State<InputBar> {
         action,
         entryId: entryId,
         toIndex: toIndex,
+        text: text,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1328,6 +1330,12 @@ class _InputBarState extends State<InputBar> {
                 'reorder_queued',
                 entryId: entryId,
                 toIndex: toIndex,
+              ),
+              onEditQueued: (entryId, text) => _runQueueAction(
+                provider,
+                'edit_queued',
+                entryId: entryId,
+                text: text,
               ),
             ),
 

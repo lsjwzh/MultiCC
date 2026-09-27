@@ -413,7 +413,10 @@
           const timing = liveUi.buildTimingLine({ role: 'assistant', ts: Date.now(), durationMs: duration });
           if (timing) content.appendChild(timing);
         }
-        if (content) historyView.renderToolTrajectory?.(content, trajTools);
+        if (content) historyView.renderToolTrajectory?.(content, trajTools,
+          Number.isFinite(message.durationMs)
+            ? message.durationMs
+            : (state.turnStartMs ? Date.now() - state.turnStartMs : undefined));
       }
       state.turnStartMs = 0;
       host.stopTitleAnimation?.();

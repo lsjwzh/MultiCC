@@ -86,6 +86,12 @@ class ChatView extends StatefulWidget {
   final SettingsService settings;
   final VoidCallback? onCollapse;
 
+  /// 手机端浮层的标题区域往下拖 = 收起对话（与 `onCollapse` 同一条出口）。
+  /// Web 的 `#chat-layer` 上这一条是「拖标题区收起」，App 在标题行接住再转发给
+  /// 浮层。为空（独立页/测试宿主）时标题区不挂拖拽手势。
+  final ValueChanged<double>? onSheetDragUpdate;
+  final ValueChanged<double>? onSheetDragEnd;
+
   /// Optional deep-link target: when non-null, the chat scrolls to + highlights
   /// this message once history loads (task-board "jump to message" flow). Null
   /// = normal open with zero behaviour change - the focus code paths are all
@@ -95,6 +101,8 @@ class ChatView extends StatefulWidget {
     super.key,
     required this.settings,
     this.onCollapse,
+    this.onSheetDragUpdate,
+    this.onSheetDragEnd,
     this.focusMessageId,
   });
 
@@ -862,6 +870,8 @@ class _ChatViewState extends State<ChatView> {
                       ChatHeader(
                         settings: widget.settings,
                         onCollapse: widget.onCollapse,
+                        onSheetDragUpdate: widget.onSheetDragUpdate,
+                        onSheetDragEnd: widget.onSheetDragEnd,
                         mergeReady: mergeReady,
                         cwd: provider.cwd,
                         branch: _mergeStatus?['branch']?.toString(),

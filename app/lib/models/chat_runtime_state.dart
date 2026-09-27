@@ -28,6 +28,9 @@ class SessionQueueItem {
   /// 只有还没被调度器领取的 pending 条目能插队；已经是 priority 的不必再插一次。
   bool get canInsert => canCancel && !priority;
 
+  /// 双击弹输入框改正文：与 [canCancel] 同一条守卫（没开始执行的 pending 条目）。
+  bool get canEdit => canCancel;
+
   factory SessionQueueItem.fromJson(
     Map<String, dynamic> json, {
     required int fallbackPosition,

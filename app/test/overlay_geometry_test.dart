@@ -4,10 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:multicc_app/utils/overlay_geometry.dart';
 
-// 打开对话是一层浮层（三端同一套规矩）：默认盖满内容区、页头留在外面当快捷入口，
-// 展开才连页头一起盖。App 这一侧的落点就是这两个数 —— 它们算错了，要么浮层盖住
-// 页头（☰ 点不到，「换任务仍是一步」就不成立了），要么浮层缩在页头下面露出一条
-// 底页。「0.9 那种按屏幕比例拍脑袋的停位」是这套规矩之前的写法，这一条看着它别回来。
+// 打开对话是一层浮层（三端同一套规矩）：对话默认满屏展开（顶部不留可拖的闲置区），
+// 其它浮层按 overlay_geometry 的停位摆。App 这一侧的落点就是这两个数 —— 它们算错了，
+// 要么浮层盖住页头（☰ 点不到，「换任务仍是一步」就不成立了），要么浮层缩在页头下面
+// 露出一条底页。「0.9 那种按屏幕比例拍脑袋的停位」是这套规矩之前的写法，这一条看着
+// 它别回来。
 void main() {
   const phone = MediaQueryData(
     size: Size(390, 844),
@@ -39,30 +40,27 @@ void main() {
     expect(overlaySnapFraction(squat), 1.0);
   });
 
-  test('对话浮层用 overlay_geometry 的停位，页头那条线也只有一个来源', () {
+  test('停位与页头那条线只有一个来源；对话浮层默认展开不再依赖停位', () {
     final shell = File('lib/screens/main_shell.dart').readAsStringSync();
-    // 对话浮层两次（进场的动画目标 + 拖动落点/遮罩边界），收起态与展开态各一份。
-    expect(
-      RegExp(r'_overlaySnapFraction\(').allMatches(shell).length,
-      greaterThanOrEqualTo(4),
-      reason: '浮层要按 overlay_geometry 的停位摆；少一个就会压到页头外面',
-    );
-    expect(
-      RegExp(r'_overlayContentTop\(').allMatches(shell).length,
-      greaterThanOrEqualTo(2),
-      reason: '遮罩与浮层主体都要从内容区顶端开始',
-    );
-    // 老写法：按屏幕比例硬编码一个停位（0.9 = 盖住 90%，页头整个被压住）。
+    // 停位只从 overlay_geometry 取：main_shell 不再出现按屏幕比例拍出来的硬编码
+    // 停位。对话浮层默认满屏展开（不再停在内容区顶端），目录详情浮层等其它浮层
+    // 仍按同一份停位摆（overlay_geometry.dart 是这两个量的唯一来源）。
     expect(
       RegExp(r'_snap(Half|Default)\s*=\s*0\.\d+').hasMatch(shell),
       isFalse,
       reason: '停位只能来自 overlay_geometry，不能再按屏幕比例拍一个',
     );
-    // 展开是用户的出口：默认态页头还在外面，展开之后页头被盖住 —— 这颗按钮是那会儿
-    // 唯一的退路（加上下拉手势与 Android 返回键）。
-    expect(shell, contains("ValueKey('chat-sheet-expand')"));
-    expect(shell, contains('Icons.open_in_full_rounded'));
-    expect(shell, contains('Icons.close_fullscreen_rounded'));
+    // 对话浮层默认展开：那颗「展开/收起」按钮整条收掉，不再出现在聊天顶部。
+    expect(shell, isNot(contains("ValueKey('chat-sheet-expand')")));
+    expect(shell, isNot(contains('Icons.open_in_full_rounded')));
+    expect(shell, isNot(contains('Icons.close_fullscreen_rounded')));
+    // 收起入口挪到聊天页自己：标题左侧 ⌄ + 标题区域往下拖。
+    expect(shell, contains('onSheetDragUpdate'));
+    expect(shell, contains('onSheetDragEnd'));
+    // 两个量的唯一实现仍住在 utils/overlay_geometry.dart（被上面积分测试直接量）。
+    final util = File('lib/utils/overlay_geometry.dart').readAsStringSync();
+    expect(util, contains('double overlaySnapFraction'));
+    expect(util, contains('double overlayContentTop'));
   });
 
   test('AppBar 的 ☰ 先让浮层让开再拉抽屉', () {

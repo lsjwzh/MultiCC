@@ -4,6 +4,7 @@
   let configuredOnCancel = null;
   let configuredOnInsert = null;
   let configuredOnReorder = null;
+  let configuredOnEdit = null;
 
   // Per-action wording, in one place: the request/response handling is the same
   // for every queue action, only the words differ.
@@ -11,11 +12,13 @@
     cancel_queued: '移除',
     insert_queued: '插入',
     reorder_queued: '移动',
+    edit_queued: '修改',
   };
   const ACTION_DONE = {
     cancel_queued: '已移除暂存消息',
     insert_queued: '已停止当前回复并直接执行所选消息',
     reorder_queued: '已调整暂存消息顺序',
+    edit_queued: '已修改暂存消息',
   };
 
   // Shared status registry (public/status-presentation.js), resolved lazily so
@@ -25,10 +28,11 @@
       || (typeof require === 'function' ? require('./status-presentation.js') : null);
   }
 
-  function configure({ onCancel = null, onInsert = null, onReorder = null } = {}) {
+  function configure({ onCancel = null, onInsert = null, onReorder = null, onEdit = null } = {}) {
     configuredOnCancel = typeof onCancel === 'function' ? onCancel : null;
     configuredOnInsert = typeof onInsert === 'function' ? onInsert : null;
     configuredOnReorder = typeof onReorder === 'function' ? onReorder : null;
+    configuredOnEdit = typeof onEdit === 'function' ? onEdit : null;
   }
 
   function createActionHandler(action, {
@@ -78,6 +82,13 @@
 
   function createInsertHandler(options) {
     return createActionHandler('insert_queued', options);
+  }
+
+  function createEditHandler(options) {
+    return createActionHandler('edit_queued', {
+      ...options,
+      payloadFor: text => ({ text }),
+    });
   }
 
   // Moving a staged message takes the position the row should end up at, counted
@@ -264,6 +275,8 @@
       ? metadata.onInsert : configuredOnInsert;
     const onReorder = typeof metadata.onReorder === 'function'
       ? metadata.onReorder : configuredOnReorder;
+    const onEdit = typeof metadata.onEdit === 'function'
+      ? metadata.onEdit : configuredOnEdit;
     list.replaceChildren();
     const rows = [];
     for (const [index, item] of items.entries()) {
@@ -286,6 +299,20 @@
       const text = documentRef.createElement('div');
       text.className = 'session-queue-text';
       text.textContent = String(item?.text || '（暂存消息）');
+      // 双击长消息弹输入框改正文（web 端唯一入口；App 同款在 SessionQueuePanel
+      // 的行的双击上）。只有还没开始执行的 pending 条目能改。
+      if (item?.entryId && item?.state === 'pending' && typeof onEdit === 'function') {
+        text.dataset.edit = '1';
+        text.title = '双击修改这条消息';
+        text.addEventListener('dblclick', () => {
+          const next = (globalThis.prompt || global.prompt || (() => null))
+            .call(globalThis, '修改暂存消息', String(item?.text || ''));
+          if (next === null) return;
+          const value = next.trim();
+          if (!value || value === String(item?.text || '')) return;
+          void onEdit(item.entryId, value);
+        });
+      }
       if (handle) row.appendChild(handle);
       row.append(position, text);
       if (item?.entryId && item?.state === 'pending'
@@ -352,6 +379,7 @@
     createCancelHandler,
     createInsertHandler,
     createReorderHandler,
+    createEditHandler,
     render,
   });
 })(typeof window !== 'undefined' ? window : globalThis);

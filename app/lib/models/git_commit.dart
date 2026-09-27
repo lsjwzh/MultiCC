@@ -26,13 +26,13 @@ class GitCommit {
   final String refs;
 
   factory GitCommit.fromJson(Map<String, dynamic> json) => GitCommit(
-        hash: json['hash']?.toString() ?? '',
-        short: json['short']?.toString() ?? '',
-        author: json['author']?.toString() ?? '',
-        date: json['date']?.toString() ?? '',
-        subject: json['subject']?.toString() ?? '',
-        refs: json['refs']?.toString() ?? '',
-      );
+    hash: json['hash']?.toString() ?? '',
+    short: json['short']?.toString() ?? '',
+    author: json['author']?.toString() ?? '',
+    date: json['date']?.toString() ?? '',
+    subject: json['subject']?.toString() ?? '',
+    refs: json['refs']?.toString() ?? '',
+  );
 
   /// `2026-08-16 09:41` - the ISO date cut to minute precision. The server's
   /// `%aI` carries the author's local offset (e.g. `+08:00`), so the raw string
@@ -68,10 +68,24 @@ class GitCommitDiff {
   final String? error;
 
   factory GitCommitDiff.fromJson(Map<String, dynamic> json) => GitCommitDiff(
-        hash: json['hash']?.toString() ?? '',
-        stat: json['stat']?.toString() ?? '',
-        diff: json['diff']?.toString() ?? '',
-        truncated: json['truncated'] == true,
-        error: json['error']?.toString(),
-      );
+    hash: json['hash']?.toString() ?? '',
+    stat: json['stat']?.toString() ?? '',
+    diff: json['diff']?.toString() ?? '',
+    truncated: json['truncated'] == true,
+    error: json['error']?.toString(),
+  );
+}
+
+class GitCommitFile {
+  const GitCommitFile({required this.status, required this.path, this.oldPath});
+
+  final String status;
+  final String path;
+  final String? oldPath;
+
+  factory GitCommitFile.fromJson(Map<String, dynamic> json) => GitCommitFile(
+    status: json['status']?.toString() ?? '',
+    path: json['path']?.toString() ?? '',
+    oldPath: json['oldPath']?.toString(),
+  );
 }

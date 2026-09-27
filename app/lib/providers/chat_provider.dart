@@ -2788,6 +2788,7 @@ class ChatProvider extends ChangeNotifier {
     String action, {
     String? entryId,
     int? toIndex,
+    String? text,
   }) async {
     // Causality anchor: any `session_queue` WS event that lands while this
     // request is in flight is at least as authoritative as the action's own
@@ -2804,6 +2805,7 @@ class ChatProvider extends ChangeNotifier {
       action,
       entryId: entryId,
       toIndex: toIndex,
+      text: text,
     );
     final schedule = result['schedule'];
     if (schedule is Map) {

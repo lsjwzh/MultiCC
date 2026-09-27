@@ -215,6 +215,24 @@
   const compareDirectoryTasks = (a, b) => taskSortAt(b) - taskSortAt(a)
     || taskMessageAt(b) - taskMessageAt(a)
     || String(a?.id || '').localeCompare(String(b?.id || ''));
+  // 目录首页那份任务列表（`#directory-task-list`）的排序：用户 pin 住的那几条
+  // 照 pin 顺序排最前，其余保持 [tasks] 原有的相对顺序。与侧栏
+  // `sidebarTasks` 同一条「置顶」规矩 —— 页头那排 tab 只在桌面出现，目录页这份
+  // 列表是手机上看「我在盯哪些」的唯一窗口，所以两端都要 pin-first。
+  function pinFirstInDirectory(list) {
+    if (!taskPins.length) return list;
+    const pinned = [];
+    const taken = new Set();
+    for (const id of taskPins) {
+      const task = list.find(item => item.id === id);
+      if (task && !taken.has(id)) {
+        pinned.push(task);
+        taken.add(id);
+      }
+    }
+    if (!pinned.length) return list;
+    return [...pinned, ...list.filter(item => !taken.has(item.id))];
+  }
   // 侧栏的任务区只装「手上的任务」：打开过的排在前面，然后是当前目录里最新的几个。
   // 后一半是必要的 —— 第一次进来没有浏览记录，只有前一半的话列出来是空的，而一条
   // 空列表并不比一条能点的任务更有用。完整的那份列表在控制台（全部目录 + 搜索）。
@@ -617,8 +635,8 @@
     const filtered = ranked ? ranked.map(({ task }) => task)
       : (window.MultiCCAirAdmin?.filterTasks?.(tasks, active, () => '') || [...tasks]).sort(compareDirectoryTasks);
     const rows = directoryTasksExpanded
-      ? filtered
-      : [...tasks].sort(compareDirectoryTasks).slice(0, recentRowLimit());
+      ? pinFirstInDirectory(filtered)
+      : pinFirstInDirectory([...tasks].sort(compareDirectoryTasks)).slice(0, recentRowLimit());
     $('directory-task-heading').textContent = directoryTasksExpanded ? t('airDirAllTasks') : t('airRecentTasks');
     $('directory-overview-count').textContent = directoryTasksExpanded
       ? t('airDirCountOfTotal', { shown: filtered.length, total: tasks.length })
@@ -639,6 +657,9 @@
       const copy = node('span');
       const meta = node('small', null, 'task-meta');
       meta.append(statusBadge(task));
+      // 目录页这份列表同样给 pin 住的加标记（同侧栏 `renderSidebarTasks`）：列表
+      // 里靠前显示的那几条为什么在那儿，得有说明。
+      if (isPinned(task.id)) meta.append(node('span', '📌', 'task-pin'));
       const worktreeBadge = window.MultiCCAirAdmin?.worktreeChangeBadge?.(task);
       if (worktreeBadge) meta.append(worktreeBadge);
       // 阶段只有计划记录才有（`workflowStage` 是计划看板那一列，记录类型由行首那个
@@ -697,7 +718,6 @@
   // （POST /api/directories/:id/push —— 和旧控制台 ⋯ 菜单里那个 Push 同一条）。
   const directoryGitView = {
     dirId: null, status: null, error: '', fetchedAt: 0,
-    logOpen: false, commits: null, logError: '', openHash: null,
   };
   const GIT_REFRESH_MS = 60000;
 
@@ -708,7 +728,7 @@
     panel.hidden = !show;
     if (!show) return;
     if (directoryGitView.dirId !== directoryId) {
-      Object.assign(directoryGitView, { status: null, error: '', logOpen: false, commits: null, logError: '', openHash: null });
+      Object.assign(directoryGitView, { status: null, error: '' });
     }
     if (directoryGitView.dirId !== directoryId || Date.now() - directoryGitView.fetchedAt > GIT_REFRESH_MS) {
       void loadDirectoryGit();
@@ -784,18 +804,15 @@
     const brief = $('directory-git-brief');
     if (!brief) return;
     const note = $('directory-git-note');
-    const list = $('directory-git-list');
     if (directoryGitView.error) {
       brief.replaceChildren(node('p', t('airGitStatusFailed', { msg: directoryGitView.error }), 'directory-git-empty error'));
       if (note) note.textContent = t('airGitReadFailed');
-      if (list) list.hidden = true;
       return;
     }
     const status = directoryGitView.status;
     if (!status) {
       brief.replaceChildren(node('p', t('airGitReading'), 'directory-git-empty'));
       if (note) note.textContent = t('airGitReadingShort');
-      if (list) list.hidden = true;
       return;
     }
     const chips = node('div', null, 'directory-git-chips');
@@ -829,9 +846,9 @@
       ? t('airGitDirtyFiles', { n: status.dirtyFiles.length })
       : t('airGitMainClean'), status.dirtyFiles?.length ? 'warn' : 'ok'));
     const actions = node('div', null, 'directory-git-actions');
-    const logButton = node('button', directoryGitView.logOpen ? t('airGitLogCollapse') : t('airGitLogView'), 'subtle');
+    const logButton = node('button', t('gitManagerOpen'), 'subtle');
     logButton.type = 'button';
-    logButton.onclick = () => void toggleDirectoryGitLog();
+    logButton.onclick = () => window.MultiCCGitManager?.open({ dirId: directoryId, api, t });
     actions.append(logButton);
     brief.replaceChildren(chips, actions);
     if (status.dirtyFiles?.length) {
@@ -846,82 +863,6 @@
       brief.append(files);
     }
     if (note) note.textContent = status.upstream ? t('airGitUpstreamNote', { upstream: status.upstream }) : t('airGitNoUpstreamNote');
-    if (list) {
-      list.hidden = !directoryGitView.logOpen;
-      if (directoryGitView.logOpen) paintDirectoryGitLog(list);
-    }
-  }
-
-  async function toggleDirectoryGitLog() {
-    directoryGitView.logOpen = !directoryGitView.logOpen;
-    if (directoryGitView.logOpen && !directoryGitView.commits && !directoryGitView.logError) {
-      const list = $('directory-git-list');
-      list.replaceChildren(node('p', t('airGitReadingLog'), 'directory-git-empty'));
-      try {
-        const result = await api(`/api/git/log?dirId=${encodeURIComponent(directoryId)}&limit=30`);
-        directoryGitView.commits = result.commits || [];
-      } catch (error) {
-        directoryGitView.logError = error.message;
-      }
-    }
-    paintDirectoryGit();
-  }
-
-  function paintDirectoryGitLog(list) {
-    if (directoryGitView.logError) {
-      list.replaceChildren(node('p', t('airGitLogFailed', { msg: directoryGitView.logError }), 'directory-git-empty error'));
-      return;
-    }
-    const commits = directoryGitView.commits;
-    if (!commits) return;
-    if (!commits.length) {
-      list.replaceChildren(node('p', t('airGitNoCommits'), 'directory-git-empty'));
-      return;
-    }
-    list.replaceChildren(...commits.map(commit => {
-      const item = node('div', null, 'directory-git-commit');
-      const head = node('button', null, 'directory-git-commit-head');
-      head.type = 'button';
-      head.setAttribute('aria-expanded', String(directoryGitView.openHash === commit.hash));
-      const copy = node('span', null, 'directory-git-commit-copy');
-      copy.append(node('code', commit.short || String(commit.hash || '').slice(0, 7)),
-        node('strong', commit.subject || t('airGitNoSubject')));
-      head.append(copy,
-        node('time', commit.date ? commit.date.replace('T', ' ').slice(0, 16) : ''),
-        node('small', `${commit.author || '—'}${commit.refs ? ` · ${commit.refs}` : ''}`));
-      head.onclick = () => void toggleCommitDetail(commit);
-      item.append(head);
-      if (directoryGitView.openHash === commit.hash) {
-        const detail = node('div', null, 'directory-git-commit-detail');
-        if (commit.__stat) detail.append(node('div', commit.__stat, 'directory-git-stat'));
-        detail.append(node('pre', commit.__diff || t('airGitDiffReading'), 'directory-git-diff'));
-        item.append(detail);
-      }
-      return item;
-    }));
-  }
-
-  async function toggleCommitDetail(commit) {
-    if (directoryGitView.openHash === commit.hash) {
-      directoryGitView.openHash = null;
-      paintDirectoryGit();
-      return;
-    }
-    directoryGitView.openHash = commit.hash;
-    if (commit.__diff === undefined) {
-      paintDirectoryGit();
-      try {
-        const result = await api(`/api/git/commit-diff?dirId=${encodeURIComponent(directoryId)}&hash=${encodeURIComponent(commit.hash)}`);
-        commit.__stat = result.stat || '';
-        commit.__diff = result.error ? t('airGitDiffFailed', { msg: result.error })
-          : result.diff || t('airGitNoDiff');
-        if (result.truncated) commit.__diff += t('airGitDiffTruncated');
-      } catch (error) {
-        commit.__stat = '';
-        commit.__diff = t('airGitDiffFailed', { msg: error.message });
-      }
-    }
-    paintDirectoryGit();
   }
 
   function quickTaskId() {

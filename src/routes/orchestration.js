@@ -461,7 +461,7 @@ function createOrchestrationRoutes(rawDeps) {
       const body = req.body || {};
       const action = String(body.action || '').trim();
       if (!['retry', 'resume', 'skip', 'cancel', 'cancel_queued', 'insert_queued',
-        'reorder_queued', 'resolve'].includes(action)) {
+        'reorder_queued', 'edit_queued', 'resolve'].includes(action)) {
         return res.status(400).json({ error: 'invalid_action' });
       }
       if (body.confirm !== true) {
@@ -497,6 +497,22 @@ function createOrchestrationRoutes(rawDeps) {
           );
           const status = result.ok ? 200
             : result.code === 'queued_entry_not_found' ? 404 : 409;
+          return res.status(status).json(result);
+        }
+        if (action === 'edit_queued') {
+          // 改一条还没开始执行的暂存消息正文：客户端双击那条消息弹出输入框，
+          // 改完交到这里。正文会随下一次 schedule 广播同步回所有端。
+          const result = await deps.runtime.sessionScheduler.editQueued(
+            session.id,
+            body.entryId,
+            {
+              text: body.text,
+              actor: 'user',
+            },
+          );
+          const status = result.ok ? 200
+            : result.code === 'queued_entry_not_found' ? 404
+              : result.code === 'queued_entry_text_required' ? 400 : 409;
           return res.status(status).json(result);
         }
         if (action === 'insert_queued') {
