@@ -218,13 +218,13 @@
     },
     {
       "id": "sakurafrp-frpc-binary",
-      "classification": "external-owner",
-      "owner": "SakuraFrp frpc installer",
-      "rationale": "The standalone frpc data-plane binary is a large replaceable third-party runtime asset downloaded from the SakuraFrp CDN, not transactional MultiCC state. Installs without MULTICC_DATA_DIR keep it under the historical ~/.multicc root; configured installs stay isolated below their own data root.",
-      "migrationStrategy": "Keep production assets below a dedicated bin root, verify every download's MD5 and byte size before activation, and reinstall from the /system/clients manifest instead of copying binaries when the layout changes.",
+      "classification": "compatibility-read",
+      "owner": "SakuraFrp monitor (frpc detection)",
+      "rationale": "The standalone frpc client is an advanced setup MultiCC deliberately does not install: the Air tunnel page links to the official download and the monitor only PROBES this path for a user-supplied binary. Installs without MULTICC_DATA_DIR keep the historical ~/.multicc root; configured installs stay isolated below their own data root. Nothing under this root is ever written by MultiCC any more.",
+      "migrationStrategy": "Keep the probe read-only; the path exists only so an frpc the user dropped there (or one an older MultiCC installed) is preferred over a stale PATH copy. Drop the historical-root probe once no supported install can carry a legacy binary.",
       "sources": [
         {
-          "file": "src/tunnel-sakurafrp-install.js",
+          "file": "src/tunnel.js",
           "anchor": "? path.join(os.homedir(), '.multicc', 'bin')"
         }
       ]

@@ -2,10 +2,10 @@
 
 // SakuraFrp / Nyat v4 API client + token binding + public-URL derivation.
 //
-// This is the control-plane companion to tunnel-sakurafrp-install.js (the
-// data-plane frpc downloader). Together they enable a headless SakuraFrp setup:
-// install frpc, bind the user's access token, then discover the tunnel so the
-// monitor can enrich status and the base-URL picker can offer the public URL.
+// The control plane of the SakuraFrp setup: bind the user's access token, then
+// discover the tunnel so the monitor can enrich status and the base-URL picker
+// can offer the public URL. (The data plane — the frpc binary — is the user's
+// own: MultiCC no longer downloads it, it only probes for it.)
 //
 // TWO SECURITY / CORRECTNESS INVARIANTS drive this file:
 //

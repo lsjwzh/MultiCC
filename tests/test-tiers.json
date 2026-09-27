@@ -4851,15 +4851,6 @@
       ]
     },
     {
-      "path": "tests/test-tunnel-sakurafrp-install.js",
-      "tier": "other",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
       "path": "tests/test-tunnel-sakurafrp-wiring.js",
       "tier": "other",
       "lane": "deterministic",
