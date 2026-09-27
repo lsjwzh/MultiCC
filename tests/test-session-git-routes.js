@@ -86,6 +86,7 @@ function createFixture(overrides = {}) {
     now: () => clock,
     random: () => 0,
     asyncHandler: overrides.asyncHandler || (handler => handler),
+    readFile: overrides.readFile || (async () => Buffer.from('')),
     logger: {
       log: value => calls.logs.push(value),
       warn: value => calls.warnings.push(value),
@@ -922,6 +923,97 @@ test('diff/files truncates at 500 files but reports the full total', async () =>
   assert.equal(response.body.totalDeletions, 501);
 });
 
+test('diff/files lists untracked files with status U and counts their lines', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args.includes('--numstat')) return '';
+        if (args.includes('--name-status')) return '';
+        if (args.includes('ls-files')) return 'brand-new.js\0new dir/notes.txt\0binary.dat\0';
+        return '';
+      },
+    },
+    readFile: async (absolute) => {
+      fixture.calls.read = fixture.calls.read || [];
+      fixture.calls.read.push(absolute);
+      if (absolute.endsWith('binary.dat')) return Buffer.from([1, 2, 0, 3]);
+      if (absolute.endsWith('notes.txt')) return Buffer.from('one\n two \n', 'utf8');
+      return Buffer.from('line1\nline2\nline3\n', 'utf8');
+    },
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/files'), {
+    params: { id: 's1' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.untrackedCount, 3);
+  assert.equal(response.body.totalFiles, 3);
+  assert.equal(response.body.totalAdditions, 5); // 3 + 2 + 0
+  assert.equal(response.body.totalDeletions, 0);
+  assert.deepEqual(response.body.files, [
+    { path: 'brand-new.js', oldPath: null, status: 'U', additions: 3, deletions: 0, binary: false },
+    { path: 'new dir/notes.txt', oldPath: null, status: 'U', additions: 2, deletions: 0, binary: false },
+    { path: 'binary.dat', oldPath: null, status: 'U', additions: 0, deletions: 0, binary: true },
+  ]);
+  assert.ok(fixture.calls.run.some(call =>
+    call.args.includes('ls-files') && call.args.includes('--others')
+    && call.args.includes('--exclude-standard')), 'untracked list queried with exclude-standard');
+  assert.equal(fixture.calls.read.length, 3, 'each untracked file read for line counts');
+});
+
+test('diff/file serves an untracked file as a new-file patch', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args, options) => {
+        fixture.calls.run.push({ repo, args, options });
+        if (args.includes('ls-files')) return 'src/newfile.js\0';
+        return '';
+      },
+    },
+    readFile: async () => Buffer.from('const x = 1;\nconsole.log(x);\n', 'utf8'),
+  });
+  const response = await invoke(fixture.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'src/newfile.js' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.untracked, true);
+  assert.equal(response.body.error, null);
+  assert.match(response.body.patch, /^diff --git a\/src\/newfile\.js b\/src\/newfile\.js/m);
+  assert.match(response.body.patch, /new file mode 100644/);
+  assert.match(response.body.patch, /@@ -0,0 \+1,2 @@/);
+  assert.match(response.body.patch, /\n\+const x = 1;/);
+  assert.match(response.body.patch, /\n\+console\.log\(x\);/);
+});
+
+test('diff/file leaves tracked unchanged files alone and reports binary untracked', async () => {
+  // Tracked file with no diff: patch stays empty, not flagged untracked.
+  const unchanged = createFixture({
+    implementations: {
+      gitRunQueued: async () => '',
+    },
+  });
+  const plain = await invoke(unchanged.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'src/tracked.js' },
+  });
+  assert.equal(plain.body.untracked, false);
+  assert.equal(plain.body.patch, '');
+
+  const binary = createFixture({
+    implementations: {
+      gitRunQueued: async (repo, args) => {
+        if (args.includes('ls-files')) return 'img/logo.png\0';
+        return '';
+      },
+    },
+    readFile: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]),
+  });
+  const bin = await invoke(binary.app.routes.get('GET /api/sessions/:id/diff/file'), {
+    params: { id: 's1' }, query: { path: 'img/logo.png' },
+  });
+  assert.equal(bin.body.untracked, true);
+  assert.match(bin.body.patch, /Binary files/);
+});
+
 test('diff/files preserves missing-worktree error and maps git errors', async () => {
   const missing = createFixture({ existsSync: () => false });
   const missingResponse = await invoke(missing.app.routes.get('GET /api/sessions/:id/diff/files'), {
@@ -1115,8 +1207,10 @@ test('task diff/file returns the single-file patch from the task worktree', asyn
     params: { taskId: 'tsk-1' }, query: { path: 'src/a.js' },
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.body, { path: 'src/a.js', patch: '', truncated: false, error: null });
-  assert.deepEqual(fixture.calls.run.at(-1).args, ['diff', '--no-color', 'main', '--', 'src/a.js']);
+  assert.deepEqual(response.body, { path: 'src/a.js', patch: '', truncated: false, error: null, untracked: false });
+  assert.ok(fixture.calls.run.some(call =>
+    JSON.stringify(call.args) === JSON.stringify(['diff', '--no-color', 'main', '--', 'src/a.js'])),
+  'diff ran inside the task worktree against the task base branch');
 
   const invalid = await invoke(fixture.app.routes.get('GET /api/task-board/tasks/:taskId/diff/file'), {
     params: { taskId: 'tsk-1' }, query: { path: '-x' },
