@@ -342,7 +342,7 @@ test('a remote caller (phone app / Funnel) gets a non-loopback transport flag', 
   // is reachable from another machine.
   const remote = await invoke(harness.app, 'POST', '/api/v1/voice-gateway/launch', {
     body: { sourceSessionId: 'chat-1' },
-    headers: { host: 'macbook-air-pwy.tail94695a.ts.net' },
+    headers: { host: 'macbook-air.example-host.ts.net' },
   });
   assert.equal(remote.statusCode, 200);
   assert.deepEqual(remote.body.launch.transport, { loopbackOnly: false });

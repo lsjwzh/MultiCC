@@ -280,7 +280,7 @@ void main() {
 
     test('recognizes both relay protocols, never loopback plumbing', () {
       expect(relayProtocolFromBaseUrl(relayClaude), 'claude');
-      expect(relayProtocolFromBaseUrl('https://mac.tail94695a.ts.net/codex-proxy/cx'), 'codex');
+      expect(relayProtocolFromBaseUrl('https://mac.example-host.ts.net/codex-proxy/cx'), 'codex');
       expect(relayProtocolFromBaseUrl('http://127.0.0.1:3000/claude-proxy/abc/remote'), isNull);
       expect(relayProtocolFromBaseUrl('http://localhost:3000/codex-proxy/abc'), isNull);
       expect(relayProtocolFromBaseUrl('https://open.bigmodel.cn/api/paas/v4'), isNull);

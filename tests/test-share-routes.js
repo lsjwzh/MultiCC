@@ -229,18 +229,18 @@ test('create builds the link on the named root instead of the caller Host', () =
     params: { id: 's1' },
     protocol: 'http',
     host: '127.0.0.1:3000',
-    body: { access: 'view', publicBaseUrl: 'https://mac.tail94695a.ts.net/' },
+    body: { access: 'view', publicBaseUrl: 'https://mac.example-host.ts.net/' },
   });
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.url, `https://mac.tail94695a.ts.net/share/${res.body.token}`);
+  assert.equal(res.body.url, `https://mac.example-host.ts.net/share/${res.body.token}`);
   // 存的是剥掉路径和尾斜杠的根域，不是用户粘进来的原串。
-  assert.equal(res.body.publicBaseUrl, 'https://mac.tail94695a.ts.net');
-  assert.equal(fakeShare.calls[0][2].publicBaseUrl, 'https://mac.tail94695a.ts.net');
+  assert.equal(res.body.publicBaseUrl, 'https://mac.example-host.ts.net');
+  assert.equal(fakeShare.calls[0][2].publicBaseUrl, 'https://mac.example-host.ts.net');
 
   // 重新列出来还得是同一条链接。否则管理员关掉再打开对话框，会看到另一个地址，
   // 分不清哪条才是发出去的。
   res = invoke(routes.listSessionShares, { params: { id: 's1' }, protocol: 'http', host: '127.0.0.1:3000' });
-  assert.equal(res.body.shares[0].url, `https://mac.tail94695a.ts.net/share/${res.body.shares[0].token}`);
+  assert.equal(res.body.shares[0].url, `https://mac.example-host.ts.net/share/${res.body.shares[0].token}`);
 });
 
 test('message-snapshot shares accept the same link root', () => {
