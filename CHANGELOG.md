@@ -2,6 +2,20 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.1.5 — Task runs folded into the board, and reminders that know you're away (2026-09-27)
+
+### Highlights
+
+- **Task runs live under the task board now** — the separate `task-run` module (store, host, recovery, cleanup, provider bridge, production) was folded into the board's ownership, deleting thousands of lines of duplicated lifecycle. The public surface you rely on — running a task, watching its progress, cancelling it — is unchanged, but there is one place that owns task state instead of two.
+- **The directory card got a Git history browser** — a shared `git-manager` component shows commit history right in the Air directory card, with patches fetched only on demand and repository text always inserted as text.
+- **Reminders know whether anyone is looking** — a shared user-presence probe (page visible and touched within the last five minutes) is the single answer both the task reminders and the chat notifications read, so they never disagree about whether to narrate. Several reminders stack into a fan-out deck with a count badge (errors first), each card with its own open/dismiss.
+- **A directory's schedules are one click away** — the directory overview gains a "schedules for this directory" entry that filters the global cron rules by the directory you are looking at, as a page-internal dialog (bottom sheet on phones).
+- **The Sakura Frp tunnel installer is gone** — the tunnel surface ships without the bundled Sakura installer; the tunnel API is unchanged and manual/third-party installers keep working.
+
+### Release integrity
+
+- The runtime write inventory was trimmed to the surviving write roots, keeping the governance assertion green in CI's deterministic stage.
+
 ## v2.1.4 — One-click upgrades from the web, and a Mac that stays awake when asked (2026-09-27)
 
 ### Highlights

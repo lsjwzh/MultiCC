@@ -12,6 +12,7 @@ const ROOT = path.join(__dirname, '..');
 const VIEW_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-history-view.js'), 'utf8');
 const CHAT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat.js'), 'utf8');
 const EVENT_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-event-controller.js'), 'utf8');
+const LINKS_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-local-links.js'), 'utf8');
 const HTML = fs.readFileSync(path.join(ROOT, 'public/chat.html'), 'utf8');
 const LIVE_UI_SOURCE = fs.readFileSync(path.join(ROOT, 'public/chat-live-ui.js'), 'utf8');
 
@@ -805,9 +806,11 @@ test('classic host delegates persisted and streaming DOM ownership to the view',
   assert.equal((VIEW_SOURCE.match(/\.innerHTML\s*=/g) || []).length, 1, 'one reviewed safe Markdown sink');
   assert.match(VIEW_SOURCE, /const safeHtml = safeMarkdown\.render\(text\)/);
   // Assistant links to local files must be rewritten through /api/download so
-  // clicking them opens the file instead of a 404 server route.
-  assert.match(CHAT_SOURCE, /function fixupLocalFileLinks\(root\)/);
-  assert.match(CHAT_SOURCE, /fixupLocalFileLinks,\n\s+highlightCodeBlocks/);
+  // clicking them opens the file instead of a 404 server route. The fixup lives
+  // in chat-local-links.js (loaded before chat.js); the host injects it into the
+  // view and the view calls it on the rendered Markdown root.
+  assert.match(LINKS_SOURCE, /function fixupLocalFileLinks\(root\)/);
+  assert.match(CHAT_SOURCE, /fixupLocalFileLinks: \(window\.MultiCCChatLocalLinks && window\.MultiCCChatLocalLinks\.fixupLocalFileLinks\)/);
   assert.match(VIEW_SOURCE, /fixupLocalFileLinks\(markdownRoot\)/);
 });
 
