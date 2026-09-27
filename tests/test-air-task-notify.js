@@ -165,3 +165,190 @@ test('statusOf fold decides attention, so lifecycle done + runState error reads 
   assert.equal(ctrl.onSnapshot([{ id: 't12', status: 'done', runState: 'error' }], ''), true);
   assert.equal(ctrl.unseenKind('t12'), 'error');
 });
+
+// ── Sound policy (see public/shared/user-presence.js for the table) ──────────
+function soundHarness({ away = false, store } = {}) {
+  const { win, api } = loadModule();
+  if (store) win.localStorage = store;
+  const timers = new Map();
+  let nextId = 1;
+  let clock = 100000;
+  const dings = [];
+  const spoken = [];
+  win.AudioContext = function FakeAudio() {
+    return {
+      currentTime: 0, destination: {},
+      createOscillator: () => ({ frequency: {}, connect: x => x, start() {}, stop() {} }),
+      createGain: () => ({ gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect: x => x }),
+      close() {},
+    };
+  };
+  const origCtor = win.AudioContext;
+  win.AudioContext = function Counted() { dings.push(clock); return origCtor(); };
+  win.SpeechSynthesisUtterance = function Utterance(text) { this.text = text; };
+  win.speechSynthesis = { speak: u => spoken.push(u.text), cancel() {} };
+  const presence = { away, isAway() { return this.away; }, onReturn() { return () => {}; } };
+  const setT = (fn, delay) => { const id = nextId++; timers.set(id, { fn, at: clock + delay }); return id; };
+  const clearT = id => timers.delete(id);
+  const advance = ms => {
+    clock += ms;
+    for (const [id, t] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+      if (t.at <= clock && timers.has(id)) { timers.delete(id); t.fn(); }
+    }
+  };
+  const ctrl = api.create({
+    getCurrentTaskId: () => null, openTask: () => {},
+    window: win, document: win.document,
+    setTimeout: setT, clearTimeout: clearT, now: () => clock, presence,
+  });
+  return { ctrl, dings, spoken, presence, advance, win };
+}
+
+test('present: a completion dings but is not narrated', () => {
+  const h = soundHarness({ away: false });
+  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }], '');
+  h.ctrl.onSnapshot([{ id: 'a', status: 'done', title: 'Alpha' }], '');
+  h.advance(1000);
+  assert.equal(h.dings.length, 1);
+  assert.deepEqual(h.spoken, []);
+});
+
+test('away: ding + one sentence; several completions in one poll are one announcement', () => {
+  const h = soundHarness({ away: true });
+  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }, { id: 'c', status: 'running' }], '');
+  h.ctrl.onSnapshot([
+    { id: 'a', status: 'done', title: 'Alpha' },
+    { id: 'b', status: 'error', title: 'Beta' },
+    { id: 'c', status: 'done', title: 'Gamma' },
+  ], '');
+  h.advance(1000);
+  assert.equal(h.dings.length, 1, 'one ding for the batch');
+  assert.deepEqual(h.spoken, ['任务「Beta」出错了，另有 2 个任务有新结果'], 'errors lead the sentence');
+});
+
+test('a completion inside the cooldown is deferred and merged, never swallowed', () => {
+  const h = soundHarness({ away: true });
+  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }], '');
+  h.ctrl.onSnapshot([{ id: 'a', status: 'done', title: 'Alpha' }, { id: 'b', status: 'running' }], '');
+  h.advance(4000);
+  h.ctrl.onSnapshot([{ id: 'a', status: 'done', title: 'Alpha' }, { id: 'b', status: 'done', title: 'Beta' }], '');
+  assert.equal(h.dings.length, 1, 'still inside the cooldown');
+  h.advance(5000);
+  assert.equal(h.dings.length, 2, 'the deferred one rings after the cooldown');
+  h.advance(1000);
+  assert.deepEqual(h.spoken, ['任务「Alpha」已完成', '任务「Beta」已完成']);
+});
+
+test('opening a task before its deferred sound plays drops it', () => {
+  const h = soundHarness({ away: true });
+  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }], '');
+  h.ctrl.onSnapshot([{ id: 'a', status: 'done' }, { id: 'b', status: 'running' }], '');
+  h.ctrl.onSnapshot([{ id: 'a', status: 'done' }, { id: 'b', status: 'done' }], '');
+  h.ctrl.markOpened('b');
+  h.advance(10000);
+  assert.equal(h.dings.length, 1);
+});
+
+test('away is read when the sound plays: coming back during the cooldown means ding only', () => {
+  const h = soundHarness({ away: true });
+  h.ctrl.onSnapshot([{ id: 'a', status: 'running' }, { id: 'b', status: 'running' }], '');
+  h.ctrl.onSnapshot([{ id: 'a', status: 'done' }, { id: 'b', status: 'running' }], '');
+  h.ctrl.onSnapshot([{ id: 'a', status: 'done' }, { id: 'b', status: 'done', title: 'Beta' }], '');
+  h.presence.away = false;
+  h.advance(10000);
+  assert.equal(h.dings.length, 2);
+  assert.equal(h.spoken.length, 1, 'only the first (away) one was narrated');
+});
+
+test('two Air tabs: only the first to see a transition makes a sound', () => {
+  const shared = new Map();
+  const store = {
+    getItem: k => (shared.has(k) ? shared.get(k) : null),
+    setItem: (k, v) => shared.set(k, String(v)),
+    removeItem: k => shared.delete(k),
+  };
+  const one = soundHarness({ away: true, store });
+  const two = soundHarness({ away: true, store });
+  for (const h of [one, two]) h.ctrl.onSnapshot([{ id: 'a', status: 'running', updatedAt: 1 }], '');
+  for (const h of [one, two]) h.ctrl.onSnapshot([{ id: 'a', status: 'done', updatedAt: 2 }], '');
+  assert.equal(one.dings.length + two.dings.length, 1);
+  assert.equal(two.ctrl.isUnseen('a'), true, 'the quiet tab still marks it');
+});
+
+test('waiting is an attention kind; answered elsewhere clears the mark', () => {
+  const h = soundHarness({ away: false });
+  h.ctrl.onSnapshot([{ id: 'q', status: 'running' }], '');
+  assert.equal(h.ctrl.onSnapshot([{ id: 'q', status: 'waiting' }], ''), true);
+  assert.equal(h.ctrl.unseenKind('q'), 'waiting');
+  h.ctrl.onSnapshot([{ id: 'q', status: 'running' }], '');
+  assert.equal(h.ctrl.isUnseen('q'), false);
+  // waiting → done is a new outcome, not a repeat
+  h.ctrl.onSnapshot([{ id: 'q', status: 'waiting' }], '');
+  assert.equal(h.ctrl.onSnapshot([{ id: 'q', status: 'done' }], ''), true);
+  assert.equal(h.ctrl.unseenKind('q'), 'completed');
+});
+
+// ── shared/user-presence.js ────────────────────────────────────────────────
+const Presence = require('../public/shared/user-presence.js');
+
+function presenceHarness(store) {
+  const shared = store || new Map();
+  let clock = 1000000;
+  const listeners = new Map();
+  const target = () => ({
+    addEventListener(type, fn) { listeners.set(type, fn); },
+    removeEventListener(type) { listeners.delete(type); },
+  });
+  const doc = Object.assign(target(), { visibilityState: 'visible' });
+  const win = target();
+  const storage = {
+    getItem: k => (shared.has(k) ? shared.get(k) : null),
+    setItem: (k, v) => shared.set(k, String(v)),
+  };
+  const docListeners = new Map();
+  doc.addEventListener = (type, fn) => docListeners.set(type, fn);
+  const p = Presence.create({ window: win, document: doc, storage, now: () => clock });
+  return {
+    p, doc, shared, listeners, docListeners,
+    tick: ms => { clock += ms; },
+  };
+}
+
+test('presence: present until 5 min without input, hidden is always away', () => {
+  const h = presenceHarness();
+  assert.equal(h.p.state(), 'present');
+  h.tick(Presence.IDLE_MS - 1);
+  assert.equal(h.p.isAway(), false);
+  h.tick(1);
+  assert.equal(h.p.state(), 'idle');
+  h.listeners.get('keydown')({ type: 'keydown' });
+  assert.equal(h.p.state(), 'present');
+  h.doc.visibilityState = 'hidden';
+  assert.equal(h.p.state(), 'hidden');
+});
+
+test('presence: input in another frame/tab (shared storage) keeps this page present', () => {
+  const store = new Map();
+  const shell = presenceHarness(store);
+  const frame = presenceHarness(store);
+  shell.tick(Presence.IDLE_MS + 10);
+  frame.tick(Presence.IDLE_MS + 10);
+  assert.equal(shell.p.state(), 'idle');
+  frame.listeners.get('pointerdown')({ type: 'pointerdown' });
+  assert.equal(shell.p.state(), 'present', 'the Air shell sees the chat frame activity');
+});
+
+test('presence: onReturn fires on activity after idle and on becoming visible', () => {
+  const h = presenceHarness();
+  const reasons = [];
+  h.p.onReturn(r => reasons.push(r));
+  h.listeners.get('keydown')({ type: 'keydown' });
+  assert.deepEqual(reasons, [], 'activity while present is not a return');
+  h.tick(Presence.IDLE_MS + 1);
+  h.listeners.get('keydown')({ type: 'keydown' });
+  h.doc.visibilityState = 'hidden';
+  h.docListeners.get('visibilitychange')();
+  h.doc.visibilityState = 'visible';
+  h.docListeners.get('visibilitychange')();
+  assert.deepEqual(reasons, ['active', 'visible']);
+});
