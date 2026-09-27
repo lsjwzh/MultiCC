@@ -1481,7 +1481,9 @@ body.console-open #console-panel { transform: none; visibility: visible; }
 .admin-panel-note { color: var(--muted); font-size: 10px; }
 /* 四格过滤项：点一格在它下面展开清单，选中的那格描边提亮、底色压一点，一眼看出
    下面那张清单是谁的。目录数 / 定时任务数降成统计带下面这一行小字。 */
+.console-filter-tabs { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .console-filter-tabs .admin-stat { cursor: pointer; }
+.admin-stat.red::before { background: #e0605a; }
 .console-filter-tabs .admin-stat.selected { border-color: var(--accent); background: #f3f8ff; box-shadow: 0 0 0 1px var(--accent) inset, var(--shadow-1); }
 .console-overview-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -4px 2px 14px; color: var(--muted); font-size: 10.5px; }
 .console-overview-meta .console-meta-link { padding: 0; border: 0; color: inherit; background: none; font: inherit; cursor: pointer; }
@@ -1676,6 +1678,8 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #task-header { padding-inline: 20px; }
   #delivery-card { margin-inline: 18px; }
   .admin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 五格过滤项两列排时，最后那格「全部」独占一行，不留半行空洞。 */
+  .console-filter-tabs .admin-stat:last-child { grid-column: 1 / -1; }
   .admin-overview-grid { grid-template-columns: 1fr; }
   .admin-directory-list { grid-template-columns: 1fr; }
   .admin-directory-row { border-right: 0; }

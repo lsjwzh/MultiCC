@@ -3615,7 +3615,12 @@ window.MULTICC_I18N_CATALOG = {
     "airAdminMetaSchedules": "定时任务 {n}/{total} 条启用",
     "airAdminCollapse": "收起",
     "airAdminNoRunningTasks": "现在没有正在执行的任务。",
-    "airAdminNoDoneToday": "今天还没有完成的任务。"
+    "airAdminNoDoneToday": "今天还没有完成的任务。",
+    "airAdminTileError": "异常",
+    "airAdminTileErrorDetail": "执行出错，需要处理或重试",
+    "airAdminTileErrorNone": "没有出错的任务",
+    "airAdminTileWaitingDetail": "等待回答或卡在资源上",
+    "airAdminNoErrorTasks": "没有出错的任务。"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -7232,6 +7237,11 @@ window.MULTICC_I18N_CATALOG = {
     "airAdminMetaSchedules": "Scheduled tasks: {n}/{total} enabled",
     "airAdminCollapse": "Collapse",
     "airAdminNoRunningTasks": "No tasks are running right now.",
-    "airAdminNoDoneToday": "No tasks finished today yet."
+    "airAdminNoDoneToday": "No tasks finished today yet.",
+    "airAdminTileError": "Errors",
+    "airAdminTileErrorDetail": "Failed runs to handle or retry",
+    "airAdminTileErrorNone": "No failed tasks",
+    "airAdminTileWaitingDetail": "Waiting for an answer or blocked on resources",
+    "airAdminNoErrorTasks": "No failed tasks."
   }
 };

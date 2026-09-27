@@ -3613,5 +3613,10 @@
   "airAdminMetaSchedules": "Scheduled tasks: {n}/{total} enabled",
   "airAdminCollapse": "Collapse",
   "airAdminNoRunningTasks": "No tasks are running right now.",
-  "airAdminNoDoneToday": "No tasks finished today yet."
+  "airAdminNoDoneToday": "No tasks finished today yet.",
+  "airAdminTileError": "Errors",
+  "airAdminTileErrorDetail": "Failed runs to handle or retry",
+  "airAdminTileErrorNone": "No failed tasks",
+  "airAdminTileWaitingDetail": "Waiting for an answer or blocked on resources",
+  "airAdminNoErrorTasks": "No failed tasks."
 }
