@@ -521,10 +521,11 @@ function createSessionWorkScheduler({
           && controlAllowedByClassify(item, cls));
         if (control) return control;
       }
-      // W/B are real waits. P still has an owned turn. D/E otherwise drain:
-      // E describes the request that just ended and cannot gate a later one.
-      if (isParkedLetter(cls)) return null;
-      if (isProcessingLetter(cls)) return null;
+      // Only D drains the FIFO automatically: the queue advances on a turn that
+      // finished successfully. W/B are real waits, P still has an owned turn,
+      // and E is the previous request's fault — releasing the queue behind it
+      // would auto-start work the user staged behind a turn that never succeeded.
+      if (!isTerminalLetter(cls)) return null;
       return ordered[0];
     }
     const replay = ordered.find(item => isActiveReplay(schedule, item));
@@ -967,8 +968,10 @@ function createSessionWorkScheduler({
         ? String(awaitingRequestId)
         : null;
       if (schedule.priorityEntryId === completed.entryId) schedule.priorityEntryId = null;
-      // classifyState is the LETTER (D/W/B/E). W/B represent real waits; D/E
-      // both release FIFO because an error in one request cannot gate the next.
+      // classifyState is the LETTER (D/W/B/E). This releases the active slot for
+      // every letter, but only D drains the FIFO (selectSessionItem): W/B are
+      // real waits, and E leaves the queue staged — an error in one request must
+      // not auto-start the work the user staged behind it.
       schedule.classifyState = CLASSIFY_STATES.has(classifyState) ? classifyState : 'D';
       schedule.classifyStateAt = at;
       // A turn ending on an unanswered question must not let work staged while
