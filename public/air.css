@@ -2100,33 +2100,82 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   background: var(--danger, #b64e43);
 }
 
-/* ── 浮动完成条（三处消费之二/三：③ 页面浮动提示 ──────────────────────── */
-.task-complete-float {
+/* ── 浮动提醒牌堆（③，air-notify-deck.js） ─────────────────────────────
+   一条 = 右下角一张卡；多条 = 叠成一摞 + 数量角标，点一下沿四分之一圆弧散开。
+   卡片全靠 --x/--y/--r/--s/--o 驱动 transform/opacity 过渡，停下来就不再出帧。 */
+.task-notify-deck {
   position: fixed;
   right: 16px;
-  bottom: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   z-index: 1200;
+  width: 0;
+  height: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.task-notify-deck[hidden] { display: none; }
+.task-notify-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1199;
+  background: rgba(20, 36, 60, .14);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s ease;
+}
+.task-notify-scrim.is-on { opacity: 1; pointer-events: auto; }
+.task-notify-card {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  max-width: calc(100vw - 32px);
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  max-width: 340px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 11px 12px 11px 14px;
   border-radius: 14px;
   background: var(--panel, #fff);
   color: var(--text, #233249);
   border: 1px solid #d7e2f3;
-  box-shadow: 0 10px 34px rgba(18, 52, 96, .18);
-  font-size: 13px;
-  line-height: 1.4;
+  box-shadow: 0 10px 30px rgba(18, 52, 96, .16);
+  transform: translate(var(--x, 0px), var(--y, 0px)) rotate(var(--r, 0deg)) scale(var(--s, 1));
+  transform-origin: 100% 100%;
+  opacity: var(--o, 1);
+  transition:
+    transform .52s cubic-bezier(.34, 1.4, .5, 1) var(--d, 0ms),
+    opacity .3s ease var(--d, 0ms),
+    box-shadow .2s ease;
 }
-.task-complete-float[hidden] { display: none; }
-.task-complete-float.is-error { border-color: var(--danger, #b64e43); }
-.task-complete-float.is-error .task-complete-float-title { color: var(--danger, #b64e43); }
-.task-complete-float-text { min-width: 0; }
-.task-complete-float-title { font-weight: 700; color: var(--text, #233249); margin-bottom: 2px; }
-.task-complete-float-body { color: var(--text, #233249); overflow-wrap: anywhere; }
-.task-complete-float-actions { display: flex; gap: 6px; flex: 0 0 auto; }
-.task-complete-float-actions button { border-radius: 9px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.task-notify-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--success, #2f8f5b);
+}
+.task-notify-card.k-error { border-color: #e7c3bf; }
+.task-notify-card.k-error::before { background: var(--danger, #b64e43); }
+.task-notify-card.k-waiting::before { background: #b7791f; }
+.task-notify-deck.is-multi .task-notify-card.is-top:not(.is-leaving) { cursor: pointer; }
+.task-notify-deck:not(.is-open) .task-notify-card:not(.is-top) .task-notify-text,
+.task-notify-deck:not(.is-open) .task-notify-card:not(.is-top) .task-notify-actions { visibility: hidden; }
+.task-notify-text { min-width: 0; flex: 1; }
+.task-notify-title { font-weight: 700; font-size: 12px; margin-bottom: 2px; color: var(--success, #2f8f5b); }
+.k-error .task-notify-title { color: var(--danger, #b64e43); }
+.k-waiting .task-notify-title { color: #b7791f; }
+.task-notify-body {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+.task-notify-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.task-notify-actions button { border-radius: 9px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .task-complete-open {
   border: 1px solid var(--accent, #0d63c4);
   background: var(--accent, #0d63c4);
@@ -2140,6 +2189,84 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   color: var(--text, #233249);
 }
 .task-complete-close:hover { background: #eef3fa; }
+/* 散开：卡片缩成 224×58 的胶囊（与 air-notify-deck.js 的 CARD_W/CARD_H 一致） */
+.task-notify-deck.is-open .task-notify-card {
+  width: 224px;
+  height: 58px;
+  align-items: center;
+  padding: 8px 10px 8px 13px;
+}
+.task-notify-deck.is-open .task-notify-body { -webkit-line-clamp: 1; }
+.task-notify-deck.is-open .task-notify-actions button { padding: 3px 8px; }
+.task-notify-deck.is-open .task-notify-card:hover { box-shadow: 0 14px 36px rgba(18, 52, 96, .26); z-index: 50 !important; }
+.task-notify-card.is-leaving { --o: 0 !important; --s: .6 !important; pointer-events: none; }
+.task-notify-badge {
+  position: absolute;
+  right: -6px;
+  bottom: 52px;
+  z-index: 60;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: var(--danger, #b64e43);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
+  pointer-events: none;
+  transition: transform .3s cubic-bezier(.34, 1.6, .5, 1), opacity .2s;
+}
+.task-notify-deck:not(.is-multi) .task-notify-badge,
+.task-notify-deck.is-open .task-notify-badge { transform: scale(0); opacity: 0; }
+.task-notify-hint {
+  position: absolute;
+  right: 0;
+  bottom: -2px;
+  transform: translateY(100%);
+  font-size: 11px;
+  color: var(--muted, #6f8096);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.task-notify-more {
+  position: absolute;
+  right: 100px;
+  bottom: 8px;
+  z-index: 70;
+  font-size: 12px;
+  color: var(--muted, #6f8096);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.task-notify-hub {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 70;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 18px;
+  border: 1px solid #d0d7e2;
+  background: #fff;
+  color: var(--text, #233249);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(18, 52, 96, .18);
+  transform: scale(0);
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: 100% 100%;
+  transition: transform .35s cubic-bezier(.34, 1.6, .5, 1), opacity .2s;
+}
+.task-notify-deck.is-open .task-notify-hub { transform: scale(1); opacity: 1; pointer-events: auto; }
+.task-notify-deck.is-narrow.is-open .task-notify-more { right: 0; bottom: 44px; }
+@media (prefers-reduced-motion: reduce) {
+  .task-notify-card, .task-notify-hub, .task-notify-badge, .task-notify-scrim { transition-duration: .01ms !important; }
+}
 
 /* 目录拖拽排序 + 左上角目录卡的 hover 侧拉（air-directory-nav.js）。 */
 [data-dir-id][draggable="true"] { cursor: grab; }

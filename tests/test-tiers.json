@@ -884,6 +884,15 @@
       ]
     },
     {
+      "path": "tests/test-air-notify-deck.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:security",
+      "entrypoints": [
+        "npm:test:security"
+      ]
+    },
+    {
       "path": "tests/test-air-ops-cdp.js",
       "tier": "flow",
       "lane": "cdp",
