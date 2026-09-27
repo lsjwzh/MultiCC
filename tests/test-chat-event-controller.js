@@ -967,7 +967,7 @@ test('Flutter keeps the pending answer card above the message lane, not in the b
   const pending = screen.indexOf('if (provider.pendingUserInput != null &&');
   const messages = screen.indexOf('child: _MessageList(');
   assert.ok(pending >= 0 && pending < messages);
-  assert.match(screen, /maxHeight:\s*MediaQuery\.sizeOf\(context\)\.height \* 0\.38/);
+  assert.match(screen, /maxHeight:\s*MediaQuery\.sizeOf\(context\)\.height\s*\*\s*0\.38/);
   assert.doesNotMatch(inputBar, /PendingUserInputPanel\s*\(/);
 });
 
