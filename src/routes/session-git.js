@@ -1,5 +1,6 @@
 'use strict';
 
+const path = require('path');
 const {
   classifyDisplay, isProcessingLetter, isBackgroundLetter,
 } = require('../classify/vocab');
@@ -33,7 +34,7 @@ function assertDependencies(deps) {
   for (const name of [
     'gitWorktreeMergeState', 'gitBaseBranch', 'gitRunQueued', 'gitMergeBack',
     'gitSyncFromBase', 'gitRebaseResolve', 'appendEvent', 'workspaceBroadcast',
-    'existsSync', 'now', 'random', 'asyncHandler',
+    'existsSync', 'now', 'random', 'asyncHandler', 'readFile',
   ]) assertFunction(deps[name], name);
   if (!deps.logger || typeof deps.logger.log !== 'function'
       || typeof deps.logger.warn !== 'function') {
@@ -165,6 +166,46 @@ function parseDiffFiles(numstatZ, nameStatusZ) {
       binary: file.binary,
     };
   });
+}
+
+// Untracked files are invisible to `git diff <base>`: git only reports the
+// working-tree diff for files already in the index. But merge runs `git add -A`
+// before committing, so a brand-new file IS part of what merge will land —
+// hiding it from the diff UI lets the user approve a merge that quietly adds
+// files they never saw. Collect them from `git ls-files --others` instead.
+async function listUntrackedFiles(execGit, worktree, maxBytes = 4 * 1024 * 1024) {
+  try {
+    const raw = await execGit(worktree,
+      ['-c', 'core.quotepath=false', 'ls-files', '--others', '--exclude-standard', '-z'],
+      { maxBuffer: maxBytes });
+    return String(raw || '').split('\0').filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+function isProbablyBinary(buffer) {
+  const sample = buffer.subarray(0, 8000);
+  return sample.includes(0);
+}
+
+// Line count of a text buffer, matching git's numstat convention (a file
+// without a trailing newline still counts its final line).
+function countTextLines(buffer) {
+  const text = buffer.toString('utf8');
+  if (text.length === 0) return 0;
+  const newlines = (text.match(/\n/g) || []).length;
+  return newlines + (text.endsWith('\n') ? 0 : 1);
+}
+
+async function untrackedFileFacts(readFile, worktree, relative) {
+  try {
+    const buffer = await readFile(path.join(worktree, relative));
+    const binary = isProbablyBinary(buffer);
+    return { additions: binary ? 0 : countTextLines(buffer), binary };
+  } catch (_) {
+    return { additions: 0, binary: false };
+  }
 }
 
 function createSessionGitRuntime(rawDeps) {
@@ -518,11 +559,31 @@ function createSessionGitRuntime(rawDeps) {
       } catch (cause) {
         if (!error) error = errorText(cause);
       }
-      const allFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      const trackedFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      // New (untracked) files never appear in `git diff <base>`, yet merge's
+      // `git add -A` would land them. Surface them as status 'U' so the merge
+      // preview is honest about what will be committed.
+      const fileCap = 500;
+      let untrackedFiles = [];
+      try {
+        const untrackedPaths = await listUntrackedFiles(deps.gitRunQueued, worktree);
+        for (const relative of untrackedPaths.slice(0, fileCap)) {
+          const facts = await untrackedFileFacts(deps.readFile, worktree, relative);
+          untrackedFiles.push({
+            path: relative,
+            oldPath: null,
+            status: 'U',
+            additions: facts.additions,
+            deletions: 0,
+            binary: facts.binary,
+          });
+        }
+      } catch (_) { /* untracked list stays empty on failure */ }
+      const allFiles = [...trackedFiles, ...untrackedFiles];
+      const untrackedCount = untrackedFiles.length;
       const totalFiles = allFiles.length;
       const totalAdditions = allFiles.reduce((sum, f) => sum + f.additions, 0);
       const totalDeletions = allFiles.reduce((sum, f) => sum + f.deletions, 0);
-      const fileCap = 500;
       const truncated = totalFiles > fileCap;
       const files = truncated ? allFiles.slice(0, fileCap) : allFiles;
       return res.json({
@@ -532,6 +593,7 @@ function createSessionGitRuntime(rawDeps) {
         totalFiles,
         totalAdditions,
         totalDeletions,
+        untrackedCount,
         truncated,
         mergeState: mergeStateCached(dir, persisted),
         error,
@@ -565,6 +627,7 @@ function createSessionGitRuntime(rawDeps) {
       let patch = '';
       let truncated = false;
       let error = null;
+      let untracked = false;
       try {
         patch = await deps.gitRunQueued(worktree,
           ['diff', '--no-color', baseBranch, '--', filePath],
@@ -577,11 +640,44 @@ function createSessionGitRuntime(rawDeps) {
         error = errorText(cause);
         patch = '';
       }
+      if (!patch && !error) {
+        // An empty patch here means either "no change" or "untracked file" —
+        // git diff cannot see files that are not in the index. Check the
+        // untracked list so a brand-new file still renders in the viewer.
+        const untrackedPaths = await listUntrackedFiles(deps.gitRunQueued, worktree);
+        if (untrackedPaths.includes(filePath)) {
+          untracked = true;
+          const buffer = await deps.readFile(path.join(worktree, filePath)).catch(() => null);
+          if (buffer) {
+            const binary = isProbablyBinary(buffer);
+            if (binary) {
+              patch = `Binary files /dev/null and b/${filePath} differ`;
+            } else {
+              const lines = buffer.toString('utf8').split(/\r?\n/);
+              if (lines.length && lines[lines.length - 1] === '') lines.pop();
+              patch = [
+                `diff --git a/${filePath} b/${filePath}`,
+                'new file mode 100644',
+                'index 0000000..0000000',
+                '--- /dev/null',
+                `+++ b/${filePath}`,
+                `@@ -0,0 +1,${lines.length} @@`,
+                ...lines.map(line => `+${line}`),
+              ].join('\n');
+              if (patch.length > patchCap) {
+                patch = patch.slice(0, patchCap);
+                truncated = true;
+              }
+            }
+          }
+        }
+      }
       return res.json({
         path: filePath,
         patch,
         truncated,
         error,
+        untracked,
       });
     });
 
@@ -860,11 +956,30 @@ function createSessionGitRuntime(rawDeps) {
         if (!error) error = errorText(cause);
       }
       const identity = taskIdentity(info);
-      const allFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      const fileCap = 500;
+      const trackedFiles = error ? [] : parseDiffFiles(numstat, nameStatus);
+      // Untracked files are invisible to `git diff <base>` but merge would add
+      // them; surface them with status 'U' (mirrors the session route).
+      let untrackedFiles = [];
+      try {
+        const untrackedPaths = await listUntrackedFiles(deps.gitRunQueued, worktree);
+        for (const relative of untrackedPaths.slice(0, fileCap)) {
+          const facts = await untrackedFileFacts(deps.readFile, worktree, relative);
+          untrackedFiles.push({
+            path: relative,
+            oldPath: null,
+            status: 'U',
+            additions: facts.additions,
+            deletions: 0,
+            binary: facts.binary,
+          });
+        }
+      } catch (_) { /* untracked list stays empty on failure */ }
+      const allFiles = [...trackedFiles, ...untrackedFiles];
+      const untrackedCount = untrackedFiles.length;
       const totalFiles = allFiles.length;
       const totalAdditions = allFiles.reduce((sum, f) => sum + f.additions, 0);
       const totalDeletions = allFiles.reduce((sum, f) => sum + f.deletions, 0);
-      const fileCap = 500;
       const truncated = totalFiles > fileCap;
       const files = truncated ? allFiles.slice(0, fileCap) : allFiles;
       return res.json({
@@ -874,6 +989,7 @@ function createSessionGitRuntime(rawDeps) {
         totalFiles,
         totalAdditions,
         totalDeletions,
+        untrackedCount,
         truncated,
         mergeState: mergeStateCached(info.dir, identity),
         error,
@@ -899,6 +1015,7 @@ function createSessionGitRuntime(rawDeps) {
       let patch = '';
       let truncated = false;
       let error = null;
+      let untracked = false;
       try {
         patch = await deps.gitRunQueued(info.worktreePath,
           ['diff', '--no-color', baseBranch, '--', filePath],
@@ -911,7 +1028,36 @@ function createSessionGitRuntime(rawDeps) {
         error = errorText(cause);
         patch = '';
       }
-      return res.json({ path: filePath, patch, truncated, error });
+      if (!patch && !error) {
+        const untrackedPaths = await listUntrackedFiles(deps.gitRunQueued, info.worktreePath);
+        if (untrackedPaths.includes(filePath)) {
+          untracked = true;
+          const buffer = await deps.readFile(path.join(info.worktreePath, filePath)).catch(() => null);
+          if (buffer) {
+            const binary = isProbablyBinary(buffer);
+            if (binary) {
+              patch = `Binary files /dev/null and b/${filePath} differ`;
+            } else {
+              const lines = buffer.toString('utf8').split(/\r?\n/);
+              if (lines.length && lines[lines.length - 1] === '') lines.pop();
+              patch = [
+                `diff --git a/${filePath} b/${filePath}`,
+                'new file mode 100644',
+                'index 0000000..0000000',
+                '--- /dev/null',
+                `+++ b/${filePath}`,
+                `@@ -0,0 +1,${lines.length} @@`,
+                ...lines.map(line => `+${line}`),
+              ].join('\n');
+              if (patch.length > patchCap) {
+                patch = patch.slice(0, patchCap);
+                truncated = true;
+              }
+            }
+          }
+        }
+      }
+      return res.json({ path: filePath, patch, truncated, error, untracked });
     });
 
     app.post('/api/task-board/tasks/:taskId/merge', async (req, res) => {
