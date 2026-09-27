@@ -303,9 +303,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 共 4 键，中英各 4 行 = +8，合流后重跑生成器实测按下方登记值为准。
   // 2026-09-27 运行期防锁 + 自动解锁 13 键（airGlobalKeepAwake* / airGlobalUnlock*），
   // 中英各 13 行 = +26，重跑生成器实测 7216 行 / 450572 字节。
+  // 2026-09-27 frpc 改「跳官网下载、不再代装」：删 3 键（airTunnelInstallFrpc /
+  // airTunnelDownloading / airTunnelFrpcInstalled）、增 2 键（airTunnelDownloadFrpc /
+  // airTunnelRecheckClient），中英各 -1 行；改写的 3 条文案更长，重跑生成器实测
+  // 7214 行 / 450751 字节（行数回落，字节涨 179）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7216,
-    maxBytes: 450572,
+    maxLines: 7214,
+    maxBytes: 450751,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
