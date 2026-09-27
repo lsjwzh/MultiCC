@@ -117,7 +117,10 @@
                 <div class="air-tunnel-step-body">
                   <h4>${t('airTunnelInstallFrpcTitle')}</h4>
                   <p>${t('airTunnelInstallFrpcDesc')}</p>
-                  <button id="air-sf-install" type="button">${t('airTunnelInstallFrpc')}</button>
+                  <div class="air-tunnel-actions">
+                    <a class="air-tunnel-button" href="https://www.natfrp.com/tunnel/download" target="_blank" rel="noopener noreferrer">${t('airTunnelDownloadFrpc')}</a>
+                    <button id="air-sf-recheck" type="button">${t('airTunnelRecheckClient')}</button>
+                  </div>
                 </div>
               </li>
               <li>
@@ -438,12 +441,6 @@
     setMessage('air-sf-message', t('airTunnelKeyBound'), 'success');
   }
 
-  async function installSakura() {
-    const result = await context.api('/api/tunnel/sakurafrp/install', {}, 'POST');
-    await load();
-    setMessage('air-sf-message', `${t('airTunnelFrpcInstalled', { version: result.version || '' })}${result.path ? ` · ${result.path}` : ''}`, 'success');
-  }
-
   async function backfillSakura() {
     const boundDomain = byId('air-sf-domain')?.value.trim() || '';
     const result = await context.api('/api/tunnel/sakurafrp/public-url', { boundDomain }, 'POST');
@@ -562,7 +559,9 @@
     byId('air-access-save').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-access-message', () => saveAccessPassword(false));
     byId('air-access-clear').onclick = event => runAction(event.currentTarget, t('airTunnelClearing'), 'air-access-message', () => saveAccessPassword(true));
     byId('air-sf-bind').onclick = event => runAction(event.currentTarget, t('airTunnelBinding'), 'air-sf-message', bindSakura);
-    byId('air-sf-install').onclick = event => runAction(event.currentTarget, t('airTunnelDownloading'), 'air-sf-message', installSakura);
+    // frpc 是高级用法：MultiCC 只做检测与托管，安装交给用户自己去官网下载，
+    // 所以这里只有一个「重新检测」，检测路径与页面加载时同一条（见 load()）。
+    byId('air-sf-recheck').onclick = event => runAction(event.currentTarget, t('airTunnelDetecting'), 'air-sf-message', load);
     byId('air-sf-backfill').onclick = event => runAction(event.currentTarget, t('airTunnelBackfilling'), 'air-sf-message', backfillSakura);
     byId('air-sf-save').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-sf-message', saveSakura);
     byId('air-sf-restart').onclick = event => runAction(event.currentTarget, t('airTunnelStarting'), 'air-sf-message', () => restartProvider('sakurafrp', 'air-sf-message'));

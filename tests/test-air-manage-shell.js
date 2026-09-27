@@ -88,7 +88,10 @@ test('regional tunnel onboarding is native and self-contained in Air', () => {
   assert.match(tunnel, /<h3 id="air-tunnel-cn-title">SakuraFrp · \$\{t\('airTunnelCnTitle'\)\}<\/h3>/);
   assertLocalized(tunnel, 'public/air-tunnel.js', 'airTunnelCnTitle', '樱花内网穿透');
   assert.match(tunnel, /Tailscale Funnel/);
-  assert.match(tunnel, /api\/tunnel\/sakurafrp\/install/);
+  // frpc 是高级功能，页面不再代装：第 2 步只跳官网下载地址（2026-09-27 产品决定），
+  // 服务端的 /api/tunnel/sakurafrp/install 仍在（自装、诊断用），只是这里不再调它。
+  assert.doesNotMatch(tunnel, /api\/tunnel\/sakurafrp\/install/);
+  assert.match(tunnel, /<a class="air-tunnel-button" href="https:\/\/www\.natfrp\.com\/tunnel\/download"/);
   assert.match(tunnel, /api\/tunnel\/sakurafrp\/public-url/);
   assert.match(tunnel, /api\/tunnel\/funnel/);
   assert.match(tunnel, /api\/tunnel\/ipv6/);

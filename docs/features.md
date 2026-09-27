@@ -203,7 +203,7 @@ A single operational surface for everything:
 
 - **Tailscale Funnel**: one-click toggle in `/manage` to expose your MultiCC server to the public internet via Tailscale.
 - **花生壳 (phtunnel) monitor**: optional shell watchdog that restarts the DDNS client if the public URL goes unreachable.
-- **SakuraFrp (樱花frp)**: CLI-based tunnel provider with launcher detection, diagnostics, and monitoring — falls back to a local `frpc` binary when no launcher is configured.
+- **SakuraFrp (樱花frp)**: CLI-based tunnel provider with launcher detection, diagnostics, and monitoring — falls back to a local `frpc` binary when no launcher is configured. The standalone `frpc` client is an advanced setup MultiCC does **not** install for you: the Air tunnel page links to the official download, then re-checks whether the binary is on the PATH (or in `~/.multicc/bin`).
 - All three tunnel modes are managed from the dashboard with live status indicators.
 
 ## Security
