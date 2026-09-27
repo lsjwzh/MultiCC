@@ -18,7 +18,6 @@ const { createPaths } = require('./paths');
 const { atomicWriteJson } = require('./runtime-security');
 const { createTailscaleFunnelProbe } = require('./tailscale-funnel-health');
 const { findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp } = require('./tunnel-sakurafrp');
-const { defaultFrpcDest, installFrpc } = require('./tunnel-sakurafrp-install');
 const { readLauncherToken, getUserInfo, discoverAccess } = require('./tunnel-sakurafrp-api');
 
 const PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
@@ -37,9 +36,23 @@ const MAX_REPAIR_LEDGER_BYTES = 16 * 1024;
 // to a PATH lookup so a user-installed binary still works.
 const NATAPP_BIN_CANDIDATES = ['/opt/natapp/natapp', '/usr/local/bin/natapp', '/opt/homebrew/bin/natapp'];
 const CPOLAR_BIN_CANDIDATES = ['/usr/local/bin/cpolar', '/opt/homebrew/bin/cpolar', '/usr/bin/cpolar'];
-// The headless `frpc` we install ourselves (tunnel-sakurafrp-install) lands under
-// the MultiCC data root, so probe it FIRST — a managed install must win over a
-// stale PATH/homebrew copy — then fall back to the well-known system locations.
+// Where a user-supplied `frpc` is expected to live. The standalone frpc client is
+// an advanced SakuraFrp setup that MultiCC deliberately does NOT install — the Air
+// tunnel page links to the official download instead — so this path is only ever
+// PROBED, never written. It keeps the paths.js convention for large, replaceable
+// third-party runtimes: a normal instance looks under ~/.multicc, an isolated
+// MULTICC_DATA_DIR instance below its own root.
+function defaultFrpcDest({ dataDir, platform = process.platform } = {}) {
+  const paths = createPaths({ dataDir });
+  const base = paths.root === paths.pkgRoot
+    ? path.join(os.homedir(), '.multicc', 'bin')
+    : path.join(paths.root, 'bin');
+  return path.join(base, platform === 'win32' ? 'frpc.exe' : 'frpc');
+}
+
+// Probe the data-root path FIRST — an frpc the user dropped there (or one an older
+// MultiCC installed) must win over a stale PATH/homebrew copy — then fall back to
+// the well-known system locations.
 const SAKURAFRP_BIN_CANDIDATES = [
   defaultFrpcDest({ dataDir: process.env.MULTICC_DATA_DIR }),
   '/usr/local/bin/frpc',
@@ -721,17 +734,6 @@ async function sakuraAccess({ fetch } = {}) {
   }
 }
 
-// Headless frpc install — the CLI-first onboarding path. Lands at the managed
-// data-root bin that SAKURAFRP_BIN_CANDIDATES now probes first.
-async function sakuraInstallFrpc({ fetch } = {}) {
-  try {
-    const result = await installFrpc({ dest: defaultFrpcDest({ dataDir: process.env.MULTICC_DATA_DIR }), fetch });
-    return { ok: true, path: result.path, version: result.version, archKey: result.archKey, size: result.size };
-  } catch (error) {
-    return { ok: false, reason: 'install_failed', message: String((error && error.message) || error).slice(0, 200) };
-  }
-}
-
 // Honest base-URL backfill. Plain-http tunnels derive http://nodeHost:remote
 // directly. auto_https tunnels CANNOT be derived (cert only covers the bound
 // *.nyat.app subdomain), so the caller must supply that bound host; we validate
@@ -1218,10 +1220,11 @@ module.exports = {
   restartCpolar,
   restartSakurafrp,
   sakuraAccess,
-  sakuraInstallFrpc,
   sakuraApplyPublicUrl,
   loadConfig,
   availability,
+  // Exported for the detection-path test: which file the monitor probes first.
+  defaultFrpcDest,
   setFunnel,
   funnelStatus,
   ipv6Status,
