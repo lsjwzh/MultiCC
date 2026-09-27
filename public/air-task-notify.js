@@ -10,9 +10,10 @@
  *        └─► ② sound: ding always; + 朗读「任务…已完成」 only when the person is
  *              away (tab hidden, or visible but no input for 5 min — see
  *              shared/user-presence.js for the one presence rule + policy table)
- *        └─► ③ floating completion panel ([打开][✕])
+ *        └─► ③ floating reminder deck, one card per task ([打开][✕]);
+ *              several stack up and fan out on click (air-notify-deck.js)
  *   user opens the task
- *        └─► ① `.unseen` cleared  ② pending/ongoing voice cancelled  ③ panel hidden
+ *        └─► ① `.unseen` cleared  ② pending/ongoing voice cancelled  ③ its card leaves
  *
  * Sound edge cases (the ones that used to read as contradictions):
  *   - several tasks finish in one poll, or within the cooldown → ONE ding and
@@ -28,7 +29,7 @@
  * `unseen` and the last-observed per-task status are persisted to localStorage,
  * so a task that finishes while the page is closed (or across a reload) is still
  * marked ① / prompted ③ the next time the page is open. "©" closing the floating
- * prompt only hides the panel; the row stays marked until the task is opened.
+ * prompt only takes that card off the deck; the row stays marked until the task is opened.
  *
  * Kept a classic script (no module dep) so air.js can construct it before the
  * first snapshot and hand over the handful of callbacks it needs.
@@ -82,7 +83,10 @@
     floatTitleWaiting: { zh: '任务等待回复', en: 'Task needs you' },
     floatOpen: { zh: '打开', en: 'Open' },
     floatClose: { zh: '✕', en: '✕' },
-    floatMore: { zh: '另 {n} 个任务有新结果', en: '{n} more updated' },
+    deckLabel: { zh: '任务提醒', en: 'Task reminders' },
+    deckHint: { zh: '共 {n} 条 · 点击展开', en: '{n} reminders · click to expand' },
+    deckCollapse: { zh: '收起 ✕', en: 'Collapse ✕' },
+    deckMore: { zh: '还有 {n} 条较早的', en: '{n} older' },
   };
 
   function storage() {
@@ -165,10 +169,6 @@
     const unseen = readUnseen();
     const prevStatus = new Map(Object.entries(readJson(LS_PREV, {})));
 
-    let panel = null;
-    let panelTask = null;
-    let panelTitle = null;
-    let panelBody = null;
     let lastVoiceAt = -Infinity;
     let voiceTimer = null;
     let flushTimer = null;
@@ -180,72 +180,21 @@
       writeJson(LS_PREV, Object.fromEntries(pruned));
     }
 
-    // ── ③ Floating completion panel ────────────────────────────────────────
-    function buildPanel() {
-      if (panel) return panel;
-      panel = doc.createElement('div');
-      panel.className = 'task-complete-float';
-      panel.setAttribute('role', 'alert');
-      const text = doc.createElement('div');
-      text.className = 'task-complete-float-text';
-      const title = doc.createElement('div');
-      title.className = 'task-complete-float-title';
-      const body = doc.createElement('div');
-      body.className = 'task-complete-float-body';
-      const actions = doc.createElement('div');
-      actions.className = 'task-complete-float-actions';
-      const open = doc.createElement('button');
-      open.type = 'button';
-      open.className = 'task-complete-open';
-      open.textContent = translate('floatOpen');
-      const close = doc.createElement('button');
-      close.type = 'button';
-      close.className = 'task-complete-close';
-      close.textContent = translate('floatClose');
-      close.setAttribute('aria-label', translate('floatClose'));
-      text.append(title, body);
-      actions.append(open, close);
-      panel.append(text, actions);
-      panelBody = body;
-      panelTitle = title;
-      open.onclick = () => {
-        const task = panelTask;
-        dismissPanel();
-        if (task && openTask) openTask(task);
-      };
-      close.onclick = () => dismissPanel();
-      doc.body.appendChild(panel);
-      return panel;
-    }
-
-    function showPanel(task, kind = 'completed') {
-      panelTask = task || null;
-      buildPanel();
-      if (panelTitle) {
-        const key = kind === 'error' ? 'floatTitleError' : kind === 'waiting' ? 'floatTitleWaiting' : 'floatTitle';
-        panelTitle.textContent = translate(key) + ' ·';
+    // ── ③ Floating reminder deck (drawn by air-notify-deck.js) ────────────
+    // One card per task that needs you; several stack and fan out on click.
+    // ✕ only takes the card off the deck — the row stays marked until opened.
+    const deckFactory = opts.deck !== undefined ? opts.deck : win.MultiCCNotifyDeck;
+    let deck = null;
+    function getDeck() {
+      if (!deck && deckFactory?.create) {
+        deck = deckFactory.create({
+          window: win, document: doc, translate, setTimeout: schedule, now,
+          onOpen: task => { if (task && openTask) openTask(task); },
+        });
       }
-      const title = task?.title || task?.id || '';
-      if (panelBody) {
-        const key = kind === 'error' ? 'errored' : kind === 'waiting' ? 'waiting' : 'completed';
-        panelBody.textContent = translate(key, { title });
-      }
-      const more = [...unseen.keys()].filter(id => id !== task?.id).length;
-      if (more > 0 && panelBody) panelBody.textContent += ` · ${translate('floatMore', { n: more })}`;
-      panel.hidden = false;
-      panel.classList.toggle('is-error', kind === 'error');
-      panel.classList.remove('is-hiding');
-      // Re-hide whenever animation timers are abandoned.
-      if (win.__multiccNotifyHide) cancelSchedule(win.__multiccNotifyHide);
+      return deck;
     }
-
-    function dismissPanel() {
-      if (!panel) return;
-      panel.hidden = true;
-      panel.classList.remove('is-error');
-      panelTask = null;
-      if (panelBody) panelBody.textContent = '';
-    }
+    function dismissPanel() { deck?.clear(); }
 
     // ── ② Voice nudge ─────────────────────────────────────────────────────
     function playDing(kind) {
@@ -350,9 +299,8 @@
       }
       persistUnseen();
       if (!flushTimer) flushSound();
-      // ③ floating panel shows the most important of this batch
-      const [task, kind] = [...fires].sort((a, b) => KIND_PRIORITY[b[1]] - KIND_PRIORITY[a[1]])[0];
-      showPanel(task, kind);             // (① is live via isUnseen → CSS class)
+      // ③ every task of the batch lands on the deck (① is live via isUnseen → CSS class)
+      for (const [task, kind] of fires) getDeck()?.upsert(task, kind);
     }
 
     function markOpened(taskId) {
@@ -363,7 +311,7 @@
       unseen.delete(id);
       persistUnseen();
       stopVoice();          // ② voice cancels
-      if (panelTask && String(panelTask.id) === id) dismissPanel();  // ③ its panel hides
+      deck?.remove(id);     // ③ its card leaves the deck
       // ① sidebar mark disappears on the next render (isUnseen returns false now)
     }
 
@@ -395,6 +343,7 @@
         if (isOpen) {                     // on screen → not "unseen"
           unseen.delete(id);
           pendingSound.delete(id);
+          deck?.remove(id);
         } else if (kind && kind !== prevKind && prev != null) {
           // observed transition into an attention state, not currently open
           fires.push([task, kind]);
@@ -402,6 +351,7 @@
         } else if (!kind && unseen.get(id) === 'waiting') {
           unseen.delete(id);
           pendingSound.delete(id);
+          deck?.remove(id);
         }
         prevStatus.delete(id);
         prevStatus.set(id, status);
@@ -430,7 +380,7 @@
       isUnseen: id => unseen.has(String(id || '')),
       markOpened,
       onSnapshot,
-      panelHidden: () => !panel || panel.hidden,
+      deckIds: () => deck?.ids() || [],
       toggleVoice,
       unseenCount: () => unseen.size,
       unseenKind: id => unseen.get(String(id || '')) || null,
