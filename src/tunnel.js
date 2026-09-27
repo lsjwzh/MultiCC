@@ -63,10 +63,12 @@ const NATAPP_DEFAULT_CMD = 'natapp -authtoken={authtoken}';
 const CPOLAR_DEFAULT_CMD = 'cpolar http {port}';
 const SAKURAFRP_DEFAULT_CMD = 'frpc -f {authtoken}';
 
-// Defaults — phddns prefilled with the legacy URL but DISABLED (it is currently
-// down; enabling a dead URL would just exercise the restart path on a loop).
+// Defaults — all providers start DISABLED with no URL. Tunnel addresses are
+// machine-local (tunnel-config.json is gitignored); a personal/public URL must
+// never ship as a default, otherwise it leaks to every other install and shows
+// up in the share / tunnel panels there.
 const DEFAULT_CONFIG = {
-  phddns:    { enabled: false, monitorOnly: false, url: 'https://1129874apfc68.vicp.fun/manage' },
+  phddns:    { enabled: false, monitorOnly: false, url: '' },
   tailscale: { enabled: false, monitorOnly: false, url: '', funnel: false, funnelPort: 3000 },
   natapp:    { enabled: false, monitorOnly: false, url: '', authtoken: '', port: 3000, startCmd: NATAPP_DEFAULT_CMD },
   cpolar:    { enabled: false, monitorOnly: false, url: '', authtoken: '', port: 3000, startCmd: CPOLAR_DEFAULT_CMD },
