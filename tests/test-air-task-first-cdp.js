@@ -958,7 +958,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // /air?view=overview 还进得去（/manage 就落在这儿），但它不再是「一个页面」：
     // 它把控制台面板从左滑出来，页头仍是当前目录，底下的任务不卸载。
     await page.navigate('/air?view=overview');
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open') && document.querySelectorAll('#console-content .admin-stat').length===4`));
+    assert.ok(await page.waitFor(`document.body.classList.contains('console-open') && document.querySelectorAll('#console-content .admin-stat').length===5`));
     await settleOverlay(page);
     assert.notEqual(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台', '控制台没有顶掉页头');
     assert.equal(await page.evaluate(`Math.round(document.getElementById('console-panel').getBoundingClientRect().left)`), 0, '面板从左侧滑到位');
@@ -1196,7 +1196,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       await page.navigate('/air?view=overview');
-      assert.ok(await page.waitFor(`document.body.classList.contains('console-open') && document.querySelectorAll('#console-content .admin-stat').length===4`));
+      assert.ok(await page.waitFor(`document.body.classList.contains('console-open') && document.querySelectorAll('#console-content .admin-stat').length===5`));
       await settleOverlay(page);
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
       assert.equal(await page.evaluate(`document.getElementById('console-panel').getBoundingClientRect().right<=innerWidth`), true);

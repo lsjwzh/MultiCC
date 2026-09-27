@@ -75,7 +75,7 @@
   // fullText 默认开：搜索的默认目标是「全部记录（含对话）」，因为只出现在对话正文里
   // 的词走不到任务板语料。注意它换的不是上面那条状态口径 —— 列表默认仍是「进行中与
   // 待处理」，搜索另有一份 searchFilter()（见下）。
-  // view 是顶上展开了哪一格过滤项（running/waiting/today/all），null = 都收着。
+  // view 是顶上展开了哪一格过滤项（running/waiting/error/today/all），null = 都收着。
   const consoleFilter = { query: '', status: 'open', dir: 'all', fullText: true, view: null };
   // 面板是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数说清楚。
   const TASK_LIST_LIMIT = 60;
@@ -387,7 +387,11 @@
     const directories = data?.directories || [];
     const active = tasks.filter(task => task.status !== 'done' && task.status !== 'archived');
     const executing = tasks.filter(isRunning).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    // 「等我回复」和「异常」拆成两格：前者是要我回答 / 卡在资源上的，后者是跑出错的。
+    // 两格合起来仍是 urgentTasks —— 侧栏徽标数的是这个总数。
     const urgent = urgentTasks(data);
+    const failed = urgent.filter(task => taskStatus(task) === 'error');
+    const waitingMe = urgent.filter(task => taskStatus(task) !== 'error');
     const finished = tasks.filter(task => doneToday(task)).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
     const enabledSchedules = (scheduleTasks || []).filter(task => task.enabled);
     const running = runningDirectories(data);
@@ -400,14 +404,15 @@
     ], panel ? 'console-actions' : 'admin-actions');
 
     const content = panel || el('admin-content');
-    // 大字只放「能点开看清单」的四个过滤项：进行中 / 等我回复 / 今日完成 / 全部。
+    // 大字只放「能点开看清单」的五个过滤项：进行中 / 等我回复 / 异常 / 今日完成 / 全部。
     // 目录数、定时任务数是背景信息，不是要处理的东西 —— 降成下面那行小字。
     // 点一格，统计带和工作目录之间就展开那一格的清单（有最大高度，自己滚）；再点
     // 同一格收起。默认什么都不展开：控制台第一眼是数字，不是一堵清单墙。
     const stats = make('div', null, 'admin-stats console-filter-tabs');
     const tiles = [
       ['running', t('airAdminTileRunning'), executing.length, running.size ? t('airAdminDirectoriesRunning', { n: running.size }) : t('airAdminTileRunningIdle'), 'green'],
-      ['waiting', t('airAdminTileWaiting'), urgent.length, urgent.length ? t('airAdminWaitingDetail') : t('airAdminNothingPending'), urgent.length ? 'amber' : ''],
+      ['waiting', t('airAdminTileWaiting'), waitingMe.length, waitingMe.length ? t('airAdminTileWaitingDetail') : t('airAdminNothingPending'), waitingMe.length ? 'amber' : ''],
+      ['error', t('airAdminTileError'), failed.length, failed.length ? t('airAdminTileErrorDetail') : t('airAdminTileErrorNone'), failed.length ? 'red' : ''],
       ['today', t('airAdminTileToday'), finished.length, t('airAdminTileTodayDetail'), 'blue'],
       ['all', t('airAdminTileAll'), active.length, t('airAdminTileAllDetail', { n: tasks.length }), 'purple'],
     ];
@@ -522,10 +527,11 @@
         ? t('airAdminTaskCountLimited', { total: rows.length, shown: shown.length })
         : t('airAdminNItems', { n: rows.length });
     }
-    // 三个固定过滤项的清单：口径就是上面那几格数字用的同一份数组，数字和清单不会分叉。
+    // 四个固定过滤项的清单：口径就是上面那几格数字用的同一份数组，数字和清单不会分叉。
     const fixedLists = {
       running: [executing, 'airAdminNoRunningTasks'],
-      waiting: [urgent, 'airAdminNoAttentionTasks'],
+      waiting: [waitingMe, 'airAdminNoAttentionTasks'],
+      error: [failed, 'airAdminNoErrorTasks'],
       today: [finished, 'airAdminNoDoneToday'],
     };
     function paintDrawer() {

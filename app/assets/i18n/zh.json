@@ -3613,5 +3613,10 @@
   "airAdminMetaSchedules": "定时任务 {n}/{total} 条启用",
   "airAdminCollapse": "收起",
   "airAdminNoRunningTasks": "现在没有正在执行的任务。",
-  "airAdminNoDoneToday": "今天还没有完成的任务。"
+  "airAdminNoDoneToday": "今天还没有完成的任务。",
+  "airAdminTileError": "异常",
+  "airAdminTileErrorDetail": "执行出错，需要处理或重试",
+  "airAdminTileErrorNone": "没有出错的任务",
+  "airAdminTileWaitingDetail": "等待回答或卡在资源上",
+  "airAdminNoErrorTasks": "没有出错的任务。"
 }

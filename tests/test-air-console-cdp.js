@@ -247,7 +247,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(await page.evaluate(`document.getElementById('overview').getAttribute('aria-expanded')`), 'true');
     // 顶上四格是过滤项；默认一张清单都不展开。
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('.console-filter-tabs .admin-stat > span')].map(el=>el.textContent)`),
-      ['进行中', '等我回复', '今日完成', '全部']);
+      ['进行中', '等我回复', '异常', '今日完成', '全部']);
     assert.equal(await page.evaluate(`document.getElementById('console-filter-panel').hidden`), true, '默认不展开任何清单');
     assert.ok(await page.evaluate(`document.querySelector('.console-overview-meta').textContent.includes('3 个工作目录')`), '目录数降成小字');
     // 点「等我回复」：清单在过滤项和工作目录之间长出来。
@@ -633,7 +633,7 @@ test('the console shows only the 5 most recently updated waits and hands the res
     // ── ① 四格过滤项：数字放大，但整条带仍是读数带的高度 ────────────────
     await page.evaluate(`document.getElementById('overview').click()`);
     assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
-    assert.ok(await page.waitFor(`document.querySelectorAll('.admin-stats .admin-stat').length===4`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.admin-stats .admin-stat').length===5`));
     const stats = await page.evaluate(`(() => {
       const card = document.querySelector('.admin-stat');
       return { height: Math.round(card.getBoundingClientRect().height),
@@ -642,20 +642,25 @@ test('the console shows only the 5 most recently updated waits and hands the res
     })()`);
     assert.ok(stats.height <= 84, `统计卡仍压在 84px 以内（实测 ${stats.height}）`);
     assert.ok(stats.fontSize >= 22, `过滤项的数字要大字（实测 ${stats.fontSize}）`);
-    assert.deepEqual(stats.values, ['2', '6', '1', '9'], '进行中 2 · 等我回复 6 · 今日完成 1 · 全部（未归档）9');
+    assert.deepEqual(stats.values, ['2', '3', '3', '1', '9'], '进行中 2 · 等我回复 3 · 异常 3 · 今日完成 1 · 全部（未归档）9');
     assert.equal(await page.evaluate(`document.getElementById('console-filter-panel').hidden`), true, '默认不展开清单');
 
     // ── ② 每格展开自己的清单，口径与数字同源，按最近更新排 ─────────────────
     const listed = `[...document.querySelectorAll('#console-task-list .admin-recent-row strong')].map(el=>el.textContent)`;
     await page.evaluate(`document.querySelector('.console-filter-tabs .admin-stat[data-view="waiting"]').click()`);
-    assert.deepEqual(await page.evaluate(listed),
-      ['出错：导出失败重试', '等回答：发布口径', '出错：兼容矩阵', '等回答：结算页文案', '出错：图谱回填', '等回答：目录巡检'],
-      '「等我回复」给全 6 条，最近更新在前，在跑的不进来');
-    assert.equal(await page.evaluate(`document.getElementById('console-task-note').textContent`), '6 条');
+    assert.deepEqual(await page.evaluate(listed), ['等回答：发布口径', '等回答：结算页文案', '等回答：目录巡检'],
+      '「等我回复」只列等回答的，最近更新在前；出错的和在跑的都不进来');
+    assert.equal(await page.evaluate(`document.getElementById('console-task-note').textContent`), '3 条');
     assert.deepEqual(await page.evaluate(`(() => { const s=getComputedStyle(document.getElementById('console-task-list')); return [s.overflowY,s.maxHeight]; })()`),
       ['auto', '350px'], '清单有最大高度，内部滚动');
-    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '6', '徽标与「等我回复」同数');
+    // 侧栏徽标数的是「要我动手的」全部：等我回复 + 异常。
+    assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '6', '徽标 = 等我回复 + 异常');
     await page.screenshot('06-console-waiting');
+    await page.evaluate(`document.querySelector('.console-filter-tabs .admin-stat[data-view="error"]').click()`);
+    assert.deepEqual(await page.evaluate(listed), ['出错：导出失败重试', '出错：兼容矩阵', '出错：图谱回填'], '「异常」单独一格，只列出错的');
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#console-task-list .mc-status-label')].map(el=>el.textContent)`),
+      ['执行异常', '执行异常', '执行异常']);
+    await page.screenshot('06a-console-error');
     await page.evaluate(`document.querySelector('.console-filter-tabs .admin-stat[data-view="running"]').click()`);
     assert.deepEqual(await page.evaluate(listed), ['在跑：登录页空状态', '在跑：投放日报']);
     await page.evaluate(`document.querySelector('.console-filter-tabs .admin-stat[data-view="today"]').click()`);
@@ -707,9 +712,10 @@ test('the console shows only the 5 most recently updated waits and hands the res
       tasks: airTasks.filter(entry => ['w1', 'e1', 'r1'].includes(entry.id)), sessions: [] });
     await page.navigate('/air?view=overview');
     assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
-    assert.ok(await page.waitFor(`document.querySelector('.admin-stat[data-view="waiting"] strong')?.textContent==='2'`));
+    assert.ok(await page.waitFor(`document.querySelector('.admin-stat[data-view="waiting"] strong')?.textContent==='1'`));
+    assert.equal(await page.evaluate(`document.querySelector('.admin-stat[data-view="error"] strong').textContent`), '1');
     await page.evaluate(`document.querySelector('.console-filter-tabs .admin-stat[data-view="waiting"]').click()`);
-    assert.deepEqual(await page.evaluate(listed), ['出错：导出失败重试', '等回答：发布口径'], '同样是最近更新在前，在跑的不算');
+    assert.deepEqual(await page.evaluate(listed), ['等回答：发布口径'], '在跑的、出错的都不算等我回复');
     assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '2');
     await page.screenshot('08-console-waiting-short');
 
@@ -792,11 +798,12 @@ test('a task waiting on background work never renders as waiting for you', async
     assert.equal(await page.evaluate(`document.getElementById('console-badge').textContent`), '1', '等后台任务不该在侧栏催我');
     await page.evaluate(`document.getElementById('overview').click()`);
     assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
-    assert.ok(await page.waitFor(`document.querySelectorAll('.admin-stats .admin-stat').length===4`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('.admin-stats .admin-stat').length===5`));
     const stats = await page.evaluate(`[...document.querySelectorAll('.admin-stats .admin-stat strong')].map(el=>el.textContent)`);
     assert.equal(stats[0], '1', '进行中只数在跑的那条');
     assert.equal(stats[1], '1', '「等我回复」只数那条等回答的');
-    assert.equal(stats[3], '3', '三条任务都还没结束');
+    assert.equal(stats[2], '0', '没有出错的');
+    assert.equal(stats[4], '3', '三条任务都还没结束');
     await page.evaluate(`document.querySelector('.console-filter-tabs .admin-stat[data-view="waiting"]').click()`);
     // 浮层是后挂上去的容器，innerText 对这种没进布局的节点会回空串 —— 读 textContent。
     const attention = await page.evaluate(`document.getElementById('console-filter-panel').textContent.replace(/\\s+/g,' ')`);
