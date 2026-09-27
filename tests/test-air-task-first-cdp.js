@@ -423,7 +423,7 @@ test('Air task-first console, management views, roles, configuration, artifacts 
       const prefixed=d.createElement('a');prefixed.href=location.origin+'/Users/me/project/b.dart';prefixed.textContent=location.origin+'/Users/me/project/b.dart';
       const remote=d.createElement('a');remote.href='https://example.com/Users/x.dart';remote.textContent='https://example.com/Users/x.dart';
       root.append(bare,prefixed,remote);
-      w.fixupLocalFileLinks(root);
+      w.MultiCCChatLocalLinks.fixupLocalFileLinks(root);
       return [...root.querySelectorAll('a[href]')].map(a=>({href:a.getAttribute('href'),text:a.textContent}));})()`);
     assert.deepEqual(localLinkFix, [
       { href: '/api/download?path=%2FUsers%2Fme%2Fproject%2Fa.dart', text: '/Users/me/project/a.dart' },
