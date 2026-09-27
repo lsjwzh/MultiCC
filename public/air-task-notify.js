@@ -24,7 +24,11 @@
  *     to claim it (localStorage) makes a sound, both still mark it;
  *   - coming back to a hidden tab cancels narration still queued from while it
  *     was hidden (it would describe something already on screen);
- *   - the open task is never announced here: its chat frame owns that sound.
+ *   - the open task is never announced here: its chat frame owns that sound;
+ *   - several Air tabs/windows share ONE record (localStorage) of what was
+ *     seen and what is unseen: opening a task in one clears it in all of them,
+ *     and a tab that was frozen in the background does not re-announce a
+ *     transition another tab already reported while it slept.
  *
  * `unseen` and the last-observed per-task status are persisted to localStorage,
  * so a task that finishes while the page is closed (or across a reload) is still
@@ -174,7 +178,54 @@
     let flushTimer = null;
     const pendingSound = new Map();  // id → { task, kind } waiting out the cooldown
 
-    function persistUnseen() { writeJson(LS_UNSEEN, Object.fromEntries([...unseen].slice(-PREV_CAP))); }
+    // `unseen` is shared by every Air tab. Each tab only writes its own changes
+    // on top of what is stored (never its whole map), otherwise a tab still
+    // holding an old copy would put back marks another tab just cleared.
+    const unseenOps = new Map();     // id → kind to add, or null to drop
+    function setUnseen(id, kind) { unseen.set(id, kind); unseenOps.set(id, kind); }
+    function dropUnseen(id) {
+      if (!unseen.delete(id)) return false;
+      unseenOps.set(id, null);
+      return true;
+    }
+    function persistUnseen() {
+      if (!unseenOps.size) return;
+      const stored = storage() ? readUnseen() : new Map(unseen);
+      for (const [id, kind] of unseenOps) {
+        stored.delete(id);             // re-insert so the newest stays inside the cap
+        if (kind) stored.set(id, kind);
+      }
+      unseenOps.clear();
+      writeJson(LS_UNSEEN, Object.fromEntries([...stored].slice(-PREV_CAP)));
+    }
+    // Take in what other tabs did: a task opened there is no longer unseen
+    // here (its card leaves too); a mark they raised shows up here as well.
+    const taskById = new Map();      // last snapshot, to put cards up for marks from other tabs
+    function pullShared() {
+      if (!storage()) return;
+      const stored = readUnseen();
+      for (const id of [...unseen.keys()]) {
+        if (stored.has(id) || unseenOps.has(id)) continue;
+        unseen.delete(id);
+        pendingSound.delete(id);
+        deck?.remove(id);
+      }
+      for (const [id, kind] of stored) {
+        if (unseen.get(id) === kind || unseenOps.has(id)) continue;
+        unseen.set(id, kind);
+        const task = taskById.get(id);
+        if (task && String(getCurrentTaskId() || '') !== id) getDeck()?.upsert(task, kind);
+      }
+    }
+    // The status watermark is shared the same way: every tab writes the latest
+    // server state after each snapshot, so what is stored is never older than
+    // this tab's copy — a tab waking up from the background compares against
+    // it and does not re-report a transition another tab already reported.
+    function pullPrev() {
+      if (!storage()) return;
+      prevStatus.clear();
+      for (const [id, status] of Object.entries(readJson(LS_PREV, {}))) prevStatus.set(id, status);
+    }
     function persistPrev() {
       const pruned = [...prevStatus.entries()].slice(-PREV_CAP);
       writeJson(LS_PREV, Object.fromEntries(pruned));
@@ -294,7 +345,7 @@
     function fireAttention(fires) {
       if (!fires.length) return;
       for (const [task, kind] of fires) {
-        unseen.set(String(task.id), kind);
+        setUnseen(String(task.id), kind);
         queueSound(task, kind);          // ② sound (batched)
       }
       persistUnseen();
@@ -307,8 +358,7 @@
       const id = String(taskId || '').trim();
       if (!id) return;
       pendingSound.delete(id);
-      if (!unseen.has(id)) return;
-      unseen.delete(id);
+      if (!dropUnseen(id)) return;
       persistUnseen();
       stopVoice();          // ② voice cancels
       deck?.remove(id);     // ③ its card leaves the deck
@@ -318,6 +368,7 @@
     // Back on a tab that was hidden: narration queued by a throttled
     // background tab would now describe something already on screen.
     presence?.onReturn?.(reason => { if (reason === 'visible') stopVoice(); });
+    win.addEventListener?.('storage', event => { if (event?.key === LS_UNSEEN) pullShared(); });
 
     // Diff the latest snapshot against the watermark; anything that moved into
     // a completed / error / waiting state (from a different state) while not the
@@ -326,7 +377,15 @@
     // before the feature/page ever saw it does not spam the page on first load.
     // A `waiting` mark whose question got answered elsewhere (App, another
     // tab) is dropped once the task leaves `waiting` — it no longer needs you.
+    // Any card whose task left the state it was raised for (someone continued
+    // it, from here or the App) leaves the deck; a later outcome raises a new one.
     function onSnapshot(tasks, currentTaskId) {
+      if (Array.isArray(tasks)) {
+        taskById.clear();
+        for (const task of tasks) if (task?.id) taskById.set(String(task.id), task);
+      }
+      pullPrev();
+      pullShared();
       // Board insertion order can put a recently rerun old task before hundreds
       // of dormant records. Keep the watermark by activity, not insertion order.
       const list = Array.isArray(tasks) ? [...tasks].sort((a, b) =>
@@ -341,15 +400,15 @@
         const prevKind = prev != null ? attentionKind(prev) : null;
         const isOpen = id === String(currentTaskId || '');
         if (isOpen) {                     // on screen → not "unseen"
-          unseen.delete(id);
+          dropUnseen(id);
           pendingSound.delete(id);
           deck?.remove(id);
         } else if (kind && kind !== prevKind && prev != null) {
           // observed transition into an attention state, not currently open
           fires.push([task, kind]);
-          unseen.set(id, kind);
-        } else if (!kind && unseen.get(id) === 'waiting') {
-          unseen.delete(id);
+          setUnseen(id, kind);
+        } else if (!kind) {
+          if (unseen.get(id) === 'waiting') dropUnseen(id);
           pendingSound.delete(id);
           deck?.remove(id);
         }
