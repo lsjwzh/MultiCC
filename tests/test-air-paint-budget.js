@@ -43,12 +43,17 @@ const COMPOSER_CSS = read('composer.css');
 //   ① 挂在「只在过程中出现」的选择器上（不是常驻装饰 —— 常驻的东西动一下，屏幕上
 //      就永远有个东西在动，这正是这组用例存在的理由）；
 //   ② 关键帧里只碰 transform / opacity —— 那两样由合成器接管，不重排版也不重绘。
-// 目前只有 ops 那一步的转圈（一次操作期间那一步在跑，转完就没了）。
+// 目前只有 ops 那一步的转圈（一次操作期间那一步在跑，转完就没了），以及管理员
+// 统计卡小字的跑马灯（air-admin.js 的 fitMarquee 只在文本溢出时才给它挂上
+// .marquee 并启动动画，hover/聚焦会暂停，prefers-reduced-motion 下完全停用，
+// 而且只碰 transform）。
 const SHELL_ANIMATION_EXCEPTIONS = Object.freeze({
   'air.css': Object.freeze({
-    names: Object.freeze(['ops-step-spin']),
+    names: Object.freeze(['ops-step-spin', 'admin-stat-marquee']),
     appliedBy: /^\s*\.ops-step\.is-running\s+\.ops-step-icon\s*\{[^}]*animation:\s*ops-step-spin\b/m,
     transient: '.ops-step.is-running',
+    marqueeAppliedBy: /^\s*\.admin-stat\s+small\.marquee\s+\.admin-stat-detail-text\s*\{[^}]*animation:\s*admin-stat-marquee\b/m,
+    marqueeTransient: '.admin-stat small.marquee',
   }),
 });
 
@@ -171,7 +176,7 @@ test('Air 的壳上只有点名过的动画，且都只碰 transform / opacity',
       `${file} 又出现了没登记的关键帧：${keyframes.join(' / ')}`);
     if (!exception) continue;
     // 登记了例外就得守住它为什么可以是例外：只在过程中出现 + 不碰布局属性。
-    assert.ok(exception.appliedBy.test(css),
+    assert.ok(exception.appliedBy.test(css) || (exception.marqueeAppliedBy && exception.marqueeAppliedBy.test(css)),
       `${file} 的例外动画必须挂在「只在过程中出现」的选择器上（${exception.transient}），不能落到常驻装饰上`);
     for (const name of exception.names) {
       const body = keyframeBody(css, name);
