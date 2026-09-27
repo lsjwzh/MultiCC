@@ -14,8 +14,8 @@ const { createShutdownCoordinator } = require('./shutdown');
 const SHUTDOWN_GRACE_MS = 60000;   // max time to let in-flight turns finish
 
 function createHostLifecycle(deps) {
-  // The CLI lane table is a dependency-free leaf, but this module's dependency set
-  // is deliberately pinned by tests/test-host-lifecycle-task-run-close.js, so the
+  // The CLI lane table is a dependency-free leaf, but this module's require set is
+  // deliberately pinned by tests/test-host-lifecycle-task-run-close.js, so the
   // predicate arrives as a port like every other runtime here.
   if (typeof deps?.isResidentSession !== 'function') throw new TypeError('[host-lifecycle] isResidentSession port is required');
   const {
@@ -62,10 +62,6 @@ function createHostLifecycle(deps) {
     stopOutputCapture,
     routerToolHost,
     sessionPersistence,
-    // Optional durable TaskRun ledger. It is closed last, after every producer
-    // and the legacy session persistence runtime have finished their teardown.
-    taskRunHost,
-    taskRunStore,
     qwenAudioSupervisor,
     sessionHibernationRuntime,
     log = console,
@@ -300,24 +296,7 @@ function createHostLifecycle(deps) {
       ? orchestrationRuntime.dispose()
       : orchestrationRuntime.stop();
   });
-  if (taskRunHost && typeof taskRunHost.waitForFinalizers === 'function') {
-    shutdownCoordinator.onClose(() => taskRunHost.waitForFinalizers());
-  }
   shutdownCoordinator.onClose(() => sessionPersistence.stop());
-  if (taskRunStore && typeof taskRunStore.close === 'function') {
-    let closeStarted = false;
-    shutdownCoordinator.onClose(async () => {
-      if (closeStarted) return;
-      closeStarted = true;
-      try {
-        await taskRunStore.close();
-      } catch (error) {
-        try {
-          log.error(`[multicc] task-run store close error: ${error && error.message}`);
-        } catch (_) {}
-      }
-    });
-  }
 
   function gracefulShutdown(sig) {
     if (getShuttingDown()) return;

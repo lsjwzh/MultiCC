@@ -42,13 +42,13 @@ function createTaskShellHost(deps) {
   };
   const publicQueueItem = item => ({
     entryId: shortText(item?.entryId, 160), taskId: shortText(item?.taskId, 160) || null,
-    taskRunId: shortText(item?.taskRunId, 160) || null, source: shortText(item?.source, 80) || null,
+    source: shortText(item?.source, 80) || null,
     workKind: shortText(item?.workKind, 80) || null, state: shortText(item?.state, 40) || null,
     position: Number(item?.position) || null, priority: item?.priority === true,
     admittedAt: Number(item?.admittedAt) || null, text: shortText(item?.text, 32000),
   });
   const publicActive = active => active ? Object.fromEntries([
-    'entryId', 'taskId', 'taskRunId', 'source', 'workKind', 'admittedAt', 'claimedAt', 'startedAt', 'attempt',
+    'entryId', 'taskId', 'source', 'workKind', 'admittedAt', 'claimedAt', 'startedAt', 'attempt',
   ].filter(key => active[key] != null).map(key => [key,
     ['admittedAt', 'claimedAt', 'startedAt', 'attempt'].includes(key) ? Number(active[key]) : shortText(active[key], 160),
   ])) : null;
@@ -241,7 +241,7 @@ function createTaskShellHost(deps) {
       })
       : await rt.send(shell.id, payload);
     return { ...result, chatId: result.sessionId, targetSessionId: result.sessionId,
-      shellId: shell.id, url: `/task-shell.html?shell=${encodeURIComponent(shell.id)}&task=${encodeURIComponent(result.taskId)}` };
+      shellId: shell.id, url: `/air?task=${encodeURIComponent(result.taskId)}${shell.dirId ? `&dir=${encodeURIComponent(shell.dirId)}` : ''}` };
   }
   async function sendClientInput(id, message, shellId = null) {
     const rt = getRuntime();

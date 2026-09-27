@@ -1,13 +1,13 @@
 'use strict';
 
 // Canonical DOM helpers for classic-script pages (chat / index / air / manage /
-// wechat / dashboard / meta / share). Load this BEFORE the first classic
+// wechat / dashboard / share). Load this BEFORE the first classic
 // consumer: the manage page alone has ~9 scripts calling a global escapeHtml
 // that used to be defined midway through manage-dashboard.js — a hidden
 // load-order coupling this file removes.
 //
 // Deliberately NOT consolidated here: the self-contained module copies in
-// safe-markdown, status-presentation, task-board-ui, chat-usage-readout,
+// safe-markdown, status-presentation, chat-usage-readout,
 // tour, memory-model, task-graph, docs-registry, air-tunnel, air-bridges and
 // air-provider-advanced — those are Node-requireable units and
 // rendering/security boundaries that must not depend on page order. They must

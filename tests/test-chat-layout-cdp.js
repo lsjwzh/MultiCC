@@ -6,13 +6,13 @@ const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 test('chat width fills, limits, persists across frames/reload and fits narrow screens', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const publicDir = path.resolve(__dirname, '../public'), routes = {};
-  for (const file of ['chat-layout.js', 'chat-layout.css', 'task-shell-air.css']) {
+  for (const file of ['chat-layout.js', 'chat-layout.css']) {
     routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: {
       'content-type': file.endsWith('.js') ? 'text/javascript' : 'text/css',
     } };
   }
   const content = '<main><div id="history"><article>完整的聊天消息内容</article></div><form id="composer"><textarea>保留草稿</textarea></form></main>';
-  routes['/frame'] = { body: '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/task-shell-air.css"><style>*{box-sizing:border-box}body{margin:0}main{width:100%}</style><body class="air">' + content + '<script src="/chat-layout.js"></script>' };
+  routes['/frame'] = { body: '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/chat-layout.css"><style>*{box-sizing:border-box}body{margin:0}main{width:100%}</style><body class="air">' + content + '<script src="/chat-layout.js"></script>' };
   routes['/'] = { body: '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/chat-layout.css"><style>body{margin:0}iframe{width:100%;height:600px;border:0}</style><button data-chat-layout>聊天宽度</button><iframe src="/frame"></iframe><script src="/chat-layout.js"></script>' };
   await withCdpHarness({ routes }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1000, deviceScaleFactor: 1, mobile: false });

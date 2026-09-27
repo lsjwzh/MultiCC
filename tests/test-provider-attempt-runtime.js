@@ -10,7 +10,6 @@ const {
   scopeHostProviderEvent,
   tagProviderAttemptEvent,
 } = require('../src/chat/provider-attempt-runtime');
-const { createTaskRunProviderBridge } = require('../src/task-run/provider-bridge');
 const { createUsageObserved } = require('../src/usage-observed');
 const { canPersistAdapterCompletion } = require('../src/chat/adapter-completion');
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/chat/finalize-plan');
@@ -572,48 +571,6 @@ test('non-main proxy usage keeps a real session but never borrows a main attempt
     'runtimeEpoch', 'turnId', 'decisionId', 'routeAttemptId', 'routeGeneration',
     'attemptNo', 'providerRevision',
   ]) assert.equal(usage[field], undefined, `${field} must not be guessed for sub usage`);
-});
-
-test('sub producer ownership survives main terminal state and drains the captured TaskRun lease', () => {
-  const { runtime } = harness();
-  const legacy = [];
-  const taskRun = [];
-  const bridge = createTaskRunProviderBridge({
-    records: new Map([['session-1', {
-      taskRunLease: { runId: 'run-1', leaseEpoch: 2 },
-    }]]),
-    recordActivity: event => event,
-    recordLegacyUsage: event => { legacy.push(event); return true; },
-    recordTaskRunUsage: event => { taskRun.push(event); return true; },
-    scheduleMicrotask: fn => fn(),
-  });
-  const attempt = runtime.beginAttempt(route({
-    cli: 'claude', protocol: 'anthropic', subagentProviderId: 'provider-sub',
-  }));
-  const request = proxy(runtime, attempt, {
-    role: 'sub', roleKind: 'sub', providerId: 'provider-sub', phase: 'request',
-  });
-  const started = runtime.onProxyActivity(request);
-  bridge.onActivity({ ...request, sessionId: started.sessionId });
-  assert.deepEqual(bridge.drainState('session-1'), {
-    drained: false, active: 1, ambiguous: false,
-  });
-  const usage = runtime.attributeProxyUsage(proxy(runtime, attempt, {
-    role: 'sub', roleKind: 'sub', providerId: 'provider-sub', eventId: 'sub-usage',
-  }));
-  assert.equal(usage.producerBound, true);
-  bridge.onUsageObserved(usage);
-  assert.equal(legacy.length, 1);
-  assert.equal(taskRun[0].taskRunId, 'run-1');
-  assert.equal(taskRun[0].routeAttemptId, undefined);
-
-  runtime.finishAttempt(attempt, { outcome: 'succeeded' });
-  const ended = runtime.onProxyActivity({ ...request, phase: 'end' });
-  assert.equal(ended.sessionId, 'session-1');
-  bridge.onActivity({ ...request, phase: 'end', sessionId: ended.sessionId });
-  assert.deepEqual(bridge.drainState('session-1'), {
-    drained: true, active: 0, ambiguous: false,
-  });
 });
 
 test('an old sub producer ends against its captured capability without binding a retry', () => {

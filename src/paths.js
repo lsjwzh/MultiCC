@@ -131,7 +131,6 @@ function createPaths({ dataDir } = {}) {
     // Values live ONLY here (0600) and never pass through any LLM transcript.
     secretsFile: path.join(root, 'secrets.json'),
     taskBoardFile: path.join(root, 'task_board.json'),
-    taskRunDbFile: path.join(root, 'task-runs.sqlite'),
     taskShellDbFile: path.join(root, 'task-shells.sqlite'),
     // Full-text index over chat_history (src/search/index-store.js). Derived data:
     // deleting it only costs the next rebuild.

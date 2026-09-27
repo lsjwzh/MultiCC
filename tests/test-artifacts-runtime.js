@@ -54,16 +54,16 @@ test('artifact cleanup refuses a symlinked root instead of deleting through it',
   assert.equal(fs.existsSync(victim), true);
 });
 
-test('server resolves pins from TaskRun storage and docs registry for every artifact cleanup tick', () => {
+test('server resolves pins from the docs registry for every artifact cleanup tick', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  // Contract: every cleanup tick merges the keep-lists from both stores, and a
-  // read failure only warns + skips (never crashes the server). Match the
-  // sources and the failure sentinel rather than the full statement shape so
-  // formatting/line-budget merges don't break this test again. The docs
-  // registry contributes its `permanent` rows — 置顶 alone no longer keeps a
-  // file alive, which is exactly the split test-docs-registry.js pins down.
+  // Contract: every cleanup tick passes the keep-list in, and a read failure
+  // only warns + skips (never crashes the server). Match the source and the
+  // failure sentinel rather than the full statement shape so formatting/
+  // line-budget merges don't break this test again. The docs registry
+  // contributes its `permanent` rows — 置顶 alone no longer keeps a file alive,
+  // which is exactly the split test-docs-registry.js pins down.
   assert.match(source,
-    /artifacts\.cleanup\(undefined, \[\.\.\.taskRunStore\.listPinnedArtifactIds\(\), \.\.\.docsRegistry\.listPermanentArtifactIds\(\)\]\)/);
+    /artifacts\.cleanup\(undefined, docsRegistry\.listPermanentArtifactIds\(\)\)/);
   assert.match(source, /artifact_cleanup_pin_read_failed/);
   assert.match(source, /cleanupArtifacts\(\);/);
   assert.match(source, /setInterval\(\(\) => cleanupArtifacts\(\), 6 \* 3600 \* 1000\)/);

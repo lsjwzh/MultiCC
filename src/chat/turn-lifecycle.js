@@ -15,11 +15,8 @@ function freezeLineage(lineage) {
 
 function freezeTask(task) {
   const source = task && typeof task === 'object' ? task : {};
-  const runId = clean(source.runId || source.taskRunId);
-  const leaseEpoch = source.leaseEpoch == null ? null : Number(source.leaseEpoch);
   return Object.freeze({
     id: clean(source.id) || null,
-    ...(runId ? { runId, leaseEpoch } : {}),
     start: source.start === true,
     source: clean(source.source) || null,
   });

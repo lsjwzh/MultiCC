@@ -6,34 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const core = require('../src/task-board/core');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
-const taskBoardUi = require('../public/task-board-ui');
 const { mkRuntime } = require('./helpers/task-board-runtime');
-
-test('task board UI groups only visible related tasks and leaves every task card distinct', () => {
-  const tasks = [
-    { id: 'task-new', title: '新衍生任务', lastTs: 30 },
-    { id: 'task-old', title: '原始任务', lastTs: 20 },
-    { id: 'task-free', title: '无关任务', lastTs: 10 },
-  ];
-  const partitioned = taskBoardUi.partitionTaskGroups(tasks, [{
-    id: 'group-1', title: '原始任务', taskIds: ['task-old', 'task-new'], lastTs: 30,
-  }]);
-  assert.deepEqual(partitioned.groups.map(group => group.id), ['group-1']);
-  assert.deepEqual(partitioned.groups[0].tasks.map(task => task.id), ['task-new', 'task-old']);
-  assert.deepEqual(partitioned.ungrouped.map(task => task.id), ['task-free']);
-  assert.deepEqual(tasks.map(task => task.id), ['task-new', 'task-old', 'task-free']);
-
-  const filtered = taskBoardUi.partitionTaskGroups([tasks[0], tasks[2]], [{
-    id: 'group-1', taskIds: ['task-old', 'task-new'],
-  }]);
-  assert.equal(filtered.groups.length, 0);
-  assert.deepEqual(filtered.ungrouped.map(task => task.id), ['task-new', 'task-free']);
-  for (const file of ['public/meta.html']) {
-    const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-    assert.match(source, /MultiCCTaskBoardUi\.partitionTaskGroups/);
-    assert.match(source, /tb-related-group/);
-  }
-});
 
 test('related task grouping persists a separate family without merging task identity', () => {
   const board = core.createEmptyBoard();

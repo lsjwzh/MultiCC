@@ -1,29 +1,24 @@
 'use strict';
 
 // Cold-start seed: a bound session that has no native cliSessionId yet is
-// seeded from the durable task ledger (task-run history plus legacy refs)
-// instead of replaying the whole chat history. Everything here is read-only
-// and best-effort — the caller always sends the bare user text too.
+// seeded from the durable task ledger (legacy turn refs) instead of replaying
+// the whole chat history. Everything here is read-only and best-effort — the
+// caller always sends the bare user text too.
 
 function createColdStartSeed({
-  records, board, taskRuns, buildTaskRunContext,
-  taskIdentityIds, legacyImportMessages, contextMessages, storedTaskMessages,
+  records, board, buildTaskRunContext,
+  taskIdentityIds, legacyImportMessages, contextMessages,
 }) {
   // Seed a not-yet-native bound session from durable task history.
   return function coldStartSeed(boundId, task) {
     if (records.get(boundId)?.cliSessionId) return '';
     try {
       const identityIds = taskIdentityIds(task);
-      const runBacked = new Map(identityIds.map(identityId => [
-        identityId,
-        taskRuns ? taskRuns.listTaskRuns(identityId).length > 0 : false,
-      ]));
       // A surviving target already carries the union of source refs, and a
       // source that survived an earlier merge may itself carry descendant
       // refs. Assign each historical ref to the most specific member first
-      // (fewest refs; canonical target last). Run-backed members still claim
-      // their refs so the same turn is not injected again through an ancestor's
-      // legacy fallback.
+      // (fewest refs; canonical target last), so the same turn is not injected
+      // again through an ancestor's legacy fallback.
       const claimedRefs = new Set();
       const refsByIdentity = new Map();
       const claimOrder = identityIds.map(identityId => board.tasks[identityId])
@@ -31,8 +26,7 @@ function createColdStartSeed({
         .sort((left, right) => {
           if (left.id === task.id) return 1;
           if (right.id === task.id) return -1;
-          return Number(runBacked.get(left.id)) - Number(runBacked.get(right.id))
-            || (left.refs?.length || 0) - (right.refs?.length || 0)
+          return (left.refs?.length || 0) - (right.refs?.length || 0)
             || String(left.id).localeCompare(String(right.id));
         });
       for (const member of claimOrder) {
@@ -58,7 +52,6 @@ function createColdStartSeed({
         refsByIdentity.set(member.id, owned);
       }
       const legacyById = new Map(identityIds.flatMap(identityId => {
-        if (runBacked.get(identityId)) return [];
         const member = board.tasks[identityId];
         return member ? legacyImportMessages({
           ...member,
@@ -68,7 +61,7 @@ function createColdStartSeed({
       const imports = contextMessages([...legacyById.values()]);
       const context = buildTaskRunContext({
         task,
-        messages: [...storedTaskMessages(task.id), ...imports],
+        messages: imports,
         includeCurrent: false,
       });
       // Layers concatenate with no separator, so the seed carries its own.

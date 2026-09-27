@@ -69,9 +69,14 @@ void main() {
   tearDown(() => I18n.switchLang('en'));
 
   test('workspace owns the drawer while settings screens stay standalone', () {
+    // Air 自带完整的壳，抽屉属于它自己的内层 Scaffold —— main_shell 只负责把
+    // AirTasksView 挂上去，设置页一律不带抽屉。
     final homeSource = File('lib/screens/main_shell.dart').readAsStringSync();
-    expect(homeSource, contains('drawer: WorkspaceNavigationDrawer('));
-    expect(homeSource, contains("ValueKey('workspace-menu-button')"));
+    expect(homeSource, contains('AirTasksView('));
+
+    final airShell = File('lib/widgets/air_tasks_view.dart').readAsStringSync();
+    expect(airShell, contains('drawer: AirSidebar('));
+    expect(airShell, contains("ValueKey('air-menu-button')"));
 
     for (final path in [
       'lib/screens/settings_screen.dart',

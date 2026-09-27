@@ -517,8 +517,9 @@ async function stopServer() {
   // attribution adopts once they have content), then the directory.
   await git(sourceWorktree, ['reset', '--hard', await git(project, ['rev-parse', 'HEAD'])]);
   const fixtureSessionIds = new Set([sourceId, importedId, legacyId, zipId, crossId, sameRepoId]);
-  const board = await api('GET', '/api/task-board');
-  const ownedTasks = Object.values(board.data.tasks || {})
+  // The board listing route is retired; read the durable index the server owns.
+  const board = JSON.parse(fs.readFileSync(path.join(dataRoot, 'task_board.json'), 'utf8'));
+  const ownedTasks = Object.values(board.tasks || {})
     .filter(task => fixtureSessionIds.has(task.chatSessionId));
   assert.ok(ownedTasks.some(task => task.chatSessionId === sourceId), 'the seeded room was adopted into a board task');
   for (const task of ownedTasks) {

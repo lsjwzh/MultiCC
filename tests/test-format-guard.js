@@ -239,7 +239,7 @@ test('every page that uses the format API loads shared/format.js before it', () 
     }
   }
   assert.deepEqual(failures, []);
-  assert.ok(PAGES.filter(page => scriptSrcs(page).includes(CANONICAL)).length >= 8,
+  assert.ok(PAGES.filter(page => scriptSrcs(page).includes(CANONICAL)).length >= 7,
     'the pages that render numbers all carry the tag');
 });
 

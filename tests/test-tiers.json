@@ -590,16 +590,6 @@
       "lane": "flutter"
     },
     {
-      "path": "app/test/task_board_entry_service_test.dart",
-      "tier": "core",
-      "lane": "flutter"
-    },
-    {
-      "path": "app/test/task_board_model_test.dart",
-      "tier": "core",
-      "lane": "flutter"
-    },
-    {
       "path": "app/test/task_bound_chat_test.dart",
       "tier": "core",
       "lane": "flutter"
@@ -607,11 +597,6 @@
     {
       "path": "app/test/task_chat_open_test.dart",
       "tier": "flow",
-      "lane": "flutter"
-    },
-    {
-      "path": "app/test/task_chat_transport_test.dart",
-      "tier": "core",
       "lane": "flutter"
     },
     {
@@ -626,16 +611,6 @@
     },
     {
       "path": "app/test/task_notify_preference_test.dart",
-      "tier": "other",
-      "lane": "flutter"
-    },
-    {
-      "path": "app/test/task_run_summary_list_test.dart",
-      "tier": "other",
-      "lane": "flutter"
-    },
-    {
-      "path": "app/test/task_run_summary_model_test.dart",
       "tier": "other",
       "lane": "flutter"
     },
@@ -687,11 +662,6 @@
     {
       "path": "app/test/workspace_navigation_drawer_test.dart",
       "tier": "other",
-      "lane": "flutter"
-    },
-    {
-      "path": "app/test/workspace_task_run_stream_test.dart",
-      "tier": "core",
       "lane": "flutter"
     },
     {
@@ -4303,27 +4273,9 @@
       ]
     },
     {
-      "path": "tests/test-task-board-cancel-run.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
       "path": "tests/test-task-board-groups.js",
       "tier": "other",
       "lane": "deterministic"
-    },
-    {
-      "path": "tests/test-task-board-merge.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
     },
     {
       "path": "tests/test-task-board.js",
@@ -4473,124 +4425,6 @@
       ]
     },
     {
-      "path": "tests/test-task-run-cleanup.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-context.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-errors.js",
-      "tier": "core",
-      "lane": "deterministic"
-    },
-    {
-      "path": "tests/test-task-run-host.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-main-usage-integration.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:contracts",
-      "entrypoints": [
-        "npm:test:contracts"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-panel-cdp.js",
-      "tier": "flow",
-      "lane": "cdp",
-      "owner": "npm:test:cdp",
-      "entrypoints": [
-        "npm:test:cdp"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-production.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-provider-bridge.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-recovery.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-routes.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-routing-contract.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-server-composition.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:contracts",
-      "entrypoints": [
-        "npm:test:contracts"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-store.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
-      "path": "tests/test-task-run-stream-forwarder.js",
-      "tier": "core",
-      "lane": "deterministic"
-    },
-    {
       "path": "tests/test-task-search.js",
       "tier": "other",
       "lane": "deterministic",
@@ -4615,16 +4449,6 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:task-shells"
-      ]
-    },
-    {
-      "path": "tests/test-task-shell-cdp.js",
-      "tier": "flow",
-      "lane": "cdp",
-      "owner": "npm:test:task-shells:cdp",
-      "entrypoints": [
-        "docker/task-shell/run-tests.js",
-        "npm:test:task-shells:cdp"
       ]
     },
     {
@@ -4748,11 +4572,6 @@
       "entrypoints": [
         "npm:test:core"
       ]
-    },
-    {
-      "path": "tests/test-task-transcript.js",
-      "tier": "core",
-      "lane": "deterministic"
     },
     {
       "path": "tests/test-task-worktree.js",

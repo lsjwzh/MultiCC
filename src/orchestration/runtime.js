@@ -93,7 +93,6 @@ function createOrchestrationRuntime({
   noteBlockedDelivery = null,
   isDeliveryLocked = () => false,
   deliveryGroup = id => id,
-  isSlotUnavailable = () => false,
   hasPersistedDelivery = async () => false,
   // Optional: (sessionId, identity) → null | { known, handedOff, turnId, at }.
   // Distinguishes "persisted to history" from "runner took over" on the
@@ -231,10 +230,6 @@ function createOrchestrationRuntime({
         ? { registrationFingerprint: String(spec.registrationFingerprint).slice(0, 128) }
         : {}),
       ...(spec.taskId ? { taskId: String(spec.taskId).slice(0, 128) } : {}),
-      ...(spec.taskRunId ? {
-        taskRunId: String(spec.taskRunId).slice(0, 128),
-        leaseEpoch: Number(spec.leaseEpoch),
-      } : {}),
       ...(spec.originDispatchId
         ? { originDispatchId: String(spec.originDispatchId).slice(0, 128) }
         : {}),
@@ -246,11 +241,6 @@ function createOrchestrationRuntime({
         clientScheduleId: String(spec.clientScheduleId || '').slice(0, 128),
       } : {}),
     };
-    if (registrationMetadata.taskRunId
-        && (!Number.isSafeInteger(registrationMetadata.leaseEpoch)
-          || registrationMetadata.leaseEpoch < 1)) {
-      throw new TypeError('task-run wait requires a positive leaseEpoch');
-    }
     let metadata;
     if (mode === 'poll') {
       if (!spec.pollCmd && !spec.pollUrl) throw new Error('poll mode needs pollCmd or pollUrl');
@@ -731,22 +721,6 @@ function createOrchestrationRuntime({
     return lineage.taskId || ownPayload(item)?.taskId || ownPayload(item)?.options?.taskId || null;
   }
 
-  function itemTaskRunId(item) {
-    const lineage = itemTurnLineage(item);
-    return lineage.taskRunId
-      || ownPayload(item)?.taskRunId
-      || ownPayload(item)?.options?.taskRunId
-      || null;
-  }
-
-  function itemLeaseEpoch(item) {
-    const lineage = itemTurnLineage(item);
-    const parsed = Number(lineage.leaseEpoch
-      ?? ownPayload(item)?.leaseEpoch
-      ?? ownPayload(item)?.options?.leaseEpoch);
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-  }
-
   function itemOriginDispatchId(item) {
     const lineage = itemTurnLineage(item);
     return lineage.originDispatchId
@@ -781,8 +755,6 @@ function createOrchestrationRuntime({
     item.turnLineage = {
       ...itemTurnLineage(item),
       taskId,
-      taskRunId: matches[0].spec?.taskRunId || null,
-      leaseEpoch: matches[0].spec?.leaseEpoch || null,
       originDispatchId: matches[0].id,
       workKind: 'continuation',
       inheritedBy: 'unique_live_task_match',
@@ -807,8 +779,6 @@ function createOrchestrationRuntime({
         ...(payload.options || {}),
         deliveryClass,
         taskId: itemTaskId(item) || undefined,
-        taskRunId: itemTaskRunId(item) || undefined,
-        leaseEpoch: itemLeaseEpoch(item) || undefined,
         originDispatchId: itemOriginDispatchId(item) || undefined,
         originContinue: effectiveWorkKind !== 'task',
         deliveryId: item.id,
@@ -832,14 +802,10 @@ function createOrchestrationRuntime({
         taskShellReceiptId: payload.taskShellReceiptId || undefined,
         receivedAt: payload.receivedAt,
         taskId: payload.taskId || undefined,
-        taskRunId: payload.taskRunId || undefined,
-        leaseEpoch: itemLeaseEpoch(item) || undefined,
         // No history intent is passed. A delivered dispatch is the same thing
         // as a message typed into the input box: the engine derives
-        // resume-vs-fresh from live native-session proof. A task run still
-        // starts a fresh thread, but because resetSlot cleared cliSessionId
-        // and the turn count before cleanup could report done — not because
-        // the dispatcher pinned it.
+        // resume-vs-fresh from live native-session proof, never from a
+        // dispatcher-pinned intent.
         taskStart: payload.taskStart === true,
         taskSource: payload.taskSource || undefined,
         taskText: payload.taskText || undefined,
@@ -851,8 +817,6 @@ function createOrchestrationRuntime({
       deliveryId: item.id,
       clientMsgId: item.id,
       taskId: itemTaskId(item) || undefined,
-      taskRunId: itemTaskRunId(item) || undefined,
-      leaseEpoch: itemLeaseEpoch(item) || undefined,
       originDispatchId: itemOriginDispatchId(item) || undefined,
     };
   }
@@ -907,8 +871,7 @@ function createOrchestrationRuntime({
       // The host-busy read must happen before our own claim: claiming emits
       // 'claimed', which projects queueState 'running' onto the session
       // record, so a post-claim isBusy would read its own claim as busy and
-      // defer forever. Slot-lease conflicts are re-checked after the claim
-      // because only the claim reveals the retained run lineage.
+      // defer forever.
       if (isBusy(item.sessionId, item)) {
         return outbox.defer(item.id, item.leaseToken, 'chat session is busy', {
           delayMs: 0,
@@ -921,30 +884,6 @@ function createOrchestrationRuntime({
         });
       }
       schedulerClaimed = true;
-      const claimedActive = schedulerClaim.schedule?.active || {};
-      if (!itemTaskRunId(item) && claimedActive.taskRunId) {
-        item.turnLineage = {
-          ...itemTurnLineage(item),
-          taskId: itemTaskId(item) || claimedActive.taskId || null,
-          taskRunId: claimedActive.taskRunId,
-          leaseEpoch: claimedActive.leaseEpoch || null,
-          originDispatchId: itemOriginDispatchId(item)
-            || claimedActive.originDispatchId || null,
-        };
-      }
-      if (isSlotUnavailable(item.sessionId, item)) {
-        // P0 ordering: settle the transport lease FIRST (silent store mutation),
-        // then release the scheduler claim — its 'claim_released' broadcast then
-        // carries the authoritative post-rollback queue snapshot with this item
-        // already back in the FIFO, instead of broadcasting an intermediate
-        // state that hides the item until some later event fires.
-        const deferred = await outbox.defer(item.id, item.leaseToken, 'task execution slot is leased to another run', {
-          delayMs: 0,
-        });
-        await sessionScheduler.releaseClaim(item, 'host_busy_after_claim');
-        schedulerClaimed = false;
-        return deferred;
-      }
       if (await hasPersistedDelivery(item.sessionId, deliveryId)) {
         // Persisted ≠ delivered. The live turn engine reports whether a runner
         // actually took over for this identity. A known pre-handoff rejection
@@ -975,8 +914,6 @@ function createOrchestrationRuntime({
         text: deliveryText(item),
         opts: deliveryOptions(item),
         taskId: itemTaskId(item),
-        taskRunId: itemTaskRunId(item),
-        leaseEpoch: itemLeaseEpoch(item),
       };
       deliveryGuard = await Promise.resolve(beforeDeliver(descriptor));
       const accepted = await Promise.resolve(

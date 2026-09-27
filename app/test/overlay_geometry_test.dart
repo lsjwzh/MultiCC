@@ -39,17 +39,17 @@ void main() {
     expect(overlaySnapFraction(squat), 1.0);
   });
 
-  test('两个浮层用的是同一份停位，页头那条线也只有一个来源', () {
+  test('对话浮层用 overlay_geometry 的停位，页头那条线也只有一个来源', () {
     final shell = File('lib/screens/main_shell.dart').readAsStringSync();
-    // 对话浮层与目录详情浮层各两次（进场的动画目标 + 拖动落点/遮罩边界）。
+    // 对话浮层两次（进场的动画目标 + 拖动落点/遮罩边界），收起态与展开态各一份。
     expect(
       RegExp(r'_overlaySnapFraction\(').allMatches(shell).length,
       greaterThanOrEqualTo(4),
-      reason: '两个浮层都要按同一个停位摆；少一个就会一层压在另一层外面',
+      reason: '浮层要按 overlay_geometry 的停位摆；少一个就会压到页头外面',
     );
     expect(
       RegExp(r'_overlayContentTop\(').allMatches(shell).length,
-      greaterThanOrEqualTo(3),
+      greaterThanOrEqualTo(2),
       reason: '遮罩与浮层主体都要从内容区顶端开始',
     );
     // 老写法：按屏幕比例硬编码一个停位（0.9 = 盖住 90%，页头整个被压住）。
@@ -76,6 +76,5 @@ void main() {
     final home = File('lib/screens/main_shell.dart').readAsStringSync();
     expect(home, contains('beforeOpenNavigation: () async {'));
     expect(home, contains('await mgr.requestCloseChat()'));
-    expect(home, contains('await mgr.requestCloseFleetDir()'));
   });
 }

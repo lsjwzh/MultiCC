@@ -46,7 +46,6 @@ function fixture(overrides = {}) {
       }),
       gitRelocateWorktree: overrides.gitRelocateWorktree || (async () => ({ ok: true })),
     },
-    taskRuns: null, isOpenTaskRun: () => false,
     resolveTask: id => board.tasks[id] || null,
     taskIdentityIds: t => [t.id],
     taskDirId: t => t.dirId,

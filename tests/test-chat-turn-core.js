@@ -392,19 +392,17 @@ test('turn lifecycle carries canonical task identity into router tool capabiliti
   assert.equal(Object.isFrozen(turn.task), true);
 });
 
-test('task-run identity and provider attribution stay frozen for the admitted turn', () => {
+test('task identity and provider attribution stay frozen for the admitted turn', () => {
   const normalized = normalizeTurnRequest({
     sessionId: 'worker-1',
     text: 'run the task',
     cli: 'codex',
     taskId: 'task-1',
-    taskRunId: 'run-1',
-    leaseEpoch: 7,
     taskSource: 'task-board',
   });
   const turn = createTurnLifecycle(normalized, { turnId: 'turn-task-run' });
   assert.deepEqual(turn.task, {
-    id: 'task-1', runId: 'run-1', leaseEpoch: 7,
+    id: 'task-1',
     start: false, source: 'task-board',
   });
 

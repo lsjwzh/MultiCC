@@ -50,23 +50,6 @@ function fixture(overrides = {}) {
   };
 }
 
-function mountRoutes(runtime) {
-  const routes = new Map();
-  runtime.mountRoutes({
-    get: (route, handler) => routes.set(`GET ${route}`, handler),
-    post: (route, handler) => routes.set(`POST ${route}`, handler),
-  });
-  return routes;
-}
-
-function response() {
-  return {
-    code: 200,
-    status(code) { this.code = code; return this; },
-    json(body) { this.body = body; return this; },
-  };
-}
-
 test('automatic classification recovers canonical taskId context from a partial annotation', () => {
   const history = [
     { id: 'u-canonical', role: 'user', content: '恢复 canonical 上下文', taskId: 'task-canonical', ts: 1 },
@@ -195,19 +178,14 @@ test('an unreadable context store fails open instead of archiving the card', () 
     taskId: 'task-unreadable', dirId: 'dir-1', sessionId: 'sess-1',
     taskText: '上下文暂时不可读', now: 1,
   });
-  const routes = mountRoutes(runtime);
-  const res = response();
+  pending.moduleAssignment.lastError = 'missing_context';
 
-  routes.get('POST /api/task-board/tasks/:taskId/reclassify')({
-    params: { taskId: pending.id }, body: {},
-  }, res);
-  assert.equal(res.code, 503);
-  assert.equal(res.body.error, 'context_unavailable');
-  assert.equal(pending.status, 'active');
-  assert.equal(pending.moduleAssignment.lastError, '');
+  assert.equal(runtime.scanPendingClassifications(), 1);
+  assert.equal(pending.status, 'active', 'an unreadable store never hides the card');
+  assert.equal(pending.moduleAssignment.lastError, 'context_unavailable');
 });
 
-test('bulk cleanup archives missing context and admits valid work despite historical Aux health', () => {
+test('startup recovery archives missing context and clears valid work despite historical Aux health', () => {
   const history = [
     { id: 'u-health', role: 'user', content: '有效但 Aux 不健康', ts: 1 },
     { id: 'a-health', role: 'assistant', content: '完成。', ts: 2 },
@@ -231,23 +209,18 @@ test('bulk cleanup archives missing context and admits valid work despite histor
   });
   valid.refs[0].userMsgId = history[0].id;
   valid.refs[0].assistantMsgId = history[1].id;
+  valid.moduleAssignment.lastError = 'missing_context';
   const missing = core.createPendingTask(board, {
     taskId: 'task-health-missing', dirId: 'dir-1', sessionId: 'gone',
     taskText: '已删除历史', now: 2,
   });
-  const routes = mountRoutes(runtime);
-  const res = response();
+  missing.moduleAssignment.lastError = 'missing_context';
 
-  routes.get('POST /api/task-board/reclassify-pending')({
-    body: { dirId: 'dir-1' },
-  }, res);
-  assert.equal(res.code, 200);
-  assert.deepEqual(
-    { queued: res.body.queued, archived: res.body.archived, skipped: res.body.skipped },
-    { queued: 1, archived: 1, skipped: 0 },
-  );
-  assert.equal(enqueueCalls, 1);
+  assert.equal(runtime.scanPendingClassifications(), 2);
+  // The shared Aux lane is serial; startup recovery never bulk-queues, so a
+  // historically unhealthy lane is irrelevant here.
+  assert.equal(enqueueCalls, 0);
   assert.equal(valid.status, 'active');
-  assert.equal(valid.moduleAssignment.running, true);
+  assert.equal(valid.moduleAssignment.lastError, '');
   assert.equal(missing.status, 'archived');
 });

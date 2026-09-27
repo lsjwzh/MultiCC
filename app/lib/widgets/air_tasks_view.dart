@@ -65,10 +65,10 @@ class AirTasksView extends StatefulWidget {
 
   /// ☰ 按下之后、抽屉拉开之前的这一步。
   ///
-  /// 抽屉是这一层 Scaffold 的，而打开着的对话 / 目录详情浮层挂在它上面（宿主把
-  /// 它们叠在外层 Stack 里）—— 不先把浮层让开，抽屉就拉在浮层底下，屏幕上什么
-  /// 也看不到。宿主知道当前开着的是哪一层、也知道它什么时候滑完，所以这件事交给
-  /// 宿主；这里只负责等它回来再开抽屉。不提供 = 直接开。
+  /// 抽屉是这一层 Scaffold 的，而打开着的对话浮层挂在它上面（宿主把它叠在外层
+  /// Stack 里）—— 不先把浮层让开，抽屉就拉在浮层底下，屏幕上什么也看不到。宿主
+  /// 知道当前开着的是哪一层、也知道它什么时候滑完，所以这件事交给宿主；这里只负责
+  /// 等它回来再开抽屉。不提供 = 直接开。
   final Future<void> Function()? beforeOpenNavigation;
 
   const AirTasksView({
@@ -223,7 +223,7 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 一条路由，首页又是栈底那一条，`canPop()` 会直接说「没得弹」。
   void _closeDrawer() => _scaffoldKey.currentState?.closeDrawer();
 
-  /// ☰：先请宿主把浮层让开（对话 / 目录详情），让开了再拉抽屉 —— 抽屉属于这一层
+  /// ☰：先请宿主把浮层让开（对话），让开了再拉抽屉 —— 抽屉属于这一层
   /// Scaffold，浮层不滑落的话它会被压在上面盖住（见 [AirTasksView.beforeOpenNavigation]）。
   /// ScaffoldState 在 await 之前就取好：跨过 await 再碰 BuildContext 是不合法的。
   Future<void> _openNavigation(BuildContext drawerContext) async {

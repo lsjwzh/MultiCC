@@ -53,7 +53,7 @@ vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(root, 'public', 'i18n-catalog.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(root, 'public', 'i18n.js'), 'utf8'), context);
 
-// Air 是唯一的产品主界面（/ 、/manage、/chat.html、/task-shell.html 全都 302 到它），
+// Air 是唯一的产品主界面（/ 、/manage、/chat.html 302 到它，/task-shell.html 经任务入口页落到它），
 // 所以它的每一个 key 都必须落在词典里 —— 每个 air*.js 都扫，新模块不用回来加名字。
 const airFiles = ['air.html', ...fs.readdirSync(path.join(root, 'public'))
   .filter((name) => /^air.*\.js$/.test(name)).sort()];

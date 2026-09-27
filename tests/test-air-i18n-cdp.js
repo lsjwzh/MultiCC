@@ -1,5 +1,5 @@
 'use strict';
-// Air 是唯一的产品主界面（/ 、/manage、/chat.html、/task-shell.html 都 302 到它），
+// Air 是唯一的产品主界面（/ 、/manage、/chat.html 302 到它，/task-shell.html 经任务入口页落到它），
 // 所以「整个产品 UI 能在中文/English 之间切换」这句话最终就落在这一页上。这组断言
 // 盯两件事：
 //   ① 语言切到 en 之后，Air 壳里不能再有任何中文 —— 文本节点、title / aria-label /
@@ -141,7 +141,6 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
   };
   // 对话帧是另一个文档，本测试只断 Air 自己那一页：给个空壳，省掉一堆无关请求。
   routes['/chat.html'] = { body: '<!doctype html><meta charset="utf-8"><title>frame</title>', headers: { 'content-type': 'text/html; charset=utf-8' } };
-  routes['/task-shell.html'] = routes['/chat.html'];
 
   const configuration = { cli: 'codex', provider: 'codex-lab', providerName: 'Lab Responses', providerSelection: null,
     model: 'gpt-5.5', effectiveModel: 'gpt-5.5', effort: 'medium' };

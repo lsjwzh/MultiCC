@@ -16,7 +16,6 @@ const suites = [
   ['--test', 'tests/test-air-task-first-cdp.js'],
   ['tests/test-task-shell-isolated.js'],
   ['tests/test-task-shell-context-isolation.js'],
-  ['--test', 'tests/test-task-shell-cdp.js'],
 ];
 async function run(args) {
   console.log(`\n[Docker regression] node ${args.join(' ')}`);

@@ -834,9 +834,8 @@ test('every voice entry point goes through the one launch endpoint', () => {
 
   const mainShell = readRepoFile('app/lib/screens/main_shell.dart');
   assert.match(mainShell, /VoiceLaunchService\(settings: widget\.settings\)\.launch\(\)/);
-  assert.match(mainShell, /class _VoiceBetaEntry/);
-  assert.match(mainShell, /globalVoiceBetaHint/);
-  assert.match(mainShell, /'BETA'/);
+  // 老首页那一版 _VoiceBetaEntry 入口随整块首页下线；Air 侧栏的语音入口由
+  // public/air-voice.js 一节钉住（见上），这里不再要求 main_shell 自带那条横幅。
   assert.match(readRepoFile('app/assets/i18n/zh.json'), /"globalVoiceCall"/);
   assert.match(readRepoFile('app/assets/i18n/en.json'), /"globalVoiceCall"/);
   assert.match(readRepoFile('app/assets/i18n/zh.json'), /"globalVoiceBetaHint"/);

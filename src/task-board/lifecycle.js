@@ -92,18 +92,14 @@ function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, t
     delete: (req, res) => operate(req, res, 'delete') };
 }
 
-function createBoardTaskLifecycle({ deps, taskRuns, isOpenTaskRun, ...options }) {
-  return createTaskLifecycle({ ...options, assertIdle: async task => {
-    const ids = options.taskIdentityIds(task);
-    if (ids.some(id => taskRuns?.listTaskRuns(id).some(isOpenTaskRun))) throw Object.assign(new Error('task_busy'), { code: 'task_busy' });
-    await deps.assertTaskIdle?.(task, ids);
+function createBoardTaskLifecycle({ deps, ...rest }) {
+  return createTaskLifecycle({ ...rest, assertIdle: async task => {
+    await deps.assertTaskIdle?.(task, rest.taskIdentityIds(task));
   }, preparePurge: async (task, ids, options) => {
-    for (const id of ids) taskRuns?.assertTaskPurgeable(id);
     await deps.prepareTaskDelete?.(task, ids, options);
   }, purge: async (task, ids, options) => {
     if (!deps.purgeTaskData) throw Object.assign(new Error('task_delete_unavailable'), { code: 'task_delete_unavailable' });
     await deps.purgeTaskData(task, ids, options);
-    for (const id of ids) taskRuns?.purgeTask(id);
   } });
 }
 

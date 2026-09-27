@@ -3,29 +3,15 @@
 // Task-board runtime: persistence, classification, dispatch and REST wiring.
 
 const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 const core = require('../task-board/core');
 const planning = require('../task-board/planning');
-const { createPaths } = require('../paths');
 const { isVoiceRouterRecord } = require('../voice/router');
 const { runStateForFreezeReason } = require('../session-work/scheduler');
 const { runStateForClassify: runStateForLetter } = require('../classify/vocab');
-const { publicRunDto } = require('./task-runs');
-const {
-  buildTaskRunContext: defaultBuildTaskRunContext,
-  isTaskRunWrapperText,
-} = require('../task-run/context');
-const { recordRunError, runErrorOf } = require('../task-run/errors');
+const { buildTaskRunContext: defaultBuildTaskRunContext } = require('../task-board/turn-context');
 const { createTaskWorktreeService } = require('../task-worktree');
-const {
-  taskTranscriptMessages,
-  paginateTranscript,
-} = require('../task-run/transcript-repository'); const { displayMessages, taskFields } = require('../task-display-attribution');
-const {
-  aggregateTaskUsages,
-  createTaskMergeHandler,
-} = require('../task-board/merge-runtime');
+const { taskFields } = require('../task-display-attribution');
 const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board/runtime-helpers');
 const { createColdStartSeed } = require('../task-board/cold-start-seed');
 const { createTaskPlanningRuntime } = require('./task-planning');
@@ -38,39 +24,16 @@ function createTaskBoardRuntime(deps) {
     workspaceBroadcast, atomicWriteJson, isSystemInjected,
     getSessionRunState,
   } = deps;
-  const taskRuns = deps.taskRuns && typeof deps.taskRuns.beginRun === 'function'
-    ? deps.taskRuns : null;
   const buildTaskRunContext = deps.buildTaskRunContext || defaultBuildTaskRunContext;
   const resolveSessionQueue = typeof deps.resolveSessionQueue === 'function'
     ? deps.resolveSessionQueue
     : async () => ({ ok: false, code: 'no_active_task' });
-  const terminateTaskRun = typeof deps.terminateTaskRun === 'function'
-    ? deps.terminateTaskRun : null;
-  const cancelUndeliveredTaskRun = typeof deps.cancelUndeliveredTaskRun === 'function'
-    ? deps.cancelUndeliveredTaskRun : null;
-  const getCommanderMigrationStatus = typeof deps.getCommanderMigrationStatus === 'function'
-    ? deps.getCommanderMigrationStatus : null;
   // P1 task-bound hidden sessions: creates ordinary chat records carrying the
   // taskBoundTaskId marker. Optional in reduced hosts/tests — without it the
   // chat-session endpoint answers an explicit 501 instead of crashing.
   const createSessionRecord = typeof deps.createSessionRecord === 'function'
     ? deps.createSessionRecord : null;
-  // Composer runtime picks · where the suggested-runtime endpoint reads recent
-  // activity from. Optional in reduced hosts/tests; production derives the same
-  // chat_history dir the history service writes to.
-  const chatHistoryDir = typeof deps.chatHistoryDir === 'string' && deps.chatHistoryDir
-    ? deps.chatHistoryDir : null;
   const logger = deps.logger || console;
-  const taskRunAnswers = new Map();
-  // Optional goal-mode note ports.
-  const resolveGoalLimits = typeof deps.resolveGoalLimits === 'function' ? deps.resolveGoalLimits : null;
-  const buildGoalLimitNote = typeof deps.buildGoalLimitNote === 'function' ? deps.buildGoalLimitNote : null;
-
-  function goalNoteFor(body) {
-    if (!body || !body.goal || !resolveGoalLimits || !buildGoalLimitNote) return '';
-    try { return buildGoalLimitNote(resolveGoalLimits(body.goalLimits)) || ''; }
-    catch (_) { return ''; }
-  }
 
   const recoveryFile = file.replace(/\.json$/i, '') + '.planning-v2.json';
   let rawBoard = null;
@@ -234,59 +197,11 @@ function createTaskBoardRuntime(deps) {
         gitWorktreeRemove: deps.gitWorktreeRemove,
         gitMergeBack: deps.gitMergeBack,
         existsSync: typeof deps.existsSync === 'function' ? deps.existsSync : fs.existsSync,
-        isTaskRunning: taskRuns ? id => taskRuns.listTaskRuns(id).some(isOpenTaskRun) : null,
         beginTaskOperation: holdTaskOperation,
         logger,
       })
     : null;
 
-
-  // Retry each retryable failed delivery once, without retry chains.
-  async function autoRetryTaskRun({ taskId, runId } = {}) {
-    if (!taskRuns) return { ok: false, code: 'task_runs_unavailable' };
-    const id = String(taskId || '').trim();
-    const task = resolvedTask(id);
-    if (!task) return { ok: false, code: 'task_not_found' };
-    const failedRunId = String(runId || '').trim();
-    let runs;
-    try {
-      runs = taskRuns.listTaskRuns(id);
-    } catch (_) {
-      return { ok: false, code: 'task_runs_unavailable' };
-    }
-    const failedRun = runs.find(run => run.runId === failedRunId) || null;
-    if (!failedRun || failedRun.executionStatus !== 'failed') {
-      return { ok: false, code: 'run_not_failed' };
-    }
-    if (failedRun.metadata?.retryOf
-        || runs.some(run => run.metadata?.retryOf === failedRunId)) {
-      return { ok: true, skipped: true, code: 'retry_cap_reached' };
-    }
-    const errorInfo = runErrorOf(taskRuns, failedRunId);
-    if (errorInfo?.retryable !== true) {
-      return { ok: true, skipped: true, code: 'not_retryable' };
-    }
-    const admission = (taskRuns.getRunMessages(failedRunId) || [])
-      .find(message => message.kind === 'admission');
-    const text = core.messageText({ content: admission?.content }).trim();
-    if (!text) return { ok: false, code: 'admission_missing' };
-    const commander = core.resolveDirectoryCommander(records, core.taskDirId(board, task));
-    if (!commander.ok) return { ok: false, code: commander.code || 'commander_not_found' };
-    logger.log(`[multicc/taskboard] auto-retrying failed task run ${failedRunId} (${errorInfo.code})`);
-    const result = await routeCommanderFollowup(commander.sessionId, id, text, {
-      clientMsgId: `auto-retry:${failedRunId}`,
-      source: 'task-board',
-    });
-    return result;
-  }
-
-  function notifyTaskRun(taskId) {
-    const id = String(taskId || '').trim();
-    const task = resolvedTask(id);
-    if (!task) return false;
-    notify(core.taskDirId(board, task), [...new Set([task.id, id])]);
-    return true;
-  }
 
   function stableTaskId(source, requestKey) {
     const digest = crypto.createHash('sha256')
@@ -294,14 +209,6 @@ function createTaskBoardRuntime(deps) {
       .digest('hex')
       .slice(0, 32);
     return `tsk-${digest}`;
-  }
-
-  function requestKey(req) {
-    const bodyKey = String(req?.body?.clientMsgId || '').trim();
-    const headerKey = typeof req?.get === 'function'
-      ? String(req.get('Idempotency-Key') || '').trim()
-      : String(req?.headers?.['idempotency-key'] || '').trim();
-    return (bodyKey || headerKey).slice(0, 128) || crypto.randomUUID();
   }
 
   function canonicalMessages(task, identityIdsOverride = null) {
@@ -401,33 +308,6 @@ function createTaskBoardRuntime(deps) {
     }));
   }
   function canonicalTaskBody(task) {
-    if (taskRuns) {
-      try {
-        for (const taskId of taskIdentityIds(task)) {
-          for (const run of taskRuns.listTaskRuns(taskId)) {
-            const messages = taskRuns.getRunMessages(run.runId);
-            const canonical = messages.find(message => message.role === 'user'
-                && message.kind === 'legacy_import' && message.metadata?.canonicalBody === true)
-              || messages.find(message => message.role === 'user'
-                && message.kind === 'legacy_import')
-              || messages.find(message => message.role === 'user' && message.kind === 'admission');
-            if (canonical) {
-              const imported = canonical.kind === 'legacy_import';
-              return {
-                text: core.messageText({ content: canonical.content }),
-                messageId: imported
-                  ? canonical.metadata?.sourceMessageId || null
-                  : canonical.messageId || null,
-                sessionId: imported
-                  ? canonical.metadata?.sourceSessionId || null
-                  : null,
-                legacy: false,
-              };
-            }
-          }
-        }
-      } catch (_) { /* legacy history remains the compatibility fallback */ }
-    }
     const start = canonicalMessages(task)
       .find(entry => entry.message.role === 'user' && entry.message.taskStart === true);
     if (start) {
@@ -461,161 +341,6 @@ function createTaskBoardRuntime(deps) {
     }
     return { text: '', messageId: null, sessionId: null, legacy: true };
   }
-  // Transport wrappers are not conversation; metadata plus text catch old and new rows.
-  function isWrapperLedgerMessage(message) {
-    if (!message || message.role !== 'user') return false;
-    if (message.metadata?.wrapper === true) return true;
-    return isTaskRunWrapperText(core.messageText({ content: message.content }));
-  }
-  function storedTaskMessages(taskId, excludeRunId = null) {
-    if (!taskRuns) return [];
-    const items = [];
-    const task = resolvedTask(taskId);
-    const ids = task ? taskIdentityIds(task) : [taskId];
-    for (const identityId of ids) {
-      for (const run of taskRuns.listTaskRuns(identityId)) {
-        if (run.runId === excludeRunId) continue;
-        for (const message of taskRuns.getRunMessages(run.runId)) {
-          if (isWrapperLedgerMessage(message)) continue;
-          items.push({
-            id: message.messageId,
-            role: message.role,
-            ts: message.createdAt,
-            text: core.messageText({ content: message.content }),
-          });
-        }
-      }
-    }
-    return items;
-  }
-
-  function isOpenTaskRun(run) {
-    return !!run && run.executionStatus === 'running'
-      && run.usageStatus === 'collecting' && run.cleanupState === 'blocked';
-  }
-
-  function latestOpenTaskRun(taskId, knownRuns = null) {
-    if (!taskRuns) return null;
-    const task = resolvedTask(taskId);
-    const runs = Array.isArray(knownRuns) ? knownRuns
-      : (task ? taskIdentityIds(task) : [taskId])
-        .flatMap(identityId => taskRuns.listTaskRuns(identityId));
-    return runs.filter(isOpenTaskRun).sort((left, right) => (
-      (Number(left.startedAt) || 0) - (Number(right.startedAt) || 0)
-        || String(left.runId || '').localeCompare(String(right.runId || ''))
-    )).at(-1) || null;
-  }
-
-  // The one "is there a question waiting on this run" validator. Every other
-  // reader of pendingUserInput treats `resolved === true` as "no question"
-  // (publicPendingQuestion below, session-work/host.js, task-shell/host.js,
-  // dispatch/targeting.js, classify/vocab.js applyUserInputEvidence); leaving it
-  // out here was how an already-answered question still validated as the run's
-  // answer target. `allowResolved` exists for the answer route alone: a replay
-  // of the answer that resolved it (or a crash-resume of a reserved receipt)
-  // must still find its run, and that path re-verifies the durable receipt
-  // before it does anything.
-  function exactTaskRunTarget(taskId, knownRuns = null, { allowResolved = false } = {}) {
-    if (!taskRuns) return { ok: false, code: 'task_run_unavailable' };
-    let run;
-    try { run = latestOpenTaskRun(taskId, knownRuns); }
-    catch (_) { return { ok: false, code: 'task_run_unavailable' }; }
-    if (!run) return { ok: false, code: 'task_run_not_waiting' };
-    const slotId = String(run.slotId || '').trim();
-    const leaseEpoch = Number(run.leaseEpoch);
-    if (!slotId || !Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1) {
-      return { ok: false, code: 'task_run_lease_stale' };
-    }
-    const record = records.get(slotId);
-    const projected = record?.taskRunLease;
-    if (!record?.taskExecutionSlot || record.taskRunQuarantined
-        || projected?.runId !== run.runId || Number(projected?.leaseEpoch) !== leaseEpoch) {
-      return { ok: false, code: 'task_run_lease_stale' };
-    }
-    if (typeof taskRuns.getSlotLease !== 'function') {
-      return { ok: false, code: 'task_run_lease_stale' };
-    }
-    let lease;
-    try { lease = taskRuns.getSlotLease(slotId); }
-    catch (_) { return { ok: false, code: 'task_run_lease_stale' }; }
-    if (!lease || lease.runId !== run.runId || Number(lease.leaseEpoch) !== leaseEpoch
-        || lease.state !== 'active' || lease.phase !== 'ready') {
-      return { ok: false, code: 'task_run_lease_stale' };
-    }
-    const pending = record.taskState?.pendingUserInput || null;
-    if (!pending || String(pending.taskId || '') !== String(taskId)) {
-      return { ok: false, code: 'no_pending_question' };
-    }
-    if (pending.resolved === true && !allowResolved) {
-      return { ok: false, code: 'no_pending_question' };
-    }
-    return { ok: true, run, slotId, leaseEpoch, record, pending };
-  }
-
-  function publicPendingQuestion(pending) {
-    if (!pending || pending.resolved === true) return null;
-    const requestId = String(pending.requestId || '').trim().slice(0, 160);
-    const question = String(pending.question || '').trim().slice(0, 16 * 1024);
-    if (!requestId || !question) return null;
-    const options = [];
-    const seen = new Set();
-    for (const raw of Array.isArray(pending.options) ? pending.options : []) {
-      const option = String(raw == null ? '' : raw).trim().slice(0, 512);
-      if (!option || seen.has(option)) continue;
-      seen.add(option);
-      options.push(option);
-      if (options.length >= 12) break;
-    }
-    return {
-      requestId,
-      question,
-      reason: String(pending.reason || '').trim().slice(0, 4 * 1024),
-      options,
-      allowMultiple: pending.allowMultiple === true && options.length >= 2,
-      createdAt: Math.max(0, Number(pending.createdAt) || 0),
-    };
-  }
-
-  function taskRunDtos(taskId) {
-    if (!taskRuns) return { runs: [], usage: null };
-    try {
-      const task = resolvedTask(taskId);
-      const identityIds = task ? taskIdentityIds(task) : [taskId];
-      const runsByTask = identityIds.map(id => ({
-        id,
-        runs: taskRuns.listTaskRuns(id),
-        usage: taskRuns.getTaskUsage(id),
-      }));
-      const targetRuns = runsByTask.find(item => item.id === task?.id)?.runs || [];
-      const storedRuns = runsByTask.flatMap(item => item.runs).sort((left, right) => (
-        (Number(left.startedAt) || 0) - (Number(right.startedAt) || 0)
-          || String(left.runId || '').localeCompare(String(right.runId || ''))
-      ));
-      const answerTarget = exactTaskRunTarget(task?.id || taskId, targetRuns);
-      const pendingQuestion = answerTarget.ok
-        ? publicPendingQuestion(answerTarget.pending) : null;
-      const runs = storedRuns.slice(-5).reverse().map(run => ({
-        ...publicRunDto(run), usage: taskRuns.getRunUsage(run.runId),
-        ...(run.executionStatus === 'failed'
-          ? { error: runErrorOf(taskRuns, run.runId) } : {}),
-        ...(pendingQuestion && run.runId === answerTarget.run.runId
-          ? { pendingQuestion } : {}),
-      }));
-      return {
-        runs,
-        usage: aggregateTaskUsages(task?.id || taskId, runsByTask.map(item => item.usage)),
-      };
-    } catch (error) {
-      logger.log(`[multicc/taskboard] task-run projection failed: ${error?.code || 'unknown'}`);
-      return { runs: [], usage: null };
-    }
-  }
-
-  // #38 · the pooled admission machinery (beginTaskRun/rejectTaskRun) is
-  // retired with the slot dispatch: new work only ever enters through the
-  // bound chat session, and the ledger's read side (projection, answers,
-  // cancel, bounded auto-retry) keeps serving the legacy cards.
-
   function ensureTaskIndex({
     taskId, dirId, sessionId, routing, taskText = '', origin = null, now = Date.now(),
   }) {
@@ -1384,137 +1109,11 @@ function createTaskBoardRuntime(deps) {
     });
   }
 
-  // ── Backfill (scan existing chat history into the board) ─────────────────
-
-  // Pair user→assistant turns from a history array, skipping system-injected
-  // user messages and interim/error assistant messages. Returns the last
-  // `limit` pairs in chronological order.
-  function extractTurnPairs(history, limit) {
-    const pairs = [];
-    let pendingUser = null;
-    for (const m of history) {
-      if (!m || !m.role) continue;
-      if (m.role === 'user') {
-        const text = core.messageText(m).trim();
-        if (!text || isSystemInjected(text)) { pendingUser = null; continue; }
-        pendingUser = m;
-      } else if (m.role === 'assistant') {
-        if (m._interim || m.error) continue;
-        const text = core.messageText(m).trim();
-        if (!text || !pendingUser) continue;
-        pairs.push({ userMsg: pendingUser, assistantMsg: m });
-        pendingUser = null;
-      }
-    }
-    return pairs.slice(-limit);
-  }
-
-  // Backfill state — one run at a time; progress readable via GET board route.
-  const backfillState = { running: false, queued: 0, done: 0, startedAt: null };
-
-  function backfillSession(sessionId, rec, turnLimit) {
-    const history = loadHistory(sessionId) || [];
-    const pairs = extractTurnPairs(history, turnLimit);
-    if (!pairs.length) return null;
-    const turns = pairs.map((p, i) => ({
-      n: i + 1,
-      user: core.messageText(p.userMsg),
-      reply: core.messageText(p.assistantMsg),
-    }));
-    const refByTurn = new Map(pairs.map((p, i) => [i + 1, {
-      sessionId,
-      dirId: rec.dirId || null,
-      dirLabel: null,
-      userMsgId: p.userMsg.id || null,
-      assistantMsgId: p.assistantMsg.id || null,
-      ts: p.assistantMsg.ts || p.userMsg.ts || Date.now(),
-      excerpt: core.messageText(p.userMsg).trim().slice(0, 140),
-    }]));
-    return auxQueue.enqueue({
-      type: 'task_backfill',
-      systemPrompt: core.buildBackfillSystemPrompt(),
-      prompt: core.buildBackfillUserPrompt({
-        board, sessionLabel: rec.label || sessionId, dirLabel: null, turns,
-      }),
-      meta: { sessionName: sessionId, sessionId: rec.id || sessionId },
-    }).then(result => {
-      if (!result || result.cancelled) return { sessionId, tagged: 0 };
-      const parsed = core.parseBackfillResult(result.text);
-      const touched = core.applyBackfillResult(board, parsed.tasks, refByTurn, Date.now());
-      if (touched.length) {
-        save();
-        notify(rec.dirId || null, touched);
-      }
-      return { sessionId, tagged: touched.length };
-    });
-  }
-
-  async function handleBackfill(req, res) {
-    if (backfillState.running) {
-      return res.status(409).json({ error: 'backfill_running', state: { ...backfillState } });
-    }
-    const dirId = String(req.body?.dirId || '').trim() || null;
-    const turnLimit = Math.min(Math.max(Number(req.body?.turnLimit) || 12, 1), 30);
-    const candidates = [];
-    for (const [sid, rec] of records) {
-      if (!rec || rec.kind !== 'chat') continue;
-      if (rec.type === 'aux' || rec.type === 'gateway' || rec.type === 'commander' || rec.ephemeral) continue;
-      if (dirId && rec.dirId !== dirId) continue;
-      candidates.push([sid, rec]);
-    }
-    backfillState.running = true;
-    backfillState.queued = 0;
-    backfillState.done = 0;
-    backfillState.startedAt = Date.now();
-    const jobs = [];
-    for (const [sid, rec] of candidates) {
-      try {
-        const job = backfillSession(sid, rec, turnLimit);
-        if (job) {
-          backfillState.queued++;
-          jobs.push(job.then(r => { backfillState.done++; return r; })
-            .catch(e => { backfillState.done++; return { sessionId: sid, error: e?.message || String(e) }; }));
-        }
-      } catch (e) {
-        logger.log(`[multicc/taskboard] backfill enqueue failed for ${sid}: ${e?.message || e}`);
-      }
-    }
-    Promise.allSettled(jobs).then(() => { backfillState.running = false; });
-    res.json({ ok: true, queued: backfillState.queued, note: `已入队 ${backfillState.queued} 个会话的历史归档（aux 后台处理，完成后任务板自动刷新）` });
-  }
-
   // ── REST ──────────────────────────────────────────────────────────────────
   // Authentication/authorization is owned by the app-level API gate, which is
   // mounted before this runtime. Task-board mutations are ordinary product
   // operations and must work for authenticated remote administrators; do not
   // add a transport-locality check here.
-
-  function commanderFailure(res, code) {
-    const notes = {
-      directory_required: '自动路由必须指定任务所属工作区',
-      commander_not_found: '该工作区没有带稳定角色元数据的 Agent Commander，请先创建或修复 Commander 会话',
-      commander_ambiguous: '该工作区存在多个 Agent Commander，无法安全确定唯一入口，请先修复角色配置',
-    };
-    return res.status(code === 'directory_required' ? 400 : 409).json({
-      error: code || 'commander_unavailable',
-      note: notes[code] || 'Agent Commander 当前不可用',
-    });
-  }
-
-  function commanderMigrationFailure(res, dirId) {
-    if (!getCommanderMigrationStatus || !dirId) return false;
-    const status = getCommanderMigrationStatus(dirId);
-    if (status && status.ready === true) return false;
-    const code = status?.code || 'commander_migration_pending';
-    res.status(503).json({
-      error: code,
-      directoryId: dirId,
-      note: code === 'commander_migration_pending'
-        ? 'Agent Commander 升级迁移尚未完成，自动路由暂不可用'
-        : '该工作区的 Agent Commander 迁移未安全完成，请查看 readiness 并修复后重试',
-    });
-    return true;
-  }
 
   // 卡片自愈的证据：会话记录里拿不出受理物证 = 这一轮从来没被受理过（见
   // task-board/view.js 的 sessionHasTurn / deadDispatchClaim）。读侧把这类卡片的
@@ -1554,7 +1153,6 @@ function createTaskBoardRuntime(deps) {
     dto.sessionIds = (dto.sessionIds || [])
       .filter(sessionId => records.get(sessionId)?.taskExecutionSlot !== true);
     attachBoundWorkspace(dto);
-    Object.assign(dto, taskRunDtos(task.id));
     return dto;
   }
 
@@ -1568,376 +1166,9 @@ function createTaskBoardRuntime(deps) {
     return dto;
   }
 
-  // M2 T1 · single-task bootstrap for a task-mode chat view: the per-task
-  // slice of handleBoard's projection (title/body/identity, routing, dirIds,
-  // runs) without fetching the whole board. Additive-only (I3).
-  function handleTask(req, res) {
-    const task = resolvedTask(req.params.taskId);
-    if (!task) return res.status(404).json({ error: 'task_not_found' });
-    res.json({ ok: true, task: taskDto(task) });
-  }
-
-  function handleBoard(req, res) {
-    const dto = core.buildBoardDto(board, getSessionRunState, { sessionHasTurn });
-    const labels = {};
-    for (const t of dto.tasks) {
-      const body = canonicalTaskBody(board.tasks[t.id]);
-      if (t.title === core.PENDING_TASK_TITLE && body.text) {
-        t.title = core.deriveTaskTitle(body.text);
-      }
-      t.body = body.text;
-      t.bodyMessageId = body.messageId;
-      t.bodySessionId = body.sessionId;
-      t.legacy = body.legacy;
-      t.identityState = body.text
-        ? body.legacy ? 'legacy' : 'canonical'
-        : board.tasks[t.id]?.routing?.operationId ? 'orphaned_admission' : 'legacy_unresolved';
-      if (t.routing) {
-        const sid = t.routing.targetSessionId;
-        labels[sid] = records.get(sid)?.label || sid;
-        t.routing.targetLabel = labels[sid];
-        if (t.routing.workerSessionId) {
-          const workerId = t.routing.workerSessionId;
-          const worker = records.get(workerId);
-          if (worker?.taskExecutionSlot === true) {
-            delete t.routing.workerSessionId;
-            t.routing.internalExecution = true;
-          } else {
-            labels[workerId] = worker?.label || workerId;
-            t.routing.workerLabel = labels[workerId];
-          }
-        }
-      }
-      t.sessionIds = (t.sessionIds || [])
-        .filter(sessionId => records.get(sessionId)?.taskExecutionSlot !== true);
-      attachBoundWorkspace(t);
-      for (const sid of t.sessionIds) {
-        if (!(sid in labels)) labels[sid] = records.get(sid)?.label || sid;
-      }
-      Object.assign(t, taskRunDtos(t.id));
-    }
-    res.json({ ok: true, ...dto, sessionLabels: labels, backfill: { ...backfillState } });
-  }
-
-  // M0 · chat-history-style pagination over the same wrapper-filtered
-  // transcript the legacy `items` projection serves, so a task-mode chat view
-  // pages a task exactly like a session (docs/chat-view-unification-design.md
-  // §3-M0). The session contract: tail page by default, `before` pages older,
-  // `around` centres on one id and adds found/hasNewer.
-  function transcriptPagePayload(messages, req, task) {
-    const query = req.query || {};
-    const page = paginateTranscript(messages, {
-      before: query.before && String(query.before),
-      around: query.around && String(query.around),
-      limit: query.limit && String(query.limit),
-    });
-    const payload = { messages: displayMessages(page.messages, task, { getTask: id => board.tasks[id], codeFor: deps.taskShortCode }), hasMore: page.hasMore };
-    if (query.around) {
-      payload.found = page.found === true;
-      payload.hasNewer = page.hasNewer === true;
-    }
-    return payload;
-  }
-
-  function handleMessages(req, res) {
-    const task = resolvedTask(req.params.taskId);
-    if (!task) return res.status(404).json({ error: 'task_not_found' });
-    const runProjection = taskRunDtos(task.id);
-    if (taskRuns && runProjection.runs.length) {
-      const items = [];
-      try {
-        const transcript = [];
-        const itemKeys = new Set();
-        const pushItem = item => {
-          const key = item.messageId
-            ? `${item.sessionId || ''}\0${item.messageId}`
-            : `${item.taskRunId || ''}\0${item.role}\0${item.ts}\0${item.text}`;
-          if (itemKeys.has(key)) return;
-          itemKeys.add(key);
-          items.push(item);
-        };
-        const sessionImports = [];
-        for (const identityId of taskIdentityIds(task)) {
-          const identityRuns = taskRuns.listTaskRuns(identityId);
-          for (const run of identityRuns) {
-            for (const message of taskRuns.getRunMessages(run.runId)) {
-              if (isWrapperLedgerMessage(message)) continue;
-              const text = core.messageText({ content: message.content });
-              if (!text && message.role !== 'assistant') continue;
-              const imported = message.kind === 'legacy_import';
-              const sourceSessionId = imported
-                ? String(message.metadata?.sourceSessionId || '') || null
-                : null;
-              pushItem({
-                sessionId: sourceSessionId,
-                sessionLabel: sourceSessionId
-                  ? records.get(sourceSessionId)?.label || sourceSessionId
-                  : '临时执行',
-                taskRunId: run.runId,
-                role: message.role,
-                messageId: imported
-                  ? message.metadata?.sourceMessageId || null
-                  : message.messageId || null,
-                ts: message.createdAt || 0,
-                text,
-                ...(message.metadata?.partial === true ? { partial: true } : {}),
-                ...(imported && message.metadata?.lost === true ? { lost: true } : {}),
-              });
-            }
-          }
-          transcript.push(...taskTranscriptMessages({
-            taskRuns, messageText: core.messageText, isWrapperText: isTaskRunWrapperText,
-          }, identityId));
-          if (!identityRuns.length) {
-            const member = board.tasks[identityId];
-            if (member) sessionImports.push(...legacyImportMessages(member, {
-              identityIds: [identityId],
-            }));
-          }
-        }
-        // A merge can combine a modern bound-session task with a legacy
-        // ledger task.  Keep both histories: synthesize the session-backed
-        // side through the same stable legacy ids and deduplicate any rows the
-        // ledger had already imported.
-        for (const message of sessionImports) {
-          const sourceSessionId = String(message.metadata?.sourceSessionId || '') || null;
-          const sourceMessageId = message.metadata?.sourceMessageId || null;
-          const text = core.messageText({ content: message.content });
-          pushItem({
-            sessionId: sourceSessionId,
-            sessionLabel: sourceSessionId
-              ? records.get(sourceSessionId)?.label || sourceSessionId : '历史记录',
-            role: message.role,
-            messageId: sourceMessageId,
-            ts: message.createdAt || 0,
-            text,
-            ...(message.metadata?.lost === true ? { lost: true } : {}),
-          });
-          transcript.push({
-            id: message.messageId,
-            role: message.role,
-            content: text,
-            ts: message.createdAt || 0,
-            kind: 'legacy_import',
-          });
-          }
-        items.sort((left, right) => (left.ts || 0) - (right.ts || 0));
-        const transcriptById = new Map();
-        for (const message of transcript.sort((left, right) => (left.ts || 0) - (right.ts || 0))) {
-          if (!transcriptById.has(message.id)) transcriptById.set(message.id, message);
-        }
-        return res.json({
-          ok: true, task: taskDto(task), items, ...runProjection,
-          ...transcriptPagePayload([...transcriptById.values()], req, task),
-        });
-      } catch (error) {
-        logger.log(`[multicc/taskboard] task-run messages failed: ${error?.code || 'unknown'}`);
-      }
-    }
-    const cache = new Map();
-    const historyFor = (sid) => {
-      if (!cache.has(sid)) {
-        try { cache.set(sid, loadHistory(sid) || []); }
-        catch (_) { cache.set(sid, []); }
-      }
-      return cache.get(sid);
-    };
-    const items = [];
-    const seenItems = new Set();
-    const pushHistoryItem = item => {
-      const key = item.messageId
-        ? `${item.sessionId || ''}\0${item.messageId}`
-        : `${item.sessionId || ''}\0${item.role}\0${item.ts}\0${item.text}`;
-      if (seenItems.has(key)) return;
-      seenItems.add(key);
-      items.push(item);
-    };
-    const canonical = canonicalMessages(task);
-    for (const entry of canonical) {
-      const { sessionId, message } = entry;
-      const label = records.get(sessionId)?.label || sessionId;
-      const text = message.role === 'user' && message.taskStart
-        ? String(message.taskText || core.messageText(message))
-        : core.messageText(message);
-      if (!text && message.role !== 'assistant') continue;
-      if (isTaskRunWrapperText(text)) continue;
-      pushHistoryItem({
-        sessionId,
-        sessionLabel: label,
-        role: message.role,
-        messageId: message.id || null,
-        ts: message.ts || 0,
-        text,
-      });
-    }
-    // Legacy members of a merged lineage may have no taskId metadata even
-    // when the target has canonical messages.  Always walk refs and dedup
-    // against the canonical rows instead of dropping that side of history.
-    for (const ref of task.refs) {
-      const label = records.get(ref.sessionId)?.label || ref.sessionId;
-      const history = historyFor(ref.sessionId);
-      const um = ref.userMsgId ? history.find(m => m && m.id === ref.userMsgId) : null;
-      const am = ref.assistantMsgId ? history.find(m => m && m.id === ref.assistantMsgId) : null;
-      if (um) {
-        pushHistoryItem({ sessionId: ref.sessionId, sessionLabel: label, role: 'user',
-                     messageId: um.id || ref.userMsgId || null,
-                     ts: um.ts || ref.ts, text: core.messageText(um) });
-      } else if (ref.excerpt) {
-        // The message may have been trimmed out of history — keep the excerpt.
-        pushHistoryItem({ sessionId: ref.sessionId, sessionLabel: label, role: 'user',
-                     messageId: null, ts: ref.ts, text: ref.excerpt, lost: true });
-      }
-      if (am) {
-        pushHistoryItem({ sessionId: ref.sessionId, sessionLabel: label, role: 'assistant',
-                     messageId: am.id || ref.assistantMsgId || null,
-                     ts: am.ts || ref.ts, text: core.messageText(am) });
-      }
-    }
-    items.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    // Legacy ref-backed tasks share the pagination contract: ref history is
-    // frozen, so index-derived ids are stable and the task-mode chat view can
-    // open any historical task without a ledger.
-    res.json({
-      ok: true, task: taskDto(task), items, ...runProjection,
-      ...transcriptPagePayload(items.map((item, index) => ({
-        id: item.messageId || `legacy-${index}`,
-        role: item.role,
-        content: item.text,
-        ts: item.ts || 0,
-      })), req, task),
-    });
-  }
-
-  function answerResult(res, target, result = {}, duplicate = false) {
-    return res.json({
-      ok: true,
-      taskId: target.run.taskId,
-      taskRunId: target.run.runId,
-      requestId: String(target.pending.requestId || ''),
-      queued: result.queued === true,
-      status: 'answered',
-      operationId: result.operationId || null,
-      duplicate: duplicate || result.duplicate === true,
-    });
-  }
-
-  async function handleAnswer(req, res) {
-    if (rejectShellOperation(req, res)) return;
-    const task = resolvedTask(req.params?.taskId);
-    if (!task) return res.status(404).json({ error: 'task_not_found' });
-    const taskId = task.id;
-    const requestId = String(req.body?.requestId || '').trim().slice(0, 160);
-    const text = String(req.body?.text || '').trim().slice(0, 64 * 1024);
-    const clientMsgId = String(req.body?.clientMsgId || '').trim().slice(0, 160);
-    if (!requestId) return res.status(400).json({ error: 'request_id_required' });
-    if (!text) return res.status(400).json({ error: 'empty_text' });
-    if (!clientMsgId) return res.status(400).json({ error: 'client_msg_id_required' });
-    // allowResolved: a replay of the answer that resolved this question (and a
-    // crash-resume of a reserved receipt) is answered below from the durable
-    // receipt, never by dispatching a second answer.
-    const target = exactTaskRunTarget(taskId, null, { allowResolved: true });
-    if (!target.ok) return res.status(target.code === 'task_run_unavailable' ? 503 : 409)
-      .json({ error: target.code });
-    if (String(target.pending.requestId || '') !== requestId) {
-      return res.status(409).json({ error: 'pending_request_mismatch' });
-    }
-    const key = `${target.run.runId}\0${requestId}`;
-    const answerHash = crypto.createHash('sha256').update(text, 'utf8').digest('hex');
-    const receiptIdentity = {
-      runId: target.run.runId, requestId, clientMsgId, answerHash,
-    };
-    if (!taskRuns || typeof taskRuns.reserveAnswerReceipt !== 'function'
-        || typeof taskRuns.markAnswerAccepted !== 'function'
-        || typeof taskRuns.getAnswerReceipt !== 'function') {
-      return res.status(503).json({ error: 'task_run_answer_receipt_unavailable' });
-    }
-
-    if (target.pending.resolved === true) {
-      let receipt;
-      try { receipt = taskRuns.getAnswerReceipt(receiptIdentity); }
-      catch (error) {
-        logger.log(`[multicc/taskboard] answer receipt read failed: ${error?.code || 'unknown'}`);
-        return res.status(503).json({ error: 'task_run_answer_receipt_unavailable' });
-      }
-      // The question is answered: this is not a replay of the answer that resolved
-      // it (the receipt is keyed by clientMsgId + answerHash), so there is nothing
-      // left to answer. `no_pending_question` is the same code the validator uses;
-      // `answer_receipt_missing` named the durable store audit trail at the client.
-      if (!receipt) return res.status(409).json({ error: 'no_pending_question' });
-      if (receipt.clientMsgId !== clientMsgId || receipt.answerHash !== answerHash) {
-        return res.status(409).json({ error: 'idempotency_conflict' });
-      }
-      if (receipt.state === 'accepted') return answerResult(res, target, {}, true);
-      // A crash may land after the canonical ingress accepted the clientMsgId
-      // but before this receipt advanced. Retry the exact payload through that
-      // ingress: its durable clientMsgId dedupe proves the enqueue before we
-      // mark this receipt accepted.
-    }
-
-    let reservation;
-    try { reservation = taskRuns.reserveAnswerReceipt(receiptIdentity); }
-    catch (error) {
-      if (error?.code === 'TASK_RUN_ANSWER_CONFLICT') {
-        return res.status(409).json({ error: 'idempotency_conflict' });
-      }
-      logger.log(`[multicc/taskboard] answer receipt reserve failed: ${error?.code || 'unknown'}`);
-      return res.status(503).json({ error: 'task_run_answer_receipt_unavailable' });
-    }
-    if (reservation.state === 'accepted') return answerResult(res, target, {}, true);
-
-    const current = taskRunAnswers.get(key);
-    if (current) {
-      if (current.clientMsgId !== clientMsgId) {
-        return res.status(409).json({ error: 'answer_in_progress' });
-      }
-      if (current.answerHash !== answerHash) {
-        return res.status(409).json({ error: 'idempotency_conflict' });
-      }
-      try {
-        const replay = await current.promise;
-        if (!replay?.ok) {
-          return res.status(502).json({ error: replay?.code || replay?.error || 'answer_failed' });
-        }
-        return answerResult(res, target, replay, true);
-      } catch (error) {
-        logger.log(`[multicc/taskboard] answer failed: ${error?.code || error?.message || 'unknown'}`);
-        return res.status(502).json({ error: 'answer_failed' });
-      }
-    }
-
-    const promise = Promise.resolve()
-      .then(() => sendSessionMessage(target.slotId, text, {
-        userInputRequestId: requestId,
-        taskId,
-        taskRunId: target.run.runId,
-        leaseEpoch: target.leaseEpoch,
-        originContinue: true,
-        taskSource: 'task-board',
-        clientMsgId,
-      }))
-      .then(result => {
-        if (result?.ok) taskRuns.markAnswerAccepted(receiptIdentity);
-        return result;
-      });
-    taskRunAnswers.set(key, { clientMsgId, answerHash, promise });
-    try {
-      const result = await promise;
-      if (!result?.ok) {
-        return res.status(502).json({ error: result?.code || result?.error || 'answer_failed' });
-      }
-      notify(core.taskDirId(board, task), [taskId]);
-      return answerResult(res, target, result);
-    } catch (error) {
-      logger.log(`[multicc/taskboard] answer failed: ${error?.code || error?.message || 'unknown'}`);
-      return res.status(502).json({ error: 'answer_failed' });
-    } finally {
-      if (taskRunAnswers.get(key)?.promise === promise) taskRunAnswers.delete(key);
-    }
-  }
-
   const coldStartSeed = createColdStartSeed({
-    records, board, taskRuns, buildTaskRunContext,
-    taskIdentityIds, legacyImportMessages, contextMessages, storedTaskMessages,
+    records, board, buildTaskRunContext,
+    taskIdentityIds, legacyImportMessages, contextMessages,
   });
 
   async function sendBoundSessionFollowupUnlocked(boundId, task, messageText, {
@@ -1995,13 +1226,6 @@ function createTaskBoardRuntime(deps) {
     if (!messageText) return { ok: false, code: 'empty_text' };
     const clientKey = String(options.clientMsgId || '').trim() || crypto.randomUUID();
     const source = options.source === 'commander' ? 'commander' : 'task-board';
-    // Follow up through the bound chat; refuse while a legacy run owns it.
-    if (latestOpenTaskRun(task.id)) {
-      return {
-        ok: false, code: 'task_run_open',
-        error: '任务仍有池化旧运行未结束：请等它结束或先取消，再继续追问',
-      };
-    }
     const bound = await ensureBoundChatSession(task, { dirId: commander.dirId });
     if (!bound?.ok) {
       logger.log(`[multicc/taskboard] follow-up bound-session resolve failed for ${taskId}: ${bound?.code || 'unknown'}`);
@@ -2009,87 +1233,6 @@ function createTaskBoardRuntime(deps) {
     }
     return sendBoundSessionFollowup(bound.sessionId, task, messageText, {
       clientKey, source, goalNote: String(options.goalNote || ''), commanderId,
-    });
-  }
-
-  async function handleSend(req, res) {
-    if (rejectShellOperation(req, res)) return;
-    const task = resolvedTask(req.params.taskId);
-    if (!task) return res.status(404).json({ error: 'task_not_found' });
-    const userAnswerRequestId = String(req.body?.userInputRequestId || '').trim().slice(0, 160);
-    if (userAnswerRequestId) {
-      req.body.requestId = userAnswerRequestId;
-      return handleAnswer(req, res);
-    }
-    const expected = req.body?.expectedRevision ?? req.body?.revision;
-    if (task.recordType === 'planned' && expected != null) {
-      const checked = planning.validateExpectedRevision(task, expected);
-      if (!checked.ok) return res.status(checked.error === 'revision_conflict' ? 409 : 400).json(checked);
-    }
-    const text = String(req.body?.text ?? req.body?.message ?? '').trim();
-    if (!text) return res.status(400).json({ error: 'empty_text' });
-    const explicit = String(req.body?.target || '').trim() || null;
-    if (explicit) {
-      // Task-board input always enters the task's virtual session; there is no
-      // session picking on this ingress.
-      return res.status(409).json({
-        error: 'manual_target_unsupported',
-        note: '任务板消息一律进入任务的虚拟会话，不支持指定会话',
-      });
-    }
-    const followupKey = requestKey(req);
-    const routeMode = 'commander';
-    const dirId = core.taskDirId(board, task);
-    if (commanderMigrationFailure(res, dirId)) return;
-    const commander = core.resolveDirectoryCommander(records, dirId);
-    if (!commander.ok) return commanderFailure(res, commander.code);
-    const target = commander.sessionId;
-    const result = await routeCommanderFollowup(target, task.id, text, {
-      clientMsgId: followupKey,
-      source: 'task-board',
-      goalNote: goalNoteFor(req.body),
-    });
-    if (!result?.ok) {
-      const busy = result?.code === 'target_busy' || result?.error === 'target_busy'
-        || result?.code === 'task_run_open';
-      return res.status(busy ? 409 : result?.code === 'persistence_failed' ? 500 : 502)
-        .json({ error: result?.code || result?.error || 'dispatch_failed' });
-    }
-    if (result.taskBound === true) {
-      // P1-b1: the follow-up went straight to the task-bound chat session —
-      // no commander, no slot, no TaskRun ledger row. The card's runState now
-      // aggregates the bound session's classify state like any legacy ref.
-      return res.json({
-        ok: true,
-        taskBound: true,
-        target: result.targetSessionId,
-        targetLabel: records.get(result.targetSessionId)?.label || result.targetSessionId,
-        routingMode: 'task-bound',
-        commanderSessionId: null,
-        workerSessionId: result.targetSessionId,
-        workerLabel: records.get(result.targetSessionId)?.label || null,
-        queued: result.queued === true,
-        chatId: result.chatId,
-        operationId: result.operationId || null,
-        taskRunId: null,
-        task: taskDto(task),
-        revision: board.revision,
-      });
-    }
-    res.json({
-      ok: true,
-      target,
-      targetLabel: records.get(target)?.label || target,
-      routingMode: routeMode,
-      commanderSessionId: routeMode === 'commander' ? target : null,
-      workerSessionId: routeMode === 'commander' ? result.workerSessionId || result.targetSessionId : null,
-      workerLabel: routeMode === 'commander' ? result.targetLabel : null,
-      queued: routeMode === 'commander' && result.queued === true,
-      chatId: result.chatId,
-      operationId: result.operationId || null,
-      taskRunId: null,
-      task: taskDto(task),
-      revision: board.revision,
     });
   }
 
@@ -2120,12 +1263,6 @@ function createTaskBoardRuntime(deps) {
     const replayOperationId = existing?.routing?.operationId || null;
     // A fresh Commander route binds a hidden chat and uses canonical ingress.
     if (effectiveRouteMode === 'commander' && !replayOperationId) {
-      if (existing && latestOpenTaskRun(taskId)) {
-        return {
-          ok: false, code: 'task_run_open',
-          error: '任务仍有池化旧运行未结束：请等它结束或先取消，再重新发送',
-        };
-      }
       if (!createSessionRecord) {
         return { ok: false, code: 'chat_session_unavailable' };
       }
@@ -2198,13 +1335,6 @@ function createTaskBoardRuntime(deps) {
     // operation id reproduces the original idempotency key (it is the run id
     // for legacy pooled routes); a fresh manual route is the only non-replay
     // path left below — the pooled Commander admission is gone (#38).
-    let replayRun = null;
-    if (replayOperationId && effectiveRouteMode === 'commander' && taskRuns) {
-      try {
-        replayRun = (taskRuns.listTaskRuns(taskId) || [])
-          .find(run => run.runId === replayOperationId) || null;
-      } catch (_) { replayRun = null; }
-    }
     const routed = effectiveRouteMode === 'commander'
       ? core.buildCommanderRoutedMessage(taskShape, text)
       : core.buildRoutedMessage(taskShape, text);
@@ -2231,20 +1361,6 @@ function createTaskBoardRuntime(deps) {
             ok: true,
             duplicate: true,
             taskBound: true,
-            targetSessionId: originalWorker,
-            targetLabel: records.get(originalWorker)?.label || originalWorker,
-            queued: existing.routing.status === 'queued',
-            status: existing.routing.status || 'admitted',
-            operationId: existing.routing.operationId,
-          };
-        } else if (replayRun) {
-          // The durable queue already holds this operation; a replay must not
-          // re-admit it (the lease may have advanced since, which the outbox
-          // would rightfully reject as a payload conflict). Answer from the
-          // recorded routing instead.
-          result = {
-            ok: true,
-            duplicate: true,
             targetSessionId: originalWorker,
             targetLabel: records.get(originalWorker)?.label || originalWorker,
             queued: existing.routing.status === 'queued',
@@ -2294,8 +1410,6 @@ function createTaskBoardRuntime(deps) {
     const routedAt = Date.now();
     const indexed = ensureTaskIndex({
       taskId,
-      taskRunId: null,
-      leaseEpoch: null,
       dirId,
       sessionId: workerSessionId,
       taskText: text,
@@ -2332,161 +1446,6 @@ function createTaskBoardRuntime(deps) {
     const release = holdTaskOperation(taskId);
     try { return await dispatchTaskStartUnlocked(options); }
     finally { release(); }
-  }
-
-  // Board input always enters the task's virtual session: dispatchTaskStart opens
-  // a TaskRun and routes through the Commander host router, so the Commander LLM
-  // is never in the routing decision loop and there is no session picking.
-  async function handleBoardSend(req, res) {
-    const text = String(req.body?.text || '').trim();
-    if (!text) return res.status(400).json({ error: 'empty_text' });
-    const dirId = String(req.body?.dirId || '').trim() || null;
-    const explicit = String(req.body?.target || '').trim() || null;
-    if (explicit) {
-      return res.status(409).json({
-        error: 'manual_target_unsupported',
-        note: '任务板消息一律进入任务的虚拟会话，不支持指定会话',
-      });
-    }
-    if (commanderMigrationFailure(res, dirId)) return;
-    const commander = core.resolveDirectoryCommander(records, dirId);
-    if (!commander.ok) return commanderFailure(res, commander.code);
-    const target = commander.sessionId;
-    const routeMode = 'commander';
-    const clientKey = requestKey(req);
-    // Composer runtime picks (指定 cli/provider): applied at bound-session
-    // creation only; empty strings mean "no pick" (commander inheritance).
-    const pickCli = String(req.body?.cli || '').trim();
-    const pickProvider = String(req.body?.provider || '').trim();
-    const pickModel = String(req.body?.model || '').trim();
-    // Auto Provider pick: a virtual pool, not a provider id. It is passed
-    // through untouched — createSessionRecord owns the one validator (catalog,
-    // protocol, trust domain, attempt budget) and rejects a bad pool there.
-    const rawSelection = req.body?.providerSelection;
-    const pickSelection = rawSelection && typeof rawSelection === 'object' && !Array.isArray(rawSelection)
-      ? rawSelection
-      : null;
-    const runtime = (pickCli || pickProvider || pickModel || pickSelection)
-      ? {
-        ...(pickCli ? { cli: pickCli } : {}),
-        ...(pickProvider ? { provider: pickProvider } : {}),
-        ...(pickModel ? { model: pickModel } : {}),
-        ...(pickSelection ? { providerSelection: pickSelection } : {}),
-      }
-      : null;
-    const result = await dispatchTaskStart({
-      source: 'task-board',
-      dirId: routeMode === 'commander' ? (records.get(target)?.dirId || dirId) : dirId,
-      target,
-      routeMode,
-      text,
-      clientKey,
-      goalNote: goalNoteFor(req.body),
-      ...(runtime ? { runtime } : {}),
-    });
-    if (!result.ok) {
-      const conflict = result.code === 'idempotency_conflict';
-      const busy = result.code === 'target_busy' || result.error === 'target_busy'
-        || result.code === 'task_run_open';
-      return res.status(busy || conflict ? 409 : 502).json({
-        error: result.code || result.error || 'dispatch_failed',
-      });
-    }
-    if (result.taskBound === true) {
-      // P1-b2: first turn opened on the task-bound hidden chat session — no
-      // commander hop, no slot, no TaskRun ledger row.
-      return res.json({
-        ok: true,
-        taskId: result.taskId,
-        taskBound: true,
-        target: result.targetSessionId,
-        targetLabel: records.get(result.targetSessionId)?.label || result.targetSessionId,
-        routingMode: 'task-bound',
-        commanderSessionId: null,
-        workerSessionId: result.targetSessionId,
-        workerLabel: records.get(result.targetSessionId)?.label || null,
-        queued: result.queued === true,
-        chatId: result.chatId || result.targetSessionId,
-        operationId: result.operationId || null,
-        duplicate: result.duplicate === true,
-      });
-    }
-    // Fallback when no TaskRun store is wired: the task is still created and
-    // routed deterministically, only the run receipt is skipped.
-    res.json({
-      ok: true,
-      taskId: result.taskId,
-      target,
-      targetLabel: records.get(target)?.label || target,
-      routingMode: 'commander',
-      commanderSessionId: target,
-      workerSessionId: result.workerSessionId || null,
-      workerLabel: result.workerSessionId
-        ? records.get(result.workerSessionId)?.label || result.workerSessionId
-        : null,
-      queued: result.queued === true,
-      chatId: target,
-      operationId: result.operationId || null,
-      duplicate: result.duplicate === true,
-    });
-  }
-
-  // Stopping a task's open run is shared by two entries: marking the task
-  // done (lifecycle change) and the chat view's stop button (cancel-run, no
-  // lifecycle change). One path, one 409 surface — only the status write
-  // differs. Returns { ok:true, openRun|null } or { ok:false, status, body }.
-  async function cancelOpenTaskRun(task) {
-    let openRun = null;
-    try { openRun = latestOpenTaskRun(task.id); }
-    catch (_) {
-      return { ok: false, status: 409, body: { error: 'task_run_state_unavailable' } };
-    }
-    if (!openRun) return { ok: true, openRun: null };
-    const operationId = String(task.routing?.operationId || '').trim();
-    if (!openRun.slotId) {
-      if (!operationId || !cancelUndeliveredTaskRun) {
-        return { ok: false, status: 409, body: { error: 'task_run_cancel_unavailable' } };
-      }
-      let cancelled;
-      try {
-        cancelled = await cancelUndeliveredTaskRun(operationId, {
-          taskId: task.id, runId: openRun.runId,
-        });
-      } catch (error) {
-        logger.log(`[multicc/taskboard] task-run dispatch cancel failed: ${error?.code || error?.message || 'unknown'}`);
-        return { ok: false, status: 409, body: { error: 'task_run_cancel_failed' } };
-      }
-      if (!(cancelled?.ok === true && cancelled?.neverDelivered === true)) {
-        return { ok: false, status: 409, body: {
-          error: cancelled?.code || 'task_run_delivery_not_cancellable',
-        } };
-      }
-    }
-    if (!terminateTaskRun) {
-      return { ok: false, status: 409, body: { error: 'task_run_termination_unavailable' } };
-    }
-    let terminated;
-    try {
-      terminated = await terminateTaskRun({
-        taskId: task.id,
-        runId: openRun.runId,
-        leaseEpoch: Number(openRun.leaseEpoch) || null,
-        ...(openRun.slotId
-          ? { slotId: openRun.slotId }
-          : { neverDelivered: true }),
-      });
-    } catch (error) {
-      logger.log(`[multicc/taskboard] task-run termination failed: ${error?.code || error?.message || 'unknown'}`);
-      return { ok: false, status: 409, body: { error: 'task_run_termination_failed' } };
-    }
-    const alreadyTerminal = terminated?.duplicate === true
-      || ['already_terminal', 'task_run_closed'].includes(terminated?.code);
-    if (!(terminated === true || terminated?.ok === true || alreadyTerminal)) {
-      return { ok: false, status: 409, body: {
-        error: terminated?.code || 'task_run_termination_failed',
-      } };
-    }
-    return { ok: true, openRun };
   }
 
   // Legacy (non-slot) sessions keep their own active-task queue entry; a
@@ -2625,29 +1584,6 @@ function createTaskBoardRuntime(deps) {
       ...(bound.adopted ? { adopted: true } : {}) });
   }
 
-  async function handleCancelRunUnlocked(req, res) {
-    const task = resolvedTask(req.params.taskId);
-    if (!task) return res.status(404).json({ error: 'task_not_found' });
-    const stopped = await cancelOpenTaskRun(task);
-    if (!stopped.ok) return res.status(stopped.status).json(stopped.body);
-    if (!stopped.openRun) {
-      return res.json({ ok: true, cancelled: false, task: taskDto(task) });
-    }
-    const queues = await resolveLegacySessionQueues(task,
-      '会话仍占用该任务；请稍后重试。');
-    if (!queues.ok) return res.status(queues.status).json(queues.body);
-    res.json({
-      ok: true, cancelled: true, runId: stopped.openRun.runId, task: taskDto(task),
-    });
-  }
-
-  async function handleCancelRun(req, res) {
-    if (rejectShellOperation(req, res)) return;
-    const release = holdTaskOperation(req.params?.taskId);
-    try { return await handleCancelRunUnlocked(req, res); }
-    finally { release(); }
-  }
-
   async function handleStatusUnlocked(req, res) {
     const task = resolvedTask(req.params.taskId);
     if (!task) return res.status(404).json({ error: 'task_not_found' });
@@ -2667,10 +1603,8 @@ function createTaskBoardRuntime(deps) {
     }
     const beforeMutation = JSON.parse(JSON.stringify(task));
     if (status === 'done') {
-      const stopped = await cancelOpenTaskRun(task);
-      if (!stopped.ok) return res.status(stopped.status).json(stopped.body);
-      // Done is a lifecycle finalization: legacy queues resolve even when no
-      // open run exists (e.g. pre-TaskRun tasks with plain session refs).
+      // Done is a lifecycle finalization: legacy queues resolve even when the
+      // task has only plain session refs.
       const queues = await resolveLegacySessionQueues(task,
         '当前任务仍在执行；请先取消，或等待其进入冻结状态后再明确标记完成。');
       if (!queues.ok) return res.status(queues.status).json(queues.body);
@@ -2726,67 +1660,13 @@ function createTaskBoardRuntime(deps) {
     res.status(409).json({ error: 'task_shell_route_required' }); return true;
   }
 
-  const handleMergeTasks = createTaskMergeHandler({
-    board, core, taskRuns, getSessionRunState, isOpenTaskRun,
-    activeTaskOperations, taskIdentityIds, resolvedTask, taskDto,
-    persist: () => { if (!save()) throw new Error('persistence_failed'); },
-    notify, logger,
-    isIdentityProtected: task => !!deps.isTaskShellSession?.(task?.chatSessionId),
-  });
-
-  const taskLifecycle = require('../task-board/lifecycle').createBoardTaskLifecycle({ deps, taskRuns, isOpenTaskRun, getBoard: () => board,
+  const taskLifecycle = require('../task-board/lifecycle').createBoardTaskLifecycle({ deps, getBoard: () => board,
     resolveTask: resolvedTask, taskIdentityIds, commit: commitPlanningMutation, taskDto, notify,
     taskDirId: task => core.taskDirId(board, task), activeOperations: activeTaskOperations });
 
   // Air 任务「移动」：编排会话工作区搬迁（带未提交改动）、shell 指针与板块记录。
-  const taskRelocate = require('../task-board/relocate').createTaskRelocate({ deps, taskRuns, isOpenTaskRun, resolveTask: resolvedTask,
+  const taskRelocate = require('../task-board/relocate').createTaskRelocate({ deps, resolveTask: resolvedTask,
     taskIdentityIds, commit: commitPlanningMutation, taskDto, notify, taskDirId: task => core.taskDirId(board, task), isBusy: id => taskLifecycle.isBusy(id), logger });
-
-  async function handleArchiveCompleted(req, res) {
-    const dirId = String(req.body?.dirId || '').trim() || null;
-    const taskIds = [], skipped = [];
-    for (const task of Object.values(board.tasks)) {
-      if (task.status !== 'done' || (dirId && core.taskDirId(board, task) !== dirId)) continue;
-      const result = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
-      await taskLifecycle.archive({ params: { taskId: task.id }, body: {} }, result);
-      if (result.body?.ok) taskIds.push(task.id);
-      else skipped.push({ taskId: task.id, error: result.body?.error });
-    }
-    res.json({ ok: true, archivedCount: taskIds.length, releasedSessions: 0, taskIds, skipped });
-  }
-
-  function handleReclassify(req, res) {
-    const task = resolvedTask(req.params.taskId);
-    if (!task) return res.status(404).json({ error: 'task_not_found' });
-    if (!task.moduleAssignment) return res.status(409).json({ error: 'not_pending' });
-    const result = queueTaskClassification(task.id, { manual: true });
-    if (!result.ok) {
-      const status = result.error === 'context_unavailable' ? 503 : 409;
-      const note = result.error === 'context_unavailable'
-        ? '任务上下文暂时无法读取，请稍后重试'
-        : null;
-      return res.status(status).json({ error: result.error, note });
-    }
-    res.json({ ...result, task: taskDto(task) });
-  }
-
-  function handleReclassifyPending(req, res) {
-    const dirId = String(req.body?.dirId || '').trim() || null;
-    let queued = 0;
-    let archived = 0;
-    let skipped = 0;
-    for (const task of Object.values(board.tasks)) {
-      if (!task.moduleAssignment || task.status === 'archived') continue;
-      const mod = task.moduleId ? board.modules[task.moduleId] : null;
-      const taskDirId = mod?.dirId || task.refs.find(r => r.dirId)?.dirId || null;
-      if (dirId && taskDirId !== dirId) continue;
-      const result = queueTaskClassification(task.id, { manual: true });
-      if (result.queued) queued++;
-      else if (result.archived) archived++;
-      else skipped++;
-    }
-    res.json({ ok: true, queued, archived, skipped });
-  }
 
   const planningRuntime = createTaskPlanningRuntime({
     getBoard: () => board,
@@ -2796,60 +1676,13 @@ function createTaskBoardRuntime(deps) {
     taskDirId: task => core.taskDirId(board, task),
     notify, afterRename: typeof deps.syncTaskTitle === 'function' ? deps.syncTaskTitle : null,
     hasDirectory: resolveDirectoryPort ? dirId => !!resolveDirectoryPort(dirId) : null,
-    beforeStageChange: async task => {
-      const stopped = await cancelOpenTaskRun(task);
-      if (!stopped.ok) return stopped;
-      return resolveLegacySessionQueues(task,
-        '当前任务仍在执行；请先取消，或等待其进入冻结状态后再移动到已完成。');
-    },
+    beforeStageChange: task => resolveLegacySessionQueues(task,
+      '当前任务仍在执行；请先取消，或等待其进入冻结状态后再移动到已完成。'),
     logger,
   });
 
   function mountRoutes(app) {
     planningRuntime.mountRoutes(app);
-    app.get('/api/task-board', handleBoard);
-    // Composer runtime suggestion: "recently active" = the newest mtime in the
-    // chat_history store maps to a live chat record — its (cli, provider, model)
-    // is what the user last actually ran, which is a better default than any
-    // configured constant. Synthetic histories (__aux__/__gateway__) and
-    // execution slots are never a provider source.
-    app.get('/api/task-board/suggested-runtime', (req, res) => {
-      try {
-        const dir = chatHistoryDir
-          || createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).chatHistoryDir;
-        let newest = null;
-        for (const name of fs.readdirSync(dir)) {
-          if (!name.endsWith('.json') || name.startsWith('__')) continue;
-          const id = name.slice(0, -'.json'.length);
-          const record = records.get(id);
-          if (!record || record.kind !== 'chat' || record.taskExecutionSlot) continue;
-          const mtime = fs.statSync(path.join(dir, name)).mtimeMs;
-          if (!newest || mtime > newest.mtime) newest = { mtime, record };
-        }
-        if (newest) {
-          const r = newest.record;
-          return res.json({
-            ok: true, source: 'recent',
-            cli: r.cli || 'claude', provider: r.provider || '', model: r.model || null,
-          });
-        }
-      } catch (_) { /* fall through to defaults */ }
-      res.json({ ok: true, source: 'default', cli: 'claude', provider: '', model: null });
-    });
-    app.get('/api/task-board/tasks/:taskId', handleTask);
-    app.get('/api/task-board/tasks/:taskId/messages', handleMessages);
-    app.post('/api/task-board/tasks/:taskId/send', (req, res) => {
-      handleSend(req, res).catch(e => {
-        logger.log(`[multicc/taskboard] send failed: ${e?.message || e}`);
-        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
-      });
-    });
-    app.post('/api/task-board/tasks/:taskId/answer', (req, res) => {
-      handleAnswer(req, res).catch(e => {
-        logger.log(`[multicc/taskboard] answer failed: ${e?.message || e}`);
-        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
-      });
-    });
     app.post('/api/task-board/tasks/:taskId/status', (req, res) => {
       // Return the promise so harness callers can await the full handler.
       return handleStatus(req, res).catch(error => {
@@ -2861,12 +1694,6 @@ function createTaskBoardRuntime(deps) {
     app.post('/api/task-board/tasks/:taskId/relocate', (req, res) => taskRelocate.relocate(req, res)
       .catch(error => { logger.log(`[multicc/taskboard] relocate failed: ${error?.message || error}`);
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' }); }));
-    app.post('/api/task-board/tasks/:taskId/cancel-run', (req, res) => {
-      handleCancelRun(req, res).catch(error => {
-        logger.log(`[multicc/taskboard] cancel-run failed: ${error?.message || error}`);
-        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
-      });
-    });
     app.post('/api/task-board/tasks/:taskId/chat-session', (req, res) => {
       // Return the promise so harness callers can await the full handler.
       return handleChatSession(req, res).catch(error => {
@@ -2874,23 +1701,6 @@ function createTaskBoardRuntime(deps) {
         if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
       });
     });
-    app.post('/api/task-board/tasks/:targetTaskId/merge-tasks', handleMergeTasks);
-    app.post('/api/task-board/archive-completed', handleArchiveCompleted);
-    app.post('/api/task-board/tasks/:taskId/reclassify', handleReclassify);
-    app.post('/api/task-board/send', (req, res) => {
-      // Return the promise so harness callers can await the full handler.
-      return handleBoardSend(req, res).catch(e => {
-        logger.log(`[multicc/taskboard] board send failed: ${e?.message || e}`);
-        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
-      });
-    });
-    app.post('/api/task-board/backfill', (req, res) => {
-      handleBackfill(req, res).catch(e => {
-        logger.log(`[multicc/taskboard] backfill failed: ${e?.message || e}`);
-        if (!res.headersSent) res.status(500).json({ error: 'internal_error' });
-      });
-    });
-    app.post('/api/task-board/reclassify-pending', handleReclassifyPending);
   }
 
   // Recover interrupted module assignment and retire already-confirmed stale
@@ -2946,8 +1756,6 @@ function createTaskBoardRuntime(deps) {
       });
     },
     routeCommanderFollowup,
-    autoRetryTaskRun,
-    notifyTaskRun,
     // test/introspection surface
     getBoard: () => board,
     save,
@@ -2961,7 +1769,6 @@ function createTaskBoardRuntime(deps) {
         const task = board.tasks[id];
         if (!task || task.status === 'archived' || task.deleting) return false;
         if (taskLifecycle.isBusy(id)) return false;
-        if (taskRuns?.listTaskRuns?.(id)?.some(isOpenTaskRun)) return false;
         return true;
       });
       const skipped = wanted.filter(id => !ids.includes(id)).map(taskId => ({ taskId, error: 'task_busy_or_missing' }));

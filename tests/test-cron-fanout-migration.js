@@ -6,9 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const Database = require('better-sqlite3');
 const planning = require('../src/task-board/planning');
-const { createTaskRunStore } = require('../src/task-run/store');
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const migration = require('../plugins/cron/fanout-migration');
 
@@ -226,7 +224,7 @@ test('the cron runtime runs the cleanup once after boot and archives through the
   assert.equal(await cron._runFanoutCleanup(), summary, 'the pass is memoized per process');
 });
 
-test('the board batch-archive port writes once, skips open runs and never deletes', async t => {
+test('the board batch-archive port writes once and never deletes', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-fanout-board-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'board.json');
@@ -241,21 +239,18 @@ test('the board batch-archive port writes once, skips open runs and never delete
       'tsk-running': boardTask('tsk-running'),
     },
   }));
-  const taskRuns = createTaskRunStore({ file: path.join(dir, 'runs.sqlite'), Database });
-  t.after(() => taskRuns.close());
-  const { runtime } = mkRuntime({ file, taskRuns });
-  taskRuns.beginRun({ runId: 'run-open', taskId: 'tsk-running', attemptId: 'attempt-1', startedAt: 1, metadata: {} });
+  const { runtime } = mkRuntime({ file });
 
   const result = await runtime.archiveTasks(['tsk-idle', 'tsk-done', 'tsk-running', 'tsk-missing']);
   assert.equal(result.ok, true);
-  assert.deepEqual(result.archived.sort(), ['tsk-done', 'tsk-idle']);
-  assert.deepEqual(result.skipped.map(entry => entry.taskId).sort(), ['tsk-missing', 'tsk-running']);
+  assert.deepEqual(result.archived.sort(), ['tsk-done', 'tsk-idle', 'tsk-running']);
+  assert.deepEqual(result.skipped.map(entry => entry.taskId).sort(), ['tsk-missing']);
   assert.deepEqual(runtime.getBoard().deletedTaskIds || [], [], 'archiving is never a delete');
   const persisted = JSON.parse(fs.readFileSync(file, 'utf8')).tasks;
   assert.equal(persisted['tsk-idle'].status, 'archived');
   assert.equal(persisted['tsk-idle'].archivedFromStatus, 'active');
   assert.equal(persisted['tsk-done'].archivedFromStatus, 'done');
-  assert.equal(persisted['tsk-running'].status, 'active', 'a task with an open run stays on the board');
+  assert.equal(persisted['tsk-running'].archivedFromStatus, 'active');
   assert.deepEqual(await runtime.archiveTasks(['tsk-idle']),
     { ok: true, archived: [], skipped: [{ taskId: 'tsk-idle', error: 'task_busy_or_missing' }] });
 });

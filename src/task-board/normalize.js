@@ -3,8 +3,8 @@
 const crypto = require('crypto');
 const planning = require('./planning');
 const { TURN_RUN_STATES } = require('../classify/vocab');
-// Task board core — pure logic for the AI-tagged module→task board shown in
-// the fleet panel (meta.html). No I/O and no host state: given a board object
+// Task board core — pure logic for the AI-tagged module→task board. No I/O and
+// no host state: given a board object
 // and inputs, every function here is deterministic, so the whole tagging /
 // aggregation / routing surface is unit-testable without a server.
 //

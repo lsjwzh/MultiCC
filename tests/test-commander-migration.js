@@ -235,24 +235,19 @@ test('a newly migrated Commander is identified by the task board and binds the t
     getCommanderMigrationStatus: directoryId => h.state.statusFor(directoryId),
     logger: { log() {} },
   });
-  const routes = new Map();
-  board.mountRoutes({ get: (route, handler) => routes.set(route, handler), post: (route, handler) => routes.set(route, handler) });
-  const response = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
-  routes.get('/api/task-board/send')({ body: { dirId: 'dir-a', text: '请指挥官分派' } }, response);
-  for (let attempt = 0; attempt < 50 && !response.body; attempt += 1) {
-    await new Promise(resolve => setImmediate(resolve));
-  }
+  // The board send route is gone; the Commander ingress is the runtime port.
+  const result = await board.routeCommanderInput('commander-dir-a', '请指挥官分派',
+    { source: 'task-board', clientMsgId: 'migrated-commander' });
 
-  assert.equal(response.code, 200);
-  assert.equal(response.body.routingMode, 'task-bound');
-  assert.equal(response.body.target, 'bound-1');
-  assert.equal(response.body.commanderSessionId, null, 'the Commander is no longer a dispatch hop');
+  assert.equal(result.ok, true);
+  assert.equal(result.routeMode, 'task-bound');
+  assert.equal(result.target, 'bound-1');
   // #38 · the migrated Commander still identifies the directory's runtime — it
   // just lends it to the task-bound session instead of owning a pooled slot.
   assert.equal(creates.length, 1);
   assert.equal(creates[0].dir.id, 'dir-a');
   assert.equal(creates[0].cli, commander.cli);
-  assert.equal(creates[0].taskBoundTaskId, response.body.taskId);
+  assert.equal(creates[0].taskBoundTaskId, result.taskId);
   assert.equal(dispatches.length, 0, 'a board send never dispatches through the Commander');
   assert.equal(sends.length, 1, 'the first turn opens directly on the bound session');
   assert.equal(sends[0].sessionId, 'bound-1');

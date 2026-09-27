@@ -1528,24 +1528,18 @@ test('Flutter attachments offer the iOS photo library, not just the Files picker
   assert.match(picker, /FilePicker\.platform\.pickFiles\(withData:\s*true\)/);
   assert.match(picker, /readAsBytes/);
 
-  // Both attachment call sites delegate to the shared picker and never drive
+  // The attachment call site delegates to the shared picker and never drives
   // FilePicker directly (the direct path is what hid the photo album on iOS).
-  for (const rel of ['input_bar.dart', 'task_board_view.dart']) {
-    const source = fs.readFileSync(
-      path.join(ROOT, 'app', 'lib', 'widgets', rel),
-      'utf8',
-    );
-    assert.match(source, /pickChatAttachment\(context\)/, `${rel} routes through the shared picker`);
-    assert.doesNotMatch(source, /FilePicker\.platform/, `${rel} must not pick files inline`);
-    if (rel === 'input_bar.dart') {
-      // input_bar 把整个 PickedAttachment 交给共享上传助手（multipart 流程归它），
-      // 不再自己摊开 bytes/filename 字段。
-      assert.match(source, /uploadChatAttachment\(\s*settings:\s*settings,\s*picked:\s*picked,/,
-        `${rel} uploads the picked attachment through the shared helper`);
-    } else {
-      assert.match(source, /picked\.filename/, `${rel} uploads under the picked filename`);
-    }
-  }
+  const inputBar = fs.readFileSync(
+    path.join(ROOT, 'app', 'lib', 'widgets', 'input_bar.dart'),
+    'utf8',
+  );
+  assert.match(inputBar, /pickChatAttachment\(context\)/, 'input_bar.dart routes through the shared picker');
+  assert.doesNotMatch(inputBar, /FilePicker\.platform/, 'input_bar.dart must not pick files inline');
+  // input_bar 把整个 PickedAttachment 交给共享上传助手（multipart 流程归它），
+  // 不再自己摊开 bytes/filename 字段。
+  assert.match(inputBar, /uploadChatAttachment\(\s*settings:\s*settings,\s*picked:\s*picked,/,
+    'input_bar.dart uploads the picked attachment through the shared helper');
 
   // Sheet labels are localized in both catalogs (zh is authoritative).
   for (const locale of ['zh', 'en']) {

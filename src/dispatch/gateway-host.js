@@ -234,18 +234,6 @@ function createGatewayHost(rawDeps) {
     return { ok: true, rec };
   }
 
-  function validateTaskRunTarget(targetId, fromSessionId, allowCommander, taskRunId) {
-    const result = validateDispatchTarget(targetId, fromSessionId, allowCommander);
-    if (result.ok && result.rec.taskExecutionSlot === true && !String(taskRunId || '').trim()) {
-      return {
-        ok: false,
-        code: 'task_execution_slot_requires_task_run',
-        error: '内部任务执行槽只能由 TaskRun 调度器寻址',
-      };
-    }
-    return result;
-  }
-
   // Exactly one structured terminal frame per voice-router turn.
   //
   // A live call cannot infer durable admission from assistant prose. The Host
@@ -370,11 +358,10 @@ function createGatewayHost(rawDeps) {
 
   // Deliver a confirmed dispatch; terminal targets receive an ephemeral chat.
   async function dispatchToSession(targetId, message, opts = {}) {
-    let v = validateTaskRunTarget(
+    let v = validateDispatchTarget(
       targetId,
       opts.replyTo || null,
       opts.allowCommander === true && opts.queueIfBusy === true && opts.requireIdle === false,
-      opts.taskRunId,
     );
     // Create matching *-ultra-NN workers on demand from the dispatcher's config.
     if (!v.ok) {
@@ -395,11 +382,10 @@ function createGatewayHost(rawDeps) {
               persistence: 'bestEffort', persistenceSource: 'runtime.dispatch-worker-create',
             });
             if (created.ok) {
-              v = validateTaskRunTarget(
+              v = validateDispatchTarget(
                 targetId,
                 opts.replyTo || null,
                 opts.allowCommander === true && opts.queueIfBusy === true && opts.requireIdle === false,
-                opts.taskRunId,
               );
             }
           }

@@ -114,9 +114,8 @@ const { mountHostReadRoutes } = require('./src/routes/host-read');
 const { mountHostWriteRoutes } = require('./src/routes/host-write');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
-const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskRunRoutes } = require('./src/routes/task-runs'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
-const { createTaskRunStore } = require('./src/task-run/store'); const { createProductionTaskRunHost } = require('./src/task-run/production'); const { reconcileTaskRunSlotLeases } = require('./src/task-run/recovery');
-const { createTaskRunProviderBridge } = require('./src/task-run/provider-bridge'); const { createCommanderMigrationState } = require('./src/commander-migration');
+const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
+const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferRoutes } = require('./src/routes/file-transfer');
 const { mountSkillSyncRoutes } = require('./src/routes/skill-sync');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -200,7 +199,7 @@ const { createChatHistoryFileRepository } = require('./src/session');
 const { TurnProgressHeartbeat } = require('./src/chat/progress-heartbeat');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
-const { createTaskContextHost, createTaskRunStreamEmitter } = require('./src/task-context-host');
+const { createTaskContextHost } = require('./src/task-context-host');
 const { createSessionWorkHost } = require('./src/session-work/host');
 const {
   normalizeTurnRequest,
@@ -245,7 +244,7 @@ const { createHealthHandlers } = require('./src/health');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
 const { createHostEnv } = require('./src/host-env');
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
-const taskRunStore = createTaskRunStore({ file: MULTICC_PATHS.taskRunDbFile }); const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
+const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
 const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
 const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS); const turnLedgerRuntime = require('./src/turn-ledger/runtime').createTurnLedgerRuntime({ dataDir: MULTICC_PATHS.root, codexCmd: () => cliCommands.codex }).start(); // 终端轮次账本：hook→spool→TurnLedger，影子模式只观测不接管状态
@@ -256,7 +255,7 @@ let chatHistoryService = null;
 // This runtime deliberately owns preparation only. The established streaming
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore();
-let orchestrationRuntime = null; let taskRunHost = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null; let worktreeOrphanScanner = null;
+let orchestrationRuntime = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null; let worktreeOrphanScanner = null;
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability; const messageSearchRuntime = () => getSharedSearchRuntime({ dataDir: MULTICC_PATHS.root, logger }); // 消息全文索引（src/search/runtime.js）：进程内单例、按数据目录记忆化，首个 message-search 请求或启动时那次 .start() 才真正建库开扫
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
@@ -1312,16 +1311,12 @@ const livenessRuntime = createLivenessRuntime({
   probeSession: async (sessionId, sig) => livenessProcessProbe.probe(
     sig && Number.isInteger(sig.pid) ? sig.pid : null, livenessRolloutPath(persistedSessions.get(sessionId))),
 });
-const taskRunProviderBridge = createTaskRunProviderBridge({ records: persistedSessions,
-  recordActivity: event => livenessRuntime.recordProxyActivity(event), recordLegacyUsage: recordUsageObserved,
-  recordTaskRunUsage: event => taskRunHost?.recordObservedUsage(event) });
 const providerAttemptRuntime = createProviderAttemptRuntime({ emit: chatBroadcast, audit: (id, event) => turnEventJournal.note(id, event), resolveProviderRevision: attempt => createProviderRevision({ cli: attempt.cli, providerId: attempt.providerId, protocol: attempt.protocol, model: attempt.model, summary: attempt.providerId === '_default_' ? null : providerRouterRuntime.getProviderSummary(undefined, attempt.providerId) }), resolveTerminalRoute: sessionId => terminalProxyRoutes.lookup(sessionId) });
 const terminalProxyRoutes = createTerminalProxyRoutes({ persistedSessions, persist: savePersistedSessionsBestEffort, encode: (id, token) => providerAttemptRuntime.encodeProxyRoute(id, token) }); // 终端那条托管路由的能力：存在会话记录上，跨重启有效
 function handleProxyUsage(event) {
   const tagged = providerAttemptRuntime.attributeProxyUsage(event);
-  if (tagged.routeAttribution === 'exact' || tagged.producerBound === true) {
-    taskRunProviderBridge.onUsageObserved(tagged);
-  } else if (String(event.roleKind || event.role || 'main').toLowerCase() !== 'main') {
+  if (tagged.routeAttribution === 'exact' || tagged.producerBound === true
+      || String(event.roleKind || event.role || 'main').toLowerCase() !== 'main') {
     recordUsageObserved(tagged);
   }
 }
@@ -1343,7 +1338,7 @@ providerRouterRuntime.mountProtocolProxies(app, {
   onProxyOutcome: handleProxyOutcome,
   // A 409 here is a host decision, and it used to leave no trace at all.
   onRejected: event => logger.warn('provider_proxy_route_rejected', event),
-  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
+  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) livenessRuntime.recordProxyActivity({ ...event, sessionId: bound.sessionId }); },
   // Token-level delta + Claude 5h rate-limit sidecars: see src/chat/proxy-broadcast.js.
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
@@ -1358,7 +1353,7 @@ const codexProxyMounts = providerRouterRuntime.mountProtocolProxies(app, {
   onUsageObserved: handleProxyUsage,
   onProxyOutcome: handleProxyOutcome,
   onRejected: event => logger.warn('provider_proxy_route_rejected', event),
-  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) taskRunProviderBridge.onActivity({ ...event, sessionId: bound.sessionId }); },
+  onActivity: event => { const bound = providerAttemptRuntime.onProxyActivity(event); if (bound) livenessRuntime.recordProxyActivity({ ...event, sessionId: bound.sessionId }); },
   ...createProxyBroadcasters(chatBroadcast, { resolveCli: name => (persistedSessions.get(name) || {}).cli, recordLimit: limitRecorder.recordSession, attemptRuntime: providerAttemptRuntime, audit: (id, event) => turnEventJournal.note(id, event) }),
 });
 // Session query, dashboard, workspace and classify-admin routes share one
@@ -2000,8 +1995,6 @@ function dispatchTargetBusyReasons(sid, item = null) {
   catch (err) { reasons.push(err?.code || 'workspace_occupied_check_failed'); }
   try { if (sessionWorkHost?.isRunActive(sid)) reasons.push('run_active'); }
   catch (_) { reasons.push('run_active_check_failed'); }
-  try { if (taskRunHost?.isSlotUnavailable(sid, item || {})) reasons.push('task_slot_unavailable'); }
-  catch (_) { reasons.push('task_slot_check_failed'); }
   try { if (defaultRepoActor.isLeased(sid)) reasons.push('repo_lease'); }
   catch (_) { reasons.push('repo_lease_check_failed'); }
   try { if (taskShellHost.isWorkspaceBusy(sid)) reasons.push('task_shell_workspace_busy'); }
@@ -2020,13 +2013,10 @@ function dispatchTargetBusy(sid, item = null) {
 const taskBoardRuntime = createTaskBoardRuntime({
   ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn), workspaceBroadcast, chatBroadcast }),
   file: MULTICC_PATHS.taskBoardFile,
-  taskRuns: taskRunStore, auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
+  auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,
   sendSessionMessage: (...args) => taskContextHost.deliverSessionMessage(...args),
-  terminateTaskRun: input => taskRunHost.terminateRun(input), cancelUndeliveredTaskRun: async (operationId, context = {}) => {
-    const result = await orchestrationRuntime.operations.cancelUndeliveredDispatch(operationId, { taskRunId: context.runId, reason: 'task marked done before start' });
-    if (result?.ok) cancelDispatchRun(operationId); return result; },
   workspaceBroadcast: (dirId, payload) => workspaceBroadcast(dirId, payload),
   atomicWriteJson,
   isSystemInjected: msg => isSystemInjectedMsg(msg),
@@ -2042,13 +2032,12 @@ const taskBoardRuntime = createTaskBoardRuntime({
   relocateShellTask: (taskId, dirId, opts) => taskShellHost.relocateTask(taskId, dirId, opts),
   logger: console,
 });
-taskBoardRuntime.mountRoutes(app); createTaskRunRoutes({ store: taskRunStore, logger }).mountRoutes(app); createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), messages: messageSearchRuntime, logger }).mountRoutes(app); messageSearchRuntime().start();
+taskBoardRuntime.mountRoutes(app); createTaskSearchRoutes({ getBoard: () => taskBoardRuntime.getBoard(), messages: messageSearchRuntime, logger }).mountRoutes(app); messageSearchRuntime().start();
 const taskContextHost = createTaskContextHost({
-  getState: sessionId => chatSessions.get(sessionId), emitClients: createTaskRunStreamEmitter(broadcastTo, chatSessions, persistedSessions, workspaceBroadcast),
+  getState: sessionId => chatSessions.get(sessionId), emitClients: broadcastTo,
   append: (sessionId, message) => chatHistoryRuntime.appendMessage(sessionId, message),
   getTaskBoard: () => taskBoardRuntime, getTaskShells: () => taskShellHost, classifyDisplay,
   containsDelivery: (sessionId, id) => chatHistoryService.containsDelivery(sessionId, id),
-  recordTaskRunMessage: (sessionId, message) => taskRunHost?.recordMessage(sessionId, message),
   randomUUID: () => crypto.randomUUID(), getRecord: sessionId => persistedSessions.get(sessionId),
   runTurn: (sessionId, text, options) => chatTurnEngine.admitChatWork(sessionId, text, options),
 });
@@ -2226,14 +2215,6 @@ chatHistoryRuntime = createChatHistoryRuntime({
 });
 chatHistoryService = chatHistoryRuntime.service;
 chatHistoryRuntime.mountRoutes(app);
-taskRunHost = createProductionTaskRunHost({ taskRunStore, dataRoot: MULTICC_PATHS.root, providerHomesDir: providers.CODEX_HOMES_DIR, codexSessionHomesDir: providers.CODEX_SESSION_HOMES_DIR,
-  records: persistedSessions, directories, chatStream, clearNativeCliStates: record => { if (record) delete record.pendingCliHandoff; return clearAllNativeCliStates(record); },
-  deleteChatHistory: id => chatHistoryService.deleteSession(id), resetChatState: id => { const state = chatSessions.get(id); if (state) { state.chatTurnCount = 0; delete state._currentTaskId; delete state._currentTaskRunId; delete state._currentTaskLeaseEpoch; } },
-  resetRoleUsage: resetRoleTokenUsage, persistRecords: savePersistedSessionsBestEffort,
-  drainProviderProducers: (id, lease) => taskRunProviderBridge.waitForDrain(id, lease), onRunUpdated: ({ taskId }) => taskBoardRuntime.notifyTaskRun(taskId), getTaskState: id => getTaskState(persistedSessions.get(id)), onRunFailed: ({ taskId, runId }) => taskBoardRuntime.autoRetryTaskRun({ taskId, runId }),
-  prepareTaskWorktree: i => taskBoardRuntime.taskWorktree?.prepareForRun(i) || { ok: false, code: 'worktree_service_unavailable' },
-  releaseTaskWorktree: i => taskBoardRuntime.taskWorktree?.releaseSlot(i),
-  providerSnapshot: id => { const record = persistedSessions.get(id) || {}; return { providerId: record.provider || '_default_', providerName: record.provider || '_default_', cli: record.cli || '', model: effectiveSessionModel(record) || '' }; }, logger });
 createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(app); turnLedgerRuntime.mountRoutes(app);
 
 // Compatibility wrappers preserve the earlier host composition point.
@@ -2261,7 +2242,6 @@ const {
 } = createChatHostRuntime({
   appendMessage: appendChatMessage,
   persistUsage: accumulateTokenUsage,
-  persistTaskRunUsage: payload => taskRunHost.recordMainUsage(payload),
   afterUsageCommit: (sessionId, attribution) => {
     broadcastProviderTokenStats(sessionId, attribution);
     broadcastRoleTokenStats(sessionId);
@@ -2583,7 +2563,7 @@ require('./src/workspace/air-routes').mountAirRoutes(app, {
   providerName: sessionProviderName,
   effectiveModel: effectiveSessionModel,
   effectiveEffort: effectiveSessionEffort, mergeStateCached,
-  serializeSubagent, getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle',
+  serializeSubagent, getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle', cronSessionIds: () => cronTasks.sessionIds(),
 });
 
 const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
@@ -2688,7 +2668,7 @@ services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
-  isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, noteBlockedDelivery: id => workspaceAdmission?.noteBlockedDelivery(id), deliveryGroup: id => taskShellHost.workspaceGroup(id), isSlotUnavailable: (sid, item) => !!taskRunHost?.isSlotUnavailable(sid, item || {}),
+  isBusy: dispatchTargetBusy, busyReasons: dispatchTargetBusyReasons, noteBlockedDelivery: id => workspaceAdmission?.noteBlockedDelivery(id), deliveryGroup: id => taskShellHost.workspaceGroup(id),
   hasPersistedDelivery: chatTurnEngine.persistedOrchestrationDelivery,
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox,
@@ -2702,9 +2682,9 @@ orchestrationRuntime = createOrchestrationRuntime({
   // instead of a worker-wide deadlock (see orchestration-runtime processOutbox).
   isDeliveryLocked: sid => !!persistedSessions.get(sid)?.taskBoundTaskId
     && !!sessionHibernationRuntime?.isLocked?.(taskShellHost.workspaceGroup(sid)),
-  beforeDeliver: async descriptor => { const guard = await workspaceAdmission.beforeDeliver(descriptor); try { await taskRunHost.beforeDeliver(descriptor); return guard; } catch (error) { await guard?.complete({ accepted: false, durable: false }); throw error; } }, beforeFirstTick: ({ sessionScheduler }) => reconcileTaskRunSlotLeases({ store: taskRunStore, records: persistedSessions, persistRecords: savePersistedSessionsBestEffort, resumeCleanup: item => taskRunHost.resumeCleanup(item), resetSlot: item => taskRunHost.resetSlotForRecovery(item), getSchedulerStatus: slotId => sessionScheduler.status(slotId), recoverTerminal: event => taskRunHost.recoverTerminal(event), log: message => logger.warn(message) }),
+  beforeDeliver: descriptor => workspaceAdmission.beforeDeliver(descriptor),
   getSessionRecoveryState: id => sessionWorkHost.recoveryState(id),
-  onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); void taskRunHost.onSchedulerEvent(event).catch(error => logger.warn('task_run_finalize_failed', { error: error.message })); },
+  onSchedulerEvent: event => { sessionWorkHost.onSchedulerEvent(event); },
   workerIntervalMs: Math.max(100, Number(process.env.MULTICC_ORCHESTRATION_WORKER_INTERVAL_MS) || 1000),
   log: message => console.log('[multicc/wait]', message),
 });
@@ -2914,8 +2894,6 @@ const { shutdownCoordinator, trackServiceTimer, gracefulShutdown } = createHostL
   stopOutputCapture,
   routerToolHost,
   sessionPersistence,
-  taskRunHost,
-  taskRunStore,
   qwenAudioSupervisor,
   sessionHibernationRuntime,
 });
@@ -2981,7 +2959,7 @@ app.use(safeErrorHandler(logger));
       .catch(error => logger.warn('provider_log_watchdog_sweep_failed', { error: error.message })), providerLogWatchdog.PROVIDER_LOG_WATCHDOG_INTERVAL_MS));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
-const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, [...taskRunStore.listPinnedArtifactIds(), ...docsRegistry.listPermanentArtifactIds()]); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
+const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, docsRegistry.listPermanentArtifactIds()); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
     trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000)); require('./src/assist-snapshots').startAssistSweep({ assistDir: MULTICC_PATHS.assistDir, trackTimer: trackServiceTimer, log: (message) => logger.info('assist_snapshot_cleanup', { message }) });
     // Keep the official OAuth credential alive. The check is a credential read;
     // it only runs the CLI once the expiry is close, so the router never has to

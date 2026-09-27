@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const core = require('../task-board/core');
+const { isAbnormalLetter } = require('../classify/vocab');
 const { createAirPinRuntime } = require('./pins');
 
 // Air 是轮询页面：每 4 秒要把「任务板快照」（线上约 580KB、1069 张卡）和
@@ -108,9 +109,13 @@ function mountAirRoutes(app, deps) {
     // 的运行时，随快照一起下发。只读、不另落盘：「最近使用」本身就是会话
     // 记录已经知道的事，再存一份只会多出一个会悄悄过期的副本。terminal 镜像
     // 会话不在其列 —— 它们的 cli 说着的是进程归属，不是用户挑过的路由。
+    // 定时任务会话每轮自动跑、lastWorkAt 总是最新，不代表用户的选择；上一轮异常收尾的线路也不算。
+    const cronSessionIds = new Set(deps.cronSessionIds?.() || []);
     let lastUsed = null;
     for (const record of deps.records.values()) {
       if (record.kind !== 'chat' || !record.cli) continue;
+      if (cronSessionIds.has(record.id)) continue;
+      if (isAbnormalLetter(record.taskState?.classifyState)) continue;
       const at = record.lastWorkAt || record.createdAt || '';
       if (!lastUsed || String(at) > String(lastUsed.at)) lastUsed = { at, record };
     }
