@@ -88,17 +88,37 @@ function foreignRunSession(task, sessionId) {
   return sessionId !== routing.workerSessionId && sessionId !== task.chatSessionId;
 }
 
-// 自愈：卡片上写着「执行中/排队」，但唯一执行它的 worker 会话自己已经不在跑
-// （队列不是 running/queued），且这个值已过派发宽限 —— 那是被别的会话的事件
-// 写上去、再没人改回来的陈旧值，按 worker 的真实状态投影。
+// 卡片**自己声明**的执行者会话：单向路由派出去的 worker，或任务绑定的隐藏会话
+// （chatSessionId —— 一个任务一个会话，它整个生命周期只跑这一个任务）。两者都
+// 意味着「这张卡的运行只可能发生在这一个会话里」，所以那个会话的队列状态就是这
+// 张卡的真实状态。
+//
+// 没有声明执行者的卡片（只有一条 ref 的普通卡片）不算：那条 ref 可能是一个名下
+// 压着很多张卡的共用会话，它的状态代表不了某一张卡 —— 那种卡片继续交给
+// deadDispatchClaim 的证据判定。
+function soleRunSessionId(task) {
+  const routing = normalizeTaskRouting(task?.routing);
+  if (routing?.workerSessionId) return routing.workerSessionId;
+  const bound = typeof task?.chatSessionId === 'string' ? task.chatSessionId : '';
+  return bound && taskRunSessionIds(task).includes(bound) ? bound : '';
+}
+
+// 自愈：卡片上写着「执行中/排队」，但唯一的执行者会话自己已经不在跑（队列不是
+// running/queued），且这个值已过派发宽限 —— 那是被某个排队事件写上去、再没人改
+// 回来的陈旧值，按执行者会话的真实状态投影。
+//
+// 只看「这一轮有没有被受理过」不够：受理过的卡片同样会被后来的事件写脏。真实例子
+// （2026-09-27 微信提醒中转卡）：一条投不出去的消息让 delivery_deferred 每分钟
+// `claimed` → `claim_released` 各一次，每次 release 都把卡片刷成「排队中」，而事件
+// 自己写着 queued:0 / queuedItems:[]；重试停下之后，卡片上就只剩最后一笔「排队」。
 function staleWorkerClaim(task, getSessionRunState, now = Date.now()) {
   if (task?.runState !== 'running' && task?.runState !== 'queued') return null;
-  const routing = normalizeTaskRouting(task.routing);
-  if (!routing?.oneWay || !routing.workerSessionId || typeof getSessionRunState !== 'function') return null;
+  const executor = soleRunSessionId(task);
+  if (!executor || typeof getSessionRunState !== 'function') return null;
   const claimedAt = Number(task.runStateAt || task.updatedAt || task.createdAt || 0);
   if (!(claimedAt > 0 && now - claimedAt > DISPATCH_CLAIM_GRACE_MS)) return null;
   let workerState = null;
-  try { workerState = getSessionRunState(routing.workerSessionId); } catch (_) { return null; }
+  try { workerState = getSessionRunState(executor); } catch (_) { return null; }
   if (!workerState || workerState === 'running' || workerState === 'queued') return null;
   return ['done', 'completed'].includes(workerState) ? 'succeeded' : workerState;
 }
@@ -214,6 +234,7 @@ module.exports = {
   deadDispatchClaim,
   foreignRunSession,
   sessionHasTurn,
+  soleRunSessionId,
   staleWorkerClaim,
   taskRunSessionIds,
 };

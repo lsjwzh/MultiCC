@@ -532,8 +532,95 @@ test('a released delivery claim returns its routed task card to queued', () => {
   assert.equal(runtime.getBoard().tasks['tsk-release'].runState, 'running');
   runtime.onQueueEvent({
     type: 'claim_released', taskId: 'tsk-release', at: 21,
+    reason: 'prelaunch_deferred', queued: 1, queuedItems: [{ entryId: 'e2' }],
   });
   assert.equal(runtime.getBoard().tasks['tsk-release'].runState, 'queued');
+});
+
+test('a released claim reads what the release left behind, not 排队 unconditionally', () => {
+  // 2026-09-27 的真实事故：一条投不出去的消息让 delivery_deferred 每分钟
+  // claimed → claim_released 各一次，每次 release 都把卡片刷成「排队中」，而事件
+  // 自己写着 queued:0 / queuedItems:[]。重试停下之后卡片上只剩最后一笔「排队」，
+  // 于是「外部卡片显示排队、内部 FIFO 一条都没有」。release 不是排队。
+  const { runtime } = mkRuntime();
+  assert.equal(runtime.recordRouterAdmission({
+    callerSessionId: 'commander-1', targetSessionId: 'sess-1',
+    taskId: 'tsk-drain', taskText: 'drain', operationId: 'op-drain', status: 'admitted',
+  }), true);
+  runtime.onQueueEvent({ type: 'claimed', taskId: 'tsk-drain', at: 20 });
+
+  // 交还占用、队列一条不剩：卡片读会话落定的判定（D = 执行成功）。
+  runtime.onQueueEvent({
+    type: 'claim_released', taskId: 'tsk-drain', at: 21, reason: 'delivery_deferred',
+    queued: 0, queuedItems: [],
+    queueSummary: { sessionId: 'sess-1', depth: 0, state: 'idle', classifyState: 'D', updatedAt: 21 },
+  });
+  assert.equal(runtime.getBoard().tasks['tsk-drain'].runState, 'succeeded');
+
+  // 释放之后真的还压着东西 —— 那才叫排队。
+  runtime.onQueueEvent({
+    type: 'claim_released', taskId: 'tsk-drain', at: 22, reason: 'prelaunch_deferred',
+    queued: 1, queuedItems: [{ entryId: 'e2' }],
+    queueSummary: { sessionId: 'sess-1', depth: 1, state: 'idle', classifyState: 'D', updatedAt: 22 },
+  });
+  assert.equal(runtime.getBoard().tasks['tsk-drain'].runState, 'queued');
+
+  // 中途释放那一支是冻结而不是清空：调度器还会继续推，对 UI 就是执行中。
+  runtime.onQueueEvent({
+    type: 'claim_released', taskId: 'tsk-drain', at: 23, reason: 'delivery_error',
+    freezeReason: 'incomplete_requires_resume', queued: 0, queuedItems: [],
+    queueSummary: { sessionId: 'sess-1', depth: 0, state: 'frozen', classifyState: 'P', updatedAt: 23 },
+  });
+  assert.equal(runtime.getBoard().tasks['tsk-drain'].runState, 'running');
+});
+
+test('the scheduler hands claim_released the freeze reason its consumer projects from', () => {
+  // task-board 只能从事件里读状态（emit 会把 schedule 换成 queueSummary），
+  // 所以 route 2 的冻结原因必须随事件一起出来 —— 否则卡片会把一次「中途交还、
+  // 还在推进」读成「排队」。
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'session-work', 'scheduler.js'), 'utf8');
+  assert.match(source, /freezeReason: result\.schedule\.freezeReason,/);
+});
+
+test('a bound-session card stuck 排队 reads its own session, not the stale claim', () => {
+  // 同一个事故的读侧：卡片绑定的隐藏会话（chatSessionId）整个生命周期只跑这一个
+  // 任务，所以它的队列状态就是这张卡的真实状态。共用会话（一个会话名下压着很多
+  // 张卡）没有声明执行者，不走这条路。
+  const board = core.createEmptyBoard();
+  const now = 1_000_000_000;
+  const [taskId] = core.applyTagResult(board, [{ id: 'new', title: '提醒通道', module: 'M', areas: [] }],
+    mkRef({ sessionId: 'task-bound-1', ts: now - 30 * 60 * 1000 }), now - 30 * 60 * 1000);
+  const task = board.tasks[taskId];
+  task.chatSessionId = 'task-bound-1';
+  task.runState = 'queued';
+  task.runStateAt = now - 10 * 60 * 1000;
+
+  assert.equal(core.soleRunSessionId(task), 'task-bound-1', '绑定会话被认成执行者');
+
+  let sessionState = 'succeeded';
+  const local = sid => (sid === 'task-bound-1' ? sessionState : null);
+  let dto = core.buildBoardDto(board, local, { sessionHasTurn: () => true, now }).tasks[0];
+  assert.equal(dto.runState, 'succeeded', '执行者已落地 → 不再冒充排队');
+
+  // 会话自己在跑的时候一枚字节都不动（那一轮可能就是这张卡）。
+  sessionState = 'running';
+  dto = core.buildBoardDto(board, local, { sessionHasTurn: () => true, now }).tasks[0];
+  assert.equal(dto.runState, 'queued');
+
+  // 派发宽限期内也不许闪。
+  sessionState = 'succeeded';
+  task.runStateAt = now - 1000;
+  dto = core.buildBoardDto(board, local, { sessionHasTurn: () => true, now }).tasks[0];
+  assert.equal(dto.runState, 'queued');
+
+  // 没有声明执行者的卡片（只有一条 ref 的普通卡片）不走这条路：那条 ref 可能是
+  // 一个压着很多张卡的共用会话。
+  const plain = JSON.parse(JSON.stringify(task));
+  delete plain.chatSessionId;
+  delete plain.routing;
+  assert.equal(core.soleRunSessionId(plain), '');
+  assert.equal(core.staleWorkerClaim({ ...plain, runStateAt: now - 10 * 60 * 1000 }, local, now), null);
 });
 
 test('task cards record whether they were started on the board or inside a chat', async () => {
