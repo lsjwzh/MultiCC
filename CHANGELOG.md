@@ -2,6 +2,20 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.1.4 — One-click upgrades from the web, and a Mac that stays awake when asked (2026-09-27)
+
+### Highlights
+
+- **The upgrade button now runs the real installer** — the web UI's update path stops pointing at an in-package re-pack; it fetches `install.sh` from the target tag and runs it against the existing install directory, so an upgrade is byte-for-byte the same flow as a first install (stop, back up, replace, carry port/token across, start). A git checkout still uses `./multicc update`.
+- **Keep the machine awake while a task runs** — an opt-in runtime switch (global settings) holds a `caffeinate` assertion so the display and the lock screen do not come up mid-task; the assertion is released automatically when the server exits, so no orphan process keeps the screen on forever.
+- **The unlock password stays in the login keychain** — the optional auto-unlock password for the MultiCC Agent is written to the macOS login keychain only, never through the vault and never through an LLM.
+- **A directory's artifacts got their own page** — the directory overview's artifact list now opens as a dedicated page (same data as the overview grid), with its own refresh, its own pinned and permanent toggles, and an App counterpart.
+- **The macOS Agent grew a native companion** — the MultiCCAgent framework now carries its own keep-awake and unlock-password plumbing, so the desktop client can keep the screen on and unlock without shelling out through a fragile path.
+
+### Release integrity
+
+- The runtime write inventory is complete again — the human-assist screenshot root was registered as ephemeral, which clears the governance assertion that had been red in CI's deterministic stage since 2026-09-25. The release core gate itself was never affected (it does not run that tier), which is why the release went out while CI was red.
+
 ## v2.1.3 — Terminals you can actually work in, and screenshots you can point at (2026-09-26)
 
 ### Highlights
