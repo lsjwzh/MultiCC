@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const { exec } = require('child_process');
 const { createPaths } = require('../../src/paths');
 const { atomicWriteJson } = require('../../src/runtime-security');
 const fanoutMigration = require('./fanout-migration');
@@ -33,6 +34,11 @@ const bindingFlights = new Map();
 const RUN_HISTORY_LIMIT = 20;
 // /api/cron 列表里回放多少条(这条路径每开一次面板就要跑, 保持小而快)。
 const RUN_HISTORY_VIEW = 10;
+// 脚本任务( kind='script' )的一次运行有多长时间预算, 超时按失败记。
+const SCRIPT_TIMEOUT_MS = 120000;
+// 脚本输出只保留末尾这些字符进执行记录, 防跑飞的脚本把整个任务文件撑爆。
+const SCRIPT_OUTPUT_LIMIT = 2000;
+const SCRIPT_OUTPUT_VIEW = 400;
 
 function load() {
   const source = !fs.existsSync(STORE) && fs.existsSync(LEGACY_STORE) ? LEGACY_STORE : STORE;
@@ -115,6 +121,25 @@ function taskClientMsgId(...parts) {
   return parts.join(':').replace(/[^\w.:-]/g, '_').slice(0, 160);
 }
 
+// kind='script' 的任务不建固定 Air 任务，而是直接在主机上跑一条命令（通常是一个
+// python 脚本，避免「跑个脚本也要养一个常驻大模型会话」）。cwd 落在该规则的工作
+// 目录，输出和退出码进执行记录，面板能看到每次跑的结果。
+function runScriptCommand(command, cwd, timeoutMs) {
+  return new Promise(resolve => {
+    exec(command, {
+      cwd: cwd || undefined,
+      timeout: timeoutMs || SCRIPT_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
+      env: { ...process.env },
+    }, (error, stdout, stderr) => {
+      const code = error && typeof error.code === 'number' ? error.code : error ? 1 : 0;
+      const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+      resolve({ code, output, timedOut: !!(error && error.killed) });
+    });
+  });
+}
+
 async function taskEntry(taskId) {
   if (!deps.getTask) return null;
   const entry = await deps.getTask(taskId);
@@ -158,7 +183,7 @@ function clearBindingBreak(task) {
 // 旧的滚出去, 所以文件不会随时间无限长。
 function recordRun(task, entry) {
   const runs = Array.isArray(task.runs) ? task.runs : [];
-  runs.push({
+  const run = {
     at: Number(entry.at) || Date.now(),
     reason: entry.reason === 'manual' ? 'manual' : 'schedule',
     status: entry.status || 'error',
@@ -167,7 +192,10 @@ function recordRun(task, entry) {
     sessionId: entry.sessionId || null,
     receiptId: entry.receiptId || null,
     error: entry.error ? String(entry.error).slice(0, 200) : '',
-  });
+  };
+  if (entry.exitCode !== undefined && entry.exitCode !== null) run.exitCode = Number(entry.exitCode);
+  if (entry.output) run.output = String(entry.output).slice(0, SCRIPT_OUTPUT_LIMIT);
+  runs.push(run);
   if (runs.length > RUN_HISTORY_LIMIT) runs.splice(0, runs.length - RUN_HISTORY_LIMIT);
   task.runs = runs;
 }
@@ -182,6 +210,11 @@ async function ensureTaskInner(task) {
   if (deps.ready) await deps.ready;
   const dir = deps.directories.get(task.dirId);
   if (!dir) throw Object.assign(new Error('目标目录不存在'), { code: 'directory_missing' });
+
+  // 脚本任务不绑定固定 Air 任务：它直接跑本地命令，不经过大模型会话。
+  if (task.kind === 'script') {
+    return { taskId: null, sessionId: null, entry: null, script: true, dir };
+  }
 
   // New-format schedules never silently rotate identity. If the user removed
   // or archived their fixed task, surface that fact and let them decide.
@@ -295,6 +328,7 @@ async function migrateTasks() {
   let migrated = 0;
   const errors = [];
   for (const task of tasks) {
+    if (task.kind === 'script') continue; // 脚本任务没有可迁移的 Air 绑定
     try {
       const before = task.taskId;
       await ensureTask(task);
@@ -313,27 +347,49 @@ async function fireTask(task, reason, deliveryKey = null) {
   let binding = null;
   let result = null;
   try {
-    if (typeof deps.sendTaskMessage !== 'function') throw Object.assign(new Error('Air 任务入口尚未就绪'), { code: 'task_service_unavailable' });
-    binding = await ensureTask(task);
-    const key = deliveryKey || (reason === 'manual' ? randomUUID() : String(attemptedAt));
-    result = await deps.sendTaskMessage(binding.taskId, task.prompt, {
-      clientMsgId: taskClientMsgId('cron-run', task.id, reason, key),
-      source: 'cron',
-      taskText: task.name,
-    });
-    if (!result?.ok) throw Object.assign(new Error(result?.error || result?.code || '任务入队失败'), { code: result?.code || 'task_delivery_failed' });
-    task.lastError = '';
-    clearBindingBreak(task);
-    task.lastStatus = result.decision === 'queued' ? 'queued' : 'ok';
-    task.lastReceiptId = result.receiptId || null;
-    task.lastDecision = result.decision || 'continue';
+    if (task.kind === 'script') {
+      if (typeof deps.directories?.get !== 'function') throw Object.assign(new Error('脚本任务目录服务尚未就绪'), { code: 'task_service_unavailable' });
+      binding = await ensureTask(task);
+      const dir = binding.dir || deps.directories.get(task.dirId);
+      const run = await runScriptCommand(String(task.command || '').trim(), dir?.path, task.scriptTimeoutMs);
+      if (run.code === 0) {
+        task.lastStatus = 'ok';
+        task.lastExitCode = 0;
+        task.lastError = '';
+        result = { ok: true, exitCode: 0, output: run.output };
+      } else {
+        task.lastStatus = 'error';
+        task.lastExitCode = run.code;
+        task.lastError = (run.timedOut ? '脚本超时' : `脚本退出码 ${run.code}`) + (run.output ? `：${run.output.slice(0, 120)}` : '');
+        result = null;
+      }
+      task.lastOutput = run.output;
+      clearBindingBreak(task);
+    } else {
+      if (typeof deps.sendTaskMessage !== 'function') throw Object.assign(new Error('Air 任务入口尚未就绪'), { code: 'task_service_unavailable' });
+      binding = await ensureTask(task);
+      const key = deliveryKey || (reason === 'manual' ? randomUUID() : String(attemptedAt));
+      result = await deps.sendTaskMessage(binding.taskId, task.prompt, {
+        clientMsgId: taskClientMsgId('cron-run', task.id, reason, key),
+        source: 'cron',
+        taskText: task.name,
+      });
+      if (!result?.ok) throw Object.assign(new Error(result?.error || result?.code || '任务入队失败'), { code: result?.code || 'task_delivery_failed' });
+      task.lastError = '';
+      clearBindingBreak(task);
+      task.lastStatus = result.decision === 'queued' ? 'queued' : 'ok';
+      task.lastReceiptId = result.receiptId || null;
+      task.lastDecision = result.decision || 'continue';
+    }
   } catch (error) {
     task.lastStatus = 'error';
-    task.lastError = error.message || error.code || '任务入队失败';
+    task.lastError = error.message || error.code || '任务执行失败';
     // The fixed task is gone/archived: never spawn a replacement on our own,
     // surface it once and let the explicit rebind action rotate the identity.
-    if (!task.taskId) task.taskBindingError = task.lastError;
-    else if (BINDING_BREAK_CODES.has(error?.code)) markBindingBroken(task, error);
+    if (task.kind !== 'script') {
+      if (!task.taskId) task.taskBindingError = task.lastError;
+      else if (BINDING_BREAK_CODES.has(error?.code)) markBindingBroken(task, error);
+    }
   }
   task.lastRunAt = attemptedAt;
   if (binding?.sessionId || result?.sessionId) {
@@ -349,15 +405,18 @@ async function fireTask(task, reason, deliveryKey = null) {
     reason,
     status: task.lastStatus,
     decision: result?.decision || null,
+    exitCode: task.kind === 'script' ? task.lastExitCode : undefined,
+    output: task.kind === 'script' ? task.lastOutput : undefined,
     receiptId: result?.receiptId || null,
     taskId: task.taskId || binding?.taskId || null,
     sessionId: task.taskSessionId || result?.sessionId || binding?.sessionId || null,
     error: ok ? '' : task.lastError,
   });
   save();
-  console.log(`[multicc/cron] fired ${task.id} (${task.name}) [${reason}] → Air task ${task.taskId || 'unbound'}, ${ok ? task.lastStatus : task.lastError}`);
+  console.log(`[multicc/cron] fired ${task.id} (${task.name}) [${reason}] → ${task.kind === 'script' ? `脚本退出码 ${task.lastExitCode ?? '?'}` : `Air task ${task.taskId || 'unbound'}`}, ${ok ? task.lastStatus : task.lastError}`);
   return { ok, taskId: task.taskId || null, sessionId: task.taskSessionId || null,
-    receiptId: result?.receiptId || null, decision: result?.decision || null, error: ok ? null : task.lastError };
+    receiptId: result?.receiptId || null, decision: result?.decision || null,
+    exitCode: task.kind === 'script' ? task.lastExitCode ?? null : null, error: ok ? null : task.lastError };
 }
 
 async function tick() {
@@ -380,6 +439,7 @@ async function tick() {
 function sessionIds() {
   const ids = new Set();
   for (const task of tasks) {
+    if (task.kind === 'script') continue; // 脚本任务没有固定会话
     const id = task.taskSessionId || task.lastSessionId;
     if (id) ids.add(id);
   }
@@ -390,23 +450,30 @@ function sessionIds() {
 function toView(task) {
   const dir = deps && deps.directories.get(task.dirId);
   const summary = task.taskId && deps?.taskSummary ? deps.taskSummary(task.taskId) : null;
+  const isScript = task.kind === 'script';
   return {
     id: task.id, name: task.name, dirId: task.dirId,
     dirName: dir ? dir.name : '(已删除)',
-    cli: summary?.runtime?.cli || task.cli || 'claude',
-    provider: summary?.runtime?.provider || null,
-    model: summary?.runtime?.model || null,
-    effort: summary?.runtime?.effort || null,
-    prompt: task.prompt, cron: task.cron, enabled: !!task.enabled,
+    kind: task.kind || 'agent',
+    command: task.command || '',
+    scriptTimeoutMs: task.scriptTimeoutMs || null,
+    cli: isScript ? null : (summary?.runtime?.cli || task.cli || 'claude'),
+    provider: isScript ? null : (summary?.runtime?.provider || null),
+    model: isScript ? null : (summary?.runtime?.model || null),
+    effort: isScript ? null : (summary?.runtime?.effort || null),
+    prompt: isScript ? '' : task.prompt,
+    cron: task.cron, enabled: !!task.enabled,
     createdBy: task.createdBy || 'user', createdAt: task.createdAt,
     lastRunAt: task.lastRunAt || null, lastStatus: task.lastStatus || null,
     lastError: task.lastError || '', lastSessionId: task.taskSessionId || task.lastSessionId || null,
-    taskId: task.taskId || null,
-    taskTitle: summary?.title || task.name,
-    taskStatus: summary?.status || (task.taskId ? 'unknown' : 'binding'),
+    lastExitCode: isScript && task.lastExitCode !== undefined ? task.lastExitCode : null,
+    lastOutput: isScript && task.lastOutput ? String(task.lastOutput).slice(-SCRIPT_OUTPUT_VIEW) : '',
+    taskId: isScript ? null : (task.taskId || null),
+    taskTitle: isScript ? null : (summary?.title || task.name),
+    taskStatus: isScript ? null : (summary?.status || (task.taskId ? 'unknown' : 'binding')),
     taskReadOnly: summary?.readOnly === true,
-    taskBindingError: task.taskBindingError || '',
-    taskBindingBroken: !!task.taskBindingError,
+    taskBindingError: isScript ? '' : (task.taskBindingError || ''),
+    taskBindingBroken: !isScript && !!task.taskBindingError,
     taskBindingBrokenAt: task.taskBindingBrokenAt || null,
     taskRebindHistory: Array.isArray(task.taskRebindHistory) ? task.taskRebindHistory : [],
     taskUrl: task.taskId ? `/air?task=${encodeURIComponent(task.taskId)}&dir=${encodeURIComponent(task.dirId)}` : null,
@@ -422,6 +489,12 @@ function toView(task) {
 function sanitizeIncoming(body, existing) {
   const t = existing || {};
   const out = {};
+  if (body.kind !== undefined) out.kind = body.kind === 'script' ? 'script' : 'agent';
+  if (body.command !== undefined) out.command = String(body.command).trim().slice(0, 4000);
+  if (body.scriptTimeoutMs !== undefined) {
+    const ms = Math.floor(Number(body.scriptTimeoutMs));
+    out.scriptTimeoutMs = Number.isFinite(ms) && ms > 0 ? Math.min(ms, 3600000) : null;
+  }
   if (body.name !== undefined) out.name = String(body.name).trim().slice(0, 80);
   if (body.dirId !== undefined) out.dirId = String(body.dirId);
   // allow targeting by directory path too (agents know their cwd, not the dirId)
@@ -440,8 +513,12 @@ function sanitizeIncoming(body, existing) {
 function validate(t) {
   if (!t.name) return '任务名不能为空';
   if (!t.dirId || !deps.directories.get(t.dirId)) return '目标目录无效';
-  if (deps.clis?.length && !deps.clis.includes(t.cli || 'claude')) return 'CLI 无效';
-  if (!t.prompt || !t.prompt.trim()) return 'prompt 不能为空';
+  if (t.kind === 'script') {
+    if (!t.command || !t.command.trim()) return '脚本命令不能为空';
+  } else {
+    if (deps.clis?.length && !deps.clis.includes(t.cli || 'claude')) return 'CLI 无效';
+    if (!t.prompt || !t.prompt.trim()) return 'prompt 不能为空';
+  }
   if (!cronValidate(t.cron || '')) return 'cron 表达式无效（需 5 段：分 时 日 月 周）';
   return null;
 }
@@ -457,6 +534,7 @@ function mount(app) {
     const t = sanitizeIncoming(req.body || {});
     if (t.enabled === undefined) t.enabled = true;
     if (!t.cli) t.cli = 'claude';
+    if (!t.kind) t.kind = 'agent';
     const err = validate(t);
     if (err) return res.status(400).json({ error: err });
     t.id = uid();
@@ -465,7 +543,7 @@ function mount(app) {
     await ensureTask(t);
     tasks.push(t);
     save();
-    console.log(`[multicc/cron] created task ${t.id} (${t.name}) by ${t.createdBy}, cron="${t.cron}"`);
+    console.log(`[multicc/cron] created task ${t.id} (${t.name}) by ${t.createdBy}, kind=${t.kind}, cron="${t.cron}"`);
     res.json(toView(t));
   }).catch(next));
 
@@ -500,6 +578,7 @@ function mount(app) {
   app.post('/api/cron/:id/rebind', (req, res, next) => Promise.resolve().then(async () => {
     const task = tasks.find(x => x.id === req.params.id);
     if (!task) return res.status(404).json({ error: 'task not found' });
+    if (task.kind === 'script') return res.status(409).json({ error: '脚本任务没有固定 Air 任务，无需重新绑定' });
     const result = await rebindTask(task, { force: req.body?.force === true, reason: req.body?.reason || 'manual' });
     if (!result.ok) return res.status(409).json({ error: result.code || 'rebind_failed', taskId: result.taskId || null });
     console.log(`[multicc/cron] rebound ${task.id} (${task.name}) → Air task ${result.taskId} (was ${result.previousTaskId || 'unbound'})`);
