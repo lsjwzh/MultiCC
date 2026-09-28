@@ -136,9 +136,11 @@ test('locality checks stay limited to authentication and sensitive host controls
   // sensitive host settings.
   assert.deepEqual(localityUsers, [
     'server.js',
+    'src/host-power-services.js',
     'src/request-locality.js',
     'src/router-tool-host.js',
     'src/routes/auth.js',
+    'src/routes/host-power.js',
     'src/routes/host-read.js',
     'src/routes/host-write.js',
     'src/ws/connection-router.js',
