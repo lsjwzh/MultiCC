@@ -2,6 +2,19 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.1.6 — A settings drawer that stays tidy, and unlock checks that do not nag (2026-09-28)
+
+### Highlights
+
+- **The settings drawer is a two-level cascade** — the Air settings panel groups related options under sections instead of one long flat list, so host power, tunnel, update and account settings are each one click away instead of a scroll away.
+- **The uncommitted-files pill opens its list** — the main checkout's "N uncommitted files" capsule is now clickable and shows the actual file list with a diff on demand, instead of being a static count.
+- **Unlock access is probed instead of assumed** — the macOS Agent auto-unlock gained a bounded readiness probe (an explicit check, or saving a password, may show the system sheet while the screen is unlocked). The old `privileged-helper` was removed and its routes were folded into the host power surface, with a probe that never returns credentials and stays inside the web client's request timeout.
+- **The main repo's shared `data/` is ignored** — root `data/` is local shared data and no longer a candidate for the git watch.
+
+### Release integrity
+
+- The paint budget now registers the admin-stats marquee keyframe (it only runs while the label overflows, pauses on hover/focus and drops under reduced-motion), keeping the CI gate green.
+
 ## v2.1.5 — Task runs folded into the board, and reminders that know you're away (2026-09-27)
 
 ### Highlights
