@@ -1053,9 +1053,10 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
     await tester.pumpAndSettle();
     await tapInSidebar(tester, find.byKey(const ValueKey('air-more-section')));
-
-    // Web `air.html` 的 `#side-more .global-links` 是四项：
-    // 服务与文档 / 记忆图谱 / 任务图谱 / 设置中心。
+    // 任务图谱是「重要功能」那一组里的一行（Web `air-admin.js` 的
+    // `settingGroups.featured` 同样是「服务与文档 / 记忆图谱 / 任务图谱」）。
+    // 四组默认都折着，先展开它。
+    await tapInSidebar(tester, find.text('重要功能'));
     expect(find.byKey(const ValueKey('air-more-task-graph')), findsOneWidget);
     expect(find.text('任务图谱'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -1140,7 +1141,7 @@ void main() {
     client.close();
   });
 
-  testWidgets('更多与系统：每组各套一个框，全局页那四行自成一格', (tester) async {
+  testWidgets('更多与系统：每组各套一个框，设置那四组自成一格', (tester) async {
     final settings = await _settings();
     final client = _client(<String>[], lidSleepAvailable: true);
     await tester.pumpWidget(
@@ -1161,15 +1162,28 @@ void main() {
     // Chat / Terminal 切换（`air_directory_mode_test.dart` 盯那一边）。
     for (final group in const [
       'air-group-frequent',
-      'air-group-global',
+      'air-group-settings',
       'air-group-entries',
       'air-group-host',
     ]) {
       expect(find.byKey(ValueKey(group)), findsOneWidget, reason: group);
     }
-    // 「服务与文档 / 记忆图谱 / 任务图谱 / 设置中心」四行同框，别的一行都不在。
+    // 设置那一格是 Web 抽屉一级的镜像：四个分组各占一个可折的标题
+    // （`air-admin.js` 的 settingGroups 就是这四个 key），外加一行「设置中心」。
+    for (final tile in const [
+      'air-more-group-featured',
+      'air-more-group-ai',
+      'air-more-group-connect',
+      'air-more-group-storage',
+    ]) {
+      expect(find.byKey(ValueKey(tile)), findsOneWidget, reason: tile);
+    }
+    // 折着的分组不建子树：展开「重要功能」才看得见它那三行。
+    expect(find.byKey(const ValueKey('air-more-docs')), findsNothing);
+    await tapInSidebar(tester, find.text('重要功能'));
+    // 展开后「服务与文档 / 记忆图谱 / 任务图谱」和「设置中心」同框，别的一行都不在。
     final global = tester.getRect(
-      find.byKey(const ValueKey('air-group-global')),
+      find.byKey(const ValueKey('air-group-settings')),
     );
     for (final row in const [
       'air-more-docs',
@@ -1199,7 +1213,7 @@ void main() {
     // 四个框互不重叠地一路排下去（同一条竖线上，一个接一个）。
     final boxes = [
       'air-group-frequent',
-      'air-group-global',
+      'air-group-settings',
       'air-group-entries',
       'air-group-host',
     ].map((k) => tester.getRect(find.byKey(ValueKey(k)))).toList();

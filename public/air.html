@@ -369,13 +369,19 @@
     </section>
   </main>
 
-  <!-- 更多设置独立于侧栏布局；原生 dialog 管理焦点和模态遮罩。 -->
+  <!-- 更多设置独立于侧栏布局；原生 dialog 管理焦点和模态遮罩。
+
+       一级是抽屉自己（常用设置 / 设置 / 主机三段），二级是「设置」那一段里四个
+       分组向右展开的面板清单：设置中心那十六个面板在这里各有一行，换线路、配桥接
+       都不必先跳进设置中心再点一次。桌面是两列联动；窄屏由 air-more.js 把二级
+       整组搬回它父行下面变成就地折叠 —— 同一份 DOM 两种摆法，不另造一套目的地。 -->
   <dialog id="more-panel" aria-labelledby="more-title">
     <header class="more-head">
       <h2 id="more-title" data-i18n="airMoreSystem">更多与系统</h2>
       <button id="more-close" type="button" data-i18n="airBackToTask">返回任务</button>
     </header>
-    <div class="more-scroll">
+    <div class="more-columns">
+      <div class="more-scroll more-rail">
         <div class="side-more-body">
           <section id="frequent-settings-group" class="side-group">
             <h3 class="side-group-title" data-i18n="airFrequentSettings">常用设置</h3>
@@ -391,29 +397,101 @@
               <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span data-i18n="airBridges">消息桥接</span></button>
             </nav>
           </section>
-          <nav class="global-links side-group">
-            <button type="button" data-air-view="docs" data-i18n="airDocs">服务与文档</button>
-            <button type="button" data-air-view="memory" data-i18n="airMemoryGraph">记忆图谱</button>
-            <button type="button" data-air-view="taskgraph" data-i18n="airTaskGraph">任务图谱</button>
-            <button type="button" data-air-view="settings" data-i18n="airSettingsCenter">设置中心</button>
-          </nav>
+          <!-- 设置中心那一页的十六个面板在这里按同一张分组表重排一遍：一行一个
+               分组（data-more-group），点开/悬停把它的面板清单放到右边那一列。
+               分组名与面板文案用的就是设置页那张表的 key（airAdminGroup* /
+               airAdminPanel*），所以两处永远说的是同一件事，不会各写一套名字。
+               最后一行「设置中心 / 全部面板」仍然是整页入口：习惯跳整页的人不必
+               改肌肉记忆。分组和面板都带 data-air-view，接线仍归 air.js —— 这里
+               只摆骨架，不碰目的地。 -->
+          <section id="settings-tree-group" class="side-group">
+            <h3 class="side-group-title" data-i18n="airSettingsCenter">设置中心</h3>
+            <nav id="settings-tree" class="settings-tree" aria-label="设置中心" data-i18n-aria-label="airSettingsCenter">
+              <button type="button" class="more-parent" data-more-group="featured" aria-expanded="false" aria-controls="more-group-featured">
+                <span class="more-glyph" aria-hidden="true">◆</span>
+                <span class="more-label"><strong data-i18n="airAdminGroupFeatured">重要功能</strong></span>
+                <span class="more-chevron" aria-hidden="true">›</span>
+              </button>
+              <button type="button" class="more-parent" data-more-group="ai" aria-expanded="false" aria-controls="more-group-ai">
+                <span class="more-glyph" aria-hidden="true">◆</span>
+                <span class="more-label"><strong data-i18n="airAdminGroupAi">AI 与执行</strong></span>
+                <span class="more-chevron" aria-hidden="true">›</span>
+              </button>
+              <button type="button" class="more-parent" data-more-group="connect" aria-expanded="false" aria-controls="more-group-connect">
+                <span class="more-glyph" aria-hidden="true">◆</span>
+                <span class="more-label"><strong data-i18n="airAdminGroupConnect">连接与通知</strong></span>
+                <span class="more-chevron" aria-hidden="true">›</span>
+              </button>
+              <button type="button" class="more-parent" data-more-group="storage" aria-expanded="false" aria-controls="more-group-storage">
+                <span class="more-glyph" aria-hidden="true">◆</span>
+                <span class="more-label"><strong data-i18n="airAdminGroupStorage">资源与存储</strong></span>
+                <span class="more-chevron" aria-hidden="true">›</span>
+              </button>
+              <button type="button" class="more-leaf" data-air-view="settings">
+                <span class="more-glyph" aria-hidden="true">▦</span>
+                <span class="more-label"><strong data-i18n="airSettingsCenter">设置中心</strong><small data-i18n="airSettingsAllPanels">全部面板</small></span>
+                <span class="more-chevron" aria-hidden="true">›</span>
+              </button>
+            </nav>
+          </section>
           <!-- Deliberately outside the version row above: that row is a click target
                for the update check, and reading a timestamp should not fire a call. -->
           <div class="ops-boot side-group">
             <div class="ops-boot-row"><span class="ops-boot-label" data-i18n="airLastBoot">最近启动</span><span id="air-boot-time">—</span></div>
             <div id="air-boot-uptime" class="ops-boot-uptime"></div>
           </div>
+          <!-- 这一组每一行的图标走 CSS 的 ::before + attr(data-icon)，不写成子节点：
+               ① air-ops.js 的 paintPush 会 textContent 重画推送那一行，子节点会被抹掉；
+               ② tests/test-air-ops.js 按 textContent 找按钮，图标混进文字会让它找不到。
+               「🔄 重启」自己就带符号，不再另配一个。 -->
           <nav class="ops-actions side-group" aria-label="主机操作" data-i18n-aria-label="airHostActions">
-            <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包" data-i18n-title="airInstallTitle" data-i18n="airInstallPackage">安装包</button>
-            <button type="button" id="air-qr-btn" title="扫码在手机上打开" data-i18n-title="airQrTitle" data-i18n="airQr">二维码</button>
+            <button type="button" id="air-apk-btn" data-icon="⤓" title="下载 Android / iOS 安装包" data-i18n-title="airInstallTitle" data-i18n="airInstallPackage">安装包</button>
+            <button type="button" id="air-qr-btn" data-icon="▩" title="扫码在手机上打开" data-i18n-title="airQrTitle" data-i18n="airQr">二维码</button>
             <!-- 标签与 title 运行时都由 air-ops.js 重画（pwa.js 只认自己的英文兜底）。
                  data-i18n 只负责首屏那一次：air-ops 的 paintPush 要等 multicc-push-state
                  事件，中间那一小段在英文界面里会露出源码里的中文。 -->
-            <button type="button" id="push-toggle" title="开启浏览器推送通知" data-i18n-title="airOpsPushSubscribe" data-i18n="airOpsPushNotify">推送通知</button>
+            <button type="button" id="push-toggle" data-icon="◔" title="开启浏览器推送通知" data-i18n-title="airOpsPushSubscribe" data-i18n="airOpsPushNotify">推送通知</button>
             <button type="button" id="air-restart-btn" title="重启 multicc 服务" data-i18n-title="airRestartTitle" data-i18n="airRestartService">🔄 重启</button>
-            <a href="/logout" title="退出登录" data-i18n-title="airLogout" data-i18n="airLogout">退出登录</a>
+            <a href="/logout" data-icon="⇥" title="退出登录" data-i18n-title="airLogout" data-i18n="airLogout">退出登录</a>
           </nav>
         </div>
+      </div>
+      <!-- 二级：设置那四个分组各自的面板清单。桌面是右边这一列，一次只显示选中的
+           那一组（其余 hidden）；窄屏由 air-more.js 把这几个 .more-leaf-group 整个
+           搬回它父行下面，于是同一个元素变成就地折叠的内容 —— 两份 DOM 会让
+           「哪个才是目的地」变成两个答案，所以宁可搬节点。 -->
+      <div id="more-flyout" class="more-flyout" hidden>
+        <div class="more-flyout-head">
+          <strong id="more-flyout-title"></strong>
+          <span id="more-flyout-note"></span>
+        </div>
+        <div class="more-flyout-body">
+          <div class="more-leaf-group" id="more-group-featured" hidden>
+            <button type="button" class="more-leaf" data-air-view="secrets"><span class="more-glyph" aria-hidden="true">🔐</span><span class="more-label"><strong data-i18n="airAdminPanelSecrets">敏感信息</strong><small data-i18n="secretsVaultShortHint">注入子进程环境变量</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="docs"><span class="more-glyph" aria-hidden="true">▤</span><span class="more-label"><strong data-i18n="airAdminPanelDocs">服务与文档</strong><small data-i18n="airAdminPanelDocsDesc">本地服务、网页和文件</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="memory"><span class="more-glyph" aria-hidden="true">⬡</span><span class="more-label"><strong data-i18n="airAdminPanelMemory">记忆图谱</strong><small data-i18n="airAdminPanelMemoryDesc">项目记忆、会话记忆与文件编辑</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="taskgraph"><span class="more-glyph" aria-hidden="true">⋈</span><span class="more-label"><strong data-i18n="airAdminPanelTaskgraph">任务图谱</strong><small data-i18n="airAdminPanelTaskgraphDesc">任务关联网络：父子 / 分组 / 合并 / 壳链接</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="workspaces"><span class="more-glyph" aria-hidden="true">⧉</span><span class="more-label"><strong data-i18n="airAdminPanelWorkspaces">工作区</strong><small data-i18n="airAdminPanelWorkspacesDesc">worktree 休眠回收：预算 / 审计 / 孤儿对账</small></span></button>
+          </div>
+          <div class="more-leaf-group" id="more-group-ai" hidden>
+            <button type="button" class="more-leaf" data-air-view="provider"><span class="more-glyph" aria-hidden="true">◈</span><span class="more-label"><strong data-i18n="airAdminPanelProvider">Provider 配置</strong><small data-i18n="airAdminPanelProviderDesc">全局供应商、账号与线路管理</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="aux"><span class="more-glyph" aria-hidden="true">✦</span><span class="more-label"><strong>AI Assistant</strong><small data-i18n="airAdminPanelAuxDesc">意图分类与摘要服务的模型与运行记录</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="goal"><span class="more-glyph" aria-hidden="true">◎</span><span class="more-label"><strong data-i18n="airAdminPanelGoal">Goal 预检</strong><small data-i18n="airAdminPanelGoalDesc">任务目标与自动分类规则</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="voice"><span class="more-glyph" aria-hidden="true">♪</span><span class="more-label"><strong data-i18n="airAdminPanelVoice">语音设置</strong><small data-i18n="airAdminPanelVoiceDesc">识别、转写与实时语音能力</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="global"><span class="more-glyph" aria-hidden="true">⚙</span><span class="more-label"><strong data-i18n="airAdminPanelGlobal">全局配置</strong><small data-i18n="airAdminPanelGlobalDesc">语言、执行与通用偏好</small></span></button>
+          </div>
+          <div class="more-leaf-group" id="more-group-connect" hidden>
+            <button type="button" class="more-leaf" data-air-view="push"><span class="more-glyph" aria-hidden="true">◔</span><span class="more-label"><strong data-i18n="airAdminPanelPush">推送通知</strong><small data-i18n="airAdminPanelPushDesc">Web Push 与备用提醒通道</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="tunnel"><span class="more-glyph" aria-hidden="true">⌁</span><span class="more-label"><strong data-i18n="airAdminPanelTunnel">外网穿透</strong><small data-i18n="airAdminPanelTunnelDesc">国内 SakuraFrp / 海外 Tailscale 一站式接入</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="bridges"><span class="more-glyph" aria-hidden="true">⇄</span><span class="more-label"><strong data-i18n="airAdminPanelBridges">消息桥接</strong><small data-i18n="airAdminPanelBridgesDesc">微信、飞书及其他消息入口</small></span></button>
+          </div>
+          <div class="more-leaf-group" id="more-group-storage" hidden>
+            <button type="button" class="more-leaf" data-air-view="resources"><span class="more-glyph" aria-hidden="true">⬢</span><span class="more-label"><strong data-i18n="airAdminPanelResources">Agent 资源</strong><small data-i18n="airAdminPanelResourcesDesc">Skills 与历史资源管理</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="skillsync"><span class="more-glyph" aria-hidden="true">⇅</span><span class="more-label"><strong data-i18n="airAdminPanelSkillsync">技能同步</strong><small data-i18n="airAdminPanelSkillsyncDesc">跨 CLI 的 Skills 同步状态</small></span></button>
+            <button type="button" class="more-leaf" data-air-view="storage"><span class="more-glyph" aria-hidden="true">⇧</span><span class="more-label"><strong data-i18n="airAdminPanelStorage">临时上传</strong><small data-i18n="airAdminPanelStorageDesc">上传缓存、空间占用与清理</small></span></button>
+          </div>
+        </div>
+      </div>
     </div>
     <p id="more-status" role="status" aria-live="polite"></p>
   </dialog>

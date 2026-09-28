@@ -43,6 +43,47 @@ test('Air owns the management home and exposes the management navigation', () =>
   assert.match(js, /MultiCCAirAdmin\?\.render/);
 });
 
+// 抽屉的二级是「设置中心那一页的面板，在抽屉里各有一行」。这条不测摆法（那是
+// air-more.js 的事，CDP 那组跑），只钉住骨架本身：分组是 air-admin.js 那张表的
+// 同一批 key，十六个面板一个不少、各带一个 data-air-view，且分组顺序和表一致。
+test('the drawer second level mirrors every settings panel under the same group keys', () => {
+  const html = read('public/air.html');
+  const admin = read('public/air-admin.js');
+  // 只认那张表本身的行，别把 renderSettings 里 title === 'airAdminGroupFeatured'
+  // 那处比较也算成一个分组。
+  const groupKeys = [...admin.matchAll(/^\s*\['airAdminGroup([A-Za-z]+)',\s*\[/gm)].map(m => m[1].toLowerCase());
+  assert.deepEqual(groupKeys, ['featured', 'ai', 'connect', 'storage'], 'air-admin.js 的分组表还是四组');
+  const drawer = html.slice(html.indexOf('id="more-panel"'));
+  const parents = [...drawer.matchAll(/class="more-parent" data-more-group="([a-z]+)"/g)].map(m => m[1]);
+  assert.deepEqual(parents, groupKeys, '抽屉一级的分组顺序就是 air-admin.js 那张表的顺序');
+  // 每个分组一行，面板挂在它自己的 .more-leaf-group 里 —— 组名对不上就会出现
+  // 「点开一组、右边列出别组的面板」。
+  for (const key of groupKeys) {
+    assert.match(drawer, new RegExp(`id="more-group-${key}"`), `抽屉缺 ${key} 那一组的面板清单`);
+  }
+  // 面板清单直接抄 air-admin.js 那张表：集合必须一模一样，多一个少一个都算漂移。
+  const tablePanels = [...admin.matchAll(/^\s*([a-z]+): \[(?:t\('airAdminPanel|'AI Assistant')/gm)].map(m => m[1]);
+  assert.equal(tablePanels.length, 16, 'air-admin.js 那张表还是十六个面板');
+  // 从 id="more-flyout" 往后切：二级那一列不含「设置中心（全部面板）」那一行，
+  // 它是一级的整页入口，不是第十七个面板。
+  const flyout = drawer.slice(drawer.indexOf('id="more-flyout"'));
+  const drawerViews = [...flyout.matchAll(/class="more-leaf" data-air-view="([a-z]+)"/g)].map(m => m[1]);
+  assert.deepEqual([...drawerViews].sort(), [...tablePanels].sort(), '二级列的十六行与设置页的面板一一对应');
+  // 二级的每一行都必须自带 data-air-view：air.js 只在启动时给当时在 DOM 里的
+  // [data-air-view] 接线，所以这些行必须是静态 HTML —— 运行时现造的行点了没反应。
+  assert.equal(drawerViews.length, 16, '十六行都写在 air.html 里，不是运行时生成的');
+  assert.match(drawer, /class="more-leaf" data-air-view="settings"[\s\S]*?airSettingsAllPanels/);
+  // 二级整组是父行的兄弟节点，不是塞在父行 button 里面 —— 按钮里套按钮，
+  // 点哪一层都会先撞到外层。父行自己是一行闭合的标签，二级在它后面另起一段。
+  const opens = [...drawer.matchAll(/<button[^>]*class="more-parent"/g)].map(m => m.index);
+  assert.equal(opens.length, 4, '四个父行');
+  for (const at of opens) {
+    const close = drawer.indexOf('</button>', at);
+    const nested = drawer.indexOf('<button', at + 1);
+    assert.ok(nested === -1 || nested > close, '父行不许嵌按钮');
+  }
+});
+
 test('native Air registry and compatibility panels preserve every former manage child', () => {
   const admin = read('public/air-admin.js');
   for (const view of ['memory', 'voice', 'goal', 'provider', 'global', 'push', 'tunnel', 'bridges', 'resources', 'skillsync', 'storage']) {
