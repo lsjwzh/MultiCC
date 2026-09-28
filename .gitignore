@@ -12,6 +12,10 @@ node_modules
 sessions.json
 # Folder-based session/shared memory store (per-session + shared .md, kept local)
 memories/
+# 主仓根目录的跨任务共享数据目录（按「共享文件放主仓根目录」的约定写进来的测量/
+# 报告等，如 data/power-measurements/）。不是仓库源码，保持本地即可；不忽略它会让
+# 主检出一直显示成「有未提交文件」。只挡根目录这一层，别误伤源码里同名子目录。
+/data/
 directories.json
 scheduled_tasks.json
 docs_registry.json
