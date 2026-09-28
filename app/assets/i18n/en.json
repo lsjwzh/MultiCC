@@ -1781,6 +1781,7 @@
   "airGitDiffReading": "Reading diff…",
   "airGitDiffTruncated": "\n⚠ diff truncated (too long)",
   "airGitDirtyFiles": "● {n} uncommitted files (main checkout)",
+  "airGitDirtyHint": "view",
   "airGitDirtySummary": "{n} uncommitted files — edited directly in the main checkout, not part of any task worktree",
   "airGitInSyncBase": "Matches the base branch {base}",
   "airGitInSyncUpstream": "In sync with upstream",

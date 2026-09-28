@@ -92,9 +92,13 @@ const MIGRATION_DEBT = Object.freeze({
   // 回到前台立刻对齐一次（idleRounds + visibilitychange，共 20 行）。服务端每轮要
   // 重算全部卡片（线上 1189 张、实测 0.5s），闲置时这笔纯属白烧电；行数只涨在 poll
   // 这一段，该拆的仍是页内那份目录渲染。按实测高水位登记 3133/171642。
+  // 2026-09-28 「● N 个未提交文件（主检出）」那颗从纯标签改成可点按钮（点开就地展开
+  // 文件清单，展开态存进 directoryGitView.filesOpen，免得每次重绘又收起）：paintDirectoryGit
+  // 里多了一段按钮 + toggle 接线，行数 3108（split 计数，比 wc -l 多 1）、字节 170451，
+  // 仍在同一段；下一次动目录页，该拆的仍是 renderSchedules / renderDirectoryOverview。
   'public/air.js': Object.freeze({
-    ceiling: 3096,
-    byteCeiling: 169647,
+    ceiling: 3108,
+    byteCeiling: 170451,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -342,10 +346,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 7162 行 / 447955 字节（行数回落到收编前，字节多 130）。
   // 2026-09-28 抽屉二级联动：补 airSettingsAllPanels / airSettingsPanelCount 两键
   // （中英各 2 行 = +4）。重跑生成器实测 7180 行 / 448479 字节，按棘轮登记到这一格。
+  // 2026-09-28 目录 Git 状态那颗「● N 个未提交文件」可点开后补 1 键 airGitDirtyHint
+  // （中英各 1 行 = +2）；与上面抽屉那两键合流后，按本树重跑生成器的真实值登记。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7180,
-    maxBytes: 448479,
+    maxLines: 7182,
+    maxBytes: 448543,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
