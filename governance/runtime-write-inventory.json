@@ -191,6 +191,19 @@
       ]
     },
     {
+      "id": "macos-agent-power-preferences",
+      "classification": "external-owner",
+      "owner": "macOS desktop agent (host power services)",
+      "rationale": "The auto-unlock preference is agent-owned state written beside the LaunchAgent's other preserved config under ~/.multicc/agent (MULTICC_AGENT_DIR override), outside any replaceable MultiCC checkout; the resident desktop Agent is the one that reads it back, the server only reports it.",
+      "migrationStrategy": "Keep the write private (0700 directory, 0600 file) and idempotent; if the agent root ever moves, copy power-settings.json forward together with the agent's other config and keep a read-only fallback for one release rather than relocating this file alone.",
+      "sources": [
+        {
+          "file": "src/host-power-services.js",
+          "anchor": "function createPowerPreferences({ dir = process.env.MULTICC_AGENT_DIR || path.join(os.homedir(), '.multicc', 'agent') } = {}) {"
+        }
+      ]
+    },
+    {
       "id": "local-asr-models",
       "classification": "external-owner",
       "owner": "local ASR model installer",

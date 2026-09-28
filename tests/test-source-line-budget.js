@@ -80,10 +80,12 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // back under 3000) means shrinking this list in the same commit. The
   // manage.js entry was retired by the manage-aux-history.js split.
   // main_shell.dart was retired when the task-board UI moved out of it.
-  // air.js crossed 3000 in 0f276ebc; turn-engine.js is now below 3000 again.
+  // air.js crossed 3000 in 0f276ebc and was retired again on 2026-09-29, when
+  // renderSchedules moved to public/air-schedule-center.js and dropped it to
+  // 2903 — the debt entry went in the same commit, so the list below lost it.
   // chat_provider.dart crossed 3000 (from exactly 3000) in the limit-bar
   // structural review — see the debt comment in scripts/check-source-line-budget.js
   // for the split that retires it.
   assert.deepEqual(result.debts.map(entry => entry.file),
-    ['app/lib/providers/chat_provider.dart', 'public/air.js']);
+    ['app/lib/providers/chat_provider.dart']);
 });
