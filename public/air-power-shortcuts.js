@@ -27,17 +27,19 @@
     async function toggle(action) {
       if (busy || !state) return;
       const wanted = !(action === 'lid' ? state.enabled : state.unlockPassword?.enabled);
-      if (wanted && !state.unlockPassword?.set) { openSetup(action); return; }
+      if (wanted && !state.unlockPassword?.set) { root.MultiCCAirMore?.close(); openSetup(action); return; }
       busy = true;
       paint(state);
       try {
         const result = await api(action === 'lid' ? '/api/settings/power' : '/api/settings/power/auto-unlock', { enabled: wanted }, 'POST');
         paint(result);
         root.dispatchEvent(new CustomEvent('multicc-power-changed', { detail: result }));
-        notice(t(action === 'lid' ? (result.enabled ? 'airLidSleepOn' : 'airLidSleepOff') : (result.unlockPassword?.enabled ? 'airGlobalUnlockSaved' : 'airGlobalUnlockOff')));
+        notice(t(action === 'lid'
+          ? (result.enabled ? 'airLidSleepOn' : result.systemSleepDisabled ? 'airGlobalPowerExternal' : 'airLidSleepOff')
+          : (result.unlockPassword?.enabled ? 'airGlobalUnlockSaved' : 'airGlobalUnlockOff')));
       } catch (error) {
         notice(t('airGlobalPowerFailed', { message: error.message }));
-        if (error.code === 'unlock_setup_required' || error.code === 'unlock_authorization_required') openSetup(action);
+        if (error.code === 'unlock_setup_required' || error.code === 'unlock_authorization_required') { root.MultiCCAirMore?.close(); openSetup(action); }
       } finally {
         busy = false;
         paint(state);
@@ -47,9 +49,7 @@
     lid.onclick = () => { void toggle('lid'); };
     unlock.onclick = () => { void toggle('unlock'); };
     root.addEventListener('multicc-power-changed', event => paint(event.detail));
-    document.getElementById('side-more')?.addEventListener('toggle', event => {
-      if (event.target.open) void refresh();
-    });
+    root.addEventListener('multicc-more-opened', () => { void refresh(); });
     return { refresh };
   } };
 })(window);

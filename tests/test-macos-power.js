@@ -134,7 +134,7 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
         callback(null, file === '/usr/bin/pmset' ? 'Battery Power:\n sleep 1\n' : '', '');
       },
     }),
-    /did not take effect/
+    /系统尚未生效/
   );
 
   await assert.rejects(

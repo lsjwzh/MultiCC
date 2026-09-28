@@ -379,11 +379,6 @@ details.side-group:not([open]) > .side-group-title::after { transform: rotate(-9
 .global-links button { min-height: 28px; padding: 3px 5px; color: #526b83; border-color: transparent; background: transparent; text-align: left; font-size: 11px; }
 .global-links button:hover, .global-links button.active { color: #0f63c6; background: rgba(255, 255, 255, .78); }
 .side-bottom small { margin-top: 4px; line-height: 1.5; }
-/* 频次收敛：偶尔点的那批折进「更多与系统」，每天点的那批留在外面。 */
-.side-more { min-width: 0; }
-.side-more > summary { padding: 7px 9px; color: #566d85; border: 1px solid transparent; border-radius: 11px; font-size: 11px; cursor: pointer; }
-.side-more > summary:hover { color: #0f63c6; background: rgba(255, 255, 255, .78); }
-.side-more[open] > summary { color: #0f63c6; border-color: #d7e7f8; background: rgba(255, 255, 255, .9); }
 /* 版本检查 + 语言共用一行。版本读数吃剩余宽度，语言只占自己那颗短按钮；文案仍
    由 i18n.js 的 .lang-toggle 刷成「中/EN ↔ EN/中」。 */
 .side-version-line { min-width: 0; display: flex; align-items: stretch; gap: 5px; margin-top: 4px; }

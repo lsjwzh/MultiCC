@@ -664,6 +664,37 @@ test('power settings preserve success and validation responses and redact thrown
   assert.equal(presentSafely(response.nextError).body.error, 'internal_error');
 });
 
+test('power route releases off intent and presents expected failures without leaking command output', async () => {
+  const power = require('../plugins/utils/macos-power');
+  let intent = 'off';
+  const options = { platform: 'darwin', powerdWaitMs: 0,
+    powerd: { readIntent: () => intent, setIntent: value => { intent = value ? 'on' : 'off'; return true; } },
+    execFile: (file, args, opts, cb) => cb(null, 'SleepDisabled 1\n', '') };
+  const { routes } = createHarness({ macosPower: {
+    isAvailable: () => true,
+    setLidSleepPrevention: enabled => power.setLidSleepPrevention(enabled, options),
+    getLidModeSettings: () => power.getLidModeSettings(options),
+  } });
+  const off = await invoke(routes, '/api/settings/power', { local: true, body: { enabled: false } });
+  assert.equal(off.body.ok, true);
+  assert.equal(off.body.enabled, false);
+  assert.equal(off.body.systemSleepDisabled, true);
+
+  for (const [code, overrides] of [
+    ['power_application_pending', { execFile: (file, args, opts, cb) => cb(null, 'SleepDisabled 0\n', '') }],
+    ['power_authorization_cancelled', { powerd: { setIntent: () => false },
+      execFile: (file, args, opts, cb) => cb(new Error('User canceled. (-128) /Users/private secret'), '', '') }],
+  ]) {
+    const failed = createHarness({ macosPower: { isAvailable: () => true,
+      setLidSleepPrevention: enabled => power.setLidSleepPrevention(enabled, { ...options, ...overrides }) } });
+    const response = await invoke(failed.routes, '/api/settings/power', { local: true, body: { enabled: true } });
+    const presented = presentSafely(response.nextError);
+    assert.equal(presented.statusCode, 409);
+    assert.equal(presented.body.code, code);
+    assert.doesNotMatch(presented.body.error, /internal_error|private|secret/);
+  }
+});
+
 test('lid and unlock switches preserve independent consent and reject incomplete setup', async () => {
   let current = false, requested = false, set = true, authorized = true;
   let writes = 0, clears = 0;
