@@ -18,8 +18,10 @@ function createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports 
       // 第一轮领养出来的新行必须并回来 —— 老实现就是靠重扫全表看见它们的；同一个 id
       // 只该被处理一次，而 Map 的 set 覆盖又天然保序。「已建索引」的标记集合也一次
       // 读全，老实现是每行一次 store.get('task-first:indexed')。
-      const all = new Map(store.list('task').map(task => [task.id, task]));
-      const indexed = new Set(store.entries('task-first:indexed').map(([id]) => id));
+      // 两次读都走行缓存：同一轮 /api/air 里 listTasks() 马上要再读一次同一张
+      // 表，内容没变时不该解析两遍（store.js 的 cachedList/cachedEntries）。
+      const all = new Map(store.cachedList('task').map(task => [task.id, task]));
+      const indexed = new Set(store.cachedEntries('task-first:indexed').map(([id]) => id));
       const known = new Map([...all.values()].map(task => [task.sessionId, task]));
       for (const record of records) {
         if (record.kind !== 'chat' || record.taskExecutionSlot || record.experimentalMode

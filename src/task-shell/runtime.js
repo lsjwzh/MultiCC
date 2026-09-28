@@ -872,7 +872,9 @@ function createTaskShellRuntime(ports) {
     prepareContext: (id, options) => contextPlanner.prepare(owns(id), options),
     contextSent: (id, receipt, turn) => { const task = owns(id); if (task) contextPlanner.sent(task, receipt, turn); },
     contextComplete: (id, receipt, turn, success) => { const task = owns(id); if (task) contextPlanner.complete(task, receipt, turn, success); },
-    separation, roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.list('task'),
+    // listTasks 是任务板读投影的热路径：一次 /api/air 里迁移与卡片刻画各读一次
+    // 全表（线上 514 行 / 4.5MB）。走行缓存后同一份内容只解析一遍（store.js）。
+    separation, roles, migrateTaskSessions: taskFirst.migrate, listTasks: () => store.cachedList('task'),
     // 任务图谱的只读快照：壳、持久任务、link 三张表一次拉全，供路由层聚合。
     taskGraphData: () => ({ shells: store.list('shell'), tasks: store.list('task'), links: store.list('link'),
       relations: store.list('relation') }),
