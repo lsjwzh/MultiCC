@@ -24,8 +24,28 @@ String providerDisplayLabel(
   String? id, {
   required List<Map<String, dynamic>> providers,
   String? resolved,
+  String? model,
 }) {
   if (id == null || id.isEmpty) {
+    // OpenCode native config (provider-less sessions): the session saves
+    // provider='' with a native `opencodego/<model>` id. The provider name must
+    // come from that model, not from the first official MultiCC provider in the
+    // catalog — otherwise the chip would claim "Claude 官方" for an OpenCode Go
+    // session.
+    if (model != null && model.isNotEmpty) {
+      final slash = model.indexOf('/');
+      if (slash > 0) {
+        final nativeId = openCodeNativeProviderId(model.substring(0, slash));
+        for (final provider in providers) {
+          if (provider['id'] == nativeId) {
+            return provider['name']?.toString() ?? nativeId;
+          }
+        }
+        // The catalog row may be missing (models cache empty at chip load);
+        // the model prefix alone still names the native provider.
+        return openCodeNativeProviderDisplayName(model.substring(0, slash));
+      }
+    }
     for (final provider in providers) {
       final providerId = provider['id']?.toString() ?? '';
       if (provider['builtinOfficial'] == true ||
@@ -125,8 +145,32 @@ class ModelChipState extends State<ModelChip> {
     } catch (_) {}
   }
 
-  String _providerLabel(String? id, {String? resolved}) =>
-      providerDisplayLabel(id, providers: _providers, resolved: resolved);
+  String _providerLabel(String? id, {String? resolved, String? model}) {
+    if (widget.cli == SessionCli.opencode &&
+        (id == null || id.isEmpty)) {
+      if (model != null && model.isNotEmpty) {
+        final slash = model.indexOf('/');
+        if (slash > 0) {
+          final nativeId = openCodeNativeProviderId(model.substring(0, slash));
+          for (final provider in _providers) {
+            if (provider['id'] == nativeId) {
+              return provider['name']?.toString() ?? nativeId;
+            }
+          }
+          return openCodeNativeProviderDisplayName(model.substring(0, slash));
+        }
+      }
+      // Provider-less OpenCode runs on the CLI's own native config — the
+      // catalog's "Claude 官方 / Codex 官方" defaults don't apply here.
+      return 'OpenCode 原生配置（全部模型）';
+    }
+    return providerDisplayLabel(
+      id,
+      providers: _providers,
+      resolved: resolved,
+      model: model,
+    );
+  }
 
   /// The picked provider's aliasMap (tier → {model, name}), or null when absent.
   Map? _aliasMapFor(String? providerId) {
@@ -208,7 +252,11 @@ class ModelChipState extends State<ModelChip> {
       }
     } else {
       parts.addAll([
-        _providerLabel(runtime?.provider, resolved: runtime?.providerName),
+        _providerLabel(
+          runtime?.provider,
+          resolved: runtime?.providerName,
+          model: runtime?.model,
+        ),
         _modelLabel(runtime),
       ]);
     }
