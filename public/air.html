@@ -11,6 +11,7 @@
        Air 不自己写一套状态色，只提供浅色调色板（air.css 里的 --st-* 一组）。 -->
   <link rel="stylesheet" href="status-badge.css">
   <link rel="stylesheet" href="air.css">
+  <link rel="stylesheet" href="air-more.css">
   <link rel="stylesheet" href="git-manager.css">
   <script src="auth-client.js"></script>
   <!-- i18n 必须早于所有 Air 模块：air.js / air-*.js 在初始化阶段就会调用 t()，
@@ -79,9 +80,7 @@
       <nav id="tasks" aria-label="最近任务列表" data-i18n-aria-label="airRecentTasksList"></nav>
     </section>
 
-    <!-- 频次收敛：每天点的（当前目录、控制台、定时任务、最近任务、新建）留在外面，
-         偶尔点的（常用设置、全局工具、任务看板、TERMINAL、主机运维）折进「更多」。
-         版本行留在外面：它是更新提示的落点，藏起来就没人知道有新版本。 -->
+    <!-- 版本和语言常驻；更多设置在独立抽屉里，不挤占任务列表。 -->
     <div class="side-bottom">
       <div class="side-version-line">
         <div id="air-ver-row" class="ops-version" role="button" tabindex="0" title="点击检查并安装更新" data-i18n-title="airCheckUpdate">
@@ -98,59 +97,10 @@
                 onclick="event.stopPropagation(); toggleLang()"
                 title="切换语言：中文 / English" data-i18n-title="languageToggle">中/EN</button>
       </div>
-      <details id="side-more" class="side-more">
-        <summary data-i18n="airMoreSystem">更多与系统</summary>
-        <div class="side-more-body">
-          <!-- 常用设置原本是侧栏顶部的一栏（控制台 / 定时任务下面）。三行常驻把
-               任务清单往下推了一整段，而它们其实是「偶尔改一次」的东西 —— 收进
-               折叠区，但自成一栏、排在这批折叠项的最前面：比起同在这里的全局工具
-               和主机运维，这三个还是点得最多的。id 和 .sidebar-setting-row 都留着，
-               air.js 的 data-air-view 绑定与 active 态不认位置。
-
-               这一栏现在自己也是可折叠的（details/summary，默认展开），并且和下面
-               几栏一样套了一个 .side-group 的框：这几组东西（设置入口 / 系统工具 /
-               最近启动 / 主机操作）之间本来只靠留白分隔，四组叠在一起看着是一整片
-               按钮。框住之后每一组自己成立，视线不再被下一组的行带走。
-               两列排布：四个入口正好 2×2，比一列短一半。 -->
-          <details id="frequent-settings-group" class="side-group" open>
-            <summary class="side-group-title" data-i18n="airFrequentSettings">常用设置</summary>
-            <nav id="frequent-settings" class="frequent-settings" aria-label="常用设置" data-i18n-aria-label="airFrequentSettings">
-              <!-- Provider 配置是这一栏里最常点的（换线路、换模型都从它进），所以
-                   字重和颜色都比另外几行重一点，不是四个等价的入口。 -->
-              <button type="button" class="sidebar-setting-row is-primary" data-air-view="provider"><span>◈</span><span data-i18n="airProviderConfig">Provider 配置</span></button>
-              <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span data-i18n="airTunnel">外网穿透</span></button>
-              <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span data-i18n="airBridges">消息桥接</span></button>
-              <button type="button" class="sidebar-setting-row" id="air-lid-sleep" hidden
-                      title="关盖时保持运行，不进入睡眠（点击切换）" data-i18n-title="airLidSleepOffTitle"><span>☾</span><span data-i18n="airLidSleep">关盖运行</span><span class="row-switch" aria-hidden="true"></span></button>
-              <button type="button" class="sidebar-setting-row" id="air-auto-unlock" hidden
-                      title="允许电脑操作工具在需要时自动解锁" data-i18n-title="airGlobalUnlockSaved"><span>♧</span><span data-i18n="airGlobalUnlockToggle">允许自动解锁</span><span class="row-switch" aria-hidden="true"></span></button>
-            </nav>
-          </details>
-          <nav class="global-links side-group">
-            <button type="button" data-air-view="docs" data-i18n="airDocs">服务与文档</button>
-            <button type="button" data-air-view="memory" data-i18n="airMemoryGraph">记忆图谱</button>
-            <button type="button" data-air-view="taskgraph" data-i18n="airTaskGraph">任务图谱</button>
-            <button type="button" data-air-view="settings" data-i18n="airSettingsCenter">设置中心</button>
-          </nav>
-          <!-- Deliberately outside the version row above: that row is a click target
-               for the update check, and reading a timestamp should not fire a call. -->
-          <div class="ops-boot side-group">
-            <div class="ops-boot-row"><span class="ops-boot-label" data-i18n="airLastBoot">最近启动</span><span id="air-boot-time">—</span></div>
-            <div id="air-boot-uptime" class="ops-boot-uptime"></div>
-          </div>
-          <nav class="ops-actions side-group" aria-label="主机操作" data-i18n-aria-label="airHostActions">
-            <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包" data-i18n-title="airInstallTitle" data-i18n="airInstallPackage">安装包</button>
-            <button type="button" id="air-qr-btn" title="扫码在手机上打开" data-i18n-title="airQrTitle" data-i18n="airQr">二维码</button>
-            <!-- 标签与 title 运行时都由 air-ops.js 重画（pwa.js 只认自己的英文兜底）。
-                 data-i18n 只负责首屏那一次：air-ops 的 paintPush 要等 multicc-push-state
-                 事件，中间那一小段在英文界面里会露出源码里的中文。 -->
-            <button type="button" id="push-toggle" title="开启浏览器推送通知" data-i18n-title="airOpsPushSubscribe" data-i18n="airOpsPushNotify">推送通知</button>
-            <button type="button" id="air-restart-btn" title="重启 multicc 服务" data-i18n-title="airRestartTitle" data-i18n="airRestartService">🔄 重启</button>
-            <a href="/logout" title="退出登录" data-i18n-title="airLogout" data-i18n="airLogout">退出登录</a>
-          </nav>
-        </div>
-      </details>
-      <!-- 留在折叠区外：运维动作的回执要看得见，折起来会连回执一起藏掉。 -->
+      <button id="side-more" class="nav-row" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="more-panel">
+        <span aria-hidden="true">⚙</span><span data-i18n="airMoreSystem">更多与系统</span><span aria-hidden="true">›</span>
+      </button>
+      <!-- 关闭抽屉后仍可见的运维回执；打开时同步到抽屉内。 -->
       <p id="air-ops-status" class="ops-status" role="status"></p>
       <small data-i18n="airTagline">让每一次对话，都有清晰的目标。</small>
     </div>
@@ -419,8 +369,56 @@
     </section>
   </main>
 
-  <!-- 控制台面板：从左侧展开的一层，不是新页面 —— 地址不变、当前任务不卸载，
-       关掉就回到原处。内容是控制台自己的概览（air-admin.js 渲染到这里）。 -->
+  <!-- 更多设置独立于侧栏布局；原生 dialog 管理焦点和模态遮罩。 -->
+  <dialog id="more-panel" aria-labelledby="more-title">
+    <header class="more-head">
+      <h2 id="more-title" data-i18n="airMoreSystem">更多与系统</h2>
+      <button id="more-close" type="button" data-i18n="airBackToTask">返回任务</button>
+    </header>
+    <div class="more-scroll">
+        <div class="side-more-body">
+          <section id="frequent-settings-group" class="side-group">
+            <h3 class="side-group-title" data-i18n="airFrequentSettings">常用设置</h3>
+            <nav id="frequent-settings" class="frequent-settings" aria-label="常用设置" data-i18n-aria-label="airFrequentSettings">
+              <button type="button" class="sidebar-setting-row" id="air-lid-sleep" hidden
+                      title="关盖时保持运行，不进入睡眠（点击切换）" data-i18n-title="airLidSleepOffTitle"><span>☾</span><span class="more-setting-copy"><strong data-i18n="airLidSleep">关盖运行</strong><small data-i18n="airGlobalPowerDesc">合上盖后任务继续运行、屏幕熄灭，开盖点亮。</small></span><span class="row-switch" aria-hidden="true"></span></button>
+              <button type="button" class="sidebar-setting-row" id="air-auto-unlock" hidden
+                      title="允许电脑操作工具在需要时自动解锁" data-i18n-title="airGlobalUnlockSaved"><span>♧</span><span class="more-setting-copy"><strong data-i18n="airGlobalUnlockToggle">允许自动解锁</strong><small data-i18n="airGlobalUnlockDesc">电脑操作工具需要使用桌面时，可用已保存的登录密码解锁。</small></span><span class="row-switch" aria-hidden="true"></span></button>
+              <!-- Provider 配置是这一栏里最常点的（换线路、换模型都从它进），所以
+                   字重和颜色都比另外几行重一点，不是四个等价的入口。 -->
+              <button type="button" class="sidebar-setting-row is-primary" data-air-view="provider"><span>◈</span><span data-i18n="airProviderConfig">Provider 配置</span></button>
+              <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span data-i18n="airTunnel">外网穿透</span></button>
+              <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span data-i18n="airBridges">消息桥接</span></button>
+            </nav>
+          </section>
+          <nav class="global-links side-group">
+            <button type="button" data-air-view="docs" data-i18n="airDocs">服务与文档</button>
+            <button type="button" data-air-view="memory" data-i18n="airMemoryGraph">记忆图谱</button>
+            <button type="button" data-air-view="taskgraph" data-i18n="airTaskGraph">任务图谱</button>
+            <button type="button" data-air-view="settings" data-i18n="airSettingsCenter">设置中心</button>
+          </nav>
+          <!-- Deliberately outside the version row above: that row is a click target
+               for the update check, and reading a timestamp should not fire a call. -->
+          <div class="ops-boot side-group">
+            <div class="ops-boot-row"><span class="ops-boot-label" data-i18n="airLastBoot">最近启动</span><span id="air-boot-time">—</span></div>
+            <div id="air-boot-uptime" class="ops-boot-uptime"></div>
+          </div>
+          <nav class="ops-actions side-group" aria-label="主机操作" data-i18n-aria-label="airHostActions">
+            <button type="button" id="air-apk-btn" title="下载 Android / iOS 安装包" data-i18n-title="airInstallTitle" data-i18n="airInstallPackage">安装包</button>
+            <button type="button" id="air-qr-btn" title="扫码在手机上打开" data-i18n-title="airQrTitle" data-i18n="airQr">二维码</button>
+            <!-- 标签与 title 运行时都由 air-ops.js 重画（pwa.js 只认自己的英文兜底）。
+                 data-i18n 只负责首屏那一次：air-ops 的 paintPush 要等 multicc-push-state
+                 事件，中间那一小段在英文界面里会露出源码里的中文。 -->
+            <button type="button" id="push-toggle" title="开启浏览器推送通知" data-i18n-title="airOpsPushSubscribe" data-i18n="airOpsPushNotify">推送通知</button>
+            <button type="button" id="air-restart-btn" title="重启 multicc 服务" data-i18n-title="airRestartTitle" data-i18n="airRestartService">🔄 重启</button>
+            <a href="/logout" title="退出登录" data-i18n-title="airLogout" data-i18n="airLogout">退出登录</a>
+          </nav>
+        </div>
+    </div>
+    <p id="more-status" role="status" aria-live="polite"></p>
+  </dialog>
+
+  <!-- 控制台保留当前任务，概览由 air-admin.js 渲染。 -->
   <button id="console-scrim" type="button" aria-label="关闭控制台" data-i18n-aria-label="airCloseConsole" hidden></button>
   <section id="console-panel" aria-label="控制台" data-i18n-aria-label="airConsole" aria-hidden="true">
     <header id="console-head">
@@ -661,6 +659,7 @@
   <script src="air-dir-schedules.js"></script>
   <script src="git-manager.js"></script>
   <script src="air.js"></script>
+  <script src="air-more.js"></script>
   <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->
   <script src="air-quick-fold.js"></script>
 </body>

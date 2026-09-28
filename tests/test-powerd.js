@@ -163,3 +163,19 @@ test('setLidSleepPrevention prefers the daemon: no sudo, no password prompt', as
   }), /系统尚未生效/);
   assert.deepEqual(elevated, [], 'never repeat elevation for delayed application');
 });
+
+test('turning off releases saved intent even when another app keeps system sleep disabled', async () => {
+  const macosPower = require('../plugins/utils/macos-power');
+  for (const previous of ['on', 'off']) {
+    let intent = previous;
+    const powerd = { readIntent: () => intent, setIntent: value => { intent = value ? 'on' : 'off'; return true; } };
+    const options = { platform: 'darwin', powerd,
+      elevate: () => assert.fail('off must not prompt again'),
+      execFile: (file, args, opts, cb) => cb(null, 'SleepDisabled 1\n', '') };
+    assert.deepEqual(await macosPower.setLidSleepPrevention(false, options),
+      { available: true, enabled: false, systemSleepDisabled: true });
+    assert.equal(intent, 'off');
+    assert.deepEqual(await macosPower.getLidModeSettings(options),
+      { available: true, enabled: false, systemSleepDisabled: true });
+  }
+});

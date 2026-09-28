@@ -126,7 +126,7 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     await page.navigate('/air?dir=d1&view=overview');
     assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`), '控制台打开');
     // 它住在侧栏「更多与系统」那一栏里（默认收着），展开就该点得到。
-    await page.evaluate(`document.getElementById('side-more').open = true`);
+    await page.evaluate(`document.getElementById('side-more').click()`);
     assert.ok(await page.waitFor(`document.getElementById('air-apk-btn')?.checkVisibility() === true`), '安装包那颗按钮展开「更多与系统」就在，一直点得到');
     await page.screenshot('00-apk-entry');
 

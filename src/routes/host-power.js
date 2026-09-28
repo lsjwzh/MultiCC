@@ -2,6 +2,7 @@
 
 const { getUnlockPassword, getUnlockProbe, getPowerPreferences, readPowerSettings } = require('../host-power-services');
 const { MAX_PASSWORD_LENGTH } = require('../macos-unlock-password');
+const { mapError } = require('../http/error-map');
 
 const passwordService = deps => deps.unlockPassword || getUnlockPassword();
 const preferencesService = deps => deps.powerPreferences || getPowerPreferences();
@@ -47,7 +48,7 @@ function mountPowerWriteRoutes(app, deps) {
       }
       preferencesService(deps).write(enabled);
       return res.json({ ok: true, ...await readPowerSettings(deps, req) });
-    } catch (error) { return next(error); }
+    } catch (error) { return next(mapError(error)); }
   }));
   for (const [method, action] of [['post', 'set'], ['delete', 'clear']]) {
     app[method]('/api/settings/power/unlock-password', serial(async (req, res, next) => {
@@ -71,7 +72,7 @@ function mountPowerWriteRoutes(app, deps) {
         preferences.write(preferences.read(await password.hasPassword()));
         await password.setPassword(value);
         return res.json({ ok: true, set: true, authorization: await probeAuthorization(deps, true) });
-      } catch (error) { return next(error); }
+      } catch (error) { return next(mapError(error)); }
     }));
   }
   app.post('/api/settings/power/unlock-password/authorize', serial(async (req, res, next) => {
@@ -80,7 +81,7 @@ function mountPowerWriteRoutes(app, deps) {
       const authorization = await passwordService(deps).hasPassword()
         ? await probeAuthorization(deps, true) : { state: 'no-password' };
       return res.json({ ok: true, authorization });
-    } catch (error) { return next(error); }
+    } catch (error) { return next(mapError(error)); }
   }));
 }
 
@@ -93,7 +94,7 @@ function createPowerSettingsHandler(deps) {
       if (enabled && !(await requireUnlockReady(deps, res))) return;
       await deps.macosPower.setLidSleepPrevention(enabled);
       return res.json({ ok: true, ...await readPowerSettings(deps, req) });
-    } catch (error) { return next(error); }
+    } catch (error) { return next(mapError(error)); }
   };
 }
 

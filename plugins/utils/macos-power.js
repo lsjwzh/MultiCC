@@ -5,6 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createPowerd } = require('../../src/powerd');
+const { DomainError } = require('../../src/http/domain-error');
+const powerError = (code, message) => new DomainError('conflict', message, { code });
 
 const ELEVATE_TIMEOUT_MS = 120000;
 const POWERD_INSTALLER = path.join(__dirname, '..', '..', 'scripts', 'install-powerd.sh');
@@ -59,7 +61,7 @@ async function getLidModeSettings(options = {}) {
 // pmset 真的变过来有几百毫秒。生效返回那一刻的状态，超时返回 null（超时不代表失败：
 // 意图已经记下了，只是这一次没能确认）。
 async function settlesTo(enabled, options = {}) {
-  const deadline = Date.now() + (options.powerdWaitMs ?? 6000);
+  const deadline = Date.now() + (options.powerdWaitMs ?? 18000);
   for (;;) {
     const status = await getLidSleepPrevention(options);
     if (status.enabled === enabled) return status;
@@ -76,7 +78,7 @@ const forAppleScript = (text) => String(text).replace(/\\/g, '\\\\').replace(/"/
 // Shell quoting and AppleScript quoting are separate boundaries.
 const shellQuote = value => "'" + String(value).replace(/'/g, "'\\''") + "'";
 function elevatedCommand(enabled, { user = os.userInfo().username, powerdInstaller = POWERD_INSTALLER } = {}) {
-  if (!fs.existsSync(powerdInstaller)) throw new Error('电源组件缺失，请更新 MultiCC 后重试。');
+  if (!fs.existsSync(powerdInstaller)) throw powerError('power_component_missing', '电源组件缺失，请更新 MultiCC 后重试。');
   const intent = shellQuote('/Library/Application Support/multicc/power-intent');
   return `/bin/sh ${shellQuote(powerdInstaller)} install ${shellQuote(user)} && /usr/bin/printf '%s\\n' '${enabled ? 'on' : 'off'}' > ${intent} && /usr/bin/pmset -a disablesleep ${enabled ? '1' : '0'}`;
 }
@@ -91,10 +93,10 @@ async function elevateLidSleep(enabled, options = {}) {
     }, options.execFile || execFile);
   } catch (error) {
     const detail = `${error.message || ''} ${error.stderr || ''}`;
-    if (/User canceled|(-128)/i.test(detail)) {
-      throw new Error('已取消授权，设置未完成。');
+    if (/User canceled|\(-128\)/i.test(detail)) {
+      throw powerError('power_authorization_cancelled', '已取消授权，设置未完成。');
     }
-    throw new Error('未能完成系统授权，请在这台 Mac 上重试。');
+    throw powerError('power_authorization_failed', '未能完成系统授权，请在这台 Mac 上重试。');
   }
 }
 
@@ -106,9 +108,16 @@ async function setLidSleepPrevention(enabled, options = {}) {
   //    这次切换不需要任何密码，重启之后也还是这个意图。
   const powerd = options.powerd || createPowerd({ platform });
   if (powerd.setIntent(enabled)) {
+    // Off releases MultiCC's hold. The daemon clears SleepDisabled once on
+    // transition, then respects other apps. Repeating off cannot require the
+    // shared system flag to stay zero, or a saved choice becomes a false error.
+    if (!enabled) {
+      const observed = await getLidSleepPrevention(options);
+      return { available: true, enabled: false, systemSleepDisabled: observed.enabled };
+    }
     const settled = await settlesTo(enabled, options);
     if (settled) return settled;
-    throw new Error('设置已保存，但系统尚未生效，请稍后刷新状态。');
+    throw powerError('power_application_pending', '设置已保存，但系统尚未生效，请稍后刷新状态。');
   }
 
   // ② 没装上 / 没在跑：弹一次管理员授权框，一次做完「装 powerd + 改设置」。
@@ -116,7 +125,7 @@ async function setLidSleepPrevention(enabled, options = {}) {
 
   const status = await getLidSleepPrevention(options);
   if (status.enabled !== enabled) {
-    throw new Error('macOS power setting did not take effect');
+    throw powerError('power_application_pending', '设置已保存，但系统尚未生效，请稍后刷新状态。');
   }
   return status;
 }
