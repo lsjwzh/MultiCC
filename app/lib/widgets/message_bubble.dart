@@ -222,7 +222,7 @@ Future<void> _showMessageActions(
   );
   if (!context.mounted) return;
   if (action == 'copy') {
-    _copyMessage(context, message.content);
+    _copyMessage(context, messageCopyText(message));
   } else if (action == 'quote') {
     _quoteMessage(context, message, quote);
   } else if (action == 'delete') {
@@ -311,12 +311,47 @@ Future<void> _confirmDeleteMessage(
   }
 }
 
+/// 一条消息里能复制的全部文本：正文 + 每个工具调用的命令与输出。
+///
+/// 「复制内容」原先只取 `message.content`。于是纯工具轮（模型只发工具调用、没有
+/// 正文的那条）取到空串，点下去静默返回 —— 用户看到的就是「长按之后没有复制
+/// 功能」；而长按工具输出时，复制到的又是正文，不是长按的那一块。工具卡片的
+/// 输入/输出本来就画在这个气泡里，它就是这条消息的内容。
+String messageCopyText(ChatMessage message) {
+  final parts = <String>[];
+  final prose = message.content.trim();
+  if (prose.isNotEmpty) parts.add(prose);
+  for (final call in message.toolCalls) {
+    final buffer = StringBuffer();
+    final head = call.description.trim();
+    if (head.isNotEmpty) buffer.writeln(head);
+    final result = (call.result ?? '').trim();
+    if (result.isNotEmpty) buffer.write(result);
+    final text = buffer.toString().trim();
+    if (text.isNotEmpty) parts.add(text);
+  }
+  return parts.join('\n\n');
+}
+
 /// Copy a message's text to the clipboard with a brief confirmation.
+///
+/// 没东西可复制时必须**说出来**：静默返回等于「点了没反应」，用户只会认为复制
+/// 功能坏了 —— 纯工具轮的长按正是踩在这上面。
 void _copyMessage(BuildContext context, String text) {
   final t = text.trim();
-  if (t.isEmpty) return;
+  final messenger = ScaffoldMessenger.of(context);
+  if (t.isEmpty) {
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('这条消息没有可复制的内容'),
+        duration: Duration(milliseconds: 1600),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    return;
+  }
   Clipboard.setData(ClipboardData(text: t));
-  ScaffoldMessenger.of(context).showSnackBar(
+  messenger.showSnackBar(
     const SnackBar(
       content: Text('已复制'),
       duration: Duration(milliseconds: 1200),
@@ -1341,8 +1376,14 @@ class _FencedCodeBuilder extends MarkdownElementBuilder {
 
 /// One highlighted code block. The surrounding `pre` container already paints
 /// the codeblock background/border, so this supplies only the padding and the
-/// horizontal scroll the default renderer had. Text.rich participates in the
-/// ancestor SelectionArea — select/copy is preserved on both paths.
+/// horizontal scroll the default renderer had.
+///
+/// 注意：这里的 `Text.rich` **不可选中**。原先的注释写着「参与祖先 SelectionArea，
+/// 两条路径都保留选中/复制」——全 App 没有任何 SelectionArea（`MarkdownBody` 的
+/// `selectable: true` 只把正文变成 `SelectableText.rich`），所以长按代码块不会弹
+/// 系统工具条，只会落到气泡的长按菜单，由「复制内容」复制整条消息。要让它和正文
+/// 一样能选中，得在这里套 `SelectionArea` —— 代价是代码块区域的长按从此不再打开
+/// 那个菜单（引用/隐藏/分叉），代码块独占一条消息时尤其明显。
 class _FencedCodeBlock extends StatelessWidget {
   final List<CodeSpan> spans;
   const _FencedCodeBlock({required this.spans});

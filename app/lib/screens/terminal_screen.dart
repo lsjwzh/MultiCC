@@ -9,6 +9,7 @@ import '../services/settings_service.dart';
 import '../services/terminal_service.dart';
 import '../utils/cli_display.dart';
 import '../widgets/conflict_diff_dialog.dart';
+import '../widgets/terminal_copy_button.dart';
 import 'memo_screen.dart';
 
 class TerminalScreen extends StatefulWidget {
@@ -29,6 +30,10 @@ class _TerminalScreenState extends State<TerminalScreen> {
   late TerminalService _svc;
   TerminalConnectionState _connState = TerminalConnectionState.disconnected;
 
+  /// 长按选中的那一段文字归它管（xterm 的 TerminalView 自己建的那份拿不到），
+  /// 「复制」按钮要读的就是它的 selection。
+  final TerminalController _controller = TerminalController();
+
   @override
   void initState() {
     super.initState();
@@ -44,6 +49,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
 
   @override
   void dispose() {
+    _controller.dispose();
     _svc.dispose();
     super.dispose();
   }
@@ -132,19 +138,34 @@ class _TerminalScreenState extends State<TerminalScreen> {
         child: Column(
           children: [
             Expanded(
-              child: TerminalView(
-                _svc.terminal,
-                theme: _kTerminalTheme,
-                textStyle: const TerminalStyle(
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                ),
-                autofocus: true,
-                backgroundOpacity: 1.0,
-                padding: const EdgeInsets.all(4),
-                onSecondaryTapDown: (details, offset) {
-                  // Context menu for copy on long press could be added here
-                },
+              // 浮层而不是插进 Column：TerminalView 是 autoResize 的，多一行就
+              // 会 resize 远端 pty，把整屏输出重排一次。
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: TerminalView(
+                      _svc.terminal,
+                      controller: _controller,
+                      theme: _kTerminalTheme,
+                      textStyle: const TerminalStyle(
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                      ),
+                      autofocus: true,
+                      backgroundOpacity: 1.0,
+                      padding: const EdgeInsets.all(4),
+                    ),
+                  ),
+                  // 长按选中文字之后才有东西可点（见 TerminalCopyButton）。
+                  Positioned(
+                    right: 12,
+                    bottom: 12,
+                    child: TerminalCopyButton(
+                      terminal: _svc.terminal,
+                      controller: _controller,
+                    ),
+                  ),
+                ],
               ),
             ),
             _MobileKeyBar(terminal: _svc.terminal),

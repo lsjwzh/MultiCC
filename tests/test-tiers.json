@@ -460,6 +460,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/message_copy_action_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/message_quote_provider_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -621,6 +626,11 @@
     },
     {
       "path": "app/test/task_separation_prompt_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/terminal_copy_button_test.dart",
       "tier": "flow",
       "lane": "flutter"
     },
