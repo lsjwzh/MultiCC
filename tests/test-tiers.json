@@ -4559,6 +4559,15 @@
       ]
     },
     {
+      "path": "tests/test-task-shell-row-cache.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
       "path": "tests/test-task-shell-task-index.js",
       "tier": "core",
       "lane": "deterministic",

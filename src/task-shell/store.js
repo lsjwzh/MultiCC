@@ -27,8 +27,13 @@ function createTaskShellStore(file) {
   const allWithRowids = db.prepare('SELECT rowid AS rid, id, body FROM shell_records WHERE kind = ? ORDER BY rowid');
   const rowidOf = db.prepare('SELECT rowid AS rid FROM shell_records WHERE kind = ? AND id = ?');
   const receiptWatermarkStmt = db.prepare("SELECT max(rowid) AS mx FROM shell_records WHERE kind = 'receipt'");
-  const put = db.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?) ON CONFLICT(kind, id) DO UPDATE SET body = excluded.body');
-  const remove = db.prepare('DELETE FROM shell_records WHERE kind = ? AND id = ?');
+  // 写入口只有这两个语句：set/remove、派生索引维护、收据桶重建用的都是它们，
+  // 所以这个自增计数覆盖本连接的全部写路径 —— 见下面行缓存的失效信号。
+  let writes = 0;
+  const putStmt = db.prepare('INSERT INTO shell_records(kind, id, body) VALUES (?, ?, ?) ON CONFLICT(kind, id) DO UPDATE SET body = excluded.body');
+  const removeStmt = db.prepare('DELETE FROM shell_records WHERE kind = ? AND id = ?');
+  const put = { run: (...args) => { const out = putStmt.run(...args); writes += 1; return out; } };
+  const remove = { run: (...args) => { const out = removeStmt.run(...args); writes += 1; return out; } };
   const get = (kind, id) => { const row = select.get(kind, id); return row ? JSON.parse(row.body) : null; };
   const scan = kind => allWithIds.all(kind).map(row => ({ id: row.id, value: JSON.parse(row.body) }));
 
@@ -150,10 +155,46 @@ function createTaskShellStore(file) {
     else if (kind === 'receipt') dropReceiptIndex(select.get('receipt', id) ? JSON.parse(select.get('receipt', id).body)?.shellId : null, id);
     return remove.run(kind, id);
   });
+  const list = kind => all.all(kind).map(row => JSON.parse(row.body));
+  const entriesStmt = db.prepare('SELECT id, body FROM shell_records WHERE kind = ?');
+  const entries = kind => entriesStmt.all(kind).map(row => [row.id, JSON.parse(row.body)]);
+
+  // ── 行缓存 ──────────────────────────────────────────────────────────────
+  // list(kind) 是「整表读 + 逐行 JSON.parse + 重新分配」。同一份内容反复重建没有
+  // 意义：线上 task 表 514 行 / 4.5MB，一次 /api/air 要读两遍（migrate 一次、
+  // listTasks 一次），每遍 12-20ms，还要把这 4.5MB 重新分配一遍（服务进程 RSS 已
+  // 到 1GB）。这里记住上一次解析出来的行，内容没变就直接复用。
+  //
+  // 失效信号必须同时看两路：
+  //   · data_version：SQLite 在「别的连接提交」时自增，自己的写不动它（实测同连接
+  //     连写两次值不变，另一连接写一次才 +1）。同一个库文件上还有第二个连接 ——
+  //     admission 的 store（见 workspace/admission.js），只看自己的写会漏掉它。
+  //   · writes：本连接的写计数（上面两个写入口自增），补上 data_version 看不见的自写。
+  // 只对「小表」开放：receipt 一个 kind 就 201MB，缓存它等于把线上库常驻内存。
+  // 白名单外的 kind 直接报错，而不是悄悄退化成不缓存 —— 那会变成沉默的性能 bug。
+  const CACHEABLE = new Set(['task', 'task-first:indexed']);
+  const rowCache = new Map();
+  function cached(shape, kind, build) {
+    if (!CACHEABLE.has(kind)) throw new Error(`row cache not allowed for kind ${kind}`);
+    const epoch = `${db.pragma('data_version', { simple: true })}:${writes}`;
+    const key = `${shape}:${kind}`;
+    const hit = rowCache.get(key);
+    if (hit && hit.epoch === epoch) return hit.rows;
+    const built = build();
+    rowCache.set(key, { epoch, rows: built });
+    return built;
+  }
+
   return {
     get,
-    list: kind => all.all(kind).map(row => JSON.parse(row.body)),
-    entries: kind => db.prepare('SELECT id, body FROM shell_records WHERE kind = ?').all(kind).map(row => [row.id, JSON.parse(row.body)]),
+    list,
+    entries,
+    // 缓存版 list/entries：内容没变时复用上次解析的行，省掉整表读与几 MB 的
+    // JSON.parse。返回的**数组是副本**（调用方 sort/push 不会污染缓存），但**行
+    // 对象是共享的、只读的** —— 调用方不得就地改写（今天这些调用点都只读：
+    // find/filter/map）。set/remove 与别的连接提交都会让它失效。
+    cachedList: kind => cached('rows', kind, () => list(kind)).slice(),
+    cachedEntries: kind => cached('entries', kind, () => entries(kind)).slice(),
     // 单点查询（索引命中即一次单行读；未命中回退扫描并回填标记）。
     taskBySession(sessionId) {
       if (!sessionId) return null;
