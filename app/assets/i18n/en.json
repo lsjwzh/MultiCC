@@ -3581,5 +3581,6 @@
   "airGlobalUnlockLocal": "For first-time setup, open Global settings on this Mac and save its login password.",
   "airGlobalUnlockChange": "Update password",
   "airGlobalUnlockForget": "Delete saved password",
-  "airGlobalUnlockCancel": "Cancel"
+  "airGlobalUnlockCancel": "Cancel",
+  "airGlobalPowerExternal": "This switch is off. System sleep is still disabled, possibly by another app or setting."
 }

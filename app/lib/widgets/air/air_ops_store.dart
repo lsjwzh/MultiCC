@@ -67,6 +67,8 @@ class AirOpsStore extends ChangeNotifier {
   bool? lidSleepAvailable;
   bool lidSleepOn = false;
   bool lidSleepBusy = false;
+  bool autoUnlockAvailable = false;
+  bool autoUnlockOn = false;
 
   /// 正在跑的更新。null 表示没在跟任何一次更新。
   AirUpdateRun? updateRun;
@@ -224,6 +226,8 @@ class AirOpsStore extends ChangeNotifier {
       final status = await service.fetchMacLidSleep();
       lidSleepAvailable = status.available;
       lidSleepOn = status.enabled;
+      autoUnlockAvailable = status.unlockAvailable;
+      autoUnlockOn = status.unlockEnabled;
     } catch (_) {
       return;
     }
@@ -242,10 +246,34 @@ class AirOpsStore extends ChangeNotifier {
       final status = await service.setMacLidSleep(wanted);
       lidSleepAvailable = status.available;
       lidSleepOn = status.enabled;
+      autoUnlockAvailable = status.unlockAvailable;
+      autoUnlockOn = status.unlockEnabled;
       say(status.enabled ? '已开启关盖保持运行' : '已恢复关盖睡眠');
     } catch (error) {
       lidSleepOn = !wanted;
       say('关盖运行设置失败：$error', tone: 'err');
+    } finally {
+      lidSleepBusy = false;
+      _notify();
+    }
+  }
+
+  Future<void> toggleAutoUnlock() async {
+    if (lidSleepBusy || !autoUnlockAvailable) return;
+    if (lidSleepOn) {
+      say('已随关盖运行开启；请先关闭关盖运行，再单独关闭自动解锁。');
+      return;
+    }
+    lidSleepBusy = true;
+    _notify();
+    try {
+      final status = await service.setMacAutoUnlock(!autoUnlockOn);
+      lidSleepOn = status.enabled;
+      autoUnlockAvailable = status.unlockAvailable;
+      autoUnlockOn = status.unlockEnabled;
+      say(autoUnlockOn ? '已允许自动解锁' : '已关闭自动解锁');
+    } catch (error) {
+      say('自动解锁设置失败：$error', tone: 'err');
     } finally {
       lidSleepBusy = false;
       _notify();

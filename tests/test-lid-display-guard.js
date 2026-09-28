@@ -15,11 +15,13 @@ test('Agent handles lid transitions, not idle time or repeated display wakeups',
   const source = fs.readFileSync(path.join(__dirname, '../scripts/macos-agent/MultiCCAgent.swift'), 'utf8');
   const decision = source.slice(source.indexOf('struct LidDisplayDecision'), source.indexOf('func powerCommand'));
   const policy = source.slice(source.indexOf('func automaticUnlockAllowed()'), source.indexOf('final class LidDisplayGuard'));
+  const intentReader = source.slice(source.indexOf('func lidModeEnabled()'), source.indexOf('func lidClosed()')).replace('"/Library/Application Support/multicc/power-intent"', 'agentDir + "/power-intent"');
   const file = path.join(dir, 'main.swift');
   fs.writeFileSync(file, 'import Foundation\n' + decision + `
     let agentDir = ${JSON.stringify(dir)}
-    var lidEnabled = false
-    func lidModeEnabled() -> Bool? { return lidEnabled }
+    ${intentReader}
+    let intent = URL(fileURLWithPath: agentDir + "/power-intent")
+    try! Data("off".utf8).write(to: intent)
     func hasUnlockPassword() -> Bool { return true }
     ${policy}
     // An existing credential preserves legacy consent until explicitly disabled.
@@ -27,9 +29,9 @@ test('Agent handles lid transitions, not idle time or repeated display wakeups',
     let prefs = URL(fileURLWithPath: agentDir + "/power-settings.json")
     try! Data("{\\"autoUnlock\\":false}".utf8).write(to: prefs)
     assert(!automaticUnlockAllowed())
-    lidEnabled = true
+    try! Data("on".utf8).write(to: intent)
     assert(automaticUnlockAllowed())
-    lidEnabled = false
+    try! Data("off".utf8).write(to: intent)
     try! Data("{\\"autoUnlock\\":true}".utf8).write(to: prefs)
     assert(automaticUnlockAllowed())
     try! Data("broken".utf8).write(to: prefs)

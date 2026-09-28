@@ -358,6 +358,24 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockLocal'));
     assert.equal(await checked('unlock-toggle'), false);
     assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), true);
+
+    // User report: system sleep disabled must not turn MultiCC's shortcut on.
+    power = { available: true, enabled: false, systemSleepDisabled: true };
+    unlockPassword = { available: true, set: true, canEdit: true, requested: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-lid-sleep').classList.contains('on')`), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-auto-unlock').hidden`), false);
+    assert.equal(await text('#air-global-power-status'), await t('airGlobalPowerExternal'));
+    await page.evaluate(`document.getElementById('air-auto-unlock').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-auto-unlock').classList.contains('on') && !document.getElementById('air-auto-unlock').disabled`));
+    assert.deepEqual(unlockToggles.at(-1), { enabled: true });
+    // First-time shortcut opens the shared password form in one click.
+    unlockPassword = { available: true, set: false, canEdit: true, requested: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    await page.evaluate(`document.getElementById('air-auto-unlock').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-block')?.hidden === false`));
+    assert.equal(await checked('unlock-toggle'), false);
+    await click('unlock-cancel');
     await page.screenshot('03-global-unlock');
   });
 });

@@ -16,6 +16,7 @@
   // render(host, context) 每进一次面板就重建 DOM，回调里要用的 context 只能存在模块上
   // （同 air-secrets.js）：它由 air.js 每次渲染递进来。
   let context = null;
+  let setupFromShortcut = null;
   let styleNode = null;
 
   // 样式跟模块走：这页是后加的，不去动 air.css（那份是外壳和各面板共用的）。
@@ -247,8 +248,9 @@
     if (!busy && powerState) paintUnlock(powerState.unlockPassword);
   }
 
-  function paintPower(data) {
+  function paintPower(data, broadcast = true) {
     powerState = data;
+    if (broadcast) root.dispatchEvent(new CustomEvent("multicc-power-changed", { detail: data }));
     const panel = el('air-global-power-card');
     panel.hidden = data.available === false;
     const toggle = el('air-global-power-toggle');
@@ -256,6 +258,7 @@
     toggle.disabled = powerBusy || !!data.error;
     const status = el('air-global-power-status');
     status.textContent = data.error ? t('airGlobalPowerReadFailed', { message: data.error }) : t(data.enabled ? 'airGlobalPowerOn' : 'airGlobalPowerOff');
+    if (!data.error && !data.enabled && data.systemSleepDisabled) status.textContent = t('airGlobalPowerExternal');
     status.className = 'air-global-status' + (data.error ? ' err' : data.enabled ? ' ok' : '');
     paintUnlock(data.unlockPassword);
   }
@@ -413,6 +416,15 @@
     return Promise.all([loadOauth(), loadPower()]);
   }
 
+  function beginPowerSetup(action) {
+    if (!action || !powerState) return;
+    if (!powerState.unlockPassword?.set) requestPassword(action);
+    else {
+      pendingPowerAction = action;
+      paintAuthorization({ state: 'waiting-for-user' });
+    }
+  }
+
   function render(host, ctx) {
     context = ctx;
     pendingPowerAction = null;
@@ -423,8 +435,17 @@
     install.append(make('p', t('airGlobalInstallHint'), 'admin-empty air-global-hint'));
     host.replaceChildren(install, oauthCard(), powerCard());
     injectStyle(host);
-    return load();
+    const action = setupFromShortcut;
+    setupFromShortcut = null;
+    return load().then(() => beginPowerSetup(action));
   }
 
-  root.MultiCCAirGlobal = Object.freeze({ render, refresh: () => load() });
+  root.addEventListener('multicc-power-changed', event => {
+    if (el('air-global-power-card') && !powerBusy && event.detail !== powerState) paintPower(event.detail, false);
+  });
+
+  root.MultiCCAirGlobal = Object.freeze({ render, refresh: () => load(), prepareSetup: action => {
+    if (el('air-global-power-card')?.checkVisibility() && powerState) beginPowerSetup(action);
+    else setupFromShortcut = action;
+  } });
 })(typeof window !== 'undefined' ? window : null);

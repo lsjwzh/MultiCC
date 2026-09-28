@@ -139,7 +139,7 @@ function createHarness(overrides = {}) {
     macosPower: {
       isAvailable: () => true,
       setLidSleepPrevention: async enabled => ({ available: true, enabled }),
-      getLidSleepPrevention: async () => ({ available: true, enabled: true }),
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
     },
     powerPreferences: { read: () => false, write: () => {} },
     unlockPassword: {
@@ -671,7 +671,7 @@ test('lid and unlock switches preserve independent consent and reject incomplete
     macosPower: {
       isAvailable: () => true,
       setLidSleepPrevention: async enabled => { current = enabled; writes++; },
-      getLidSleepPrevention: async () => ({ available: true, enabled: current }),
+      getLidModeSettings: async () => ({ available: true, enabled: current }),
     },
     powerPreferences: { read: () => requested, write: value => { requested = value; } },
     unlockPassword: { isAvailable: () => true, hasPassword: async () => set, clearPassword: async () => { clears++; } },
@@ -704,7 +704,7 @@ test('unlock password write requires a local socket and never leaks the value', 
   const writes = [];
   const clears = [];
   const { routes } = createHarness({
-    macosPower: { isAvailable: () => true, setLidSleepPrevention: async () => {}, getLidSleepPrevention: async () => ({ available: true, enabled: false }) },
+    macosPower: { isAvailable: () => true, setLidSleepPrevention: async () => {}, getLidModeSettings: async () => ({ available: true, enabled: false }) },
     unlockPassword: {
       isAvailable: () => true,
       hasPassword: async () => true,

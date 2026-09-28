@@ -338,10 +338,11 @@ func powerCommand(_ args: [String]) -> (Int32, String) {
 }
 
 func lidModeEnabled() -> Bool? {
-  let (code, text) = powerCommand(["-g"])
-  guard code == 0 else { return nil }
-  guard let range = text.range(of: "(?m)^\\s*SleepDisabled\\s+([01])\\s*$", options: .regularExpression) else { return nil }
-  return text[range].trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("1")
+  // Only MultiCC's explicit choice authorizes lid handling and auto-unlock.
+  // Another application's SleepDisabled assertion must never grant consent.
+  let path = "/Library/Application Support/multicc/power-intent"
+  guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+  return text.trimmingCharacters(in: .whitespacesAndNewlines) == "on"
 }
 
 func lidClosed() -> Bool? {

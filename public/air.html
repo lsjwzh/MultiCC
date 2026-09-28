@@ -120,11 +120,10 @@
               <button type="button" class="sidebar-setting-row is-primary" data-air-view="provider"><span>◈</span><span data-i18n="airProviderConfig">Provider 配置</span></button>
               <button type="button" class="sidebar-setting-row" data-air-view="tunnel"><span>⌁</span><span data-i18n="airTunnel">外网穿透</span></button>
               <button type="button" class="sidebar-setting-row" data-air-view="bridges"><span>⇄</span><span data-i18n="airBridges">消息桥接</span></button>
-              <!-- 关盖运行是设置中心 › 全局配置里那个开关的快捷版：点一下直接切，
-                   不用先跳进设置。只在 macOS 且接口答得出状态时才出现（air.js
-                   的 loadLidSleepRow），其它平台/环境整行隐藏，不留一个点不动的坑。 -->
               <button type="button" class="sidebar-setting-row" id="air-lid-sleep" hidden
                       title="关盖时保持运行，不进入睡眠（点击切换）" data-i18n-title="airLidSleepOffTitle"><span>☾</span><span data-i18n="airLidSleep">关盖运行</span><span class="row-switch" aria-hidden="true"></span></button>
+              <button type="button" class="sidebar-setting-row" id="air-auto-unlock" hidden
+                      title="允许电脑操作工具在需要时自动解锁" data-i18n-title="airGlobalUnlockSaved"><span>♧</span><span data-i18n="airGlobalUnlockToggle">允许自动解锁</span><span class="row-switch" aria-hidden="true"></span></button>
             </nav>
           </details>
           <nav class="global-links side-group">
@@ -612,6 +611,7 @@
   <script src="air-voice.js"></script>
   <script src="air-goal.js"></script>
   <script src="air-global.js"></script>
+  <script src="air-power-shortcuts.js"></script>
   <script src="air-push.js"></script>
   <script src="air-bridges.js"></script>
   <script src="air-resources.js"></script>

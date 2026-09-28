@@ -46,6 +46,15 @@ async function getLidSleepPrevention(options = {}) {
   return { available: true, enabled: parseLidSleepPrevention(output) };
 }
 
+// SleepDisabled is shared with other applications. It is an observation, not
+// permission for MultiCC to run its display guard or unlock the desktop.
+async function getLidModeSettings(options = {}) {
+  const observed = await getLidSleepPrevention(options);
+  if (!observed.available) return observed;
+  const powerd = options.powerd || createPowerd({ platform: options.platform || process.platform });
+  return { available: true, enabled: powerd.readIntent() === 'on', systemSleepDisabled: observed.enabled };
+}
+
 // 轮询等设置落地：powerd 是 launchd 按 WatchPaths 拉起来的，从写完 power-intent 到
 // pmset 真的变过来有几百毫秒。生效返回那一刻的状态，超时返回 null（超时不代表失败：
 // 意图已经记下了，只是这一次没能确认）。
@@ -157,6 +166,7 @@ async function sleepNow(options = {}) {
 }
 
 module.exports = {
+  getLidModeSettings,
   elevatedCommand,
   getLidSleepPrevention,
   isAvailable,

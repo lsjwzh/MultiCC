@@ -38,7 +38,7 @@ const getPowerPreferences = () => powerPreferences || (powerPreferences = create
 
 async function readPowerSettings(deps, req) {
   if (!deps.macosPower.isAvailable()) return { available: false, enabled: false };
-  const status = await deps.macosPower.getLidSleepPrevention();
+  const status = await deps.macosPower.getLidModeSettings();
   if (deps.batteryGuard) status.batteryGuard = deps.batteryGuard.getStatus();
   const password = deps.unlockPassword || getUnlockPassword();
   const preferences = deps.powerPreferences || getPowerPreferences();

@@ -822,6 +822,15 @@ class _MoreSection extends StatelessWidget {
                           onTap: () => unawaited(ops.toggleLidSleep()),
                           trailing: _MiniSwitch(on: ops.lidSleepOn),
                         ),
+                      if (ops.autoUnlockAvailable)
+                        _CompactRow(
+                          semanticKey: 'air-more-auto-unlock',
+                          icon: Icons.lock_open_outlined,
+                          label: '允许自动解锁',
+                          toggled: ops.autoUnlockOn,
+                          onTap: () => unawaited(ops.toggleAutoUnlock()),
+                          trailing: _MiniSwitch(on: ops.autoUnlockOn),
+                        ),
                     ],
                   ),
                 ],

@@ -54,7 +54,7 @@ function createHarness(overrides = {}) {
     getOfficialOAuthEnabled: () => false,
     macosPower: {
       isAvailable: () => false,
-      getLidSleepPrevention: async () => ({ available: true, enabled: true }),
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
     },
     powerPreferences: { read: () => false },
     unlockPassword: {
@@ -360,7 +360,7 @@ test('power settings preserve success branches and delegate all errors', async (
   const available = createHarness({
     macosPower: {
       isAvailable: () => true,
-      getLidSleepPrevention: async () => ({ available: true, enabled: true, source: 'pmset' }),
+      getLidModeSettings: async () => ({ available: true, enabled: true, source: 'pmset' }),
     },
   });
   assert.deepEqual((await invoke(available.routes, '/api/settings/power')).body, {
@@ -374,7 +374,7 @@ test('power settings preserve success branches and delegate all errors', async (
   const hasPassword = createHarness({
     macosPower: {
       isAvailable: () => true,
-      getLidSleepPrevention: async () => ({ available: true, enabled: true }),
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
     },
     unlockPassword: { isAvailable: () => true, hasPassword: async () => true },
   });
@@ -385,7 +385,7 @@ test('power settings preserve success branches and delegate all errors', async (
   const failing = createHarness({
     macosPower: {
       isAvailable: () => true,
-      getLidSleepPrevention: async () => { throw operationError; },
+      getLidModeSettings: async () => { throw operationError; },
     },
   });
   const response = await invoke(failing.routes, '/api/settings/power');
@@ -398,7 +398,7 @@ test('power settings preserve success branches and delegate all errors', async (
   const availabilityFailing = createHarness({
     macosPower: {
       isAvailable: () => { throw availabilityError; },
-      getLidSleepPrevention: async () => ({ available: true, enabled: true }),
+      getLidModeSettings: async () => ({ available: true, enabled: true }),
     },
   });
   const availabilityResponse = await invoke(availabilityFailing.routes, '/api/settings/power');
