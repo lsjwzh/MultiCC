@@ -21,7 +21,7 @@ function harness(reply) {
 }
 
 test('unlock probe maps the agent reply onto the four states the panel paints', async () => {
-  const h = harness({ ok: true, authorized: true });
+  const h = harness({ ok: true, authorized: true, powerProtocol: 1 });
   assert.deepEqual(await h.make().probe(), { state: 'authorized' });
   assert.equal(h.calls[0].file, '/tmp/fake-agent');
   assert.deepEqual(h.calls[0].args, ['probe-unlock', String(PROBE_SECONDS)]);
@@ -56,4 +56,13 @@ test('unlock probe degrades to unavailable instead of failing the save', async (
   assert.deepEqual(await linux.make({ platform: 'linux' }).probe(), { state: 'unavailable', detail: 'not-macos' });
   assert.deepEqual(linux.calls, []);
   assert.ok(PROBE_TIMEOUT_MS > 0);
+});
+
+test('outdated Agent never claims it can enforce the new switch', async () => {
+  assert.deepEqual(await harness({ ok: true, authorized: true }).make().probe(), { state: 'unavailable', detail: 'agent-update-required' });
+  assert.equal(await harness({ ok: true }).make().runtimeReady(), false);
+  assert.equal(await harness({ ok: true, powerProtocol: 1 }).make().runtimeReady(), true);
+  const h = harness({ ok: true, authorized: true, powerProtocol: 1 });
+  await h.make().probe({ allowUI: true });
+  assert.equal(h.calls[0].args.at(-1), '--allow-ui');
 });

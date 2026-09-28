@@ -63,17 +63,13 @@ async function settlesTo(enabled, options = {}) {
 // 插进来的只有一个仓库内路径和一个用户名（脚本自己还会再校验一次）。
 const forAppleScript = (text) => String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-// 「关盖运行」要改的是一条只有 root 能改的设置，所以第一次必然要一次管理员授权 ——
-// 这一次顺手把 powerd 也装上。装完以后这个设置由 launchd 守着（重启、别的程序改回去
-// 都会被恢复），而 MultiCC 之后每次切换只需要往 power-intent 里写一个词：这就是
-// 「输一次密码，以后不再出」。脚本缺失（比如独立包里没带上）也照改设置，那种机器只是
-// 每次切换都要再问一次密码，功能不会因此不能用。
+// First authorization installs the daemon and persists the requested state.
+// Shell quoting and AppleScript quoting are separate boundaries.
+const shellQuote = value => "'" + String(value).replace(/'/g, "'\\''") + "'";
 function elevatedCommand(enabled, { user = os.userInfo().username, powerdInstaller = POWERD_INSTALLER } = {}) {
-  const pmset = `/usr/bin/pmset -a disablesleep ${enabled ? '1' : '0'}`;
-  if (!fs.existsSync(powerdInstaller)) return pmset;
-  const install = `/bin/sh '${forAppleScript(powerdInstaller)}' install '${forAppleScript(user)}' >/dev/null 2>&1`;
-  // 分隔符是分号不是 &&：powerd 装不上时，这次授权至少要真的把设置改掉。
-  return `${install}; ${pmset}`;
+  if (!fs.existsSync(powerdInstaller)) throw new Error('电源组件缺失，请更新 MultiCC 后重试。');
+  const intent = shellQuote('/Library/Application Support/multicc/power-intent');
+  return `/bin/sh ${shellQuote(powerdInstaller)} install ${shellQuote(user)} && /usr/bin/printf '%s\\n' '${enabled ? 'on' : 'off'}' > ${intent} && /usr/bin/pmset -a disablesleep ${enabled ? '1' : '0'}`;
 }
 
 async function elevateLidSleep(enabled, options = {}) {
@@ -87,9 +83,9 @@ async function elevateLidSleep(enabled, options = {}) {
   } catch (error) {
     const detail = `${error.message || ''} ${error.stderr || ''}`;
     if (/User canceled|(-128)/i.test(detail)) {
-      throw new Error('Administrator authorization was canceled');
+      throw new Error('已取消授权，设置未完成。');
     }
-    throw new Error(`Failed to update macOS power settings: ${error.message}`);
+    throw new Error('未能完成系统授权，请在这台 Mac 上重试。');
   }
 }
 
@@ -100,8 +96,11 @@ async function setLidSleepPrevention(enabled, options = {}) {
   // ① powerd 已经在守（第一次开启时装上的）：写下意图就够了，launchd 会照做，
   //    这次切换不需要任何密码，重启之后也还是这个意图。
   const powerd = options.powerd || createPowerd({ platform });
-  const settled = powerd.setIntent(enabled) ? await settlesTo(enabled, options) : null;
-  if (settled) return settled;
+  if (powerd.setIntent(enabled)) {
+    const settled = await settlesTo(enabled, options);
+    if (settled) return settled;
+    throw new Error('设置已保存，但系统尚未生效，请稍后刷新状态。');
+  }
 
   // ② 没装上 / 没在跑：弹一次管理员授权框，一次做完「装 powerd + 改设置」。
   await (options.elevate || elevateLidSleep)(enabled, options);

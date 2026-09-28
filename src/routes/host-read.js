@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { getLidDisplayGuard, getUnlockPassword } = require('../host-power-services');
+const { readPowerSettings } = require('../host-power-services');
 
 const EMPTY_HEALTH = Object.freeze({
   successCount: 0,
@@ -212,31 +212,7 @@ function createBooleanSettingHandler(getEnabled) {
 function createPowerSettingsHandler(deps) {
   return async function powerSettingsHandler(req, res, next) {
     try {
-      if (!deps.macosPower.isAvailable()) {
-        return res.json({ available: false, enabled: false });
-      }
-      const status = await deps.macosPower.getLidSleepPrevention();
-      // Optional companion: the in-process battery guard that sleeps the Mac
-      // when charge drops while lid-sleep prevention keeps it awake.
-      if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
-        status.batteryGuard = deps.batteryGuard.getStatus();
-      }
-      // 合盖熄屏守卫跟着「关盖运行」的实况走：这里读到的 pmset 就是唯一真相，不另存
-      // 一份开关。每次读电源状态顺手对账一次，开机那次在 startPowerRuntimes 里。
-      const lidGuard = deps.lidDisplayGuard || getLidDisplayGuard();
-      status.lidGuard = lidGuard.sync(status.enabled);
-      // 自动解锁：钥匙串里有没有密码（只读探测，失败也不阻断整张卡）。
-      const unlockPassword = deps.unlockPassword || getUnlockPassword();
-      if (unlockPassword.isAvailable()) {
-        try {
-          status.unlockPassword = { available: true, set: await unlockPassword.hasPassword() };
-        } catch {
-          status.unlockPassword = { available: true, set: false, error: 'read-failed' };
-        }
-      } else {
-        status.unlockPassword = { available: false, set: false };
-      }
-      return res.json(status);
+      return res.json(await readPowerSettings(deps, req));
     } catch (error) {
       return next(error);
     }

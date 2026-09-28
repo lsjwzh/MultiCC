@@ -94,7 +94,7 @@ const MIGRATION_DEBT = Object.freeze({
   // 这一段，该拆的仍是页内那份目录渲染。按实测高水位登记 3133/171642。
   'public/air.js': Object.freeze({
     ceiling: 3133,
-    byteCeiling: 171642,
+    byteCeiling: 171606,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
@@ -341,8 +341,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 塞进「读取失败：{message}」只会把机器码印给用户看）。重跑生成器实测
   // 7162 行 / 447955 字节（行数回落到收编前，字节多 130）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7162,
-    maxBytes: 447955,
+    // Shared setup, cancel and saved-password management for the two power switches.
+    maxLines: 7174,
+    maxBytes: 448054,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

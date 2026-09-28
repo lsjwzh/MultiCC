@@ -18,7 +18,7 @@ const NO_POWERD = { setIntent: () => false };
 // The elevated path must not depend on whether this checkout happens to carry
 // the installer, so the prompt cases name a path that does not exist (the
 // plain-pmset command) — the combined command has its own case below.
-const NO_INSTALLER = '/nonexistent/install-powerd.sh';
+const NO_INSTALLER = require('node:path').join(__dirname, '../scripts/install-powerd.sh');
 
 assert.strictEqual(isAvailable('darwin'), true);
 assert.strictEqual(isAvailable('linux'), false);
@@ -69,21 +69,17 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   });
 
   assert.strictEqual(invocations[0].file, '/usr/bin/osascript');
-  assert.deepStrictEqual(invocations[0].args, [
-    '-e',
-    'do shell script "/usr/bin/pmset -a disablesleep 1" with administrator privileges',
-  ]);
+  assert.match(invocations[0].args[1], /install-powerd\.sh/);
+  assert.match(invocations[0].args[1], /power-intent/);
   assert.strictEqual(invocations[0].options.timeout, 120000);
   assert.strictEqual(invocations[1].file, '/usr/bin/pmset');
   assert.deepStrictEqual(status, { available: true, enabled: true });
 
-  // 第一次开启的这一跳要一次做完两件事：装 powerd（之后就免密了）+ 改设置。
-  // 命令必须是「分号」而不是 && —— powerd 装失败时这次授权仍要真的改掉设置。
   const combined = elevatedCommand(true, { user: 'green' });
-  assert.match(combined,
-    /^\/bin\/sh '[^']*\/scripts\/install-powerd\.sh' install 'green' >\/dev\/null 2>&1; \/usr\/bin\/pmset -a disablesleep 1$/,
-    '默认走仓库里的 powerd 安装脚本：这次授权同时把「以后免密」装上');
-  assert.strictEqual(elevatedCommand(false, { powerdInstaller: NO_INSTALLER }), '/usr/bin/pmset -a disablesleep 0');
+  assert.match(combined, /install 'green' &&/);
+  assert.match(combined, /'on' > .*power-intent.* && .*disablesleep 1/);
+  assert.throws(() => elevatedCommand(false, { powerdInstaller: '/nonexistent/install.sh' }), /组件缺失/);
+  assert.ok(elevatedCommand(true, { user: "a'b" }).includes("'a'\\''b'"), 'shell quotes are escaped independently');
 
   // powerd 已经装着：写下意图即可，一个密码框都不该弹。
   let daemonIntents = [];
@@ -117,7 +113,7 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
         callback(error, '', '');
       },
     }),
-    /authorization was canceled/
+    /已取消授权/
   );
 
   await assert.rejects(

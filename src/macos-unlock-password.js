@@ -41,7 +41,7 @@ function createUnlockPassword({
   function run(args) {
     return new Promise((resolve) => {
       execFileFn('/usr/bin/security', args, { timeout: 8000 }, (error, stdout, stderr) => {
-        resolve({ ok: !error, stdout: String(stdout || ''), stderr: String(stderr || '') });
+        resolve({ ok: !error, code: error?.code, stdout: String(stdout || ''), stderr: String(stderr || '') });
       });
     });
   }
@@ -50,6 +50,7 @@ function createUnlockPassword({
     if (!isAvailable()) return false;
     // 只探测存在性：绝不带 -w，find 输出的是条目属性而不是密码本身。
     const r = await run(['find-generic-password', '-s', SERVICE, '-a', account]);
+    if (!r.ok && r.code !== 44) throw new Error('暂时无法读取已保存的密码状态，请重试。');
     return r.ok;
   }
 
@@ -62,14 +63,14 @@ function createUnlockPassword({
       '-T', agentAppPath, '-w', password,
     ]);
     if (!r.ok) {
-      const detail = r.stderr.trim() || 'security returned an error';
-      throw new Error(`failed to save unlock password: ${detail}`);
+      throw new Error('密码未能保存到本机钥匙串，请在这台 Mac 上重试。');
     }
   }
 
   async function clearPassword() {
     if (!isAvailable()) return;
-    await run(['delete-generic-password', '-s', SERVICE, '-a', account]);
+    const result = await run(['delete-generic-password', '-s', SERVICE, '-a', account]);
+    if (!result.ok && result.code !== 44) throw new Error('未能删除已保存的密码，请重试。');
   }
 
   return { isAvailable, hasPassword, setPassword, clearPassword };

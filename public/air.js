@@ -2835,10 +2835,9 @@
   document.querySelectorAll('[data-air-view]').forEach(button => { button.onclick = () => setMode(button.dataset.airView); });
 
   // ── 常用设置里的「关盖运行」 ───────────────────────────────────────────
-  // 设置中心 › 全局配置里那个开关的快捷版：点一下直接切，不用先跳页。这一行只在
+  // 全局设置的快捷入口：首次缺密码时跳到设置页。
   // macOS 且读得到状态时才出现 —— 非 macOS 的 /api/settings/power 答 available:false，
   // 接口打不通（旧服务、未登录）也一律当不支持：宁可少一行，也不要摆一个点了没
-  // 反应的按钮。状态读取是 best-effort，失败不弹错误（侧栏不是报错的地方）。
   const lidSleepRow = $('air-lid-sleep');
   let lidSleepBusy = false;
   function paintLidSleep(enabled) {
@@ -2869,6 +2868,7 @@
       // 失败退回原状态：开关不能替服务点头。
       paintLidSleep(!wanted);
       notice(t('airLidSleepFailed', { msg: error.message }));
+      if (error.code === 'unlock_setup_required' || error.code === 'unlock_authorization_required') setMode('global');
     } finally { lidSleepBusy = false; }
   }
   if (lidSleepRow) lidSleepRow.onclick = () => { void toggleLidSleep(); };

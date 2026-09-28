@@ -61,6 +61,7 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
     MULTICC_AGENT_NO_LAUNCHCTL: '1',
     // Ad-hoc: a test must not reach into the developer's keychain.
     MULTICC_AGENT_SIGN_IDENTITY: '-',
+    MULTICC_AGENT_POWER_DISABLED: '1',
   };
   const bin = path.join(env.MULTICC_AGENT_APP, 'Contents/MacOS/MultiCCAgent');
 
@@ -120,7 +121,7 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
   assert.equal(bg.reason, 'dangerous-background-hotkey');
   assert.equal(call('resume').body.ok, true);
   const status = call('status').body;
-  assert.equal(status.version, '2');
+  assert.equal(status.version, '3');
   assert.equal(typeof status.screenLocked, 'boolean');
   assert.equal(typeof status.unlockPassword, 'boolean');
   // status 是 computer-use 高频调用的只读操作，只能查条目属性；一旦它真去解密密码，
@@ -278,6 +279,7 @@ test('agent provisioning: packages ship the installer, and the installer prefers
     MULTICC_AGENT_LINK: path.join(tmp, 'bin', 'multicc-agent'),
     MULTICC_AGENT_NO_LAUNCHCTL: '1',
     MULTICC_AGENT_SIGN_IDENTITY: '-',
+    MULTICC_AGENT_POWER_DISABLED: '1',
   };
   const out = execFileSync('/bin/sh', [INSTALLER, 'install'], { env, encoding: 'utf8' });
   assert.match(out, /using prebuilt binary/);
