@@ -389,17 +389,15 @@ test('a running update shows each step, where it is stuck, and a failed step', a
   assert.ok(findButton(registry, '强制重试') || findButton(registry, t('airOpsForceRetry')));
 });
 
-test('a standalone install updates without the git force option and shows download progress', async () => {
-  const at = seconds => new Date(seconds * 1000).toISOString();
-  const plan = ['check', 'download', 'checksum', 'extract', 'restart', 'ready'];
+test('a standalone install updates without the git force option and streams the script verbatim', async () => {
+  // install.sh writes no step markers of its own, so a standalone run has no
+  // plan to render: what the user asked for — and gets — is the script's own
+  // output, including curl's download bar, verbatim.
+  const tail = ['Updating 2.1.0 → 2.2.0...', '####################                                                       25.0%'].join('\n');
   const fetchImpl = scriptedFetch({
     '/api/update/status': [
       { json: { state: 'idle', running: false, kind: 'standalone' } },
-      { json: { state: 'running', running: true, kind: 'standalone', tail: 'Updating 2.1.0 → 2.2.0...', steps: plan.map(id => ({
-        id, state: 'pending', startedAt: null, endedAt: null, note: null, progress: null,
-        ...(id === 'check' ? { state: 'done', startedAt: at(1000), endedAt: at(1001) } : {}),
-        ...(id === 'download' ? { state: 'running', startedAt: at(1001), progress: { text: '12.0 / 48.0 MB · 25% · 4.5 MB/s', percent: 25 } } : {}),
-      })) } },
+      { json: { state: 'running', running: true, kind: 'standalone', tail } },
     ],
     '/api/version-check': [{ json: { current: '2.1.0', channel: 'stable', latest: 'v2.2.0', updateAvailable: true } }],
     '/api/update': [{ status: 202, json: { ok: true, status: 'started', force: false, activeStreaming: 0 } }],
@@ -416,11 +414,12 @@ test('a standalone install updates without the git force option and shows downlo
   await settle();
 
   assert.deepEqual(fetchImpl.calls.find(call => call.url === '/api/update').body, { force: false });
-  const rows = registry['ops-extra'].descendants().filter(node => node.tagName === 'LI');
-  assert.equal(rows.length, 6, 'the run\'s own plan decides the steps');
-  assert.match(dialogText(registry), /下载新版本安装包/);
-  assert.match(dialogText(registry), /12\.0 \/ 48\.0 MB · 25%/);
-  assert.match(registry['air-ver-hint'].textContent, /25%/);
+  assert.equal(registry['ops-extra'].descendants().filter(node => node.tagName === 'LI').length, 0,
+    'a standalone run shows the script verbatim, never a checklist it has no markers for');
+  assert.match(registry['ops-log'].textContent, /Updating 2\.1\.0 → 2\.2\.0/);
+  assert.match(registry['ops-log'].textContent, /25\.0%/, "the script's download bar stays visible");
+  assert.match(registry['air-ver-hint'].textContent, /25\.0%/,
+    'the percentage survives the hint truncation, which would otherwise cut it off');
 });
 
 test('the force checkbox is what reaches the API, not a separate button', async () => {
