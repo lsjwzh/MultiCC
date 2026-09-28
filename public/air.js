@@ -726,7 +726,7 @@
   // 「↑ N 个提交未推送」那颗还能按：点开确认一次，然后走目录的 push 接口
   // （POST /api/directories/:id/push —— 和旧控制台 ⋯ 菜单里那个 Push 同一条）。
   const directoryGitView = {
-    dirId: null, status: null, error: '', fetchedAt: 0,
+    dirId: null, status: null, error: '', fetchedAt: 0, filesOpen: false,
   };
   const GIT_REFRESH_MS = 60000;
 
@@ -737,7 +737,7 @@
     panel.hidden = !show;
     if (!show) return;
     if (directoryGitView.dirId !== directoryId) {
-      Object.assign(directoryGitView, { status: null, error: '' });
+      Object.assign(directoryGitView, { status: null, error: '', filesOpen: false });
     }
     if (directoryGitView.dirId !== directoryId || Date.now() - directoryGitView.fetchedAt > GIT_REFRESH_MS) {
       void loadDirectoryGit();
@@ -851,26 +851,38 @@
       }
       if (status.upstream && status.behind) chips.append(chip(t('airGitBehindUpstream', { n: status.behind }), 'warn'));
     }
-    chips.append(chip(status.dirtyFiles?.length
-      ? t('airGitDirtyFiles', { n: status.dirtyFiles.length })
-      : t('airGitMainClean'), status.dirtyFiles?.length ? 'warn' : 'ok'));
+    // 「● N 个未提交文件」和旁边「↑ N 个未推送」一样是一颗能按的胶囊：点开就地展开
+    // 下面那份文件清单，再点收起。纯标签时底下藏着清单也没人看得见。
+    const dirty = status.dirtyFiles || [];
+    let files = null;
+    if (dirty.length) {
+      files = node('details', null, 'directory-git-files');
+      files.open = !!directoryGitView.filesOpen;
+      files.append(node('summary', t('airGitDirtySummary', { n: dirty.length })));
+      const fileList = node('ul');
+      const shown = dirty.slice(0, 50);
+      for (const file of shown) fileList.append(node('li', `${file.status || 'M'}  ${file.path}`));
+      if (dirty.length > shown.length) fileList.append(node('li', t('airGitMoreFiles', { n: dirty.length - shown.length })));
+      files.append(fileList);
+      files.addEventListener('toggle', () => { directoryGitView.filesOpen = files.open; });
+      const dirtyChip = node('button', null, 'directory-git-chip warn is-clickable');
+      dirtyChip.type = 'button';
+      dirtyChip.title = t('airGitDirtySummary', { n: dirty.length });
+      dirtyChip.append(node('span', t('airGitDirtyFiles', { n: dirty.length })),
+        node('span', t('airGitDirtyHint'), 'directory-git-chip-hint'));
+      dirtyChip.onclick = () => {
+        files.open = !files.open;
+        if (files.open) files.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      };
+      chips.append(dirtyChip);
+    } else chips.append(chip(t('airGitMainClean'), 'ok'));
     const actions = node('div', null, 'directory-git-actions');
     const logButton = node('button', t('gitManagerOpen'), 'subtle');
     logButton.type = 'button';
     logButton.onclick = () => window.MultiCCGitManager?.open({ dirId: directoryId, api, t });
     actions.append(logButton);
     brief.replaceChildren(chips, actions);
-    if (status.dirtyFiles?.length) {
-      const files = node('details', null, 'directory-git-files');
-      files.append(node('summary',
-        t('airGitDirtySummary', { n: status.dirtyFiles.length })));
-      const fileList = node('ul');
-      const shown = status.dirtyFiles.slice(0, 50);
-      for (const file of shown) fileList.append(node('li', `${file.status || 'M'}  ${file.path}`));
-      if (status.dirtyFiles.length > shown.length) fileList.append(node('li', t('airGitMoreFiles', { n: status.dirtyFiles.length - shown.length })));
-      files.append(fileList);
-      brief.append(files);
-    }
+    if (files) brief.append(files);
     if (note) note.textContent = status.upstream ? t('airGitUpstreamNote', { upstream: status.upstream }) : t('airGitNoUpstreamNote');
   }
 

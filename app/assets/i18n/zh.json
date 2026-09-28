@@ -1781,6 +1781,7 @@
   "airGitDiffReading": "正在读取 diff…",
   "airGitDiffTruncated": "\n⚠ diff 过长已截断",
   "airGitDirtyFiles": "● {n} 个未提交文件（主检出）",
+  "airGitDirtyHint": "查看",
   "airGitDirtySummary": "未提交文件 {n} 个 — 在主检出里直接改的，不属于任何任务 worktree",
   "airGitInSyncBase": "与基分支 {base} 一致",
   "airGitInSyncUpstream": "已与上游同步",

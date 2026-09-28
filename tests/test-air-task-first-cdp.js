@@ -719,6 +719,17 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     // Git 状态卡：未推送提交数、主检出的脏文件，提交列表与 diff 懒加载。
     assert.ok(await page.waitFor(`document.getElementById('directory-git').textContent.includes('2 个提交未推送')`));
     assert.equal(await page.evaluate(`document.getElementById('directory-git').textContent.includes('2 个未提交文件')`), true);
+    // 「● 2 个未提交文件（主检出）」那颗也是能按的：点开就地展开文件清单，再点收起。
+    // 以前它只是颗纯标签 —— 点它没反应，底下那份清单也没人知道该去哪展开。
+    const dirtyChip = `document.querySelector('.directory-git-chips .directory-git-chip.is-clickable')`;
+    assert.equal(await page.evaluate(`${dirtyChip}.tagName`), 'BUTTON', '未提交文件那颗是可点按钮');
+    assert.equal(await page.evaluate(`${dirtyChip}.textContent.includes('查看')`), true, '按钮上写着「查看」');
+    await page.evaluate(`${dirtyChip}.click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.directory-git-files')?.open === true`));
+    assert.equal(await page.evaluate(`[...document.querySelectorAll('.directory-git-files li')].map(li=>li.textContent).join('|')`),
+      'M  README.md|??  notes/scratch.md', '点开后列出全部脏文件');
+    await page.evaluate(`${dirtyChip}.click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.directory-git-files')?.open === false`));
     assert.equal(await page.evaluate(`document.querySelector('.git-manager')===null`), true, 'Git 管理器默认关闭');
     await page.evaluate(`document.getElementById('directory-git').querySelector('.directory-git-actions button').click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('.git-manager-commits .git-manager-row').length===2`));
