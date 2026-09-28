@@ -920,6 +920,15 @@
       ]
     },
     {
+      "path": "tests/test-air-phase-timing.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first"
+      ]
+    },
+    {
       "path": "tests/test-air-pins.js",
       "tier": "other",
       "lane": "deterministic",
