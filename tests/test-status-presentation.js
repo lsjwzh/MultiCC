@@ -703,8 +703,12 @@ test('the Air word column is the one source for every Air surface', () => {
   for (const file of ['app/lib/widgets/air/air_task_status.dart', 'app/lib/services/air_service.dart']) {
     const src = read(file);
     assert.ok(/airStatusWord|airStatusWords/.test(src), `${file} must derive its Air words from the registry`);
+    // The directory filter chips answer "which rows to show", not "what a status
+    // is called" — a different axis, so their labels may coincide with a status
+    // word. Same exemption the console's liveness pill already gets above.
+    const withoutFilterChips = src.replace(/enum AirDirectoryTaskFilter \{[\s\S]*?\n\}/g, '');
     assert.ok(
-      !/'(空闲|排队中|执行中|等待回答|等待配置|执行成功|执行异常|状态未知)'/.test(src),
+      !/'(空闲|排队中|执行中|等待回答|等待配置|执行成功|执行异常|状态未知)'/.test(withoutFilterChips),
       `${file} still keeps a hand copy of the status words`,
     );
   }
