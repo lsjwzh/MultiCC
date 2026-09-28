@@ -473,7 +473,12 @@
           return;
         } else if (state.state === 'running') {
           if (standalone) {
-            setVersionHint((String(state.tail || '').trim().split('\n').pop() || t('airOpsUpdating')).slice(0, 40), true);
+            // install.sh reports the download through curl's own bar, whose
+            // percentage sits at the end of a ~80-char line — truncating the
+            // line to fit the hint would cut off the one number worth reading.
+            const lastLine = String(state.tail || '').trim().split('\n').pop() || t('airOpsUpdating');
+            const percent = lastLine.match(/(\d+(?:\.\d+)?)%/);
+            setVersionHint(percent ? percent[0] : lastLine.slice(0, 40), true);
             if (dialog) dialog.setBody(sawUnreachable ? t('airOpsServerBackFinishing') : t('airOpsUpdatingBody'));
           } else {
             // The hint beside the version number: the download's own progress
