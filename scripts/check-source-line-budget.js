@@ -340,10 +340,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 由 airGlobalUnlockUnreadable 说话，服务端给的 error 本来就是 'read-failed' 这种码，
   // 塞进「读取失败：{message}」只会把机器码印给用户看）。重跑生成器实测
   // 7162 行 / 447955 字节（行数回落到收编前，字节多 130）。
+  // 2026-09-28 抽屉二级联动：补 airSettingsAllPanels / airSettingsPanelCount 两键
+  // （中英各 2 行 = +4）。重跑生成器实测 7180 行 / 448479 字节，按棘轮登记到这一格。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7176,
-    maxBytes: 448311,
+    maxLines: 7180,
+    maxBytes: 448479,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

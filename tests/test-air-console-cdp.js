@@ -170,12 +170,43 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.ok(await page.evaluate(`document.getElementById('more-panel').open`));
     assert.deepEqual(await page.evaluate(`({url: location.href, task: document.getElementById('task-title').textContent})`), moreBefore);
     assert.equal(await page.evaluate(`document.getElementById('more-panel').parentElement.tagName`), 'BODY', 'not clipped by the sidebar');
-    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#more-panel .global-links button')].map(b=>b.textContent)`),
-      ['服务与文档', '记忆图谱', '任务图谱', '设置中心']);
-    assert.ok(await page.evaluate(`['air-lid-sleep','air-auto-unlock'].every(id => {
-      const row = document.getElementById(id), box = row.getBoundingClientRect();
-      return row.checkVisibility() && box.width > 500 && box.height >= 48 && getComputedStyle(row.querySelector('strong')).fontSize === '15px';
-    })`), 'both power switches are readable full-width rows');
+    // 一级是四个分组 + 一行整页入口；二级只显示选中的那一组。
+    assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#settings-tree .more-parent strong')].map(b=>b.textContent)`),
+      ['重要功能', 'AI 与执行', '连接与通知', '资源与存储']);
+    assert.deepEqual(await page.evaluate(`(() => {
+      const flyout = document.getElementById('more-flyout');
+      return {
+        twoColumn: document.getElementById('more-panel').getBoundingClientRect().width > 700 && flyout.checkVisibility(),
+        shown: [...flyout.querySelectorAll('.more-leaf-group:not([hidden]) .more-leaf strong')].map(b=>b.textContent),
+        folded: flyout.querySelectorAll('.more-leaf-group[hidden]').length,
+      };
+    })()`), { twoColumn: true, shown: ['敏感信息', '服务与文档', '记忆图谱', '任务图谱', '工作区'], folded: 3 },
+      '抽屉开成两列，二级默认选中第一组、另外三组收着');
+    // 悬停换组就是「联动」：右边那一列跟着换，一级那一行同时点亮。
+    await page.evaluate(`document.querySelector('#settings-tree .more-parent[data-more-group="connect"]')
+      .dispatchEvent(new PointerEvent('pointerenter'))`);
+    await settle(page);
+    assert.deepEqual(await page.evaluate(`(() => {
+      const flyout = document.getElementById('more-flyout');
+      return {
+        shown: [...flyout.querySelectorAll('.more-leaf-group:not([hidden]) .more-leaf strong')].map(b=>b.textContent),
+        title: document.getElementById('more-flyout-title').textContent,
+        note: document.getElementById('more-flyout-note').textContent,
+        on: [...document.querySelectorAll('#settings-tree .more-parent.on strong')].map(b=>b.textContent),
+      };
+    })()`), { shown: ['推送通知', '外网穿透', '消息桥接'], title: '连接与通知', note: '3 项', on: ['连接与通知'] },
+      '悬停一级那一行，二级那一列换成它的一组');
+    await page.evaluate(`document.querySelector('#settings-tree .more-parent[data-more-group="featured"]')
+      .dispatchEvent(new PointerEvent('pointerenter'))`);
+    assert.ok(await page.evaluate(`(() => {
+      const rail = document.querySelector('#more-panel .more-rail').getBoundingClientRect();
+      return ['air-lid-sleep','air-auto-unlock'].every(id => {
+        const row = document.getElementById(id), box = row.getBoundingClientRect();
+        return row.checkVisibility() && box.width > 240 && box.right <= rail.right + 1 && box.height >= 48 &&
+          getComputedStyle(row.querySelector('strong')).fontSize === '14px' &&
+          getComputedStyle(row.querySelector('small')).whiteSpace === 'normal';
+      });
+    })()`), 'both power switches are readable full-width rows');
     assert.equal(await page.evaluate(`Math.round(document.getElementById('more-panel').getBoundingClientRect().left)`), 0);
     t.diagnostic('more desktop: ' + await page.screenshot('more-desktop'));
     await page.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true });
@@ -185,6 +216,28 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
       return panel.getBoundingClientRect().right <= innerWidth && scroll.scrollWidth <= scroll.clientWidth + 1 &&
         ['air-lid-sleep', 'air-auto-unlock'].every(id => document.getElementById(id).getBoundingClientRect().height >= 48);
     })()`), 'phone drawer scrolls vertically without horizontal clipping');
+    // 窄屏没有右边那一列：二级那几组被搬回各自父行下面就地折着，点父行展开/收起。
+    // 关键是「搬」而不是另画一份 —— 所以断言的是同一个 #more-group-* 换了父节点。
+    assert.deepEqual(await page.evaluate(`(() => {
+      const parents = [...document.querySelectorAll('#settings-tree .more-parent')];
+      return {
+        flyout: document.getElementById('more-flyout').checkVisibility(),
+        hosts: parents.map(row => document.getElementById('more-group-' + row.dataset.moreGroup).previousElementSibling === row),
+        open: parents.filter(row => row.getAttribute('aria-expanded') === 'true').map(row => row.dataset.moreGroup),
+        leaves: document.querySelectorAll('#more-panel .more-leaf-group .more-leaf').length,
+      };
+    })()`), { flyout: false, hosts: [true, true, true, true], open: ['featured'], leaves: 16 },
+      '窄屏把二级整组搬进抽屉就地折叠，十六行面板一个不少');
+    await page.evaluate(`document.querySelector('#settings-tree .more-parent[data-more-group="featured"]').click()`);
+    await settle(page);
+    assert.ok(await page.evaluate(`(() => {
+      const group = document.getElementById('more-group-featured');
+      return !group.checkVisibility() &&
+        document.querySelector('#settings-tree .more-parent[data-more-group="featured"]').getAttribute('aria-expanded') === 'false';
+    })()`), '再点一次收起这一组');
+    await page.evaluate(`document.querySelector('#settings-tree .more-parent[data-more-group="ai"]').click()`);
+    await settle(page);
+    assert.ok(await page.evaluate(`document.getElementById('more-group-ai').checkVisibility()`), '折叠模式下换一组只开它自己');
     t.diagnostic('more mobile: ' + await page.screenshot('more-mobile'));
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.evaluate(`document.getElementById('air-lid-sleep').click()`);
