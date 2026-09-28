@@ -39,7 +39,7 @@ function mountPowerWriteRoutes(app, deps) {
       if (!deps.macosPower.isAvailable()) return res.status(400).json({ error: 'This setting is only available on macOS' });
       const enabled = req.body?.enabled;
       if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be a boolean' });
-      const lid = await deps.macosPower.getLidSleepPrevention();
+      const lid = await deps.macosPower.getLidModeSettings();
       if (!enabled && lid.enabled) return res.status(409).json({ error: '关盖运行需要自动解锁。请先关闭「关盖运行」。' });
       if (enabled && !(await requireUnlockReady(deps, res))) return;
       if (!enabled && !(await (deps.unlockProbe || getUnlockProbe()).runtimeReady())) {
@@ -56,7 +56,7 @@ function mountPowerWriteRoutes(app, deps) {
         const password = passwordService(deps);
         if (!password.isAvailable()) return res.status(400).json({ error: 'This setting is only available on macOS' });
         if (action === 'clear') {
-          const lid = await deps.macosPower.getLidSleepPrevention();
+          const lid = await deps.macosPower.getLidModeSettings();
           if (lid.enabled) return res.status(409).json({ error: '请先关闭「关盖运行」，再删除已保存的密码。' });
           preferencesService(deps).write(false);
           await password.clearPassword();

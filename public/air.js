@@ -2834,46 +2834,9 @@
   $('schedules').onclick = () => setMode('schedules');
   document.querySelectorAll('[data-air-view]').forEach(button => { button.onclick = () => setMode(button.dataset.airView); });
 
-  // ── 常用设置里的「关盖运行」 ───────────────────────────────────────────
-  // 全局设置的快捷入口：首次缺密码时跳到设置页。
-  // macOS 且读得到状态时才出现 —— 非 macOS 的 /api/settings/power 答 available:false，
-  // 接口打不通（旧服务、未登录）也一律当不支持：宁可少一行，也不要摆一个点了没
-  const lidSleepRow = $('air-lid-sleep');
-  let lidSleepBusy = false;
-  function paintLidSleep(enabled) {
-    lidSleepRow.classList.toggle('on', !!enabled);
-    lidSleepRow.setAttribute('aria-pressed', String(!!enabled));
-    lidSleepRow.title = enabled ? t('airLidSleepOnTitle') : t('airLidSleepOffTitle');
-  }
-  async function loadLidSleepRow() {
-    if (!lidSleepRow) return;
-    try {
-      const status = await api('/api/settings/power');
-      if (!status.available) { lidSleepRow.hidden = true; return; }
-      paintLidSleep(status.enabled);
-      lidSleepRow.hidden = false;
-    } catch (_) { lidSleepRow.hidden = true; }
-  }
-  async function toggleLidSleep() {
-    if (lidSleepBusy) return;
-    lidSleepBusy = true;
-    const wanted = !lidSleepRow.classList.contains('on');
-    // 先动开关：授权框弹在 Mac 上的时候，它不该还停在旧状态上装没反应。
-    paintLidSleep(wanted);
-    try {
-      const result = await api('/api/settings/power', { enabled: wanted }, 'POST');
-      paintLidSleep(result.enabled);
-      notice(t(result.enabled ? 'airLidSleepOn' : 'airLidSleepOff'));
-    } catch (error) {
-      // 失败退回原状态：开关不能替服务点头。
-      paintLidSleep(!wanted);
-      notice(t('airLidSleepFailed', { msg: error.message }));
-      if (error.code === 'unlock_setup_required' || error.code === 'unlock_authorization_required') setMode('global');
-    } finally { lidSleepBusy = false; }
-  }
-  if (lidSleepRow) lidSleepRow.onclick = () => { void toggleLidSleep(); };
-  const sideMore = $('side-more');
-  if (sideMore) sideMore.addEventListener('toggle', () => { if (sideMore.open) void loadLidSleepRow(); });
+  const powerShortcuts = window.MultiCCAirPowerShortcuts.attach({
+    api, notice, openSetup: action => { window.MultiCCAirGlobal.prepareSetup(action); setMode('global'); },
+  });
   $('directory-search').oninput = renderDirectories;
   // Refreshing means reloading what the page is showing. The conversation lives
   // in a frame of its own, so reloading it is a partial reload of this page: the
@@ -3127,6 +3090,6 @@
     const delay = pollFailures ? Math.min(base * 2 ** pollFailures, POLL_MAX_MS) : base;
     timer = setTimeout(() => poll(currentEpoch), delay);
   }
-  void loadLidSleepRow();
+  void powerShortcuts.refresh();
   void poll();
 })();

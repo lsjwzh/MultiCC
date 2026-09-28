@@ -118,7 +118,7 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
   // 哪一边，POST 是点一下之后的落点（把这个 body 断言出来，才算断到真的在写）。
   const powerPosts = [];
   let powerEnabled = false;
-  routes['/api/settings/power'] = () => json({ available: true, enabled: powerEnabled });
+  routes['/api/settings/power'] = () => json({ available: true, enabled: powerEnabled, unlockPassword: { available: true, set: true, enabled: powerEnabled } });
   routes['POST /api/settings/power'] = req => {
     powerEnabled = JSON.parse(req.body).enabled;
     powerPosts.push(req.body);
@@ -206,8 +206,8 @@ test('Air console is a cross-directory overlay, the task band shows recents, and
     assert.equal(freq.open, true, '默认展开');
     assert.equal(freq.display, 'grid');
     assert.equal(freq.columns, 2, '两列排布');
-    assert.deepEqual(freq.labels, ['◈Provider 配置', '⌁外网穿透', '⇄消息桥接', '☾关盖运行'],
-      '三个常用设置 + 关盖运行（macOS 可用时才出现），一个不少');
+    assert.deepEqual(freq.labels, ['◈Provider 配置', '⌁外网穿透', '⇄消息桥接', '☾关盖运行', '♧允许自动解锁'],
+      '三个常用设置 + 两个 macOS 开关，一个不少');
     assert.ok(Number(freq.provider) > Number(freq.neighbour), `Provider 配置比旁边几行加粗（${freq.provider} vs ${freq.neighbour}）`);
     assert.equal(freq.lidOn, false, '关盖运行的开关跟着服务端状态');
     // 点一下就是切：请求带上取反后的值，回来之后开关跟着服务端答的那个状态走。

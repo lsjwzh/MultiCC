@@ -3583,7 +3583,8 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalUnlockLocal": "首次设置请在这台 Mac 上打开「全局设置」并保存登录密码。",
     "airGlobalUnlockChange": "更新密码",
     "airGlobalUnlockForget": "删除保存的密码",
-    "airGlobalUnlockCancel": "取消"
+    "airGlobalUnlockCancel": "取消",
+    "airGlobalPowerExternal": "此开关已关闭；系统目前仍处于禁止睡眠状态，可能由其他软件或设置维持。"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -7168,6 +7169,7 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalUnlockLocal": "For first-time setup, open Global settings on this Mac and save its login password.",
     "airGlobalUnlockChange": "Update password",
     "airGlobalUnlockForget": "Delete saved password",
-    "airGlobalUnlockCancel": "Cancel"
+    "airGlobalUnlockCancel": "Cancel",
+    "airGlobalPowerExternal": "This switch is off. System sleep is still disabled, possibly by another app or setting."
   }
 };

@@ -4,6 +4,7 @@ const assert = require('assert');
 const {
   elevatedCommand,
   getLidSleepPrevention,
+  getLidModeSettings,
   isAvailable,
   parseBatteryStatus,
   parseLidSleepPrevention,
@@ -39,6 +40,14 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
     available: false,
     enabled: false,
   });
+
+  for (const [intent, observed, expected] of [['off', 1, false], ['none', 1, false], ['on', 0, true], ['on', 1, true]]) {
+    const settings = await getLidModeSettings({
+      platform: 'darwin', powerd: { readIntent: () => intent },
+      execFile: (file, args, options, cb) => cb(null, `SleepDisabled ${observed}\n`, ''),
+    });
+    assert.deepStrictEqual(settings, { available: true, enabled: expected, systemSleepDisabled: !!observed });
+  }
 
   let readArgs;
   assert.deepStrictEqual(await getLidSleepPrevention({
