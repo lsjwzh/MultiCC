@@ -1,7 +1,7 @@
 'use strict';
 
 const { resolveNotifySettingsUpdates } = require('./host-read');
-const { getKeepAwake, getUnlockPassword, getUnlockProbe } = require('../host-power-services');
+const { getLidDisplayGuard, getUnlockPassword, getUnlockProbe } = require('../host-power-services');
 const { MAX_PASSWORD_LENGTH } = require('../macos-unlock-password');
 
 const LOCAL_ONLY_MESSAGE = '仅可在本机修改';
@@ -345,26 +345,18 @@ function createPowerSettingsHandler(deps) {
         return res.status(400).json({ error: 'This setting is only available on macOS' });
       }
       const body = req.body || {};
-      const hasEnabled = typeof body.enabled === 'boolean';
-      const hasKeepAwake = typeof body.keepAwake === 'boolean';
-      if (!hasEnabled && !hasKeepAwake) {
-        return res.status(400).json({ error: 'enabled or keepAwake must be a boolean' });
+      if (typeof body.enabled !== 'boolean') {
+        return res.status(400).json({ error: 'enabled must be a boolean' });
       }
-      if (hasEnabled) {
-        await deps.macosPower.setLidSleepPrevention(body.enabled);
-      }
-      if (hasKeepAwake) {
-        const keepAwake = deps.keepAwake || getKeepAwake();
-        await keepAwake.setEnabled(body.keepAwake);
-      }
+      await deps.macosPower.setLidSleepPrevention(body.enabled);
       const status = await deps.macosPower.getLidSleepPrevention();
       // Mirror the read route: report the companion battery guard so the UI can
       // show what protection now applies after the toggle.
       if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
         status.batteryGuard = deps.batteryGuard.getStatus();
       }
-      const keepAwake = deps.keepAwake || getKeepAwake();
-      status.keepAwake = keepAwake.getStatus();
+      const lidGuard = deps.lidDisplayGuard || getLidDisplayGuard();
+      status.lidGuard = lidGuard.sync(status.enabled);
       const unlockPassword = deps.unlockPassword || getUnlockPassword();
       if (unlockPassword.isAvailable()) {
         try {

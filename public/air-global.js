@@ -57,10 +57,10 @@
         .air-global-status { min-width: 0; color: var(--faint); font-size: 10.5px; overflow-wrap: anywhere; }
         .air-global-status.ok { color: #2f7d52; }
         .air-global-status.err { color: #b34b34; }
-        /* 免密助手是同一张卡里的附属选项，不是第二件事：靠一条细线和缩进把它
-           归到关盖开关下面，而不是再画一张卡。 */
-        .air-global-helper { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--hairline); }
-        .air-global-helper h4 { margin: 0; font-size: 12px; color: #2f536f; }
+        /* 两条设置之间只隔一条细线：允许自动解锁是同一张卡里的第二件事，那张卡的抬头
+           （MACOS）同时罩着两条，所以它不该再画一张自己的卡。 */
+        .air-global-sep { padding-top: 4px; border-top: 1px solid var(--hairline); }
+        .air-global-block { display: grid; gap: 7px; }
         #air-global-unlock-password { width: auto; min-width: 0; flex: 1 1 240px; }
       `;
     }
@@ -160,7 +160,10 @@
     }
   }
 
-  // ── 关盖运行（仅 macOS） ───────────────────────────────────────────────
+  // ── 电源：只有两条对外设置（关盖运行、允许自动解锁） ──────────────────────
+  // 两条都遵守同一条规矩：开的时候要一次密码，之后不再出。关盖运行那一次是管理员
+  // 授权（顺手装上 powerd，之后连重启都不用再问）；允许自动解锁那一次是把登录密码
+  // 存进本机钥匙串，写入时预授权 Agent（-T），所以 Agent 之后读它不会弹框。
   function powerCard() {
     const panel = make('section', null, 'admin-panel air-global-card');
     panel.id = 'air-global-power-card';
@@ -186,38 +189,31 @@
     const foot = make('div', null, 'air-global-foot');
     foot.append(refresh, status);
 
-    // 运行期防锁（caffeinate，用户态，无需密码）—— 自动解锁不可用时的兜底。
-    const kaToggle = make('input');
-    kaToggle.type = 'checkbox';
-    kaToggle.id = 'air-global-keepawake-toggle';
-    kaToggle.disabled = true;
-    kaToggle.onchange = () => { void toggleKeepAwake(); };
-    const kaLabel = make('label', null, 'air-global-toggle');
-    kaLabel.append(kaToggle, make('span', t('airGlobalKeepAwakeToggle')));
-    const kaStatus = make('span', '', 'air-global-status');
-    kaStatus.id = 'air-global-keepawake-status';
-    const kaRow = make('div', null, 'air-global-row');
-    kaRow.append(kaLabel, kaStatus);
+    // 第二条：允许自动解锁。开关本身就是「存不存密码」这一件事 —— 打开才露出输入框，
+    // 关掉就是删掉钥匙串里那条目。
+    const unlockToggle = make('input');
+    unlockToggle.type = 'checkbox';
+    unlockToggle.id = 'air-global-unlock-toggle';
+    unlockToggle.disabled = true;
+    unlockToggle.onchange = () => { void toggleUnlock(); };
+    const unlockLabel = make('label', null, 'air-global-toggle');
+    unlockLabel.append(unlockToggle, make('span', t('airGlobalUnlockToggle')));
 
-    // 自动解锁（可选）：密码只进本机钥匙串，Agent 锁屏时用它走原生验证。
-    const unlockBlock = make('div', null, 'air-global-helper');
+    const unlockBlock = make('div', null, 'air-global-block');
     unlockBlock.id = 'air-global-unlock-block';
     unlockBlock.hidden = true;
-    const unlockHead = make('h4', t('airGlobalUnlockTitle'));
-    const unlockDesc = make('p', t('airGlobalUnlockDesc'), 'air-global-desc');
     const pwInput = make('input');
     pwInput.type = 'password';
     pwInput.id = 'air-global-unlock-password';
     pwInput.placeholder = t('airGlobalUnlockPlaceholder');
     pwInput.autocomplete = 'off';
+    pwInput.onkeydown = (event) => { if (event.key === 'Enter') void saveUnlockPassword(); };
     const saveBtn = make('button', t('airGlobalUnlockSave'));
     saveBtn.type = 'button';
     saveBtn.id = 'air-global-unlock-save';
     saveBtn.onclick = () => { void saveUnlockPassword(); };
-    const clearBtn = make('button', t('airGlobalUnlockClear'));
-    clearBtn.type = 'button';
-    clearBtn.id = 'air-global-unlock-clear';
-    clearBtn.onclick = () => { void clearUnlockPassword(); };
+    // 授权那一次没点上（人没看见框，或者点晚了）时的重试：条目已经在钥匙串里，所以
+    // **不用重输密码** —— 再问一次就是把那个系统框再弹一次。
     const authorizeBtn = make('button', t('airGlobalUnlockAuthorize'));
     authorizeBtn.type = 'button';
     authorizeBtn.id = 'air-global-unlock-authorize';
@@ -225,90 +221,20 @@
     const unlockStatus = make('span', '', 'air-global-status');
     unlockStatus.id = 'air-global-unlock-status';
     const unlockRow = make('div', null, 'air-global-foot');
-    unlockRow.append(pwInput, saveBtn, clearBtn, authorizeBtn);
-    unlockBlock.append(unlockHead, unlockDesc, unlockRow, unlockStatus);
+    unlockRow.append(pwInput, saveBtn, authorizeBtn);
+    unlockBlock.append(unlockRow, unlockStatus);
 
-    // 免密助手这一行只在服务端说「这台机器适用」时才出现（loadHelper 里解禁），
-    // 所以先整块藏起来：一个按了必然报错的按钮比没有这个按钮更糟。
-    const helperRow = make('div', null, 'air-global-helper');
-    helperRow.id = 'air-global-helper-row';
-    helperRow.hidden = true;
-    const helperBtn = make('button', t('airGlobalHelperInstall'));
-    helperBtn.type = 'button';
-    helperBtn.id = 'air-global-helper-btn';
-    helperBtn.onclick = () => { void toggleHelper(); };
-    const helperStatus = make('span', '', 'air-global-status');
-    helperStatus.id = 'air-global-helper-status';
-    const helperFoot = make('div', null, 'air-global-foot');
-    helperFoot.append(helperBtn, helperStatus);
-    helperRow.append(helperFoot, make('p', t('airGlobalHelperDesc'), 'air-global-desc'));
-
-    panel.append(head, label, make('p', t('airGlobalPowerDesc'), 'air-global-desc'), foot, kaRow, unlockBlock, helperRow);
+    panel.append(
+      head,
+      label,
+      make('p', t('airGlobalPowerDesc'), 'air-global-desc'),
+      foot,
+      make('div', null, 'air-global-sep'),
+      unlockLabel,
+      make('p', t('airGlobalUnlockDesc'), 'air-global-desc'),
+      unlockBlock,
+    );
     return panel;
-  }
-
-  // 装不装都不影响关盖运行能不能用，所以这块读失败时只写一行状态，绝不把整张卡收掉
-  // ——那会让人以为关盖开关本身出了问题。
-  // keepStatus：刚说完一句话（取消了、失败了）之后的那次复查要带上它 —— 复查是为了
-  // 把按钮态校准到服务端说的那个，不是为了把那句话抹掉换成一行干巴巴的「已安装」。
-  async function loadHelper(keepStatus = false) {
-    const row = el('air-global-helper-row');
-    const button = el('air-global-helper-btn');
-    const status = el('air-global-helper-status');
-    if (!row || !button || !status) return;
-    const say = (text, className) => {
-      if (keepStatus) return;
-      status.textContent = text;
-      status.className = className;
-    };
-    try {
-      const data = await context.api('/api/system/privileged-helper');
-      if (!data || data.applicable === false) { row.hidden = true; return; }
-      row.hidden = false;
-      button.dataset.installed = data.installed ? '1' : '';
-      button.textContent = t(data.installed ? 'airGlobalHelperRemove' : 'airGlobalHelperInstall');
-      say(data.installed ? t('airGlobalHelperInstalled', { user: data.user }) : t('airGlobalHelperMissing'),
-        `air-global-status${data.installed ? ' ok' : ''}`);
-    } catch (error) {
-      // 读不到状态时那句话必须盖掉：此刻屏幕上的「已取消/已移除」谁也担保不了了。
-      row.hidden = false;
-      status.textContent = t('airGlobalHelperReadFailed', { message: error.message || String(error) });
-      status.className = 'air-global-status err';
-    }
-  }
-
-  async function toggleHelper() {
-    const button = el('air-global-helper-btn');
-    const status = el('air-global-helper-status');
-    if (!button || !status) return;
-    const removing = Boolean(button.dataset.installed);
-    // 同关盖开关：这一步会弹系统授权框，先按住按钮并说明在等什么。
-    button.disabled = true;
-    status.textContent = t('airGlobalHelperWaiting');
-    status.className = 'air-global-status';
-    let keepStatus = false;
-    try {
-      await context.api(
-        `/api/system/privileged-helper/${removing ? 'uninstall' : 'install'}`, undefined, 'POST');
-      status.textContent = t(removing ? 'airGlobalHelperRemoved' : 'airGlobalHelperDone');
-      status.className = 'air-global-status ok';
-    } catch (error) {
-      // 取消密码框是用户的选择，不是故障。它走的也是这条 catch —— 外壳的 request()
-      // 把 ok:false 一律当失败抛出，但会把整个回包挂到 error 上，所以这里认 status
-      // 而不是认「抛没抛」：照原样把服务端那句话写出来，不染红。
-      const canceled = error && error.status === 'canceled';
-      status.textContent = canceled
-        ? (error.error || error.message)
-        : t('airGlobalHelperFailed', { message: error.message || String(error) });
-      status.className = `air-global-status${canceled ? '' : ' err'}`;
-      // 两种情况这句话都得留着：它是这一次点击唯一的结果，不该被复查换成「已安装」。
-      keepStatus = true;
-    } finally {
-      button.disabled = false;
-      // 装没装成以服务端的复查为准（sudo 会静默忽略权限不对的 drop-in），
-      // 所以最后总要再问一次，而不是照按钮本地的想法改文案。
-      await loadHelper(keepStatus);
-    }
   }
 
   async function loadPower() {
@@ -327,10 +253,7 @@
       panel.hidden = false;
       toggle.disabled = false;
       toggle.checked = !!data.enabled;
-      paintKeepAwake(data.keepAwake);
       paintUnlock(data.unlockPassword);
-      // 先把关盖状态画好再问助手：助手读失败不该拖着开关一起显示不出来。
-      void loadHelper();
       if (status) {
         if (data.error) {
           // 读到了「这个平台支持，但状态读不出来」：卡留着，把原因写在状态行上。
@@ -345,22 +268,6 @@
       // 连可用性都问不出来时也把卡收起来（同旧页）：留在屏幕上的是一个读不到真状态的开关。
       panel.hidden = true;
       if (status) status.textContent = '';
-    }
-  }
-
-  function paintKeepAwake(keepAwake) {
-    const toggle = el('air-global-keepawake-toggle');
-    const status = el('air-global-keepawake-status');
-    if (!toggle || !keepAwake) return;
-    toggle.disabled = false;
-    toggle.checked = !!keepAwake.enabled;
-    if (!status) return;
-    if (keepAwake.error) {
-      status.textContent = t('airGlobalKeepAwakeFailed', { message: keepAwake.error });
-      status.className = 'air-global-status err';
-    } else {
-      status.textContent = t(keepAwake.enabled ? 'airGlobalKeepAwakeOn' : 'airGlobalKeepAwakeOff');
-      status.className = `air-global-status${keepAwake.enabled ? ' ok' : ''}`;
     }
   }
 
@@ -385,38 +292,74 @@
     status.className = `air-global-status${tone}`;
   }
 
+  // 开关态一律以服务端说的为准（钥匙串里到底有没有那条目）。输入框只在「刚打开、还没
+  // 存成」的那一刻露出来，所以每次按服务端回包重画时都收回去。
   function paintUnlock(unlockPassword) {
+    const toggle = el('air-global-unlock-toggle');
     const block = el('air-global-unlock-block');
     const status = el('air-global-unlock-status');
-    if (!block) return;
-    block.hidden = !(unlockPassword && unlockPassword.available);
-    // 没有条目时「确认授权」无从谈起：它只会回一句 no-password。
     const authorize = el('air-global-unlock-authorize');
-    if (authorize) authorize.disabled = !(unlockPassword && unlockPassword.set);
-    if (!block.hidden && status && !status.textContent) {
-      status.textContent = unlockPassword.set ? t('airGlobalUnlockSaved') : '';
-      status.className = `air-global-status${unlockPassword.set ? ' ok' : ''}`;
+    if (!toggle) return;
+    const available = Boolean(unlockPassword && unlockPassword.available);
+    toggle.disabled = !available;
+    if (!available) {
+      // 这台机器根本没有这条设置：开关按住、框收起来，状态行也不许留着上一台机器的旧话。
+      if (block) block.hidden = true;
+      if (status) { status.textContent = ''; status.className = 'air-global-status'; }
+      return;
+    }
+    if (unlockPassword.error) {
+      // 读不到「钥匙串里到底有没有那条目」时不许画勾：一个不知道真假的勾比没有勾更坏
+      // （显示成「关」会让人以为什么都没开，而它可能正开着）。
+      toggle.disabled = true;
+      toggle.checked = false;
+      if (block) block.hidden = true;
+      if (status) {
+        status.textContent = t('airGlobalUnlockUnreadable');
+        status.className = 'air-global-status err';
+      }
+      return;
+    }
+    const set = Boolean(unlockPassword.set);
+    toggle.checked = set;
+    if (block) block.hidden = true;
+    // 没有条目时「确认授权」无从谈起：它只会回一句 no-password。
+    if (authorize) authorize.hidden = !set;
+    if (status && !status.textContent) {
+      status.textContent = set ? t('airGlobalUnlockSaved') : '';
+      status.className = `air-global-status${set ? ' ok' : ''}`;
     }
   }
 
-  async function toggleKeepAwake() {
-    const toggle = el('air-global-keepawake-toggle');
-    const status = el('air-global-keepawake-status');
+  // 打开：已经存过就没什么可做的（服务端说 set，开关本来就是亮的）；没存过就把输入框
+  // 露出来让人输一次。关掉：删掉钥匙串里那条目 —— 开关本身就是这件事，不需要第二个按钮。
+  async function toggleUnlock() {
+    const toggle = el('air-global-unlock-toggle');
+    const block = el('air-global-unlock-block');
+    const status = el('air-global-unlock-status');
+    const input = el('air-global-unlock-password');
     if (!toggle) return;
-    const previous = !toggle.checked;
+    if (toggle.checked) {
+      if (block) block.hidden = false;
+      if (status) { status.textContent = t('airGlobalUnlockNeedPassword'); status.className = 'air-global-status'; }
+      if (input) input.focus();
+      return;
+    }
+    if (block) block.hidden = true;
     toggle.disabled = true;
     if (status) { status.textContent = t('airGlobalPowerWaiting'); status.className = 'air-global-status'; }
     try {
-      const data = await context.api('/api/settings/power', { keepAwake: toggle.checked });
-      toggle.checked = !!(data && data.keepAwake && data.keepAwake.enabled);
-      if (status) {
-        status.textContent = t(toggle.checked ? 'airGlobalKeepAwakeOn' : 'airGlobalKeepAwakeOff');
-        status.className = `air-global-status${toggle.checked ? ' ok' : ''}`;
-      }
+      await context.api('/api/settings/power/unlock-password', undefined, 'DELETE');
+      if (input) input.value = '';
+      // 条目没了，「确认授权」就无从谈起（它只会回一句 no-password）—— 跟着一起收起来。
+      const authorize = el('air-global-unlock-authorize');
+      if (authorize) authorize.hidden = true;
+      if (status) { status.textContent = t('airGlobalUnlockCleared'); status.className = 'air-global-status ok'; }
     } catch (error) {
-      toggle.checked = previous;
+      // 删不掉就把开关弹回去：屏幕上的勾必须等于钥匙串里真有那条目。
+      toggle.checked = true;
       if (status) {
-        status.textContent = t('airGlobalKeepAwakeFailed', { message: error.message || String(error) });
+        status.textContent = t('airGlobalUnlockFailed', { message: error.message || String(error) });
         status.className = 'air-global-status err';
       }
     } finally {
@@ -428,6 +371,8 @@
     const input = el('air-global-unlock-password');
     const status = el('air-global-unlock-status');
     const save = el('air-global-unlock-save');
+    const toggle = el('air-global-unlock-toggle');
+    const block = el('air-global-unlock-block');
     if (!input || !save) return;
     const password = input.value;
     if (!password) { input.focus(); return; }
@@ -437,6 +382,11 @@
     try {
       const data = await context.api('/api/settings/power/unlock-password', { password }, 'POST');
       input.value = '';
+      if (block) block.hidden = true;
+      if (toggle) toggle.checked = true;
+      // 条目这下才真的在钥匙串里，「确认授权」从这一刻起才有意义（首次保存时它还是藏着的）。
+      const authorize = el('air-global-unlock-authorize');
+      if (authorize) authorize.hidden = false;
       // 服务端回的是「Agent 到底读不读得到」的判定，界面照它说话。没有这个字段时
       // （老服务端）退回原来那句。
       if (data && data.authorization) paintAuthorization(data.authorization);
@@ -451,24 +401,6 @@
       }
     } finally {
       save.disabled = false;
-    }
-  }
-
-  async function clearUnlockPassword() {
-    const status = el('air-global-unlock-status');
-    const clear = el('air-global-unlock-clear');
-    if (!clear) return;
-    clear.disabled = true;
-    try {
-      await context.api('/api/settings/power/unlock-password', undefined, 'DELETE');
-      if (status) { status.textContent = t('airGlobalUnlockCleared'); status.className = 'air-global-status ok'; }
-    } catch (error) {
-      if (status) {
-        status.textContent = t('airGlobalUnlockFailed', { message: error.message || String(error) });
-        status.className = 'air-global-status err';
-      }
-    } finally {
-      clear.disabled = false;
     }
   }
 

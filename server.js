@@ -52,6 +52,8 @@ const cronTasks = require('./plugins/cron/cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./plugins/utils/macos-power');
 const batteryGuardRuntime = require('./src/battery-guard').createBatteryGuardRuntime({ macosPower, logger: console }).start(); // 掉电保护，详见 src/battery-guard.js 头注
+const hostPowerServices = require('./src/host-power-services');
+void hostPowerServices.startPowerRuntimes({ macosPower }); // 合盖熄屏守卫开机对账，详见 src/lid-display-guard.js 头注
 const gitPush = require('./plugins/utils/git-push');
 const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git/queue');
 

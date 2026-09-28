@@ -183,6 +183,10 @@
         {
           "file": "scripts/install-agent.sh",
           "anchor": "LINK=\"${MULTICC_AGENT_LINK:-$HOME/.multicc/bin/multicc-agent}\""
+        },
+        {
+          "file": "src/macos-unlock-probe.js",
+          "anchor": "return process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent');"
         }
       ]
     },

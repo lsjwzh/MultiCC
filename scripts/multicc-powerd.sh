@@ -2,16 +2,17 @@
 # com.multicc.powerd — MultiCC's root power reconciler (installed by
 # scripts/install-powerd.sh as /Library/PrivilegedHelperTools/com.multicc.powerd).
 #
-# What it is for: the sudoers helper (src/privileged-helper.js) removes the
-# password prompt, but a one-shot `pmset -a disablesleep 1` is lost the moment
-# another program resets it (observed: UU Remote's root helper clears
-# SleepDisabled on its own schedule). This job holds the user's INTENT and puts
-# the setting back.
+# What it is for: MultiCC installs this job inside the one administrator prompt
+# that 「关盖运行」already needs, and from then on no switch ever asks for a
+# password again. A one-shot `pmset -a disablesleep 1` is not enough on its own:
+# it is lost the moment another program resets it (observed: UU Remote's root
+# helper clears SleepDisabled on its own schedule). This job holds the user's
+# INTENT and puts the setting back.
 #
-# Why it stays as safe as the sudoers whitelist: it has no listener and accepts
+# Why it stays as safe as a whitelist: it has no listener and accepts
 # no arguments. launchd starts it (on intent-file change and every few seconds),
 # it reads ONE word from the intent file, and the only root actions it can take
-# are the same two fixed commands the sudoers drop-in already allows. Anything
+# are the same two fixed pmset commands. Anything
 # that is not exactly `on` or `off` is ignored.
 #
 # Intent semantics (deliberately asymmetric):

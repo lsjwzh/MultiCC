@@ -165,7 +165,15 @@ curl -s "$MULTICC_BASE_URL/api/cron" \
 | `GET` | `/api/voice/vocab` | Learned vocabulary terms |
 | `DELETE` | `/api/voice/vocab/:term` | Remove a term |
 | `GET` / `POST` | `/api/settings/voice` | Get / update voice configuration (hot-reload) |
-| `GET` / `POST` | `/api/settings/power` | Read / update macOS lid-sleep prevention |
+| `GET` / `POST` | `/api/settings/power` | Read / update macOS lid-sleep prevention (`available`, `enabled`, `lidGuard`, `unlockPassword`) |
+| `POST` | `/api/settings/power/unlock-password` | Store the login password for automatic unlock; replies with the agent's keychain-authorization receipt |
+| `POST` | `/api/settings/power/unlock-password/authorize` | Re-run that receipt probe (no password needed — the entry is already stored) |
+| `DELETE` | `/api/settings/power/unlock-password` | Delete the stored password (this is what turning the switch off does) |
+
+Both macOS host settings — keep running with the lid closed, and allow automatic
+unlock — cost one password prompt when they are first switched on and never
+again (an administrator authorization that installs the `powerd` job, and a
+keychain write that pre-authorizes the desktop agent).
 
 ## Voice — Speech-to-Speech (S2S)
 
