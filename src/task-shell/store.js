@@ -172,7 +172,13 @@ function createTaskShellStore(file) {
   //   · writes：本连接的写计数（上面两个写入口自增），补上 data_version 看不见的自写。
   // 只对「小表」开放：receipt 一个 kind 就 201MB，缓存它等于把线上库常驻内存。
   // 白名单外的 kind 直接报错，而不是悄悄退化成不缓存 —— 那会变成沉默的性能 bug。
-  const CACHEABLE = new Set(['task', 'task-first:indexed']);
+  //
+  // workspace:record / workspace:lease 同样是「小表 + 被逐条问到」：容量判定
+  // （registry.available）每张卡片问一次，每次都要两遍整表读 + 逐行 JSON.parse
+  // （线上 445 + 187 行）。实测一轮 Air 快照问 251 次 = 176ms，占整轮的 96%；
+  // 接上缓存后降到 5ms。行数会随 worktree 数增长，但始终是「本地 worktree 的
+  // 数量级」，不是 receipt 那种按轮次累积的量级。
+  const CACHEABLE = new Set(['task', 'task-first:indexed', 'workspace:record', 'workspace:lease']);
   const rowCache = new Map();
   function cached(shape, kind, build) {
     if (!CACHEABLE.has(kind)) throw new Error(`row cache not allowed for kind ${kind}`);
