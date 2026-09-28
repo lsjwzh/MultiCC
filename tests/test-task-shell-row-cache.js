@@ -79,11 +79,40 @@ test('entries 缓存同样按内容失效，且只对白名单里的小表开放
   // receipt 一张表就 201MB：白名单外必须报错，而不是悄悄退化成不缓存。
   assert.throws(() => store.cachedList('receipt'), /row cache not allowed for kind receipt/);
   assert.throws(() => store.cachedEntries('link'), /row cache not allowed for kind link/);
+  // 容量判定那两张表在名单里（它们同样是「小表 + 被逐条问到」，见 store.js）。
+  assert.deepEqual(store.cachedList('workspace:record'), []);
+  assert.deepEqual(store.cachedList('workspace:lease'), []);
+});
+
+// 行缓存接进容量判定（registry.available）之后，「可用」这个答案不许在缓存里变陈旧：
+// 一份过期的 record 表会让同目录的 resident 预算看起来还没用完。注意不能拿
+// workspace_busy 来测 —— 那条判据走的是单行 get()，本来就不经过缓存，判不出问题。
+test('容量判定读到的是当下的事实：别的连接改了 record 表，答案必须立刻改口', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-cache-'));
+  const file = path.join(dir, 'shell.sqlite');
+  const readerStore = createTaskShellStore(file), writerStore = createTaskShellStore(file);
+  t.after(() => { readerStore.close(); writerStore.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const { createWorkspaceRegistry } = require('../src/workspace/registry');
+  const reader = createWorkspaceRegistry(readerStore, { residentLimit: 2 });
+  const writer = createWorkspaceRegistry(writerStore, { residentLimit: 2 });
+  const ws = writer.register({ ownerId: 's3', dirId: 'd1', path: '/wt/s3', branch: 'b3' });
+  // 读者先问一次：这一问会把 record 表（此刻只有 ws 一行）读进缓存。
+  assert.equal(reader.available(ws.id), null, '预算还没用掉时给出「可用」');
+  // 另一个连接把同目录的 resident 预算用满（residentLimit 2）。
+  writer.register({ ownerId: 's1', dirId: 'd1', path: '/wt/s1', branch: 'b1', residency: 'resident' });
+  writer.register({ ownerId: 's2', dirId: 'd1', path: '/wt/s2', branch: 'b2', residency: 'resident' });
+  assert.equal(reader.available(ws.id), 'workspace_resident_capacity',
+    '陈旧缓存会在这里答「可用」——那正是这条测试要拦住的');
 });
 
 test('热路径必须走缓存版（防止以后悄悄退回 store.list）', () => {
   const runtime = fs.readFileSync(path.join(__dirname, '..', 'src', 'task-shell', 'runtime.js'), 'utf8');
   const taskFirst = fs.readFileSync(path.join(__dirname, '..', 'src', 'task-shell', 'task-first.js'), 'utf8');
+  const registry = fs.readFileSync(path.join(__dirname, '..', 'src', 'workspace', 'registry.js'), 'utf8');
+  // 容量判定是逐条问的（一轮 Air 快照 251 次）：退回裸 list 就是每张卡片两遍整表
+  // JSON.parse，线上实测 176ms。
+  assert.match(registry, /store\.cachedList\(prefix \+ kind\)/);
+  assert.doesNotMatch(registry, /const list = kind => store\.list\(/);
   // listTasks 是 /api/air 每轮都要走的读投影入口。
   assert.match(runtime, /listTasks: \(\) => store\.cachedList\('task'\)/);
   assert.match(taskFirst, /store\.cachedList\('task'\)/);

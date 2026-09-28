@@ -22,7 +22,13 @@ function createWorkspaceRegistry(store, { epoch = randomUUID(), executionLimit =
   for (const n of [executionLimit, residentLimit, restoreLimit]) if (!Number.isSafeInteger(n) || n < 1) throw new TypeError('positive workspace budgets required');
   const get = (kind, id) => store.get(prefix + kind, id);
   const put = (kind, id, value) => store.set(prefix + kind, id, value);
-  const list = kind => store.list(prefix + kind);
+  // list(kind) 每次都是「整表读 + 逐行 JSON.parse」（见 task-shell/store.js）。这里
+  // 的两张表会被**逐条**问到：容量判定 available() 每张卡片一次，每次都要 lease 全表
+  // 加 record 全表两遍解析。实测一轮 Air 快照调 251 次 = 176ms，占整轮 96%；走行缓存
+  // 后同样 251 次只要 5ms。缓存按 (data_version, 自增写计数) 失效 —— 本进程的写与
+  // 同库第二个连接的提交都算，所以容量判定读到的仍是当下的事实（不变量：acquire
+  // 里先 available() 再写 lease，写让 epoch 变，下一次问必然重读）。
+  const list = kind => (store.cachedList ? store.cachedList(prefix + kind) : store.list(prefix + kind));
   function register(input) {
     if (!input.ownerId || !input.dirId || !input.path || !input.branch) throw fail('workspace_identity_missing');
     const key = hash(input.path), id = 'ws_' + key;
