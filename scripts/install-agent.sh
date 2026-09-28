@@ -205,4 +205,11 @@ until lc bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; do
   [ "$n" -lt 10 ] || die "launchctl bootstrap failed"
   sleep 0.5
 done
+# Retire the old standalone display watcher only after the replacement starts.
+# Keep its files for recovery; no user data is deleted.
+if [ -z "$NO_LAUNCHCTL" ]; then
+  launchctl bootout "$DOMAIN/com.zhuanz.lid-display-guard" >/dev/null 2>&1 || true
+  LEGACY_PLIST="$HOME/Library/LaunchAgents/com.zhuanz.lid-display-guard.plist"
+  [ ! -f "$LEGACY_PLIST" ] || mv "$LEGACY_PLIST" "$LEGACY_PLIST.disabled"
+fi
 echo "multicc-agent: installed $LABEL"

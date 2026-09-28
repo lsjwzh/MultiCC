@@ -44,12 +44,14 @@ import CoreGraphics
 import ApplicationServices
 import AppKit
 import Security
+import IOKit
+import IOKit.pwr_mgt
 #if canImport(ScreenCaptureKit)
 import ScreenCaptureKit
 #endif
 import ImageIO
 
-let VERSION = "2"
+let VERSION = "3"
 let home = FileManager.default.homeDirectoryForCurrentUser.path
 let agentDir = ProcessInfo.processInfo.environment["MULTICC_AGENT_DIR"] ?? "\(home)/.multicc/agent"
 let sockPath = "\(agentDir)/agent.sock"
@@ -302,6 +304,99 @@ func screenLocked() -> Bool {
   ((CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue ?? false
 }
 
+// MARK: - Resident power runtime
+// The Agent owns display transitions even when the web server is stopped.
+// No idle-display policy, no persistent caffeinate assertion, no auto-unlock
+// on a timer: unlocking happens only when computer use requests it.
+struct LidDisplayDecision {
+  var previousClosed: Bool? = nil
+  mutating func action(enabled: Bool, closed: Bool?) -> String? {
+    guard enabled, let closed = closed else { previousClosed = nil; return nil }
+    defer { previousClosed = closed }
+    if closed && previousClosed != true { return "off" }
+    if !closed && previousClosed == true { return "wake" }
+    return nil
+  }
+}
+
+func powerCommand(_ args: [String]) -> (Int32, String) {
+  // pmset output is small for -g; read concurrently so a pipe can never stall
+  // the watchdog. A stuck process is killed after three seconds.
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+  process.arguments = args
+  let pipe = Pipe()
+  process.standardOutput = pipe
+  process.standardError = FileHandle.nullDevice
+  do { try process.run() } catch { return (-1, "") }
+  let timeout = DispatchWorkItem { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }
+  DispatchQueue.global().asyncAfter(deadline: .now() + 3, execute: timeout)
+  let data = pipe.fileHandleForReading.readDataToEndOfFile()
+  process.waitUntilExit()
+  timeout.cancel()
+  return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+}
+
+func lidModeEnabled() -> Bool? {
+  let (code, text) = powerCommand(["-g"])
+  guard code == 0 else { return nil }
+  guard let range = text.range(of: "(?m)^\\s*SleepDisabled\\s+([01])\\s*$", options: .regularExpression) else { return nil }
+  return text[range].trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("1")
+}
+
+func lidClosed() -> Bool? {
+  let root = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOPMrootDomain"))
+  guard root != 0 else { return nil }
+  defer { IOObjectRelease(root) }
+  return IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool
+}
+
+func automaticUnlockAllowed() -> Bool {
+  if lidModeEnabled() == true { return true }
+  let path = "\(agentDir)/power-settings.json"
+  if !FileManager.default.fileExists(atPath: path) { return hasUnlockPassword() } // legacy consent
+  guard let data = FileManager.default.contents(atPath: path),
+        let settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
+  return settings["autoUnlock"] as? Bool == true
+}
+
+final class LidDisplayGuard {
+  private let lock = NSLock()
+  private var state: [String: Any] = ["owner": "agent", "enabled": false]
+  func snapshot() -> [String: Any] { lock.lock(); defer { lock.unlock() }; return state }
+  func run() {
+    var decision = LidDisplayDecision()
+    while true {
+      let enabled = lidModeEnabled()
+      let closed = lidClosed()
+      let previous = decision
+      let action = decision.action(enabled: enabled == true, closed: closed)
+      var error: String? = enabled == nil ? "power-state-unavailable" : nil
+      if let action = action {
+        let success: Bool
+        if action == "off" {
+          success = powerCommand(["displaysleepnow"]).0 == 0
+        } else {
+          // User-activity assertion expires after one second; never prevents lock.
+          var assertion = IOPMAssertionID(0)
+          success = IOPMAssertionDeclareUserActivity("MultiCC lid opened" as CFString,
+            kIOPMUserActiveLocal, &assertion) == kIOReturnSuccess
+          if success {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { IOPMAssertionRelease(assertion) }
+          }
+        }
+        if !success { decision = previous; error = "display-action-failed" }
+      }
+      lock.lock()
+      state = ["owner": "agent", "enabled": enabled == true,
+               "closed": closed as Any? ?? NSNull(), "error": error as Any? ?? NSNull()]
+      lock.unlock()
+      Thread.sleep(forTimeInterval: 2)
+    }
+  }
+}
+let lidDisplayGuard = LidDisplayGuard()
+
 // MARK: - Lock-screen auto-unlock
 // The login password lives in the user's login keychain under a dedicated
 // service; the server writes it (Air global settings) and we only read it here,
@@ -383,8 +478,8 @@ func hasUnlockPassword() -> Bool {
 // Developer ID signed, so the ACL records its identity and not a cdhash).
 func probeUnlockAuthorization(_ req: [String: Any]) -> [String: Any] {
   let seconds = min(120, max(1, num(req["seconds"]) ?? 25))
-  switch readUnlockPassword(uiAllowed: true, seconds: seconds) {
-  case .ok: return ["ok": true, "authorized": true]
+  switch readUnlockPassword(uiAllowed: req["allowUI"] as? Bool == true && !screenLocked(), seconds: seconds) {
+  case .ok: return ["ok": true, "authorized": true, "powerProtocol": 1]
   case .missing: return ["ok": true, "authorized": false, "reason": "no-password"]
   case .needsAuthorization: return ["ok": true, "authorized": false, "reason": "waiting-for-user"]
   case .failed: return ["ok": true, "authorized": false, "reason": "read-failed"]
@@ -418,6 +513,9 @@ func unlockScreen(_ req: [String: Any]) -> [String: Any] {
   guard screenLocked() else { return ["ok": false, "error": "the screen is not locked"] }
   if control.isHalted {
     return refused("user-stopped", "the user pressed Esc to stop computer use", retrySafe: false)
+  }
+  guard automaticUnlockAllowed() else {
+    return refused("auto-unlock-disabled", "enable automatic unlock in MultiCC settings first", retrySafe: false)
   }
   let password: String
   switch readUnlockPassword(uiAllowed: false) {
@@ -1052,7 +1150,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
   let session = String(((req["session"] as? String) ?? "anonymous").prefix(128))
   switch op {
   case "ping":
-    return ["ok": true, "version": VERSION, "pid": Int(getpid())]
+    return ["ok": true, "version": VERSION, "pid": Int(getpid()), "powerProtocol": 1]
   case "status":
     return ["ok": true, "version": VERSION,
             "accessibility": AXIsProcessTrusted(),
@@ -1064,6 +1162,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
             "escTaps": Dictionary(uniqueKeysWithValues: escTaps.map { ($0.name, $0.snapshot) }),
             "screenLocked": screenLocked(),
             "unlockPassword": hasUnlockPassword(),
+            "lidGuard": lidDisplayGuard.snapshot(),
             "control": control.snapshot(),
             "snapshots": snapshots.count,
             "chrome": chrome.snapshot()]
@@ -1329,6 +1428,10 @@ func serve() -> Never {
   chmod(sockPath, 0o600)
   log("multicc-agent \(VERSION) serving \(sockPath) (accessibility=\(AXIsProcessTrusted()) screen=\(CGPreflightScreenCaptureAccess()))")
 
+  if ProcessInfo.processInfo.environment["MULTICC_AGENT_POWER_DISABLED"] != "1" {
+    Thread.detachNewThread { lidDisplayGuard.run() }
+  }
+
   let interval = Double(ProcessInfo.processInfo.environment["MULTICC_AGENT_CHROME_INTERVAL"] ?? "") ?? 20
   Thread.detachNewThread { while true { chrome.tick(); Thread.sleep(forTimeInterval: interval) } }
 
@@ -1425,6 +1528,7 @@ func client(_ args: [String]) -> Never {
     if let a = rest.first { req["app"] = a }
   case "probe-unlock":
     if let s = rest.first, let n = Double(s) { req["seconds"] = n }
+    req["allowUI"] = rest.contains("--allow-ui")
   case "snap":
     guard let path = rest.first else { usage("snap /abs/out.png [x y w h]") }
     req["path"] = path
@@ -1468,7 +1572,7 @@ if argv.isEmpty || argv.first == "help" {
          set ID VALUE | type-el ID TEXT      write/type into an element
          press CHORD [N]                     e.g. cmd+shift+g, return, escape
          unlock                              auto-unlock the locked screen from the keychain password
-         probe-unlock [SECONDS]              ask the keychain once (system sheet allowed) whether this app may read it
+         probe-unlock [SECONDS] [--allow-ui]  check keychain access; prompts require --allow-ui
          move|click|rclick|dclick X Y | scroll X Y N | type TEXT | snap /abs.png [x y w h] | call JSON
   """)
   exit(0)

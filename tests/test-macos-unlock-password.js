@@ -34,7 +34,7 @@ test('unlock password is mac-only and probes presence without asking for the sec
   assert.equal(h.calls[0].args[0], 'find-generic-password');
   assert.equal(h.calls[0].args.includes('-w'), false, 'presence probe never fetches the value');
 
-  const missing = harness({ 'find-generic-password': { error: new Error('not found'), stderr: 'item not found' } });
+  const missing = harness({ 'find-generic-password': { error: Object.assign(new Error('not found'), { code: 44 }), stderr: 'item not found' } });
   assert.equal(await missing.make().hasPassword(), false);
 });
 
@@ -62,12 +62,12 @@ test('unlock password stores with add-generic-password -U and rejects invalid in
     'add-generic-password': { error: new Error('EACCES'), stderr: 'errSecInteractionNotAllowed' },
   });
   const error = await failing.make().setPassword('topsecret').catch(e => e);
-  assert.match(error.message, /errSecInteractionNotAllowed/);
+  assert.match(error.message, /未能保存/);
   assert.ok(!String(error.message).includes('topsecret'));
 });
 
 test('unlock password clears via delete-generic-password and tolerates a missing entry', async () => {
-  const h = harness({ 'delete-generic-password': { error: new Error('not found') } });
+  const h = harness({ 'delete-generic-password': { error: Object.assign(new Error('not found'), { code: 44 }) } });
   const up = h.make();
   await up.clearPassword();
   assert.equal(h.calls[0].args[0], 'delete-generic-password');
@@ -75,4 +75,9 @@ test('unlock password clears via delete-generic-password and tolerates a missing
   const linux = createUnlockPassword({ platform: 'linux', execFileFn: h.execFileFn });
   await linux.clearPassword();
   assert.equal(h.calls.length, 1, 'non-macOS clear is a no-op');
+});
+test('keychain failures are errors, never absent credentials or successful deletion', async () => {
+  const h = harness({ 'find-generic-password': { error: new Error('denied') }, 'delete-generic-password': { error: new Error('denied') } });
+  await assert.rejects(h.make().hasPassword(), /无法读取/);
+  await assert.rejects(h.make().clearPassword(), /未能删除/);
 });

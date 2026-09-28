@@ -295,11 +295,12 @@ class AirOpsService {
         ? http.post(uri, headers: headers, body: body)
         : client.post(uri, headers: headers, body: body);
     final response = await call.timeout(const Duration(seconds: 120));
-    final status = AirMacLidSleep.fromJson(_decode(response));
+    final data = _decode(response);
+    final status = AirMacLidSleep.fromJson(data);
     // 失败是「设置没生效」，不是「开关现在是关的」。这里必须抛：返回一个看起来
     // 正常的状态，界面就会把一次失败画成一次成功的切换。
     if (response.statusCode >= 400) {
-      throw Exception('HTTP ${response.statusCode}');
+      throw Exception(data['error'] ?? 'HTTP ${response.statusCode}');
     }
     return status;
   }

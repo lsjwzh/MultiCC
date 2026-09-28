@@ -24,6 +24,7 @@ const EXPECTED_PATHS = [
   'POST /api/settings/access-token',
   'POST /api/settings/official-oauth',
   'POST /api/settings/power',
+  'POST /api/settings/power/auto-unlock',
   'POST /api/settings/power/unlock-password',
   'DELETE /api/settings/power/unlock-password',
   'POST /api/settings/power/unlock-password/authorize',
@@ -140,12 +141,10 @@ function createHarness(overrides = {}) {
       setLidSleepPrevention: async enabled => ({ available: true, enabled }),
       getLidSleepPrevention: async () => ({ available: true, enabled: true }),
     },
-    lidDisplayGuard: {
-      sync: enabled => ({ available: true, enabled, closed: null, displayOn: null, lastAction: 'none', lastRunAt: null, error: null }),
-    },
+    powerPreferences: { read: () => false, write: () => {} },
     unlockPassword: {
       isAvailable: () => true,
-      hasPassword: async () => false,
+      hasPassword: async () => true,
       setPassword: async () => {},
       clearPassword: async () => {},
     },
@@ -154,6 +153,7 @@ function createHarness(overrides = {}) {
     unlockProbe: {
       isAvailable: () => true,
       probe: async () => ({ state: 'authorized' }),
+      runtimeReady: async () => true,
     },
     log: message => state.events.push(['log', message]),
     reportFailure: (stage, category) => state.events.push(['failure', { stage, category }]),
@@ -648,8 +648,7 @@ test('power settings preserve success and validation responses and redact thrown
     ok: true,
     available: true,
     enabled: true,
-    lidGuard: { available: true, enabled: true, closed: null, displayOn: null, lastAction: 'none', lastRunAt: null, error: null },
-    unlockPassword: { available: true, set: false },
+    unlockPassword: { available: true, set: true, canEdit: true, requested: false, enabled: true, requiredByLid: true },
   });
 
   const failure = createHarness({
@@ -665,32 +664,47 @@ test('power settings preserve success and validation responses and redact thrown
   assert.equal(presentSafely(response.nextError).body.error, 'internal_error');
 });
 
-test('power toggle re-syncs the lid display guard to the setting that actually landed', async () => {
-  const synced = [];
-  let current = false;
+test('lid and unlock switches preserve independent consent and reject incomplete setup', async () => {
+  let current = false, requested = false, set = true, authorized = true;
+  let writes = 0, clears = 0;
   const { routes } = createHarness({
     macosPower: {
       isAvailable: () => true,
-      setLidSleepPrevention: async enabled => { current = enabled; return { available: true, enabled }; },
+      setLidSleepPrevention: async enabled => { current = enabled; writes++; },
       getLidSleepPrevention: async () => ({ available: true, enabled: current }),
     },
-    lidDisplayGuard: {
-      sync: enabled => { synced.push(enabled); return { available: true, enabled, closed: null, displayOn: null, lastAction: 'none', lastRunAt: null, error: null }; },
-    },
+    powerPreferences: { read: () => requested, write: value => { requested = value; } },
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => set, clearPassword: async () => { clears++; } },
+    unlockProbe: { probe: async () => ({ state: authorized ? 'authorized' : 'waiting-for-user' }), runtimeReady: async () => true },
   });
-  const on = await invoke(routes, '/api/settings/power', { local: true, body: { enabled: true } });
-  assert.equal(on.body.lidGuard.enabled, true, '开着「关盖运行」时守卫必须在守');
-  const off = await invoke(routes, '/api/settings/power', { local: true, body: { enabled: false } });
-  assert.equal(off.body.lidGuard.enabled, false);
-  // 两次同步用的是**落地后的设置**（回读 pmset 的那个值），不是请求体 ——
-  // 授权被取消、pmset 没生效时，守卫绝不能按用户点的那一下去动屏幕。
-  assert.deepEqual(synced, [true, false]);
+  const change = (path, enabled) => invoke(routes, '/api/settings/power' + path, { local: true, body: { enabled } });
+  set = false;
+  assert.equal((await change('', true)).statusCode, 409);
+  assert.equal(writes, 0);
+  set = true; authorized = false;
+  assert.equal((await change('', true)).statusCode, 409);
+  assert.equal(writes, 0);
+  authorized = true;
+  assert.equal((await change('', true)).body.unlockPassword.enabled, true);
+  assert.equal(requested, false, 'lid mode does not overwrite independent choice');
+  assert.equal((await change('/auto-unlock', false)).statusCode, 409);
+  assert.equal((await invoke(routes, '/api/settings/power/unlock-password', { local: true, method: 'DELETE' })).statusCode, 409);
+  assert.equal(clears, 0);
+  assert.equal((await change('', false)).body.unlockPassword.enabled, false);
+  assert.equal((await change('/auto-unlock', true)).body.unlockPassword.enabled, true);
+  await change('', true);
+  assert.equal((await change('', false)).body.unlockPassword.enabled, true);
+  const off = await change('/auto-unlock', false);
+  assert.equal(off.body.unlockPassword.enabled, false);
+  assert.equal(off.body.unlockPassword.set, true, 'turning off keeps saved password');
+  assert.equal(clears, 0);
 });
 
 test('unlock password write requires a local socket and never leaks the value', async () => {
   const writes = [];
   const clears = [];
   const { routes } = createHarness({
+    macosPower: { isAvailable: () => true, setLidSleepPrevention: async () => {}, getLidSleepPrevention: async () => ({ available: true, enabled: false }) },
     unlockPassword: {
       isAvailable: () => true,
       hasPassword: async () => true,
@@ -761,6 +775,7 @@ test('unlock authorization can be re-checked without retyping the password', asy
 
   // 没条目时不必去问 Agent（也就不会弹任何框）
   const empty = createHarness({
+    unlockPassword: { isAvailable: () => true, hasPassword: async () => false },
     unlockProbe: {
       isAvailable: () => true,
       probe: async () => { throw new Error('must not probe without an item'); },

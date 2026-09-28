@@ -151,16 +151,15 @@ test('setLidSleepPrevention prefers the daemon: no sudo, no password prompt', as
   assert.deepEqual(status, { available: true, enabled: true });
   assert.ok(seen.every(f => f === '/usr/bin/pmset'), 'only pmset reads, no osascript');
 
-  // Daemon installed but not taking effect in time: the elevated path still
-  // applies it — that is the one admin prompt, and it installs powerd too.
+  // A slow daemon must not open another administrator prompt. Report pending
+  // application; its persisted intent remains available for reconciliation.
   value = '0';
   const elevated = [];
-  const fallback = await macosPower.setLidSleepPrevention(true, {
+  await assert.rejects(macosPower.setLidSleepPrevention(true, {
     platform: 'darwin', powerdWaitMs: 30, powerdPollMs: 10,
     powerd: { setIntent: () => true },
     elevate: async (on) => { elevated.push(on); value = '1'; },
     execFile,
-  });
-  assert.equal(fallback.enabled, true);
-  assert.deepEqual(elevated, [true], '只有 daemon 没接住时才走那一次管理员授权');
+  }), /系统尚未生效/);
+  assert.deepEqual(elevated, [], 'never repeat elevation for delayed application');
 });
