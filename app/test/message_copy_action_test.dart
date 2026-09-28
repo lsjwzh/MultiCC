@@ -12,6 +12,10 @@ import 'package:multicc_app/widgets/message_bubble.dart';
 // 这条链路曾经两头都断：纯工具轮（模型只发工具调用、没有正文）的消息点「复制内容」
 // 静默什么都不做，用户看到的就是「长按之后没有复制功能」；长按工具输出时复制到的
 // 又是正文。iOS 上没有兜底 —— 正文段落有系统工具条，代码块和工具卡都没有。
+//
+// 「复制内容」现在长在系统选择工具条上（长按选中 → iOS 的系统条，App 的动作追加在
+// 系统条目之后，见 `_MessageSelection`），所以这里的 long-press 同时也是那条链路的
+// 端到端证明：长按必须真的落到选择上，工具条才弹得出来。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() => I18n.init('zh'));

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -109,53 +110,62 @@ void main() {
   testWidgets('transcript hosts hide delete/fork; session hosts keep them', (
     tester,
   ) async {
+    // 用户气泡（纯 Text）而不是 AI 正文：正文走 markdown，落成 `Text.rich`
+    // （data 为空），测试里不好定位，而这条契约与角色无关。平台钉成 iOS，工具条
+    // 的形态才是 App 里那一个。
     ChatMessage row({required bool withId}) => ChatMessage(
-      role: MessageRole.assistant,
+      role: MessageRole.user,
       content: '内容',
       id: withId ? 'm-1' : null,
     );
 
-    // Drive the bubble's long-press handler directly: pixel-level gesture
-    // simulation against the markdown body is font-metric flaky in the test
-    // environment (the arena never resolves), while the contract under test
-    // is what the sheet offers once the handler runs.
-    Future<void> openSheet() async {
-      final gd = tester.widget<GestureDetector>(
-        find.descendant(
-          of: find.byType(MessageBubble),
-          matching: find.byType(GestureDetector),
-        ),
+    /// 长按气泡，等菜单（系统的选择工具条）弹出来。
+    ///
+    /// 这里必须走真实手势：菜单是 `SelectionArea` 弹的，直接调回调会恰好漏掉
+    /// 「长按有没有落到选择上」这半条链路 —— 而它正是这次改动本身。
+    Future<void> openMenu() async {
+      final gesture = await tester.startGesture(
+        tester.getRect(find.text('内容')).center,
       );
-      gd.onLongPress!();
+      await tester.pump(const Duration(milliseconds: 700));
+      await gesture.up();
       await tester.pumpAndSettle();
     }
 
-    // Transcript host: server actions disabled — copy only, even with an id.
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: MessageBubble(
-            enableServerActions: false,
-            message: row(withId: true),
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      // Transcript host: server actions disabled — copy only, even with an id.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MessageBubble(
+              enableServerActions: false,
+              message: row(withId: true),
+            ),
           ),
         ),
-      ),
-    );
-    await openSheet();
-    expect(find.text('复制内容'), findsOneWidget);
-    expect(find.text('隐藏'), findsNothing);
-    expect(find.text('从此处分叉会话'), findsNothing);
-    await tester.tap(find.text('复制内容'));
-    await tester.pumpAndSettle();
+      );
+      await openMenu();
+      expect(find.text('复制内容'), findsOneWidget);
+      expect(find.text('隐藏'), findsNothing);
+      expect(find.text('从此处分叉会话'), findsNothing);
+      await tester.tap(find.text('复制内容'));
+      await tester.pumpAndSettle();
 
-    // Session host (default): id-addressable message keeps delete + fork.
-    await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: MessageBubble(message: row(withId: true)))),
-    );
-    await openSheet();
-    expect(find.text('复制内容'), findsOneWidget);
-    expect(find.text('隐藏'), findsOneWidget);
-    expect(find.text('从此处分叉会话'), findsOneWidget);
+      // Session host (default): id-addressable message keeps delete + fork.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: MessageBubble(message: row(withId: true))),
+        ),
+      );
+      await openMenu();
+      expect(find.text('复制内容'), findsOneWidget);
+      expect(find.text('隐藏'), findsOneWidget);
+      expect(find.text('从此处分叉会话'), findsOneWidget);
+    } finally {
+      // 必须写在测试体内：addTearDown 晚于 flutter_test 的 debug 变量不变量检查。
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   // 产出链接优化：agent 输出的本地文件链接（裸绝对路径或带 server origin）要

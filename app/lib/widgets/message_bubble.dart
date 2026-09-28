@@ -146,16 +146,21 @@ Future<void> _openLocalFile(
   }
 }
 
-/// Long-press action sheet: copy and quote always; delete only when the message
-/// has a server-side history id (streaming / not-yet-persisted bubbles aren't
-/// addressable — the id arrives via the chat_msg_meta WS event once saved).
-Future<void> _showMessageActions(
+/// 一条消息在长按菜单里能做的事，按展示顺序。
+enum MessageAction { copy, quote, delete, fork }
+
+/// 这条消息该摆哪几个动作 —— 全 App 唯一一份清单。
+///
+/// 少一个入口不会有任何报错：输入框通道（provider 的 `quoteInserter`）没人登记，
+/// 菜单里就少一行，功能静悄悄地没了。所以这份判定必须能被单独测。
+List<MessageAction> availableMessageActions(
   BuildContext context,
   ChatMessage message, {
   bool serverActions = true,
-}) async {
-  // Delete/fork are session-history operations bound to ChatProvider + the
-  // session REST surface; transcript-only hosts (task detail) get copy only.
+  bool allowQuote = true,
+}) {
+  // 删除/分叉是会话历史操作，绑 ChatProvider + 会话 REST 接口；只读转录宿主
+  // （任务详情）只给复制。
   final provider = context.read<ChatProvider?>();
   final canDelete =
       serverActions &&
@@ -163,72 +168,99 @@ Future<void> _showMessageActions(
       (message.id ?? '').isNotEmpty;
   // 引用要落进输入框，所以能不能引用问的是「本宿主有没有输入框」，不是
   // 「能不能动服务端历史」—— 引用不改任何东西，只是把已有的话搬进输入框。
-  // 没有输入框就别摆这个入口：摆了也点不出结果。
-  final quote = provider?.quoteInserter == null
-      ? ''
-      : buildMessageQuote(message);
+  // 没有输入框、或者这条消息本来就摘不出引用块（空白消息），都别摆这个入口：
+  // 摆了也点不出结果。
+  final quote = allowQuote && provider?.quoteInserter != null
+      ? buildMessageQuote(message)
+      : '';
   final canQuote = quote.isNotEmpty;
-  final action = await showModalBottomSheet<String>(
-    context: context,
-    backgroundColor: const Color(0xFFffffff),
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
-    ),
-    builder: (ctx) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: const Icon(Icons.copy_outlined, color: Color(0xFF6f8096)),
-            title: Text(
-              I18n.of('msgCopyAction'),
-              style: const TextStyle(color: Color(0xFF233249)),
-            ),
-            onTap: () => Navigator.pop(ctx, 'copy'),
+  return [
+    MessageAction.copy,
+    if (canQuote) MessageAction.quote,
+    if (canDelete) MessageAction.delete,
+    if (canDelete) MessageAction.fork,
+  ];
+}
+
+/// 动作在菜单里的名字。
+String messageActionLabel(MessageAction action) => switch (action) {
+  MessageAction.copy => I18n.of('msgCopyAction'),
+  MessageAction.quote => I18n.of('msgQuoteAction'),
+  MessageAction.delete => I18n.of('msgDeleteAction'),
+  MessageAction.fork => I18n.of('msgForkAction'),
+};
+
+/// 执行一个菜单动作。
+Future<void> runMessageAction(
+  BuildContext context,
+  ChatMessage message,
+  MessageAction action,
+) async {
+  switch (action) {
+    case MessageAction.copy:
+      _copyMessage(context, messageCopyText(message));
+    case MessageAction.quote:
+      final quote = context.read<ChatProvider?>()?.quoteInserter == null
+          ? ''
+          : buildMessageQuote(message);
+      if (quote.isEmpty) return;
+      _quoteMessage(context, message, quote);
+    case MessageAction.delete:
+      await _confirmDeleteMessage(context, message);
+    case MessageAction.fork:
+      await _forkFromMessage(context, message);
+  }
+}
+
+/// 把一条消息的文字交给**系统**的选择机制。
+///
+/// 长按选中之后弹的是系统自己的工具条（iOS 上的拷贝 / 查询 / 共享…），和用户在
+/// 系统里选任何一段文字走的是同一条路 —— 选择、拖动句柄、全选、放大镜全都是原生的。
+/// App 的动作（复制内容 / 引用 / 隐藏 / 分叉）追加在系统条目之后，所以菜单换了宿主
+/// 但没有丢。
+///
+/// 一条气泡只有一个选择域，正文、代码块、工具输出因此可以连着一起选。代价是长按
+/// 手势从此归选择用，不再有第二个长按入口。`_MarkdownContent` 也相应关掉了自己的
+/// `selectable`：`SelectableText` 会另起一个选择域，把正文从这条链上摘出去，正文
+/// 就成了唯一弹不出 App 动作的地方。
+class _MessageSelection extends StatelessWidget {
+  const _MessageSelection({
+    required this.message,
+    required this.child,
+    this.serverActions = true,
+    this.allowQuote = true,
+  });
+
+  final ChatMessage message;
+  final Widget child;
+  final bool serverActions;
+  final bool allowQuote;
+
+  @override
+  Widget build(BuildContext context) {
+    return SelectionArea(
+      contextMenuBuilder: (ctx, state) =>
+          AdaptiveTextSelectionToolbar.buttonItems(
+            anchors: state.contextMenuAnchors,
+            buttonItems: [
+              ...state.contextMenuButtonItems,
+              for (final action in availableMessageActions(
+                ctx,
+                message,
+                serverActions: serverActions,
+                allowQuote: allowQuote,
+              ))
+                ContextMenuButtonItem(
+                  label: messageActionLabel(action),
+                  onPressed: () {
+                    state.hideToolbar();
+                    runMessageAction(ctx, message, action);
+                  },
+                ),
+            ],
           ),
-          if (canQuote)
-            ListTile(
-              leading: const Icon(Icons.format_quote, color: Color(0xFF0965cf)),
-              title: Text(
-                I18n.of('msgQuoteAction'),
-                style: const TextStyle(color: Color(0xFF233249)),
-              ),
-              onTap: () => Navigator.pop(ctx, 'quote'),
-            ),
-          if (canDelete)
-            ListTile(
-              leading: const Icon(
-                Icons.delete_outline,
-                color: Color(0xFFb64e43),
-              ),
-              title: Text(
-                I18n.of('msgDeleteAction'),
-                style: const TextStyle(color: Color(0xFFb64e43)),
-              ),
-              onTap: () => Navigator.pop(ctx, 'delete'),
-            ),
-          if (canDelete)
-            ListTile(
-              leading: const Icon(Icons.call_split, color: Color(0xFF137780)),
-              title: Text(
-                I18n.of('msgForkAction'),
-                style: const TextStyle(color: Color(0xFF137780)),
-              ),
-              onTap: () => Navigator.pop(ctx, 'fork'),
-            ),
-        ],
-      ),
-    ),
-  );
-  if (!context.mounted) return;
-  if (action == 'copy') {
-    _copyMessage(context, messageCopyText(message));
-  } else if (action == 'quote') {
-    _quoteMessage(context, message, quote);
-  } else if (action == 'delete') {
-    await _confirmDeleteMessage(context, message);
-  } else if (action == 'fork') {
-    await _forkFromMessage(context, message);
+      child: child,
+    );
   }
 }
 
@@ -506,12 +538,9 @@ class _UserBubble extends StatelessWidget {
             : MediaQuery.of(context).size.width;
         return Align(
           alignment: Alignment.centerRight,
-          child: GestureDetector(
-            onLongPress: () => _showMessageActions(
-              context,
-              message,
-              serverActions: enableServerActions,
-            ),
+          child: _MessageSelection(
+            message: message,
+            serverActions: enableServerActions,
             child: Container(
               constraints: BoxConstraints(maxWidth: laneWidth * 0.85),
               margin: const EdgeInsets.symmetric(vertical: 4),
@@ -644,12 +673,9 @@ class _AssistantBubble extends StatelessWidget {
             : MediaQuery.of(context).size.width;
         return Align(
           alignment: Alignment.centerLeft,
-          child: GestureDetector(
-            onLongPress: () => _showMessageActions(
-              context,
-              message,
-              serverActions: enableServerActions,
-            ),
+          child: _MessageSelection(
+            message: message,
+            serverActions: enableServerActions,
             child: Container(
               constraints: BoxConstraints(maxWidth: laneWidth * 0.92),
               margin: const EdgeInsets.symmetric(vertical: 4),
@@ -1339,7 +1365,11 @@ class _MarkdownContent extends StatelessWidget {
               vertical: 4,
             ),
           ),
-          selectable: true,
+          // 关掉自己的选择域，正文才会并进气泡那一个 `SelectionArea`
+          // （见 `_MessageSelection`）。这里开 `selectable: true` 会渲染成
+          // `SelectableText`，它另起一个选择域：正文能选，但选中后弹的系统工具条
+          // 里没有 App 的动作，而且选不过相邻的代码块 —— 一条消息被切成两半。
+          selectable: false,
           onTapLink: (text, href, title) => _handleLinkTap(context, href),
         ),
         if (isStreaming) const _StreamingDot(),
@@ -1378,12 +1408,10 @@ class _FencedCodeBuilder extends MarkdownElementBuilder {
 /// the codeblock background/border, so this supplies only the padding and the
 /// horizontal scroll the default renderer had.
 ///
-/// 注意：这里的 `Text.rich` **不可选中**。原先的注释写着「参与祖先 SelectionArea，
-/// 两条路径都保留选中/复制」——全 App 没有任何 SelectionArea（`MarkdownBody` 的
-/// `selectable: true` 只把正文变成 `SelectableText.rich`），所以长按代码块不会弹
-/// 系统工具条，只会落到气泡的长按菜单，由「复制内容」复制整条消息。要让它和正文
-/// 一样能选中，得在这里套 `SelectionArea` —— 代价是代码块区域的长按从此不再打开
-/// 那个菜单（引用/隐藏/分叉），代码块独占一条消息时尤其明显。
+/// 这里的 `Text.rich` 自己不带选择域：它靠祖先那个 `SelectionArea`（气泡外层的
+/// `_MessageSelection`）参与选中，长按弹的是系统工具条。原先的注释写着「参与祖先
+/// SelectionArea，两条路径都保留选中/复制」，当时全 App 根本没有 SelectionArea，
+/// 于是代码块既选不中、又只有「复制内容」能救 —— 现在那句才成立。
 class _FencedCodeBlock extends StatelessWidget {
   final List<CodeSpan> spans;
   const _FencedCodeBlock({required this.spans});
@@ -1484,13 +1512,10 @@ class _SystemInjectBubbleState extends State<_SystemInjectBubble> {
     final hasBody = body.isNotEmpty;
     return Align(
       alignment: Alignment.centerLeft,
-      child: GestureDetector(
-        // 和其它气泡同一张长按菜单：复制/引用，落库后还能删除（只删显示，与 Web 的 ✕ 一致）。
-        onLongPress: () => _showMessageActions(
-          context,
-          widget.message,
-          serverActions: widget.enableServerActions,
-        ),
+      // 和其它气泡同一张菜单：复制/引用，落库后还能删除（只删显示，与 Web 的 ✕ 一致）。
+      child: _MessageSelection(
+        message: widget.message,
+        serverActions: widget.enableServerActions,
         child: Container(
           margin: const EdgeInsets.symmetric(vertical: 4),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1567,8 +1592,12 @@ class _SystemBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: GestureDetector(
-        onLongPress: () => _copyMessage(context, message.content),
+      // 系统行（role=system）在会话里没有身份可指认，也就没有引用/删除/分叉，
+      // 只剩复制 —— 但复制同样走系统工具条，和其它气泡一致。
+      child: _MessageSelection(
+        message: message,
+        serverActions: false,
+        allowQuote: false,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Text(
