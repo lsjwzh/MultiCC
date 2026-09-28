@@ -21,6 +21,7 @@ import '../screens/task_graph_screen.dart';
 import '../screens/terminal_screen.dart';
 import '../services/air_service.dart';
 import '../services/manage_service.dart';
+import '../services/opencode_models_service.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -1979,12 +1980,21 @@ class _AirTasksViewState extends State<AirTasksView>
     String? defaultProviderId;
     try {
       if (initialCli.supportsProvider) {
+        if (initialCli == SessionCli.opencode) {
+          await OpenCodeModelsService(settings: widget.settings).load();
+        }
         final d = await ManageService(
           settings: widget.settings,
-        ).fetchProviders(initialCli.appType);
+        ).fetchProvidersForCli(initialCli.name);
         providers = (d['providers'] as List? ?? [])
             .map((e) => (e as Map).cast<String, dynamic>())
             .toList();
+        if (initialCli == SessionCli.opencode) {
+          providers = mergeOpenCodeNativeProviders(
+            providers,
+            OpenCodeModelsService.cached,
+          );
+        }
         final defaults = d['defaults'];
         if (defaults is Map && defaults[initialCli.name] != null) {
           defaultProviderId = defaults[initialCli.name].toString();

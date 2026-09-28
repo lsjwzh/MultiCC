@@ -14,6 +14,7 @@ import '../services/settings_service.dart';
 import '../services/manage_service.dart';
 import '../services/claude_models_service.dart';
 import '../services/codex_models_service.dart';
+import '../services/opencode_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../theme.dart';
 import '../utils/cli_display.dart';
@@ -93,6 +94,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
 
   bool get _isClaude => _pickedCli.isClaudeFamily;
   bool get _isCodex => _pickedCli.isCodexFamily;
+
   /// 这张弹窗能给哪种会话挑哪条车道，是车道的事实（服务端 cli-capability 的 kinds
   /// 列），不是这里的分支：chat 只给常驻车道（`claude -p` / `codex exec` 那两个
   /// 一次性可执行文件归终端），终端反过来只给能真跑起来的原生命令。
@@ -100,6 +102,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     final kind = widget.kind == SessionKind.chat ? 'chat' : 'terminal';
     return SessionCli.values.where((cli) => cliOffersIn(cli.name, kind));
   }
+
   bool get _isQoder => _pickedCli == SessionCli.qoder;
   String get _defaultEffort => _pickedCli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
@@ -154,14 +157,16 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
 
   /// 收起的那一格里的同一项：只有大字（那份两行式是菜单用的，见 [_cliOptionLabel]）。
   Widget _cliOptionClosedLabel(SessionCli cli) => Text(
-        _cliOptionMain(cli),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: _cliOptionColor(cli), fontSize: 13),
-      );
+    _cliOptionMain(cli),
+    maxLines: 1,
+    overflow: TextOverflow.ellipsis,
+    style: TextStyle(color: _cliOptionColor(cli), fontSize: 13),
+  );
 
-  static const TextStyle _providerOptionStyle =
-      TextStyle(color: Color(0xFF233249), fontSize: 13);
+  static const TextStyle _providerOptionStyle = TextStyle(
+    color: Color(0xFF233249),
+    fontSize: 13,
+  );
 
   /// provider 那一行大字：默认前缀 + 名字 + 订阅标记 + 模型（限额摘要是第二行，
   /// 不进这行）。菜单项与收起字段共用，免得两处各拼一遍又对不上。
@@ -177,8 +182,11 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _roleCtrl = TextEditingController();
     _agentCtrl = TextEditingController();
     _presetSvc = AgentPresetService(settings: widget.settings);
-    _pickedCli = widget.defaultCli ??
-        (widget.kind == SessionKind.chat ? SessionCli.claudeExp : SessionCli.claude);
+    _pickedCli =
+        widget.defaultCli ??
+        (widget.kind == SessionKind.chat
+            ? SessionCli.claudeExp
+            : SessionCli.claude);
     // If the requested default CLI isn't installed on this host, fall back to
     // the first available one (or keep Claude when nothing is known).
     if (!_selectableClis.contains(_pickedCli) || !_cliAvailable(_pickedCli)) {
@@ -283,6 +291,14 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     if (_pickedCli == SessionCli.dsh) return kDshModelOptions;
     if (_pickedCli == SessionCli.gemini) return kGeminiModelOptions;
     if (_pickedCli == SessionCli.grok) return kGrokModelOptions;
+    if (_pickedCli == SessionCli.opencode && _effectiveProviderId.isEmpty) {
+      return [
+        const MapEntry('', '默认（跟随 OpenCode 设置）'),
+        ...openCodeNativeModelOptions(
+          _providers,
+        ).map((model) => MapEntry(model, model)),
+      ];
+    }
     Map<String, dynamic>? prov;
     final providerId = _effectiveProviderId;
     for (final p in _providers) {
@@ -521,14 +537,25 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
         ).load(forceRefresh: true);
       } catch (_) {}
     }
+    if (cli == SessionCli.opencode) {
+      try {
+        await OpenCodeModelsService(settings: widget.settings).load();
+      } catch (_) {}
+    }
     try {
       final d = await ManageService(
         settings: widget.settings,
-      ).fetchProviders(cli.appType);
+      ).fetchProvidersForCli(cli.name);
       if (!mounted) return;
-      final providers = (d['providers'] as List? ?? [])
+      var providers = (d['providers'] as List? ?? [])
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList();
+      if (cli == SessionCli.opencode) {
+        providers = mergeOpenCodeNativeProviders(
+          providers,
+          OpenCodeModelsService.cached,
+        );
+      }
       String? defaultProviderId;
       final defaults = d['defaults'];
       if (defaults is Map && defaults[cli.poolKey] != null) {
@@ -567,7 +594,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       rolePrompt: _roleCtrl.text.trim().isNotEmpty
           ? _roleCtrl.text.trim()
           : null,
-      provider: (_pickedProvider != null && _pickedProvider!.isNotEmpty)
+      provider:
+          (_pickedProvider != null &&
+              _pickedProvider!.isNotEmpty &&
+              !isOpenCodeNativeProvider(_pickedProvider!))
           ? _pickedProvider
           : null,
       model: model,
@@ -695,7 +725,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
               // 建会话时选到兜底车道（codex exec，计划淘汰）要说一句：这条车道对外
               // 也叫 Codex，只靠名字看不出它是要退役的那条。这句只在 chat 里成立
               // —— 终端要跑的就是那个原生命令，那条车道在终端不是过渡品。
-              if (widget.kind == SessionKind.chat && _pickedCli.isDeprecatedLane) ...[
+              if (widget.kind == SessionKind.chat &&
+                  _pickedCli.isDeprecatedLane) ...[
                 const SizedBox(height: 6),
                 Text(
                   _deprecationNoteText(_pickedCli),
@@ -765,7 +796,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                       DropdownMenuItem(
                         value: '',
                         child: Text(
-                          t('defaultLogin'),
+                          _pickedCli == SessionCli.opencode
+                              ? 'OpenCode 原生配置（全部模型）'
+                              : t('defaultLogin'),
                           style: const TextStyle(color: Color(0xFF233249)),
                         ),
                       ),
@@ -786,7 +819,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                   selectedItemBuilder: (context) => [
                     if (!_hasConcreteDefaultProvider)
                       Text(
-                        t('defaultLogin'),
+                        _pickedCli == SessionCli.opencode
+                            ? 'OpenCode 原生配置（全部模型）'
+                            : t('defaultLogin'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(color: Color(0xFF233249)),

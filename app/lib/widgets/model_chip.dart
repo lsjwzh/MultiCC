@@ -10,6 +10,7 @@ import '../providers/chat_provider.dart';
 import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/codex_models_service.dart';
+import '../services/opencode_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import 'ai_config_sheet.dart';
@@ -38,8 +39,9 @@ String providerDisplayLabel(
   for (final provider in providers) {
     if (provider['id'] == id) return (provider['name'] as String?) ?? id;
   }
-  if (resolved != null && resolved.isNotEmpty && resolved != id)
+  if (resolved != null && resolved.isNotEmpty && resolved != id) {
     return resolved;
+  }
   return id.length > 8 ? id.substring(0, 8) : id;
 }
 
@@ -89,7 +91,6 @@ class ModelChipState extends State<ModelChip> {
   Future<void> _load({SessionCli? cli}) async {
     final epoch = ++_loadEpoch;
     final selectedCli = cli ?? widget.cli;
-    final appType = selectedCli.appType;
     try {
       final runtime = await SessionService(
         settings: widget.settings,
@@ -101,13 +102,22 @@ class ModelChipState extends State<ModelChip> {
       if (selectedCli.isCodexFamily) {
         await CodexModelsService(settings: widget.settings).load();
       }
+      if (selectedCli == SessionCli.opencode) {
+        await OpenCodeModelsService(settings: widget.settings).load();
+      }
       final d = await ManageService(
         settings: widget.settings,
-      ).fetchProviders(appType);
+      ).fetchProvidersForCli(selectedCli.name);
       if (!mounted || epoch != _loadEpoch) return;
-      final providers = (d['providers'] as List? ?? [])
+      var providers = (d['providers'] as List? ?? [])
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList();
+      if (selectedCli == SessionCli.opencode) {
+        providers = mergeOpenCodeNativeProviders(
+          providers,
+          OpenCodeModelsService.cached,
+        );
+      }
       setState(() {
         _providers = providers;
       });

@@ -257,6 +257,23 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
+  /// Provider catalog filtered by the server's CLI compatibility matrix.
+  /// This is the endpoint shape used by Web. It matters for OpenCode and ZCode,
+  /// which can consume compatible providers from both managed pools.
+  Future<Map<String, dynamic>> fetchProvidersForCli(String cli) async {
+    final q = '?cli=${Uri.encodeQueryComponent(cli)}';
+    final uri = Uri.parse(_url('/api/providers$q'));
+    final client = httpClient;
+    final res =
+        await (client == null
+                ? http.get(uri, headers: _headers)
+                : client.get(uri, headers: _headers))
+            .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
   /// Import / sync from cc-switch. Returns `{ok, imported, updated, total}`.
   Future<Map<String, dynamic>> importProviders() async {
     final res = await http
@@ -1045,7 +1062,9 @@ class ManageService {
       Uri.parse(_url('/api/auto-provider/routing/test')),
       body: jsonEncode({'apiKeyName': apiKeyName, 'text': text}),
     );
-    if (res.statusCode == 404) return const {'ok': false, 'code': 'test_unavailable'};
+    if (res.statusCode == 404) {
+      return const {'ok': false, 'code': 'test_unavailable'};
+    }
     // Every failure shape this route produces carries a JSON verdict (400 for a
     // bad entry name, 200 for a Jev verdict, 500 for an internal failure), so a
     // body that will not decode is reported as such instead of thrown.
