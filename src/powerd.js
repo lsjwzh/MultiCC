@@ -6,9 +6,9 @@
 // reads the job's status file, and writes the intent.
 //
 // Installed means "the intent file exists and this user can write it" plus the
-// plist being present. Whether launchd actually picked the job up is proven the
-// same way the sudoers helper proves itself: by the setting changing, which is
-// why setIntent callers still verify with pmset afterwards.
+// plist being present. Whether launchd actually picked the job up is proven by
+// the setting changing, which is why setIntent callers still verify with pmset
+// afterwards.
 const fs = require('node:fs');
 const path = require('node:path');
 

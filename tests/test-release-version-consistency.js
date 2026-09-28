@@ -150,8 +150,17 @@ test('core runner covers every selected path and expands declared variants', () 
   // 291 + 1 = 292。
   // 2026-09-28 自动解锁授权链路（本次）：再注册 tests/test-macos-unlock-probe.js。
   // 它注入 execFile，只解析 agent 的 stdout JSON，不 spawn 真进程也不碰真钥匙串，
-  // 同样是 hermetic 单测。292 + 1 = 293，deterministic 250 + 2 = 252，
-  // commands 277 + 2 = 279。
+  // 同样是 hermetic 单测。292 + 1 = 293。
+  // 2026-09-28 合盖熄屏守卫收进 server 进程（本次）：再注册
+  // tests/test-lid-display-guard.js —— 决策表 + 两档轮询 + 注入 execFile 的行为测试，
+  // 不 spawn、不碰真屏幕。293 + 1 = 294，deterministic 250 + 3 = 253，
+  // commands 277 + 3 = 280。
+  // 2026-09-28 主机设置收敛成两条（本次）：运行期防锁（caffeinate）整套退役 ——
+  // 它在两开关模型里是多余的（SleepDisabled 覆盖空闲睡眠、自动解锁覆盖锁屏），而且
+  // 开着反而跟省电目标对着干（-d 会让屏幕永不熄）。tests/test-keep-awake.js 随之退出
+  // core；两个免密助手测试（test-privileged-helper.js / -route.js）本就在 flow 档，
+  // 沿 powerd 那条路一起删掉，core 之外的数字不动。294 - 1 = 293，
+  // deterministic 253 - 1 = 252，commands 280 - 1 = 279。
   assert.equal(core.length, 293, 'the reviewed core set changed; re-audit the release tier');
   assert.equal(plan.entries.length, 293);
   assert.deepEqual(

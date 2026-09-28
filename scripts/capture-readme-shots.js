@@ -233,7 +233,6 @@ function apiRoutes(options = {}) {
     'GET /api/uploads/stats': json({ ok: true, total: 0 }),
     'GET /api/skill-sync/status': json({ ok: true, skills: [] }),
     'GET /api/settings/official-oauth': json({ ok: true }),
-    'GET /api/system/privileged-helper': json({ ok: false }),
   };
 }
 

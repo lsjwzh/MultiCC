@@ -328,9 +328,21 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // （airGlobalUnlockAuthorized / airGlobalUnlockAuthorize / airGlobalUnlockWaitAuthorize
   // / airGlobalUnlockNotStored / airGlobalUnlockProbeUnknown 共 5 键），中英各 5 行 = +10，
   // 重跑生成器实测 7176→7192 行（脚本按 split("\n") 计数，比 wc -l 多 1）/ 449575 字节，按棘轮登记到这一格。
+  // 2026-09-28 电源设置收成两条开关：删掉免密助手那一行（airGlobalHelper* 10 键）与
+  // 运行期防锁那一行（airGlobalKeepAwake* 5 键），以及被开关取代的 airGlobalUnlockTitle /
+  // airGlobalUnlockClear；补 airGlobalUnlockToggle / airGlobalUnlockNeedPassword 两键，
+  // 并改写关盖运行与自动解锁的说明文字。中英各净 -15 键，重跑生成器实测 7162 行 /
+  // 447825 字节，按棘轮登记到这一格（缩小也得回来改，不然以后回涨 30 行都没人管）。
+  // 2026-09-28 同一批收尾：钥匙串状态读不出来时不许把开关画成「关」，补 1 键
+  // airGlobalUnlockUnreadable（中英各 1 行 = +2），另把 airGlobalUnlockFailed 从
+  // 「保存失败」改成中性的「设置失败」（关掉开关走的是 DELETE，说成「保存」是错的；
+  // 键数不变），并删掉从没被引用过的 airGlobalUnlockReadFailed（-2 行；它那条路现在
+  // 由 airGlobalUnlockUnreadable 说话，服务端给的 error 本来就是 'read-failed' 这种码，
+  // 塞进「读取失败：{message}」只会把机器码印给用户看）。重跑生成器实测
+  // 7162 行 / 447955 字节（行数回落到收编前，字节多 130）。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7192,
-    maxBytes: 449575,
+    maxLines: 7162,
+    maxBytes: 447955,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

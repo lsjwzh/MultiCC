@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { getKeepAwake, getUnlockPassword } = require('../host-power-services');
+const { getLidDisplayGuard, getUnlockPassword } = require('../host-power-services');
 
 const EMPTY_HEALTH = Object.freeze({
   successCount: 0,
@@ -221,10 +221,11 @@ function createPowerSettingsHandler(deps) {
       if (deps.batteryGuard && typeof deps.batteryGuard.getStatus === 'function') {
         status.batteryGuard = deps.batteryGuard.getStatus();
       }
-      // 运行期防锁（caffeinate）与自动解锁（钥匙串里有没有密码）——这两个是
-      // 独立于「合盖休眠」的状态，只读探测，失败也不阻断整张卡。
-      const keepAwake = deps.keepAwake || getKeepAwake();
-      status.keepAwake = keepAwake.getStatus();
+      // 合盖熄屏守卫跟着「关盖运行」的实况走：这里读到的 pmset 就是唯一真相，不另存
+      // 一份开关。每次读电源状态顺手对账一次，开机那次在 startPowerRuntimes 里。
+      const lidGuard = deps.lidDisplayGuard || getLidDisplayGuard();
+      status.lidGuard = lidGuard.sync(status.enabled);
+      // 自动解锁：钥匙串里有没有密码（只读探测，失败也不阻断整张卡）。
       const unlockPassword = deps.unlockPassword || getUnlockPassword();
       if (unlockPassword.isAvailable()) {
         try {

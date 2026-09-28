@@ -2807,15 +2807,6 @@
       ]
     },
     {
-      "path": "tests/test-keep-awake.js",
-      "tier": "core",
-      "lane": "deterministic",
-      "owner": "npm:test:core",
-      "entrypoints": [
-        "npm:test:core"
-      ]
-    },
-    {
       "path": "tests/test-kimi-code.js",
       "tier": "core",
       "lane": "deterministic",
@@ -2840,6 +2831,15 @@
       "owner": "npm:test:state",
       "entrypoints": [
         "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-lid-display-guard.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
       ]
     },
     {
@@ -3249,24 +3249,6 @@
     },
     {
       "path": "tests/test-powerd.js",
-      "tier": "flow",
-      "lane": "deterministic",
-      "owner": "npm:test:state",
-      "entrypoints": [
-        "npm:test:state"
-      ]
-    },
-    {
-      "path": "tests/test-privileged-helper-route.js",
-      "tier": "flow",
-      "lane": "deterministic",
-      "owner": "npm:test:state",
-      "entrypoints": [
-        "npm:test:state"
-      ]
-    },
-    {
-      "path": "tests/test-privileged-helper.js",
       "tier": "flow",
       "lane": "deterministic",
       "owner": "npm:test:state",

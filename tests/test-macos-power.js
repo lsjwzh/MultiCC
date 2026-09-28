@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const {
+  elevatedCommand,
   getLidSleepPrevention,
   isAvailable,
   parseBatteryStatus,
@@ -14,6 +15,10 @@ const {
 // The daemon path is covered in test-powerd.js; here it is always absent so
 // these cases never touch a real intent file on a machine that has it installed.
 const NO_POWERD = { setIntent: () => false };
+// The elevated path must not depend on whether this checkout happens to carry
+// the installer, so the prompt cases name a path that does not exist (the
+// plain-pmset command) — the combined command has its own case below.
+const NO_INSTALLER = '/nonexistent/install-powerd.sh';
 
 assert.strictEqual(isAvailable('darwin'), true);
 assert.strictEqual(isAvailable('linux'), false);
@@ -52,10 +57,7 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   const status = await setLidSleepPrevention(true, {
     platform: 'darwin',
     powerd: NO_POWERD,
-    // No privileged helper installed — the case this block is about. Stated
-    // explicitly because the injected execFile below answers every command
-    // successfully, which would otherwise look like a helper that is present.
-    privileged: { run: async () => null },
+    powerdInstaller: NO_INSTALLER,
     execFile(file, args, options, callback) {
       invocations.push({ file, args, options });
       if (file === '/usr/bin/pmset') {
@@ -75,6 +77,31 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
   assert.strictEqual(invocations[1].file, '/usr/bin/pmset');
   assert.deepStrictEqual(status, { available: true, enabled: true });
 
+  // 第一次开启的这一跳要一次做完两件事：装 powerd（之后就免密了）+ 改设置。
+  // 命令必须是「分号」而不是 && —— powerd 装失败时这次授权仍要真的改掉设置。
+  const combined = elevatedCommand(true, { user: 'green' });
+  assert.match(combined,
+    /^\/bin\/sh '[^']*\/scripts\/install-powerd\.sh' install 'green' >\/dev\/null 2>&1; \/usr\/bin\/pmset -a disablesleep 1$/,
+    '默认走仓库里的 powerd 安装脚本：这次授权同时把「以后免密」装上');
+  assert.strictEqual(elevatedCommand(false, { powerdInstaller: NO_INSTALLER }), '/usr/bin/pmset -a disablesleep 0');
+
+  // powerd 已经装着：写下意图即可，一个密码框都不该弹。
+  let daemonIntents = [];
+  let daemonStatusReads = 0;
+  const daemonStatus = await setLidSleepPrevention(true, {
+    platform: 'darwin',
+    powerd: { setIntent: (value) => { daemonIntents.push(value); return true; } },
+    powerdWaitMs: 50,
+    powerdPollMs: 1,
+    execFile(file, args, options, callback) {
+      daemonStatusReads += 1;
+      callback(null, 'System-wide power settings:\n SleepDisabled 1\n', '');
+    },
+  });
+  assert.deepStrictEqual(daemonIntents, [true]);
+  assert.strictEqual(daemonStatusReads, 1, '意图生效就该立刻收手，不再问第二次');
+  assert.deepStrictEqual(daemonStatus, { available: true, enabled: true });
+
   await assert.rejects(
     setLidSleepPrevention(false, { platform: 'linux' }),
     /only available on macOS/
@@ -84,6 +111,7 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
     setLidSleepPrevention(false, {
       platform: 'darwin',
       powerd: NO_POWERD,
+      powerdInstaller: NO_INSTALLER,
       execFile(file, args, options, callback) {
         const error = new Error('execution error: User canceled. (-128)');
         callback(error, '', '');
@@ -96,6 +124,7 @@ assert.strictEqual(parseLidSleepPrevention('disablesleep 1\ndisablesleep 0\n'), 
     setLidSleepPrevention(true, {
       platform: 'darwin',
       powerd: NO_POWERD,
+      powerdInstaller: NO_INSTALLER,
       execFile(file, args, options, callback) {
         callback(null, file === '/usr/bin/pmset' ? 'Battery Power:\n sleep 1\n' : '', '');
       },

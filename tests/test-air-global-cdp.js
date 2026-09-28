@@ -11,8 +11,10 @@
 //   ④ 关盖运行：available:false 时整卡不出现（不是灰掉）、error 有值要在页面上现形、
 //      勾选态以服务端回的 enabled 为准、写入失败时勾选必须回滚；
 //   ⑤ 安装包（APK / iOS OTA）不在这页重复第二张卡 —— 侧栏「主机操作」那颗才是唯一入口。
-//   ⑥ 免密助手：它长在关盖那张卡里（不是第二张）；不适用的机器整行消失；取消密码框
-//      不算失败（不染红）；装没装成一律以服务端复查过的状态为准，本地按钮说了不算。
+//   ⑥ 允许自动解锁：它是同一张卡里的第二条（不是第二张卡）；开关本身就是「钥匙串里
+//      有没有那条目」——打开只露出这一次的密码框、存完立刻收回并清空输入框（密码不许
+//      留在 DOM 里）、关掉就是发 DELETE；存完的授权回执按四种状态分别说话，重问授权
+//      不许让用户重输密码。
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
@@ -51,7 +53,13 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     oauth = { enabled: !!body.enabled };
     return json({ ok: true, enabled: oauth.enabled });
   };
-  routes['GET /api/settings/power'] = () => json(power);
+  // 第二条设置「允许自动解锁」：开关本身就是「钥匙串里有没有那条目」。所以 fixture 要能演
+  // 「这台机器不适用 / 没存过 / 存进去了但还没授权 / 授权过了 / 用户要删掉 / 真失败」。
+  let unlockPassword = { available: true, set: false };
+  let unlockAuthorization = { state: 'authorized' };
+  let unlockSaveError = '', unlockDeleteError = '', unlockSaveDelay = 0;
+  const unlockPosts = []; // { method, body }：POST 存、DELETE 删、POST authorize 重问一次
+  routes['GET /api/settings/power'] = () => json({ ...power, unlockPassword });
   routes['POST /api/settings/power'] = async req => {
     const body = JSON.parse(req.body);
     powerPosts.push(body);
@@ -63,20 +71,29 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     power = { available: true, enabled };
     return json({ ok: true, available: true, enabled });
   };
-  // 免密助手：装了之后关盖开关不再每次要密码。它是**可选**的，所以 fixture 要能演
-  // 「这台机器不适用 / 没装 / 装了 / 用户取消了密码框 / 真失败」五种回答。
-  let helper = { applicable: true, installed: false, user: 'green' };
-  let helperReply = null; // null = 照常成功；否则原样作为 POST 的回包
-  const helperPosts = [];
-  routes['GET /api/system/privileged-helper'] = () => json({ ok: true, ...helper });
-  for (const mode of ['install', 'uninstall']) {
-    routes[`POST /api/system/privileged-helper/${mode}`] = () => {
-      helperPosts.push(mode);
-      if (helperReply) return helperReply;
-      helper = { ...helper, installed: mode === 'install' };
-      return json({ ok: true, status: mode === 'install' ? 'installed' : 'removed', ...helper });
-    };
-  }
+  routes['POST /api/settings/power/unlock-password'] = async req => {
+    const body = JSON.parse(req.body);
+    unlockPosts.push({ method: 'POST', body });
+    if (unlockSaveDelay) await new Promise(resolve => setTimeout(resolve, unlockSaveDelay));
+    if (unlockSaveError) {
+      return { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: unlockSaveError }) };
+    }
+    unlockPassword = { available: true, set: true };
+    // 真服务端存完会当场问一次 Agent「你到底读不读得到」，回执就是这个 authorization。
+    return json({ ok: true, set: true, authorization: unlockAuthorization });
+  };
+  routes['DELETE /api/settings/power/unlock-password'] = () => {
+    unlockPosts.push({ method: 'DELETE' });
+    if (unlockDeleteError) {
+      return { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: unlockDeleteError }) };
+    }
+    unlockPassword = { available: true, set: false };
+    return json({ ok: true, set: false });
+  };
+  routes['POST /api/settings/power/unlock-password/authorize'] = () => {
+    unlockPosts.push({ method: 'POST', path: 'authorize' });
+    return json({ ok: true, authorization: unlockAuthorization });
+  };
 
   routes['/api/air'] = () => json({ ok: true, directories: [{ id: 'd1', name: 'MultiCC 主仓', path: '/projects/multicc' }], clis: ['codex'], migration: { errors: [] }, tasks: [], sessions: [] });
   routes['/api/cron'] = () => json([]);
@@ -271,51 +288,120 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     powerError = '';
     await page.screenshot('02-global-power');
 
-    // ── ⑤ 免密助手：它是关盖开关的附属选项，不是第二张卡 ───────────────────
-    // 「不适用 / 未装 / 已装」三态各自要现形，取消密码框不算失败，装没装成一律以
-    // 服务端复查过的状态为准（sudo 会静默忽略权限不对的 drop-in，本地按钮说了不算）。
-    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-row')?.hidden === false`), '适用时这一行在');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-row').closest('#air-global-power-card') !== null`), true,
-      '它长在关盖那张卡里 —— 免密是这条开关的附属选项，不是独立的一件事');
-    assert.equal(await text('#air-global-helper-status'), await t('airGlobalHelperMissing'), '没装时说清「每次都会要密码」');
-    assert.equal(await text('#air-global-helper-btn'), await t('airGlobalHelperInstall'));
+    // ── ⑤ 允许自动解锁：同一张卡里的第二条，开关本身就是「存不存密码」────────
+    // 这一条是给 computer use 用的：锁屏时 Agent 拿本机登录密码走原生验证解锁。密码只
+    // 进本机钥匙串，但「要用户输一次」这件事的代价是真实的，所以每一条边界都要断到：
+    // 没输之前一个请求都不许发；输完立刻从 DOM 里清掉；关掉就是删条目；存完的授权回执
+    // 四种状态各自说人话。
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').closest('#air-global-power-card') !== null`), true,
+      '它长在关盖那张卡里 —— 两条都是主机的电源行为，不是两件事');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').checked`), false, '钥匙串里没有条目时开关是关的');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), true, '没打开就不该有一个要密码的框杵在页面上');
 
-    // 装上：发一次 install，文案两处都翻面（按钮变「移除」、状态带用户名）。
-    await page.evaluate(`document.getElementById('air-global-helper-btn').click()`);
-    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-btn').disabled`), true, '等授权时按钮按住');
-    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-btn').textContent === ${JSON.stringify(await t('airGlobalHelperRemove'))}`), '装完按钮翻面');
-    assert.deepEqual(helperPosts, ['install']);
-    assert.equal(await text('#air-global-helper-status'), await tParams('airGlobalHelperInstalled', { user: 'green' }),
-      '状态行点名是给哪个用户开的免密 —— 这是一条写进 sudoers 的授权，对象必须写明');
+    // 打开：只露出输入框把这一次密码要了，别的什么都不做（还没输，凭什么发请求）。
+    await page.evaluate(`document.getElementById('air-global-unlock-toggle').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-block').hidden === false`), '打开才露出这一次的密码框');
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockNeedPassword'), '说清「填一次，之后不再问」');
+    assert.equal(await page.evaluate(`document.activeElement.id`), 'air-global-unlock-password', '焦点直接落在密码框上');
+    await new Promise(resolve => setTimeout(resolve, 150)); // 「不该发的请求」得给它时间现形
+    assert.equal(unlockPosts.length, 0, '还没输密码就一个请求都不许发');
 
-    // 取消密码框是用户的选择，不是故障：按服务端那句话原样显示，且不染成红色。
-    helperReply = { status: 200, headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ok: false, status: 'canceled', error: '已取消授权，功能仍可用，只是每次会要求输入密码。' }) };
-    await page.evaluate(`document.getElementById('air-global-helper-btn').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-status').textContent === '已取消授权，功能仍可用，只是每次会要求输入密码。'`), '取消照原样说');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-status').className.includes('err')`), false, '取消不是错误，不染红');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-btn').textContent`), await t('airGlobalHelperRemove'),
-      '取消之后状态没变：还是「已装」，因为结尾那次复查问的是服务端');
-    helperReply = null;
+    // 存：这一次请求里会弹系统授权框，所以过程里按钮按住、状态行说清在等什么。
+    unlockAuthorization = { state: 'waiting-for-user' };
+    unlockSaveDelay = 200;
+    await page.evaluate(`(() => { const i = document.getElementById('air-global-unlock-password'); i.value = 'fixture-login-password'; i.dispatchEvent(new Event('input')); })()`);
+    await page.evaluate(`document.getElementById('air-global-unlock-save').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-save').disabled`), true, '等授权时保存按住，免得再点一次');
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalPowerWaiting'), '状态行说清在等系统授权框');
+    await settle(unlockPosts, 1);
+    assert.deepEqual(unlockPosts[0], { method: 'POST', body: { password: 'fixture-login-password' } },
+      'POST 的 body 就只有这一次输的密码');
+    unlockSaveDelay = 0;
 
-    // 移除：回到「未装」，并且说清代价（之后切换又要输密码）。
-    await page.evaluate(`document.getElementById('air-global-helper-btn').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-btn').textContent === ${JSON.stringify(await t('airGlobalHelperInstall'))}`), '移除后按钮翻回去');
-    assert.deepEqual(helperPosts, ['install', 'uninstall', 'uninstall']);
-    assert.equal(await text('#air-global-helper-status'), await t('airGlobalHelperMissing'));
+    // 存完：输入框立刻收回、value 清空 —— 密码不许留在 DOM 里等人来读。
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-block').hidden === true`), '存完就把输入框收起来');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-password').value`), '', '密码用完即清，不留在这张页面上');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').checked`), true, '服务端说存进去了，开关就是开的');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-save').disabled`), false, '结束后按钮恢复可用');
+    // 「存进去了」和「Agent 真读得到」是两件事：还没点系统框里的「始终允许」时必须点名下一步。
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockWaitAuthorize'),
+      '授权还没走完时说清「去点那个框 / 点确认授权再来一次」');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-authorize').hidden`), false, '有条目才谈得上「确认授权」');
 
-    // 真失败要现形，而且按钮得放开让人再试一次。
-    helperReply = { status: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: '写入 sudoers 失败（演示）' }) };
-    await page.evaluate(`document.getElementById('air-global-helper-btn').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-status').className.includes('err')`), '失败要现形');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-helper-btn').disabled`), false, '失败也要能再试一次');
-    helperReply = null;
+    // 重问授权：条目已经在钥匙串里，所以**不许让用户重输密码**（输入框早收起来了）。
+    unlockAuthorization = { state: 'authorized' };
+    await page.evaluate(`document.getElementById('air-global-unlock-authorize').click()`);
+    await settle(unlockPosts, 2);
+    assert.deepEqual(unlockPosts[1], { method: 'POST', path: 'authorize' });
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-status').textContent === ${JSON.stringify(await t('airGlobalUnlockAuthorized'))}`),
+      '授权过了就说「已允许：锁屏解锁不会再弹任何框」');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-status').className.includes('ok')`), true, '这是成功态');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), true, '重问授权全程没有第二个密码框');
 
-    // 不适用的机器上整行消失 —— 一个按了必然报错的按钮比没有这个按钮更糟。
-    helper = { applicable: false, installed: false, user: 'green' };
+    // 刷新一次：开关态一律以服务端说的为准（钥匙串里到底有没有那条目）。
+    unlockPassword = { available: true, set: true };
     await page.evaluate(`document.getElementById('air-global-power-refresh').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('air-global-helper-row').hidden === true`), '不适用时这一行收起来');
-    assert.equal(await page.evaluate(`document.getElementById('air-global-power-card').hidden`), false, '关盖那张卡不受影响 —— 免密装不装都不挡它用');
-    await page.screenshot('03-global-helper');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-toggle').checked === true`), '服务端说存着，开关就亮着');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), true, '刷新不会把密码框再放出来');
+
+    // 关掉 = 删掉钥匙串里那条目：开关本身就是这件事，不该再多一个「清除」按钮。
+    await page.evaluate(`document.getElementById('air-global-unlock-toggle').click()`);
+    await settle(unlockPosts, 3);
+    assert.deepEqual(unlockPosts[2], { method: 'DELETE' }, '关掉发的是 DELETE');
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-status').textContent === ${JSON.stringify(await t('airGlobalUnlockCleared'))}`), '删完说「已清除」');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').checked`), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-authorize').hidden`), true, '条目没了，「确认授权」跟着收起来');
+
+    // 存失败：现形、输入框留着让人再试一次，且不许把密码从输入框里吞掉。
+    unlockSaveError = '钥匙串写入失败（演示）';
+    await page.evaluate(`document.getElementById('air-global-unlock-toggle').click()`);
+    await page.evaluate(`(() => { const i = document.getElementById('air-global-unlock-password'); i.value = 'retry-me'; i.dispatchEvent(new Event('input')); })()`);
+    await page.evaluate(`document.getElementById('air-global-unlock-save').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-status').className.includes('err')`), '失败要现形');
+    await settle(unlockPosts, 4);
+    assert.equal(await text('#air-global-unlock-status'), await tParams('airGlobalUnlockFailed', { message: unlockSaveError }), '失败原因写给用户看');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-save').disabled`), false, '失败也要能再试一次');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), false, '没存进去就别把框收走 —— 不然用户得从头再来');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-password').value`), 'retry-me', '失败时输入框里的东西不动');
+    unlockSaveError = '';
+    unlockPassword = { available: true, set: false };
+    await page.evaluate(`document.getElementById('air-global-power-refresh').click()`);
+
+    // 删失败：条目还在钥匙串里，开关就必须弹回「开」—— 屏幕上的勾不许跟钥匙串说两样话。
+    unlockPassword = { available: true, set: true };
+    unlockDeleteError = '钥匙串删除失败（演示）';
+    await page.evaluate(`document.getElementById('air-global-power-refresh').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-toggle').checked === true`), '先回到「存着」这一态');
+    await page.evaluate(`document.getElementById('air-global-unlock-toggle').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-status').className.includes('err')`), '失败要现形');
+    await settle(unlockPosts, 5);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').checked`), true, '没删掉，勾就得弹回「开」');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').disabled`), false, '失败也要能再试一次');
+    unlockDeleteError = '';
+    await page.evaluate(`document.getElementById('air-global-unlock-toggle').click()`);
+    await settle(unlockPosts, 6);
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').checked`), false, '再删一次就删掉了');
+    unlockPassword = { available: true, set: false };
+
+    // 读不到钥匙串状态（security 报错）时更不许画勾：画成「关」会让人以为什么都没开，
+    // 而它可能正开着 —— 不动的开关 ＋ 一句原因，才是这时候唯一诚实的画面。
+    unlockPassword = { available: true, set: false, error: 'read-failed' };
+    await page.evaluate(`document.getElementById('air-global-power-refresh').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-toggle').disabled === true`), '读不到就把开关按住');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-toggle').checked`), false, '不画一个不知道真假的勾');
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockUnreadable'), '并且说清为什么');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-status').className.includes('err')`), true, '这是错误态');
+
+    // 这台机器上钥匙串不可用（非 macOS / 没登录钥匙串）：开关按住，一个请求也发不出去
+    // —— 一个按了必然报错的开关比没有这个开关更糟。
+    unlockPassword = { available: false, set: false };
+    await page.evaluate(`document.getElementById('air-global-power-refresh').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-toggle').disabled === true`), '用不了就把开关按住');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-block').hidden`), true, '框也不许露出来');
+    assert.equal(await page.evaluate(`document.getElementById('air-global-power-card').hidden`), false, '关盖运行那张卡不受影响 —— 两条设置互不挡道');
+    unlockPassword = { available: true, set: false };
+    await page.evaluate(`document.getElementById('air-global-power-refresh').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-toggle').disabled === false`), '回到可用');
+    await page.screenshot('03-global-unlock');
   });
 });

@@ -56,10 +56,15 @@ function createHarness(overrides = {}) {
       isAvailable: () => false,
       getLidSleepPrevention: async () => ({ available: true, enabled: true }),
     },
-    keepAwake: {
-      getStatus: () => ({ available: true, enabled: false, error: null }),
-    },
-    unlockPassword: {
+    // 合盖熄屏守卫：路由每次读电源状态都要把它对到 pmset 的实况上（没有第二份开关），
+    // 所以这里的假守卫记下每次同步用的值。
+    lidDisplayGuard: {
+      synced: [],
+      sync(enabled) {
+        this.synced.push(enabled);
+        return { available: true, enabled, closed: null, displayOn: null, lastAction: 'none', lastRunAt: null, error: null };
+      },
+    },    unlockPassword: {
       isAvailable: () => true,
       hasPassword: async () => false,
     },
@@ -369,9 +374,13 @@ test('power settings preserve success branches and delegate all errors', async (
     available: true,
     enabled: true,
     source: 'pmset',
-    keepAwake: { available: true, enabled: false, error: null },
+    lidGuard: {
+      available: true, enabled: true, closed: null, displayOn: null, lastAction: 'none', lastRunAt: null, error: null,
+    },
     unlockPassword: { available: true, set: false },
   });
+  assert.deepEqual(available.deps.lidDisplayGuard.synced, [true],
+    '关盖运行开着时，熄屏守卫必须跟着开 —— 它没有自己的开关，就跟这条设置走');
 
   const hasPassword = createHarness({
     macosPower: {

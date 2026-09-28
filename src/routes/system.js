@@ -2,7 +2,6 @@
 
 const net = require('node:net');
 const { createDeveloperToolsRoutes } = require('./developer-tools');
-const { createPrivilegedHelperRoutes } = require('./privileged-helper');
 const { createMacosPrivacyRoutes } = require('./macos-privacy');
 
 const DEFAULT_VERSION_RESULT = Object.freeze({
@@ -279,7 +278,6 @@ function mountSystemRoutes(app, rawDeps) {
   // needs no host state — only the platform and xcode-select — and server.js
   // sits against its source-line budget.
   createDeveloperToolsRoutes().mountRoutes(app);
-  createPrivilegedHelperRoutes().mountRoutes(app);
   createMacosPrivacyRoutes().mountRoutes(app);
 }
 

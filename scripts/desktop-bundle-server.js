@@ -27,6 +27,14 @@ const MACOS_AGENT_FILES = [
   'scripts/macos-agent/build.sh',
   'scripts/macos-agent/MultiCCAgent.swift',
 ];
+// The root power reconciler 「关盖运行」installs inside its one administrator
+// prompt (plugins/utils/macos-power.js). Without these two files in the staged
+// tree that prompt would silently fall back to a plain pmset call, and the
+// setting would go back to asking for a password on every switch.
+const POWERD_FILES = [
+  'scripts/install-powerd.sh',
+  'scripts/multicc-powerd.sh',
+];
 
 function parseArgs(argv) {
   const args = { out: null, repoRoot: null, install: true, arch: null, platform: null };
@@ -131,7 +139,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   // …and the macOS desktop agent, which src/macos-agent-provision.js installs
   // at startup (a few KB; ignored on other platforms). The release adds a
   // prebuilt binary next to it (standalone-bundle.js prebuildMacosAgent).
-  for (const file of MACOS_AGENT_FILES) {
+  for (const file of [...MACOS_AGENT_FILES, ...POWERD_FILES]) {
     fs.mkdirSync(path.dirname(path.join(out, file)), { recursive: true });
     fs.copyFileSync(path.join(repoRoot, file), path.join(out, file));
     if (file.endsWith('.sh')) fs.chmodSync(path.join(out, file), 0o755);
@@ -167,6 +175,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   // 4) sanity gate — a silent missing file here becomes "app won't start" there
   for (const must of ['server.js', 'src/paths.js', 'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'plugins/bridges/wechat-ilink.js', ...MACOS_AGENT_FILES,
+    ...POWERD_FILES,
     'skills/multicc-artifact/references/registration-rule.md',
     // Storage needs no compiled addon (src/sqlite/driver.js uses the SQLite
     // that ships inside Node), so express is the only hard module to prove.
@@ -223,6 +232,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  OPTIONAL_AT_RUNTIME, PUBLIC_EXCLUDE, MACOS_AGENT_FILES, parseArgs, copyTree, crossArchNpmEnv,
+  OPTIONAL_AT_RUNTIME, PUBLIC_EXCLUDE, MACOS_AGENT_FILES, POWERD_FILES, parseArgs, copyTree, crossArchNpmEnv,
   transformPackageJson, stageServer, main,
 };

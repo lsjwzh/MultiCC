@@ -140,9 +140,8 @@ function createHarness(overrides = {}) {
       setLidSleepPrevention: async enabled => ({ available: true, enabled }),
       getLidSleepPrevention: async () => ({ available: true, enabled: true }),
     },
-    keepAwake: {
-      getStatus: () => ({ available: true, enabled: false, error: null }),
-      setEnabled: async enabled => ({ available: true, enabled }),
+    lidDisplayGuard: {
+      sync: enabled => ({ available: true, enabled, closed: null, displayOn: null, lastAction: 'none', lastRunAt: null, error: null }),
     },
     unlockPassword: {
       isAvailable: () => true,
@@ -636,12 +635,22 @@ test('power settings preserve success and validation responses and redact thrown
   assert.deepEqual((await invoke(routes, '/api/settings/power', {
     local: true,
     body: { enabled: 'true' },
-  })).body, { error: 'enabled or keepAwake must be a boolean' });
+  })).body, { error: 'enabled must be a boolean' });
+  // 权限：这个接口只做一件事（关盖运行），所以没有第二个字段可选。
+  assert.deepEqual((await invoke(routes, '/api/settings/power', {
+    local: true,
+    body: {},
+  })).body, { error: 'enabled must be a boolean' });
   assert.deepEqual((await invoke(routes, '/api/settings/power', {
     local: true,
     body: { enabled: true },
-  })).body, { ok: true, available: true, enabled: true, keepAwake: { available: true, enabled: false, error: null },
-    unlockPassword: { available: true, set: false } });
+  })).body, {
+    ok: true,
+    available: true,
+    enabled: true,
+    lidGuard: { available: true, enabled: true, closed: null, displayOn: null, lastAction: 'none', lastRunAt: null, error: null },
+    unlockPassword: { available: true, set: false },
+  });
 
   const failure = createHarness({
     macosPower: {
@@ -656,29 +665,26 @@ test('power settings preserve success and validation responses and redact thrown
   assert.equal(presentSafely(response.nextError).body.error, 'internal_error');
 });
 
-test('power settings toggle keep-awake independently of lid-sleep', async () => {
-  const calls = [];
+test('power toggle re-syncs the lid display guard to the setting that actually landed', async () => {
+  const synced = [];
+  let current = false;
   const { routes } = createHarness({
-    keepAwake: {
-      getStatus: () => ({ available: true, enabled: true, error: null }),
-      setEnabled: async enabled => { calls.push(enabled); return { available: true, enabled }; },
+    macosPower: {
+      isAvailable: () => true,
+      setLidSleepPrevention: async enabled => { current = enabled; return { available: true, enabled }; },
+      getLidSleepPrevention: async () => ({ available: true, enabled: current }),
+    },
+    lidDisplayGuard: {
+      sync: enabled => { synced.push(enabled); return { available: true, enabled, closed: null, displayOn: null, lastAction: 'none', lastRunAt: null, error: null }; },
     },
   });
-  const response = await invoke(routes, '/api/settings/power', {
-    local: true,
-    body: { keepAwake: true },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.deepEqual(calls, [true]);
-  assert.equal(response.body.keepAwake.enabled, true);
-
-  // 不带 enabled 时不得再去碰合盖休眠
-  const off = await invoke(routes, '/api/settings/power', {
-    local: true,
-    body: { keepAwake: false },
-  });
-  assert.deepEqual(calls, [true, false]);
-  assert.equal(off.body.ok, true);
+  const on = await invoke(routes, '/api/settings/power', { local: true, body: { enabled: true } });
+  assert.equal(on.body.lidGuard.enabled, true, '开着「关盖运行」时守卫必须在守');
+  const off = await invoke(routes, '/api/settings/power', { local: true, body: { enabled: false } });
+  assert.equal(off.body.lidGuard.enabled, false);
+  // 两次同步用的是**落地后的设置**（回读 pmset 的那个值），不是请求体 ——
+  // 授权被取消、pmset 没生效时，守卫绝不能按用户点的那一下去动屏幕。
+  assert.deepEqual(synced, [true, false]);
 });
 
 test('unlock password write requires a local socket and never leaks the value', async () => {
