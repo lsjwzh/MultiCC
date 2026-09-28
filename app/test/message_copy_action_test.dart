@@ -121,6 +121,60 @@ void main() {
     expect(copied.single, contains('drwxr-xr-x a.txt'));
   });
 
+  testWidgets('选中哪几句就只复制哪几句，不是整条消息', (tester) async {
+    // 「复制内容」是整条消息（含工具输出），系统工具条的「Copy / 拷贝」是**当前
+    // 选中的那一段** —— 用户要的「选择性复制几句」就是后者。这里钉住的是：选中
+    // 范围确实可调（长按落一个字，按住往右拖会拉长），且 Copy 只拿走选中的部分。
+    const long =
+        '第一句话讲的是登录接口已经改成走统一网关。'
+        '第二句话讲的是老的 token 校验分支已经删掉了。'
+        '第三句话讲的是回归测试补了 12 条，全部通过。';
+
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: MessageBubble(
+                message: ChatMessage(
+                  role: MessageRole.assistant,
+                  content: long,
+                  id: 'm-1',
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final bubble = tester.getRect(find.byType(MessageBubble));
+      final gesture = await tester.startGesture(
+        Offset(bubble.left + 60, bubble.top + 30),
+      );
+      await tester.pump(const Duration(milliseconds: 700));
+      // 按住不放往右拖 —— 真机上就是「长按选中之后拖那一下」。
+      for (var i = 0; i < 8; i++) {
+        await gesture.moveBy(const Offset(30, 0));
+        await tester.pump(const Duration(milliseconds: 40));
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Copy'));
+      await tester.pumpAndSettle();
+
+      expect(copied, hasLength(1));
+      expect(copied.single, isNotEmpty);
+      // 是整条消息里的一段，但不是整条 —— 拖出来的选区就这么多。
+      expect(long, contains(copied.single));
+      expect(copied.single.length, lessThan(long.length));
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   testWidgets('an empty message says so instead of silently doing nothing', (
     tester,
   ) async {
