@@ -88,9 +88,13 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-09-27 目录任务列表 pin-first（pinFirstInDirectory + 行上 📌 标记）：目录页
   // 那份列表和侧栏一样，pin 住的排最前。行数 3172 -> 3113、字节 172681 -> 170305，
   // 那 59 行是删掉「页内展开提交列表/diff」换独立 Git 管理器（git-manager.js）省下的。
+  // 2026-09-28 轮询自适应：快照连着两轮 304 就把 4s 拉到 15s（与后台标签页同档），
+  // 回到前台立刻对齐一次（idleRounds + visibilitychange，共 20 行）。服务端每轮要
+  // 重算全部卡片（线上 1189 张、实测 0.5s），闲置时这笔纯属白烧电；行数只涨在 poll
+  // 这一段，该拆的仍是页内那份目录渲染。按实测高水位登记 3133/171642。
   'public/air.js': Object.freeze({
-    ceiling: 3113,
-    byteCeiling: 170305,
+    ceiling: 3133,
+    byteCeiling: 171642,
     target: 3000,
   }),
   // turn-engine.js returned below 3000 while fixing native UUID preparation.

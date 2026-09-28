@@ -97,6 +97,15 @@
   });
   const POLL_HIDDEN_MS = 15000;
   const POLL_MAX_MS = 30000;
+  // 服务端每次算这份快照要重算全部卡片（线上 1189 张、实测 0.5s）。没人在这台机器
+  // 上动任务时，4 秒一轮纯属白烧 —— 连着两轮内容没变就降到 15 秒，和「后台标签页」
+  // 同一档：内容一样就意味着画面上没有任何东西会变，最多晚一轮发现变化而已。
+  // 不看「有没有卡片在跑」来豁免：任务板上长期挂着别人留下的 running/queued 旧卡
+  // （实测 9 张），拿它当条件等于永远不降频。
+  // document.hidden 在这里帮不上忙：它说的是「标签页被埋」，屏幕睡着时这个页面
+  // 依然是可见的，照旧 4 秒敲一次。
+  const POLL_IDLE_MS = 15000;
+  let idleRounds = 0;
   let quickCreateAttempt = null;
   let directoryTasksExpanded = false;
   let directorySearch = null;
@@ -2716,6 +2725,9 @@
     let failed = false;
     try {
       const snapshot = await apiConditional('/api/air');
+      // 连着两轮 304 就认为「没人动」，降到 POLL_IDLE_MS。失败的那一轮不改计数
+      // （异常走 catch，到不了这行），免得服务端打嗝被当成"没人在动"。
+      idleRounds = snapshot.unchanged ? idleRounds + 1 : 0;
       if (!snapshot.unchanged) {
         data = snapshot;
         // Pin 的清单随快照一起来（不用为它多打一次接口）。顺序就是页头从左到右的顺序。
@@ -3099,11 +3111,19 @@
     if (event.persisted) { stopped = false; epoch++; void poll(); }
   });
 
+  // 隐藏期间不刷新（见 poll），回到前台先对齐一次：降频后更不该回来还看十几秒前的状态。
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || stopped) return;
+    clearTimeout(timer);
+    epoch++;
+    void poll(epoch);
+  });
+
   async function poll(currentEpoch = epoch) {
     if (stopped || currentEpoch !== epoch) return;
     if (!document.hidden || !data) await refresh();
     if (stopped || currentEpoch !== epoch) return;
-    const base = document.hidden && data ? POLL_HIDDEN_MS : POLL_MS;
+    const base = document.hidden && data ? POLL_HIDDEN_MS : (idleRounds >= 2 ? POLL_IDLE_MS : POLL_MS);
     const delay = pollFailures ? Math.min(base * 2 ** pollFailures, POLL_MAX_MS) : base;
     timer = setTimeout(() => poll(currentEpoch), delay);
   }
