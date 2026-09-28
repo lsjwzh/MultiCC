@@ -471,9 +471,14 @@
       const initialAuto = initial && config.providerSelection?.mode === 'auto'
         ? autoApi.optionValue(config.providerSelection.protocol) : '';
       let desired = initialAuto || (initial ? config.provider || '' : currentCatalog?.defaults?.[currentCli] || '');
-      if (!desired && official) desired = official.id;
+      // 原生 OpenCode 会话（provider 为空 + `opencodego/<model>` 模型）必须先从
+      // 模型还原到原生线路，再落到官方默认 —— 否则每次打开都选成「Claude 官方」。
       const nativeFromModel = currentCli === 'opencode' && initial && !desired && String(config.model || '').split('/')[0];
-      if (nativeFromModel && options.some(option => option.value === 'opencode-native:' + nativeFromModel)) desired = 'opencode-native:' + nativeFromModel;
+      if (nativeFromModel && options.some(option => option.value === 'opencode-native:' + nativeFromModel)) {
+        desired = 'opencode-native:' + nativeFromModel;
+      } else if (!desired && official) {
+        desired = official.id;
+      }
       if (!options.some(option => option.value === desired)) desired = official?.id || '';
       const desiredProvider = providers.find(provider => provider.id === desired);
       chooseProvider(desired, initial ? config.model || '' : desiredProvider?.model || '');

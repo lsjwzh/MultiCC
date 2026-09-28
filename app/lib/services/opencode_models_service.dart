@@ -17,6 +17,15 @@ String openCodeNativeProviderOf(String value) =>
 bool isOpenCodeNativeProvider(String value) =>
     openCodeNativeProviderOf(value).isNotEmpty;
 
+/// Display names for OpenCode's own native providers. Mirrors the Web picker's
+/// OPENCODE_NATIVE_NAMES (public/chat-ai-config.js) and the synthetic rows
+/// created in [mergeOpenCodeNativeProviders]; a provider the table does not
+/// know keeps its raw id so nothing is ever mislabelled as another vendor.
+String openCodeNativeProviderDisplayName(String provider) {
+  const names = {'opencode': 'OpenCode Zen', 'opencodego': 'OpenCode Go'};
+  return 'OpenCode 原生 · ${names[provider] ?? provider}';
+}
+
 class OpenCodeModel {
   const OpenCodeModel({
     required this.provider,
@@ -45,13 +54,12 @@ List<Map<String, dynamic>> mergeOpenCodeNativeProviders(
     if (model.provider.isEmpty || model.model.isEmpty) continue;
     grouped.putIfAbsent(model.provider, () => []).add(model);
   }
-  const names = {'opencode': 'OpenCode Zen', 'opencodego': 'OpenCode Go'};
   return [
     ...managed,
     for (final entry in grouped.entries)
       {
         'id': openCodeNativeProviderId(entry.key),
-        'name': 'OpenCode 原生 · ${names[entry.key] ?? entry.key}',
+        'name': openCodeNativeProviderDisplayName(entry.key),
         'appType': 'opencode',
         'nativeOpenCode': true,
         'nativeProvider': entry.key,
