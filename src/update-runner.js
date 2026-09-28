@@ -166,10 +166,13 @@ function buildInstallScriptShellCommand({ standalone, targetVersion, port }) {
     '    echo "install.sh fetch failed: neither curl nor wget is available" >&2;',
     '  fi;',
     '  if [ "$DL_RC" -eq 0 ] && [ -s "$TMP" ]; then',
-    // Same reasoning as the git manager's own invocation below: run the
-    // downloaded script through sh explicitly rather than exec it, since a
-    // pipe/redirect download does not reliably preserve the executable bit.
-    `    /bin/sh "$TMP" --dir ${quotedDir} --version ${quotedVersionArg} --port ${quotedPort} --no-open;`,
+    // Run the downloaded script through bash explicitly rather than exec it:
+    // a pipe/redirect download does not reliably preserve the executable bit,
+    // and install.sh is a bash script (arrays, process substitution) that dies
+    // with a bare "syntax error near unexpected token" the moment POSIX sh —
+    // or /bin/sh, which on macOS is bash in POSIX mode — reaches line 467.
+    '    BASH_BIN="$(command -v bash 2>/dev/null || echo /bin/bash)";',
+    `    "$BASH_BIN" "$TMP" --dir ${quotedDir} --version ${quotedVersionArg} --port ${quotedPort} --no-open;`,
     '    RC=$?;',
     '  else',
     '    echo "install.sh fetch failed (exit $DL_RC)" >&2;',

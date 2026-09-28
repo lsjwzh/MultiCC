@@ -287,7 +287,11 @@ test('a standalone update fetches install.sh and points it at the bundle root, a
   // Unknown target version: the installer is fetched off `main` and told to
   // resolve `latest` itself, exactly as install.sh's own one-liner would.
   assert.match(script, /curl -fsSL 'https:\/\/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/main\/install\.sh' -o "\$TMP"/);
-  assert.match(script, /\/bin\/sh "\$TMP" --dir '.*' --version 'latest' --port '4242' --no-open/);
+  // install.sh is a bash script (arrays, process substitution): invoking it
+  // through /bin/sh aborted with "syntax error near unexpected token '<'".
+  assert.doesNotMatch(script, /\/bin\/sh "\$TMP"/);
+  assert.match(script, /BASH_BIN="\$\(command -v bash 2>\/dev\/null \|\| echo \/bin\/bash\)"/);
+  assert.match(script, /"\$BASH_BIN" "\$TMP" --dir '.*' --version 'latest' --port '4242' --no-open/);
   assert.ok(script.includes(shellQuote(fixture.base)), 'install.sh is pointed at the true bundle root, not Resources');
   assert.ok(script.includes(shellQuote(path.join(fixture.dataDir, 'logs', 'update.log'))), 'the log path survives shell quoting');
   assert.equal(spawned[0].options.cwd, fixture.base);

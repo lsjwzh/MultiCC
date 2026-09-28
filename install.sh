@@ -39,6 +39,20 @@
 #   cd ~/MultiCC && ./multicc service install  # start automatically on login
 # ============================================================================
 
+# ── Bash requirement ───────────────────────────────────────────────────────
+# The script below uses arrays and process substitution, so it only runs under
+# bash. Started through `sh install.sh` — or /bin/sh, which on macOS is bash in
+# POSIX mode — bash-only syntax aborts with a bare "syntax error near
+# unexpected token", which is how the web updater used to invoke it. Re-exec
+# under a real bash instead of failing halfway through.
+if [ -z "${BASH_VERSION:-}" ] || { set -o | grep -q '^posix[[:space:]]*on$'; }; then
+  if [ -n "$0" ] && [ -f "$0" ] && command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+  fi
+  echo "[ERROR] install.sh requires bash. Run it as: bash install.sh" >&2
+  exit 1
+fi
+
 set -euo pipefail
 
 # ── Color helpers ─────────────────────────────────────────────────────────
