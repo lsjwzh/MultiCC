@@ -467,6 +467,20 @@ test('install.ps1 copies from an old installation found elsewhere, and only when
   assert.match(res.stdout, /all checks passed/);
 });
 
+// install.sh is a bash script, but callers do not always say so: the web
+// updater used to run the copy it had just downloaded through /bin/sh, which on
+// macOS is bash in POSIX mode. The script got as far as resolving the release
+// and then died with "syntax error near unexpected token '<'" on the first
+// process substitution — an update that looks like it started and then stops.
+test('install.sh re-execs itself under bash when it was started by sh', () => {
+  const res = spawnSync('/bin/sh', [INSTALLER, '--help'], { encoding: 'utf8', cwd: ROOT, detached: true });
+  assert.equal(res.status, 0, `install.sh under /bin/sh failed:\n${res.stdout}\n${res.stderr}`);
+  assert.doesNotMatch(`${res.stdout}${res.stderr}`, /syntax error/);
+  assert.match(res.stdout, /One-Click Installer/);
+  const sh = fs.readFileSync(INSTALLER, 'utf8');
+  assert.match(sh, /BASH_VERSION:-\}/, 'install.sh must detect a non-bash shell and re-exec');
+});
+
 // The two installers have to agree on what counts as data. A name that is on one
 // list and not the other is a platform that silently loses that file on upgrade,
 // and nothing else in the suite would notice.
