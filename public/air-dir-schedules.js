@@ -154,18 +154,35 @@
       item.append(node('time', stamp(run.at)),
         node('span', run.reason === 'manual' ? t('airScheduleRunsManual') : t('airScheduleRunsScheduled'), 'schedule-run-source'),
         node('span', outcome, 'schedule-run-status'));
+      // 脚本那一次印了什么 —— 只有「失败」两个字看不出是脚本报错还是环境不对。
+      if (run.output) item.append(node('code', run.output, 'schedule-run-output'));
       list.append(item);
     }
     details.append(list, node('small', t('airScheduleRunsHint', { n: runs.length }), 'schedule-runs-hint'));
     return details;
   }
 
+  // 脚本任务没有固定 Air 任务可进去：那一格换成「命令 + 上次退出码」。样式复用卡片
+  // 里那套 .schedule-script（air.css），跟定时中心里同一张卡长得一样。
+  function scriptPanel(task) {
+    const panel = node('div', null, 'schedule-script');
+    const head = node('div', null, 'schedule-script-head');
+    head.append(node('span', '⌘', 'schedule-task-mark'), node('small', t('airScheduleScriptPanelNote')));
+    panel.append(head, node('code', task.command || '', 'schedule-script-command'));
+    if (task.lastExitCode !== null && task.lastExitCode !== undefined) {
+      panel.append(node('small', t('airScheduleScriptExit', { code: task.lastExitCode }),
+        task.lastExitCode === 0 ? 'schedule-script-exit' : 'schedule-script-exit error'));
+    }
+    return panel;
+  }
+
   function card(task) {
-    const broken = !!task.taskBindingError || !task.taskId;
-    const article = node('article', null, 'schedule-card');
+    const script = task.kind === 'script';
+    const broken = !script && (!!task.taskBindingError || !task.taskId);
+    const article = node('article', null, `schedule-card ${script ? 'script' : ''}`.trim());
     const head = node('header', null, 'schedule-card-head');
     const title = node('div');
-    title.append(node('span', 'SCHEDULE', 'eyebrow'), node('h3', task.name));
+    title.append(node('span', script ? 'SCRIPT' : 'SCHEDULE', 'eyebrow'), node('h3', task.name));
     head.append(title, node('span', task.enabled ? t('airScheduleEnabled') : t('airScheduleDisabled'),
       `schedule-badge ${task.enabled ? 'enabled' : ''}`));
 
@@ -178,15 +195,20 @@
       node('strong', task.lastRunAt ? stamp(task.lastRunAt) : t('airScheduleNeverRan')));
     timing.append(node('code', task.cron), next, previous);
 
-    const fixed = node('button', null, `schedule-fixed-task ${broken ? 'broken' : ''}`);
-    fixed.type = 'button';
-    fixed.disabled = !task.taskId;
-    const copy = node('span');
-    copy.append(node('small', t('airScheduleFixedTask')), node('strong', task.taskTitle || task.name),
-      node('small', task.taskBindingError
-        || (task.taskId ? `${task.taskId} · ${runtimeOf(task)}` : t('airScheduleBinding'))));
-    fixed.append(node('span', task.taskBindingError ? '!' : '↗', 'schedule-task-mark'), copy);
-    if (task.taskId) fixed.onclick = () => openTask(task.dirId, task.taskId);
+    let middle;
+    if (script) {
+      middle = scriptPanel(task);
+    } else {
+      middle = node('button', null, `schedule-fixed-task ${broken ? 'broken' : ''}`);
+      middle.type = 'button';
+      middle.disabled = !task.taskId;
+      const copy = node('span');
+      copy.append(node('small', t('airScheduleFixedTask')), node('strong', task.taskTitle || task.name),
+        node('small', task.taskBindingError
+          || (task.taskId ? `${task.taskId} · ${runtimeOf(task)}` : t('airScheduleBinding'))));
+      middle.append(node('span', task.taskBindingError ? '!' : '↗', 'schedule-task-mark'), copy);
+      if (task.taskId) middle.onclick = () => openTask(task.dirId, task.taskId);
+    }
 
     const state = node('div', null, `schedule-state ${task.lastStatus === 'error' ? 'error' : ''}`);
     state.append(node('span', stateLabel(task)),
@@ -196,13 +218,15 @@
     // 绑定坏掉的规则到点也不会有人接，修复是明说的一件事（同 air.js：只有坏了才给这颗）。
     actions.append(
       action(t('airScheduleRunNow'), () => doRun(task), 'primary subtle'),
-      ...(task.taskBindingError ? [action(t('airScheduleRebind'), () => doRebind(task), 'primary subtle')] : []),
+      ...(!script && task.taskBindingError ? [action(t('airScheduleRebind'), () => doRebind(task), 'primary subtle')] : []),
       action(task.enabled ? t('airSchedulePause') : t('airScheduleEnable'), () => doToggle(task)),
       action(t('airScheduleEdit'), () => openEditor(task)),
       node('span'),
       action(t('airScheduleDelete'), () => doDelete(task), 'danger'),
     );
-    article.append(head, timing, fixed, state, runHistory(task), node('p', task.prompt, 'schedule-prompt'), actions);
+    article.append(head, timing, middle, state, runHistory(task),
+      script ? node('code', task.command || '', 'schedule-prompt schedule-script-line')
+        : node('p', task.prompt, 'schedule-prompt'), actions);
     return article;
   }
 

@@ -3587,7 +3587,19 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalUnlockChange": "更新密码",
     "airGlobalUnlockForget": "删除保存的密码",
     "airGlobalUnlockCancel": "取消",
-    "airGlobalPowerExternal": "此开关已关闭；系统目前仍处于禁止睡眠状态，可能由其他软件或设置维持。"
+    "airGlobalPowerExternal": "此开关已关闭；系统目前仍处于禁止睡眠状态，可能由其他软件或设置维持。",
+    "airScheduleKind": "任务类型",
+    "airScheduleKindAgent": "大模型任务",
+    "airScheduleKindScript": "脚本任务",
+    "airScheduleScriptIntro": "脚本任务不创建固定任务，也不经过大模型：每次触发直接在工作目录里跑这条命令，退出码和输出末尾记进执行记录。",
+    "airScheduleCommand": "脚本命令",
+    "airScheduleCommandPlaceholder": "例如：/usr/bin/python3 ~/.multicc/watch.py --once",
+    "airScheduleCommandHint": "在「工作目录」下执行；非 0 退出码记为一次失败，输出末尾会进执行记录。「取任务状态 → 调会话接口 → 发微信提醒」这类用例见仓库 examples/cron-scripts/。",
+    "airScheduleCreateScript": "创建脚本任务",
+    "airScheduleScriptPanelNote": "本机命令 · 不经过大模型",
+    "airScheduleScriptExit": "上次退出码 {code}",
+    "airScheduleScriptRan": "脚本已跑完（退出码 0）",
+    "airScheduleScriptRunFailed": "脚本退出码 {code}"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -7176,6 +7188,18 @@ window.MULTICC_I18N_CATALOG = {
     "airGlobalUnlockChange": "Update password",
     "airGlobalUnlockForget": "Delete saved password",
     "airGlobalUnlockCancel": "Cancel",
-    "airGlobalPowerExternal": "This switch is off. System sleep is still disabled, possibly by another app or setting."
+    "airGlobalPowerExternal": "This switch is off. System sleep is still disabled, possibly by another app or setting.",
+    "airScheduleKind": "Task type",
+    "airScheduleKindAgent": "Model task",
+    "airScheduleKindScript": "Script rule",
+    "airScheduleScriptIntro": "A script rule creates no pinned task and never touches a model: each firing runs the command in the working directory, and its exit code plus the tail of the output go into the run history.",
+    "airScheduleCommand": "Script command",
+    "airScheduleCommandPlaceholder": "e.g. /usr/bin/python3 ~/.multicc/watch.py --once",
+    "airScheduleCommandHint": "Runs in the working directory. A non-zero exit code counts as a failure, and the tail of the output is kept in the run history. See examples/cron-scripts/ for a worked case (board state → session API → WeChat alert).",
+    "airScheduleCreateScript": "Create script rule",
+    "airScheduleScriptPanelNote": "Local command · no model session",
+    "airScheduleScriptExit": "Last exit code {code}",
+    "airScheduleScriptRan": "Script finished (exit 0)",
+    "airScheduleScriptRunFailed": "Script exited with code {code}"
   }
 };

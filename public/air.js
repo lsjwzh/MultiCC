@@ -74,8 +74,6 @@
   window.addEventListener('multicc-air-task-open', () => { syncFrame(); });
   let entry = null;
   let mode = modeFrom(initialParams);
-  let scheduleTasks = [];
-  let scheduleLoading = false;
   let timer;
   let epoch = 0;
   let stopped = false;
@@ -536,7 +534,7 @@
     closeNav();
     render();
     if (next === 'library') requestAnimationFrame(() => $('directory-search').focus());
-    if (next === 'schedules') void refreshSchedules();
+    if (next === 'schedules') void window.MultiCCAirSchedules?.refresh();
   }
   function resourceText(resource) {
     if (resource?.capacityReason) return label(resource.capacityReason);
@@ -1206,212 +1204,6 @@
     }
   }
 
-  function scheduleTime(value) {
-    if (!value) return '—';
-    return new Intl.DateTimeFormat(locale(), {
-      month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-    }).format(new Date(value));
-  }
-
-  function scheduleRuntime(task) {
-    const lane = task.cli ? laneRouteLabel(task.cli, task.provider) : '';
-    return [lane, task.model, task.effort].filter(Boolean).join(' · ') || t('airScheduleFollowTask');
-  }
-
-  function scheduleAction(text, action, className = '') {
-    const button = node('button', text, className);
-    button.type = 'button';
-    button.onclick = action;
-    return button;
-  }
-
-  function renderSchedules() {
-    const list = $('schedule-list');
-    if (!list) return;
-    const enabled = scheduleTasks.filter(task => task.enabled).length;
-    const errors = scheduleTasks.filter(task => task.lastStatus === 'error' || task.taskBindingError).length;
-    $('schedule-summary').replaceChildren(
-      node('span', t('airScheduleRuleCount', { n: scheduleTasks.length })),
-      node('span', t('airScheduleEnabledCount', { n: enabled })),
-      node('span', errors ? t('airScheduleErrorCount', { n: errors }) : t('airScheduleAllHealthy'), errors ? 'warning' : 'healthy'),
-    );
-    list.replaceChildren();
-    if (!scheduleTasks.length) {
-      const empty = node('div', null, 'schedule-empty');
-      empty.append(node('strong', t('airScheduleNoneYet')), node('p', t('airScheduleNoneHint')));
-      list.append(empty);
-      return;
-    }
-    for (const task of scheduleTasks) {
-      const card = node('article', null, 'schedule-card');
-      const head = node('header', null, 'schedule-card-head');
-      const title = node('div');
-      title.append(node('span', 'SCHEDULE', 'eyebrow'), node('h3', task.name));
-      head.append(title, node('span', task.enabled ? t('airScheduleEnabled') : t('airScheduleDisabled'), `schedule-badge ${task.enabled ? 'enabled' : ''}`));
-
-      const timing = node('div', null, 'schedule-timing');
-      const expression = node('code', task.cron);
-      const next = node('div');
-      next.append(node('small', t('airScheduleNextRun')), node('strong', task.enabled ? scheduleTime(task.nextRunAt) : t('airSchedulePaused')));
-      const previous = node('div');
-      previous.append(node('small', t('airScheduleLastFired')), node('strong', task.lastRunAt ? scheduleTime(task.lastRunAt) : t('airScheduleNeverRan')));
-      timing.append(expression, next, previous);
-
-      const fixed = node('button', null, `schedule-fixed-task ${task.taskBindingError || !task.taskId ? 'broken' : ''}`);
-      fixed.type = 'button';
-      fixed.disabled = !task.taskId;
-      const fixedCopy = node('span');
-      fixedCopy.append(node('small', t('airScheduleFixedTask')), node('strong', task.taskTitle || task.name),
-        node('small', task.taskBindingError || (task.taskId ? `${task.taskId} · ${scheduleRuntime(task)}` : t('airScheduleBinding'))));
-      fixed.append(node('span', task.taskBindingError ? '!' : '↗', 'schedule-task-mark'), fixedCopy);
-      if (task.taskId) fixed.onclick = () => navigate(task.dirId, task.taskId);
-
-      const state = node('div', null, `schedule-state ${task.lastStatus === 'error' ? 'error' : ''}`);
-      const stateLabel = task.lastStatus === 'queued' ? t('airScheduleQueued')
-        : task.lastStatus === 'ok' ? t('airScheduleLastAccepted')
-          : task.lastStatus === 'error' ? (task.lastError || t('airScheduleLastFailed')) : t('airScheduleAwaitingFirstRun');
-      state.append(node('span', stateLabel), node('small', t('airScheduleFiredCount', { dir: task.dirName, n: task.runCount || 0 })));
-
-      const prompt = node('p', task.prompt, 'schedule-prompt');
-      const actions = node('footer', null, 'schedule-actions');
-      // 执行记录：回答「今天到底跑没跑、跑了几次、哪次失败」。默认收起，不占高度。
-      const runs = Array.isArray(task.recentRuns) ? task.recentRuns : [];
-      const history = node('details', null, 'schedule-runs');
-      const historyHead = node('summary');
-      historyHead.append(node('span', t('airScheduleRuns')),
-        node('span', String(task.runCount || runs.length), 'schedule-runs-badge'));
-      history.append(historyHead);
-      if (!runs.length) {
-        history.append(node('p', t('airScheduleRunsEmpty'), 'schedule-runs-empty'));
-      } else {
-        const historyList = node('ul', null, 'schedule-runs-list');
-        for (const run of runs) {
-          const item = node('li', null, `schedule-run ${run.status === 'error' ? 'error' : ''}`);
-          const outcome = run.status === 'queued' ? t('airScheduleQueued')
-            : run.status === 'ok' ? t('airScheduleLastAccepted')
-              : (run.error || t('airScheduleLastFailed'));
-          item.append(node('time', scheduleTime(run.at)),
-            node('span', run.reason === 'manual' ? t('airScheduleRunsManual') : t('airScheduleRunsScheduled'), 'schedule-run-source'),
-            node('span', outcome, 'schedule-run-status'));
-          historyList.append(item);
-        }
-        history.append(historyList, node('small', t('airScheduleRunsHint', { n: runs.length }), 'schedule-runs-hint'));
-      }
-      const run = scheduleAction(t('airScheduleRunNow'), () => runSchedule(task.id), 'primary subtle');
-      // A rule whose fixed task was archived stops executing until a new fixed
-      // task is bound; that repair is explicit, never automatic.
-      const rebind = task.taskBindingError
-        ? scheduleAction(t('airScheduleRebind'), () => rebindSchedule(task.id), 'primary subtle')
-        : null;
-      const toggle = scheduleAction(task.enabled ? t('airSchedulePause') : t('airScheduleEnable'), () => toggleSchedule(task.id, !task.enabled));
-      const edit = scheduleAction(t('airScheduleEdit'), () => openScheduleDialog(task.id));
-      const remove = scheduleAction(t('airScheduleDelete'), () => deleteSchedule(task.id), 'danger');
-      actions.append(run, ...(rebind ? [rebind] : []), toggle, edit, node('span'), remove);
-      card.append(head, timing, fixed, state, history, prompt, actions);
-      list.append(card);
-    }
-  }
-
-  async function refreshSchedules() {
-    if (scheduleLoading) return;
-    scheduleLoading = true;
-    try {
-      scheduleTasks = await api('/api/cron');
-      renderSchedules();
-    } catch (error) {
-      if (mode === 'schedules') notice(t('airScheduleLoadFailed', { msg: error.message }));
-    } finally { scheduleLoading = false; }
-  }
-
-  function openScheduleDialog(id = null) {
-    if (!data) return;
-    const current = id ? scheduleTasks.find(task => task.id === id) : null;
-    const form = $('schedule-form');
-    form.reset();
-    form.elements.id.value = current?.id || '';
-    form.elements.name.value = current?.name || '';
-    form.elements.cron.value = current?.cron || '0 9 * * *';
-    form.elements.prompt.value = current?.prompt || '';
-    form.elements.enabled.checked = current ? current.enabled : true;
-    form.elements.dirId.replaceChildren(...data.directories.map(directory => {
-      const option = node('option', directory.name);
-      option.value = directory.id;
-      option.selected = directory.id === (current?.dirId || directoryId || data.directories[0]?.id);
-      return option;
-    }));
-    // 定时任务跑的是 chat 线路：一次性车道（`claude -p` / `codex exec`）不在这里。
-    // 已绑定某条线路的任务例外 —— 编辑它时得能看见自己在用哪条。
-    form.elements.cli.replaceChildren(...data.clis.filter(cli => cli === current?.cli || cliOffersInChat(cli)).map(cli => {
-      const option = node('option', cliOptionLabel(cli));
-      option.value = cli;
-      option.selected = cli === (current?.cli || firstChatCli());
-      return option;
-    }));
-    form.elements.dirId.disabled = !!current?.taskId;
-    form.elements.cli.disabled = !!current?.taskId;
-    $('schedule-fixed-note').hidden = !current?.taskId;
-    $('schedule-dialog-title').textContent = current ? t('airScheduleEditTitle') : t('airNewScheduledTask');
-    $('schedule-save').textContent = current ? t('airScheduleSaveRule') : t('airScheduleCreateAndBind');
-    $('schedule-error').textContent = '';
-    $('schedule-dialog').showModal();
-  }
-
-  async function saveSchedule(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const id = form.elements.id.value;
-    const body = {
-      name: form.elements.name.value.trim(),
-      cron: form.elements.cron.value.trim(),
-      prompt: form.elements.prompt.value.trim(),
-      enabled: form.elements.enabled.checked,
-    };
-    if (!id) Object.assign(body, { dirId: form.elements.dirId.value, cli: form.elements.cli.value });
-    $('schedule-save').disabled = true;
-    $('schedule-error').textContent = '';
-    try {
-      await api('/api/cron' + (id ? `/${encodeURIComponent(id)}` : ''), body, id ? 'PATCH' : 'POST');
-      $('schedule-dialog').close();
-      await Promise.all([refreshSchedules(), refresh()]);
-      notice(id ? t('airScheduleRuleUpdated') : t('airScheduleCreated'));
-    } catch (error) { $('schedule-error').textContent = error.message; }
-    finally { $('schedule-save').disabled = false; }
-  }
-
-  async function runSchedule(id) {
-    try {
-      const result = await api(`/api/cron/${encodeURIComponent(id)}/run`, {});
-      await Promise.all([refreshSchedules(), refresh()]);
-      notice(result.decision === 'queued' ? t('airScheduleBusyQueued') : t('airScheduleSentToTask'));
-    } catch (error) { notice(t('airScheduleRunFailed', { msg: error.message })); }
-  }
-
-  async function rebindSchedule(id) {
-    if (!window.confirm(t('airScheduleRebindConfirm'))) return;
-    try {
-      const result = await api(`/api/cron/${encodeURIComponent(id)}/rebind`, {});
-      await Promise.all([refreshSchedules(), refresh()]);
-      notice(t('airScheduleRebound', { id: result.taskId }));
-    } catch (error) {
-      notice(error.code === 'binding_healthy' ? t('airScheduleBindingHealthy') : t('airScheduleRebindFailed', { msg: error.message }));
-    }
-  }
-
-  async function toggleSchedule(id, enabled) {
-    try {
-      await api(`/api/cron/${encodeURIComponent(id)}`, { enabled }, 'PATCH');
-      await refreshSchedules();
-    } catch (error) { notice(t('airScheduleUpdateFailed', { msg: error.message })); }
-  }
-
-  async function deleteSchedule(id) {
-    if (!window.confirm(t('airScheduleDeleteConfirm'))) return;
-    try {
-      await api(`/api/cron/${encodeURIComponent(id)}`, undefined, 'DELETE');
-      await refreshSchedules();
-      notice(t('airScheduleDeleted'));
-    } catch (error) { notice(t('airScheduleDeleteFailed', { msg: error.message })); }
-  }
 
   /** 侧栏「最近任务」那一条带子。单独抽出来是因为它有两个调用点：整页 render，
    *  以及 pin 变了的时候 —— 后者只动了侧栏和页头那排 tab，没必要把整页（含对话
@@ -2768,7 +2560,7 @@
       if (entryChanged === null) failed = true;
       // 定时任务与控制台概览只在真的有新数据时重画，否则每 4 秒白建一遍 DOM。
       if (snapshot.unchanged && !entryChanged) return;
-      if (mode === 'schedules' || consoleOpen) await refreshSchedules();
+      if (mode === 'schedules' || consoleOpen) await window.MultiCCAirSchedules?.refresh();
       if (consoleOpen) window.MultiCCAirAdmin?.render('overview', adminContext());
     } catch (error) { failed = true; notice(error.message); }
     finally { if (failed) pollFailures++; else pollFailures = 0; loading = false; }
@@ -2776,7 +2568,7 @@
 
   function adminContext() {
     return {
-      data, scheduleTasks, api, setMode, navigate, notice, directoryName,
+      data, scheduleTasks: window.MultiCCAirSchedules?.tasks() || [], api, setMode, navigate, notice, directoryName,
       deleteTask: task => deleteTaskById(task),
       // 中文词表只有一份（stateNames）：面板要说的状态词跟侧栏是同一批，
       // 传下去比在 air-admin.js 里再抄一份可靠。
@@ -3022,14 +2814,17 @@
   $('task-state').onclick = () => { void toggleDetails(); };
   $('details-close').onclick = closeDetails;
   window.__multiccAirDeleteCurrentTask = () => deleteTask();
-  $('schedule-create').onclick = () => openScheduleDialog();
-  $('schedule-close').onclick = () => $('schedule-dialog').close();
-  $('schedule-cancel').onclick = () => $('schedule-dialog').close();
-  $('schedule-form').onsubmit = saveSchedule;
-  $('schedule-presets').onclick = event => {
-    const preset = event.target.closest('[data-cron]');
-    if (preset) $('schedule-form').elements.cron.value = preset.dataset.cron;
-  };
+  // 定时任务中心整块在 public/air-schedule-center.js（列表、表单、四个动作）。它只
+  // 认识这里递下去的四个东西：全局那些（t / MultiCCApi / getLocale）自己读，air 私有的
+  // 「通知、跳转、刷新、目录与车道快照」得给 —— 同目录首页那个弹层模块的分工。
+  window.MultiCCAirSchedules?.bind({
+    notice, navigate, refresh,
+    directories: () => data?.directories || [],
+    clis: () => data?.clis || [],
+    directoryId: () => directoryId,
+    mode: () => mode,
+    laneRouteLabel, cliOffersInChat, firstChatCli, cliOptionLabel,
+  });
   // 侧栏那颗「＋ 新任务」开的不是一张表单，是把目录首页那个统一输入框模块搬进
   // 弹窗（见 openNewTaskComposer）—— 任务名取正文第一行，创建完直接执行。
   $('create').onclick = openNewTaskComposer;
@@ -3079,7 +2874,7 @@
     applyConsole(['overview', 'activity'].includes(params.get('view')));
     render();
     void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
-    if (mode === 'schedules' || consoleOpen) void refreshSchedules().then(render);
+    if (mode === 'schedules' || consoleOpen) void window.MultiCCAirSchedules?.refresh().then(render);
   });
   window.addEventListener('pagehide', () => { saveDraft(); stopped = true; epoch++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => {

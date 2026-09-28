@@ -1373,6 +1373,17 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .schedule-run-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .schedule-run.error .schedule-run-status { color: #ad4d36; }
 .schedule-runs-hint { display: block; padding: 0 10px 8px; color: #a3b1c2; font-size: 10px; }
+/* 脚本任务那一格：没有固定 Air 任务可进去，摆的是命令本身和上次退出码（服务端
+   toView 里的 kind='script' 分支）。.schedule-task-mark 直接复用上面那颗方块。 */
+.schedule-script { min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 11px 12px; border: 1px solid #cfe2f5; border-radius: 14px; background: #f1f7fe; }
+.schedule-script-head { display: flex; align-items: center; gap: 11px; color: #6c8199; font-size: 10px; }
+.schedule-script-head .schedule-task-mark { width: 22px; height: 22px; flex: 0 0 22px; border-radius: 8px; font-size: 11px; }
+.schedule-script-command { display: block; min-width: 0; overflow: hidden; color: #2d5273; font-size: 11px; line-height: 1.6; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-script-exit { color: #2c7a60; font-size: 10px; }
+.schedule-script-exit.error { color: #ad4d36; }
+/* 一次脚本运行印出来的东西：另起一行铺满，别挤在那条 flex 里。 */
+.schedule-run-output { flex: 1 0 100%; max-height: 96px; margin: 2px 0 4px; padding: 6px 7px; overflow: auto; color: #526d88; border-radius: 6px; background: #eef4fa; font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.schedule-script-line { display: block; min-height: 0; -webkit-line-clamp: none; white-space: pre-wrap; overflow-wrap: anywhere; }
 .schedule-actions span { flex: 1; }
 .schedule-actions button { min-height: 31px; padding: 5px 8px; color: #526d88; border-color: transparent; background: transparent; font-size: 10px; }
 .schedule-actions button:hover { border-color: #d7e5f2; background: #f4f8fd; }

@@ -159,12 +159,19 @@ Example (script — no LLM involved):
 ```bash
 curl -s "$MULTICC_BASE_URL/api/cron" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"WeChat alert watchdog","dirPath":"'"$PWD"'","kind":"script","command":"/usr/bin/python3 /Users/Zhuanz/.multicc/wechat-alert/watcher.py --once","cron":"* * * * *","scriptTimeoutMs":120000}'
+  -d '{"name":"WeChat alert watchdog","dirPath":"'"$PWD"'","kind":"script","command":"/usr/bin/python3 '"$HOME"'/.multicc/wechat-alert/wechat-alert.py --config '"$HOME"'/.multicc/wechat-alert/config-cron.json","cron":"* * * * *","scriptTimeoutMs":120000}'
 ```
 
 Script runs carry `exitCode` and a bounded `output` tail in `recentRuns`; the
 rule view exposes `kind`, `command`, `lastExitCode` and `lastOutput`. Rebind and
 the `cli`/`provider`/`model`/`effort` fields are not applicable to script tasks.
+
+`examples/cron-scripts/wechat-alert.py` is the reference case for this kind:
+it reads `GET /api/air`, keeps the tasks whose `runState` is in `watchStates`,
+and hands one merged message per round to the relay session via
+`POST /api/sessions/<relaySessionId>/scheduled-messages`. It runs once per
+invocation — the cron expression is the loop — keeps its dedup/rate-limit state
+in a JSON file next to its config, and never re-alerts history on its first run.
 
 ## Files
 

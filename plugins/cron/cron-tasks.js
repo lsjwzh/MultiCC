@@ -200,10 +200,13 @@ function recordRun(task, entry) {
   task.runs = runs;
 }
 
-// 最近的在前 —— 面板要的是「刚刚发生了什么」。
-function recentRuns(task, limit = RUN_HISTORY_VIEW) {
+// 最近的在前 —— 面板要的是「刚刚发生了什么」。outputLimit 由调用方给：列表接口每开
+// 一次面板就要回放 10 条，脚本输出留太长会把这一趟撑成几十 KB。
+function recentRuns(task, limit = RUN_HISTORY_VIEW, outputLimit = SCRIPT_OUTPUT_LIMIT) {
   const runs = Array.isArray(task.runs) ? task.runs : [];
-  return runs.slice(-limit).reverse();
+  return runs.slice(-limit).reverse().map(run => (run.output && run.output.length > outputLimit
+    ? { ...run, output: run.output.slice(-outputLimit) }
+    : run));
 }
 
 async function ensureTaskInner(task) {
@@ -481,7 +484,7 @@ function toView(task) {
     lastDecision: task.lastDecision || null,
     runCount: task.runCount || 0,
     // 执行记录: 最近的在前, 供面板展开看「哪天跑了、哪次失败」。
-    recentRuns: recentRuns(task),
+    recentRuns: recentRuns(task, RUN_HISTORY_VIEW, SCRIPT_OUTPUT_VIEW),
     nextRunAt: task.enabled ? cronNext(task.cron, new Date()) : null,
   };
 }
@@ -590,7 +593,7 @@ function mount(app) {
     if (!task) return res.status(404).json({ error: 'task not found' });
     const r = await fireTask(task, 'manual');
     res.json({ ok: r.ok, taskId: r.taskId, sessionId: r.sessionId,
-      receiptId: r.receiptId, decision: r.decision, error: r.error });
+      receiptId: r.receiptId, decision: r.decision, exitCode: r.exitCode ?? null, error: r.error });
   }).catch(next));
 
   // 执行记录: /api/cron 只回放最近几条(列表要小), 这里给完整的那一份(仍是有界的
