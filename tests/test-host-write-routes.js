@@ -26,6 +26,7 @@ const EXPECTED_PATHS = [
   'POST /api/settings/power',
   'POST /api/settings/power/unlock-password',
   'DELETE /api/settings/power/unlock-password',
+  'POST /api/settings/power/unlock-password/authorize',
 ];
 
 function createResponse() {
@@ -148,6 +149,12 @@ function createHarness(overrides = {}) {
       hasPassword: async () => false,
       setPassword: async () => {},
       clearPassword: async () => {},
+    },
+    // 真探测会 spawn 本机的 multicc-agent 去读钥匙串：测试里必须永远走桩，
+    // 否则一台装着 Agent 的机器上跑测试就会弹系统授权框。
+    unlockProbe: {
+      isAvailable: () => true,
+      probe: async () => ({ state: 'authorized' }),
     },
     log: message => state.events.push(['log', message]),
     reportFailure: (stage, category) => state.events.push(['failure', { stage, category }]),
@@ -699,7 +706,9 @@ test('unlock password write requires a local socket and never leaks the value', 
     body: { password: 'sekret' },
   });
   assert.equal(saved.statusCode, 200);
-  assert.deepEqual(saved.body, { ok: true, set: true });
+  // 保存成功之后必须**当场**回一次「Agent 读不读得到」：没授权时那个系统框要弹在
+  // 用户面前（此刻屏幕是解锁的），不能拖到锁屏时才弹——那时点不到，Agent 会卡死。
+  assert.deepEqual(saved.body, { ok: true, set: true, authorization: { state: 'authorized' } });
   assert.deepEqual(writes, ['sekret']);
 
   const invalid = await invoke(routes, '/api/settings/power/unlock-password', {
@@ -716,6 +725,53 @@ test('unlock password write requires a local socket and never leaks the value', 
   assert.equal(cleared.statusCode, 200);
   assert.deepEqual(cleared.body, { ok: true, set: false });
   assert.deepEqual(clears, [1]);
+});
+
+test('unlock authorization can be re-checked without retyping the password', async () => {
+  let probes = 0;
+  const { routes } = createHarness({
+    unlockPassword: {
+      isAvailable: () => true,
+      hasPassword: async () => true,
+      setPassword: async () => {},
+      clearPassword: async () => {},
+    },
+    unlockProbe: {
+      isAvailable: () => true,
+      probe: async () => { probes += 1; return { state: 'waiting-for-user' }; },
+    },
+  });
+
+  // 远程请求照样被拒（和写密码同一条本机专属规矩）
+  assert.equal((await invoke(routes, '/api/settings/power/unlock-password/authorize', {
+    local: false,
+  })).statusCode, 403);
+  assert.equal(probes, 0);
+
+  const checked = await invoke(routes, '/api/settings/power/unlock-password/authorize', { local: true });
+  assert.equal(checked.statusCode, 200);
+  assert.deepEqual(checked.body, { ok: true, authorization: { state: 'waiting-for-user' } });
+  assert.equal(probes, 1);
+
+  // 没条目时不必去问 Agent（也就不会弹任何框）
+  const empty = createHarness({
+    unlockProbe: {
+      isAvailable: () => true,
+      probe: async () => { throw new Error('must not probe without an item'); },
+    },
+  });
+  assert.deepEqual((await invoke(empty.routes, '/api/settings/power/unlock-password/authorize', {
+    local: true,
+  })).body, { ok: true, authorization: { state: 'no-password' } });
+
+  // 探测本身炸了（Agent 没装/没在跑）不能说成保存失败：它只是「没能确认」
+  const broken = createHarness({
+    unlockProbe: { isAvailable: () => true, probe: async () => { throw new Error('spawn ENOENT'); } },
+  });
+  assert.deepEqual((await invoke(broken.routes, '/api/settings/power/unlock-password', {
+    local: true,
+    body: { password: 'sekret' },
+  })).body, { ok: true, set: true, authorization: { state: 'unavailable', detail: 'probe-failed' } });
 });
 
 test('tunnel applyConfig requires durable save before publishing memory', () => {

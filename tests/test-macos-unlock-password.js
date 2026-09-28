@@ -6,6 +6,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createUnlockPassword, SERVICE, MAX_PASSWORD_LENGTH } = require('../src/macos-unlock-password');
 
+const AGENT_APP = '/Applications/MultiCC Agent.app';
+
 function harness(scripted = {}) {
   const calls = [];
   const execFileFn = (file, args, opts, cb) => {
@@ -14,7 +16,9 @@ function harness(scripted = {}) {
     if (hit && hit.error) return cb(hit.error, hit.stdout || '', hit.stderr || '');
     return cb(null, (hit && hit.stdout) || '', (hit && hit.stderr) || '');
   };
-  const make = (o = {}) => createUnlockPassword({ platform: 'darwin', execFileFn, account: 'zhuanz', ...o });
+  const make = (o = {}) => createUnlockPassword({
+    platform: 'darwin', execFileFn, account: 'zhuanz', agentAppPath: AGENT_APP, ...o,
+  });
   return { calls, execFileFn, make };
 }
 
@@ -44,6 +48,11 @@ test('unlock password stores with add-generic-password -U and rejects invalid in
   assert.ok(add.args.includes('-s') && add.args.includes(SERVICE));
   assert.ok(add.args.includes('-a') && add.args.includes('zhuanz'));
   assert.ok(add.args.includes('-w') && add.args.includes('s3cret'));
+  // 钥匙串默认只信任创建条目的应用（security(1)），不把 Agent 写进 ACL 的话
+  // 它读一次就弹一次系统授权框（锁屏时点不到 → Agent 卡死）。
+  const t = add.args.indexOf('-T');
+  assert.ok(t > -1, 'agent app is pre-authorized in the item ACL');
+  assert.equal(add.args[t + 1], AGENT_APP);
 
   await assert.rejects(() => up.setPassword(''), /password is required/);
   await assert.rejects(() => up.setPassword('x'.repeat(MAX_PASSWORD_LENGTH + 1)), /too long/);

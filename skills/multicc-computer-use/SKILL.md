@@ -60,6 +60,7 @@ $MCU press cmd+shift+g    # 组合键；press return 3 = 连按 3 次
   - `stale` / `not-found` → 重新 see；`timeout` / `busy`（别的会话正在用电脑）→ 稍后重试
   - `user-stopped` → **用户按了 Esc 叫停**：立即停手、向用户说明做到哪一步并询问；只有用户明确说继续，才运行 `$MCU resume`
   - `screen-locked` → 屏幕锁着，输入会打进登录密码框：**先跑 `$MCU unlock` 自动解锁，再重试一次**；若 unlock 回 `no-password`（钥匙串里没存锁屏密码）→ 告诉用户在 Air 全局设置 › macOS 电源卡里保存锁屏密码（自动解锁）或开启「运行期防锁」（任务期间禁用锁屏）
+  - unlock 回 `password-needs-authorization`（钥匙串里有密码，但 macOS 还没被允许让 Agent 读它）→ **不要重试**（`retrySafe:false`），锁屏上那个授权框点不到：告诉用户在 Air 全局设置 › macOS 电源 › 自动解锁 里按一次「确认授权」并按弹框里的「始终允许」（屏幕解锁时才有意义）。`password-unreadable` 是读取本身失败，可以重试一次；仍不行就报告用户
   - `protected-app`（系统设置 / 密码弹窗 / 钥匙串）→ 这类必须用户亲手操作，告诉用户
   - `terminal`（往终端/VS Code 打字 = 执行 shell）→ 用你自己的 shell 工具；确需操作须征得用户同意
   - `system-surface`（控制中心/通知中心/Spotlight 等）→ 确有必要才加 allowSystem（`agent call` JSON）

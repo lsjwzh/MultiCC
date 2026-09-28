@@ -324,9 +324,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 改这一格，不然以后回涨 98 行都没人管。
   // 2026-09-27 本分支又带我的 i18n 键（本地文件链接、FIFO 编辑）合流：重跑生成器
   // 实测 7176 行 / 448047 字节，按棘轮登记到这一格。
+  // 2026-09-28 自动解锁的钥匙串授权：Air 全局设置加「确认授权」按钮与四条状态文案
+  // （airGlobalUnlockAuthorized / airGlobalUnlockAuthorize / airGlobalUnlockWaitAuthorize
+  // / airGlobalUnlockNotStored / airGlobalUnlockProbeUnknown 共 5 键），中英各 5 行 = +10，
+  // 重跑生成器实测 7176→7192 行（脚本按 split("\n") 计数，比 wc -l 多 1）/ 449575 字节，按棘轮登记到这一格。
   'public/i18n-catalog.js': Object.freeze({
-    maxLines: 7176,
-    maxBytes: 448047,
+    maxLines: 7192,
+    maxBytes: 449575,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

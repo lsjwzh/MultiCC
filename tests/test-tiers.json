@@ -2925,6 +2925,15 @@
       ]
     },
     {
+      "path": "tests/test-macos-unlock-probe.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-manage-official-accounts.js",
       "tier": "other",
       "lane": "deterministic",
