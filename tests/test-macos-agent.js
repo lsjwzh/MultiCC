@@ -123,6 +123,13 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
   assert.equal(status.version, '2');
   assert.equal(typeof status.screenLocked, 'boolean');
   assert.equal(typeof status.unlockPassword, 'boolean');
+  // status 是 computer-use 高频调用的只读操作，只能查条目属性；一旦它真去解密密码，
+  // 就会命中钥匙串 ACL 授权框（这个 ad-hoc 测试 agent 当然不在 ACL 里），而锁屏时那个
+  // 框点不到 —— 实测 mcu.sh status 在这台机器上卡过 120 秒。这里用「秒级返回」把它钉住：
+  // 改回解密的话，要么弹框（这个测试会挂到超时），要么慢到分钟级。
+  const statusStarted = Date.now();
+  assert.equal(typeof call('status').body.unlockPassword, 'boolean');
+  assert.ok(Date.now() - statusStarted < 2000, 'status must not decrypt the keychain item');
   // 未锁屏时 unlock 必须拒绝，且绝不能因为钥匙串里有/没密码就副作用。
   const unlock = call('call', '{"op":"unlock"}').body;
   assert.equal(unlock.ok, false);

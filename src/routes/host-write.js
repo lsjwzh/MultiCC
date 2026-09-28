@@ -1,7 +1,7 @@
 'use strict';
 
 const { resolveNotifySettingsUpdates } = require('./host-read');
-const { getKeepAwake, getUnlockPassword } = require('../host-power-services');
+const { getKeepAwake, getUnlockPassword, getUnlockProbe } = require('../host-power-services');
 const { MAX_PASSWORD_LENGTH } = require('../macos-unlock-password');
 
 const LOCAL_ONLY_MESSAGE = '仅可在本机修改';
@@ -402,7 +402,42 @@ function createUnlockPasswordHandler(deps, action) {
         return res.status(400).json({ error: 'password is too long' });
       }
       await unlockPassword.setPassword(password);
-      return res.json({ ok: true, set: true });
+      // 写进去 ≠ Agent 读得到。第一条读会命中钥匙串 ACL：写入时已经用 -T 预授权了 Agent，
+      // 探测就是**验证**这件事；没生效时系统会在这个请求里把授权框弹到用户面前（此刻屏幕
+      // 是解锁的、人就在跟前，点一次「始终允许」即可）。绝不能把这一步留到锁屏时才发生：
+      // 那个框在锁屏上点不到，Agent 会卡在读密码那步（实测卡死 3 分钟）。
+      return res.json({ ok: true, set: true, authorization: await probeUnlockAuthorization(deps) });
+    } catch (error) {
+      return next(error);
+    }
+  };
+}
+
+// 探测失败（Agent 没装/没在跑/回话看不懂）不能把「密码已保存」这件事说成失败：授权只是
+// 锦上添花，回执是一句话的状态，界面照它提示下一步。
+async function probeUnlockAuthorization(deps) {
+  const unlockProbe = deps.unlockProbe || getUnlockProbe();
+  try {
+    return await unlockProbe.probe();
+  } catch {
+    return { state: 'unavailable', detail: 'probe-failed' };
+  }
+}
+
+// 授权没拿到（用户没看见那个框 / 点晚了）时的重试入口：条目已经在钥匙串里了，再问一次
+// 不需要用户重输密码 —— 保存框里的密码早被清掉了，重输一次才是真的劝退。
+function createUnlockAuthorizeHandler(deps) {
+  return async function unlockAuthorizeHandler(req, res, next) {
+    try {
+      if (!requireLocal(deps, req, res)) return undefined;
+      const unlockPassword = deps.unlockPassword || getUnlockPassword();
+      if (!unlockPassword.isAvailable()) {
+        return res.status(400).json({ error: 'This setting is only available on macOS' });
+      }
+      if (!(await unlockPassword.hasPassword())) {
+        return res.json({ ok: true, authorization: { state: 'no-password' } });
+      }
+      return res.json({ ok: true, authorization: await probeUnlockAuthorization(deps) });
     } catch (error) {
       return next(error);
     }
@@ -467,6 +502,8 @@ function mountHostWriteRoutes(app, rawDeps) {
   // 自动解锁密码：只写本机登录钥匙串，本机专属设置一律要求 loopback。
   app.post('/api/settings/power/unlock-password', createUnlockPasswordHandler(deps, 'set'));
   app.delete('/api/settings/power/unlock-password', createUnlockPasswordHandler(deps, 'clear'));
+  // 再确认一次读取授权（不重输密码）：条目已在钥匙串里，只是那一次「始终允许」没点上。
+  app.post('/api/settings/power/unlock-password/authorize', createUnlockAuthorizeHandler(deps));
   // 自动归属档位是主机策略：只在服务端持有的档位阶梯，改动只允许本机发起，
   // 并且先落 .env 再切运行时值（失败按 env 回滚）。
   if (deps.taskAttributionMode) app.post('/api/settings/task-attribution', (req, res) => {

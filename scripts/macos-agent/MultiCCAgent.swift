@@ -39,6 +39,7 @@
 // and typed outcomes (dispatched / retrySafe). Not taken: SkyLight
 // SLEventPostToPid and CGEventSetWindowLocation (private, fragile).
 import Foundation
+import Dispatch
 import CoreGraphics
 import ApplicationServices
 import AppKit
@@ -308,18 +309,86 @@ func screenLocked() -> Bool {
 let UNLOCK_KEYCHAIN_SERVICE = "com.multicc.agent.unlock"
 let UNLOCK_KEYCHAIN_ACCOUNT = NSUserName()
 
-func readUnlockPassword() -> String? {
-  let query: [String: Any] = [
+enum UnlockRead {
+  case ok(String)          // read it
+  case missing             // nothing stored yet
+  case needsAuthorization  // item is there, macOS wants the user to allow this app (or nobody answered)
+  case failed              // any other read failure
+}
+
+// The item is created by the server (/usr/bin/security) and, per security(1),
+// "the application which creates an item is trusted to access its data without
+// warning" — the agent is a different application identity, so reading it can
+// raise a SecurityAgent authorization sheet. That sheet cannot be answered on a
+// locked screen, so two rules here:
+//   1. uiAllowed=false passes kSecUseAuthenticationUIFail: when user
+//      interaction would be required the read fails immediately, no sheet.
+//   2. every read is bounded. Even if the system still puts a sheet up, only
+//      this one read gives up — the request loop never parks inside securityd
+//      (status used to decrypt the password on every call, and one locked-screen
+//      status call wedged the whole computer-use chain for minutes).
+func readUnlockPassword(uiAllowed: Bool, seconds: Double = 5) -> UnlockRead {
+  var query: [String: Any] = [
     kSecClass as String: kSecClassGenericPassword,
     kSecAttrService as String: UNLOCK_KEYCHAIN_SERVICE,
     kSecAttrAccount as String: UNLOCK_KEYCHAIN_ACCOUNT,
     kSecReturnData as String: true,
     kSecMatchLimit as String: kSecMatchLimitOne,
   ]
+  // kSecUseAuthenticationUI is deprecated since macOS 11 (Apple points at
+  // LAContext.interactionNotAllowed instead) but it is what securityd actually
+  // honours for the legacy ACL prompts this item can raise, so it stays.
+  // Letting the system ask is the default, so the key is only set when the read
+  // must not prompt.
+  if !uiAllowed { query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
+  var result = UnlockRead.failed
+  let done = DispatchSemaphore(value: 0)
+  DispatchQueue.global(qos: .userInitiated).async {
+    var item: CFTypeRef?
+    switch SecItemCopyMatching(query as CFDictionary, &item) {
+    case errSecSuccess:
+      if let data = item as? Data, let text = String(data: data, encoding: .utf8) { result = .ok(text) }
+    case errSecItemNotFound:
+      result = .missing
+    case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
+      result = .needsAuthorization
+    default:
+      break
+    }
+    done.signal()
+  }
+  if done.wait(timeout: .now() + seconds) == .timedOut { return .needsAuthorization }
+  return result
+}
+
+// Presence only: attributes, never kSecReturnData. status is a hot read-only
+// call, and an attributes-only query does not decrypt and cannot raise a sheet
+// (the same thing `security find-generic-password` does without -w).
+func hasUnlockPassword() -> Bool {
+  let query: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecAttrService as String: UNLOCK_KEYCHAIN_SERVICE,
+    kSecAttrAccount as String: UNLOCK_KEYCHAIN_ACCOUNT,
+    kSecReturnAttributes as String: true,
+    kSecMatchLimit as String: kSecMatchLimitOne,
+  ]
   var item: CFTypeRef?
-  guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-        let data = item as? Data else { return nil }
-  return String(data: data, encoding: .utf8)
+  return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
+}
+
+// Called by the server right after the password is saved, while the user is
+// still sitting in front of an unlocked screen: this is where the one-time
+// "allow MultiCC Agent to read this item" sheet belongs. Answer it once with
+// 始终允许 and the ACL keeps a grant that outlives agent rebuilds (the app is
+// Developer ID signed, so the ACL records its identity and not a cdhash).
+func probeUnlockAuthorization(_ req: [String: Any]) -> [String: Any] {
+  let seconds = min(120, max(1, num(req["seconds"]) ?? 25))
+  switch readUnlockPassword(uiAllowed: true, seconds: seconds) {
+  case .ok: return ["ok": true, "authorized": true]
+  case .missing: return ["ok": true, "authorized": false, "reason": "no-password"]
+  case .needsAuthorization: return ["ok": true, "authorized": false, "reason": "waiting-for-user"]
+  case .failed: return ["ok": true, "authorized": false, "reason": "read-failed"]
+  }
 }
 
 func loginwindowPid() -> pid_t? {
@@ -350,8 +419,18 @@ func unlockScreen(_ req: [String: Any]) -> [String: Any] {
   if control.isHalted {
     return refused("user-stopped", "the user pressed Esc to stop computer use", retrySafe: false)
   }
-  guard let password = readUnlockPassword() else {
+  let password: String
+  switch readUnlockPassword(uiAllowed: false) {
+  case .ok(let p):
+    password = p
+  case .missing:
     return refused("no-password", "no unlock password in the macOS keychain; set it in Air global settings (macOS 电源) -> 自动解锁", retrySafe: false)
+  case .needsAuthorization:
+    // retrySafe: false 和 no-password 同一用意：这不是重试能解决的，只有用户在**解锁的**
+    // 屏幕上点一次「始终允许」才行，所以回执要拦住调用方的重试循环，让它去告诉用户。
+    return refused("password-needs-authorization", "the keychain item exists but macOS has not been told to let MultiCC Agent read it; open Air global settings (macOS 电源) -> 自动解锁 and press 确认授权, then click 始终允许 in the system sheet (once is enough)", retrySafe: false)
+  case .failed:
+    return refused("password-unreadable", "the unlock password could not be read from the keychain", retrySafe: true)
   }
   guard let pid = loginwindowPid() else { return ["ok": false, "error": "loginwindow is not running"] }
   let app = AXUIElementCreateApplication(pid)
@@ -984,7 +1063,7 @@ func handle(_ req: [String: Any]) -> [String: Any] {
             "listenAccess": CGPreflightListenEventAccess(),
             "escTaps": Dictionary(uniqueKeysWithValues: escTaps.map { ($0.name, $0.snapshot) }),
             "screenLocked": screenLocked(),
-            "unlockPassword": readUnlockPassword() != nil,
+            "unlockPassword": hasUnlockPassword(),
             "control": control.snapshot(),
             "snapshots": snapshots.count,
             "chrome": chrome.snapshot()]
@@ -1087,6 +1166,8 @@ func handle(_ req: [String: Any]) -> [String: Any] {
     return capture(path, rect: rect, forced: req["backend"] as? String)
   case "unlock":
     return unlockScreen(req)
+  case "probe-unlock":
+    return probeUnlockAuthorization(req)
   default:
     return ["ok": false, "error": "unknown op: \(op)"]
   }
@@ -1342,6 +1423,8 @@ func client(_ args: [String]) -> Never {
     if rest.count > 1, let n = Int(rest[1]) { req["repeat"] = n }
   case "see":
     if let a = rest.first { req["app"] = a }
+  case "probe-unlock":
+    if let s = rest.first, let n = Double(s) { req["seconds"] = n }
   case "snap":
     guard let path = rest.first else { usage("snap /abs/out.png [x y w h]") }
     req["path"] = path
@@ -1385,6 +1468,7 @@ if argv.isEmpty || argv.first == "help" {
          set ID VALUE | type-el ID TEXT      write/type into an element
          press CHORD [N]                     e.g. cmd+shift+g, return, escape
          unlock                              auto-unlock the locked screen from the keychain password
+         probe-unlock [SECONDS]              ask the keychain once (system sheet allowed) whether this app may read it
          move|click|rclick|dclick X Y | scroll X Y N | type TEXT | snap /abs.png [x y w h] | call JSON
   """)
   exit(0)

@@ -143,13 +143,22 @@ test('core runner covers every selected path and expands declared variants', () 
   // 2026-09-27 dead-subsystem 拆除：task-run 台账/生产主机/转发器那 14 个 core
   // 测试随 src/task-run 一起删除，另有 tests/test-task-board-{merge,cancel-run}.js
   // 与 6 个 app/test/*.dart（task board UI 退役）也退出 core。311 - 20 = 291。
-  assert.equal(core.length, 291, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 291);
+  // 2026-09-28 行缓存守卫：tests/test-task-shell-row-cache.js 注册为 core
+  // deterministic 时没同步这几个数字，main 因此一直红在 292 !== 291。它是
+  // hermetic 的——只在临时目录里开一个 task-shell sqlite store 验证行缓存的
+  // 复用与失效，不碰端口、网络、真库、时钟或别的进程——留在 core 是安全的。
+  // 291 + 1 = 292。
+  // 2026-09-28 自动解锁授权链路（本次）：再注册 tests/test-macos-unlock-probe.js。
+  // 它注入 execFile，只解析 agent 的 stdout JSON，不 spawn 真进程也不碰真钥匙串，
+  // 同样是 hermetic 单测。292 + 1 = 293，deterministic 250 + 2 = 252，
+  // commands 277 + 2 = 279。
+  assert.equal(core.length, 293, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 293);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 250);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 252);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 17,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -159,8 +168,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 277,
-    '274 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 279,
+    '276 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

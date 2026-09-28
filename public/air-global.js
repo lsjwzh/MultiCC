@@ -218,10 +218,14 @@
     clearBtn.type = 'button';
     clearBtn.id = 'air-global-unlock-clear';
     clearBtn.onclick = () => { void clearUnlockPassword(); };
+    const authorizeBtn = make('button', t('airGlobalUnlockAuthorize'));
+    authorizeBtn.type = 'button';
+    authorizeBtn.id = 'air-global-unlock-authorize';
+    authorizeBtn.onclick = () => { void authorizeUnlockPassword(); };
     const unlockStatus = make('span', '', 'air-global-status');
     unlockStatus.id = 'air-global-unlock-status';
     const unlockRow = make('div', null, 'air-global-foot');
-    unlockRow.append(pwInput, saveBtn, clearBtn);
+    unlockRow.append(pwInput, saveBtn, clearBtn, authorizeBtn);
     unlockBlock.append(unlockHead, unlockDesc, unlockRow, unlockStatus);
 
     // 免密助手这一行只在服务端说「这台机器适用」时才出现（loadHelper 里解禁），
@@ -360,11 +364,35 @@
     }
   }
 
+  // 保存之后服务端会当场问一次 Agent「你到底能不能读钥匙串里这条目」，回执有四种。
+  // 四句话分开写，是因为「用户下一步该做什么」完全不同：授权过了什么都不用做；没授权
+  // 则必须让他在**此刻**（屏幕解锁、人就在跟前）点掉那个系统框——这一步漏了，锁屏时
+  // 框会弹在点不到的地方，Agent 卡在读密码那步。
+  const AUTHORIZATION_TEXT = {
+    authorized: 'airGlobalUnlockAuthorized',
+    'waiting-for-user': 'airGlobalUnlockWaitAuthorize',
+    'no-password': 'airGlobalUnlockNotStored',
+    unavailable: 'airGlobalUnlockProbeUnknown',
+  };
+
+  function paintAuthorization(authorization) {
+    const status = el('air-global-unlock-status');
+    if (!status || !authorization) return;
+    const key = AUTHORIZATION_TEXT[authorization.state];
+    if (!key) return;
+    status.textContent = t(key);
+    const tone = authorization.state === 'authorized' ? ' ok' : (authorization.state === 'no-password' ? ' err' : '');
+    status.className = `air-global-status${tone}`;
+  }
+
   function paintUnlock(unlockPassword) {
     const block = el('air-global-unlock-block');
     const status = el('air-global-unlock-status');
     if (!block) return;
     block.hidden = !(unlockPassword && unlockPassword.available);
+    // 没有条目时「确认授权」无从谈起：它只会回一句 no-password。
+    const authorize = el('air-global-unlock-authorize');
+    if (authorize) authorize.disabled = !(unlockPassword && unlockPassword.set);
     if (!block.hidden && status && !status.textContent) {
       status.textContent = unlockPassword.set ? t('airGlobalUnlockSaved') : '';
       status.className = `air-global-status${unlockPassword.set ? ' ok' : ''}`;
@@ -403,12 +431,16 @@
     if (!input || !save) return;
     const password = input.value;
     if (!password) { input.focus(); return; }
+    // 这次请求里可能弹系统授权框，最坏要等十几秒（Agent 侧 8 秒 + 通信余量）。
     save.disabled = true;
     if (status) { status.textContent = t('airGlobalPowerWaiting'); status.className = 'air-global-status'; }
     try {
       const data = await context.api('/api/settings/power/unlock-password', { password }, 'POST');
       input.value = '';
-      if (status) {
+      // 服务端回的是「Agent 到底读不读得到」的判定，界面照它说话。没有这个字段时
+      // （老服务端）退回原来那句。
+      if (data && data.authorization) paintAuthorization(data.authorization);
+      else if (status) {
         status.textContent = t(data && data.set ? 'airGlobalUnlockSaved' : 'airGlobalUnlockCleared');
         status.className = 'air-global-status ok';
       }
@@ -437,6 +469,28 @@
       }
     } finally {
       clear.disabled = false;
+    }
+  }
+
+  // 授权那一次没点上（人没看见框，或者点晚了）时的重试：条目已经在钥匙串里，所以**不用
+  // 重输密码**（保存框早就清空了，叫用户重输一次才是真的劝退）。再问一次就是把那个系统
+  // 框再弹一次。
+  async function authorizeUnlockPassword() {
+    const status = el('air-global-unlock-status');
+    const button = el('air-global-unlock-authorize');
+    if (!button) return;
+    button.disabled = true;
+    if (status) { status.textContent = t('airGlobalPowerWaiting'); status.className = 'air-global-status'; }
+    try {
+      const data = await context.api('/api/settings/power/unlock-password/authorize', {});
+      paintAuthorization(data && data.authorization);
+    } catch (error) {
+      if (status) {
+        status.textContent = t('airGlobalUnlockFailed', { message: error.message || String(error) });
+        status.className = 'air-global-status err';
+      }
+    } finally {
+      button.disabled = false;
     }
   }
 

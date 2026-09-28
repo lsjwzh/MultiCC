@@ -22,6 +22,7 @@
 #   mcu.sh scroll X Y N                    N<0 down, N>0 up
 #   mcu.sh type TEXT                       Unicode text into the focused field
 #   mcu.sh unlock                          auto-unlock a locked screen from the keychain password
+#   mcu.sh probe-unlock [SECONDS]          ask the keychain once (system sheet allowed) whether the agent may read it
 #   mcu.sh resume | release                clear an Esc stop (only when the user says so) / free the lease
 # MCU_BACKEND=legacy forces the fallback (useful to compare).
 set -euo pipefail
@@ -63,7 +64,7 @@ case "$cmd" in
   backend) backend ;;
   status) agent_call status ;;
 
-  see|click-el|rclick-el|dclick-el|click-text|set|type-el|resume|release|unlock)
+  see|click-el|rclick-el|dclick-el|click-text|set|type-el|resume|release|unlock|probe-unlock)
     agent_only "$cmd"; agent_call "$cmd" "$@" ;;
 
   press|key)
