@@ -11,18 +11,96 @@ const { pendingAttention } = require('../task-board/attention');
 // 解析近 4MB JSON 并把整块 DOM 重建一遍。绝大多数轮次内容根本没变，所以两个
 // 读接口支持条件请求：内容一样就回 304，客户端保留现有视图、不再解析。
 // ETag 由响应正文本身算出，不额外维护版本号，永远不会与正文脱节。
-function conditionalBody(req, res, payload) {
+function conditionalBody(req, res, payload, timing) {
   const body = JSON.stringify(payload);
+  timing?.lap('jsonMs');
   const etag = `W/"${crypto.createHash('sha1').update(body).digest('base64url')}"`;
+  timing?.lap('etagMs');
+  // 字符数（不是字节数）：只用来判断「这一轮到底搬了多少东西」，不参与任何逻辑。
+  timing?.set('bodyChars', body.length);
   res.set('ETag', etag);
   const sent = req?.headers?.['if-none-match'];
   if (sent && String(sent).split(',').some(value => value.trim() === etag || value.trim() === '*')) {
     res.status(304).end();
+    timing?.set('status', 304);
     return undefined;
   }
   res.set('Content-Type', 'application/json; charset=utf-8');
   res.send(body);
+  timing?.set('status', 200);
   return undefined;
+}
+
+// 一轮快照在线上要 ~390ms，而同一份数据、同一批语句在离线进程里只要 40~75ms。
+// 差额既不在 SQL 条数也不在数据量上，只能把一轮拆成段落来定位 —— 于是有了下面这套
+// 分相位计时。两条硬规矩：
+//   1. 计时只做 hrtime 读数，**绝不进 payload**：快照里多一个数字，每一轮正文都会
+//      "变"，客户端就拿不到 304，为了诊断反而把代价乘十。
+//   2. 默认几乎全静默：只在明显偏慢的轮次（AIR_PHASE_LOG_MS，默认 200ms）打一行，
+//      且两行之间至少隔 AIR_PHASE_LOG_GAP_MS（默认 30s）。刚重启的头两分钟例外，
+//      每 5s 必打一行 —— 那正是「重启一次就把这几百毫秒拆开」需要的连续样本。
+function envNumber(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+const PHASE_DEFAULTS = Object.freeze({
+  logMs: envNumber('AIR_PHASE_LOG_MS', 200),
+  gapMs: envNumber('AIR_PHASE_LOG_GAP_MS', 30_000),
+  bootWindowS: envNumber('AIR_PHASE_BOOT_WINDOW_S', 120),
+  bootGapMs: envNumber('AIR_PHASE_BOOT_GAP_MS', 5_000),
+});
+const round1 = ms => Math.round(ms * 10) / 10;
+// 分段名：报告里要拿它们的和与总时长对账（对不上的那部分不在任何一段里，见
+// unaccountedMs —— 那才是「时间其实花在别处」的信号）。
+const PHASE_MARKS = ['migrateMs', 'recordsMs', 'boardMs', 'admissionMs', 'admissionIndexMs',
+  'cardListMs', 'cardLoopMs', 'tailMs', 'jsonMs', 'etagMs'];
+
+function createPhaseTimer() {
+  const start = process.hrtime.bigint();
+  const sample = {};
+  let last = start;
+  return {
+    lap(name) { const at = process.hrtime.bigint(); sample[name] = round1(Number(at - last) / 1e6); last = at; },
+    sum(name, ms) { sample[name] = round1((sample[name] || 0) + ms); },
+    set(key, value) { sample[key] = value; },
+    sample: () => ({ ...sample, totalMs: round1(Number(process.hrtime.bigint() - start) / 1e6) }),
+  };
+}
+
+// 同一件事在别的进程里快 5~10×，有两种完全不同的解释：这条路径真的更贵，或者
+// 「这个进程当下的 CPU 就是慢」（降频、被别的线程抢核、JIT 退化）。同一行日志里附一个
+// 与业务无关的固定工作量耗时，就能把两者分开：calibMs 明显高于离线基线时，倍率跟
+// Air 无关。只在已经决定要打日志的那一轮跑，正常轮次一分钱不花。
+let calibrationSink = 0;
+function calibrationMs() {
+  const start = process.hrtime.bigint();
+  for (let i = 0; i < 200_000; i++) calibrationSink += Math.sqrt(i % 977);
+  return Number(process.hrtime.bigint() - start) / 1e6;
+}
+
+// 每挂载一次各自限流（测试里可以并存好几份不同配置的挂载）。
+function createPhaseReporter(config, state) {
+  const settings = { ...PHASE_DEFAULTS, ...(config || {}) };
+  return (timing, logger) => {
+    if (!timing) return;
+    const sample = timing.sample();
+    const uptimeSec = process.uptime();
+    const booting = uptimeSec < settings.bootWindowS;
+    // 启动窗口只在宿主接了 logger 时生效：测试与工具进程里 mount 一次不该被这几行淹没。
+    if (booting && !logger) return;
+    if (!booting && sample.totalMs < settings.logMs) return;
+    const nowMs = Date.now();
+    if (nowMs - state.lastLogAt < (booting ? settings.bootGapMs : settings.gapMs)) return;
+    state.lastLogAt = nowMs;
+    try {
+      const accounted = PHASE_MARKS.reduce((total, name) => total + (Number(sample[name]) || 0), 0);
+      const memory = process.memoryUsage();
+      (logger || console).warn('air_snapshot_slow', { ...sample,
+        unaccountedMs: round1(sample.totalMs - accounted), calibMs: round1(calibrationMs()),
+        rssMB: Math.round(memory.rss / 1048576), heapUsedMB: Math.round(memory.heapUsed / 1048576),
+        uptimeSec: Math.round(uptimeSec) });
+    } catch (_) { /* 诊断永远不许影响接口本身 */ }
+  };
 }
 
 // 迁移结果里那份 `tasks` 是宿主用来省掉第二遍全表扫描的内部载荷（见
@@ -127,8 +205,18 @@ function mountAirRoutes(app, deps) {
       lease: lease?.state || 'idle', capacityReason: workspace && !lease ? deps.admission.capacityReason(workspace.id) : null, reason: lease?.reason || null, pins: workspace?.pins || [],
       path: workspace?.path || record?.worktreePath || null, branch: workspace?.branch || record?.branch || null };
   }
-  async function airSnapshot() {
+  async function airSnapshot(timing) {
+    // 计时永远只是读数：timing 缺省（测试直接调这个函数）时，下面两个局部函数退化成原调用。
+    const lap = name => timing?.lap(name);
+    const timedAdd = (name, fn) => {
+      if (!timing) return fn();
+      const at = process.hrtime.bigint();
+      const out = fn();
+      timing.sum(name, Number(process.hrtime.bigint() - at) / 1e6);
+      return out;
+    };
     const migration = publicMigration(await deps.shell.migrateTaskSessions?.());
+    lap('migrateMs');
     // 新任务输入框要「随时更新成最近用过的那套配置」，而不是每次都退回
     // 「默认线路 · 默认模型」。这里从会话记录里取 lastWorkAt 最新的 chat 会话
     // 的运行时，随快照一起下发。只读、不另落盘：「最近使用」本身就是会话
@@ -153,6 +241,7 @@ function mountAirRoutes(app, deps) {
       effort: lastUsed.record.effort || null,
       subagent: deps.serializeSubagent?.(lastUsed.record.subagent) || null,
     };
+    lap('recordsMs');
     const board = deps.getBoard();
     // One directory can retain several task/session worktrees. Count unique
     // paths from both authorities: session records cover ordinary chats;
@@ -170,6 +259,7 @@ function mountAirRoutes(app, deps) {
       const dirId = core.taskDirId(board, task) || deps.records.get(sessionId)?.dirId;
       noteWorktree(dirId, task.worktreePath);
     }
+    lap('boardMs');
     // 与任务板同一条自愈规则（见 task-board/view.js 的 deadDispatchClaim /
     // sessionHasTurn）：派发时写下的乐观 runState，如果名下会话拿不出受理物证，
     // 就证明这一轮从没被受理过 —— 不把这类卡片继续报成「执行中」（否则它会挂在
@@ -177,15 +267,22 @@ function mountAirRoutes(app, deps) {
     const hasTurnState = sessionId => core.sessionHasTurn(deps.records.get(sessionId));
     const projectNow = Date.now();
     const admission = deps.admission.snapshot();
+    lap('admissionMs');
     const admissionIdx = admissionIndex(admission);
     const lifecycle = lifecycleByDirectory(admission);
     const hibernationPolicy = (() => {
       try { return deps.hibernation?.()?.policy?.() || null; } catch (_) { return null; }
     })();
-    const tasks = boardTasks().map(t => {
+    lap('admissionIndexMs');
+    const cards = boardTasks();
+    timing?.set('cardCount', cards.length);
+    lap('cardListMs');
+    const tasks = cards.map(t => {
       const sessionId = t.chatSessionId || t.sessionId || null;
       const record = deps.records.get(sessionId);
-      const access = deps.shell.taskAccess(t);
+      // 两个逐卡嫌疑点各记一笔合计（单张卡片的读数太小，只有合计看得见走势）：
+      // taskAccess 是每条卡一次的单行读，mergeStateCached 可能把卡片排进 Git 状态队列。
+      const access = timedAdd('accessMs', () => deps.shell.taskAccess(t));
       const taskResource = resource(sessionId, admission, admissionIdx);
       // 外层卡片只需要回答「这份 worktree 还有东西没交付吗」，不要把完整 merge
       // 状态（冲突文件、分支细节等）复制进 4 秒一轮的 Air 快照。状态来自和任务页头
@@ -195,7 +292,7 @@ function mountAirRoutes(app, deps) {
       let worktreeChanges = null;
       if (record && ['resident', 'retained'].includes(taskResource.residency)
           && typeof deps.mergeStateCached === 'function') {
-        const mergeState = deps.mergeStateCached(deps.directories.get(record.dirId), record);
+        const mergeState = timedAdd('mergeStateMs', () => deps.mergeStateCached(deps.directories.get(record.dirId), record));
         if (mergeState && mergeState.reason !== 'loading' && mergeState.worktreeMissing !== true) {
           const ahead = Math.max(0, Number.parseInt(mergeState.ahead, 10) || 0);
           worktreeChanges = { dirty: mergeState.dirty === true, ahead };
@@ -223,7 +320,8 @@ function mountAirRoutes(app, deps) {
         // 未看过的结果（完成/出错/等回复）只在服务端记一份，所有客户端读同一个答案。
         attention: pendingAttention(t) };
     });
-    return { ok: true, directories: [...deps.directories.values()].map(d => ({
+    lap('cardLoopMs');
+    const payload = { ok: true, directories: [...deps.directories.values()].map(d => ({
       id: d.id, name: d.name, path: d.path,
       worktreeCount: worktreesByDir.get(d.id)?.size || 0,
       // 生命周期拆解（见 lifecycleByDirectory）：本地/休眠/计划各几个、此刻几个在用。
@@ -256,8 +354,25 @@ function mountAirRoutes(app, deps) {
             lastActivityAt: runtime ? runtime.lastActivity.getTime() : null,
             createdAt: Date.parse(s.createdAt) || null };
         }) };
+    lap('tailMs');
+    return payload;
   }
-  app.get('/api/air', route(async (req, res) => conditionalBody(req, res, await airSnapshot())));
+  // 分相位计时只在这里挂：计时对象每请求一个，响应正文与 ETag 与从前逐字节相同
+  // （数字只走日志，见 createPhaseReporter）。/api/air/tasks/:id 那条详情重得多，但先
+  // 把这一条的 390ms 拆开，别同时动两个变量。
+  const reportPhases = createPhaseReporter(deps.phaseDiagnostics, { lastLogAt: 0 });
+  let airBuildsInFlight = 0;
+  app.get('/api/air', route(async (req, res) => {
+    const timing = createPhaseTimer();
+    airBuildsInFlight += 1;
+    try {
+      return conditionalBody(req, res, await airSnapshot(timing), timing);
+    } finally {
+      airBuildsInFlight -= 1;
+      timing.set('inFlight', airBuildsInFlight);
+      reportPhases(timing, deps.logger);
+    }
+  }));
 
   // 主动回收：把空闲的 worktree 收起来（本地 checkout 删掉，分支与提交全部保留，
   // 下次打开这条任务时按需重建）。无人值守那条路是 session hibernation 的定时

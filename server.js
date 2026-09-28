@@ -2553,6 +2553,9 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
 
 require('./src/workspace/air-routes').mountAirRoutes(app, {
   admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
+  // 分相位计时（air_snapshot_slow）只在明显偏慢的轮次落一行，宿主接上 logger 才启用
+  // 「刚重启的两分钟每 5s 一行」那档，测试与工具进程拿不到它就自动静默。
+  logger,
   records: persistedSessions,
   // 运行时那张表（不是落盘的那张）：终端行要说准「进程还在不在、多久没动」，只有它
   // 知道。按引用传，所以每轮快照读到的都是当下的事实。
