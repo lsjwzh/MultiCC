@@ -485,6 +485,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/opencode_provider_parity_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/overlay_geometry_test.dart",
       "tier": "other",
       "lane": "flutter"
