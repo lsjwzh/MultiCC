@@ -25,82 +25,15 @@ const MIGRATION_DEBT = Object.freeze({
   // it crossed 3000 in 039c6e43 (跨目录控制台). 2026-09-27 删掉整块任务板 UI（老首页、
   // 目录详情浮层、任务板标签页与其级联的渲染类）后降到 699 行，已回到默认 3k 目标
   // 以内，于是这条登记按闸的要求退休 —— 别再把它加回来。
-  // public/air.js 和 src/chat/turn-engine.js 都在 0f276ebc（session
-  // multicc-claude-chat-06，2026-09-22T09:20）越过 3000：前者 3000 -> 3044，后者
-  // 2997 -> 3002，两个都没回来登记，于是这道闸在 main 上红了。之所以没人发现，
-  // 是因为当天的发版跑在更早的 Docker clean-install 就挂了，根本没走到 npm test。
-  // air.js 在 e8741e73 撤掉「打开对话重复取一次详情」后回到 3040，仍然超。
-  // 天花板同样是各自已提交的高水位，拆分哪个就压哪个，落到 <= target 时删掉这条。
-  // 保险箱页头（adminHeadings 加一条 secrets，页头才不会掉出原始 key）本该把这行加
-  // 回去，但闸只认字节不认「这条该不该有」：就地压掉同区几行注释的赘语把这笔抵掉了，
-  // 于是高水位继续往下走到 3039/163299。
-  // 工作区面板页头（adminHeadings 加一条 workspaces）用同样的办法就地抵掉，高水位
-  // 再往下压一格到 3038/163257。
-  // 定时任务「执行记录」（airScheduleRuns* 4 条键的卡片渲染 + 复用 scheduleTime）
-  // 让它长到 3062/164739：记录本身是产品要求，但这一格确实是该拆的 —— 下一次动
-  // 定时中心应把 renderSchedules 整块抽成独立模块，而不是继续抬这个天花板。
-  // Worktree 生命周期那一格（目录页的拆解 + 「现在回收」）整块落在新模块
-  // public/air-worktrees.js，air.js 只多了两处接线：目录卡那行文案改走
-  // MultiCCAirWorktrees.summary()（原表达式留作 fallback），render() 多一行把快照
-  // 递进去。三行注释 + 一段 fallback，没有别的 DOM 逻辑进来 —— 下一位再动目录页，
-  // 该拆的仍是 renderSchedules / renderDirectoryOverview，不是这里。
-  // 与工作区面板那条一起合入后，两个方向的增量都还在：合并树实测 3067/165249，
-  // 天花板就登记这个实测值（不抬到任何一个分支的旧值上去）。
-  // 工作区那一格搬成原生（air-workspaces.js）后，adminHeadings 里那条页头从硬写中文
-  // 改成 t()，行数不变、字节 +29；同区一段注释就地压掉抵账，高水位往下走到 165233。
-  // 目录侧拉 / 拖拽排序（air-directory-nav.js）在 render 里多递一行上下文，旁边两行
-  // 注释并成一行抵账，行数不变，字节降到 165226。
-  // 侧栏「最近任务」不再掺当前目录的任务（只留未读 + 打开过的）；直接 ?task= 打开的任务
-  // 改在 render() 里统一记进最近，refreshEntry 里那段记录连同长注释删掉：降到 3061/164707。
-  // 任务全文检索（public/task-search.js + GET /api/task-board/search）在 air.js 里有
-  // 三处接线：⌘K 面板与目录页各持一个控制器（paletteSearch / directorySearch），命中
-  // 时改用服务端算好的相关度顺序，并把命中片段当副标题/解释行摆出来。行数从 3064 长到
-  // 3094：其中 3 行（3061 -> 3064）是本轮之前就漂在 main 上的 —— 上一格的天花板登记在
-  // c22b8d2f，之后 4741474a 又碰了 air.js 却没回来改这里，这道闸在 main 上其实已经是红
-  // 的；剩下 30 行才是这次的接线。按惯例只登记实测高水位，不抬到别处；下一次动目录页或
-  // ⌘K，该拆的仍是 renderSchedules / renderDirectoryOverview，不是这几行接线。
-  // 搜索框加「搜索范围」开关（全部记录，含对话 / 仅任务标题与摘要）：目录页多一个
-  // select、一行渲染同步、一个 onchange，并默认落到「全部记录（含对话）」——旧默认只搜
-  // 任务标题摘要，只在对话里出现过的词根本搜不到。搜索口径另走 air-admin 的
-  // searchFilter()（永远搜全部记录，不套状态那格），目录页这里多两行算这份口径。
-  // ⌘K 面板没有放开关的位置，直接固定搜全部。行数 3094 -> 3118，其中 4 行仍是上面
-  // 那笔 main 既有漂移（3098），这次一并按实测高水位登记。
-  // 「等后台任务」独立成状态之后，这张表里的规范状态词全部改由注册表
-  // （status-presentation.js）的 airLabelKey 列经 airStatusLabels() 提供 —— 六个手抄的
-  // 状态条目（含把 B 说成「等待回答」的那个）连同一条中间变量一起删掉，`label()` 只多
-  // 一行去注册表折算别名。少掉的词换来一段解释「为什么规范状态不在这里再写一遍」的
-  // 注释，行数刚好抵平（3118 不变），字节按重排后的实测降到 169154。
-  // 2026-09-26 车道扶正（接着上面 air.js 那格）：多了一层线路展示壳
-  // （cliDisplayName / cliOptionLabel / laneRouteLabel / cliOffersInChat / firstChatCli
-  // 五个小助手），快速开始、定时任务、任务气泡三处改走它们，chat 的下拉一律滤掉一次性
-  // 车道。laneRouteLabel 是自持账号车道那处「WorkBuddy · WorkBuddy」去重 —— 产品名
-  // 扶正之后，路由名和车道名同源时会重一遍。行数 3118 -> 3148、字节
-  // 169154 -> 171301，全是接线；下一次动目录页或 ⌘K，该拆的仍是
-  // renderSchedules / renderDirectoryOverview。
-  // 2026-09-26 目录概览统计卡改版：四卡（进行中/计划/完成/全部）改为五卡可点击
-  // （运行中/等待回复/异常/完成/全部），renderDirectoryOverview 换成 taskStatus 统一
-  // 口径 + quickFilter。行数 3148 -> 3169、字节 171301 -> 172349，仍在同一段
-  // renderDirectoryOverview；下一次动目录页或 ⌘K，该拆的仍是这里。
-  // 2026-09-26 五卡里那张「完成」改口径：量的是这一轮的结局（taskStatus 的 succeeded
-  // = runState 折出来的执行成功），不再量生命周期 done（旧看板遗留，全库只剩个位数，
-  // 真正跑成功的任务一档也筛不出来）。滤值同步 'done' -> 'succeeded'，行数
-  // 3169 -> 3172、字节 172349 -> 172681，仍只在 renderDirectoryOverview 里。
-  // 2026-09-27 目录任务列表 pin-first（pinFirstInDirectory + 行上 📌 标记）：目录页
-  // 那份列表和侧栏一样，pin 住的排最前。行数 3172 -> 3113、字节 172681 -> 170305，
-  // 那 59 行是删掉「页内展开提交列表/diff」换独立 Git 管理器（git-manager.js）省下的。
-  // 2026-09-28 轮询自适应：快照连着两轮 304 就把 4s 拉到 15s（与后台标签页同档），
-  // 回到前台立刻对齐一次（idleRounds + visibilitychange，共 20 行）。服务端每轮要
-  // 重算全部卡片（线上 1189 张、实测 0.5s），闲置时这笔纯属白烧电；行数只涨在 poll
-  // 这一段，该拆的仍是页内那份目录渲染。按实测高水位登记 3133/171642。
-  // 2026-09-28 「● N 个未提交文件（主检出）」那颗从纯标签改成可点按钮（点开就地展开
-  // 文件清单，展开态存进 directoryGitView.filesOpen，免得每次重绘又收起）：paintDirectoryGit
-  // 里多了一段按钮 + toggle 接线，行数 3108（split 计数，比 wc -l 多 1）、字节 170451，
-  // 仍在同一段；下一次动目录页，该拆的仍是 renderSchedules / renderDirectoryOverview。
-  'public/air.js': Object.freeze({
-    ceiling: 3108,
-    byteCeiling: 170451,
-    target: 3000,
-  }),
+  // public/air.js 曾在 0f276ebc（session multicc-claude-chat-06，2026-09-22T09:20）越过
+  // 3000（3000 -> 3044）且没回来登记，这道闸因此在 main 上红过一阵 —— 那之后每一格增量
+  // 都按实测高水位登记一回，一路抬到 3108/170451；登记的注释末尾一直写着「下一次动目录页
+  // 或定时中心，该拆的仍是 renderSchedules / renderDirectoryOverview」。
+  // 2026-09-29 定时任务「脚本任务」这一轮兑现了前半句：renderSchedules 那一族（列表 +
+  // 唯一那张表单 + 运行/暂停/重绑/删除四个动作，共 206 行）整块搬进
+  // public/air-schedule-center.js，air.js 只留一次 bind()，落到 2903/160035 —— 回到默认
+  // 3k 目标以内，于是这条登记按闸的要求退休，别再把它加回来。该拆的还剩页内那份目录
+  // 渲染（renderDirectoryOverview）。
   // turn-engine.js returned below 3000 while fixing native UUID preparation.
   // public/manage.js crossed 3000 in b4427cf before the budget gate caught it;
   // paid back down to 2632 by splitting the aux-history UI (modal/panel/ws,
@@ -150,11 +83,8 @@ const MIGRATION_DEBT = Object.freeze({
   // FIFO 暂存消息双击改正文（createEditHandler + configure 的 onEdit）各加了十几行。
   // 高水位按实测登记 3022/153645；下一次动 chat.js 该拆的是它那 3000 行渲染/事件
   // 编排，而不是继续抬天花板。
-  'public/chat.js': Object.freeze({
-    ceiling: 3022,
-    byteCeiling: 153645,
-    target: 3000,
-  }),
+  // 2026-09-28 前后它自己降回 2993（<= 3000），这条登记按闸的要求退休 —— 别再把它
+  // 加回来。该拆的仍是渲染/事件编排。
 });
 
 // Reviewed third-party/generated assets are not first-party maintainability
@@ -348,10 +278,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // （中英各 2 行 = +4）。重跑生成器实测 7180 行 / 448479 字节，按棘轮登记到这一格。
   // 2026-09-28 目录 Git 状态那颗「● N 个未提交文件」可点开后补 1 键 airGitDirtyHint
   // （中英各 1 行 = +2）；与上面抽屉那两键合流后，按本树重跑生成器的真实值登记。
+  // 定时任务「脚本任务」类型补 12 键（airScheduleKind / KindAgent / KindScript /
+  // ScriptIntro / Command / CommandPlaceholder / CommandHint / CreateScript /
+  // ScriptPanelNote / ScriptExit / ScriptRan / ScriptRunFailed，中英各 12 行 = +24 行）。
+  // 只改文案（airScheduleCommandHint 指到 examples/cron-scripts/）不增行，只长字节：
+  // 按最后一版重跑生成器的真实值登记 7206/450584。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7182,
-    maxBytes: 448543,
+    maxLines: 7206,
+    maxBytes: 450584,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

@@ -3585,5 +3585,17 @@
   "airGlobalUnlockChange": "Update password",
   "airGlobalUnlockForget": "Delete saved password",
   "airGlobalUnlockCancel": "Cancel",
-  "airGlobalPowerExternal": "This switch is off. System sleep is still disabled, possibly by another app or setting."
+  "airGlobalPowerExternal": "This switch is off. System sleep is still disabled, possibly by another app or setting.",
+  "airScheduleKind": "Task type",
+  "airScheduleKindAgent": "Model task",
+  "airScheduleKindScript": "Script rule",
+  "airScheduleScriptIntro": "A script rule creates no pinned task and never touches a model: each firing runs the command in the working directory, and its exit code plus the tail of the output go into the run history.",
+  "airScheduleCommand": "Script command",
+  "airScheduleCommandPlaceholder": "e.g. /usr/bin/python3 ~/.multicc/watch.py --once",
+  "airScheduleCommandHint": "Runs in the working directory. A non-zero exit code counts as a failure, and the tail of the output is kept in the run history. See examples/cron-scripts/ for a worked case (board state → session API → WeChat alert).",
+  "airScheduleCreateScript": "Create script rule",
+  "airScheduleScriptPanelNote": "Local command · no model session",
+  "airScheduleScriptExit": "Last exit code {code}",
+  "airScheduleScriptRan": "Script finished (exit 0)",
+  "airScheduleScriptRunFailed": "Script exited with code {code}"
 }

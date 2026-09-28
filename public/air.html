@@ -557,13 +557,18 @@
         <div><span class="eyebrow">SCHEDULED AIR TASK</span><h2 id="schedule-dialog-title" data-i18n="airNewScheduledTask">新建定时任务</h2></div>
         <button type="button" id="schedule-close" aria-label="关闭" data-i18n-aria-label="airDlgClose">×</button>
       </div>
-      <p data-i18n="airScheduleIntro">创建后会生成一个固定 Air 任务。Provider、模型、推理强度和角色都在该任务中继续配置。</p>
+      <p id="schedule-agent-intro" data-i18n="airScheduleIntro">创建后会生成一个固定 Air 任务。Provider、模型、推理强度和角色都在该任务中继续配置。</p>
+      <p id="schedule-script-intro" hidden data-i18n="airScheduleScriptIntro">脚本任务不创建固定任务，也不经过大模型：每次触发直接在工作目录里跑这条命令，退出码和输出末尾记进执行记录。</p>
       <input name="id" type="hidden">
       <label><span data-i18n="airScheduleName">任务名称</span><input name="name" required maxlength="80" placeholder="例如：每日投放数据" data-i18n-placeholder="airScheduleNamePlaceholder"></label>
       <div class="form-row">
+        <label><span data-i18n="airScheduleKind">任务类型</span><select name="kind" id="schedule-kind">
+          <option value="agent" data-i18n="airScheduleKindAgent">大模型任务</option>
+          <option value="script" data-i18n="airScheduleKindScript">脚本任务</option>
+        </select></label>
         <label><span data-i18n="airWorkspace">工作目录</span><select name="dirId" required></select></label>
-        <label><span data-i18n="airScheduleCli">初始 CLI</span><select name="cli" required></select></label>
       </div>
+      <label id="schedule-cli-field"><span data-i18n="airScheduleCli">初始 CLI</span><select name="cli" required></select></label>
       <p id="schedule-fixed-note" class="schedule-fixed-note" hidden data-i18n="airScheduleFixedNote">工作目录和执行配置已经归属于固定任务。如需调整 CLI / Provider，请打开固定任务后修改 AI 配置。</p>
       <label><span data-i18n="airScheduleCron">Cron 表达式</span><input name="cron" required maxlength="80" value="0 9 * * *" placeholder="分 时 日 月 周" data-i18n-placeholder="airScheduleCronPlaceholder"></label>
       <div id="schedule-presets" class="schedule-presets" aria-label="常用时间" data-i18n-aria-label="airSchedulePresets">
@@ -572,7 +577,9 @@
         <button type="button" data-cron="*/30 * * * *" data-i18n="airCronEvery30">每 30 分钟</button>
         <button type="button" data-cron="0 9 * * 1" data-i18n="airCronWeeklyMon9">每周一 09:00</button>
       </div>
-      <label><span data-i18n="airSchedulePrompt">执行指令</span><textarea name="prompt" required rows="6" maxlength="32000" placeholder="每次触发时发送到固定任务的完整指令" data-i18n-placeholder="airSchedulePromptPlaceholder"></textarea></label>
+      <label id="schedule-prompt-field"><span data-i18n="airSchedulePrompt">执行指令</span><textarea name="prompt" required rows="6" maxlength="32000" placeholder="每次触发时发送到固定任务的完整指令" data-i18n-placeholder="airSchedulePromptPlaceholder"></textarea></label>
+      <label id="schedule-command-field" hidden><span data-i18n="airScheduleCommand">脚本命令</span><textarea name="command" rows="6" maxlength="4000" placeholder="例如：/usr/bin/python3 ~/.multicc/watch.py --once" data-i18n-placeholder="airScheduleCommandPlaceholder"></textarea>
+        <small data-i18n="airScheduleCommandHint">在「工作目录」下执行；非 0 退出码记为一次失败，输出末尾会进执行记录。</small></label>
       <label class="schedule-enabled"><input name="enabled" type="checkbox" checked> <span data-i18n="airScheduleEnableNow">创建后立即启用</span></label>
       <p id="schedule-error" role="alert"></p>
       <div class="schedule-form-actions">
@@ -735,6 +742,9 @@
        不改 air.js 一个字节，理由写在 public/air-dir-schedules.js 里。排在 air.js 前面：
        DOMContentLoaded 挂载时 #directory-memo / #directory-artifacts 已在静态 HTML 里。 -->
   <script src="air-dir-schedules.js"></script>
+  <!-- 定时任务中心（列表 + 唯一那张表单 + 四个动作）本体。排在 air.js 前面：air.js
+       启动时调 MultiCCAirSchedules.bind() 把「通知/跳转/刷新/目录快照」递进去。 -->
+  <script src="air-schedule-center.js"></script>
   <script src="git-manager.js"></script>
   <script src="air.js"></script>
   <script src="air-more.js"></script>

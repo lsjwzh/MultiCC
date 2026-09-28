@@ -199,8 +199,10 @@ test('the directory home opens its own scheduled rules in an in-page sheet', asy
     assert.ok(await page.waitFor(`document.getElementById('schedule-dialog').open === false`));
     const edits = requestsOf(page, 'PATCH', '/api/cron/c1');
     assert.equal(edits.length, 2, '编辑走的是同一颗 PATCH，不再是 POST');
-    assert.deepEqual(JSON.parse(edits[1].body), { name: '每日投放数据 v2', cron: '0 10 * * *', prompt: '整理昨天的投放数据并归档。', enabled: false },
-      '改规则时 PATCH 只带这四个字段（dirId / cli 属于固定任务）');
+    // kind 跟着一起发（大模型任务 ↔ 脚本任务是可以改的），其余照旧：dirId / cli 属于那个
+    // 固定任务，改规则时不发。
+    assert.deepEqual(JSON.parse(edits[1].body), { name: '每日投放数据 v2', cron: '0 10 * * *', prompt: '整理昨天的投放数据并归档。', enabled: false, kind: 'agent' },
+      '改规则时 PATCH 不带 dirId / cli（那属于固定任务）');
     assert.equal(requestsOf(page, 'POST', '/api/cron').length, 0, '编辑没有顺手 POST 一条新的');
     // 编辑器一关，这一层自己重读：新名字直接出现在卡片上。
     assert.ok(await page.waitFor(`document.querySelectorAll('#dir-schedule-list .schedule-card')[0].querySelector('h3').textContent === '每日投放数据 v2'`));

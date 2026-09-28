@@ -133,20 +133,45 @@ A task's pending question surfaces three ways, all one semantic: the chat view's
 
 ## Cron Jobs
 
+Two task kinds are supported. `kind: 'agent'` (default) owns a fixed Air task and
+dispatches the prompt to it on every firing; `kind: 'script'` runs a local command
+in the rule's working directory and records the exit code + output tail — no LLM
+session is spawned, so simple periodic jobs (e.g. a python watchdog) don't need a
+constant model session.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/cron` | List scheduled tasks with next-run and last-run status |
 | `POST` | `/api/cron` | Create a five-field cron task targeting a directory |
-| `PATCH` | `/api/cron/:id` | Update schedule, prompt, target directory, CLI, or enabled state |
+| `PATCH` | `/api/cron/:id` | Update schedule, prompt/command, target directory, CLI, or enabled state |
 | `DELETE` | `/api/cron/:id` | Delete a scheduled task |
 | `POST` | `/api/cron/:id/run` | Trigger one scheduled task immediately |
+| `POST` | `/api/cron/:id/rebind` | Rebind the fixed Air task (agent kind only) |
 
-Example:
+Example (agent):
 ```bash
 curl -s "$MULTICC_BASE_URL/api/cron" \
   -H 'Content-Type: application/json' \
   -d '{"name":"Daily review","dirPath":"'"$PWD"'","cli":"claude","cron":"0 9 * * *","prompt":"Review the repo status and summarize risks."}'
 ```
+
+Example (script — no LLM involved):
+```bash
+curl -s "$MULTICC_BASE_URL/api/cron" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"WeChat alert watchdog","dirPath":"'"$PWD"'","kind":"script","command":"/usr/bin/python3 '"$HOME"'/.multicc/wechat-alert/wechat-alert.py --config '"$HOME"'/.multicc/wechat-alert/config-cron.json","cron":"* * * * *","scriptTimeoutMs":120000}'
+```
+
+Script runs carry `exitCode` and a bounded `output` tail in `recentRuns`; the
+rule view exposes `kind`, `command`, `lastExitCode` and `lastOutput`. Rebind and
+the `cli`/`provider`/`model`/`effort` fields are not applicable to script tasks.
+
+`examples/cron-scripts/wechat-alert.py` is the reference case for this kind:
+it reads `GET /api/air`, keeps the tasks whose `runState` is in `watchStates`,
+and hands one merged message per round to the relay session via
+`POST /api/sessions/<relaySessionId>/scheduled-messages`. It runs once per
+invocation — the cron expression is the loop — keeps its dedup/rate-limit state
+in a JSON file next to its config, and never re-alerts history on its first run.
 
 ## Files
 
