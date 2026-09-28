@@ -39,11 +39,11 @@ void main() {
     expect(screen, contains("import '../services/message_quote.dart';"));
   });
 
-  test('气泡弹层问「有没有输入框」，并复用同一份文案', () {
+  test('气泡菜单问「有没有输入框」，并复用同一份文案', () {
     final bubble = readSource('lib/widgets/message_bubble.dart');
     expect(bubble, contains('buildMessageQuote(message)'));
     // 没有输入框就别摆入口 —— 摆了也点不出结果。
-    expect(bubble, contains('provider?.quoteInserter == null'));
+    expect(bubble, contains('provider?.quoteInserter != null'));
     expect(bubble, contains("I18n.of('msgQuoteAction')"));
     expect(bubble, contains("I18n.of('msgQuoteUnavailable')"));
     expect(bubble, contains("import '../services/message_quote.dart';"));

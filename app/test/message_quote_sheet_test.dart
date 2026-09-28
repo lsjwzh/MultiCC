@@ -11,11 +11,17 @@ import 'package:multicc_app/services/quota_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/message_bubble.dart';
 
-// 引用功能的**入口**：气泡长按弹层里的「引用这条消息」。
+// 引用功能的**入口**：长按气泡后菜单里的「引用这条消息」。
 //
 // 这一条最值得单独测，因为它没有会自己报错的形态：输入框通道（provider 的
-// quoteInserter）没人登记，弹层里就少一行 —— 不抛错、不留痕，功能静悄悄地没
+// quoteInserter）没人登记，菜单里就少一行 —— 不抛错、不留痕，功能静悄悄地没
 // 了。所以这里既测「有输入框时给得出来」，也测「没输入框时根本别摆」。
+//
+// 菜单的宿主已经换成系统的选择工具条（长按选中 → iOS 的系统条，App 的动作追加在
+// 系统条目之后，见 `_MessageSelection`）。手势那一段由 message_bubble_task_test
+// 和 message_copy_action_test 端到端盯着；这里问的是「摆不摆、点了会怎样」，所以
+// 直接走 `availableMessageActions` / `runMessageAction` —— 也就是工具条按下的
+// 那两条函数，免得为了一个判定去凑字体度量。
 
 class _Quota extends QuotaService {
   _Quota(SettingsService settings) : super(settings: settings);
@@ -25,7 +31,7 @@ class _Quota extends QuotaService {
   Future<Map<String, dynamic>?> fetchIdleBars() async => null;
 }
 
-/// 一个连不通任何地方的 provider：这里关心的是弹层怎么决定，不是网络。主机指向
+/// 一个连不通任何地方的 provider：这里关心的是菜单怎么决定，不是网络。主机指向
 /// 一个几乎不可能在监听的端口，失败只会走重连退避 —— 测试里 pump 的量级够不到
 /// 第一次退避。
 ///
@@ -61,20 +67,6 @@ void main() {
         timestamp: DateTime(2026, 9, 14, 9, 30),
       );
 
-  /// 长按气泡直接调它的 onLongPress：markdown 正文上的像素级手势在测试环境里
-  /// 不稳（字体度量），而这里要测的是「弹层里有什么」。
-  Future<void> openSheet(WidgetTester tester) async {
-    final gd = tester.widget<GestureDetector>(
-      find.descendant(
-        of: find.byType(MessageBubble),
-        matching: find.byType(GestureDetector),
-      ),
-    );
-    gd.onLongPress!();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
-  }
-
   Future<void> host(
     WidgetTester tester,
     ChatProvider provider,
@@ -88,18 +80,43 @@ void main() {
     ),
   );
 
-  testWidgets('有输入框时，弹层里能引用，并把引用块交给输入框', (tester) async {
+  /// 这条消息的菜单里摆了哪几行（顺序即展示顺序）。
+  List<String> menuEntries(WidgetTester tester, ChatMessage message) {
+    final context = tester.element(find.byType(MessageBubble));
+    return [
+      for (final action in availableMessageActions(context, message))
+        messageActionLabel(action),
+    ];
+  }
+
+  /// 点菜单里的某一行 —— 走的是工具条按下时那条函数。
+  Future<void> tapEntry(
+    WidgetTester tester,
+    ChatMessage message,
+    String label,
+  ) async {
+    final action = MessageAction.values.firstWhere(
+      (a) => messageActionLabel(a) == label,
+    );
+    await runMessageAction(
+      tester.element(find.byType(MessageBubble)),
+      message,
+      action,
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
+
+  testWidgets('有输入框时，菜单里能引用，并把引用块交给输入框', (tester) async {
     final provider = await idleProvider();
     final inserted = <String>[];
     provider.quoteInserter = inserted.add;
     try {
-      await host(tester, provider, row(content: '登录接口已经改成走统一网关。'));
-      await openSheet(tester);
+      final msg = row(content: '登录接口已经改成走统一网关。');
+      await host(tester, provider, msg);
 
-      expect(find.text('引用这条消息'), findsOneWidget);
-      await tester.tap(find.text('引用这条消息'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+      expect(menuEntries(tester, msg), contains('引用这条消息'));
+      await tapEntry(tester, msg, '引用这条消息');
 
       expect(inserted, hasLength(1));
       expect(inserted.single, contains('任务「完善登录页面」（tsk_1）'));
@@ -113,11 +130,11 @@ void main() {
   testWidgets('没有输入框的宿主压根不摆这个入口', (tester) async {
     final provider = await idleProvider();
     try {
-      await host(tester, provider, row(content: '登录接口已经改成走统一网关。'));
-      await openSheet(tester);
+      final msg = row(content: '登录接口已经改成走统一网关。');
+      await host(tester, provider, msg);
 
-      expect(find.text('复制内容'), findsOneWidget);
-      expect(find.text('引用这条消息'), findsNothing);
+      expect(menuEntries(tester, msg), contains('复制内容'));
+      expect(menuEntries(tester, msg), isNot(contains('引用这条消息')));
     } finally {
       provider.dispose();
     }
@@ -128,12 +145,10 @@ void main() {
     final inserted = <String>[];
     provider.quoteInserter = inserted.add;
     try {
-      await host(tester, provider, row(content: '正在写的一半…', id: null));
-      await openSheet(tester);
+      final msg = row(content: '正在写的一半…', id: null);
+      await host(tester, provider, msg);
 
-      await tester.tap(find.text('引用这条消息'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+      await tapEntry(tester, msg, '引用这条消息');
 
       expect(inserted, isEmpty);
       expect(find.text('这条消息还没有落库，暂时引用不了'), findsOneWidget);
@@ -146,10 +161,10 @@ void main() {
     final provider = await idleProvider();
     provider.quoteInserter = (_) {};
     try {
-      await host(tester, provider, row(content: '   '));
-      await openSheet(tester);
+      final msg = row(content: '   ');
+      await host(tester, provider, msg);
 
-      expect(find.text('引用这条消息'), findsNothing);
+      expect(menuEntries(tester, msg), isNot(contains('引用这条消息')));
     } finally {
       provider.dispose();
     }

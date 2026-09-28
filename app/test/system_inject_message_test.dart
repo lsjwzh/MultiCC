@@ -110,14 +110,22 @@ void main() {
     });
 
     testWidgets('长按注入卡能删除（落库后），只读转录只给复制', (tester) async {
+      // 菜单挂在系统的选择工具条上（长按选中 → 系统条），所以这里走真实长按，
+      // 顺带证明注入卡的标题确实落在选择域里。
+      Future<void> openMenu() async {
+        await tester.longPress(find.text('后台任务完成'));
+        await tester.pumpAndSettle();
+      }
+
       await tester.pumpWidget(host(
         MessageBubble(message: injected('🔇 【后台任务完成】\n任务已结束')),
       ));
-      await tester.longPress(find.text('后台任务完成'));
-      await tester.pumpAndSettle();
+      await openMenu();
       expect(find.text(t('msgCopyAction')), findsOneWidget);
       expect(find.text(t('msgDeleteAction')), findsOneWidget);
-      Navigator.of(tester.element(find.text(t('msgCopyAction')))).pop();
+
+      // 工具条不是路由，不能 pop：整棵树换掉，免得它跟着进下一轮断言。
+      await tester.pumpWidget(host(const SizedBox()));
       await tester.pumpAndSettle();
 
       await tester.pumpWidget(host(
@@ -126,8 +134,7 @@ void main() {
           enableServerActions: false,
         ),
       ));
-      await tester.longPress(find.text('后台任务完成'));
-      await tester.pumpAndSettle();
+      await openMenu();
       expect(find.text(t('msgCopyAction')), findsOneWidget);
       expect(find.text(t('msgDeleteAction')), findsNothing);
     });
