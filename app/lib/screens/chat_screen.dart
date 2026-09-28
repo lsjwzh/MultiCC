@@ -910,6 +910,41 @@ class _ChatViewState extends State<ChatView> {
                             : () => unawaited(_deleteBoundTask(provider)),
                         advancedMode: widget.settings.advancedMode.value,
                       ),
+                      // The pending-answer card lives OUTSIDE the scrolling
+                      // notices. ChatNoticeScroller becomes a reverse-anchored
+                      // scroll view while the keyboard is up, and a card at the
+                      // top of that list would have its question and first
+                      // options scrolled out of view — the app then showed only
+                      // a sliver wedged under the header. As a plain sibling it
+                      // stays fully visible, matching the web client, whose
+                      // #pending-user-input-card is a flex-shrink:0 item above
+                      // #messages. Its maxHeight is measured against the
+                      // keyboard-excluded body height, so a raised keyboard
+                      // shrinks the card instead of clipping its top.
+                      if (provider.pendingUserInput != null &&
+                          !provider.pendingUserInputCollapsed)
+                        _CenteredChatLane(
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxHeight: constraints.maxHeight * 0.38,
+                            ),
+                            child: SingleChildScrollView(
+                              padding: const EdgeInsets.fromLTRB(10, 7, 10, 0),
+                              child: PendingUserInputPanel(
+                                input: provider.pendingUserInput!,
+                                enabled:
+                                    provider.connectionState ==
+                                    ChatConnectionState.connected,
+                                onAnswer: provider.sendMessage,
+                                onSecretSubmit: (value) =>
+                                    provider.submitPendingSecret(value),
+                                onCollapse: provider.collapsePendingUserInput,
+                                onDismiss: () =>
+                                    _dismissPendingUserInput(provider),
+                              ),
+                            ),
+                          ),
+                        ),
                       // The keyboard shortens this sheet without shortening its
                       // notices. Let the notices scroll in the space left after
                       // the header and composer, so a worktree warning cannot
@@ -917,38 +952,6 @@ class _ChatViewState extends State<ChatView> {
                       ChatNoticeScroller(
                         keyboardVisible: keyboardVisible,
                         children: [
-                              if (provider.pendingUserInput != null &&
-                                  !provider.pendingUserInputCollapsed)
-                                _CenteredChatLane(
-                                  child: ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                      maxHeight:
-                                          MediaQuery.sizeOf(context).height *
-                                          0.38,
-                                    ),
-                                    child: SingleChildScrollView(
-                                      padding: const EdgeInsets.fromLTRB(
-                                        10,
-                                        7,
-                                        10,
-                                        0,
-                                      ),
-                                      child: PendingUserInputPanel(
-                                        input: provider.pendingUserInput!,
-                                        enabled:
-                                            provider.connectionState ==
-                                            ChatConnectionState.connected,
-                                        onAnswer: provider.sendMessage,
-                                        onSecretSubmit: (value) =>
-                                            provider.submitPendingSecret(value),
-                                        onCollapse:
-                                            provider.collapsePendingUserInput,
-                                        onDismiss: () =>
-                                            _dismissPendingUserInput(provider),
-                                      ),
-                                    ),
-                                  ),
-                                ),
                               // Liveness pill: only working (🟢) and stalled (🔴) earn a
                               // dedicated line — they say "a turn is running / stuck".
                               // idle (🟡) and unknown (⚪) are the resting states; a
