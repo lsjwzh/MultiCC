@@ -25,6 +25,17 @@ function conditionalBody(req, res, payload) {
   return undefined;
 }
 
+// 迁移结果里那份 `tasks` 是宿主用来省掉第二遍全表扫描的内部载荷（见
+// task-shell/host.js：迁移已经把 task 全表读过一遍并带回来了）。它不是这份快照
+// 要回答的东西 —— 客户端只用 `errors`（见 public/air.js 的 airMigrationPending）
+// —— 而 445 条完整任务体一旦随快照发出去，每轮正文会从 0.74MB 撑到 5.5MB，
+// 每 4 秒让浏览器解析一次。这里按白名单式地剔掉它，其余字段原样透传。
+function publicMigration(migration) {
+  if (!migration || typeof migration !== 'object') return migration;
+  const { tasks: _internalTasks, ...published } = migration;
+  return published;
+}
+
 // Air reads canonical task records through the task-shell/board authority.
 // The client cannot mint a workspace permit, writer proof or attribution fact.
 function mountAirRoutes(app, deps) {
@@ -95,16 +106,29 @@ function mountAirRoutes(app, deps) {
     return byDir;
   }
 
-  function resource(sessionId, snapshot = deps.admission.snapshot()) {
+  // 卡片查自己的 workspace/lease 原本是两次 find()：1069 张卡片 × 1228 条记录，
+  // 平方级的扫描。一次请求里 admission 快照是同一份对象，折成两张 Map 就够，
+  // 命中规则与 find() 一致（同一个 key 取最先出现的那条）。
+  function admissionIndex(snapshot) {
+    const workspaceByOwner = new Map(), leaseByWorkspace = new Map();
+    for (const workspace of snapshot.workspaces || []) {
+      if (workspace.ownerId && !workspaceByOwner.has(workspace.ownerId)) workspaceByOwner.set(workspace.ownerId, workspace);
+    }
+    for (const lease of snapshot.leases || []) {
+      if (lease.workspaceId && !leaseByWorkspace.has(lease.workspaceId)) leaseByWorkspace.set(lease.workspaceId, lease);
+    }
+    return { workspaceByOwner, leaseByWorkspace };
+  }
+  function resource(sessionId, snapshot = deps.admission.snapshot(), index = admissionIndex(snapshot)) {
     const record = deps.records.get(sessionId);
-    const workspace = snapshot.workspaces.find(w => w.ownerId === (record?.workspaceOwnerSessionId || sessionId));
-    const lease = workspace && snapshot.leases.find(l => l.workspaceId === workspace.id);
+    const workspace = index.workspaceByOwner.get(record?.workspaceOwnerSessionId || sessionId);
+    const lease = workspace ? index.leaseByWorkspace.get(workspace.id) : null;
     return { id: workspace?.id || null, residency: workspace?.residency || (record?.workspaceState === 'planned' ? 'planned' : record ? 'retained' : 'planned'),
       lease: lease?.state || 'idle', capacityReason: workspace && !lease ? deps.admission.capacityReason(workspace.id) : null, reason: lease?.reason || null, pins: workspace?.pins || [],
       path: workspace?.path || record?.worktreePath || null, branch: workspace?.branch || record?.branch || null };
   }
   async function airSnapshot() {
-    const migration = await deps.shell.migrateTaskSessions?.();
+    const migration = publicMigration(await deps.shell.migrateTaskSessions?.());
     // 新任务输入框要「随时更新成最近用过的那套配置」，而不是每次都退回
     // 「默认线路 · 默认模型」。这里从会话记录里取 lastWorkAt 最新的 chat 会话
     // 的运行时，随快照一起下发。只读、不另落盘：「最近使用」本身就是会话
@@ -153,6 +177,7 @@ function mountAirRoutes(app, deps) {
     const hasTurnState = sessionId => core.sessionHasTurn(deps.records.get(sessionId));
     const projectNow = Date.now();
     const admission = deps.admission.snapshot();
+    const admissionIdx = admissionIndex(admission);
     const lifecycle = lifecycleByDirectory(admission);
     const hibernationPolicy = (() => {
       try { return deps.hibernation?.()?.policy?.() || null; } catch (_) { return null; }
@@ -161,7 +186,7 @@ function mountAirRoutes(app, deps) {
       const sessionId = t.chatSessionId || t.sessionId || null;
       const record = deps.records.get(sessionId);
       const access = deps.shell.taskAccess(t);
-      const taskResource = resource(sessionId, admission);
+      const taskResource = resource(sessionId, admission, admissionIdx);
       // 外层卡片只需要回答「这份 worktree 还有东西没交付吗」，不要把完整 merge
       // 状态（冲突文件、分支细节等）复制进 4 秒一轮的 Air 快照。状态来自和任务页头
       // 同一份缓存；首次读取触发后台刷新，下一轮快照自然带上结果。只触发磁盘上真实

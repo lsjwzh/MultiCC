@@ -456,7 +456,9 @@ function createTaskShellHost(deps) {
     migrateTaskSessions: async () => {
       const rt = getRuntime(), result = await rt.migrateTaskSessions([...deps.records.values()]);
       const ready = new Set(result.migrated);
-      const bindings = rt.listTasks().filter(task => ready.has(task.id) && deps.records.has(task.sessionId)
+      // 迁移刚把 task 全表读过一遍并带回来了，别再扫第二遍（每轮 /api/air 一次）。
+      const tasks = Array.isArray(result.tasks) ? result.tasks : rt.listTasks();
+      const bindings = tasks.filter(task => ready.has(task.id) && deps.records.has(task.sessionId)
         && !deps.records.get(task.sessionId).taskBoundTaskId);
       if (bindings.length) deps.persistRecords('task-first.bind-executions', records => {
         for (const task of bindings) {
