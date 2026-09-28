@@ -15,6 +15,7 @@ import '../services/auto_provider_routing.dart';
 import '../services/manage_service.dart';
 import '../services/claude_models_service.dart';
 import '../services/codex_models_service.dart';
+import '../services/opencode_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -141,7 +142,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   String _autoError = '';
 
   // Jev key 步骤（与 web 的 routingKey 流程同一套状态机）。
-  String _jevState = 'unknown'; // unknown | checking | present | missing | error
+  String _jevState =
+      'unknown'; // unknown | checking | present | missing | error
   bool _jevFormOpen = false;
   bool _jevSaving = false;
   String _jevResult = '';
@@ -157,6 +159,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   void initState() {
     super.initState();
     _provider = widget.cli.supportsProvider ? widget.provider : '';
+    if (widget.cli == SessionCli.opencode && _provider.isEmpty) {
+      _provider = openCodeNativeProviderForModel(
+        widget.model,
+        widget.providers,
+      );
+    }
     if (_provider.isEmpty) {
       for (final p in widget.providers) {
         if (p['builtinOfficial'] == true &&
@@ -428,9 +436,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _jevResult = t('autoEditorJevKeySaveFailed', {
-          'reason': '$error',
-        });
+        _jevResult = t('autoEditorJevKeySaveFailed', {'reason': '$error'});
         _jevResultGood = false;
       });
     } finally {
@@ -480,8 +486,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     final code = '${result['code'] ?? ''}';
     final status = (result['status'] as num?)?.toInt() ?? 0;
     if (code == 'jev_key_missing') return t('autoEditorJevErrKeyMissing');
-    if (status == 401 || status == 403 ||
-        code == 'jev_http_401' || code == 'jev_http_403') {
+    if (status == 401 ||
+        status == 403 ||
+        code == 'jev_http_401' ||
+        code == 'jev_http_403') {
       return t('autoEditorJevErrKeyInvalid', {
         'status': '${status != 0 ? status : code.substring(code.length - 3)}',
       });
@@ -531,6 +539,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     // 表（SessionCli.displayName，源自 app/lib/utils/cli_display.dart），不再抄五遍。
     if (!widget.cli.supportsProvider) return widget.cli.displayName;
     if (id.isEmpty) {
+      if (widget.cli == SessionCli.opencode) {
+        return 'OpenCode 原生配置（全部模型）';
+      }
       for (final p in widget.providers) {
         final providerId = p['id']?.toString() ?? '';
         if (p['builtinOfficial'] == true ||
@@ -577,6 +588,16 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     }
     if (widget.cli == SessionCli.grok) {
       return kGrokModelOptions.map((option) => option.key).toList();
+    }
+    if (widget.cli == SessionCli.opencode && provider.isEmpty) {
+      return ['', ...openCodeNativeModelOptions(widget.providers)];
+    }
+    if (widget.cli == SessionCli.opencode &&
+        isOpenCodeNativeProvider(provider)) {
+      final options = _providerMap(provider)?['modelOptions'];
+      return options is List
+          ? options.map((value) => value.toString()).toList()
+          : const [];
     }
     final resolvedProvider = _providerMap(provider);
     if (_isCodex &&
@@ -913,6 +934,14 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         routing: routing,
       );
     }
+    final providerLabel = providerSelection == null
+        ? _providerName(provider)
+        : 'Auto · ${_protocolLabel(providerSelection.protocol)} → ${_providerName(provider)}';
+    final modelLabel = _modelResultLabel(provider, model);
+    if (widget.cli == SessionCli.opencode &&
+        isOpenCodeNativeProvider(provider)) {
+      provider = '';
+    }
     // 子任务：模型有值才算数（只选线路不选模型 = 没设）。线路留空时用这一轮
     // 实际生效的主 Provider —— Auto 档下就是排第一的那个启用候选。
     final subProvider = _subProvider.isEmpty ? provider : _subProvider;
@@ -926,10 +955,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         provider: provider,
         model: model,
         effort: _effort,
-        providerLabel: providerSelection == null
-            ? _providerName(provider)
-            : 'Auto · ${_protocolLabel(providerSelection.protocol)} → ${_providerName(provider)}',
-        modelLabel: _modelResultLabel(provider, model),
+        providerLabel: providerLabel,
+        modelLabel: modelLabel,
         effortLabel: effortShortNameForCli(widget.cli, _effort),
         providerSelection: providerSelection,
         subagent: subagent,
@@ -995,7 +1022,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   _autoRoutingEnabled
                       ? t('autoEditorListHintRouting')
                       : t('autoEditorListHintOrder'),
-                  style: const TextStyle(color: AppColors.faint, fontSize: 10.5),
+                  style: const TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 10.5,
+                  ),
                 ),
               ),
             ],
@@ -1141,9 +1171,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                         child: Text(t(choice.$2)),
                       ),
                   ],
-                  onChanged: (value) => setState(
-                    () => _autoRoutingOnUnknown = value ?? 'strong',
-                  ),
+                  onChanged: (value) =>
+                      setState(() => _autoRoutingOnUnknown = value ?? 'strong'),
                 ),
               ],
             ),
@@ -1231,7 +1260,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
           order
               ? t('autoEditorModeOrderDetail')
               : t('autoEditorModeRoutingDetail'),
-          style: const TextStyle(color: AppColors.muted, fontSize: 11, height: 1.35),
+          style: const TextStyle(
+            color: AppColors.muted,
+            fontSize: 11,
+            height: 1.35,
+          ),
         ),
       ],
     );
@@ -1292,7 +1325,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   /// 一句话说清这个池子会怎么走（两种模式各一句，与 web 的 renderSummary 同源）。
   Widget _buildAutoSummary() {
     final rows = _autoEnabledOrdered;
-    final style = const TextStyle(color: AppColors.muted, fontSize: 11, height: 1.35);
+    final style = const TextStyle(
+      color: AppColors.muted,
+      fontSize: 11,
+      height: 1.35,
+    );
     if (rows.length < 2) {
       return Text(
         t('autoEditorSummaryNeedTwo'),
@@ -1303,9 +1340,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (!_autoRoutingEnabled) {
       return Text(
         t('autoEditorSummaryOrder', {
-          'chain': rows
-              .map(_autoRowText)
-              .join(t('autoEditorSummaryThen')),
+          'chain': rows.map(_autoRowText).join(t('autoEditorSummaryThen')),
         }),
         key: const Key('auto-provider-summary'),
         style: style,
@@ -1314,7 +1349,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     final plan = _autoRungPlan;
     final groups = <int, List<String>>{};
     for (var index = 0; index < rows.length; index += 1) {
-      groups.putIfAbsent(plan.rungs[index], () => []).add(_autoRowText(rows[index]));
+      groups
+          .putIfAbsent(plan.rungs[index], () => [])
+          .add(_autoRowText(rows[index]));
     }
     if (groups.length < 2) {
       return Text(
@@ -1359,7 +1396,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       detail = t('autoEditorJevKeyCheckFailedDetail');
     }
     final formVisible =
-        hostOwned && (_jevFormOpen || _jevState == 'missing' || _jevState == 'error');
+        hostOwned &&
+        (_jevFormOpen || _jevState == 'missing' || _jevState == 'error');
     return Container(
       key: const Key('auto-provider-jev'),
       padding: const EdgeInsets.all(8),
@@ -1395,7 +1433,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
               Expanded(
                 child: Text(
                   detail,
-                  style: const TextStyle(color: AppColors.faint, fontSize: 10.5),
+                  style: const TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 10.5,
+                  ),
                 ),
               ),
               if (hostOwned && present)
@@ -1407,7 +1448,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                     minimumSize: const Size(36, 26),
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
-                  child: Text(t('autoEditorJevTest'), style: const TextStyle(fontSize: 11)),
+                  child: Text(
+                    t('autoEditorJevTest'),
+                    style: const TextStyle(fontSize: 11),
+                  ),
                 ),
               if (hostOwned && present)
                 TextButton(
@@ -1431,11 +1475,19 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             const SizedBox(height: 4),
             Text(
               '1. ${t('autoEditorJevStepCreate')}',
-              style: const TextStyle(color: AppColors.muted, fontSize: 11, height: 1.4),
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
+                height: 1.4,
+              ),
             ),
             Text(
               '2. ${t('autoEditorJevStepPaste')}',
-              style: const TextStyle(color: AppColors.muted, fontSize: 11, height: 1.4),
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
+                height: 1.4,
+              ),
             ),
           ],
           if (formVisible) ...[
@@ -1466,7 +1518,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             const SizedBox(height: 4),
             Text(
               t('autoEditorJevKeyHelp', {'name': _jevKeyName}),
-              style: const TextStyle(color: AppColors.faint, fontSize: 10.5, height: 1.35),
+              style: const TextStyle(
+                color: AppColors.faint,
+                fontSize: 10.5,
+                height: 1.35,
+              ),
             ),
           ],
           if (_jevResult.isNotEmpty)
@@ -1550,9 +1606,13 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                         p['builtinOfficial'] == true &&
                         p['id'] == '${widget.cli.poolKey}-official',
                   ))
-                    const DropdownMenuItem(
+                    DropdownMenuItem(
                       value: '',
-                      child: Text('官方 Provider'),
+                      child: Text(
+                        widget.cli == SessionCli.opencode
+                            ? 'OpenCode 原生配置（全部模型）'
+                            : '官方 Provider',
+                      ),
                     ),
                   ...autoGroups.map(
                     (group) => DropdownMenuItem(
@@ -1861,16 +1921,26 @@ Future<List<Map<String, dynamic>>> prepareAIConfigInputs(
       // sheet wait for the Codex model endpoint (up to 20 seconds).
       await CodexModelsService(settings: settings).load();
     } catch (_) {}
+  } else if (cli == SessionCli.opencode) {
+    try {
+      await OpenCodeModelsService(
+        settings: settings,
+        httpClient: httpClient,
+      ).load();
+    } catch (_) {}
   }
   try {
     if (cli.supportsProvider) {
       final d = await ManageService(
         settings: settings,
         httpClient: httpClient,
-      ).fetchProviders(cli.appType);
-      return (d['providers'] as List? ?? [])
+      ).fetchProvidersForCli(cli.name);
+      final managed = (d['providers'] as List? ?? [])
           .map((e) => (e as Map).cast<String, dynamic>())
           .toList();
+      return cli == SessionCli.opencode
+          ? mergeOpenCodeNativeProviders(managed, OpenCodeModelsService.cached)
+          : managed;
     }
   } catch (_) {}
   return const [];
