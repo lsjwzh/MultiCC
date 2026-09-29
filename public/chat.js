@@ -955,10 +955,9 @@ function addUserMsg(text, clientMsgId) {
   const streamingTail = chatHistoryView.pendingAnswerAnchor?.({ currentElement: currentMsgEl }) || null;
   if (streamingTail) messagesEl.insertBefore(div, streamingTail);
   else messagesEl.appendChild(div);
-  // Per-message auto-commit checkbox lives under the user's own message. A
-  // system-inject card takes neither the checkbox nor the last-user anchor.
+  // A system-inject card is not the user's own turn: it takes no last-user
+  // anchor (the server-side turn-end auto-commit no longer needs one either).
   if (!div.classList.contains('system-inject')) {
-    attachAutoCommitCheck(div, _sessionAutoCommit);
     _lastUserBubble = div;
   }
   forceScrollToBottom();
@@ -1027,7 +1026,6 @@ function resetHistoryPagination() {
 
 /* ── Apply initial/reconnect history without duplicating persisted DOM ── */
 function applyHistoryPlan(plan) {
-  rememberAutoCommitChoice(_lastUserBubble);
   const viewPlan = chatHistoryView.applyPlan(plan, {
     currentElement: currentMsgEl,
     lastUserElement: _lastUserBubble,
@@ -1035,12 +1033,6 @@ function applyHistoryPlan(plan) {
   });
   currentMsgEl = viewPlan.currentElement;
   _lastUserBubble = viewPlan.lastUserElement;
-  // History-rendered user bubbles never carried the per-turn auto-commit
-  // checkbox (only the live addUserMsg path attaches it). Rebuild it on the
-  // last user message so a reloaded session keeps the affordance.
-  if (_lastUserBubble && !_lastUserBubble.querySelector('.msg-auto-commit')) {
-    attachAutoCommitCheck(_lastUserBubble, _sessionAutoCommit);
-  }
 
   // A reconnect refreshes authoritative totals even when they are zero. When
   // no aggregate is provided, only the initial page may reconstruct totals;
@@ -1379,54 +1371,6 @@ async function requestMerge() {
 mergeBtn?.addEventListener('click', requestMerge);
 mergeHintBtn?.addEventListener('click', requestMerge);
 
-/* ── Auto-commit after a successful turn ── */
-// Called after an assistant turn completes. If the per-message auto-commit
-// checkbox is checked and the worktree has mergeable changes, silently
-// trigger commit + merge.
-let _autoCommitPending = false;  // prevent duplicate auto-commits
-async function autoCommitIfNeeded(bubbleEl) {
-  if (!bubbleEl || _autoCommitPending) return;
-  const row = bubbleEl.querySelector('.msg-auto-commit');
-  if (!row || row.classList.contains('done')) return;
-  const cb = row.querySelector('input[type="checkbox"]');
-  if (!cb) return;
-  // The header is the session default; execution is per-turn. Reconcile an
-  // untouched row immediately before reading it so a result that races
-  // loadSessionModel cannot observe the old false initializer. A manually
-  // toggled row remains the explicit opt-out/opt-in for this turn.
-  if (!row.dataset.userTouched) cb.checked = _sessionAutoCommit;
-  if (!cb.checked) return;
-  // The normal poll is intentionally cached. A turn just wrote the worktree,
-  // so force one authoritative Git read before deciding whether to merge.
-  _autoCommitPending = true;
-  try {
-    const mergeState = await refreshMergeStatus({ fresh: true });
-    if (!mergeState?.mergeReady) return;
-    addSystemMsg('🚀 自动提交合并中（此轮开启了自动提交）...');
-    const res = await fetch(withToken(`/api/sessions/${encodeURIComponent(_sessionName)}/merge`), { method: 'POST' });
-    const data = await res.json();
-    const failure = res.ok ? null : chatApi.errorFromPayload(data, { response: res });
-    if (res.ok) {
-      addSystemMsg(data.merged
-        ? `✓ 自动提交完成：已合并 ${data.commits} 个提交回基分支${data.committed ? '（含本次自动提交）' : ''}${data.syncedBack ? '，并已自动把基分支同步回本 worktree' : ''}`
-        : `✓ 自动提交：${data.message || '没有新提交需要合并'}`);
-      // Mark the checkbox as done
-      row.classList.add('done');
-      rememberAutoCommitChoice(bubbleEl);
-      applyMergeStatus({ mergeReady: false, dirty: false, ahead: 0 });
-      refreshMergeStatus();
-    } else if (res.status === 409) {
-      addSystemMsg('⚠️ 自动提交冲突：' + chatApi.errorText(failure) + '。冲突文件：' + (data.conflicts || []).join(', '));
-    } else {
-      addSystemMsg('自动提交失败：' + chatApi.errorText(failure));
-    }
-  } catch (e) {
-    addSystemMsg('自动提交请求失败：' + chatApi.errorText(e));
-  } finally {
-    _autoCommitPending = false;
-  }
-}
-
 /* ── Diff viewer ── */
 /* The list/detail UI lives in chat-diff.js (window.chatDiffViewer). These
  * wrappers keep the legacy call sites (merge-hint button, Esc handling)
@@ -1673,10 +1617,6 @@ async function loadSessionModel() {
   safe('model-btn', updateModelBtn); safe('effort-btn', updateEffortBtn);
   _sessionAutoCommit = info.autoCommit !== false; // 缺字段 = 开，和 create-record 同一口径
   safe('auto-commit-btn', updateAutoCommitBtn);
-  // History reload attaches the per-turn checkbox before session info lands.
-  // Catch it up to the authoritative session default unless the user already
-  // toggled that bubble's checkbox by hand.
-  syncAutoCommitChoice();
   void window.MultiCCChatAiConfig.maybePromptZcodeSetup({
     cli: _sessionCli, provider: _sessionProvider, sessionId: _sessionName, loadProviders: () => ensureProviderList('zcode'),
     onProvider: () => modelBtn?.click(), onSettings: () => window.open('/air?view=provider', '_blank', 'noopener'),
@@ -2208,13 +2148,12 @@ memoryBtn?.addEventListener('click', () => { openMemoryEditor(); });
 function applyMemoryEvent(memory) { _sessionMemory = memoryToText(memory); updateMemoryBtn(); }
 
 /* ── Per-session auto-commit (auto commit & merge after a successful turn) ── */
+// Session-level switch is the only control: the server merges at turn end
+// whenever this is on (src/routes/session-git.js autoCommitTurn). There is no
+// per-turn checkbox anymore — a client-side per-turn trigger could never fire
+// for turns that end with no page connected.
 const autoCommitBtn = document.getElementById('auto-commit-btn');
 let _sessionAutoCommit = false;
-
-const autoCommitChoices = window.MultiCCAutoCommitChoice.create({ document, storage: () => window.sessionStorage,
-  sessionId: () => _sessionName, lastBubble: () => _lastUserBubble, defaultChecked: () => _sessionAutoCommit, translate: tt });
-function rememberAutoCommitChoice(bubble) { autoCommitChoices.remember(bubble); }
-function syncAutoCommitChoice(force = false) { autoCommitChoices.sync(force); }
 
 function updateAutoCommitBtn() {
   if (!autoCommitBtn) return;
@@ -2237,17 +2176,11 @@ autoCommitBtn?.addEventListener('click', async () => {
     if (!res.ok) { addSystemMsg('保存失败：' + chatApi.errorText(chatApi.errorFromPayload(data, { response: res }))); return; }
     _sessionAutoCommit = data.autoCommit !== false;
     updateAutoCommitBtn();
-    syncAutoCommitChoice(true);
-    addSystemMsg(_sessionAutoCommit ? '✓ 已开启「本轮执行成功后自动提交合并」，每轮执行成功后将自动 commit 并合并回基分支' : '✓ 已关闭「本轮执行成功后自动提交合并」');
+    addSystemMsg(_sessionAutoCommit ? '✓ 已开启「每轮执行成功后自动提交合并」，每轮执行成功后将自动 commit 并合并回基分支' : '✓ 已关闭「每轮执行成功后自动提交合并」');
   } catch (e) {
     addSystemMsg('保存失败：' + chatApi.errorText(e));
   }
 });
-
-/* ── Per-message auto-commit checkbox ── */
-// Add a small checkbox under a user message bubble.
-// Returns the checkbox element so caller can read .checked state later.
-function attachAutoCommitCheck(bubble, checked) { return autoCommitChoices.attach(bubble, checked); }
 
 /* ── Session sharing (external web links) ── */
 const shareBtn = document.getElementById('share-btn');
@@ -2536,7 +2469,6 @@ chatEventController = window.MultiCCChatEventController.createEventController({
     cliMeta: CLI_META,
     updateContextBar,
     noteRequestUsage,
-    autoCommitIfNeeded,
     resetHistoryPagination,
     applyHistoryPlan,
     removeHistoryMessageById,

@@ -204,15 +204,12 @@ test('view upserts persisted ids and keeps user content text-only', () => {
   assert.equal(messagesEl.children[0].textContent, 'authoritative');
 });
 
-test('committed user message replaces its optimistic bubble and preserves per-turn controls', () => {
+test('committed user message replaces its optimistic bubble', () => {
   const { document, messagesEl, view } = fixture();
   const optimistic = document.createElement('div');
   optimistic.className = 'msg user';
   optimistic.dataset.clientMsgId = 'browser-1';
   optimistic.textContent = 'send once';
-  const autoCommit = document.createElement('label');
-  autoCommit.className = 'msg-auto-commit';
-  optimistic.appendChild(autoCommit);
   messagesEl.appendChild(optimistic);
 
   const committed = view.commitMessage({
@@ -225,7 +222,6 @@ test('committed user message replaces its optimistic bubble and preserves per-tu
   assert.equal(messagesEl.querySelectorAll('.msg.user').length, 1);
   assert.equal(committed.node.dataset.msgId, 'user-1');
   assert.equal(committed.node.dataset.clientMsgId, 'browser-1');
-  assert.equal(committed.node.querySelector('.msg-auto-commit'), autoCommit);
   assert.equal(committed.lastUserElement, committed.node);
 });
 
@@ -992,9 +988,6 @@ test('duplicate detection still backtracks across an injected card', () => {
 });
 
 test('the rest of the chat UI treats an injected card as a system line', () => {
-  const autoCommitSource = fs.readFileSync(path.join(ROOT, 'public/chat-auto-commit-choice.js'), 'utf8');
-  assert.match(autoCommitSource, /contains\('system-inject'\)\) return null/,
-    '注入卡不挂自动提交勾选');
   const quoteSource = fs.readFileSync(path.join(ROOT, 'public/chat-quote.js'), 'utf8');
   assert.match(quoteSource, /contains\('system-inject'\)\) return 'system'/,
     '引用注入卡时角色算系统，不算「我」');

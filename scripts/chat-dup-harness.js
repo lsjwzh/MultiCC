@@ -170,7 +170,7 @@ function createRig(cli = 'claude') {
     updateUI() {}, updateContextBar() {}, refreshNotifyPreference() {},
     updateTabIdentity() {}, updateCwdDisplay() {}, applyCliUi() {},
     updateEffortBtn() {}, updateModelBtn() {}, applyCliSwitchState() {},
-    loadSessionModel() {}, autoCommitIfNeeded() {}, rearmUnread() {},
+    loadSessionModel() {}, rearmUnread() {},
     translate: (k) => k,
     addSystemMsg() {}, addAgentNotes() {}, showNotifyToast() {},
     renderSessionQueue() {}, renderPendingUserInput: () => false,

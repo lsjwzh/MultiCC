@@ -193,7 +193,6 @@ function controllerFixture(hostOverrides) {
     applyCliSwitchState() {},
     cliMeta: { claude: { label: 'Claude' }, codex: { label: 'Codex' } },
     updateContextBar() { calls.push('context'); },
-    autoCommitIfNeeded() {},
     resetHistoryPagination() {},
     applyHistoryPlan() {},
     removeHistoryMessageById() {},

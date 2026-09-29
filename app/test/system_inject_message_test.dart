@@ -3,15 +3,13 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/models/message.dart';
-import 'package:multicc_app/services/auto_commit.dart';
 import 'package:multicc_app/services/message_quote.dart';
 import 'package:multicc_app/widgets/message_bubble.dart';
 
 /// 🔇 系统注入消息（服务端 `src/session/delivery.js` 的 SYSTEM_PREFIX）：后台任务
 /// 完成、延迟条件已到、内置任务已中断…… 引擎把它们落成 role=user 的历史记录，
-/// 但没人打过这些字。这里钉住三件事：识别（parseSystemInject）、渲染（压成一行
-/// 系统卡、点开看全文），以及「它在用户消息语义里要被排除」（自动提交锚点、引用
-/// 角色）—— Web 端的同一组不变量在 tests/test-chat-history-view.js 里。
+/// 但没人打过这些字。这里钉住两件事：识别（parseSystemInject）、渲染（压成一行
+/// 系统卡、点开看全文）—— Web 端的同一组不变量在 tests/test-chat-history-view.js 里。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -138,54 +136,9 @@ void main() {
       expect(find.text(t('msgCopyAction')), findsOneWidget);
       expect(find.text(t('msgDeleteAction')), findsNothing);
     });
-
-    testWidgets('注入卡不挂「本轮自动提交」勾选框', (tester) async {
-      await tester.pumpWidget(host(
-        MessageBubble(
-          message: injected('🔇 【后台任务完成】\n任务已结束'),
-          showAutoCommit: true,
-          autoCommitChecked: true,
-          onAutoCommitChanged: (_) {},
-        ),
-      ));
-      expect(find.byType(Checkbox), findsNothing);
-      expect(find.text(t('autoCommitPerMsg')), findsNothing);
-
-      // 对照：真用户气泡在同样入参下是挂的。
-      await tester.pumpWidget(host(
-        MessageBubble(
-          message: ChatMessage(
-            id: 'm-1',
-            role: MessageRole.user,
-            content: '把测试补上',
-            timestamp: DateTime.fromMillisecondsSinceEpoch(1724000004000),
-          ),
-          showAutoCommit: true,
-          autoCommitChecked: true,
-          onAutoCommitChanged: (_) {},
-        ),
-      ));
-      expect(find.byType(Checkbox), findsOneWidget);
-    });
   });
 
   group('注入消息不算用户说过的话', () {
-    test('lastUserMessageId 跳过注入消息，只认真正人打的那条', () {
-      final messages = [
-        ChatMessage(id: 'm-1', role: MessageRole.user, content: '把测试补上'),
-        ChatMessage(
-          id: 'm-2',
-          role: MessageRole.assistant,
-          content: '好',
-        ),
-        injected('🔇 【后台任务完成】\n任务已结束', id: 'm-3'),
-      ];
-      expect(lastUserMessageId(messages), 'm-1');
-
-      // 整段历史里只有注入消息时，没有「这一轮」可挂 —— 不能拿系统卡顶上。
-      expect(lastUserMessageId([injected('🔇 继续：重试一次', id: 'm-4')]), isNull);
-    });
-
     test('引用注入消息时 role 记成系统行', () {
       final quote = buildMessageQuote(injected('🔇 【延迟条件已到】\n继续执行计划'));
       // 引用头里报的 role 是「系统」那一条，不是「你」。

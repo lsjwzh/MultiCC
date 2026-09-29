@@ -215,6 +215,7 @@ function createChatTurnEngine(deps) {
     getExperimentalTuiChatRuntime,
     getSessionHibernation,
     getWorkspaceAdmission,
+    getSessionGitRuntime,       // const in host; auto-commit rides complete-session-turn
     isShuttingDown,             // let bool _shuttingDown
     getPort,                    // let PORT
     getClaudeOfficialViaProxy,  // let
@@ -2436,7 +2437,17 @@ function createChatTurnEngine(deps) {
     setStatus(sessionName, status) {
       setSessionStatus(sessionName, { status, currentFile: null });
     },
-    completeSessionTurn: s => getSessionWorkHost().turnSucceeded(s),
+    completeSessionTurn: s => {
+      getSessionWorkHost().turnSucceeded(s);
+      // Server-side turn-end auto-commit: merges whenever the session switch
+      // allows it, even with no chat page connected (the page-side per-turn
+      // checkbox trigger this replaces could never fire offline). Fire and
+      // forget — git work must not hold up turn finalization.
+      const git = typeof getSessionGitRuntime === 'function' ? getSessionGitRuntime() : null;
+      if (git && typeof git.autoCommitTurn === 'function') {
+        Promise.resolve(git.autoCommitTurn(s)).catch(() => {});
+      }
+    },
     classifyTurnEnd,
     resetInterrupted: sessionName => waitInjector.resetInterrupted(sessionName),
     resumeInterrupted: sessionName => waitInjector.resumeInterrupted(sessionName),

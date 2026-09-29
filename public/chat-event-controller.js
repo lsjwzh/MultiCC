@@ -435,7 +435,6 @@
       }
       host.updateContextBar?.(message.usage, message.modelUsage);
       host.updateUI?.();
-      host.autoCommitIfNeeded?.(state.lastUserBubble);
       finishTurnProgress('done', '本轮已完成');
     }
 

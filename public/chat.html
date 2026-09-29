@@ -662,44 +662,6 @@
       cursor: help;
     }
 
-    /* ── Per-message auto-commit checkbox ── */
-    .msg-auto-commit {
-      margin-top: 6px;
-      padding-top: 4px;
-      border-top: 1px solid var(--chat-soft, #21262d);
-      font-size: 11px;
-      color: var(--chat-muted, #8b949e);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      user-select: none;
-      cursor: pointer;
-    }
-    .msg-auto-commit:hover { color: var(--chat-text, #c9d1d9); }
-    .msg-auto-commit input[type="checkbox"] {
-      margin: 0;
-      cursor: pointer;
-      accent-color: #238636;
-    }
-    .msg-auto-commit.done {
-      color: var(--chat-success, #3fb950);
-      cursor: default;
-    }
-    .msg-auto-commit.done::after {
-      content: ' ✓ 已提交';
-      color: var(--chat-success, #3fb950);
-      font-weight: 600;
-    }
-    /* On the blue user bubble the gray text + dark divider are unreadable — lighten them. */
-    .msg.user .msg-auto-commit {
-      border-top-color: rgba(255, 255, 255, 0.25);
-      color: var(--chat-blue, #dbe9ff);
-    }
-    .msg.user .msg-auto-commit:hover { color: #fff; }
-    .msg.user .msg-auto-commit input[type="checkbox"] { accent-color: #2ea043; }
-    .msg.user .msg-auto-commit.done,
-    .msg.user .msg-auto-commit.done::after { color: var(--chat-success, #7ee787); }
-
     /* ── Thinking indicator ── */
     .thinking-bubble {
       align-self: flex-start;
@@ -2942,7 +2904,7 @@
   <script src="chat-session-features.js"></script><script src="chat-scheduled-send.js"></script>
   <!-- 必须排在 chat.js 前面：chat.js 在顶层就按它判断这一页是不是分享页。 -->
   <script src="chat-share-mode.js"></script>
-  <script src="chat-auto-commit-choice.js"></script><script src="chat-handoff.js"></script>
+  <script src="chat-handoff.js"></script>
   <script src="chat.js"></script><link rel="stylesheet" href="chat-annotate.css"><script src="chat-annotate.js"></script><script src="chat-air-toolbar.js"></script><script src="chat-composer-collapse.js"></script>
   <script src="tour.js"></script>
 </body>

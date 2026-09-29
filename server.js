@@ -1364,6 +1364,9 @@ const sessionGitRuntime = createSessionGitRuntime({
   gitRunQueued, gitMergeBack: (dir, session, opts) => gitMergeBack(dir, session, { ...opts, evidence: workspaceAdmission?.mergeHooks(session.id) }),
   gitSyncFromBase, gitRebaseResolve,
   appendEvent, workspaceBroadcast: (...args) => workspaceBroadcast(...args),
+  // Ephemeral result notice for the turn-end auto-commit; chatBroadcast is a
+  // hoisted function declaration, safe to reference before its definition line.
+  chatBroadcast: (...args) => chatBroadcast(...args),
   // M3 task-surface resolvers — lazy arrows: taskBoardRuntime is declared
   // later; the ports only fire at request time, after composition completes.
   resolveTaskWorktree: id => taskBoardRuntime?.taskWorktree?.info(id) || null,
@@ -2578,6 +2581,7 @@ const chatTurnEngine = createChatTurnEngine({
   getChatHistoryService: () => chatHistoryService,
   getExperimentalTuiChatRuntime: () => tuiChatMirrorRuntime, applyPendingConfiguration: cliSwitchRuntime.applyPendingConfiguration,
   getSessionHibernation: () => sessionHibernationRuntime, getWorkspaceAdmission: () => workspaceAdmission,
+  getSessionGitRuntime: () => sessionGitRuntime,
   isShuttingDown: () => _shuttingDown,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
