@@ -64,88 +64,6 @@
     return { head, note };
   }
 
-  // ── OAuth 重放 ─────────────────────────────────────────────────────────
-  function oauthCard() {
-    const panel = make('section', null, 'admin-panel air-global-card');
-    const { head, note } = card('PROXY', t('airGlobalOauthTitle'));
-    note.id = 'air-global-oauth-state'; // 「已开启 / 已关闭」也要算状态，它得被单独取到
-
-    const checkbox = make('input');
-    checkbox.type = 'checkbox';
-    checkbox.id = 'air-global-oauth-enabled';
-    checkbox.disabled = true; // 状态没回来之前不让点：这颗勾会真的改子进程怎么起
-    checkbox.onchange = () => { void toggleOauth(); };
-    const label = make('label', null, 'air-global-toggle');
-    label.append(checkbox, make('span', t('airGlobalOauthToggle')));
-    const row = make('div', null, 'air-global-row');
-    row.append(label);
-
-    const status = make('span', '', 'air-global-status');
-    status.id = 'air-global-oauth-msg';
-
-    panel.append(head, make('p', t('airGlobalOauthRisk'), 'air-global-risk'), row, status);
-    return panel;
-  }
-
-  function paintOauth(enabled) {
-    const checkbox = el('air-global-oauth-enabled');
-    if (checkbox) { checkbox.checked = enabled; checkbox.disabled = false; }
-    const state = el('air-global-oauth-state');
-    if (state) state.textContent = t(enabled ? 'airGlobalOauthOn' : 'airGlobalOauthOff');
-  }
-
-  async function loadOauth() {
-    const checkbox = el('air-global-oauth-enabled');
-    const status = el('air-global-oauth-msg');
-    try {
-      const data = await context.api('/api/settings/official-oauth');
-      paintOauth(!!(data && data.enabled));
-      if (status) { status.textContent = ''; status.className = 'air-global-status'; }
-    } catch (error) {
-      // 读不到就把它按住并说明原因：一个不知道真假的勾比没有勾更坏。
-      if (checkbox) { checkbox.disabled = true; checkbox.checked = false; }
-      const state = el('air-global-oauth-state');
-      if (state) state.textContent = '';
-      if (status) {
-        status.textContent = t('airGlobalOauthReadFailed', { message: error.message || String(error) });
-        status.className = 'air-global-status err';
-      }
-    }
-  }
-
-  async function toggleOauth() {
-    const checkbox = el('air-global-oauth-enabled');
-    const status = el('air-global-oauth-msg');
-    if (!checkbox) return;
-    const previous = !checkbox.checked;
-    // 开启是有风险的那一侧，必须先问一句。答「否」就到此为止：勾选退回原位，请求一个不发
-    // —— 服务端没被问过，界面也不该替它先表态。
-    if (checkbox.checked && !root.confirm(t('airGlobalOauthConfirm'))) {
-      checkbox.checked = false;
-      return;
-    }
-    const wanted = checkbox.checked;
-    checkbox.disabled = true;
-    if (status) { status.textContent = t('airGlobalOauthSaving'); status.className = 'air-global-status'; }
-    try {
-      const data = await context.api('/api/settings/official-oauth', { enabled: wanted });
-      const settled = !!(data && data.enabled);
-      paintOauth(settled);
-      if (status) {
-        status.textContent = t(settled ? 'airGlobalOauthOn' : 'airGlobalOauthOff') + t('airGlobalOauthSpawnNote');
-        status.className = 'air-global-status ok';
-      }
-    } catch (error) {
-      // 写失败就把勾退回原值：停在「用户点过」的那一态是在替服务端点头。
-      checkbox.checked = previous;
-      checkbox.disabled = false;
-      if (status) {
-        status.textContent = t('airGlobalOauthFailed', { message: error.message || String(error) });
-        status.className = 'air-global-status err';
-      }
-    }
-  }
-
   // ── 电源：只有两条对外设置（关盖运行、允许自动解锁） ──────────────────────
   function powerCard() {
     const panel = make('section', null, 'admin-panel air-global-card');
@@ -421,9 +339,8 @@
     if (error) el('air-global-unlock-status').textContent = t('airGlobalUnlockFailed', { message: error.message });
   }
 
-  // 两块互相独立：一块读失败不该把另一块也变成一行错误，所以各自 catch、一起等。
   function load() {
-    return Promise.all([loadOauth(), loadPower()]);
+    return loadPower();
   }
 
   function beginPowerSetup(action) {
@@ -443,7 +360,7 @@
     // 安装包（APK / iOS OTA）不在这页重复第二遍 —— 见文件头。这里只留一句指路。
     const install = make('section', null, 'admin-panel');
     install.append(make('p', t('airGlobalInstallHint'), 'admin-empty air-global-hint'));
-    host.replaceChildren(install, oauthCard(), powerCard());
+    host.replaceChildren(install, powerCard());
     injectStyle(host);
     const action = setupFromShortcut;
     setupFromShortcut = null;

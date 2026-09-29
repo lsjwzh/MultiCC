@@ -677,7 +677,7 @@ class ManageService {
     return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
   }
 
-  // ── Server-side config: token usage / access-token / official-oauth ─────────
+  // ── Server-side config: token usage / access-token ──────────────────────────
   // These were web-dashboard-only; now surfaced in the app so phone clients can
   // read them. Write endpoints are localhost-only on the server, so a remote
   // phone gets 403 — callers must handle that (read-only fallback).
@@ -713,27 +713,6 @@ class ManageService {
           Uri.parse(_url('/api/settings/access-token')),
           headers: _headers,
           body: jsonEncode({'token': token}),
-        )
-        .timeout(const Duration(seconds: 10));
-    if (res.statusCode >= 400) _throw(res);
-  }
-
-  /// Route claude-official (OAuth subscription) through the proxy.
-  /// Returns `{enabled}`. POST is localhost-only.
-  Future<bool> fetchOfficialOauth() async {
-    final res = await http
-        .get(Uri.parse(_url('/api/settings/official-oauth')), headers: _headers)
-        .timeout(const Duration(seconds: 10));
-    if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)['enabled'] == true;
-  }
-
-  Future<void> setOfficialOauth(bool enabled) async {
-    final res = await http
-        .post(
-          Uri.parse(_url('/api/settings/official-oauth')),
-          headers: _headers,
-          body: jsonEncode({'enabled': enabled}),
         )
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) _throw(res);

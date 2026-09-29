@@ -127,7 +127,6 @@ function browserContext() {
       const pathname = String(url);
       let data = {};
       if (pathname.endsWith('/start')) data = { ok: true };
-      else if (pathname === '/api/settings/official-oauth') data = { enabled: true };
       else if (pathname.endsWith('/gateway')) data = null;
       else if (pathname.endsWith('/status')) data = { configured: false, running: false, gateway: null };
       else if (pathname.endsWith('/config')) data = { configured: false };
@@ -218,6 +217,6 @@ test('every bridge owns reconnect generation and cannot reconnect after stop', a
 });
 
 // 安装包面板、开机时间读数、推送按钮这几组原本跑的是 manage-host-settings.js。
-// 那个模块随旧页删掉了，Air 侧的同名功能在 air-ops.js，由 tests/test-air-ops.js 盯着
-// （官方 OAuth 开关落在 air-global.js）。旧页那份 APK 面板比 Air 的多一层「本地没有就
-// 去 GitHub Release 找」的回退，它跟着页面一起退场了 —— 不是搬家漏了，是一并删了。
+// 那个模块随旧页删掉了，Air 侧的同名功能在 air-ops.js，由 tests/test-air-ops.js 盯着。
+// 旧页那份 APK 面板比 Air 的多一层「本地没有就去 GitHub Release 找」的回退，它跟着
+// 页面一起退场了 —— 不是搬家漏了，是一并删了。

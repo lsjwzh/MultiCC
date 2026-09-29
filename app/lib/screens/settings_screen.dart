@@ -79,11 +79,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _goalSaving = false;
   String? _goalStatus;
 
-  // Route claude-official (OAuth subscription) through the proxy — localhost-only POST.
-  bool _officialOauthEnabled = false;
-  bool _officialOauthReadOnly = false;
-  String? _officialOauthStatus;
-
   // Access-token (remote-login password). Masked preview; editable only from localhost.
   String _accessTokenMasked = '';
   bool _hasAccessToken = false;
@@ -125,7 +120,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _loadAdvancedSettings() {
     _loadGoalConfig();
-    _loadOfficialOauth();
     _loadAccessToken();
   }
 
@@ -143,62 +137,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _goalMinCtrl.dispose();
     _accessTokenCtrl.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadOfficialOauth() async {
-    try {
-      final s = widget.settings;
-      final headers = <String, String>{};
-      if (s.token.isNotEmpty) headers['X-Access-Token'] = s.token;
-      final res = await http
-          .get(
-            Uri.parse(s.buildHttpUrl('/api/settings/official-oauth')),
-            headers: headers,
-          )
-          .timeout(const Duration(seconds: 15));
-      if (res.statusCode != 200 || !mounted) return;
-      final d = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-      setState(() => _officialOauthEnabled = d['enabled'] == true);
-    } catch (_) {}
-  }
-
-  Future<void> _toggleOfficialOauth(bool v) async {
-    final prev = _officialOauthEnabled;
-    setState(() {
-      _officialOauthEnabled = v;
-      _officialOauthStatus = null;
-    });
-    try {
-      final s = widget.settings;
-      final headers = <String, String>{'Content-Type': 'application/json'};
-      if (s.token.isNotEmpty) headers['X-Access-Token'] = s.token;
-      final res = await http
-          .post(
-            Uri.parse(s.buildHttpUrl('/api/settings/official-oauth')),
-            headers: headers,
-            body: jsonEncode({'enabled': v}),
-          )
-          .timeout(const Duration(seconds: 15));
-      if (!mounted) return;
-      if (res.statusCode == 403) {
-        setState(() {
-          _officialOauthEnabled = prev;
-          _officialOauthReadOnly = true;
-          _officialOauthStatus = t('localOnlyToggle');
-        });
-      } else {
-        setState(
-          () => _officialOauthStatus = res.statusCode == 200
-              ? t('saved')
-              : t('saveFailedHttp', {'status': '${res.statusCode}'}),
-        );
-      }
-    } catch (e) {
-      if (mounted) setState(() => _officialOauthEnabled = prev);
-      if (mounted) {
-        setState(() => _officialOauthStatus = t('saveFailed', {'error': '$e'}));
-      }
-    }
   }
 
   Future<void> _loadAccessToken() async {
@@ -875,30 +813,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               if (_accessTokenReadOnly) ...[
                 const SizedBox(height: 4),
                 _Hint(t('remoteReadOnlyHint')),
-              ],
-              const Divider(height: 24),
-              // Route claude-official (OAuth subscription) through the proxy.
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  t('officialOauthProxy'),
-                  style: const TextStyle(color: AppColors.text, fontSize: 14),
-                ),
-                subtitle: Text(
-                  t('officialOauthProxyHint'),
-                  style: const TextStyle(color: AppColors.muted, fontSize: 11),
-                ),
-                value: _officialOauthEnabled,
-                activeColor: const Color(0xFFffffff),
-                activeTrackColor: AppColors.accent,
-                onChanged: _officialOauthReadOnly ? null : _toggleOfficialOauth,
-              ),
-              if (_officialOauthStatus != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  _officialOauthStatus!,
-                  style: const TextStyle(color: AppColors.accent, fontSize: 13),
-                ),
               ],
               const Divider(height: 24),
               _NavTile(
