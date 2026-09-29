@@ -185,9 +185,30 @@
   }
 
   // ── DOM painter ──
+  // Language lives only on the client (localStorage['multicc_lang']), so the
+  // server renders its Chinese and ships the pieces alongside; in English we
+  // rebuild text/title from them. A key the catalog does not know falls back to
+  // the server's own bytes, so a bar cached before this existed still renders.
+  function barTranslate(key, params, fallback) {
+    const dict = global.I18N && global.I18N.en;
+    const value = dict && typeof dict[key] === 'string' ? dict[key] : null;
+    if (value === null) return fallback;
+    if (!params) return value;
+    return value.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m));
+  }
+  // 语言判定在这一处：getLang() === 'en' 才走片段重建，中文（含缺省）原样使用
+  // 服务端字节，与 App 端行为一致。
   function resolveBar(bar, state) {
     if (!bar) return null;
-    return resolveQuotaBar ? resolveQuotaBar(bar, { state }) : bar;
+    if (!resolveQuotaBar) return bar;
+    if ((typeof global.getLang === 'function' ? global.getLang() : 'zh') !== 'en') {
+      return resolveQuotaBar(bar, { state });
+    }
+    return resolveQuotaBar(bar, {
+      state,
+      translate: barTranslate,
+      rolled: barTranslate('quotaRolledWindow', null, '已重置'),
+    });
   }
   function hideBar(element) {
     if (!element) return;
@@ -355,7 +376,14 @@
         .then(({ httpOk, body }) => {
           arkSlot.setInstallInFlight(false);
           if (httpOk && body.status === 'ok') arkSlot.refresh(true);
-          else arkSlot.setCurrent({ status: 'unavailable', error: body.error || '自动安装失败，请手动运行 npm install -g @volcengine/ark-cli' });
+          // The server's own error text (body.error) wins when present; this one
+          // is the client's, so it is spelled for the language on screen.
+          else {
+            arkSlot.setCurrent({
+              status: 'unavailable',
+              error: body.error || barTranslate('quotaArkInstallFailed', null, '自动安装失败，请手动运行 npm install -g @volcengine/ark-cli'),
+            });
+          }
         })
         .catch(() => arkSlot.setInstallInFlight(false));
     } else if (cur && cur.status === 'needs_auth') {
@@ -737,6 +765,9 @@
     // The resolver is exposed so tests can drive the shared golden fixtures
     // through the same expansion path the browser uses.
     QuotaBarView,
+    // The bar's own resolve+localize step, for the same reason: a test drives
+    // the language gate end to end instead of re-implementing it.
+    resolveBar,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.MultiCCChatRateLimit = api;

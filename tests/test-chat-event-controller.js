@@ -13,6 +13,15 @@ const eventApi = require('../public/chat-event-controller');
 
 const ROOT = path.join(__dirname, '..');
 
+// 目录是断言的中文来源：界面文案走 t()，测试就注入同一份目录，见 zhT。
+const ZH = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+const EN = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/en.json'), 'utf8'));
+const dictT = dict => (key, params) => String(dict[key] ?? key)
+  .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
+const zhT = dictT(ZH);
+// 暂存消息的 dock 也走 t()：页面在 chat.js 里注入 tt，测试在这里注入目录。
+global.MultiCCChatSessionQueue.configure({ translate: zhT });
+
 function classList() {
   const values = new Set();
   return {
@@ -167,7 +176,8 @@ function controllerFixture(hostOverrides) {
   const host = {
     debug(...args) { debugCalls.push(args); },
     warn(...args) { calls.push(['warn', ...args]); },
-    translate: (key, params) => `${key}:${JSON.stringify(params || {})}`,
+    // 文案现在全走 t()，所以夹具注入真实目录：断言仍然看中文，和页面一致。
+    translate: (key, params) => (key in ZH ? zhT(key, params) : `${key}:${JSON.stringify(params || {})}`),
     getSessionName: () => 'session-1',
     refreshNotifyPreference() { calls.push('notify-pref'); },
     updateTabIdentity() {},
@@ -233,9 +243,9 @@ test('progress heartbeat formatter exposes only safe bounded status fields', () 
   assert.equal(eventApi.formatProgressHeartbeat({
     phase: 'tool', elapsedMs: 150_900, toolKind: 'subagent',
     prompt: 'secret prompt', output: 'secret output', token: 'sk-secret',
-  }), '正在调用工具 · 2m 31s · 子 Agent');
+  }, zhT), '正在调用工具 · 2m 31s · 子 Agent');
   // 负数不是一个「零秒」的读数，是垃圾值 —— 那一格直接不画，不编一个 0s 出来。
-  assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }), '仍在执行');
+  assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }, zhT), '仍在执行');
 });
 
 test('memory admission progress shows the user message immediately and updates one loading bubble', () => {
@@ -1581,7 +1591,7 @@ test('a refusal with its own reason is shown as prose instead of a bare code', (
   fixture.controller.handleEvent({ type: 'error', code: 'task_switching', error: 'task_switching',
     message: '这个任务正在切换执行环境，请等切换结束后再发送这条消息。' }, generation);
   const shown = fixture.calls.filter(call => Array.isArray(call) && call[0] === 'system').map(call => call[1]);
-  assert.ok(shown.some(value => value.startsWith('Error: taskSwitchingRefused')),
+  assert.ok(shown.some(value => value.startsWith(`Error: ${zhT('taskSwitchingRefused')}`)),
     `the reader gets the reason, not the code: ${shown.join(' | ')}`);
   assert.equal(fixture.state.isStreaming, false);
 });
@@ -1616,13 +1626,6 @@ test('system warning with authAction routes to the auth-action renderer, with pl
   }, hooked.controller.beginGeneration()), true);
   assert.deepEqual(hooked.calls.filter(c => c[0] === 'system'), [['system', 'other action']]);
 });
-
-// ── Jev difficulty-routing note ─────────────────────────────────────────────
-const ZH = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
-const EN = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/en.json'), 'utf8'));
-const dictT = dict => (key, params) => String(dict[key] ?? key)
-  .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
-const zhT = dictT(ZH);
 
 function autoRoute(routing, extra = {}) {
   return {

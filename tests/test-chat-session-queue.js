@@ -9,6 +9,11 @@ require('../public/chat-session-queue.js');
 
 const queueApi = globalThis.MultiCCChatSessionQueue;
 const ROOT = path.join(__dirname, '..');
+
+// 文案走 t()（i18n.js）：这里注入同一份中文目录，断言才是页面上的样子。
+const ZH = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+const zhT = (key, params) => String(ZH[key] ?? key)
+  .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
 const ROW_HEIGHT = 30;
 
 function classList() {
@@ -133,7 +138,7 @@ function drag(list, from, clientY, step = ROW_HEIGHT) {
 
 test('dragging a staged message commits the index it was dropped on', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -150,7 +155,7 @@ test('dragging a staged message commits the index it was dropped on', () => {
 
 test('dragging upward lands on the row whose midpoint was passed', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -162,7 +167,7 @@ test('dragging upward lands on the row whose midpoint was passed', () => {
 
 test('a tap or a nudge on the handle moves nothing', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -184,7 +189,7 @@ test('a tap or a nudge on the handle moves nothing', () => {
 
 test('a queue event during a drag drops the gesture instead of committing a stale index', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -201,7 +206,7 @@ test('a queue event during a drag drops the gesture instead of committing a stal
 
 test('arrow keys on the handle move one slot and stop at the ends', () => {
   const moves = [];
-  queueApi.configure({ onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
+  queueApi.configure({ translate: zhT, onReorder: (entryId, toIndex) => moves.push([entryId, toIndex]) });
   const { documentRef, list } = dockFixture();
   queueApi.render(queueItems(['一', '二', '三']), {}, documentRef);
   layout(list);
@@ -218,7 +223,7 @@ test('arrow keys on the handle move one slot and stop at the ends', () => {
 });
 
 test('only entries the user may move get a handle', () => {
-  queueApi.configure({ onReorder: () => { throw new Error('must not be called'); } });
+  queueApi.configure({ translate: zhT, onReorder: () => { throw new Error('must not be called'); } });
   const { documentRef, list } = dockFixture();
   queueApi.render([
     { entryId: 'leased', state: 'leased', position: 1, text: '执行中' },
@@ -333,7 +338,7 @@ test('double-clicking a pending staged message prompts for its new text', () => 
   globalThis.prompt = () => '双击后的新正文';
   try {
     const edits = [];
-    queueApi.configure({
+    queueApi.configure({ translate: zhT,
       onEdit: async (entryId, text) => edits.push([entryId, text]),
     });
     const { documentRef, list } = dockFixture();

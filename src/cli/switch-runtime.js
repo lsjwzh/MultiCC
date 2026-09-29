@@ -801,6 +801,12 @@ function createCliSwitchRuntime(options) {
     options.chatBroadcast(sessionName, {
       type: 'system',
       subtype: 'cli_handoff_applied',
+      // The client writes the sentence: this process serves sessions in every
+      // language and must not pick one. `message` is kept byte-for-byte anyway
+      // because history persisted before these fields existed only has it.
+      fromCli: handoff.fromCli,
+      toCli: handoff.toCli,
+      reason: handoff.reason,
       message: ['history_clear_keep', 'manual_native_context_rotate', 'auto_native_context_rotate'].includes(handoff.reason)
         ? `✓ 保留的上下文 checkpoint 已由 ${handoff.toCli} 的新原生会话接收`
         : `✓ ${handoff.fromCli} → ${handoff.toCli} 的上下文交接已由目标 CLI 接收`,

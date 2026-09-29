@@ -293,10 +293,19 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 2026-09-29 「执行成功」拆出三个子状态的展示文案补 2 键（statusGoalAchieved /
   // statusGoalInteract，中英各 2 行 = +4 行），重跑生成器实测 7294/456770，
   // 按棘轮登记到这一格。
+  // 2026-09-30 英文模式下聊天页/Air 外壳残留中文：把原先硬编码的界面文案接回 t()，
+  // 补 52 键（暂存队列动作与手柄、连接状态、心跳阶段与工具种类、本轮结束语、
+  // 排队/冻结提示、CLI 交接、标注界面、同步指令，中英各 52 行 = +104 行）。
+  // 2026-09-30 同一轮补完额度条的 i18n：服务端渲染的额度条（src/quota/quota-bar-view.js）
+  // 改为随条下发结构化片段，客户端英文模式用目录重建文案，新增 160 个额度条键
+  // （中英各 160 行 = +320 行）；其中 3 个键（opencode 5h/周/月的窗口名）是测试
+  // 逐条走真实输入时才暴露的——它们由数组字面量给出、藏在 part(...) 调用之外，
+  // 静态抽取漏掉了。合计 215 键（中英各 215 行），重跑生成器实测 7714/489418，
+  // 按棘轮登记到这一格。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7294,
-    maxBytes: 456770,
+    maxLines: 7714,
+    maxBytes: 489418,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
