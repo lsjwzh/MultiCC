@@ -65,8 +65,8 @@ test('the task search box finds conversation-only hits, and the scope switch nar
   await withCdpHarness({ routes }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?dir=d1');
-    assert.ok(await page.waitFor(`document.getElementById('directory-task-more')!==null`));
-    await page.evaluate(`document.getElementById('directory-task-more').click()`);
+    // 那排筛选不再挂在「展开」后面：任务面板现在是固定高度的一栏（抬头 + 筛选 +
+    // 清单 + 分页），筛选跟清单一起常驻。
     assert.equal(await page.evaluate(`document.getElementById('directory-task-controls').hidden`), false);
     // 默认范围就是最宽的那档：搜索的默认目标是全部记录（含对话）。两档都得说人话
     // （漏翻时 t() 只会把 key 原样显示出来）。

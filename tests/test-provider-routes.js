@@ -216,6 +216,7 @@ test('provider route extraction preserves the mounted surface and response DTOs'
     'DELETE /api/providers/:appType/:id',
     'POST /api/providers/:appType/:id/probe',
     'POST /api/providers/:appType/:id/speedtest',
+    'POST /api/providers/:appType/:id/reassign-sessions',
     'POST /api/providers/:appType/:id/relay-share',
     'GET /api/provider-relay-shares',
     'DELETE /api/provider-relay-shares/:id',

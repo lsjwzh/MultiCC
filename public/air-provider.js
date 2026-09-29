@@ -240,6 +240,10 @@
     const actions = make('div', null, 'air-provider-card-actions');
     const speed = button(latency.has(provider.id) ? latency.get(provider.id) : t('airProviderSpeedTest'), () => speedTest(provider, speed));
     actions.append(speed);
+    // 批量迁移：把「主线路绑在这条线路上的所有会话」一次搬到另一条兼容线路上。
+    // 每个会话走的仍是 AI 配置弹窗那条 PATCH（src/provider-reassign.js），所以
+    // 模型替换 / Auto 会话跳过 / 忙会话下一轮生效这些口径都一致。
+    actions.append(button(t('airProviderReassignAction'), () => openReassign(provider)));
     if (!provider.isOfficial) {
       actions.append(
         button(t('airProviderEdit'), () => openEditor(provider)),
@@ -391,6 +395,177 @@
   async function removeProvider(provider) {
     if (!confirm(t('airProviderDeleteConfirm', { name: displayName(provider) }))) return;
     await deleteProvider(provider, false);
+  }
+
+  // ── 批量迁移会话 ───────────────────────────────────────────────────────────
+  //
+  // 把「主线路绑在这条线路上的所有会话」一次搬到另一条兼容线路上。服务端契约
+  // （src/provider-reassign.js，与 AI 配置弹窗同一套 PATCH）：
+  //   POST .../reassign-sessions {}                             → 列出会话 + 兼容目标
+  //   POST .../reassign-sessions {targetProviderId, dryRun:true} → 逐会话预演
+  //   POST .../reassign-sessions {targetProviderId}              → 真迁移
+  // Auto 选择会话不会被搬（单会话 PATCH 会顺手退出 Auto），子任务/默认线路也不动，
+  // 服务端只把它们计入 otherReferences —— 弹层里照实说明。
+  const reassignReasonKeys = {
+    auto_selection: 'airProviderReassignReasonAutoSelection',
+    cli_incompatible: 'airProviderReassignReasonCliIncompatible',
+    system_session: 'airProviderReassignReasonSystemSession',
+    patch_rejected: 'airProviderReassignReasonPatchRejected',
+  };
+  const reassignReason = item => (item.reason
+    ? t(reassignReasonKeys[item.reason] || 'airProviderReassignReasonUnknown')
+    : '');
+
+  function openReassign(provider) {
+    const path = `/api/providers/${encodeURIComponent(provider.appType)}/${encodeURIComponent(provider.id)}/reassign-sessions`;
+    const dialog = make('dialog', null, 'provider-dialog service-dialog air-provider-refs-dialog');
+    const form = make('form'); form.method = 'dialog';
+    const head = make('div', null, 'section-heading');
+    const title = make('div');
+    title.append(make('span', 'BATCH MIGRATION', 'eyebrow'),
+      make('h2', t('airProviderReassignTitle', { name: displayName(provider) })));
+    head.append(title, button('×', () => dialog.close()));
+    const host = make('div');
+    const error = make('p', null, 'air-provider-ref-warn');
+    const actions = make('div', null, 'schedule-form-actions');
+    const confirm = button(t('airProviderReassignConfirm'), () => apply(), 'primary');
+    confirm.disabled = true;
+    actions.append(button(t('airProviderReassignClose'), () => dialog.close()), confirm);
+    form.append(head, make('p', t('airProviderReassignIntro')), host, error, actions);
+    dialog.append(form);
+    dialog.onclose = () => dialog.remove();
+    document.body.append(dialog);
+    dialog.showModal();
+
+    let plan = null;
+    let preview = null;
+    let target = '';
+
+    function group(titleText, rows, options = {}) {
+      const section = make('section', null, 'air-provider-ref-group');
+      const header = make('header');
+      header.append(make('strong', `${titleText} · ${rows.length}`));
+      if (options.note) header.append(make('small', options.note));
+      const list = make('ul');
+      for (const row of rows) {
+        const item = make('li');
+        item.append(make('span', row.label));
+        if (row.detail) item.append(make('code', row.detail));
+        list.append(item);
+      }
+      section.append(header, list);
+      return section;
+    }
+
+    function sessionDetail(session) {
+      const bits = [cliName(session.cli)];
+      if (session.model) bits.push(session.model);
+      return bits.join(' · ');
+    }
+
+    // 目标下拉：只列服务端算过「至少有一个会话搬得过去」的线路。选项里带上
+    // 可迁移/将跳过的条数，用户不用点开就知道这条目标会漏掉谁。
+    function targetPicker() {
+      const label = make('label');
+      label.append(make('span', t('airProviderReassignTargetLabel')));
+      const select = make('select');
+      const placeholder = make('option', plan.targets.length
+        ? t('airProviderReassignTargetPlaceholder') : t('airProviderReassignNoTargets'));
+      placeholder.value = ''; select.append(placeholder);
+      for (const item of plan.targets) {
+        const option = make('option', t('airProviderReassignTargetOption', {
+          name: item.name, count: item.compatibleSessions,
+        }));
+        option.value = item.id;
+        if (item.skippedSessions) option.title = t('airProviderReassignTargetSkip', { count: item.skippedSessions });
+        select.append(option);
+      }
+      select.value = target;
+      select.disabled = !plan.targets.length;
+      select.onchange = async () => {
+        target = select.value;
+        preview = null;
+        if (target) {
+          try { preview = await context.api(path, { targetProviderId: target, dryRun: true }, 'POST'); }
+          catch (reason) { setError(t('airProviderReassignFailed', { message: reason.message })); }
+        }
+        render();
+      };
+      label.append(select);
+      return label;
+    }
+
+    function setError(message) { error.textContent = message || ''; }
+
+    function render() {
+      host.replaceChildren();
+      if (!plan) { host.append(make('p', t('airProviderReassignLoading'), 'admin-empty')); return; }
+      if (!plan.total) {
+        host.append(make('p', t('airProviderReassignEmpty'), 'admin-empty'));
+        confirm.disabled = true;
+        return;
+      }
+      host.append(make('p', t('airProviderReassignCount', { count: plan.total })));
+      const other = plan.otherReferences || {};
+      const otherCount = (other.auto_candidate || 0) + (other.subagent || 0) + (other.default || 0) + (other.aux || 0);
+      if (otherCount) host.append(make('p', t('airProviderReassignOtherRefs', { count: otherCount }), 'admin-empty'));
+      const rows = (preview && preview.results
+        ? preview.results.map(item => ({
+          status: item.status,
+          label: item.label,
+          detail: [sessionDetail(item), item.modelReset
+            ? t('airProviderReassignModelReset', {
+              from: item.modelBefore || t('airProviderReassignModelDefault'),
+              to: item.modelAfter || t('airProviderReassignModelDefault'),
+            }) : ''].filter(Boolean).join(' · '),
+        }))
+        : plan.sessions.map(item => ({
+          status: item.reason ? 'skipped' : 'bound',
+          label: item.label,
+          detail: item.reason ? reassignReason(item) : sessionDetail(item),
+        })));
+      host.append(group(t('airProviderReassignBoundTitle'), rows, { note: t('airProviderReassignModelNote') }));
+      host.append(targetPicker());
+      if (preview) {
+        host.append(group(t('airProviderReassignWillSwitch'),
+          rows.filter(item => item.status === 'switched'), {
+            note: preview.deferred ? t('airProviderReassignDeferredCount', { count: preview.deferred }) : '',
+          }));
+        host.append(group(t('airProviderReassignWillSkip'), rows.filter(item => item.status === 'skipped')));
+      }
+      if (plan.truncated) host.append(make('p', t('airProviderReassignTruncated', { count: plan.sessions.length }), 'admin-empty'));
+      confirm.disabled = !target;
+    }
+
+    async function apply() {
+      if (!target) return;
+      confirm.disabled = true;
+      setError('');
+      try {
+        const result = await context.api(path, { targetProviderId: target }, 'POST');
+        const skipped = result.results.filter(item => item.status === 'skipped');
+        dialog.close();
+        context.notice(`${t('airProviderReassignDone', {
+          count: result.switched, skipped: result.skipped,
+        })}${result.deferred ? t('airProviderReassignDoneDeferred', { count: result.deferred }) : ''}`
+          + (skipped.length ? ` · ${t('airProviderReassignSkippedList', {
+            items: skipped.map(item => `${item.label}(${reassignReason(item) || t('airProviderReassignReasonUnknown')})`).join(t('airProviderListSeparator')),
+          })}` : ''));
+        await load();
+      } catch (reason) {
+        confirm.disabled = false;
+        setError(t('airProviderReassignFailed', { message: reason.message }));
+      }
+    }
+
+    render();
+    context.api(path, { dryRun: true }, 'POST')
+      .then(result => { plan = result; render(); })
+      .catch(reason => {
+        plan = { total: 0, results: [], targets: [], sessions: [], otherReferences: {} };
+        setError(t('airProviderReassignFailed', { message: reason.message }));
+        render();
+      });
   }
 
   async function importProviders() {

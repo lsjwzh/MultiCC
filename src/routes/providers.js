@@ -12,6 +12,7 @@ const { officialAccountIdFromProvider } = require('../official-accounts');
 const { createRoutingTest } = require('./auto-provider-routing-test');
 const { detachProviderReferences } = require('../providers/force-detach');
 const { isValidIp } = require('../providers/egress-ip');
+const { reassignProviderSessions } = require('../provider-reassign');
 
 // req.body.egressIpAllowlist arrives as an array (or is absent — leave the
 // stored value untouched on PATCH, that's the `undefined` case) or `null`/`[]`
@@ -491,6 +492,66 @@ function createProviderRoutes(rawDeps) {
         });
       } catch (error) {
         res.json({ ok: false, ms: elapsed(), error: publicError(error, 'provider speedtest failed') });
+      }
+    });
+
+    // Batch reassignment of every session bound to this provider
+    // (「批量迁移会话…」). Listing/planning/simulation live in
+    // src/provider-reassign.js; this route only resolves the two provider
+    // records and hands the per-session move to the ordinary session PATCH, so
+    // a bulk move behaves exactly like N manual switches in the AI dialog.
+    // Body: { targetProviderId?, dryRun? }. Omit targetProviderId (dry-run only)
+    // to get the bound-session list plus the compatible targets for the UI.
+    app.post('/api/providers/:appType/:id/reassign-sessions', (req, res) => {
+      const appType = String(req.params.appType || '').trim();
+      if (appType !== 'claude' && appType !== 'codex') {
+        return res.status(400).json({ error: 'invalid app type' });
+      }
+      const sourceProvider = deps.providers.getProvider(appType, req.params.id);
+      if (!sourceProvider) return res.status(404).json({ error: 'provider not found' });
+      const body = (req.body && typeof req.body === 'object') ? req.body : {};
+      const rawTarget = body.targetProviderId;
+      const targetProviderId = rawTarget == null || rawTarget === '' ? null : String(rawTarget).trim();
+      const dryRun = body.dryRun === true || body.dryRun === '1' || body.dryRun === 'true';
+      if (targetProviderId === req.params.id) {
+        return res.status(400).json({ error: 'target provider must differ from the source' });
+      }
+      if (!targetProviderId && !dryRun) {
+        return res.status(400).json({ error: 'targetProviderId is required' });
+      }
+      let targetProvider = null;
+      if (targetProviderId) {
+        // Provider ids are globally unique, so the target may live in the other
+        // pool (an OpenCode/ZCode session can move across pools).
+        targetProvider = deps.providers.getProvider(undefined, targetProviderId);
+        if (!targetProvider) return res.status(404).json({ error: 'target provider not found' });
+      }
+      if (typeof deps.applySessionPatch !== 'function') {
+        return res.status(409).json({ error: 'session patch runtime unavailable' });
+      }
+      try {
+        res.json(reassignProviderSessions({
+          appType,
+          providerId: req.params.id,
+          sourceProvider,
+          targetProviderId,
+          targetProvider,
+          dryRun,
+          sessions: deps.persistedSessions,
+          references: deps.findProviderReferences({
+            appType,
+            providerId: req.params.id,
+            sessions: deps.persistedSessions,
+            defaults: providerDefaults,
+            aux: deps.getAuxConfig(),
+          }),
+          listProviders: () => deps.providers.listProviders(),
+          validProviderId,
+          applySessionPatch: deps.applySessionPatch,
+          previewSessionPatch: deps.previewSessionPatch,
+        }));
+      } catch (error) {
+        res.status(400).json({ error: publicError(error, 'provider reassignment failed') });
       }
     });
 

@@ -5,9 +5,14 @@
 // server's call (task.attention in the /api/air snapshot, see
 // src/task-board/attention.js); what is tested here is how the page reads it:
 //   - the row mark follows the snapshot, so opening a task anywhere clears it;
-//   - only marks newer than what was already rung make a sound or a card, so
-//     a reload, a second tab or a tab that slept in the background is quiet;
-//   - the very first snapshot a browser ever sees is a baseline, not a replay.
+//   - the deck (③) mirrors those marks as well: one card per task that still
+//     needs you, however long ago it was rung, so a reload or a second tab does
+//     not empty the corner while the row is still marked (the real drawing is
+//     covered by tests/test-air-notify-deck.js and test-air-notify-deck-cdp.js);
+//   - only marks newer than what was already rung make a sound, so a reload, a
+//     second tab or a tab that slept in the background stays quiet;
+//   - the very first snapshot a browser ever sees rings nothing — it only sets
+//     the ringing watermark; the marks it carries are still shown.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -47,11 +52,30 @@ function loadModule() {
   return { win, api: win.MultiCCTaskNotify };
 }
 
-const createController = (win, api) => api.create({
+// Stands in for air-notify-deck.js (not loaded in this fake window) so a test
+// can see WHAT lands on the deck without a real DOM. Opt-in: pass it and the
+// controller draws its cards here instead of finding no deck module.
+function deckStub() {
+  const kinds = new Map();
+  const cards = {
+    ids: () => [...kinds.keys()],
+    has: id => kinds.has(String(id)),
+    size: () => kinds.size,
+    upsert: (task, kind) => { kinds.set(String(task.id), kind); },
+    remove: id => { kinds.delete(String(id)); },
+    clear: () => kinds.clear(),
+    isOpen: () => false,
+    setOpen: () => {},
+  };
+  return { factory: { create: () => cards }, ids: () => [...kinds.keys()], kind: id => kinds.get(String(id)) || null };
+}
+
+const createController = (win, api, stub) => api.create({
   getCurrentTaskId: () => win._cur || null,
   openTask: () => {},
   window: win, document: win.document,
   setTimeout: win.setTimeout, clearTimeout: win.clearTimeout,
+  ...(stub ? { deck: stub.factory } : {}),
 });
 
 const KIND = { done: 'completed', succeeded: 'completed', error: 'error', waiting: 'waiting' };
@@ -62,13 +86,16 @@ const T = (id, status, at, extra = {}) => ({
 
 test('first snapshot a browser ever sees is a baseline: marks show, nothing rings', () => {
   const { win, api } = loadModule();
-  const ctrl = createController(win, api);
+  const deck = deckStub();
+  const ctrl = createController(win, api, deck);
   const fired = ctrl.onSnapshot([T('t1', 'done', 50), T('t2', 'done'), T('t3', 'running')], '');
-  assert.equal(fired, false);
+  assert.equal(fired, false, 'the baseline rings nothing');
   assert.equal(ctrl.isUnseen('t1'), true, 'the server says t1 was never opened');
   assert.equal(ctrl.isUnseen('t2'), false);
   assert.equal(ctrl.unseenCount(), 1);
-  assert.deepEqual(ctrl.deckIds(), []);
+  // The mark is shown though — the card is what the row says, not a sound.
+  assert.deepEqual(ctrl.deckIds(), ['t1']);
+  assert.equal(deck.kind('t1'), 'completed');
 });
 
 test('a new server mark fires once and marks the row unseen', () => {
@@ -91,15 +118,19 @@ test('the task on screen is never unseen and never fires', () => {
 
 test('reload: marks come back from the snapshot, but what was rung is not rung again', () => {
   const { win, api } = loadModule();
-  const first = createController(win, api);
+  const first = createController(win, api, deckStub());
   first.onSnapshot([T('t6', 'running')], '');
   assert.equal(first.onSnapshot([T('t6', 'done', 100)], ''), true);
-  const reload = createController(win, api);
-  assert.equal(reload.onSnapshot([T('t6', 'done', 100)], ''), false);
+  const reloadDeck = deckStub();
+  const reload = createController(win, api, reloadDeck);
+  assert.equal(reload.onSnapshot([T('t6', 'done', 100)], ''), false, 'a mark already rung is quiet');
   assert.equal(reload.isUnseen('t6'), true, 'still unseen after reload');
+  // …and still shown: the row is marked, so the corner cannot be empty.
+  assert.deepEqual(reloadDeck.ids(), ['t6']);
   // finished while the page was closed → a newer mark → announced on reload
-  const again = createController(win, api);
+  const again = createController(win, api, deckStub());
   assert.equal(again.onSnapshot([T('t6', 'done', 100), T('t7', 'done', 200)], ''), true);
+  assert.deepEqual(again.deckIds(), ['t6', 't7']);
 });
 
 test('markOpened clears locally until the server catches up, then follows the server', () => {

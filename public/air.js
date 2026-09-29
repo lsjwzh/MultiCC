@@ -104,7 +104,6 @@
   const POLL_IDLE_MS = 15000;
   let idleRounds = 0;
   let quickCreateAttempt = null;
-  let directoryTasksExpanded = false;
   let directorySearch = null;
   // fullText 默认开：搜索的默认目标是「全部记录（含对话）」，只出现在对话正文里的词
   // 走不到任务板语料。状态那格管的是不搜索时的列表，搜索另有 searchFilter() 那份口径。
@@ -248,12 +247,6 @@
   // —— 那个高度本来就是给任务准备的。封顶留着只为挡住真·长尾（一个目录几百条
   // 任务时不去建几百个按钮），所以给得比任何一屏都宽。
   const RECENT_LIMIT = 30;
-  // 目录首页的「最近任务」是抬头下面那一块，扫一眼就该看完 —— 它不是清单，全
-  // 部记录在控制台（这条出路现在由 `#directory-task-more` 明写出来）。手机上
-  // 一列，六行正好一屏多一点；桌面两列，十行五排。再往下加只是把输入框顶得更
-  // 远，而多出来的那些本来也排不进「最近」。
-  const RECENT_ROWS = 10;
-  function recentRowLimit() { return matchMedia('(max-width: 760px)').matches ? 6 : RECENT_ROWS; }
   function recentPool() {
     return window.MultiCCTaskNotify.recentTasks({ tasks: data?.tasks || [], recentTaskIds,
       limit: RECENT_LIMIT, isUnseen: id => taskNotify?.isUnseen(id), statusOf: taskStatus });
@@ -470,7 +463,7 @@
     const wasTask = !!taskId;
     const state = { airChat: !!task };
     if (dir !== directoryId) {
-      directoryTasksExpanded = false;
+      window.MultiCCAirTaskPager?.reset();
       directoryTaskFilter.query = '';
       directoryTaskFilter.status = 'open';
       directoryTaskFilter.fullText = true;
@@ -575,7 +568,7 @@
       directoryTaskFilter.query = '';
       directoryTaskFilter.status = status;
       directoryTaskFilter.fullText = true;
-      directoryTasksExpanded = true;
+      window.MultiCCAirTaskPager?.reset();
       renderDirectoryOverview();
     }
     const stat = (name, value, detail, tone = '', status = '') => {
@@ -610,22 +603,20 @@
     const ranked = querying ? window.MultiCCAirAdmin?.rankedRows?.(tasks, active, () => '', directorySearch?.results()) : null;
     const snippets = new Map((ranked || []).map(({ task, snippet }) => [task.id, snippet]));
     const filtered = ranked ? ranked.map(({ task }) => task)
-      : (window.MultiCCAirAdmin?.filterTasks?.(tasks, active, () => '') || [...tasks]).sort(compareDirectoryTasks);
-    const rows = directoryTasksExpanded
-      ? pinFirstInDirectory(filtered)
-      : pinFirstInDirectory([...tasks].sort(compareDirectoryTasks)).slice(0, recentRowLimit());
-    $('directory-task-heading').textContent = directoryTasksExpanded ? t('airDirAllTasks') : t('airRecentTasks');
-    $('directory-overview-count').textContent = directoryTasksExpanded
-      ? t('airDirCountOfTotal', { shown: filtered.length, total: tasks.length })
-      : t('airDirTaskCount', { total: tasks.length });
+      : pinFirstInDirectory((window.MultiCCAirAdmin?.filterTasks?.(tasks, active, () => '') || [...tasks]).sort(compareDirectoryTasks));
+    // 这一页画哪几条、右下角页码写什么，都由 air-task-pager.js 算（它自己持有当前页，
+    // 于是换页之后的一次快照刷新不会把人踢回第一页）。
+    const rows = window.MultiCCAirTaskPager?.paint(filtered) || filtered;
+    $('directory-task-heading').textContent = t('airDirAllTasks');
+    // 这里数的是**筛完之后**的条数，不是这一页画了几条 —— 页码里已经写着「第几 / 共几
+    // 页」，抬头再报一次「20 / 45 个任务」是把同一个事实说两遍。
+    $('directory-overview-count').textContent = t('airDirCountOfTotal', { shown: filtered.length, total: tasks.length });
     for (const button of $('directory-task-sort').querySelectorAll('button[data-sort]')) {
       button.setAttribute('aria-pressed', String(button.dataset.sort === directoryTaskSort));
     }
-    $('directory-task-controls').hidden = !directoryTasksExpanded;
     if ($('directory-task-search').value !== directoryTaskFilter.query) $('directory-task-search').value = directoryTaskFilter.query;
     $('directory-task-status').value = directoryTaskFilter.status;
     $('directory-task-scope').value = directoryTaskFilter.fullText ? 'full' : 'board';
-    document.querySelector('.directory-task-panel')?.classList.toggle('expanded', directoryTasksExpanded);
     $('directory-task-list').replaceChildren(...rows.map(task => {
       const row = node('div', null, 'directory-task-row');
       applyRing(row, isRunningTask(task), task.id);
@@ -671,11 +662,6 @@
       return row;
     }));
     if (!rows.length) $('directory-task-list').append(node('p', t('airDirNoTasks'), 'directory-task-empty'));
-    // 截掉的那些得有个去处，否则「最近任务」看着就是全部。数字用的是这个目录
-    // 的全部任务数，不是剩下的条数 —— 说的是「还有多少」，不是「还差几行」。
-    const more = $('directory-task-more');
-    more.hidden = !directoryTasksExpanded && tasks.length <= rows.length;
-    more.textContent = directoryTasksExpanded ? t('airDirCollapseToRecent') : t('airDirViewAllTasks', { n: tasks.length });
     renderQuickPills();
     for (const element of [$('quick-task-input'), $('quick-task-submit'),
       $('quick-task-attach'), $('quick-task-mic')]) element.disabled = !dir;
@@ -963,7 +949,7 @@
     select.disabled = false;
     $('quick-task-slot').append($('quick-task-form'));
     dialog.showModal();
-    // 手机上这个模块平时折成一条细杠（air-quick-fold.js）；弹窗里要的是整张。
+    // 这个模块平时折成一条细杠（air-quick-fold.js）；弹窗里要的是整张。
     window.__airQuickFold?.unfold?.();
     $('quick-task-input').focus();
   }
@@ -979,8 +965,8 @@
     $('empty').append($('quick-task-form'));
     quickDialogDirectoryId = null;
     $('quick-task-dialog-directory').disabled = false;
-    // 手机上它平时折成一条细杠，弹窗里为了写字摊开成整张 —— 回到目录首页就按原来
-    // 的规矩收回去，别让一次「算了」把半屏的卡片留在那儿。盒子里还有草稿时
+    // 它平时折成一条细杠，弹窗里为了写字摊开成整张 —— 回到目录首页就按原来的
+    // 规矩收回去，别让一次「算了」把半屏的卡片留在那儿。盒子里还有草稿时
     // fold() 自己什么都不做：那半句话不该被藏进一条细杠。
     window.__airQuickFold?.fold?.();
   });
@@ -2602,13 +2588,11 @@
   // task page — the full directory library stays on ⌘K and 控制台 › 浏览工作目录.
   $('library').onclick = () => (directoryId ? navigate(directoryId) : setMode('library'));
   $('overview').onclick = () => setMode('overview');
-  $('directory-task-more').onclick = () => {
-    directoryTasksExpanded = !directoryTasksExpanded;
-    renderDirectoryOverview();
-    if (directoryTasksExpanded) requestAnimationFrame(() => $('directory-task-search').focus());
-  };
+  // 换页只管翻页：页码状态在 air-task-pager.js 里，翻完让 air.js 重画一次列表。
+  window.MultiCCAirTaskPager?.bind(renderDirectoryOverview);
   $('directory-task-search').oninput = event => {
     directoryTaskFilter.query = event.target.value;
+    window.MultiCCAirTaskPager?.reset();
     renderDirectoryOverview();
     $('directory-task-search').focus();
   };
@@ -2624,6 +2608,7 @@
   // 把当前结果作废、退回本地筛选，新结果到了再覆盖。
   $('directory-task-scope').onchange = event => {
     directoryTaskFilter.fullText = event.target.value === 'full';
+    window.MultiCCAirTaskPager?.reset();
     directorySearch?.refresh();
   };
   $('directory-memo').onclick = () => {
@@ -2631,6 +2616,7 @@
   };
   $('directory-task-status').onchange = event => {
     directoryTaskFilter.status = event.target.value;
+    window.MultiCCAirTaskPager?.reset();
     renderDirectoryOverview();
   };
   $('directory-task-sort').onclick = event => {
@@ -2638,6 +2624,7 @@
     if (!button || button.dataset.sort === directoryTaskSort) return;
     directoryTaskSort = button.dataset.sort === 'visit' ? 'visit' : 'message';
     try { localStorage.setItem('air:task-sort', JSON.stringify(directoryTaskSort)); } catch (_) {}
+    window.MultiCCAirTaskPager?.reset();
     renderDirectoryOverview();
   };
   $('palette-scrim').onclick = () => closePalette();
@@ -2712,12 +2699,12 @@
   // 会让下一次变窄时菜单凭空弹出来。
   matchMedia('(min-width: 761px)').addEventListener('change', event => {
     if (event.matches) closeOptions();
-    // 「最近任务」列几条跟着屏宽走（recentRowLimit），跨过这条线得重新渲染一次，
-    // 否则横竖屏一切回来列表长度还是旧的那个。但只有目录首页用得上这个数 ——
-    // 任务开着的时候那一页没渲染，而这一趟 render 会拿列表里的任务重画页头，
-    // 把只在详情里才有的东西（本轮归属那一段）抹掉。
-    // 760px 这条线还管着两件事：页头那排 pin tab 在手机宽度整个藏掉、pin 的任务
-    // 改在侧栏置顶。这两个都不用重画页头那一段（也就不会碰 title），单独刷。
+    // 760px 这条线管着四件事：页头那排 pin tab 在手机宽度整个藏掉（pin 的任务改在
+    // 侧栏置顶）、目录首页的任务清单从两列变一列、任务面板从「铺满剩余高度」退回
+    // 「自己限高、整页滚」（air.css 那条断点），以及输入框折叠模块要跟着重画那条
+    // 细杠。前两件只管目录首页那一页；任务开着的时候那一页没渲染，而这一趟 render
+    // 会拿列表里的任务重画页头，把只在详情里才有的东西（本轮归属那一段）抹掉。
+    // pin 那两件不用重画页头（也就不会碰 title），单独刷。
     if (!taskId) render();
     else { renderPins(); renderSidebarTasks(); }
   });

@@ -379,8 +379,40 @@ class ManageService {
     return const {};
   }
 
-  // ── Aux (AI assistant) ─────────────────────────────────────────────────────
-  // Mirrors the /api/aux/* + /api/reclassify-* endpoints the web dashboard
+  /// Batch-move every session whose main route is bound to this provider onto
+  /// another one (`POST /api/providers/:appType/:id/reassign-sessions`).
+  ///
+  /// With no [targetProviderId] (dry run only) it answers the bound sessions
+  /// plus the targets at least one of them can use; with a target it previews —
+  /// or, when [dryRun] is false, performs — each session's move. The server
+  /// moves each session through the same switch the AI-config sheet performs,
+  /// so an incompatible model is replaced by the target's default; that reset
+  /// is reported per session in the preview.
+  Future<Map<String, dynamic>> reassignProviderSessions(
+    String appType,
+    String id, {
+    String? targetProviderId,
+    bool dryRun = false,
+  }) async {
+    final body = <String, dynamic>{'dryRun': dryRun};
+    if (targetProviderId != null && targetProviderId.isNotEmpty) {
+      body['targetProviderId'] = targetProviderId;
+    }
+    // `_send` keeps the injectable [httpClient] in play (widget tests stub the
+    // wire) and widens the deadline: a fleet-wide move walks up to 200
+    // sessions server-side, which a 10s default would cut off mid-way.
+    final res = await _send(
+      'POST',
+      '/api/providers/$appType/$id/reassign-sessions',
+      body: jsonEncode(body),
+      timeout: const Duration(seconds: 60),
+    );
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  // ── Aux (AI assistant) ─────────────────────────────────────────────────────  // Mirrors the /api/aux/* + /api/reclassify-* endpoints the web dashboard
   // drives. The aux helper is a side-channel AI that classifies each session's
   // goal/phase and runs background tasks; these methods cover its config,
   // task history, health, and the reclassify triggers.
