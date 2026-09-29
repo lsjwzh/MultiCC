@@ -17,6 +17,13 @@
  * tests/test-quota-bar-parity.js + app/test/quota_bar_render_test.dart run the
  * same golden fixtures through both, so a change to one that is not mirrored in
  * the other fails on both ends.
+ *
+ * A second, WEB-ONLY job lives here: a bar also arrives carrying the pieces the
+ * server assembled its Chinese from (textParts/titleParts, see
+ * src/quota/quota-bar-view.js) so a non-Chinese UI can re-render it in its own
+ * language. The app has no renderer for those pieces and displays the server's
+ * bytes verbatim, so nothing below is part of the parity contract — see
+ * renderQuotaParts.
  */
 (function (root, factory) {
   const api = factory();
@@ -77,37 +84,94 @@
   // (see humanizeCountdown) safe to expand.
   const ROLLED_WINDOW = '已重置';
 
-  function resolveText(text, nowMs) {
+  // `rolledLabel` is the localized spelling of that sentence; the default is the
+  // server's own bytes, which is what the app and the golden fixtures pin.
+  function resolveText(text, nowMs, rolledLabel) {
     if (typeof text !== 'string' || text.indexOf('{') < 0) return text || '';
     return text.replace(TOKEN, (_, kind, raw) => {
       const at = Number(raw);
       if (kind !== 'cd') return relativeAgo(at, nowMs);
       const left = at - nowMs;
-      return left > 0 ? humanizeCountdown(left) : ROLLED_WINDOW;
+      return left > 0 ? humanizeCountdown(left) : (rolledLabel || ROLLED_WINDOW);
     });
+  }
+
+  // ── Re-rendering a bar's pieces in another language (Web only) ────────────
+  // The server bakes Chinese into text/title, and it cannot know which language
+  // this client is in (the choice lives in localStorage). So each bar also ships
+  // the pieces those strings were assembled from: `{k, p, s, j}` — k a catalog
+  // key, p its params (a param that is itself a piece nests), s the exact bytes
+  // the server baked in, j the separator that precedes this piece (absent = the
+  // caller's separator). Rendering with s for every piece reproduces the server
+  // string byte for byte; rendering with a translator produces the other
+  // language.
+  //
+  // `translate(key, params, fallback)` is the caller's and MUST return
+  // `fallback` for a key it cannot translate. A piece is a hint, never a
+  // requirement: an old cached bar, or one from a server that learned a new
+  // string, still renders.
+  function renderQuotaPiece(piece, translate) {
+    if (!piece || typeof piece.s !== 'string') return '';
+    let params = null;
+    if (piece.p) {
+      params = {};
+      for (const name of Object.keys(piece.p)) {
+        const value = piece.p[name];
+        if (value === null || value === undefined) params[name] = '';
+        else if (typeof value === 'object' && typeof value.s === 'string') params[name] = renderQuotaPiece(value, translate);
+        else params[name] = value;
+      }
+    }
+    if (!piece.k) return piece.s;
+    const out = translate(piece.k, params, piece.s);
+    return typeof out === 'string' ? out : piece.s;
+  }
+
+  function renderQuotaParts(parts, sep, translate) {
+    if (!Array.isArray(parts) || !parts.length || typeof translate !== 'function') return '';
+    let out = '';
+    let first = true;
+    for (const piece of parts) {
+      if (!piece || typeof piece.s !== 'string') continue;
+      if (!first) out += piece.j !== undefined ? piece.j : sep;
+      out += renderQuotaPiece(piece, translate);
+      first = false;
+    }
+    return out;
   }
 
   /**
    * A server-rendered bar → the strings to paint right now.
    *
    * @param {object} bar   {text, color, title, action, states}
-   * @param {object} [opts] {state, now} — `state` picks one of the server's
-   *   alternative renders (a fetch in flight, a login window waiting on a
-   *   human); an unknown state falls back to the default render rather than
-   *   blanking the bar.
+   * @param {object} [opts] {state, now, translate, rolled} — `state` picks one
+   *   of the server's alternative renders (a fetch in flight, a login window
+   *   waiting on a human); an unknown state falls back to the default render
+   *   rather than blanking the bar. `translate` (with `rolled`, the localized
+   *   "已重置") is the Web-only localization seam: pass it and text/title are
+   *   rebuilt from the bar's pieces in the client's language, leave it out and
+   *   the server's own bytes are resolved, exactly as before and exactly as the
+   *   app does.
    */
   function resolveQuotaBar(bar, opts) {
     if (!bar) return null;
     const o = opts || {};
     const now = finiteNumber(o.now) ?? Date.now();
     const picked = (o.state && bar.states && bar.states[o.state]) || bar;
+    const pick = (plain, parts, sep) => {
+      if (typeof o.translate === 'function') {
+        const rebuilt = renderQuotaParts(picked[parts], sep, o.translate);
+        if (rebuilt) return resolveText(rebuilt, now, o.rolled);
+      }
+      return resolveText(picked[plain], now, o.rolled);
+    };
     return {
-      text: resolveText(picked.text, now),
+      text: pick('text', 'textParts', ' · '),
       color: picked.color || '#8b949e',
-      title: resolveText(picked.title, now),
+      title: pick('title', 'titleParts', '\n'),
       action: picked.action || null,
     };
   }
 
-  return { resolveQuotaBar, resolveText, humanizeCountdown, relativeAgo };
+  return { resolveQuotaBar, resolveText, humanizeCountdown, relativeAgo, renderQuotaParts };
 });

@@ -5,20 +5,31 @@
   let configuredOnInsert = null;
   let configuredOnReorder = null;
   let configuredOnEdit = null;
+  let configuredTranslate = null;
+
+  // Every string this module paints goes through the page's t() (i18n.js): the
+  // dock is chrome, not data. The injected translator wins; the page global is
+  // the fallback the browser auto-wire relies on; a Node caller with neither
+  // gets the key back, which is what the unit tests assert against.
+  function tr(key, params) {
+    const fn = configuredTranslate
+      || (typeof global.t === 'function' ? global.t : null);
+    return fn ? fn(key, params) : key;
+  }
 
   // Per-action wording, in one place: the request/response handling is the same
   // for every queue action, only the words differ.
   const ACTION_LABELS = {
-    cancel_queued: '移除',
-    insert_queued: '插入',
-    reorder_queued: '移动',
-    edit_queued: '修改',
+    cancel_queued: 'queueActionCancel',
+    insert_queued: 'queueActionInsert',
+    reorder_queued: 'queueActionReorder',
+    edit_queued: 'queueActionEdit',
   };
   const ACTION_DONE = {
-    cancel_queued: '已移除暂存消息',
-    insert_queued: '已停止当前回复并直接执行所选消息',
-    reorder_queued: '已调整暂存消息顺序',
-    edit_queued: '已修改暂存消息',
+    cancel_queued: 'queueCancelAccepted',
+    insert_queued: 'queueInsertAccepted',
+    reorder_queued: 'queueReorderAccepted',
+    edit_queued: 'queuedMessageEdited',
   };
 
   // Shared status registry (public/status-presentation.js), resolved lazily so
@@ -28,11 +39,13 @@
       || (typeof require === 'function' ? require('./status-presentation.js') : null);
   }
 
-  function configure({ onCancel = null, onInsert = null, onReorder = null, onEdit = null } = {}) {
+  function configure({ onCancel = null, onInsert = null, onReorder = null, onEdit = null,
+    translate = null } = {}) {
     configuredOnCancel = typeof onCancel === 'function' ? onCancel : null;
     configuredOnInsert = typeof onInsert === 'function' ? onInsert : null;
     configuredOnReorder = typeof onReorder === 'function' ? onReorder : null;
     configuredOnEdit = typeof onEdit === 'function' ? onEdit : null;
+    configuredTranslate = typeof translate === 'function' ? translate : null;
   }
 
   function createActionHandler(action, {
@@ -45,7 +58,7 @@
     return async (entryId, argument) => {
       const sessionName = String(getSessionName?.() || '').trim();
       const cleanEntryId = String(entryId || '').trim();
-      if (!sessionName || !cleanEntryId) throw new Error('缺少排队消息标识');
+      if (!sessionName || !cleanEntryId) throw new Error(tr('queueEntryIdMissing'));
       const response = await fetchImpl(withToken(
         `/api/sessions/${encodeURIComponent(sessionName)}/queue/action`,
       ), {
@@ -62,16 +75,19 @@
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok !== true) {
         const message = data.code === 'queued_entry_already_claimed'
-          ? '这条消息已经开始执行，无法再调整。'
-          : `${ACTION_LABELS[action] || '操作'}失败：${data.error || data.code || response.status}`;
+          ? tr('queueEntryAlreadyClaimed')
+          : tr('queueActionFailedNamed', {
+            action: tr(ACTION_LABELS[action] || 'queueActionDefault'),
+            error: data.error || data.code || response.status,
+          });
         notify(message, 'error');
         throw new Error(message);
       }
       if (action === 'insert_queued' && data.started !== true) {
-        notify('已优先排队，尚未开始执行', 'info');
+        notify(tr('queueInsertPending'), 'info');
         return false;
       }
-      notify(ACTION_DONE[action] || '已更新暂存消息', 'completed');
+      notify(tr(ACTION_DONE[action] || 'queuedMessageUpdated'), 'completed');
       return true;
     };
   }
@@ -265,10 +281,12 @@
       : (metadata.state === 'assessing' ? 'running' : 'queued');
     const dockIcon = registry.presentation('session', dockStatus).icon;
     hint.textContent = `${dockIcon} ` + (metadata.state === 'frozen'
-        ? `已暂停：${registry.sanitizeReason(metadata.freezeReason) || '等待当前任务继续'}`
+        ? tr('sessionQueuePaused', {
+          reason: registry.sanitizeReason(metadata.freezeReason) || tr('sessionQueueWaitContinue'),
+        })
         : metadata.state === 'assessing'
-          ? '等待完成判定，队列已暂停'
-          : '当前回复完成后自动发送');
+          ? tr('sessionQueueAssessing')
+          : tr('sessionQueueHint'));
     const onCancel = typeof metadata.onCancel === 'function'
       ? metadata.onCancel : configuredOnCancel;
     const onInsert = typeof metadata.onInsert === 'function'
@@ -290,23 +308,23 @@
         handle.type = 'button';
         handle.className = 'session-queue-handle';
         handle.textContent = '⠿';
-        handle.title = '拖动调整顺序，或用 ↑/↓ 移动';
-        handle.setAttribute?.('aria-label', `调整第 ${Number(item.position) || index + 1} 条暂存消息的顺序`);
+        handle.title = tr('queueReorderHandleTitle');
+        handle.setAttribute?.('aria-label', tr('queueReorderHandleAria', { n: Number(item.position) || index + 1 }));
       }
       const position = documentRef.createElement('span');
       position.className = 'session-queue-position';
       position.textContent = `${Number(item?.position) || index + 1}.`;
       const text = documentRef.createElement('div');
       text.className = 'session-queue-text';
-      text.textContent = String(item?.text || '（暂存消息）');
+      text.textContent = String(item?.text || tr('queueEntryPlaceholder'));
       // 双击长消息弹输入框改正文（web 端唯一入口；App 同款在 SessionQueuePanel
       // 的行的双击上）。只有还没开始执行的 pending 条目能改。
       if (item?.entryId && item?.state === 'pending' && typeof onEdit === 'function') {
         text.dataset.edit = '1';
-        text.title = '双击修改这条消息';
+        text.title = tr('queueEditHintTitle');
         text.addEventListener('dblclick', () => {
           const next = (globalThis.prompt || global.prompt || (() => null))
-            .call(globalThis, '修改暂存消息', String(item?.text || ''));
+            .call(globalThis, tr('queuedMessageEditTitle'), String(item?.text || ''));
           if (next === null) return;
           const value = next.trim();
           if (!value || value === String(item?.text || '')) return;
@@ -323,22 +341,22 @@
           const insert = documentRef.createElement('button');
           insert.type = 'button';
           insert.className = 'session-queue-insert';
-          insert.textContent = item.priority ? '等待插入' : '立刻插入';
+          insert.textContent = item.priority ? tr('queuedMessageRunning') : tr('queueInsertNow');
           insert.title = item.priority
-            ? '这条消息已被选中立即执行'
-            : '停止当前回复并立即执行这条消息';
+            ? tr('queueInsertPending')
+            : tr('insertQueuedMessage');
           insert.disabled = item.priority === true;
-          insert.setAttribute?.('aria-label', `立即执行第 ${Number(item.position) || index + 1} 条消息`);
+          insert.setAttribute?.('aria-label', tr('queueInsertAria', { n: Number(item.position) || index + 1 }));
           insert.addEventListener('click', async event => {
             event.stopPropagation?.();
             if (insert.disabled) return;
             insert.disabled = true;
-            insert.textContent = '插入中…';
+            insert.textContent = tr('queueInserting');
             try {
               await onInsert(item.entryId);
             } catch (_) {
               insert.disabled = false;
-              insert.textContent = '立刻插入';
+              insert.textContent = tr('queueInsertNow');
             }
           });
           actions.appendChild(insert);
@@ -348,8 +366,8 @@
           close.type = 'button';
           close.className = 'session-queue-close';
           close.textContent = '×';
-          close.title = '移除这条尚未开始执行的消息';
-          close.setAttribute?.('aria-label', `移除第 ${Number(item.position) || index + 1} 条暂存消息`);
+          close.title = tr('cancelQueuedMessage');
+          close.setAttribute?.('aria-label', tr('queueRemoveAria', { n: Number(item.position) || index + 1 }));
           close.addEventListener('click', async event => {
             event.stopPropagation?.();
             if (close.disabled) return;

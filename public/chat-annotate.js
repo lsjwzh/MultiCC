@@ -60,13 +60,14 @@
     return `annotated-${base}-${now}.png`;
   }
 
-  function ageText(lastModified, now) {
+  function ageText(lastModified, now, translate) {
+    const tr = typeof translate === 'function' ? translate : (key => key);
     const t = Date.parse(lastModified || '');
     if (!Number.isFinite(t)) return '';
     const min = Math.max(0, Math.round((now - t) / 60000));
-    if (min < 1) return '截于刚刚';
-    if (min < 60) return `截于 ${min} 分钟前`;
-    return `截于 ${Math.round(min / 60)} 小时前`;
+    if (min < 1) return tr('annotAgeJustNow');
+    if (min < 60) return tr('annotAgeMinutes', { n: min });
+    return tr('annotAgeHours', { n: Math.round(min / 60) });
   }
 
   function drawMark(ctx, m, index) {
@@ -109,8 +110,13 @@
   }
 
   // Everything browser-bound lives here; the pure helpers above are unit-tested.
-  function createAnnotator({ doc, win, fetchFn, withToken, getComposer, getInputEl, getSessionId, notify }) {
+  function createAnnotator({ doc, win, fetchFn, withToken, getComposer, getInputEl, getSessionId, notify, translate }) {
     let overlay = null;
+    // 这套界面是 chrome（App 端同一套文案在 annot* 键里），字样必须跟着 t() 走。
+    // 注入的翻译器优先；页面全局兜底；Node 调用者两样都没有时拿到键本身。
+    const tr = (key, params) => (typeof translate === 'function'
+      ? translate(key, params)
+      : (typeof global.t === 'function' ? global.t(key, params) : key));
 
     function putIntoComposer(text, file) {
       const inputEl = getInputEl();
@@ -140,7 +146,7 @@
         lastModified = response.headers.get('last-modified') || '';
         blob = await response.blob();
       } catch (error) {
-        notify('无法加载图片用于标注：' + (error && error.message || error));
+        notify(tr('annotLoadFailed', { error: (error && error.message || error) }));
         return false;
       }
       const image = await new Promise((resolve, reject) => {
@@ -150,7 +156,7 @@
         img.onerror = () => { win.URL.revokeObjectURL(objectUrl); reject(new Error('decode failed')); };
         img.src = objectUrl;
       }).catch(() => null);
-      if (!image) { notify('图片解码失败，无法标注'); return false; }
+      if (!image) { notify(tr('annotDecodeFailed')); return false; }
       build(image, src, name, lastModified);
       return true;
     }
@@ -167,31 +173,35 @@
 
       overlay = el(doc, 'div', 'annotate-overlay');
       const header = el(doc, 'div', 'annotate-header');
-      header.append(el(doc, 'span', 'annotate-title', '标注 · ' + (name || src.split('/').pop() || '图片')));
-      const age = ageText(lastModified, Date.now());
+      const title = [tr('annotTitle'), name || src.split('/').pop() || ''].filter(Boolean).join(' · ');
+      header.append(el(doc, 'span', 'annotate-title', title));
+      const age = ageText(lastModified, Date.now(), translate);
       const stale = el(doc, 'span', 'annotate-stale', age);
-      const refresh = el(doc, 'button', 'annotate-btn', '页面变了，重新截');
+      const refresh = el(doc, 'button', 'annotate-btn', tr('annotRecapture'));
       refresh.type = 'button';
       refresh.onclick = () => { putIntoComposer(refreshText(src), null); close(); };
       stale.append(refresh);
       const closeBtn = el(doc, 'button', 'annotate-btn annotate-close', '×');
       closeBtn.type = 'button';
-      closeBtn.title = '关闭';
+      closeBtn.title = tr('close');
       closeBtn.onclick = close;
       header.append(stale, closeBtn);
 
       const toolbar = el(doc, 'div', 'annotate-toolbar');
-      const tools = [['pan', '✋ 查看'], ['point', '① 点'], ['box', '▭ 框'], ['arrow', '➜ 箭头']];
+      // The glyphs are decoration, the words are catalog data (the App draws the
+      // same four tools from annotTool*).
+      const tools = [['pan', '✋ ' + tr('annotToolPan')], ['point', '① ' + tr('annotToolPoint')],
+        ['box', '▭ ' + tr('annotToolBox')], ['arrow', '➜ ' + tr('annotToolArrow')]];
       const toolButtons = tools.map(([key, label]) => {
         const b = el(doc, 'button', 'annotate-btn' + (key === tool ? ' on' : ''), label);
         b.type = 'button';
         b.onclick = () => { tool = key; toolButtons.forEach(x => x.classList.toggle('on', x === b)); };
         return b;
       });
-      const undo = el(doc, 'button', 'annotate-btn', '↶ 撤销');
+      const undo = el(doc, 'button', 'annotate-btn', '↶ ' + tr('annotUndo'));
       undo.type = 'button';
       undo.onclick = () => { marks.pop(); render(); renderList(); };
-      const fitBtn = el(doc, 'button', 'annotate-btn', '适配');
+      const fitBtn = el(doc, 'button', 'annotate-btn', tr('annotResetView'));
       fitBtn.type = 'button';
       fitBtn.onclick = fit;
       toolbar.append(...toolButtons, el(doc, 'span', 'annotate-sep'), undo, fitBtn);
@@ -205,22 +215,22 @@
       const lg = loupe.getContext('2d');
       stage.append(cv, loupe);
 
-      const hint = el(doc, 'div', 'annotate-hint', '单指：用当前工具（点=轻触，框/箭头=拖动）；双指：随时缩放平移。手指拖动时上方有放大镜。');
+      const hint = el(doc, 'div', 'annotate-hint', tr('annotGestureHint'));
       const list = el(doc, 'div', 'annotate-marks');
       const noteBox = el(doc, 'div', 'annotate-note');
       const noteInput = el(doc, 'textarea');
-      noteInput.placeholder = '整体说明（可选）：比如「先关掉右上角弹窗再点同意」';
-      const warn = el(doc, 'div', 'annotate-warn', '⚠ 标注图和文字都会发给模型。密码/验证码不要写在这里，用「🔒 敏感信息」存进本地保险箱。');
+      noteInput.placeholder = tr('annotOverallHintWeb');
+      const warn = el(doc, 'div', 'annotate-warn', tr('annotWarning'));
       noteBox.append(noteInput, warn);
 
       const actions = el(doc, 'div', 'annotate-actions');
-      const secretBtn = el(doc, 'button', 'annotate-btn', '🔒 敏感信息');
+      const secretBtn = el(doc, 'button', 'annotate-btn', tr('annotSecretButton'));
       secretBtn.type = 'button';
       secretBtn.onclick = saveSecret;
-      const cancel = el(doc, 'button', 'annotate-btn', '取消');
+      const cancel = el(doc, 'button', 'annotate-btn', tr('cancel'));
       cancel.type = 'button';
       cancel.onclick = close;
-      const done = el(doc, 'button', 'annotate-btn primary', '放进输入框');
+      const done = el(doc, 'button', 'annotate-btn primary', tr('annotInsert'));
       done.type = 'button';
       done.onclick = finish;
       actions.append(secretBtn, el(doc, 'span', 'annotate-spacer'), cancel, done);
@@ -250,11 +260,11 @@
       }
       function renderList() {
         list.replaceChildren();
-        const kinds = { point: '点', box: '框', arrow: '箭头' };
+        const kinds = { point: tr('annotToolPoint'), box: tr('annotToolBox'), arrow: tr('annotToolArrow') };
         marks.forEach((m, i) => {
           const row = el(doc, 'div', 'annotate-mark');
           const input = el(doc, 'input');
-          input.placeholder = '这里要做什么？（可空）';
+          input.placeholder = tr('annotNoteHint');
           input.value = m.note || '';
           input.oninput = () => { m.note = input.value; };
           const del = el(doc, 'button', 'annotate-btn', '✕');
@@ -353,10 +363,10 @@
       }, { passive: false });
 
       async function saveSecret() {
-        const name = String(win.prompt('保险箱条目名（字母/数字/_.-）', 'ASSIST_SECRET') || '').trim();
+        const name = String(win.prompt(tr('annotSecretName'), 'ASSIST_SECRET') || '').trim();
         if (!name) return;
-        if (!SECRET_NAME_RE.test(name)) { notify('条目名只能包含字母、数字、_ . -'); return; }
-        const value = win.prompt(`输入 ${name} 的值（只存本地保险箱，不进对话）`, '');
+        if (!SECRET_NAME_RE.test(name)) { notify(tr('annotSecretBadName')); return; }
+        const value = win.prompt(`${name} · ${tr('annotSecretValue')}`, '');
         if (!value) return;
         try {
           const response = await fetchFn(withToken('/api/secrets'), {
@@ -367,9 +377,10 @@
           const data = await response.json().catch(() => ({}));
           if (!response.ok || data.ok !== true) throw new Error(data.error || ('HTTP ' + response.status));
         } catch (error) {
-          notify('保存失败：' + (error && error.message || error));
+          notify(tr('annotSecretFailed', { error: (error && error.message || error) }));
           return;
         }
+        // 这一行是协议，不是文案：host-prompts 按它解析，App 端同款。不要翻译。
         const line = `敏感值已存入本地保险箱，环境变量名 ${name}（值不在对话里）`;
         noteInput.value = noteInput.value.trim() ? `${noteInput.value.trim()} ${line}` : line;
       }
@@ -386,7 +397,7 @@
         render(out.getContext('2d'), false);
         out.toBlob(blob => {
           const file = blob ? new win.File([blob], exportFileName(src, Date.now()), { type: 'image/png' }) : null;
-          if (!file) notify('标注图导出失败，只放入了文字');
+          if (!file) notify(tr('annotExportFailed'));
           putIntoComposer(text, file);
           close();
         }, 'image/png');
@@ -400,9 +411,9 @@
     function install() {
       const lightbox = doc.getElementById('img-lightbox');
       if (!lightbox || lightbox.querySelector('.lb-annotate')) return false;
-      const button = el(doc, 'button', 'lb-annotate', '✎ 标注');
+      const button = el(doc, 'button', 'lb-annotate', '✎ ' + tr('annotAction'));
       button.type = 'button';
-      button.title = '在图上标注并写操作说明';
+      button.title = tr('annotActionTitle');
       button.addEventListener('click', event => {
         event.stopPropagation();
         const img = lightbox.querySelector('img');
@@ -438,6 +449,7 @@
       getInputEl: () => document.getElementById('input'),
       // eslint-disable-next-line no-undef
       getSessionId: () => (typeof _sessionName !== 'undefined' ? _sessionName : ''),
+      translate: (key, params) => (typeof window.t === 'function' ? window.t(key, params) : key),
       notify: text => { if (typeof window.addSystemMsg === 'function') window.addSystemMsg(text); else window.alert(text); },
     });
     global.MultiCCChatAnnotator = annotator;

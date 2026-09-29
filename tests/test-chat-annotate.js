@@ -4,11 +4,19 @@
 // into the composer. The App (image_annotate_screen.dart) must emit the same
 // bytes; the agent-side contract lives in src/chat/host-prompts.js.
 
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   serializeAnnotation, refreshText, sourcePathFromUrl, exportFileName, ageText,
 } = require('../public/chat-annotate.js');
+
+// 文案走 t()（i18n.js）：注入同一份中文目录，断言才是页面上的样子。
+const ROOT = path.join(__dirname, '..');
+const ZH = JSON.parse(fs.readFileSync(path.join(ROOT, 'app/assets/i18n/zh.json'), 'utf8'));
+const zhT = (key, params) => String(ZH[key] ?? key)
+  .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
 
 test('serializes point / box / arrow with normalized 3-decimal coordinates', () => {
   const text = serializeAnnotation({
@@ -57,9 +65,9 @@ test('export filename and capture age', () => {
   assert.equal(exportFileName('/a/b/snap-1.png', 42), 'annotated-snap-1-42.png');
   assert.equal(exportFileName('', 7), 'annotated-image-7.png');
   const now = Date.parse('2026-09-26T10:00:00Z');
-  assert.equal(ageText('Sat, 26 Sep 2026 09:57:00 GMT', now), '截于 3 分钟前');
-  assert.equal(ageText('Sat, 26 Sep 2026 07:00:00 GMT', now), '截于 3 小时前');
-  assert.equal(ageText('', now), '');
+  assert.equal(ageText('Sat, 26 Sep 2026 09:57:00 GMT', now, zhT), '截于 3 分钟前');
+  assert.equal(ageText('Sat, 26 Sep 2026 07:00:00 GMT', now, zhT), '截于 3 小时前');
+  assert.equal(ageText('', now, zhT), '');
 });
 
 test('agent-side contract describes the same block the editors emit', () => {

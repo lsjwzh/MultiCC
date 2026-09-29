@@ -230,6 +230,9 @@ let chatScrollController = null;
 const inputEl     = document.getElementById('input');
 const sendBtn     = document.getElementById('send-btn');
 const statusEl    = document.getElementById('status');
+// Filled again on every status change; set here so the narrow Air pill never
+// renders empty during the window before the first connect lands.
+if (statusEl) statusEl.dataset.statusLabel = tt('connecting');
 const costBar     = document.getElementById('cost-bar');
 const cwdPathEl   = document.getElementById('cwd-path');
 const attachArea  = document.getElementById('attach-area');
@@ -620,6 +623,10 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
   onSocket(socket) { ws = socket; },
   onConnecting({ debugUrl }) {
     statusEl.textContent = 'Connecting...';
+    // The narrow Air layout hides this text and paints a short pill instead
+    // (chat-air.css): a pseudo-element can only read what we put in an
+    // attribute, it cannot call t() itself.
+    statusEl.dataset.statusLabel = tt('connecting');
     statusEl.className = '';
     dbg('ws', `connect() → ${debugUrl}`);
   },
@@ -632,6 +639,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
       return false;
     }
     statusEl.textContent = 'Connected';
+    statusEl.dataset.statusLabel = tt('connected');
     statusEl.className = 'connected';
     statusEl.title = '';
     statusEl.onclick = () => forceReconnect('status click');
@@ -701,6 +709,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
       ? window.MultiCCErrorEnvelope.presentation(envelope, { retrySeconds: secs }) : null;
     statusEl.textContent = _isRestarting ? '重启中…'
       : view ? `${view.headline}：${view.message}` : `Reconnecting in ${secs}s...`;
+    statusEl.dataset.statusLabel = tt(_isRestarting ? 'chatStatusRestarting' : 'chatStatusReconnecting');
     statusEl.className = 'error';
     statusEl.title = envelope && window.MultiCCErrorEnvelope
       ? window.MultiCCErrorEnvelope.diagnosticText(envelope) : '';
@@ -719,6 +728,7 @@ const chatTransport = window.MultiCCChatTransport.createTransport({
     statusEl.textContent = view
       ? `${view.headline}：${view.message}`
       : `WebSocket ticket failed: ${error && error.message || 'unknown error'}`;
+    statusEl.dataset.statusLabel = tt('chatStatusReconnecting');
     statusEl.className = 'error';
     statusEl.title = envelope && window.MultiCCErrorEnvelope
       ? window.MultiCCErrorEnvelope.diagnosticText(envelope) : '';
@@ -1261,7 +1271,7 @@ function truncate(s, n) {
    the merge-hint observer and the CDP fixtures call by name. */
 const worktreeSyncRequest = window.MultiCCWorktreeSync.create({ document,
   getSession: () => _sessionName, getShell: () => shellChatView.shellId,
-  readOnly: isReadOnly,
+  readOnly: isReadOnly, translate: tt,
   request: (url, options) => chatApi.json(withToken(url), options), notice: addSystemMsg,
 });
 /* ── 这个帧还在台上吗 ──
@@ -2434,6 +2444,7 @@ window.MultiCCChatSessionQueue.configure({
   onInsert: SHARE_MODE ? null : insertQueuedSessionEntry,
   onReorder: SHARE_MODE ? null : reorderQueuedSessionEntry,
   onEdit: SHARE_MODE ? null : editQueuedSessionEntry,
+  translate: tt,
 });
 function consumeUserInputRequestId(requestId) {
   if (chatEventState.pendingUserInputRequestId !== requestId) return;
