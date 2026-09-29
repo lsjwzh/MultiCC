@@ -45,6 +45,31 @@ AirService _service(
 );
 
 void main() {
+  test('第 1025 个任务的机器错误码变成明确容量提示', () async {
+    final settings = await _settings();
+    final service = AirService(settings: settings, httpClient: MockClient((_) async =>
+      http.Response(jsonEncode({'ok': false, 'code': 'task_shell_task_limit',
+        'message': 'Task limit reached (1024 tasks/project)'}), 409,
+        headers: {'content-type': 'application/json; charset=utf-8'})));
+    await expectLater(service.createTask(dirId: 'd1', title: '新任务', clientMsgId: 'c1'),
+        throwsA(isA<AirTaskCapacityException>()));
+  });
+
+  test('清理接口先 GET 预览，再 POST 明确选中的任务 id，不传 force', () async {
+    final settings = await _settings();
+    final requests = <http.Request>[];
+    final service = AirService(settings: settings, httpClient: MockClient((request) async {
+      requests.add(request);
+      return http.Response(jsonEncode({'ok': true, 'tasks': <Object>[], 'deleted': <Object>[], 'skipped': <Object>[]}),
+          200, headers: {'content-type': 'application/json; charset=utf-8'});
+    }));
+    await service.previewTaskRetention('d1');
+    await service.deleteTaskRetention('d1', ['old']);
+    expect(requests.map((request) => request.method).toList(), ['GET', 'POST']);
+    expect(requests.map((request) => request.url.path).toList(),
+        ['/api/task-board/directories/d1/retention', '/api/task-board/directories/d1/retention']);
+    expect(jsonDecode(requests.last.body), {'taskIds': ['old']});
+  });
   group('renameTask', () {
     test('任务标题写入任务身份端点，任务 id 会安全编码', () async {
       final settings = await _settings();

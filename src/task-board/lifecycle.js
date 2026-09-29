@@ -33,6 +33,11 @@ function createTaskLifecycle({ getBoard, resolveTask, taskIdentityIds, commit, t
       const ids = taskIdentityIds(task), dirId = taskDirId(task);
       const purgeOptions = { force: options.force === true, ...(options.automatic === true ? { automatic: true } : {}) };
       await preparePurge?.(task, ids, purgeOptions);
+      // Retention can lose eligibility (most importantly a new pin) while its
+      // asynchronous Git preflight is running. Recheck before the write barrier.
+      if (options.guard && !options.guard()) {
+        throw Object.assign(new Error('no_longer_eligible'), { code: 'no_longer_eligible' });
+      }
       // Persist a write barrier before cleanup. Retrying after a transient
       // failure resumes this same deletion; permanent refusals restore the card.
       let result = commit(board => { for (const id of ids) if (board.tasks[id]) board.tasks[id].deleting = true; return { ok: true }; });

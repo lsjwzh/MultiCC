@@ -918,7 +918,51 @@
   // its composer — the same AI 配置 (CLI · provider · model · effort) and 角色
   // dialogs. Nothing about configuring a task is written twice: a pill opens the
   // one dialog and holds the answer until the task is created.
-  function quickStatus(text) { $('quick-task-status').textContent = text || ''; }
+  function quickStatus(text, capacity = false) {
+    $('quick-task-status').textContent = text || '';
+    $('quick-task-status').classList.toggle('capacity-error', capacity);
+  }
+  let retentionPreview = null;
+  const retentionDialog = $('task-retention-dialog');
+  const closeRetention = () => retentionDialog.close();
+  $('task-retention-close').onclick = closeRetention;
+  $('task-retention-cancel').onclick = closeRetention;
+  $('quick-task-retention').onclick = async () => {
+    const dirId = quickTargetDirectoryId();
+    if (!dirId) return;
+    retentionPreview = null;
+    $('task-retention-delete').disabled = true;
+    $('task-retention-list').replaceChildren();
+    $('task-retention-summary').textContent = t('airAdminLoading');
+    retentionDialog.showModal();
+    try {
+      const preview = await api(`/api/task-board/directories/${encodeURIComponent(dirId)}/retention`);
+      if (!retentionDialog.open || dirId !== quickTargetDirectoryId()) return;
+      retentionPreview = { dirId, tasks: preview.tasks || [] };
+      $('task-retention-summary').textContent = retentionPreview.tasks.length
+        ? t('airRetentionSummary', { count: preview.count, limit: preview.limit, n: retentionPreview.tasks.length })
+        : t('airRetentionEmpty');
+      const list = $('task-retention-list');
+      list.replaceChildren(...retentionPreview.tasks.map(task => node('div',
+        `${task.title || task.id} · ${new Date(task.lastInteractionAt).toLocaleString()}`)));
+      $('task-retention-delete').disabled = !retentionPreview.tasks.length;
+    } catch (error) { $('task-retention-summary').textContent = error.message; }
+  };
+  $('task-retention-delete').onclick = async () => {
+    const preview = retentionPreview;
+    if (!preview?.tasks?.length) return;
+    $('task-retention-delete').disabled = true;
+    try {
+      const result = await api(`/api/task-board/directories/${encodeURIComponent(preview.dirId)}/retention`,
+        { taskIds: preview.tasks.map(task => task.id) });
+      closeRetention();
+      await refresh();
+      quickStatus(t('airRetentionDone', { deleted: result.deleted.length, skipped: result.skipped.length }));
+    } catch (error) {
+      $('task-retention-summary').textContent = error.message;
+      $('task-retention-delete').disabled = false;
+    }
+  };
 
   // 侧栏那颗「＋ 新任务」：把上面这**一个**输入框模块搬进弹窗，而不是再长出一张
   // 自己的表单。搬的是节点，所以两处的胶囊、草稿、附件、Goal 上限和绑定的处理器
@@ -1197,7 +1241,10 @@
         await refresh();
         navigate(targetDirectoryId, created.taskId);
         notice(t('airQuickFirstMessageUnconfirmed', { msg: error.message }));
-      } else quickStatus(error.message);
+      } else {
+        const full = error.code === 'task_shell_task_limit';
+        quickStatus(full ? t('airRetentionFull', { count: 1024, limit: 1024 }) : error.message, full);
+      }
     } finally {
       $('quick-task-submit').disabled = false;
       $('quick-task-dialog-directory').disabled = false;

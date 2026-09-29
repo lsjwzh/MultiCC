@@ -313,6 +313,7 @@
               <span id="quick-task-status" role="status" aria-live="polite"></span>
               <button id="quick-task-submit" class="primary" type="submit" data-i18n="airCreateAndRun">创建并执行 ↑</button>
             </div>
+            <button id="quick-task-retention" class="quick-task-retention" type="button" data-i18n="airRetentionManage">管理任务容量</button>
           </form>
         </div>
 
@@ -494,6 +495,13 @@
       </div>
     </div>
     <p id="more-status" role="status" aria-live="polite"></p>
+  </dialog>
+
+  <dialog id="task-retention-dialog" class="task-retention-dialog" aria-label="管理任务容量" data-i18n-aria-label="airRetentionManage">
+    <div class="section-heading"><div><span class="eyebrow">TASK CAPACITY</span><h2 data-i18n="airRetentionManage">管理任务容量</h2></div><button id="task-retention-close" type="button" data-i18n-aria-label="airDlgClose">×</button></div>
+    <p id="task-retention-summary" role="status"></p>
+    <div id="task-retention-list" class="task-retention-list"></div>
+    <div class="task-retention-actions"><button id="task-retention-cancel" type="button" data-i18n="airDlgClose">关闭</button><button id="task-retention-delete" type="button" class="primary" disabled data-i18n="airRetentionDelete">确认删除列出的安全任务</button></div>
   </dialog>
 
   <!-- 控制台保留当前任务，概览由 air-admin.js 渲染。 -->

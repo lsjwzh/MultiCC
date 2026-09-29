@@ -99,6 +99,66 @@ test('at the cap, no safe completed candidate refuses admission without deleting
   assert.deepEqual(f.purged, []);
 });
 
+test('retention preview is read-only and confirmed batch rechecks safety before deleting', async t => {
+  const purged = [];
+  let pinned = [];
+  const shellTasks = ['older', 'newer'].map(id => ({ id, dirId: 'dir-1', ready: true, sessionId: `s-${id}` }));
+  const f = mkRuntime({ listShellTasks: () => shellTasks,
+    getPinnedTaskIds: () => pinned,
+    prepareTaskDelete: async () => {},
+    purgeTaskData: async task => { purged.push(task.id); },
+  });
+  t.after(() => fs.rmSync(path.dirname(f.file), { recursive: true, force: true }));
+  const board = f.runtime.getBoard();
+  for (const [id, at] of [['older', 1], ['newer', 2]]) {
+    board.tasks[id] = { id, dirId: 'dir-1', title: id, status: 'done',
+      refs: [{ sessionId: `s-${id}`, userMsgId: `u-${id}`, ts: at }] };
+    f.deps.records.set(`s-${id}`, { id: `s-${id}`, dirId: 'dir-1', taskBoundTaskId: id });
+  }
+  const routes = new Map();
+  f.runtime.mountRoutes({ get: (url, handler) => routes.set(`GET ${url}`, handler),
+    post: (url, handler) => routes.set(`POST ${url}`, handler), delete: () => {} });
+  const pathName = '/api/task-board/directories/:dirId/retention';
+  const call = async (method, body) => {
+    const res = { statusCode: 200, status(code) { this.statusCode = code; return this; },
+      json(value) { this.body = value; return this; } };
+    await routes.get(`${method} ${pathName}`)({ params: { dirId: 'dir-1' }, body }, res);
+    return res;
+  };
+  const preview = await call('GET');
+  assert.deepEqual(preview.body.tasks.map(task => task.id), ['older', 'newer']);
+  assert.deepEqual(purged, []);
+  pinned = ['older'];
+  const result = await call('POST', { taskIds: preview.body.tasks.map(task => task.id) });
+  assert.deepEqual(result.body.deleted, ['newer']);
+  assert.deepEqual(result.body.skipped, [{ id: 'older', reason: 'no_longer_eligible' }]);
+  assert.deepEqual(purged, ['newer']);
+  assert.ok(board.tasks.older);
+  assert.equal((await call('POST', { taskIds: ['older', 'older'] })).statusCode, 400);
+});
+
+test('a pin added during retention lifecycle preflight prevents the write barrier', async t => {
+  let pinned = [];
+  let checks = 0;
+  const purged = [];
+  const shellTasks = [{ id: 'old', dirId: 'dir-1', ready: true, sessionId: 's-old' }];
+  const f = mkRuntime({ listShellTasks: () => shellTasks, getPinnedTaskIds: () => pinned,
+    prepareTaskDelete: async () => { if (++checks === 2) pinned = ['old']; },
+    purgeTaskData: async task => purged.push(task.id) });
+  t.after(() => fs.rmSync(path.dirname(f.file), { recursive: true, force: true }));
+  const board = f.runtime.getBoard();
+  board.tasks.old = { id: 'old', dirId: 'dir-1', title: 'old', status: 'done',
+    refs: [{ sessionId: 's-old', userMsgId: 'u-old', ts: 1 }] };
+  f.deps.records.set('s-old', { id: 's-old', dirId: 'dir-1', taskBoundTaskId: 'old' });
+  // The first preflight is retention's check, the second is inside the
+  // lifecycle. A pin placed there must still stop the write barrier.
+  const result = await f.runtime.evictOldestSafeTask('dir-1', () => shellTasks, () => true)
+    .catch(error => error);
+  assert.equal(result.code, 'task_shell_task_limit');
+  assert.deepEqual(purged, []);
+  assert.equal(board.tasks.old.deleting, undefined);
+});
+
 test('retention excludes unfinished archives, live sessions, shared executions and the source task', () => {
   const specs = [
     ['done', { status: 'done' }, 's-done'],
