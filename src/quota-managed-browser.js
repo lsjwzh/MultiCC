@@ -187,6 +187,48 @@ function findChromeBinary(platform = process.platform, env = process.env) {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The second half of the Cloudflare story the base args only tell half of.
+//
+// Dropping AutomationControlled really does put `navigator.webdriver` back to
+// false (verified in the page), and yet a *headless* launch still landed on the
+// "请稍候…" interstitial — because headless Chrome also announces itself in the
+// user agent ("HeadlessChrome/154.0.0.0"), and bot management reads that token
+// too. Measured on Chrome 154.0.8037.58, 2026-09-29, cold start with no other
+// browser running:
+//
+//   flag only            → navigator.webdriver=false, page stuck on the challenge
+//   flag + this UA       → "Settings - Claude", /api/organizations/<uuid>/usage 200
+//
+// Chrome zeroes the build components in its own UA, so the major version is all
+// that is needed to spell the exact string a headed window of the same build
+// sends — the same story the profile's Cloudflare clearance was issued against.
+const UA_PLATFORM = {
+  darwin: 'Macintosh; Intel Mac OS X 10_15_7',
+  win32: 'Windows NT 10.0; Win64; x64',
+  linux: 'X11; Linux x86_64',
+};
+const userAgentCache = new Map();
+
+async function headlessUserAgent(binary, platform = process.platform) {
+  if (!binary) return null;
+  if (userAgentCache.has(binary)) return userAgentCache.get(binary);
+  const token = UA_PLATFORM[platform] || UA_PLATFORM.linux;
+  let agent = null;
+  try {
+    const out = await execFileAsync(binary, ['--version']);
+    const match = /(\d+)\.\d+\.\d+\.\d+/.exec(String(out));
+    if (match) {
+      agent = `Mozilla/5.0 (${token}) AppleWebKit/537.36 (KHTML, like Gecko) `
+        + `Chrome/${match[1]}.0.0.0 Safari/537.36`;
+    }
+  } catch (_) {
+    // No version, no override: the launch still works, it may just meet the
+    // challenge — and the caller already reports that as its own state.
+  }
+  userAgentCache.set(binary, agent);
+  return agent;
+}
+
 function createManagedQuotaBrowser(options = {}) {
   const {
     profileDir = PROFILE_DIR,
@@ -259,6 +301,14 @@ function createManagedQuotaBrowser(options = {}) {
       '--no-default-browser-check',
       '--disable-background-networking',
       '--disable-sync',
+      // A CDP client flips navigator.webdriver to true, and Cloudflare reads
+      // exactly that bit: claude.ai answers our page fetch with a "Just a
+      // moment…" challenge (403, cf-mitigated: challenge) instead of the usage
+      // panel, no matter how good the login in the profile is. Dropping the
+      // AutomationControlled blink feature puts the flag back to false while
+      // leaving the DevTools connection intact — measured on Chrome 154:
+      // challenged before, logged-in panel (and its JSON API) after.
+      '--disable-blink-features=AutomationControlled',
       ...extra,
     ];
   }
@@ -270,7 +320,8 @@ function createManagedQuotaBrowser(options = {}) {
       throw err;
     }
     fs.mkdirSync(profileDir, { recursive: true });
-    const proc = spawnChrome(binary, baseArgs(true, ['about:blank']));
+    const ua = await headlessUserAgent(binary);
+    const proc = spawnChrome(binary, baseArgs(true, [...(ua ? [`--user-agent=${ua}`] : []), 'about:blank']));
     child = proc;
     childMode = 'headless';
     proc.on('exit', () => {
