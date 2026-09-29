@@ -68,6 +68,7 @@ const { buildReplayMessages } = require('../routes/chat-history');
 const chatStream = require('./chat-stream');
 const waitInjector = require('../wait/injector');
 const providers = require('../providers/core');
+const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
 const { createTurnTimingRecorder } = require('./turn-timing');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard } = require('./codex-rollout-guard');
@@ -979,6 +980,21 @@ function createChatTurnEngine(deps) {
         logger.warn?.('chat_run_hibernated_workspace_blocked', { sessionId: sessionName, code: error.code });
         try { chatBroadcast(sessionName, { type: 'error', code: 'workspace_hibernated', error: '会话工作区尚未恢复，消息未执行；系统会保留并重试投递。' }); } catch (_) {}
         return { blocked: true, code: 'workspace_hibernated' };
+      }
+    }
+    // Provider egress-IP advanced restriction: fail closed before spawning
+    // when the bound provider declares an allowlist and the host's current
+    // public IP (background-refreshed cache, see providers/egress-ip.js) is
+    // not exactly one of the listed addresses.
+    if (persisted.provider) {
+      const boundProvider = providers.getProvider(undefined, persisted.provider);
+      if (boundProvider) {
+        const egressCheck = checkEgressIpAllowed(boundProvider);
+        if (!egressCheck.allowed) {
+          logger.warn?.('chat_run_egress_ip_blocked', { sessionId: sessionName, code: egressCheck.code, providerId: persisted.provider });
+          try { chatBroadcast(sessionName, { type: 'error', code: egressCheck.code, error: egressCheck.detail }); } catch (_) {}
+          return { blocked: true, code: egressCheck.code };
+        }
       }
     }
     const delivery = opts.clientMsgId || opts.deliveryId;

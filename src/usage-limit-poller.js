@@ -27,6 +27,8 @@ const { publicTransportError } = require('./upstream-error');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const providers = require('./providers/core');
+const { checkEgressIpAllowed } = require('./providers/egress-ip-policy');
 
 const POLL_TIMEOUT_MS = 6000;
 // 借道余量透传：出借方收到查询后自己触发对厂商的真实余量查询（可能比本机
@@ -317,6 +319,17 @@ function createUsageLimitPoller({ resolveTarget, broadcast, now = () => Date.now
     const promise = (async () => {
       let dto = null;
       let failureDetail = null;
+      // Same egress-IP-allowlist gate as the chat-turn admission path: a
+      // restricted provider must not be polled for balance/quota either.
+      const boundProvider = target.providerId ? providers.getProvider(target.appType, target.providerId) : null;
+      const egressCheck = boundProvider ? checkEgressIpAllowed(boundProvider) : { allowed: true };
+      if (!egressCheck.allowed) {
+        failureDetail = egressCheck.detail;
+        console.warn(`[usage-limit] ${target.strategy} poll skipped (${target.providerId}): ${failureDetail}`);
+        cache.set(cacheKey, { at: nowMs, dto: null, error: failureDetail });
+        inflight.delete(cacheKey);
+        return null;
+      }
       try {
         dto = await adapter(target, nowMs);
       } catch (error) {
