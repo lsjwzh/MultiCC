@@ -19,6 +19,7 @@
 // 别因为一次「没读到」就把它删了。
 
 const stateStore = require('../state/store');
+const fs = require('node:fs');
 const { createPaths } = require('../paths');
 
 const PIN_LIMIT = 100;
@@ -35,6 +36,17 @@ function normalizePins(value) {
     if (out.length >= PIN_LIMIT) break;
   }
   return out;
+}
+
+// Eviction must read current pins, not a second long-lived cache. Corruption
+// makes the protection state unknown, so the caller must fail closed.
+function readStoredPinIds(file) {
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  const body = raw?.data || raw;
+  if (!Array.isArray(body?.taskIds)) throw new Error('air pins unavailable');
+  return normalizePins(body.taskIds);
 }
 
 function createAirPinRuntime(rawDeps) {
@@ -66,7 +78,10 @@ function createAirPinRuntime(rawDeps) {
 
   function persist() {
     try { store.save({ taskIds: pinned }); }
-    catch (e) { logger.warn(`[multicc/air-pins] save failed: ${e.message}`); }
+    catch (e) {
+      logger.warn(`[multicc/air-pins] save failed: ${e.message}`);
+      throw Object.assign(new Error('Pin state could not be saved'), { code: 'pin_save_failed', status: 500 });
+    }
   }
 
   function knownIds() {
@@ -84,8 +99,10 @@ function createAirPinRuntime(rawDeps) {
   /** 整份替换（拖排序、批量取消都走这里）。超出上限的尾巴直接丢掉。 */
   function replace(taskIds) {
     const known = knownIds();
+    const previous = read();
     pinned = normalizePins(taskIds).filter(id => !known || known.has(id));
-    persist();
+    try { persist(); }
+    catch (error) { pinned = previous; throw error; }
     return read();
   }
 
@@ -111,7 +128,8 @@ function createAirPinRuntime(rawDeps) {
       if (!Array.isArray(body.taskIds)) {
         return res.status(400).json({ ok: false, code: 'task_ids_required', message: 'taskIds 必须是数组' });
       }
-      res.json({ ok: true, taskIds: replace(body.taskIds) });
+      try { res.json({ ok: true, taskIds: replace(body.taskIds) }); }
+      catch (error) { res.status(error.status || 500).json({ ok: false, code: error.code || 'pin_failed', message: 'Request failed' }); }
     });
     target.post('/api/air/pins/toggle', (req, res) => {
       try { res.json({ ok: true, taskIds: toggle((req.body || {}).taskId) }); }
@@ -124,4 +142,4 @@ function createAirPinRuntime(rawDeps) {
   return { file, limit: PIN_LIMIT, read, replace, toggle, mountRoutes };
 }
 
-module.exports = { PIN_LIMIT, normalizePins, createAirPinRuntime };
+module.exports = { PIN_LIMIT, normalizePins, readStoredPinIds, createAirPinRuntime };

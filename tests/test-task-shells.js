@@ -32,6 +32,91 @@ test('task-first creation allows 1024 tasks per directory, then rejects only tha
   assert.equal((await f.runtime.createStandalone({ dirId: 'd2', title: 'Other directory', clientMsgId: 'create-other' })).ok, true);
 });
 
+test('a full directory waits for safe eviction before reserving a new task', async t => {
+  let f;
+  const evictions = [];
+  f = fixture(t, { getDirectory: id => id === 'd1' ? { id } : null,
+    evictTaskForCapacity: async (dirId, listTasks, atCapacity) => {
+      evictions.push(dirId);
+      assert.equal(atCapacity(), true);
+      assert.equal(listTasks().length, MAX_TASKS_PER_DIRECTORY);
+      f.store.remove('task', 'tsk_old');
+    } });
+  f.store.transaction(() => {
+    for (let i = 0; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      f.store.set('task', i === 0 ? 'tsk_old' : `tsk_seed_${i}`,
+        { id: i === 0 ? 'tsk_old' : `tsk_seed_${i}`, dirId: 'd1' });
+    }
+  });
+  const created = await f.runtime.createStandalone({ dirId: 'd1', title: 'After eviction', clientMsgId: 'create-after-evict' });
+  assert.equal(created.ok, true);
+  assert.deepEqual(evictions, ['d1']);
+  assert.equal(f.store.get('task', 'tsk_old'), null);
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
+
+test('legacy task resolution also evicts at the limit without evicting its current source', async t => {
+  let f;
+  const excluded = [];
+  f = fixture(t, { evictTaskForCapacity: async (_dirId, _list, _full, ids) => {
+    excluded.push(...ids);
+    f.store.remove('task', 'tsk_old');
+  } });
+  const source = f.runtime.adopt(f.a.id, 'a');
+  f.store.transaction(() => {
+    for (let i = 1; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      const id = i === 1 ? 'tsk_old' : `tsk_seed_${i}`;
+      f.store.set('task', id, { id, dirId: 'd1' });
+    }
+  });
+  const task = await f.runtime.resolveTask(f.a.id, { taskId: 'tsk_new' });
+  assert.equal(task.id, 'tsk_new');
+  assert.ok(excluded.includes(source.id));
+  assert.ok(f.store.get('task', source.id));
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
+
+test('invalid full-directory requests never evict a task before validation', async t => {
+  let evictions = 0;
+  const f = fixture(t, { evictTaskForCapacity: async () => { evictions += 1; } });
+  f.runtime.adopt(f.a.id, 'a');
+  f.store.transaction(() => {
+    for (let i = 1; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      const id = `tsk_seed_${i}`;
+      f.store.set('task', id, { id, dirId: 'd1' });
+    }
+  });
+  await assert.rejects(f.runtime.resolveTask(f.a.id, { taskId: 'bad id' }), { code: 'invalid_input' });
+  await assert.rejects(f.runtime.sendExplicit(f.a.id, input('invalid-target'), { taskId: 'bad id' }), { code: 'invalid_input' });
+  await assert.rejects(f.runtime.sendExplicit(f.a.id, input('invalid-context', null,
+    { contextTaskIds: ['tsk_missing'] }), { taskId: 'tsk_new' }), { code: 'context_requires_new_task' });
+  await assert.rejects(f.runtime.send(f.a.id, input('invalid-reference', null,
+    { newTask: true, contextTaskIds: ['tsk_missing'] })), { code: 'task_not_found' });
+  assert.equal(evictions, 0);
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
+
+test('a valid new-work message evicts only after admission validation', async t => {
+  let f, evictions = 0;
+  f = fixture(t, { evictTaskForCapacity: async () => {
+    evictions += 1;
+    f.store.remove('task', 'tsk_old');
+  } });
+  const source = f.runtime.adopt(f.a.id, 'a');
+  f.store.transaction(() => {
+    for (let i = 1; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      const id = i === 1 ? 'tsk_old' : `tsk_seed_${i}`;
+      f.store.set('task', id, { id, dirId: 'd1' });
+    }
+  });
+  const sent = await f.runtime.send(f.a.id, input('valid-new-work', null, { newTask: true }));
+  assert.equal(sent.ok, true);
+  assert.notEqual(sent.taskId, source.id);
+  assert.ok(f.store.get('task', source.id));
+  assert.equal(evictions, 1);
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
+
 test('task-shell display attribution uses the registry code and preserves source tasks', () => {
   const tasks = new Map([
     ['tsk-current', { id: 'tsk-current', title: '当前任务完整名称' }],
@@ -381,7 +466,7 @@ test('task deep links resolve the exact task and make it the shell focus', async
   const f = fixture(t, { getTask: id => boardTasks[id] || null });
   const adopted = f.runtime.adopt(f.a.id, 'a');
   assert.notEqual(adopted.id, 'tsk-linked');
-  const resolved = f.runtime.resolveTask(f.a.id, { taskId: 'tsk-linked' });
+  const resolved = await f.runtime.resolveTask(f.a.id, { taskId: 'tsk-linked' });
   assert.equal(resolved.id, 'tsk-linked');
   assert.equal(resolved.title, '链接指定任务');
   assert.equal(f.runtime.view(f.a.id).currentTaskId, 'tsk-linked');

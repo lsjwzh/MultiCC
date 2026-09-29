@@ -135,11 +135,11 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       if (!owner) throw fail('source_session_missing');
       let task = receipt && store.get('task', receipt.taskId);
       if (!task) {
-        if (directoryAtCapacity(store, owner.dirId)) throw fail('task_shell_task_limit');
         const entry = await taskEntry(id);
         if (entry.execution.busy !== false) throw fail('fork_source_busy', 'Wait for the source task to finish before forking');
         if (!ports.captureForkBaseline) throw fail('fork_unavailable');
         const captured = await ports.captureForkBaseline(source, owner, async () => historySnapshot(id, (await taskEntry(id)).messages));
+        if (directoryAtCapacity(store, owner.dirId)) await ports.ensureTaskSlot(owner.dirId, [source.id]);
         const { history, ...baseline } = captured;
         const snapshot = history || historySnapshot(id, entry.messages);
         const taskId = `tsk_${hash(key).slice(0, 32)}`, sessionId = `task-${taskId.slice(4)}`;
@@ -199,6 +199,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       if (receipt && receipt.fingerprint !== fingerprint) throw fail('idempotency_conflict');
       if (receipt?.result) return receipt.result;
       let task = receipt && store.get('task', receipt.taskId);
+      if (!task && directoryAtCapacity(store, input.dirId)) await ports.ensureTaskSlot(input.dirId);
       if (!task) store.transaction(() => {
         if (directoryAtCapacity(store, input.dirId)) throw fail('task_shell_task_limit');
         const taskId = `tsk_${hash(key).slice(0, 32)}`, sessionId = `task-${taskId.slice(4)}`, shellId = `sh_${hash(sessionId).slice(0, 24)}`;

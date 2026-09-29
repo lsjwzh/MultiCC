@@ -1139,7 +1139,7 @@ function createClassifyStateMachine(rawDeps) {
           reason: '归集判定本轮为独立新任务（relation=new）',
         } : null);
         const suggestion = separationAsk
-          ? getTaskContextHost().proposeTaskSeparation?.(sessionName, shellReceiptId, {
+          ? await getTaskContextHost().proposeTaskSeparation?.(sessionName, shellReceiptId, {
             separation: separationAsk, turnId, anchorMessageId,
           })
           : null;

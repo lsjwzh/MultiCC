@@ -352,7 +352,7 @@ test('Air lists and pins hide unseparated tasks across decisions and restarts, t
       { id: 'u1', role: 'user', content: 'New goal', turnId: 'turn-1', clientMsgId: sent.receiptId },
       { id: 'a1', role: 'assistant', content: 'Result', turnId: 'turn-1' });
     f.statuses.set(source.sessionId, { busy: false });
-    const suggestion = f.runtime.separation.propose(source.sessionId, sent.receiptId, {
+    const suggestion = await f.runtime.separation.propose(source.sessionId, sent.receiptId, {
       turnId: 'turn-1', anchorMessageId: 'a1', separation: { title: 'New goal' },
     });
     await new Promise(resolve => setImmediate(resolve));

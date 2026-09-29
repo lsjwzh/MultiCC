@@ -185,6 +185,7 @@ function createTaskShellHost(deps) {
         return { ok: true, baseline: { commit: git.stdout.trim(), branch: record.branch, baseBranch: dir.baseBranch, worktreePath: record.worktreePath } };
       },
       indexTask: task => deps.getTaskBoard().registerShellTask(task),
+      evictTaskForCapacity: (dirId, listShellTasks, atCapacity, excludedIds) => deps.getTaskBoard().evictOldestSafeTask(dirId, listShellTasks, atCapacity, excludedIds),
       taskGraphContext: deps.taskGraphContext,
       prepareAdmission: (sessionId, text, clientMsgId) =>
         deps.prepareAutoProviderAdmission?.(sessionId, text, clientMsgId),
