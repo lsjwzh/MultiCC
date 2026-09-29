@@ -21,6 +21,7 @@ import '../services/settings_service.dart';
 import '../services/transcript_live_folder.dart';
 import '../utils/session_status_helpers.dart';
 import 'admission_notes.dart';
+import 'pending_configuration.dart';
 
 // Re-exported so existing tests keep importing the sidecar helpers from the
 // provider (their pre-extraction home); the implementation now lives with the
@@ -385,6 +386,10 @@ class ChatProvider extends ChangeNotifier {
   SessionCli _cli = SessionCli.claude;
   SessionCli get cli => _cli;
   String? _lastCliSwitchHandoffId;
+
+  /// 会话忙时服务端把用户的改动暂存成 pendingConfiguration（下一轮才落地）；那份
+  /// 暂存才是用户此刻的意图，页头与药丸按它显示。见 pending_configuration.dart。
+  final PendingConfiguration pendingConfiguration = PendingConfiguration();
 
   String _statusText = 'Disconnected';
   String get statusText => _statusText;
@@ -1061,6 +1066,8 @@ class ChatProvider extends ChangeNotifier {
 
       case 'system_init':
         unawaited(refreshDispatchQueue());
+        // system_init 帧里没有 pendingConfiguration，补一次 REST（见该方法）。
+        unawaited(refreshPendingConfiguration());
         final msg = evt.payload as Map<String, dynamic>;
         final sid = (msg['session_id'] ?? msg['session'])?.toString();
         if (sid != null && sid.isNotEmpty) _sessionId = sid;
@@ -1106,6 +1113,14 @@ class ChatProvider extends ChangeNotifier {
         notifyListeners();
         break;
 
+      case 'session_configuration_pending':
+      case 'session_configuration_applied':
+        // 另一端暂存 → 立刻显示成选好的那条；轮次边界已落地 → 记号清掉。
+        if (pendingConfiguration.syncFromEvent(evt.type, evt.payload)) {
+          notifyListeners();
+        }
+        break;
+
       case 'system_msg':
         _addSystemMsg(evt.payload as String);
         break;
@@ -1114,6 +1129,8 @@ class ChatProvider extends ChangeNotifier {
         final msg = evt.payload as Map<String, dynamic>;
         final next = parseCli(msg['cli']?.toString());
         final from = parseCli(msg['fromCli']?.toString());
+        // 换道真的落地了（延迟换道的落点就是轮次边界）：暂存的那份不再是「待生效」。
+        pendingConfiguration.clear();
         if (next != _cli) _clearCliQuotaBackoff();
         _cli = next;
         _providerSelection = parseProviderSelection(msg['providerSelection']);
@@ -1763,6 +1780,7 @@ class ChatProvider extends ChangeNotifier {
   void applyCliConfig(SessionCliConfig config) {
     if (config.cli != _cli) _clearCliQuotaBackoff();
     _cli = config.cli;
+    pendingConfiguration.update(config.pending);
     _providerSelection = config.providerSelection;
     _clearActualProviderRoute();
     if (_providerSelection == null) {
@@ -1846,6 +1864,7 @@ class ChatProvider extends ChangeNotifier {
   /// saveSession (chat.js: "without this call the bar kept showing the OLD
   /// provider until the next loadSessionModel()").
   void applyProviderSwitch(SessionCliConfig config) {
+    pendingConfiguration.update(config.pending);
     _providerSelection = config.providerSelection;
     _clearActualProviderRoute();
     if (_providerSelection == null) {
@@ -1865,6 +1884,12 @@ class ChatProvider extends ChangeNotifier {
       _statusText = 'Connected · $model';
     }
     notifyListeners();
+  }
+
+  /// Learn the "applies next turn" configuration without touching the running
+  /// route: deferred switch-cli/PATCH response, or the connect-time REST refresh.
+  void applyPendingConfiguration(SessionPendingConfiguration? pending) {
+    if (pendingConfiguration.update(pending)) notifyListeners();
   }
 
   /// ChatService has already run ProviderRouteGate before emitting these
@@ -2562,6 +2587,16 @@ class ChatProvider extends ChangeNotifier {
         _bgSweepTimer = null;
       }
     });
+  }
+
+  /// 连接时补齐「下轮生效」的那份改动：system_init 帧不带它，不补这一次 REST，
+  /// App 重启在 deferral 窗口里就会出现两个答案。
+  Future<void> refreshPendingConfiguration() async {
+    final target = executionSessionName;
+    if (target.isEmpty) return;
+    final config = await fetchPendingConfiguration(settings, target);
+    if (config == null || target != executionSessionName) return;
+    applyPendingConfiguration(config.pending);
   }
 
   // ── Dispatch activity (polled projection; no WS push in the contract) ─────

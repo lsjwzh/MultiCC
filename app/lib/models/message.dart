@@ -1057,6 +1057,60 @@ Map<SessionCli, bool> parseCliAvailability(dynamic json) {
   return result;
 }
 
+/// 「下一轮生效」的那一份待应用配置（服务端 `pendingConfiguration`）。
+///
+/// 忙碌中的会话不能立刻换 CLI / 线路，服务端把这次选择存成一份待应用配置，下一轮
+/// 开始时才真正落地（`src/session/pending-configuration.js`）。它同时是用户此刻
+/// **看到**的意图：Web 端一律按它显示（聊天页的 `desiredConfig`、Air 药丸的
+/// `shown` 都拿它覆盖当前配置），否则「切了 CLI 却还显示旧的 CLI，Provider 也跟着
+/// 旧的那条走」——用户以为已经切过去了。
+class SessionPendingConfiguration {
+  final SessionCli cli;
+  final bool fresh;
+  final String? provider;
+  final String? providerName;
+  final SessionProviderSelection? providerSelection;
+  final String? model;
+  final String? effort;
+  final String? agent;
+  final SessionSubagent? subagent;
+
+  const SessionPendingConfiguration({
+    required this.cli,
+    this.fresh = false,
+    this.provider,
+    this.providerName,
+    this.providerSelection,
+    this.model,
+    this.effort,
+    this.agent,
+    this.subagent,
+  });
+
+  factory SessionPendingConfiguration.fromJson(Map<String, dynamic> json) {
+    final profile = json['profile'] is Map
+        ? Map<String, dynamic>.from(json['profile'] as Map)
+        : const <String, dynamic>{};
+    return SessionPendingConfiguration(
+      cli: parseCli(json['cli']?.toString()),
+      fresh: json['fresh'] == true,
+      provider: profile['provider']?.toString(),
+      // providerName 不落在 profile 里：它是服务端为了显示随地解析出来的只读名字
+      // （Air 的 taskDetail / open 会在 pending 上挂一个，见 air-routes.js）。
+      providerName: json['providerName']?.toString(),
+      providerSelection: parseProviderSelection(profile['providerSelection']),
+      model: profile['model']?.toString(),
+      effort: profile['effort']?.toString(),
+      agent: profile['agent']?.toString(),
+      subagent: profile['subagent'] is Map
+          ? SessionSubagent.fromJson(
+              Map<String, dynamic>.from(profile['subagent'] as Map),
+            )
+          : null,
+    );
+  }
+}
+
 /// Runtime settings returned by GET /api/sessions/:id and switch-cli.
 class SessionCliConfig {
   final SessionCli cli;
@@ -1074,7 +1128,8 @@ class SessionCliConfig {
   final String? agent;
   final SessionSubagent? subagent;
   final bool deferred;
-  final SessionCli? pendingCli;
+  /// 待应用（下轮生效）的那份配置；null = 没有待应用的东西。
+  final SessionPendingConfiguration? pending;
   final bool changed;
   final bool reusedTarget;
 
@@ -1094,10 +1149,13 @@ class SessionCliConfig {
     this.agent,
     this.subagent,
     this.deferred = false,
-    this.pendingCli,
+    this.pending,
     this.changed = false,
     this.reusedTarget = false,
   });
+
+  /// 待换的车道（下轮生效）。换道面板拿它当初始选中项。
+  SessionCli? get pendingCli => pending?.cli;
 
   factory SessionCliConfig.fromJson(Map<String, dynamic> json) {
     final handoff = json['pendingCliHandoff'];
@@ -1119,8 +1177,10 @@ class SessionCliConfig {
           ? null
           : SessionSubagent.fromJson(json['subagent']),
       deferred: json['deferred'] == true || json['pendingConfiguration'] is Map,
-      pendingCli: json['pendingConfiguration'] is Map
-          ? parseCli(json['pendingConfiguration']['cli']?.toString())
+      pending: json['pendingConfiguration'] is Map
+          ? SessionPendingConfiguration.fromJson(
+              Map<String, dynamic>.from(json['pendingConfiguration'] as Map),
+            )
           : null,
       changed: json['changed'] == true,
       reusedTarget: json['reusedTarget'] == true,
@@ -1149,6 +1209,10 @@ class Session {
   final String? agent; // Native --agent for Claude/OpenCode.
   final Map<SessionCli, SessionCliState> cliStates;
   final CliHandoff? pendingCliHandoff;
+
+  /// 下轮才生效的那份配置（服务端 session 行里就有；null = 没有待应用的改动）。
+  /// 任务列表/会话卡片按它显示用户**已经选好**的 CLI 与线路。
+  final SessionPendingConfiguration? pending;
   final bool?
   streaming; // per-session stream mode (claude chat defaults true; server 2ad82ec)
   final String cwd;
@@ -1185,6 +1249,7 @@ class Session {
     this.agent,
     this.cliStates = const {},
     this.pendingCliHandoff,
+    this.pending,
     this.streaming,
     this.cwd = '',
     required this.createdAt,
@@ -1219,6 +1284,11 @@ class Session {
       cliStates: parseCliStates(json['cliStates']),
       pendingCliHandoff: json['pendingCliHandoff'] is Map
           ? CliHandoff.fromJson(json['pendingCliHandoff'] as Map)
+          : null,
+      pending: json['pendingConfiguration'] is Map
+          ? SessionPendingConfiguration.fromJson(
+              Map<String, dynamic>.from(json['pendingConfiguration'] as Map),
+            )
           : null,
       streaming: json['streaming'] == null ? null : json['streaming'] == true,
       cwd: (json['cwd'] ?? '').toString(),
@@ -1270,6 +1340,7 @@ class Session {
       agent: agent ?? this.agent,
       cliStates: cliStates,
       pendingCliHandoff: pendingCliHandoff,
+      pending: pending,
       streaming: streaming,
       cwd: cwd,
       createdAt: createdAt,

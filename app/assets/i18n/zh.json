@@ -2913,6 +2913,7 @@
   "backgroundTasksTitle": "后台任务",
   "chatContextBarLabel": "工作区与运行状态",
   "chatWidthHint": "调整聊天宽度",
+  "cliSwitchPending": "下轮生效",
   "cliSwitchTitle": "当前 {cli}；点击切换 CLI（通过结构化 checkpoint 交接上下文）",
   "danmakuCollapseToFab": "收起到悬浮球",
   "dbgPageLoadedConnect": "page loaded — 开始连接",

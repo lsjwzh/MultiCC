@@ -393,6 +393,18 @@ class ChatService {
         _emit('cli_switched', msg);
         break;
 
+      // Deferred ("applies next turn") configuration: staged by a busy session
+      // so the switch/PATCH cannot take effect immediately. Forwarded so the
+      // header can show what the user picked instead of the old CLI/provider
+      // until the next turn applies it.
+      case 'session_configuration_pending':
+        _emit('session_configuration_pending', msg);
+        break;
+
+      case 'session_configuration_applied':
+        _emit('session_configuration_applied', msg);
+        break;
+
       case 'provider_route_event':
         _emit('provider_route_event', msg);
         break;
