@@ -102,9 +102,10 @@
   }
 
   // The Air shell header owns the page title (air.js renderHeader); a view only
-  // contributes its actions. Page views put them in the header toolbar; the
-  // console panel is an overlay, so its actions stay inside the panel instead of
-  // rewriting the header of the page it is covering.
+  // contributes its actions, and they ride in the header toolbar — one heading
+  // band per view. The console used to be an overlay and kept its actions inside
+  // the panel (it was covering another page's header); it is a page now, so it
+  // follows the same rule as every other page.
   function setActions(actions = [], hostId = 'admin-actions') {
     el(hostId).replaceChildren(...actions);
   }
@@ -424,13 +425,13 @@
     const finished = tasks.filter(task => doneToday(task)).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
     const enabledSchedules = (scheduleTasks || []).filter(task => task.enabled);
     const running = runningDirectories(data);
-    // The overview lives in the console panel; `#admin-content` is the fallback
-    // for any host that renders it as a page.
+    // The overview is 控制台's own page; `#admin-content` is the fallback for any
+    // host that renders it without that page (it used to be the only host).
     const panel = el('console-content');
     setActions([
       action(t('airAdminBrowseDirectories'), () => setMode('library'), '', panelIcon('▦')),
       action(t('airAdminNewTask'), () => { setMode('tasks'); setTimeout(() => el('create')?.click(), 0); }, 'primary', keepsGlyph('＋')),
-    ], panel ? 'console-actions' : 'admin-actions');
+    ]);
 
     const content = panel || el('admin-content');
     // 大字只放「能点开看清单」的五个过滤项：进行中 / 等我回复 / 异常 / 今日完成 / 全部。
@@ -532,7 +533,9 @@
     allList.id = 'console-task-list';
     drawer.append(drawerHead, controls, allList);
 
-    const openRow = (task, extra = {}) => taskRow(task, context, { onOpen: () => context.closeConsole?.(), ...extra });
+    // 点走一条只是 navigate —— 控制台从前是浮层，得先把那层收掉再跳；现在它自己
+    // 就是一页，navigate 会把模式切回 tasks，不需要谁再补一手。
+    const openRow = (task, extra = {}) => taskRow(task, context, extra);
     // 只重画列表，不重画面板：每敲一个字就 replaceChildren 的话，输入框会在第一次
     // 按键后失去焦点。筛选状态存在模块里，所以重开面板还是同一份筛选。
     // 全文检索控制器。构造时就会跑一次 onChange，所以先声明成 null：那一刻
@@ -635,8 +638,8 @@
     toolHead.append(make('div'));
     toolHead.firstChild.append(make('span', 'SYSTEM TOOLS', 'eyebrow'), make('h3', t('airAdminServicesAndSettings')));
     const toolGrid = make('div', null, 'admin-tool-grid');
-    // 保险箱不在这张格子里：它在控制台的顶栏上（air.html 的 #console-secrets），
-    // 跟「返回任务」并列常驻，不用滚到工具格才找得到。
+    // 保险箱不在这张格子里：它在控制台那一页的页头工具栏上（air.html 的
+    // #console-secrets），跟这一页的其它动作并列常驻，不用滚到工具格才找得到。
     const shortcuts = [
       ['docs', '▤', t('airAdminPanelDocs'), t('airAdminPanelDocsDesc')],
       ['memory', '◇', t('airAdminPanelMemory'), t('airAdminMemoryShortDesc')],

@@ -1489,42 +1489,20 @@ dialog .air-config-field input { margin-top: 7px; }
 .air-config-footer > div { display: flex; gap: 8px; }
 .air-config-footer button { min-width: 86px; }
 
-/* ── 控制台：从左侧展开的一层，不是新页面 ─────────────────────────────────
-   点「控制台」时地址不变、当前任务不卸载，面板盖着页面滑出来，关掉就回到原处。
-   里面装的还是概览那套 .admin-* 排版（面板宽度和原来的内容区几乎一样），所以
-   这里只补面板自己的外壳，概览的卡片不用改。 */
-#console-scrim { position: fixed; z-index: 40; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: rgba(32, 49, 70, .34); }
-#console-panel {
-  position: fixed;
-  z-index: 41;
-  inset: 0 auto 0 0;
-  width: min(1180px, 91vw);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border-right: 1px solid rgba(202, 218, 235, .9);
-  border-radius: 0 22px 22px 0;
-  background: linear-gradient(145deg, #fff, #f6faff);
-  box-shadow: 18px 0 70px #263f5d2e;
-  /* 关着的时候整块停在屏外，并且不可聚焦：面板里的按钮不该在收起状态下被 Tab 摸到。 */
-  transform: translateX(-100%);
-  visibility: hidden;
-  transition: transform 300ms cubic-bezier(.22, .68, .24, 1), visibility 300ms;
-}
-body.console-open #console-panel { transform: none; visibility: visible; }
-#console-head { flex-shrink: 0; display: flex; align-items: center; gap: 14px; padding: 20px 30px 15px; border-bottom: 1px solid rgba(220, 230, 241, .9); background: rgba(251, 253, 255, .94); }
-.console-title { min-width: 0; flex: 1; }
-.console-title h2 { margin-top: 3px; font-size: 21px; }
-#console-here { color: var(--muted); font-size: 13px; font-weight: 400; }
-#console-actions { display: flex; flex-wrap: wrap; gap: 7px; }
-#console-actions:empty { display: none; }
-#console-close, #console-secrets { flex: 0 0 auto; }
-/* 顶栏上这颗是常驻入口（不是某一页的工具），所以给它一圈底，跟「返回任务」区分开。 */
+/* ── 控制台：主区域里的一页（跟目录首页、定时任务同一层）──────────────────
+   它从前是从左侧滑出来的一层浮层：地址不变、当前任务不卸载、关掉回到原处，也就
+   连带要一张遮罩、一段滑入动画和一套「关掉时把地址与任务还原」的回退逻辑。现在
+   它就是右边那块主区域里的一页（点侧栏那行进来，地址写 view=overview），#console-center
+   是这一页的滚动容器 —— 和 #admin-center / #schedule-center 一样。里面装的还是概览
+   那套 .admin-* 排版，所以这里只补页面自己的外壳，概览的卡片不用改。 */
+#console-center { min-height: 0; flex: 1; overflow: auto; padding: 34px 38px 48px; }
+/* 敏感信息那一颗跟着这一页的页头工具栏走（#console-secrets 在 #task-tools 里）：
+   它管的不是某一组功能里的开关，而是子进程的 spawn 环境，是常驻入口而不是一件
+   普通工具，所以给它一圈底，跟旁边那排图标区分开。 */
 #console-secrets { display: flex; align-items: center; gap: 6px; color: #2c6ba8; border-color: #cfe1f3; background: #f2f8ff; }
-#console-body { min-height: 0; flex: 1; overflow: auto; padding: 26px 30px 46px; }
 
 /* 控制台那一行的常驻徽标：接管原先「跨目录活动」承担的「别处有事在等」信号，
-   不展开也知道。数字由 air-admin.js 的 urgentTasks 一份定义喂出来。 */
+   不进那一页也知道。数字由 air-admin.js 的 urgentTasks 一份定义喂出来。 */
 .console-badge { margin-left: auto; min-width: 19px; padding: 1px 6px; color: #fff; border-radius: 20px; background: var(--accent); font-size: 10px; font-weight: 700; text-align: center; }
 
 .admin-panel-note { color: var(--muted); font-size: 10px; }
@@ -1682,10 +1660,9 @@ main { background: transparent; }
    住在 30px 高的胶囊里、自己是 26×26 —— 抬了就会溢出容器 2px。那两个浮层按钮保持
    原尺寸，圆角沿用它们自己的 8px。 */
 
-/* ── 控制台面板 ──────────────────────────────────────────────────────── */
-#console-panel { border-right: 1px solid var(--hairline); background: #fff; box-shadow: 24px 0 80px rgba(43, 76, 109, .16); }
-#console-head { padding: 26px 34px 18px; border-bottom: 1px solid var(--hairline); }
-#console-body { padding: 24px 34px 40px; }
+/* 控制台那一页的正文（#console-center）走的还是下面这套 .admin-* 皮肤；页面外壳
+   自己的尺寸在文件上半部分那一节里（和 #admin-center / #schedule-center 挨着），
+   这里只管页面里面那些卡片。 */
 /* 控制台顶上那四张卡是过滤项（进行中 / 等我回复 / 今日完成 / 全部）：数字要大到
    一眼读出，但整条带的高度上限（桌面 84px、手机 80px）仍写在 test-air-console-cdp.js
    里 —— 只放大数字，内边距不动，省下的高度留给点开后的清单。 */
@@ -1739,8 +1716,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .air-tunnel-route-grid { grid-template-columns: 1fr; }
   .air-tunnel-compat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #directory-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #console-head { padding-inline: 22px; }
-  #console-body { padding: 22px 22px 42px; }
+  #console-center { padding: 22px 22px 42px; }
 }
 
 @media (max-width: 760px) {
@@ -1921,14 +1897,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #air-usage-global { overflow-x: auto; }
   .air-usage-role-grid { grid-template-columns: 1fr 1fr; }
   .air-legacy-frame { min-height: 620px; height: calc(100dvh - 260px); }
-  /* 面板几乎占满窄屏，但留一条边让底下的页面还认得出是「盖上来的一层」。 */
-  #console-panel { width: calc(100% - 22px); border-radius: 0 18px 18px 0; box-shadow: 8px 0 40px #263f5d24; }
-  #console-head { align-items: flex-start; flex-wrap: wrap; gap: 10px; padding: 16px 15px 13px; }
-  #console-actions { order: 3; width: 100%; }
-  /* 顶栏在手机上只剩图标：标题那一行本来就挤，名字留给 aria-label。 */
-  #console-secrets > span { display: none; }
-  #console-body { padding: 18px 15px 36px; }
-  .console-title h2 { font-size: 19px; }
+  #console-center { padding: 22px 15px 36px; }
   #palette { top: 68px; max-height: min(520px, calc(100dvh - 110px)); }
   #palette footer { gap: 10px; }
 
@@ -2073,8 +2042,6 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #task-title { font-size: 21px; }
   #empty { padding: 18px 16px 24px; }
   .directory-task-panel, .directory-git-panel, .admin-panel { border-radius: 20px; }
-  #console-head { padding: 20px 18px 14px; }
-  #console-body { padding: 18px 16px 32px; }
 }
 /* 统计卡在手机上的内边距单独收在 421px 以上：≤420px 那一档把它压到 9px 是为了在
    320px 上不折行，那是小屏的事，不该被这次视觉变更抬回去。 */

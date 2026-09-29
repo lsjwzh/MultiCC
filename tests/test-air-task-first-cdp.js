@@ -5,16 +5,11 @@ const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
 // 注意别叫 t：这个文件的测试回调形参就是 t（测试上下文），会把它盖掉。
 const { t: translate } = require('./helpers/i18n-translator');
 
-// The console panel slides in over a 300ms CSS transition. The test target is a
-// background one — it never renders and never produces frames, so the document
-// timeline does not advance and a bare wait leaves the panel parked at its start
-// position. Capturing a frame is what pumps the timeline; wait the transition out
-// between two captures and the panel has genuinely arrived.
-const settleOverlay = async page => {
-  await page.screenshot('overlay-frame');
-  await page.evaluate(`new Promise(done => setTimeout(done, 400))`);
-  await page.screenshot('overlay-frame');
-};
+// The console used to slide in over a 300ms CSS transition, and this test target is a
+// background one — it never renders and never produces frames, so the document timeline
+// does not advance and a bare wait left the panel parked at its start position. The
+// console is a page in the main area now (#console-center, no transition), so nothing
+// here needs pumping any more: a plain waitFor is the whole story.
 
 test('Air task-first console, management views, roles, configuration, artifacts and mobile', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
@@ -1008,13 +1003,14 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(roleBody.expectedVersion, 0, 'a fresh task binds roles at version 0');
     const order = page.requests.map(r => r.method + ' ' + r.path);
     assert.ok(order.indexOf('POST /api/air/tasks/tsk_new/roles') < order.indexOf('POST /api/task-shell-tasks/tsk_new/messages'), 'roles are bound before the first message runs');
-    // /air?view=overview 还进得去（/manage 就落在这儿），但它不再是「一个页面」：
-    // 它把控制台面板从左滑出来，页头仍是当前目录，底下的任务不卸载。
+    // /air?view=overview 是控制台那一页的正式地址（/manage 就落在这儿）：它开在
+    // 主区域里，页头换成这一页自己的标题，当前任务只是被藏起来、不卸载。
     await page.navigate('/air?view=overview');
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open') && document.querySelectorAll('#console-content .admin-stat').length===5`));
-    await settleOverlay(page);
-    assert.notEqual(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台', '控制台没有顶掉页头');
-    assert.equal(await page.evaluate(`Math.round(document.getElementById('console-panel').getBoundingClientRect().left)`), 0, '面板从左侧滑到位');
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false && document.querySelectorAll('#console-content .admin-stat').length===5`));
+    assert.equal(await page.evaluate(`document.getElementById('task-title').textContent`), '控制台', '页头是这一页自己的标题');
+    assert.equal(await page.evaluate(`new URLSearchParams(location.search).get('view')`), 'overview');
+    assert.equal(await page.evaluate(`document.getElementById('task-layout').hidden`), true, '任务那块正文让开（不是卸载）');
+    assert.equal(await page.evaluate(`document.getElementById('console-center').getBoundingClientRect().right<=innerWidth`), true);
     assert.equal(await page.evaluate(`document.querySelectorAll('#console-content .admin-directory-row').length`), 2);
     assert.equal(await page.evaluate(`document.querySelector('#console-content .admin-directory-row').innerText.includes('MultiCC')`), true);
     assert.equal(await page.evaluate(`[...document.querySelectorAll('.air-legacy-frame')].filter(x=>x.offsetParent).length`), 0);
@@ -1249,10 +1245,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     for (const width of [390, 320]) {
       await page.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: true });
       await page.navigate('/air?view=overview');
-      assert.ok(await page.waitFor(`document.body.classList.contains('console-open') && document.querySelectorAll('#console-content .admin-stat').length===5`));
-      await settleOverlay(page);
+      assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false && document.querySelectorAll('#console-content .admin-stat').length===5`));
       assert.equal(await page.evaluate(`document.documentElement.scrollWidth<=innerWidth`), true);
-      assert.equal(await page.evaluate(`document.getElementById('console-panel').getBoundingClientRect().right<=innerWidth`), true);
+      assert.equal(await page.evaluate(`document.getElementById('console-center').getBoundingClientRect().right<=innerWidth`), true);
       screenshots.push(await page.screenshot('air-console-mobile-' + width));
     }
     await page.navigate('/air?view=provider');

@@ -50,9 +50,13 @@
       </div>
     </div>
 
-    <!-- 控制台不是「页面」：点它从左侧展开面板，地址不变、当前任务不卸载。
-         徽标接管了原来「跨目录活动」那条常驻信号——不展开也知道有别处的事在等。 -->
-    <button id="overview" class="nav-row" type="button" aria-expanded="false" aria-controls="console-panel">
+    <!-- 控制台和「定时任务」一样是主区域里的一页：点它就在右边打开，地址写
+         view=overview（/manage 与 App 的「网页版控制台」都落在这儿）。它从前是从
+         左侧滑出来的一层浮层 —— 那会盖住页头、要一张遮罩，关闭时还得把地址和当前
+         任务都还原回去，而它本来就是「跨目录看全部任务」的一页内容（App 那边一直
+         是独立页面，Web 这次跟上）。
+         徽标接管了原来「跨目录活动」那条常驻信号：不点开也知道别处有事在等。 -->
+    <button id="overview" class="nav-row" type="button">
       <span>◫</span><span data-i18n="airConsole">控制台</span><span id="console-badge" class="console-badge" hidden></span>
     </button>
     <button id="schedules" class="nav-row" type="button"><span>◴</span><span data-i18n="airScheduledTasks">定时任务</span></button>
@@ -137,6 +141,11 @@
         <button id="add-directory" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> <span data-i18n="airAddDirectory">添加工作目录</span></button>
         <button id="schedule-create" class="primary" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> <span data-i18n="airNewScheduledTask">新建定时任务</span></button>
         <div id="admin-actions" hidden></div>
+        <!-- 敏感信息跟着控制台那一页的工具走（air.js 按 mode 显隐），不折进控制台
+             正文的工具格：它管的不是某一组功能里的开关，而是子进程的 spawn 环境
+             （条目按同名环境变量注入），所以要和这一页的其它动作并列、不用滚就能看见。
+             data-air-view 由 air.js 统一接线（点它落到保险箱整页）。 -->
+        <button id="console-secrets" type="button" data-air-view="secrets" hidden title="敏感信息" data-i18n-title="airAdminPanelSecrets" aria-label="敏感信息" data-i18n-aria-label="airAdminPanelSecrets"><span class="air-tool-icon" aria-hidden="true">🔐</span><span class="air-tool-name" data-i18n="airAdminPanelSecrets">敏感信息</span></button>
         <!-- Two of the frame's most-used More-menu actions stay one click away
              (the menu keeps the full list). Each shortcut clicks the chat
              page's own button, so the handler, the permission check and the
@@ -171,6 +180,14 @@
     <section id="schedule-center" hidden>
       <div id="schedule-summary" aria-live="polite"></div>
       <div id="schedule-list"></div>
+    </section>
+
+    <!-- 控制台：和目录首页、定时任务同级的一页，就开在右边这块主区域里。
+         概览内容由 air-admin.js 渲染进 #console-content，页面自己的动作
+         （浏览工作目录 / 新建任务）走页头那排工具，和其他每一页同一条规矩 ——
+         一页只有一个标题带，正文里不再重复一遍标题。 -->
+    <section id="console-center" hidden>
+      <div id="console-content" aria-live="polite"></div>
     </section>
 
     <section id="task-layout">
@@ -503,25 +520,6 @@
     <div id="task-retention-list" class="task-retention-list"></div>
     <div class="task-retention-actions"><button id="task-retention-cancel" type="button" data-i18n="airDlgClose">关闭</button><button id="task-retention-delete" type="button" class="primary" disabled data-i18n="airRetentionDelete">确认删除列出的安全任务</button></div>
   </dialog>
-
-  <!-- 控制台保留当前任务，概览由 air-admin.js 渲染。 -->
-  <button id="console-scrim" type="button" aria-label="关闭控制台" data-i18n-aria-label="airCloseConsole" hidden></button>
-  <section id="console-panel" aria-label="控制台" data-i18n-aria-label="airConsole" aria-hidden="true">
-    <header id="console-head">
-      <div class="console-title">
-        <span class="eyebrow">CONSOLE</span>
-        <h2><span data-i18n="airConsole">控制台</span> <span id="console-here"></span></h2>
-      </div>
-      <div id="console-actions"></div>
-      <!-- 敏感信息固定在控制台的顶栏上，不折进下面的工具格：它管的不是某一组功能里
-           的开关，而是子进程的 spawn 环境（条目按同名环境变量注入），所以要跟「返回
-           任务」并列、随时一眼可见。data-air-view 由 air.js 统一接线（setMode 会顺手
-           收掉这层浮层，落到保险箱整页）。窄屏只留 🔐，名字回到 aria-label。 -->
-      <button id="console-secrets" type="button" data-air-view="secrets" aria-label="敏感信息" data-i18n-aria-label="airAdminPanelSecrets">🔐 <span data-i18n="airAdminPanelSecrets">敏感信息</span></button>
-      <button id="console-close" type="button" data-i18n="airBackToTask">返回任务</button>
-    </header>
-    <div id="console-body"><div id="console-content" aria-live="polite"></div></div>
-  </section>
 
   <!-- ⌘K：目录和任务一起搜。找任务不必先想它在哪个目录。 -->
   <button id="palette-scrim" type="button" aria-label="关闭搜索" data-i18n-aria-label="airCloseSearch" hidden></button>

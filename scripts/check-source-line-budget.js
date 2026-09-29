@@ -294,10 +294,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 按最后一版重跑生成器的真实值登记 7206/450337。
   // 2026-09-29 官方 provider 可编辑高级设置补 1 键（airProviderOfficialLockedHint，
   // 中英各 1 行 = +2）；按最后一版重跑生成器的真实值登记 7208/450638。
+  // 2026-09-29 控制台从左侧滑出的浮层改成主区域里的一页：浮层那两颗专有的文案
+  // 一起退场 —— airCloseConsole（「关闭控制台」）删掉（这一页没有「关掉」这回事），
+  // airConsoleHere（浮层标题旁的「· 当前 {name}」）换成 airConsoleHint（这一页
+  // 自己的一句话，跟 attention / settings 那几条同形）。中英各 1 行 = -2 行；
+  // 新那句话比旧的长，字节仍多了 26，按最后一版重跑生成器的真实值登记 7206/450664。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7208,
-    maxBytes: 450638,
+    maxLines: 7206,
+    maxBytes: 450664,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
