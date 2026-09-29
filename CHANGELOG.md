@@ -2,6 +2,14 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.2.0 — Auto-commit that fires even when no page is watching (2026-09-29)
+
+### Highlights
+
+- **Auto-commit moved server-side** — a finished turn now commits and merges back to the base branch from the server's turn engine, so turns that end while no chat page is connected (closed laptop, evicted Air frame, app in the background) are merged too instead of piling up in the worktree until the next online turn. Results land in the conversation as transient system messages.
+- **The per-turn auto-commit checkbox is gone** — the little checkbox under the last user message could never cover offline turns by design, so the session-level header toggle is now the single control (Web header and App menu alike), defaulting to on as before.
+- **Planned tasks can be deleted again** — a task whose workspace was never materialized (no turn ever ran) refused deletion with `task_workspace_unverifiable`, which also blocked deleting its directory. A never-created branch now reads as "nothing to lose"; a missing checkout with a surviving branch keeps the old conservative refusal.
+
 ## v2.1.6 — A settings drawer that stays tidy, and unlock checks that do not nag (2026-09-28)
 
 ### Highlights
