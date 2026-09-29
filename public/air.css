@@ -636,7 +636,12 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #notice:empty { display: none; }
 #task-layout { min-height: 0; flex: 1; display: flex; }
 #task-content { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; overflow: hidden; background: linear-gradient(145deg, #fff, #f7faff); }
-#empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 34px; color: var(--muted); }
+/* 目录首页是一列卡片，整列自己滚（代码卡在任务面板下面，滚下去看）。唯一要吃高度的
+   是任务面板：它不吃「剩余高度」，而是由 air-task-pager.js 按「滚动口可见高 − 面板上
+   面那一段 − 输入框占掉的那条带子」算出一个像素值写进 --directory-task-panel-h
+   （上面那一段里有统计卡、配置卡，它们是出现/隐藏的，写成 CSS 里的 dvh 减常数一改就
+   错位）。 */
+#empty { min-height: 0; flex: 1; overflow: auto; padding: 28px 34px 24px; color: var(--muted); }
 /* ── 目录视图切换：Chat（默认）／ Terminal ─────────────────────────────────────
    终端属于每个目录，摆在目录页最前面。两类东西**互相让位**，不是排成一列：
    终端模式下 Chat 那一整块（统计卡 / 最近任务 / Git / 新任务输入框）整块收起，
@@ -657,7 +662,6 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 #empty.is-terminal-mode #directory-terminals { display: block; }
 #empty.is-terminal-mode > #setup-card,
 #empty.is-terminal-mode > #directory-stats,
-#empty.is-terminal-mode > #directory-worktrees,
 #empty.is-terminal-mode > .directory-task-panel,
 #empty.is-terminal-mode > #directory-git,
 #empty.is-terminal-mode > #quick-task-form { display: none; }
@@ -717,18 +721,21 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-stat span { color: #6d8094; font-size: 10px; }
 .directory-stat strong { display: block; margin: 2px 0; color: #2d4d68; font-size: 19px; line-height: 1.1; }
 .directory-stat small { color: #8a9aab; font-size: 10.5px; }
-/* ── Worktree 生命周期（air-worktrees.js）─────────────────────────────────────
+/* ── Worktree 生命周期（air-worktrees.js）：目录代码卡的第二行 ───────────────
    光报「有几个 worktree」看不出这个数是怎么长的：本地真占着磁盘的、已经睡下只剩
    一条分支引用的、计划了还没落地的，是三种完全不同的状态，而用户要判断的正是
    「要不要现在腾地方」。所以这块把三个数分开摆，右边跟一个「现在回收」。
-   它跟统计卡同一族（浅蓝白卡片），但说的不是任务而是磁盘。 */
-.directory-worktrees { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 14px; padding: 11px 14px; border: 1px solid #dbe6f1; border-radius: 12px; background: rgba(255, 255, 255, .86); }
-.directory-worktrees .section-heading { flex: 1 1 100%; }
-.directory-worktrees .section-heading strong { font-size: 12px; }
-.directory-worktrees .section-heading span { color: var(--muted); font-size: 11px; }
-#directory-worktree-body { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-.directory-worktrees p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
-.directory-worktrees .worktree-policy { color: var(--faint); }
+   它跟上面那行（主检出的提交与工作区）说的是同一件事 —— 这个目录的代码现在
+   什么状态 —— 所以住在同一张卡里，由一条发丝线分上下，小一号的标题行 + 一行
+   说明 + `margin-left: auto` 顶到右端的回收按钮。三块（标题 / 说明 / 按钮）都会
+   自己换行，窄屏上不会互相挤。 */
+#directory-worktrees { border-top: 1px solid #e8eef5; }
+#directory-worktrees .section-heading { padding: 10px 15px 0; border-bottom: 0; }
+#directory-worktrees .section-heading strong { font-size: 11.5px; }
+#directory-worktrees .section-heading span { color: var(--muted); font-size: 11px; }
+#directory-worktree-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 5px 15px 13px; }
+#directory-worktrees p { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+#directory-worktrees .worktree-policy { color: var(--faint); }
 /* ── 目录首页「本目录产物」入口（public/air-artifacts.js）──────────────────
    清单本身是**一张单独的页面**（public/artifacts.html，样式在 artifacts.css）：
    这里只剩那颗 window.open 的按钮，跟旁边的「备忘」一样只是个入口，不再是页内
@@ -772,17 +779,21 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 }
 .worktree-reclaim { min-height: 30px; margin-left: auto; padding: 0 14px; border: 1px solid #bcd8f2; border-radius: 9px; background: var(--blue-soft); color: var(--accent-strong); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .worktree-reclaim:disabled { opacity: .5; cursor: default; }
-.directory-task-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
-.directory-task-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
+/* ── 当前目录的任务面板 ────────────────────────────────────────────────────
+   一张三段的卡：抬头、筛选条、分页条都固定，中间那份清单吃掉剩下的高度并在自己内部
+   滚（align-content: start：行保持自己的高度，多出来的空间不会按行等分）。整张卡的高度
+   由 air-task-pager.js 写进 --directory-task-panel-h；JS 没上线时退回 auto —— 那时候
+   面板按内容长、整页滚，功能不丢。手机上高度交回 760px 那条断点（清单不抢高度）。 */
+.directory-task-panel { display: flex; flex-direction: column; height: var(--directory-task-panel-h, auto); overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
+.directory-task-panel .section-heading { flex: 0 0 auto; padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 .directory-task-heading-actions { display: flex; align-items: center; gap: 10px; }
 .task-sort-switch { display: inline-flex; padding: 2px; border: 1px solid #dce6ef; border-radius: 9px; background: #f3f7fb; }
 .task-sort-switch button { min-height: 0; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: #7a8c9e; font-size: 9.5px; line-height: 1.35; }
 .task-sort-switch button[aria-pressed="true"] { background: #fff; color: #2e73b8; box-shadow: 0 1px 4px #27496814; font-weight: 650; }
-#directory-task-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-/* 限高，不是定高：定高时任务少到不足一屏，多出来的空间会被网格按行等分——筛出两条
-   就得到两片半屏高的空卡（行内内容是垂直居中的）。限高让容器自己缩到内容高，行保持
-   自己的高度；align-content 是防回归的保险，将来谁再给它一个高度也不会把行拉开。 */
-.directory-task-panel.expanded #directory-task-list { max-height: min(390px, 48dvh); align-content: start; overflow-y: auto; overscroll-behavior: contain; }
+/* 清单自己滚、自己撑满：`min-height: 0` 是让它在 flex 列里真的能被压小（默认的
+   min-height: auto 会顶回去），align-content 是防回归的保险 —— 将来谁给它一个固定
+   高度也不会把行拉开。 */
+#directory-task-list { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; overflow-y: auto; overscroll-behavior: contain; }
 .directory-task-row { min-width: 0; display: flex; align-items: stretch; padding: 0; border: 0; border-right: 1px solid #e8eef5; border-bottom: 1px solid #e8eef5; border-radius: 0; background: transparent; text-align: left; }
 .directory-task-row:nth-child(2n) { border-right: 0; }
 .directory-task-row:hover, .directory-task-row:focus-within { background: #f2f8fe; }
@@ -794,12 +805,20 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .directory-task-mark { color: #3b8edc; font-size: 18px; }
 .directory-task-empty { grid-column: 1 / -1; padding: 26px; text-align: center; font-size: 11px; }
 .directory-task-controls { grid-template-columns: minmax(0, 1fr) auto; margin: 0; padding: 10px 14px; border-bottom: 1px solid #e8eef5; background: #f8fbfe; }
-/* 列表是截过的（air.js 的 recentRowLimit），所以底下必须留一条明路：这一页只
-   放得下最近那几条，完整的那份在控制台。数字跟着行数走，别让人以为只剩这些。 */
-#directory-task-more { display: block; width: 100%; padding: 11px 14px; border: 0; border-top: 1px solid #e8eef5; border-radius: 0 0 15px 15px; background: transparent; color: #3b8edc; font-size: 11px; text-align: center; }
-#directory-task-more:hover { background: #f2f8fe; }
-/* 目录的 Git 状态面板：与任务面板同一张卡的语法，但内容是「代码现在什么
-   状态」—— 未推送提交、主检出的脏文件、可展开的提交记录。 */
+/* 分页条：面板的第三段（抬头 / 筛选 / 分页三段固定，中间那份清单自己滚）。一页 20 条
+   （两列十行）由 air-task-pager.js 定，只有一页时整条收起 —— 所以它不是常驻的页脚，
+   而是「翻得动才出现」的一条。
+   `flex-direction: row` 必须显式写：全局那条 `nav { flex-direction: column }` 是按元素名
+   命中的，这里只写 display 的话，类选择器赢得过 nav 的 display、赢不过它没写的
+   flex-direction —— 三颗会竖着摞成一条一百多像素高的「页脚」，正好把清单挤没
+   （和 #task-pins 那条同一个坑）。 */
+.directory-task-pager { display: flex; flex: 0 0 auto; flex-direction: row; align-items: center; justify-content: center; gap: 10px; padding: 7px 14px; border-top: 1px solid #e8eef5; background: #f8fbfe; }
+.directory-task-pager button { min-height: 28px; padding: 4px 12px; font-size: 11px; }
+.directory-task-pager button:disabled { opacity: .45; cursor: default; }
+#directory-task-page { color: #6d8094; font-size: 11px; white-space: nowrap; }
+/* 目录的代码状态面板：与任务面板同一张卡的语法，但内容是「代码现在什么
+   状态」—— 未推送提交、主检出的脏文件，下面再跟着这个目录的 worktree 生命周期
+   （`#directory-worktrees`，见上面那条）。 */
 .directory-git-panel { overflow: hidden; border: 1px solid #dbe6f1; border-radius: 15px; background: rgba(255, 255, 255, .9); }
 .directory-git-panel .section-heading { padding: 12px 15px 8px; border-bottom: 1px solid #e5edf4; }
 #directory-git-brief { display: grid; gap: 8px; padding: 12px 15px; }
@@ -827,8 +846,13 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 /* The new-task composer is the composer module (composer.css) in its panel
    placement; only where it sits in the column is decided here — floating a
    little above the bottom edge so it reads as part of the conversation column
-   rather than a bar glued to the viewport. */
-#quick-task-form { position: sticky; bottom: 20px; margin-top: 18px; }
+   rather than a bar glued to the viewport. 它是 sticky 的：贴在滚动口下沿、内容从它底下
+   滚过去。滑到最底下时，它上面那条**上边距**就是最后一张卡与它之间的净空 —— 它自己
+   的排版位置贴着列的尾巴，视觉上却比那个位置高 20px（sticky 的 bottom 偏移），所以
+   `margin-top` 得比那 20px 明显大一些，最后那张卡的最后一行才不会压在它底下。
+   `flex: 0 0 auto` 是给「＋ 新任务」弹窗那一列用的（那里它是普通 flex 孩子），
+   #empty 这一列里它是普通块，那一条不生效。 */
+#quick-task-form { position: sticky; bottom: 20px; flex: 0 0 auto; margin-top: 30px; }
 /* 折叠态（air-quick-fold.js）。这一条细杠是卡片的第一个孩子，所以整个状态只要
    两句话：折起来时只留它，展开时只藏它 —— 不用逐块开关 aux 带、输入框和动作行。
    杠自己不是内容，是折叠的开关：aria-expanded 说的是里面那张卡片在不在。 */
@@ -1619,7 +1643,7 @@ main { background: transparent; }
 .pin-tab { border-radius: 15px; background: #fff; box-shadow: var(--shadow-1); }
 
 /* ── 目录首页 ────────────────────────────────────────────────────────── */
-#empty { padding: 30px 34px 38px; }
+#empty { padding: 30px 34px 24px; }
 #directory-stats { gap: 14px; margin-bottom: 18px; }
 .directory-stat { padding: 17px 19px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1); }
 .directory-stat span { font-size: 12px; }
@@ -1642,11 +1666,16 @@ main { background: transparent; }
 .directory-task-row strong { font-size: 12.5px; color: #2f4d68; }
 .directory-task-row time { font-size: 9.5px; }
 .directory-git-panel .section-heading { padding: 16px 20px 12px; }
+/* 卡里第二行（worktree）的小标题跟卡片标题同一档留白，但小一号。 */
+#directory-worktrees .section-heading { padding: 12px 20px 0; }
+#directory-worktree-body { padding: 6px 20px 16px; }
 .directory-git-chip { padding: 5px 10px; border-radius: 11px; }
-#directory-task-more { padding: 14px; font-size: 12px; }
+.directory-task-pager { padding: 7px 20px; }
+.directory-task-pager button { min-height: 30px; padding: 5px 14px; font-size: 12px; }
+#directory-task-page { font-size: 12px; }
 
 /* ── 统一输入框（composer 面板位）─────────────────────────────────────── */
-#quick-task-form { margin-top: 22px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-2); }
+#quick-task-form { margin-top: 34px; border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-2); }
 .mc-composer__aux { padding: 14px 14px 0; }
 #quick-task-expand { padding: 15px 16px; }
 
@@ -1821,10 +1850,15 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   #delivery-destination { width: 100%; }
   #task-details { width: 100%; border-left: 0; }
   #directory-library { padding: 22px 15px; }
-  #empty { padding: 19px 12px 30px; }
+  #empty { padding: 19px 12px 24px; }
   #directory-task-list { grid-template-columns: 1fr; }
   .directory-task-row { border-right: 0; }
-  .directory-task-panel.expanded #directory-task-list { max-height: min(360px, 46dvh); }
+  /* 手机上「清单吃掉剩余高度」这件事要退回去：一列的行本来就比桌面高一倍，把
+     面板按到剩余高度里，能看见的只剩两三行，而整页又还得往下滚 —— 两个滚动条
+     互相打架。手机上让面板按内容长、整页一起滚，只给它一个上限，免得几百条任务
+     把输入框推到很远的地方。高度那条变量（air-task-pager.js 在桌面上写的）在这里
+     被 height: auto 顶掉 —— 断点里不按窗口算高度。 */
+  #empty > .directory-task-panel { height: auto; max-height: min(420px, 52dvh); }
   /* 任务行的标题在手机上占两行：一行 11px 的标题在 390px 屏上只装得下十来个字，
      读不出这条任务是干什么的（目录首页由用户报的那张图就是这个）。标题是这一行
      里唯一必须读全的字段，字也给它放大到副行之上；徽标与阶段仍在它下面那行，徽标

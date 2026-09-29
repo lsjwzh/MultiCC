@@ -286,23 +286,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 2026-09-29 任务容量提示与确认清理增加 6 个双语键；生成后 7218/452143。
   // 2026-09-29 自动解锁的 Agent 故障指路补 3 键（airGlobalUnlockAgentBroken /
   // AgentMissing / AgentOutdated，中英各 3 行 = +6）；生成后 7224/453091。
-  // 2026-09-29 Provider 高级配置新增「限定出口 IP」编辑框补 3 键
-  // （airProviderEgressIpSummary / Body / Placeholder，中英各 3 行 = +6）；
-  // 生成后 7230/453911。
-  // 2026-09-29 删除「官方会话走代理（OAuth 重放）」UI 整段，去掉 12 个双语键
-  // （airGlobalOauth* × 8 + officialOauthProxy* × 2，中英各 12 行 = -24）；
-  // 按最后一版重跑生成器的真实值登记 7206/450337。
-  // 2026-09-29 官方 provider 可编辑高级设置补 1 键（airProviderOfficialLockedHint，
-  // 中英各 1 行 = +2）；按最后一版重跑生成器的真实值登记 7208/450638。
-  // 2026-09-29 控制台从左侧滑出的浮层改成主区域里的一页：浮层那两颗专有的文案
-  // 一起退场 —— airCloseConsole（「关闭控制台」）删掉（这一页没有「关掉」这回事），
-  // airConsoleHere（浮层标题旁的「· 当前 {name}」）换成 airConsoleHint（这一页
-  // 自己的一句话，跟 attention / settings 那几条同形）。中英各 1 行 = -2 行；
   // 新那句话比旧的长，字节仍多了 26，按最后一版重跑生成器的真实值登记 7206/450664。
+  // 2026-09-29 三件事一起进场：按 Provider 批量迁移会话（airProviderReassign* 31 键）、
+  // 右下角提醒牌堆补齐 air-notify-deck.js 早就在用却没登记的 6 键（deck*/float*）、
+  // 目录页合卡与分页（airCodeAndWorktrees / airTaskPage* 5 键）；与上面出口 IP /
+  // 控制台成页那几批合流后，按本树重跑生成器的真实值登记 7290/456602。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7206,
-    maxBytes: 450664,
+    maxLines: 7290,
+    maxBytes: 456602,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

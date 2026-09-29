@@ -570,7 +570,24 @@ function createSessionProfileRoutes(rawDeps) {
       });
       return { status, body: result };
     }
-    return { applySessionPatch };
+
+    // Dry run of the same patch: validation runs against a detached
+    // desired-state draft (pending configuration included) and nothing is
+    // written — no process, rollout, audit event or active route is touched.
+    // Used by the bulk provider reassignment preview so its "this is what would
+    // happen" answer comes from the very code that would do it.
+    function previewSessionPatch(sessionId, body) {
+      const session = persistedSessions.get(sessionId);
+      if (!session) return { status: 404, body: { error: 'session not found' } };
+      const draft = desiredSession(session);
+      let status = 200, result;
+      patchSession({ params: { id: sessionId }, body: body || {}, query: {} }, {
+        status(code) { status = code; return this; },
+        json(value) { result = value; return this; },
+      }, draft);
+      return { status, body: result, draft };
+    }
+    return { applySessionPatch, previewSessionPatch };
   }
 
   return { mountRoutes };

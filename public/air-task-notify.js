@@ -17,11 +17,12 @@
  *   user opens the task (here, or anywhere else)
  *        └─► ① `.unseen` cleared  ② pending/ongoing voice cancelled  ③ its card leaves
  *
- * Whether a task is unseen is never decided here: this page only keeps what it
- * has already rung (a watermark on the server's attention.at, shared by every
- * tab through localStorage), so a reload, a second tab or a tab that slept in
- * the background never re-announces a result that was already announced — and
- * one opened elsewhere is simply no longer in the snapshot.
+ * Whether a task is unseen is never decided here: ① and ③ are both a mirror of
+ * the snapshot's marks, so a task opened anywhere clears its row and its card.
+ * What this page does keep is what it has already RUNG (a watermark on the
+ * server's attention.at, shared by every tab through localStorage), so a
+ * reload, a second tab or a tab that slept in the background never rings twice
+ * for a result that was already announced.
  *
  * Sound edge cases (the ones that used to read as contradictions):
  *   - several tasks finish in one poll, or within the cooldown → ONE ding and
@@ -29,13 +30,15 @@
  *     burst, and never a silently swallowed second completion;
  *   - a task opened before its deferred announcement plays is dropped from it;
  *   - two Air tabs/PWA windows poll the same new mark → only one of them makes
- *     a sound; each shows its own card;
+ *     a sound; each shows its own card (the card is not a sound: it follows the
+ *     mark, so a tab opened later still shows what the row already shows);
  *   - coming back to a hidden tab cancels narration still queued from while it
  *     was hidden (it would describe something already on screen);
  *   - the open task is never announced here: its chat frame owns that sound.
  *
  * ✕ on a card only takes that card off the deck; the row stays marked until the
- * task is opened.
+ * task is opened, and the card comes back with the next page (the mark is still
+ * pending — that is what a reminder owes you).
  *
  * Kept a classic script (no module dep) so air.js can construct it before the
  * first snapshot and hand over the handful of callbacks it needs.
@@ -165,7 +168,8 @@
     // up with yet (opened: id → the mark's `at` that was consumed).
     let unseen = new Map();
     const opened = new Map();
-    // Newest mark this tab has put on its deck; null until the first snapshot.
+    // Newest mark this tab has rung (②); null until the first snapshot. Only
+    // the sound is gated by what was already rung — ① and ③ follow the marks.
     let tabHeard = null;
     function sharedHeard() {
       const raw = storage()?.getItem(LS_HEARD);
@@ -181,6 +185,10 @@
     // ── ③ Floating reminder deck (drawn by air-notify-deck.js) ────────────
     // One card per task that needs you; several stack and fan out on click.
     // ✕ only takes the card off the deck — the row stays marked until opened.
+    // `shown` is that deck's memory, keyed by the mark's own `at`: a card is put
+    // up once per mark, so a ✕ stays off for this page while the mirrored row
+    // keeps coming back (a reload, another tab) for a mark still pending.
+    const shown = new Map();         // id → the attention.at already on the deck
     const deckFactory = opts.deck !== undefined ? opts.deck : win.MultiCCNotifyDeck;
     let deck = null;
     function getDeck() {
@@ -306,6 +314,7 @@
       if (!mark) return;
       opened.set(id, mark.at);
       unseen.delete(id);
+      shown.delete(id);
       stopVoice();          // ② voice cancels
       deck?.remove(id);     // ③ its card leaves the deck
       // ① sidebar mark disappears on the next render (isUnseen returns false now)
@@ -315,10 +324,12 @@
     // background tab would now describe something already on screen.
     presence?.onReturn?.(reason => { if (reason === 'visible') stopVoice(); });
 
-    // Read the marks off the latest snapshot. A mark newer than anything this
-    // tab has shown becomes a card; newer than anything any tab has rung, a
-    // sound. The very first snapshot a browser ever sees only sets the
-    // watermark, so turning the feature on does not replay old results.
+    // Read the marks off the latest snapshot. Every task still carrying one gets
+    // its card — the same mirror the sidebar row is, so a reload, a second tab
+    // or a browser that was away shows what still needs you. A mark newer than
+    // anything any tab has RUNG also makes a sound; the very first snapshot a
+    // browser ever sees only sets that watermark, so turning the feature on
+    // never replays a result that was already announced.
     // A card whose task is no longer marked (opened elsewhere) or has moved on
     // (someone continued it) leaves the deck.
     function onSnapshot(tasks, currentTaskId) {
@@ -340,11 +351,15 @@
         const live = mark && id !== current && !opened.has(id);
         if (live) {
           next.set(id, { kind: mark.kind, at });
-          if (tabHeard != null && at > tabHeard) cards.push([task, mark.kind]);
+          if (shown.get(id) !== at) {         // once per mark: a ✕ stays off
+            shown.set(id, at);
+            cards.push([task, mark.kind]);
+          }
           if (heard != null && at > heard) sounds.push([task, mark.kind, at]);
         }
         if (!live || !attentionKind(statusOf(task))) {
           pendingSound.delete(id);
+          shown.delete(id);
           deck?.remove(id);
         }
       }
@@ -354,7 +369,7 @@
         try { storage()?.setItem(LS_HEARD, String(newest)); } catch (_) {}
       }
       fireAttention(cards, sounds);
-      return cards.length > 0;
+      return sounds.length > 0;      // what rung, not what is on screen
     }
 
     // Expose a couple of controls the Air toolbar may want (voice on/off).

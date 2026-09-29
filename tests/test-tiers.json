@@ -65,6 +65,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/air_directory_task_panel_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/air_fleet_sharing_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -87,6 +92,11 @@
     {
       "path": "app/test/air_palette_test.dart",
       "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/air_quick_composer_test.dart",
+      "tier": "flow",
       "lane": "flutter"
     },
     {
@@ -140,7 +150,7 @@
       "lane": "flutter"
     },
     {
-      "path": "app/test/air_worktree_panel_test.dart",
+      "path": "app/test/air_workspace_card_test.dart",
       "tier": "other",
       "lane": "flutter"
     },
@@ -520,6 +530,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/provider_reassign_dialog_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/provider_route_gate_test.dart",
       "tier": "core",
       "lane": "flutter"
@@ -822,6 +837,15 @@
       ]
     },
     {
+      "path": "tests/test-air-directory-page-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
       "path": "tests/test-air-directory-status-filter-cdp.js",
       "tier": "flow",
       "lane": "cdp"
@@ -896,6 +920,15 @@
     },
     {
       "path": "tests/test-air-memory-cdp.js",
+      "tier": "flow",
+      "lane": "cdp",
+      "owner": "npm:test:cdp",
+      "entrypoints": [
+        "npm:test:cdp"
+      ]
+    },
+    {
+      "path": "tests/test-air-notify-deck-cdp.js",
       "tier": "flow",
       "lane": "cdp",
       "owner": "npm:test:cdp",
@@ -3381,6 +3414,15 @@
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-provider-reassign.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
       ]
     },
     {

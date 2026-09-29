@@ -29,6 +29,7 @@ import '../utils/format.dart';
 import 'air/air_console.dart';
 import 'air/air_directory_schedules.dart';
 import 'air/air_directory_search.dart';
+import 'air/air_directory_task_panel.dart';
 import 'air/air_destinations.dart';
 import 'air/air_fleet_sharing.dart';
 import 'air/air_new_task_sheet.dart';
@@ -42,6 +43,7 @@ import 'air/air_task_config.dart';
 import 'air/air_task_details.dart';
 import 'air/air_task_status.dart';
 import 'air/air_task_actions.dart';
+import 'air/air_workspace_card.dart';
 import 'create_session_dialog.dart';
 
 import 'tour_overlay.dart';
@@ -94,8 +96,6 @@ enum _AirMode { tasks, library }
 /// 只显示一种 —— 终端不混进任务清单，任务行也不混进终端列表。
 enum _DirectoryMode { chat, terminal }
 
-enum _DirectoryTaskSort { message, visit }
-
 class _AirTasksViewState extends State<AirTasksView>
     with WidgetsBindingObserver {
   late final AirService _service = AirService(
@@ -131,14 +131,21 @@ class _AirTasksViewState extends State<AirTasksView>
   bool _openingTerminal = false;
   bool _creatingTerminal = false;
   bool _reclaiming = false;
-  bool _showAll = false;
   final _taskSearch = TextEditingController();
   late final _directorySearch = AirDirectorySearch(_service)
     ..addListener(_searchChanged);
   bool _fullText = true;
   String _taskQuery = '';
   AirDirectoryTaskFilter _taskStatus = AirDirectoryTaskFilter.open;
-  _DirectoryTaskSort _taskSort = _DirectoryTaskSort.message;
+  AirDirectoryTaskSort _taskSort = AirDirectoryTaskSort.message;
+
+  /// 清单一页摆多少条。翻页之后不再有「越滚越长的清单」，页大小就是「一屏能读
+  /// 完、不用一直滚」的那个数。
+  static const _tasksPageSize = 20;
+
+  /// 现在第几页（从 1 起）。换目录、改筛选、改搜索都回到第 1 页 —— 换了条件还停
+  /// 在第 7 页，看到的往往是空的。
+  int _tasksPage = 1;
   _AirMode _mode = _AirMode.tasks;
 
   /// 当前目录首页显示哪一类东西。默认 Chat（任务/对话），和 Web 一致；换一个
@@ -187,8 +194,8 @@ class _AirTasksViewState extends State<AirTasksView>
     setState(() {
       _store = store;
       _taskSort = store.taskSort == 'visit'
-          ? _DirectoryTaskSort.visit
-          : _DirectoryTaskSort.message;
+          ? AirDirectoryTaskSort.visit
+          : AirDirectoryTaskSort.message;
     });
   }
 
@@ -265,7 +272,7 @@ class _AirTasksViewState extends State<AirTasksView>
       _mode = _AirMode.tasks;
       // 每个目录都从 Chat 起步：切过去先看这个目录的活，终端是下一跳的事。
       _dirMode = _DirectoryMode.chat;
-      _showAll = false;
+      _tasksPage = 1;
       _taskQuery = '';
       _taskStatus = AirDirectoryTaskFilter.open;
       _taskSearch.clear();
@@ -1118,7 +1125,7 @@ class _AirTasksViewState extends State<AirTasksView>
               Navigator.of(routeContext).pop();
               setState(() {
                 _mode = _AirMode.tasks;
-                _showAll = false;
+                _tasksPage = 1;
               });
             },
             onOpenLibrary: () {
@@ -1371,12 +1378,12 @@ class _AirTasksViewState extends State<AirTasksView>
     return rows.length > 30 ? rows.sublist(0, 30) : rows;
   }
 
-  /// 首页这块是 Web 的「最近任务」（`air.js` 的 `renderDirectoryOverview`）：
-  /// 抬头下面只摆最近几条，其余交给下面那颗「查看全部 N 个任务 ›」。
+  /// 目录首页这份清单（Web `air.js` 的 `renderDirectoryOverview`）：这个目录下
+  /// 的任务，按当前排序键倒序，再按状态与搜索词筛一道。
   ///
-  /// 截断而不是按状态过滤，也是照 Web 抄的：那边这份 `tasks` 只按 dirId 过滤，
-  /// `!['done','archived'].includes(status)` 那道判断只用在抬头上面那四张统计卡
-  /// 里。默认按最后消息倒序，也可以切到本机最后访问时间。
+  /// 从前这里分两档 —— 默认只摆最近几条、剩下的交给「查看全部 N 个任务 ›」。现在
+  /// 只有一档：筛选条件常驻，条数由翻页接手（用户要的形态）。所以这里返回的是
+  /// **筛完的整份**，切片由 [_pageRows] 做。
   List<AirTask> _visibleTasks(BuildContext context) {
     final data = _data;
     final rows = (data?.tasksOf(_directoryId) ?? const <AirTask>[]).toList();
@@ -1386,26 +1393,23 @@ class _AirTasksViewState extends State<AirTasksView>
       final messages = b.lastMessageAt.compareTo(a.lastMessageAt);
       return messages != 0 ? messages : a.id.compareTo(b.id);
     });
-    if (_showAll) {
-      final needle = _taskQuery.trim().toLowerCase();
-      if (needle.isNotEmpty && _directorySearch.ids != null) {
-        final byId = {for (final task in rows) task.id: task};
-        final ranked = [
-          for (final id in _directorySearch.ids!)
-            if (byId[id] != null) byId[id]!,
-        ];
-        // 搜索命中照旧保持相关度顺序，但 pin 住的那几条仍然排最前（对齐 Web
-        // `renderDirectoryOverview`：`pinFirstInDirectory(filtered)` 对 ranked
-        // 结果同样生效）——「我在盯哪些」不因一次搜索而掉队。
-        return _pinFirstInDirectory(ranked);
-      }
-      return _pinFirstInDirectory(rows).where((task) {
-        final statusMatches = needle.isNotEmpty || _taskStatus.matches(task);
-        return statusMatches &&
-            (needle.isEmpty || task.title.toLowerCase().contains(needle));
-      }).toList();
+    final needle = _taskQuery.trim().toLowerCase();
+    if (needle.isNotEmpty && _directorySearch.ids != null) {
+      final byId = {for (final task in rows) task.id: task};
+      final ranked = [
+        for (final id in _directorySearch.ids!)
+          if (byId[id] != null) byId[id]!,
+      ];
+      // 搜索命中照旧保持相关度顺序，但 pin 住的那几条仍然排最前（对齐 Web
+      // `renderDirectoryOverview`：`pinFirstInDirectory(filtered)` 对 ranked
+      // 结果同样生效）——「我在盯哪些」不因一次搜索而掉队。
+      return _pinFirstInDirectory(ranked);
     }
-    return _pinFirstInDirectory(rows).take(_recentRowLimit(context)).toList();
+    return _pinFirstInDirectory(rows).where((task) {
+      final statusMatches = needle.isNotEmpty || _taskStatus.matches(task);
+      return statusMatches &&
+          (needle.isEmpty || task.title.toLowerCase().contains(needle));
+    }).toList();
   }
 
   /// 目录首页任务列表（Web `#directory-task-list`）的排序：pin 住的那几条照 pin
@@ -1427,7 +1431,7 @@ class _AirTasksViewState extends State<AirTasksView>
     return [...pinned, ...rest];
   }
 
-  int _taskSortAt(AirTask task) => _taskSort == _DirectoryTaskSort.visit
+  int _taskSortAt(AirTask task) => _taskSort == AirDirectoryTaskSort.visit
       ? (_store?.visitedAt(task.id) ?? 0)
       : task.lastMessageAt;
 
@@ -1438,49 +1442,36 @@ class _AirTasksViewState extends State<AirTasksView>
   void _searchDirectory(String value) {
     setState(() {
       _taskQuery = value;
+      // 换了搜索词就回到第 1 页：停在第 7 页看一份新结果的第 7 页，多半是空的。
+      _tasksPage = 1;
       _directorySearch.search(value, _directoryId, _fullText);
     });
   }
 
-  Widget _taskSortButton(_DirectoryTaskSort value, String label) {
-    final selected = _taskSort == value;
-    return Semantics(
-      button: true,
-      selected: selected,
-      child: InkWell(
-        key: ValueKey('air-task-sort-${value.name}'),
-        onTap: () {
-          if (selected) return;
-          setState(() => _taskSort = value);
-          unawaited(_store?.setTaskSort(value.name));
-        },
-        borderRadius: BorderRadius.circular(7),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: selected ? AppColors.panel : Colors.transparent,
-            borderRadius: BorderRadius.circular(7),
-            boxShadow: selected
-                ? const [BoxShadow(color: Color(0x14274968), blurRadius: 4)]
-                : null,
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? AppColors.accent : AppColors.faint,
-              fontSize: 10.5,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            ),
-          ),
-        ),
-      ),
-    );
+  /// 当前这一页的行。页码只在这里夹一次 —— 筛选把条数缩下来时，停在旧页码上会
+  /// 得到一张空表，而用户看见的仍然写着「第 7 页」。
+  int _pageCountFor(int rows) =>
+      rows <= 0 ? 1 : ((rows - 1) ~/ _tasksPageSize) + 1;
+
+  List<AirTask> _pageRows(List<AirTask> rows) {
+    final page = _tasksPage.clamp(1, _pageCountFor(rows.length));
+    final start = (page - 1) * _tasksPageSize;
+    return rows.skip(start).take(_tasksPageSize).toList();
   }
 
-  /// Web `air.js` 的 `recentRowLimit()`：760px 及以下六行，再宽十行。一行就是一条
-  /// 任务，截掉的本来也排不进「最近」。
-  static int _recentRowLimit(BuildContext context) =>
-      MediaQuery.sizeOf(context).width <= 760 ? 6 : 10;
+  /// 主检出的 git 状态（工作区卡上半格）。宿主是 Air 页，这一份来自 `SessionManager`
+  /// 的目录表（`/api/directories` 的 `pushState`）—— Air 快照自己不带 git 状态。
+  ///
+  /// 拿不到就不摆那一格（测试里没有 Provider、远端工作区、非 git 仓库都是这一条）。
+  DirectoryPushState? get _directoryPushState {
+    final id = _directoryId;
+    if (id == null) return null;
+    final manager = context.watch<SessionManager?>();
+    return manager?.directories
+        .where((directory) => directory.id == id)
+        .firstOrNull
+        ?.pushState;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2092,6 +2083,12 @@ class _AirTasksViewState extends State<AirTasksView>
     }
   }
 
+  /// 目录首页（Chat 模式）的三段：**固定的抬头区**（统计卡 + 工作区卡 + 路径）、
+  /// **占满剩余高度的清单卡**（自己滚，翻页）、以及贴底的创建输入条（在
+  /// [_buildDirectory] 那一层）。
+  ///
+  /// 为什么抬头固定、清单自己滚：筛选和抬头在滚动里被推走之后，「我按的是哪个
+  /// 状态」和「列表在看什么」就分家了；反过来，行多起来时该滚的是行，不是整页。
   Widget _buildTasks(
     AirSnapshot? data,
     AirDirectory? directory,
@@ -2101,223 +2098,114 @@ class _AirTasksViewState extends State<AirTasksView>
       return const Center(child: CircularProgressIndicator());
     }
     // 抬头上的「N 个任务」和统计卡读的是同一份**未截断**的目录任务表：数字说的是
-    // 这个目录一共有多少条，不是这一屏摆得下多少条。
+    // 这个目录一共有多少条，不是这一页摆得下多少条。
     final all = data?.tasksOf(_directoryId) ?? const <AirTask>[];
-    // Worktree 生命周期面板：只有本机目录、服务端确实给了拆解、而且这个目录真的
-    // 有 worktree 时才摆 —— 远端工作区没有本机 worktree，空目录那块也只是噪声。
+    // 工作区卡（代码状态 + worktree 生命周期）：只有本机目录、服务端确实给了拆解、
+    // 而且这个目录真的有 worktree 时才摆 —— 远端工作区没有本机 worktree，空目录
+    // 那块也只是噪声。
     final worktrees = directory == null || directory.external
         ? null
         : directory.visibleWorktreeLifecycle;
-    return RefreshIndicator(
-      onRefresh: _refresh,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
-        // 往下拖列表就收键盘：贴底输入条的焦点监听接着会把展开态收回去，
-        // 用户不必靠「提交」或开弹层才能把面板收掉。
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+    final pageCount = _pageCountFor(tasks.length);
+    // 抬头这一截有多高由内容说了算（统计卡 + 工作区卡 + 路径），小窗口里它可能比
+    // 整个可视高度还高。抬头固定、清单自己滚是这一页要的形状，但「固定」不等于
+    // 「无限高」—— 所以给它封顶：最多吃掉六成高度，而且必须先给清单卡留下它自己
+    // 那份最小高度（抬头 + 筛选那两截是死的）。多出来的部分在抬头那一截里自己滚。
+    // 不然小窗口上多出来的那几十像素就是 RenderFlex 溢出。
+    return LayoutBuilder(
+      builder: (context, constraints) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          AirDirectoryStats(
-            tasks: all,
-            worktreeCount: directory?.worktreeCount ?? 0,
-            onFilter: (filter) => setState(() {
-              _directorySearch.reset();
-              _showAll = true;
-              _taskStatus = filter;
-              _taskQuery = '';
-              _taskSearch.clear();
-            }),
-          ),
-          if (worktrees != null)
-            AirWorktreePanel(
-              lifecycle: worktrees,
-              idleMs: data?.worktreePolicy.idleMs ?? 0,
-              busy: _reclaiming,
-              onReclaim: () => _reclaimWorktrees(directory!),
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: constraints.maxHeight.isFinite
+                  ? (constraints.maxHeight - AirDirectoryTaskPanel.minHeight)
+                      .clamp(0.0, constraints.maxHeight * 0.62)
+                  : double.infinity,
             ),
-          const SizedBox(height: 22),
-          if (directory != null) ...[
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    directory.path,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.faint,
-                      fontSize: 11.5,
-                    ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  AirDirectoryStats(
+                    tasks: all,
+                    worktreeCount: directory?.worktreeCount ?? 0,
+                    // 统计卡就是一颗快速筛选键：点它 = 按这个状态筛清单。点完回到
+                    // 第 1 页 —— 换了筛选条件还停在旧页码，看到的往往是空的。
+                    onFilter: (filter) => setState(() {
+                      _directorySearch.reset();
+                      _tasksPage = 1;
+                      _taskStatus = filter;
+                      _taskQuery = '';
+                      _taskSearch.clear();
+                    }),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-          ],
-          const SizedBox(height: 18),
-          // Web `air.html` 的 `.section-heading`：左边两行（小字 `当前目录` + 粗体
-          // `最近任务`），右边一个 `#directory-overview-count`。两条筛选 chip 换成了
-          // 这一行 —— Web 那份默认就带着归档行，「未完成 / 全部」在这里没有对位。
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '当前目录',
-                      style: TextStyle(color: AppColors.faint, fontSize: 11.5),
+                  const SizedBox(height: 18),
+                  if (worktrees != null)
+                    AirWorkspaceCard(
+                      lifecycle: worktrees,
+                      pushState: _directoryPushState,
+                      idleMs: data?.worktreePolicy.idleMs ?? 0,
+                      busy: _reclaiming,
+                      onReclaim: () => _reclaimWorktrees(directory!),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _showAll ? '全部任务' : '最近任务',
-                      key: const ValueKey('air-tasks-heading'),
-                      style: const TextStyle(
-                        color: AppColors.text,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
+                  if (directory != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        directory.path,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppColors.faint,
+                          fontSize: 11.5,
+                        ),
                       ),
                     ),
-                  ],
-                ),
-              ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(2),
-                    decoration: BoxDecoration(
-                      color: AppColors.bgSoft,
-                      borderRadius: BorderRadius.circular(9),
-                      border: Border.all(color: AppColors.line),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _taskSortButton(_DirectoryTaskSort.message, '消息'),
-                        _taskSortButton(_DirectoryTaskSort.visit, '访问'),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _showAll
-                        ? '${tasks.length} / ${all.length} 个任务'
-                        : '${all.length} 个任务',
-                    key: const ValueKey('air-tasks-count'),
-                    style: const TextStyle(
-                      color: AppColors.faint,
-                      fontSize: 11.5,
-                    ),
-                  ),
                 ],
               ),
-            ],
+            ),
           ),
-          const SizedBox(height: 12),
-          if (_showAll) ...[
-            DropdownButton<bool>(
-              key: const ValueKey('air-directory-search-scope'),
-              value: _fullText,
-              isExpanded: true,
-              items: const [
-                DropdownMenuItem(value: true, child: Text('全部记录（含对话）')),
-                DropdownMenuItem(value: false, child: Text('仅任务标题与摘要')),
-              ],
-              onChanged: (value) {
-                if (value == null) return;
-                _fullText = value;
-                _searchDirectory(_taskQuery);
-              },
-            ),
-            if (_directorySearch.loading) const Text('搜索中…'),
-            if (_directorySearch.failed) const Text('全文搜索暂不可用，当前仅按标题匹配'),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    key: const ValueKey('air-directory-task-search'),
-                    controller: _taskSearch,
-                    onChanged: _searchDirectory,
-                    style: const TextStyle(color: AppColors.text, fontSize: 13),
-                    decoration: sheetInputDecoration(hint: '搜索当前目录任务'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                SizedBox(
-                  width: 145,
-                  child: DropdownButtonFormField<AirDirectoryTaskFilter>(
-                    key: const ValueKey('air-directory-task-status'),
-                    value: _taskStatus,
-                    isExpanded: true,
-                    decoration: sheetInputDecoration(hint: ''),
-                    dropdownColor: AppColors.panel,
-                    items: [
-                      for (final filter in AirDirectoryTaskFilter.values)
-                        DropdownMenuItem(
-                          value: filter,
-                          child: Text(filter.label),
-                        ),
-                    ],
-                    onChanged: (value) {
-                      if (value != null) setState(() => _taskStatus = value);
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-          ],
-          if (data != null && tasks.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 28),
-              child: Text(
-                '没有匹配的任务。可切换筛选条件，或在底部创建新任务。',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: AppColors.faint,
-                  fontSize: 13,
-                  height: 1.8,
-                ),
-              ),
-            ),
-          if (_showAll && tasks.isNotEmpty)
-            SizedBox(
-              key: const ValueKey('air-directory-task-scroll'),
-              height: 390,
-              child: ListView.separated(
-                primary: false,
-                itemCount: tasks.length,
-                separatorBuilder: (_, _) => const SizedBox(height: 10),
-                itemBuilder: (_, index) => _directoryTaskTile(tasks[index]),
-              ),
-            )
-          else if (!_showAll)
-            for (final task in tasks) ...[
-              _directoryTaskTile(task),
-              const SizedBox(height: 10),
-            ],
-          // Web `#directory-task-more`：列表是截过的，这条是留给剩下那些的出口。
-          // 两端都在当前目录页就地展开固定高度的完整清单。
-          if (all.length > tasks.length || _showAll)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                key: const ValueKey('air-tasks-more'),
-                onPressed: () => setState(() {
-                  _showAll = !_showAll;
-                  if (!_showAll) {
-                    _directorySearch.reset();
-                    _taskQuery = '';
-                    _taskStatus = AirDirectoryTaskFilter.open;
-                    _taskSearch.clear();
-                  }
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: AirDirectoryTaskPanel(
+                rows: _pageRows(tasks),
+                filteredCount: tasks.length,
+                totalCount: all.length,
+                page: _tasksPage.clamp(1, pageCount),
+                pageCount: pageCount,
+                sort: _taskSort,
+                searchController: _taskSearch,
+                status: _taskStatus,
+                fullText: _fullText,
+                searching: _directorySearch.loading,
+                searchFailed: _directorySearch.failed,
+                onSort: (value) {
+                  // 换排序和换筛选是一回事：顺序变了还停在旧页码，看到的还是「中间
+                  // 那一截」，回第 1 页才说得清从头看起看的是哪一份顺序。
+                  setState(() {
+                    _tasksPage = 1;
+                    _taskSort = value;
+                  });
+                  unawaited(_store?.setTaskSort(value.name));
+                },
+                onSearch: _searchDirectory,
+                onStatus: (value) => setState(() {
+                  _tasksPage = 1;
+                  _taskStatus = value;
                 }),
-                child: Text(
-                  _showAll ? '收起，返回最近任务' : '查看全部 ${all.length} 个任务 ›',
-                ),
+                onScope: (value) {
+                  _fullText = value;
+                  _searchDirectory(_taskQuery);
+                },
+                onPage: (value) => setState(() => _tasksPage = value),
+                rowBuilder: _directoryTaskTile,
+                onRefresh: _refresh,
               ),
             ),
+          ),
         ],
       ),
     );

@@ -245,20 +245,9 @@
             </div>
           </section>
           <div id="directory-stats" aria-label="当前目录任务统计" data-i18n-aria-label="airDirectoryStats"></div>
-          <!-- Worktree 生命周期：只报「有几个」看不出这个数是本地占着磁盘、还是已经
-               睡下只剩分支引用、还是计划了没落地，而用户要判断的正是要不要现在腾地方。
-               三个数分开摆，配合「现在回收」按钮（默认只收过期的，force 要用户再点一次
-               确认）。口径与渲染都在 air-worktrees.js，air.js 只负责递上下文。 -->
-          <section id="directory-worktrees" class="directory-worktrees" hidden aria-label="目录 Worktree 生命周期" data-i18n-aria-label="airWorktreeLifecycle">
-            <div class="section-heading">
-              <div><span class="caption" data-i18n="airDirWorktrees">Worktrees</span><strong data-i18n="airWorktreeLifecycle">Worktree 生命周期</strong></div>
-              <span id="directory-worktree-summary"></span>
-            </div>
-            <div id="directory-worktree-body"></div>
-          </section>
           <section class="directory-task-panel">
             <div class="section-heading">
-              <div><span class="caption" data-i18n="airCurrentDirectory">当前目录</span><strong id="directory-task-heading" data-i18n="airRecentTasks">最近任务</strong></div>
+              <div><span class="caption" data-i18n="airCurrentDirectory">当前目录</span><strong id="directory-task-heading" data-i18n="airDirAllTasks">全部任务</strong></div>
               <div class="directory-task-heading-actions">
                 <div id="directory-task-sort" class="task-sort-switch" role="group" aria-label="任务排序方式" data-i18n-aria-label="airTaskSortLabel">
                   <button type="button" data-sort="message" data-i18n="airTaskSortMessage">消息</button>
@@ -267,7 +256,9 @@
                 <span id="directory-overview-count"></span>
               </div>
             </div>
-            <div id="directory-task-controls" class="admin-task-controls directory-task-controls" hidden>
+            <!-- 筛选条默认就摆在面板里（不再等「查看全部」才出现）：这一页现在就是
+                那份完整清单，抬头、筛选、分页三行固定，列表自己滚。 -->
+            <div id="directory-task-controls" class="admin-task-controls directory-task-controls">
               <input id="directory-task-search" type="search" placeholder="搜索任务标题" data-i18n-placeholder="airSearchTaskTitle" aria-label="搜索当前目录任务" data-i18n-aria-label="airSearchDirectoryTask">
               <select id="directory-task-status" aria-label="按状态筛选当前目录任务" data-i18n-aria-label="airFilterDirectoryTaskStatus">
                 <option value="open" data-i18n="airStatusOpenAndPending">进行中与待处理</option>
@@ -283,20 +274,39 @@
                 <option value="board" data-i18n="airSearchScopeBoard">仅任务标题与摘要</option>
               </select>
             </div>
+            <!-- 列表吃掉面板剩下的高度（air.css）：条目多过一页时不再往下长，多出来
+                 的交由下面那条分页（air-task-pager.js），而不是一路把输入框顶出屏幕。 -->
             <div id="directory-task-list"></div>
-            <!-- 就地展开当前目录的完整清单；给列表限高（不是定高）与筛选避免把输入框推到页面之外。 -->
-            <button id="directory-task-more" type="button" hidden></button>
+            <nav id="directory-task-pager" class="directory-task-pager" hidden aria-label="任务分页" data-i18n-aria-label="airTaskPagination">
+              <button id="directory-task-prev" type="button" data-i18n="airTaskPagePrev">上一页</button>
+              <span id="directory-task-page"></span>
+              <button id="directory-task-next" type="button" data-i18n="airTaskPageNext">下一页</button>
+            </nav>
           </section>
-          <!-- 目录的代码状态：主检出本身有多少提交没 push、有没有漂在任务
-               worktree 之外的未提交文件。会话 worktree 的 ahead/dirty 在各自
-               的任务页头（合并按钮）看；这里看的是它们共同的主人 —— 主检出。
-               提交历史在独立 Git 管理器窗口浏览，首屏只取一份状态。 -->
+          <!-- 目录的代码状态：一张卡、上下两行。上行是主检出本身 —— 有多少提交
+               没 push、有没有漂在任务 worktree 之外的未提交文件（会话 worktree 的
+               ahead/dirty 在各自的任务页头那颗合并按钮上看，这里看的是它们共同的
+               主人）；下行是这个目录的 worktree 现在住在哪 —— 本地占着磁盘、睡下
+               只剩分支引用、还是计划了没落地，配合「现在回收」按钮（默认只收过期
+               的，force 要用户再点一次确认）。
+               两块原来是两张平级的卡，说的是同一件事（这个目录的代码现在什么状态）
+               却各占一条标题，所以合成一张：git 那行由 air.js 画，worktree 那行口径
+               与渲染都在 air-worktrees.js（它只认 #directory-worktrees 这个 id，
+               搬进卡里不用改它）。提交历史在独立 Git 管理器窗口浏览，首屏只取一份
+               状态。 -->
           <section id="directory-git" class="directory-git-panel" hidden aria-label="目录 Git 状态" data-i18n-aria-label="airDirectoryGitStatus">
             <div class="section-heading">
-              <div><span class="caption">GIT</span><strong id="directory-git-title" data-i18n="airCodeStatus">代码状态</strong></div>
+              <div><span class="caption">GIT</span><strong id="directory-git-title" data-i18n="airCodeAndWorktrees">代码与 Worktree</strong></div>
               <span id="directory-git-note" class="admin-panel-note"></span>
             </div>
             <div id="directory-git-brief"></div>
+            <section id="directory-worktrees" class="directory-worktrees" hidden aria-label="目录 Worktree 生命周期" data-i18n-aria-label="airWorktreeLifecycle">
+              <div class="section-heading">
+                <div><span class="caption" data-i18n="airDirWorktrees">Worktrees</span><strong data-i18n="airWorktreeLifecycle">Worktree 生命周期</strong></div>
+                <span id="directory-worktree-summary"></span>
+              </div>
+              <div id="directory-worktree-body"></div>
+            </section>
           </section>
           <!-- 全站唯一的那一个输入框模块。它在目录首页是常驻的，侧栏那颗
                「＋ 新任务」会把它临时搬进 #quick-task-dialog（air.js 的
@@ -751,6 +761,10 @@
   <!-- 定时任务中心（列表 + 唯一那张表单 + 四个动作）本体。排在 air.js 前面：air.js
        启动时调 MultiCCAirSchedules.bind() 把「通知/跳转/刷新/目录快照」递进去。 -->
   <script src="air-schedule-center.js"></script>
+  <!-- 目录首页任务清单的分页（上一页 / 第 x / y 页 / 下一页）。自持 DOM 与页码状态，
+       只把「换了一页」回调给 air.js 重画列表；页码状态不能被 air.js 的重渲染重置，
+       所以它必须活在 air.js 之外。排在 air.js 前面：air.js 启动时调它的 bind()。 -->
+  <script src="air-task-pager.js"></script>
   <script src="git-manager.js"></script>
   <script src="air.js"></script>
   <script src="air-more.js"></script>

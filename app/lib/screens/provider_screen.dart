@@ -3,11 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../i18n.dart';
 import '../models/provider_limit_label.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
 import '../widgets/provider_option.dart';
+import '../widgets/provider_reassign_dialog.dart';
 
 /// Provider 配置。镜像网页管理台的「Provider」页：从 cc-switch 导入/同步，
 /// 在 multicc 自己的存储里增删改，设全局默认（claude / codex 各一个）。
@@ -145,6 +147,21 @@ class _ProviderScreenState extends State<ProviderScreen> {
     } catch (e) {
       _snack('删除失败：$e');
     }
+  }
+
+  /// 批量迁移会话（Web `air-provider.js` 的 openReassign）。
+  ///
+  /// 弹层自己拿 dry-run 结果画「有多少会话在用这条线路 / 哪些线路可迁移 / 每个会话
+  /// 切换后的模型」，确认后才真发一次非 dry-run 的调用。服务端每个会话走的都是
+  /// AI 配置弹窗那条 PATCH，所以模型替换、Auto 会话不改动、忙会话下一轮生效这些
+  /// 口径和单会话切换完全一致。
+  Future<void> _openReassign(Map<String, dynamic> p) async {
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => ProviderReassignDialog(manage: _manage, provider: p),
+    );
+    if (result != null && result.isNotEmpty) _snack(result);
+    await _refresh();
   }
 
   // 与 Web(public/air-provider.js showReferences)同一口径：按类型分组，每组写明
@@ -324,6 +341,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
                 manage: _manage,
                 onEdit: () => _openEditor(provider: p),
                 onDelete: () => _delete(p),
+                onReassign: () => _openReassign(p),
               ),
             )),
       ],
@@ -583,8 +601,15 @@ class _ProviderCard extends StatefulWidget {
   final Map<String, dynamic> p;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onReassign;
   final ManageService manage;
-  const _ProviderCard({required this.p, required this.onEdit, required this.onDelete, required this.manage});
+  const _ProviderCard({
+    required this.p,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onReassign,
+    required this.manage,
+  });
 
   @override
   State<_ProviderCard> createState() => _ProviderCardState();
@@ -714,6 +739,15 @@ class _ProviderCardState extends State<_ProviderCard> {
                     : const Icon(Icons.speed_rounded, size: 17, color: AppColors.accent),
                 label: Text(_testing ? '测速中' : '测速',
                     style: const TextStyle(color: AppColors.accent, fontSize: 13)),
+              ),
+              // 批量迁移会话：把主线路绑在这条线路上的会话整体换到另一条兼容线路上
+              // （Web `air-provider.js` 的「批量迁移会话…」同款动作，同一个服务端接口）。
+              TextButton.icon(
+                key: ValueKey('provider-reassign-${p['id']}'),
+                onPressed: widget.onReassign,
+                icon: const Icon(Icons.swap_horiz_rounded, size: 17, color: AppColors.muted),
+                label: Text(t('airProviderReassignAction'),
+                    style: const TextStyle(color: AppColors.muted, fontSize: 13)),
               ),
               TextButton.icon(
                 onPressed: widget.onEdit,
