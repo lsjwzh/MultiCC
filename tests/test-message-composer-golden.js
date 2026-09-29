@@ -81,6 +81,10 @@ function codexModelConfigArg(session) {
 const GATEWAY_PREFIX = '<<GATEWAY-BLOCK>>\n\n';
 const DISPATCH_BLOCK = '<<DISPATCH-CONTEXT>>\n';
 const GOAL_BLOCK = '<<GOAL-LIMIT maxRounds=...>>\n\n';
+// The real builder (src/chat/host-prompts.js buildPlanProgressPrompt) is a
+// constant block; a sentinel keeps this gate about PLACEMENT and GATING rather
+// than about its wording, which tests/test-host-prompts.js pins.
+const PLAN_BLOCK = '<<TURN-PLAN>>\n\n';
 const IMG_HINT = '<<MULTICC_IMG_HINT>>';
 const ROLE_PROMPT = '<<ROLE: 你是一个严谨的翻译助手>>';
 const ENV_CONSTRAINT = '<<env: CODEX_SANDBOX=0>>';
@@ -89,6 +93,14 @@ const STAY_ALIVE = '<<stay-alive: 不要退出>>';
 function buildGatewayPrompt(userText) { return GATEWAY_PREFIX + userText; }
 function buildDispatchContextPrompt(_sessionId) { return DISPATCH_BLOCK; }
 function buildGoalLimitNote(_limits) { return GOAL_BLOCK; }
+function buildPlanPrompt(_persisted, _sessionName) { return PLAN_BLOCK; }
+
+// The same gate the composer applies (kind 'turn-plan'): every chat turn gets
+// the plan layer; aux (internal parsed-output jobs) and gateway (machine-parsed
+// router) sessions do not.
+function planLayerFor(persisted) {
+  return persisted.type === 'aux' || persisted.type === 'gateway' ? '' : PLAN_BLOCK;
+}
 
 // notes store keyed by sessionName; pendingNotesFor reads + we can mutate.
 const notesStore = {};
@@ -105,6 +117,7 @@ function makeDeps(overrides) {
     buildGatewayPrompt,
     buildDispatchContextPrompt,
     buildGoalLimitNote,
+    buildPlanPrompt,
     pendingNotesFor,
     saveNotes,
     appendEvent,
@@ -139,6 +152,11 @@ function todayPrompt({ text, persisted, sessionName, goalLimits, bare }, deps) {
     const dc = deps.buildDispatchContextPrompt(sessionName);
     if (dc) promptText = dc + promptText;
   }
+  // order 18: the per-turn plan layer sits between the goal note (10) and the
+  // dispatch/gateway block (20), i.e. it is prepended after dispatch and before
+  // the goal note.
+  const plan = planLayerFor(persisted) ? deps.buildPlanPrompt(persisted, sessionName) : '';
+  if (plan) promptText = plan + promptText;
   if (goalLimits) {
     const note = deps.buildGoalLimitNote(goalLimits);
     if (note) promptText = note + promptText;
@@ -244,9 +262,10 @@ console.log('── Suite 2: envelope structure ──');
   assert(env.systemPrompt === `${IMG_HINT}\n\n${ROLE_PROMPT}`, 'systemPrompt = imgHint+\\n\\n+rolePrompt');
   assert(env.imgHint === IMG_HINT, 'imgHint carried as independent field');
   assert(env.rolePrompt === ROLE_PROMPT, 'rolePrompt carried as independent field');
-  // layers sorted ascending by order: goal(10) < dispatch(20)
+  // layers sorted ascending by order: goal(10) < turn-plan(18) < dispatch(20)
   const orders = env.contextLayers.map(l => l.order);
-  assert(orders.length === 2 && orders[0] === 10 && orders[1] === 20, 'contextLayers sorted by order asc (goal<dispatch)');
+  assert(orders.length === 3 && orders[0] === 10 && orders[1] === 18 && orders[2] === 20,
+    'contextLayers sorted by order asc (goal<plan<dispatch)');
   assert(env.spawnOpts.rawModel === 'fable', 'spawnOpts.rawModel = persisted.model (raw, not pre-parsed)');
   assert(env.spawnOpts.rawEffort === 'ultracode', 'spawnOpts.rawEffort = persisted.effort (raw)');
   assert(env.spawnOpts.rawAgent === null, 'spawnOpts.rawAgent = persisted.agent (raw)');
@@ -606,6 +625,97 @@ console.log('── Suite 6: sub-agent provider hint ──');
     assert(buildSubagentProviderHint(bad) === '', `6d inert subagent: ${JSON.stringify(bad)}`);
   }
   assert(buildSubagentProviderHint({ providerId: 'p1' }).includes('(p1)'), '6d provider only -> route without model');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
+// Suite 7: turn-plan layer (per-turn plan + progress reporting)
+//
+// Injected on EVERY chat turn (that is the point: the goal/achievement
+// judgement the classify prompt makes reads the whole conversation, so the
+// instruction has to be in front of the model on every turn, not once in a
+// system prompt). Two session types are deliberately excluded, and this suite
+// pins both the inclusion and the exclusions.
+// ═══════════════════════════════════════════════════════════════════════
+console.log('');
+console.log('── Suite 7: turn-plan layer ──');
+
+(function suite7() {
+  const { buildPlanProgressPrompt } = require('../src/chat/host-prompts');
+  const deps = makeDeps({ buildPlanPrompt: buildPlanProgressPrompt });
+  const sessionName = 's1';
+  delete notesStore[sessionName];
+  const text = '把登录页改成暗色';
+
+  // 7a: a plain chat turn carries it, once, at order 18.
+  const plain = composeMessage({ text, persisted: basePersisted({ type: null }), sessionName, opts: { isFirstTurn: true }, deps });
+  const layer = plain.contextLayers.find(l => l.kind === 'turn-plan');
+  assert(!!layer, '7a chat turn carries the turn-plan layer');
+  assert(!!layer && layer.order === 18, '7a order 18: after handoff, before gateway/dispatch');
+  assert(!!layer && layer.text === buildPlanProgressPrompt(), '7a layer carries the builder output verbatim');
+  assert(!!layer && layer.text.endsWith('\n\n'), '7a layer carries its own trailing separator');
+  assert(renderPrompt(plain).split(layer.text).length - 1 === 1, '7a the block reaches the model exactly once');
+
+  // 7b: it sits between the goal note (10) and the dispatch block (20), and the
+  // user message is still the tail.
+  const layered = composeMessage({
+    text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName,
+    opts: { isFirstTurn: true, goalLimits: { maxRounds: 5 } }, deps,
+  });
+  const rendered = renderPrompt(layered);
+  const realBlock = buildPlanProgressPrompt();   // suite 7 injects the real builder
+  assert(rendered.indexOf(GOAL_BLOCK) < rendered.indexOf(realBlock), '7b goal note comes first');
+  assert(rendered.indexOf(realBlock) < rendered.indexOf(DISPATCH_BLOCK), '7b plan comes before dispatch context');
+  assert(rendered.endsWith(text), '7b the user message is still the tail');
+
+  // 7c: "every chat turn" — streaming sessions and turns with notes get it too.
+  const streaming = composeMessage({
+    text, persisted: basePersisted({ type: null, streaming: true }), sessionName,
+    opts: { isFirstTurn: false, mode: 'streaming' }, deps,
+  });
+  assert(streaming.contextLayers.some(l => l.kind === 'turn-plan'), '7c streaming chat turn carries it');
+  notesStore[sessionName] = [{ fromLabel: 'worker-A', body: '合并完成' }];
+  const noted = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName, opts: { isFirstTurn: true }, deps });
+  const notedOrders = noted.contextLayers.map(l => l.order);
+  assert(notedOrders.includes(18) && notedOrders.includes(30), '7c notes turn carries plan(18) and notes(30)');
+  delete notesStore[sessionName];
+
+  // 7d: the two exclusions. aux sessions are internal parsed-output jobs;
+  // gateway sessions are the WeChat/voice router whose reply is a control block.
+  for (const type of ['aux', 'gateway']) {
+    const env = composeMessage({ text, persisted: basePersisted({ type }), sessionName, opts: { isFirstTurn: true }, deps });
+    assert(!env.contextLayers.some(l => l.kind === 'turn-plan'), `7d ${type} session must not carry it`);
+  }
+  const bare = composeMessage({
+    text, persisted: basePersisted({ type: null }), sessionName, opts: { isFirstTurn: false, bare: true }, deps,
+  });
+  assert(bare.contextLayers.length === 0, '7d bare (continue/retry) turns carry no layers');
+
+  // 7e: a host without the builder gets no layer (composer stays optional-dep
+  // safe for the many unit tests that inject a partial deps bag).
+  const noBuilder = composeMessage({
+    text, persisted: basePersisted({ type: null }), sessionName, opts: { isFirstTurn: true }, deps: makeDeps({ buildPlanPrompt: undefined }),
+  });
+  assert(!noBuilder.contextLayers.some(l => l.kind === 'turn-plan'), '7e no builder -> no layer');
+
+  // 7f: the builder's own contract — the four instructions the classify prompt
+  // leans on, and the language rule (a report is prose in the conversation's
+  // language, not an English footer bolted onto a Chinese reply).
+  const block = buildPlanProgressPrompt();
+  for (const kw of ['Decompose before you act', 'verifiable outcome', 'Keep one plan',
+    'ordinary prose', 'Never present an unfinished step as complete']) {
+    assert(block.includes(kw), `7f block states: ${kw}`);
+  }
+
+  // 7g: wiring. The layer only exists if the composition root actually hands the
+  // builder over and the turn engine forwards it; a builder nobody injects is
+  // the silent failure this asserts against.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.join(__dirname, '..');
+  const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  const engine = fs.readFileSync(path.join(root, 'src', 'chat', 'turn-engine.js'), 'utf8');
+  assert(server.includes('buildPlanPrompt: buildPlanProgressPrompt'), '7g server.js injects the builder');
+  assert(/buildPlanPrompt,/.test(engine), '7g turn-engine forwards it into the composer deps');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════

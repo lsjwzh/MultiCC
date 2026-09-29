@@ -44,6 +44,15 @@ function assertFunction(value, name) {
   }
 }
 
+// Display copy for a turn's terminal outcome. These are labels, never switches:
+// every branch that acts on an outcome keys on the semantic status
+// (`succeeded` / `error`) that the finalize plan decides, so rewording a label
+// can never change behavior. Mirrors the badge copy in
+// public/status-presentation.js (`succeeded.airLabelKey`).
+const TURN_OUTCOME_LABELS = Object.freeze({
+  succeeded: '执行成功',
+});
+
 function completionVoiceMessage(shortCode, goal) {
   const code = String(shortCode || '').trim();
   const taskGoal = String(goal || '').trim();
@@ -1420,26 +1429,32 @@ function createClassifyStateMachine(rawDeps) {
     if (!persisted) return;
     const sessionId = persisted.id || sessionName;
     if (getUserInputSignalHost().pending(sessionName)) { setTaskState(sessionName, { lastTurnEndedAt: Date.now(), endedAt: Date.now() }); return; }
-    // Enrich bare "执行成功" with the stable task name so the dashboard / chat
-    // shows "执行成功：memo图片更换" instead of a dry "执行成功".
-    // Prefer the current turn's stored task name; fall back to the last
-    // session summary (from a prior intent_classify).
-    if (message === '执行成功') {
+    // Enrich a successful turn's summary with the closed-loop goal, so the
+    // dashboard / chat shows "执行成功：memo图片更换" instead of a dry "执行成功".
+    // The switch is `status` — the semantic turn outcome the finalize plan already
+    // decided — and never the message text: `message` is copy, so rewording it
+    // must not change behavior (it is only the label this summary is built from).
+    // Two real effects ride on this branch:
+    //   • the goal suffix (falling back to the last summary's subject when no goal
+    //     was ever extracted);
+    //   • marking the closed-loop task done, which is what makes ensureCurrentTask
+    //     start a fresh task next turn instead of continuing a finished one.
+    if (status === 'succeeded') {
       const cs = chatSessions.get(sessionName);
       // Prefer the closed-loop task goal (noun-phrase, model-generated); fall
       // back to the legacy currentTaskName, then to the last session summary.
       const goal = cs?.currentTask?.goal || cs?.currentTaskName || '';
-      // Mark the closed-loop task done so ensureCurrentTask starts a fresh task
-      // next turn (rather than continuing a finished one).
       if (cs?.currentTask) cs.currentTask.phase = 'done';
+      const label = String(message || '').trim() || TURN_OUTCOME_LABELS.succeeded;
       if (goal) {
-        message = `执行成功：${goal}`;
+        message = `${label}：${goal}`;
       } else {
         const sm = getSessionSummaries().get(sessionId);
         const raw = sm?.summary || '';
-        // Strip any status label prefix plus optional " · subAction" / " — subAction" suffix
-        const clean = raw.replace(/^(正在处理：|处理中：|执行成功：|任务完成：)/, '').replace(/\s*[·—]\s*.+$/, '').trim();
-        if (clean) message = `执行成功：${clean}`;
+        // Strip any status label prefix (historical copies included) plus an
+        // optional " · subAction" / " — subAction" suffix.
+        const clean = raw.replace(/^(正在处理：|处理中：|执行成功：|任务完成：|已完成：)/, '').replace(/\s*[·—]\s*.+$/, '').trim();
+        if (clean) message = `${label}：${clean}`;
       }
     }
 

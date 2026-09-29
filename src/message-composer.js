@@ -17,7 +17,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'} ContextLayerKind
+ * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'turn-plan'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'} ContextLayerKind
  */
 
 /**
@@ -25,7 +25,7 @@
  *
  * @typedef {Object} ContextLayer
  * @property {ContextLayerKind} kind  - discriminator (unique within an envelope)
- * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 20=gateway/dispatch-context, 30=cross-agent-notes
+ * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 18=turn-plan, 20=gateway/dispatch-context, 25=background-stopped, 30=cross-agent-notes
  * @property {string} text            - complete block INCLUDING its own trailing separator; concatenated with no extra separator
  */
 
@@ -186,7 +186,7 @@ function validateEnvelope(env) {
  * @param {string[]} [input.opts.disallowedTools=[]]
  * @param {Object} input.deps - injected dependencies (avoids a circular require of server.js):
  *   { resolveRolePrompt, multiccImgHint, buildSubagentProviderHint, buildCliHandoffPrompt, buildGatewayPrompt, buildDispatchContextPrompt,
- *     buildGoalLimitNote, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
+ *     buildGoalLimitNote, buildPlanPrompt?, pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast,
  *     chatBroadcast, normalizeEffort, cliEffortLevel, takeBackgroundStopNote? }
  * @returns {MessageEnvelope}
  */
@@ -244,6 +244,24 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
     if (typeof deps.buildCliHandoffPrompt === 'function') {
       const handoff = deps.buildCliHandoffPrompt(persisted);
       if (handoff) contextLayers.push({ kind: 'cli-handoff', order: 15, text: handoff });
+    }
+
+    // order 18: plan + progress reporting. Injected on EVERY chat turn (the
+    // caller supplies the builder; a host without one gets no layer), because it
+    // is the agent-side half of the goal/achievement contract the classify
+    // prompt reads back: state the decomposition, then state which steps
+    // actually landed and with what evidence.
+    //
+    // Deliberately NOT injected into:
+    //  • aux sessions — internal classification/attribution jobs whose output is
+    //    parsed, and whose prompt is not a conversation with the user;
+    //  • gateway sessions — the WeChat/voice router, whose reply is a
+    //    machine-parsed control block, not prose to a person.
+    // `bare` (continue/retry) already skips every layer, this one included.
+    if (typeof deps.buildPlanPrompt === 'function'
+      && persisted.type !== 'aux' && persisted.type !== 'gateway') {
+      const plan = deps.buildPlanPrompt(persisted, sessionName);
+      if (plan) contextLayers.push({ kind: 'turn-plan', order: 18, text: plan });
     }
 
     // order 20: gateway OR dispatch-context (mutually exclusive; today server.js:9055-9060).

@@ -180,7 +180,7 @@ const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLa
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
 const { installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
 const { recordAdapterUserInput, createUserInputSignalHost } = require('./src/classify/user-input-host');
-const { createHostPrompts } = require('./src/chat/host-prompts');
+const { createHostPrompts, buildPlanProgressPrompt } = require('./src/chat/host-prompts');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
 const { createDispatchProgressSubscription } = require('./src/dispatch/progress');
@@ -2619,6 +2619,10 @@ const chatTurnEngine = createChatTurnEngine({
   buildGatewayPrompt,
   buildDispatchContextPrompt,
   buildGoalLimitNote,
+  // Per-turn plan/progress layer (message-composer kind 'turn-plan'). Every
+  // chat turn carries it; aux and gateway sessions are excluded inside the
+  // composer, not here.
+  buildPlanPrompt: buildPlanProgressPrompt,
   appendChatMessage,
   loadChatHistory,
   viewChatHistory,
