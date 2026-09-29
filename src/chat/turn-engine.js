@@ -260,6 +260,7 @@ function createChatTurnEngine(deps) {
     buildGatewayPrompt,
     buildDispatchContextPrompt,
     buildGoalLimitNote,
+    buildPlanPrompt,
     appendChatMessage,
     loadChatHistory,
     // Read-only transcript view; see the WS replay below for why the cloning
@@ -1484,6 +1485,7 @@ function createChatTurnEngine(deps) {
           resolveRolePrompt: managed?.rolePrompt || folderMemory.resolveRolePrompt, multiccImgHint: MULTICC_IMG_HINT, buildSubagentProviderHint,
           buildCliHandoffPrompt: (session) => managed ? '' : renderHandoffPrompt(session && session.pendingCliHandoff),
           buildGatewayPrompt, buildDispatchContextPrompt, buildGoalLimitNote,
+          buildPlanPrompt,
           pendingNotesFor, saveNotes, appendEvent, workspaceBroadcast, chatBroadcast,
           normalizeEffort, cliEffortLevel,
           takeBackgroundStopNote: name => getBackgroundTaskRuntime()?.takeStoppedNote?.(name) || '',

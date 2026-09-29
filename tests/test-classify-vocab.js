@@ -130,6 +130,26 @@ test('buildClassifySystemPrompt embeds the prior goal and the full state vocabul
   assert.doesNotMatch(p0, /undefined/);
 });
 
+test('the classify prompt carries the goal-verifiability and achievement criteria', () => {
+  const p = buildClassifySystemPrompt('给目录卡片加 git 状态行');
+  // 第1行: a goal must be checkable, and must cover every parallel ask in the
+  // segment (the "只写最后一条" failure is what made goals unusable for
+  // judging achievement).
+  assert.match(p, /必须可验证/);
+  assert.match(p, /并列/);
+  assert.match(p, /能不能一眼判断做没做完/);
+  // 第2行: 「已完成」 is defined as goal-achieved and nothing else, with the
+  // "the turn just wrapped up" shortcuts named and rejected.
+  assert.match(p, /「已完成」= 目标达成/);
+  assert.match(p, /口头说/);
+  assert.match(p, /只是这一轮对话结束了/);
+  // The sub-state display reads `phase === 'done'`, so the prompt has to keep
+  // the phase verdict and the turn-outcome letter apart instead of letting one
+  // answer for the other (D + 非已完成 is a legitimate combination).
+  assert.match(p, /第3行与第2行各答各的/);
+  assert.match(p, /D \+ 非「已完成」是正常组合/);
+});
+
 test('CLASSIFY_DISPLAY is complete and self-consistent for every state', () => {
   for (const letter of ['D', 'C', 'W', 'B', 'E', 'P']) {
     const d = CLASSIFY_DISPLAY[letter];
@@ -412,4 +432,14 @@ test('optimistic completion cannot overwrite a pending structured question', () 
   const end = source.indexOf('// Turn-boundary hook', start);
   assert.match(source.slice(start, end),
     /if \(getUserInputSignalHost\(\)\.pending\(sessionName\)\).*setTaskState.*return;/);
+
+  // The outcome branch keys on the semantic status, never on the summary copy:
+  // a display string must not be a behavior switch (rewording it used to drop
+  // both the goal suffix and the `currentTask.phase = 'done'` write). The
+  // behavior itself is pinned end-to-end in tests/test-cancel-state-flow.js.
+  const body = source.slice(start, end).replace(/(^|[^:'"])\/\/[^\n]*/g, '$1');
+  assert.match(body, /if \(status === 'succeeded'\) \{/,
+    'the turn-outcome branch must key on status');
+  assert.doesNotMatch(body, /message\s*===\s*['"]/,
+    'the turn-outcome branch must not compare the message copy');
 });

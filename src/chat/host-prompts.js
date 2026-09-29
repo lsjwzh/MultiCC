@@ -48,6 +48,32 @@ function buildHumanAssistPrompt(assistRoot) {
   ];
 }
 
+// Plan + progress reporting, injected as a PER-TURN layer into every chat turn
+// (message-composer, kind 'turn-plan'). A per-turn layer rather than a
+// system-prompt block because it has to be re-read on every turn of a long
+// session, and it is deliberately absent from aux sessions (internal
+// classification/attribution jobs) and gateway sessions (whose model is a
+// router with machine-parsed output) — see the layer's gate in message-composer.
+//
+// Modelled on hierarchical-planning agents (eko-style generate → execute): split
+// the request into subtasks before acting, then report per-subtask achievement.
+// The transcript is the only evidence the status system has, so the reporting
+// half is what makes 「达成目标」 judgeable instead of a claim. Mirrors the
+// classify prompt's own criteria (src/classify/vocab.js): 已完成 == goal
+// achieved, never "the turn wrapped up".
+function buildPlanProgressPrompt() {
+  return [
+    '[Plan the work and report the outcome - every turn] The status system (the succeeded/waiting badge, the summary line, the task board, the notifications) reads THIS conversation and nothing else. Anything you do not say here is invisible to it, and a claim with no visible result behind it counts as unfinished. So:',
+    '  (1) Decompose before you act. For any request that takes more than one step, first give a short plan: 2-6 concrete steps, each with a verifiable outcome (a file changed, a command and what it printed, a behaviour you observed) rather than an activity ("analyse", "look into", "optimise"). Cover EVERY part of what was asked, including parallel asks buried in one sentence — a step missing from the plan is a step nobody will do.',
+    '  (2) Keep one plan, do not re-plan. Reuse the plan already in this conversation: tick steps off as they land, add steps the work turns up, and do not restate the whole plan every turn.',
+    '  (3) Before you end a turn in which the work moved, say where things stand — in the language of the conversation, as ordinary prose (no machine format, no markup, no English boilerplate inside a Chinese conversation). Name the steps that are done together with their evidence and how many of the plan\'s steps that is ("3/5 done: ..."), the steps still open, and who acts next: the user (a decision or a confirmation) or you (waiting on a job or a check).',
+    '  (4) Never present an unfinished step as complete. "Done" means every step has a verifiable result; if you did part of it and stopped, or you are handing it back to the user, say exactly that. An unfinished item reported as done is the one error the status system cannot undo.',
+    '  (5) A one-step or chat-only request needs no plan — just answer.',
+    // Each context layer carries its own trailing separator (renderPrompt joins
+    // with none), which is what keeps the block glued to the rest of the prompt.
+  ].join('\n') + '\n\n';
+}
+
 function createHostPrompts(env = process.env, { assistRoot } = {}) {
   const codexNoAskToolHint = env.CODEX_NO_ASK_TOOL_HINT ?? '1';
   const codexEnvConstraint = buildCodexUserInputConstraint(codexNoAskToolHint !== '0');
@@ -137,4 +163,9 @@ function createHostPrompts(env = process.env, { assistRoot } = {}) {
   };
 }
 
-module.exports = { createHostPrompts, buildSubagentProviderHint, buildHumanAssistPrompt };
+module.exports = {
+  createHostPrompts,
+  buildSubagentProviderHint,
+  buildHumanAssistPrompt,
+  buildPlanProgressPrompt,
+};

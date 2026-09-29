@@ -198,7 +198,10 @@ function harness(t, options = {}) {
       },
     }),
     getTaskBoardRuntime: () => taskBoard,
-    getUserInputSignalHost: () => ({ clear() {} }),
+    getUserInputSignalHost: () => ({
+      clear() {},
+      pending: () => options.pendingUserInput === true,
+    }),
     getApiErrorHost: () => ({}),
     getWaitInjector: () => ({ resetAuto() { record({ kind: 'wait_reset_auto' }); }, resetInterrupted() {} }),
     setTaskState: (sessionId, patch, opts) => {
@@ -206,7 +209,7 @@ function harness(t, options = {}) {
       return taskStateStore.setTaskState(sessionId, patch, opts);
     },
     getTaskState: taskStateStore.getTaskState,
-    setSessionSummary: () => {},
+    setSessionSummary: (sessionId, message) => record({ kind: 'session_summary', sessionId, message }),
     setSessionStatus: (sessionId, patch) => record({ kind: 'session_status', sessionId, patch }),
     chatBroadcast: (sessionId, payload) => record({ kind: 'chat_broadcast', sessionId, payload }),
     workspaceBroadcast: (dirId, payload) => record({ kind: 'workspace_broadcast', dirId, payload }),
@@ -758,4 +761,71 @@ test('manual question dismissal settles persisted waiting, task projection and r
   h.host.replayState('s1', message => replay.push(message));
   assert.equal(replay.some(e => e.type === 'user_input_required'), false);
   assert.equal(replay.some(e => e.type === 'user_input_resolved' && e.requestId === 'old'), true);
+});
+
+// ── Turn outcome: the switch is the semantic status, never the copy ────────
+//
+// emitTurnOutcome used to key its goal enrichment (and the `currentTask.phase =
+// 'done'` write that lets the next turn start a fresh task) on
+// `message === '执行成功'`. That made a display string a behavior switch: any
+// rewording of the copy — or a caller passing a differently-labelled summary —
+// would silently drop both effects. These tests pin the split: `status` decides
+// what happens, `message` only decides what the summary says.
+
+test('succeeded turn outcome enriches the summary with the goal whatever the copy', async t => {
+  const h = harness(t);
+  await h.startTurn();
+  h.chatState.currentTask = { goal: '重构取消链路', phase: 'implement' };
+
+  h.classify.emitTurnOutcome('s1', {
+    status: 'succeeded', notifyState: 'succeeded', message: '随便换个文案', alert: false,
+  });
+
+  // The real side effects are independent of the message text.
+  assert.equal(h.chatState.currentTask.phase, 'done',
+    'a succeeded turn must close the closed-loop task so the next turn starts fresh');
+  const summary = h.events.filter(e => e.kind === 'session_summary').at(-1);
+  assert.equal(summary?.message, '随便换个文案：重构取消链路',
+    'the summary keeps the goal suffix; only the label comes from the caller');
+});
+
+test('the standard succeeded label is used when the caller passes none', async t => {
+  const h = harness(t);
+  await h.startTurn();
+  h.chatState.currentTask = { goal: '重构取消链路', phase: 'implement' };
+
+  h.classify.emitTurnOutcome('s1', {
+    status: 'succeeded', notifyState: 'succeeded', message: '', alert: false,
+  });
+
+  const summary = h.events.filter(e => e.kind === 'session_summary').at(-1);
+  assert.equal(summary?.message, '执行成功：重构取消链路');
+});
+
+test('a non-succeeded turn outcome never touches the task or the summary copy', async t => {
+  const h = harness(t);
+  await h.startTurn();
+  h.chatState.currentTask = { goal: '重构取消链路', phase: 'implement' };
+
+  h.classify.emitTurnOutcome('s1', {
+    status: 'error', notifyState: 'error', message: '执行成功', alert: true,
+  });
+
+  assert.equal(h.chatState.currentTask.phase, 'implement',
+    'a failed turn must not close the task just because the copy says success');
+  const summary = h.events.filter(e => e.kind === 'session_summary').at(-1);
+  assert.equal(summary?.message, '执行成功', 'the raw copy is passed through unchanged');
+});
+
+test('a pending structured question suppresses the optimistic completion entirely', async t => {
+  const h = harness(t, { pendingUserInput: true });
+  await h.startTurn();
+  h.chatState.currentTask = { goal: '重构取消链路', phase: 'implement' };
+
+  h.classify.emitTurnOutcome('s1', {
+    status: 'succeeded', notifyState: 'succeeded', message: '执行成功', alert: false,
+  });
+
+  assert.equal(h.chatState.currentTask.phase, 'implement');
+  assert.equal(h.events.some(e => e.kind === 'session_summary'), false);
 });
