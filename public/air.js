@@ -47,13 +47,12 @@
     const requested = params.get('view');
     if (requested === 'directories') return 'library';
     if (requested === 'schedules') return 'schedules';
-    if (requested === 'overview') return 'tasks';
-    if (requested === 'activity') return 'tasks';
+    // 跨目录看任务只有这一个入口，所以 view=activity 和 view=overview 同义。
+    // view=overview 自己就是控制台那一页，走下面 adminModes 那条（它在这张集合里）。
+    if (requested === 'activity') return 'overview';
     if (adminModes.has(requested)) return requested;
     return 'tasks';
   };
-  // 跨目录看任务这件事现在只有这一个入口，所以 view=activity 和 view=overview 同义。
-  let consoleOpen = ['overview', 'activity'].includes(initialParams.get('view'));
   let paletteOpen = false;
   let paletteItems = [];
   let paletteSearch = null;
@@ -358,28 +357,6 @@
     await refreshEntry();
   }
 
-  // ── 控制台：从左侧展开的一层 ────────────────────────────────────────────
-  // 打开不改地址、不卸载任务；/manage 的旧 view=overview 入口在关闭时一并抹平。
-  function applyConsole(open) {
-    consoleOpen = !!open;
-    document.body.classList.toggle('console-open', consoleOpen);
-    $('overview').setAttribute('aria-expanded', String(consoleOpen));
-    $('console-panel').setAttribute('aria-hidden', String(!consoleOpen));
-    $('console-scrim').hidden = !consoleOpen;
-  }
-  function setConsole(open) {
-    if (consoleOpen === !!open) return;
-    const focusConsole = !!open;
-    applyConsole(open);
-    if (focusConsole) {
-      render();
-      $('console-close').focus();
-      return;
-    }
-    if (new URLSearchParams(location.search).get('view') === 'overview') history.replaceState({}, '', routeUrl());
-    $('overview').focus();
-  }
-
   // ── ⌘K：目录和任务一起搜 ────────────────────────────────────────────────
   // 找任务不该先要求你想起来它在哪个目录，也不该要求你记得标题里那几个字：
   // 有全文结果时任务按内容相关度排（服务端算，命中片段直接当副标题），没有时退回
@@ -443,9 +420,6 @@
   }
   function openPalette() {
     if (!data || paletteOpen) return;
-    // 用 setConsole 而不是 applyConsole：它顺手把地址里的 view=overview 撤掉，
-    // 否则面板被 ⌘K 顶掉之后，刷新页面又会自己弹回来。
-    if (consoleOpen) setConsole(false);
     paletteOpen = true;
     paletteIndex = 0;
     $('palette-input').value = '';
@@ -477,11 +451,10 @@
     if (taskId && nextMode === 'tasks') params.set('task', taskId);
     return '/air' + (params.size ? '?' + params : '');
   }
-  // 从控制台或命令面板里选走一个目标，就意味着那一层要让开；地址由这次
-  // 导航决定，浮层不往地址栏里写东西。
+  // 从命令面板里选走一个目标，就意味着那一层要让开；地址由这次导航决定，
+  // 浮层不往地址栏里写东西。
   function closeOverlays() {
     if (paletteOpen) closePalette();
-    if (consoleOpen) applyConsole(false);
     closeOptions();
   }
   // `remember:false` 是给侧栏点开那条路留的：那条路要让 MRU 晚一拍再上台（见
@@ -518,9 +491,6 @@
     void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
   }
   function setMode(next) {
-    // 控制台不再是一种页面模式：任何还写着 setMode('overview') 的入口都换成
-    // 展开这层面板，页面留在原处。
-    if (next === 'overview') { setConsole(true); return; }
     saveDraft();
     // 从 AI Assistant 设置页离开时重查配置：刚在那儿保存过的话，首启配置卡
     // 会在这次渲染里自己消失。
@@ -1489,6 +1459,8 @@
     } : selectedEntry;
     const selectedTask = headerEntry?.task || listedTask;
     const adminHeadings = {
+      // 控制台这一页自己：跨全部工作目录的任务总览。
+      overview: [t('airCrumbConsole'), t('airConsole'), t('airConsoleHint')],
       // 「谁在等我」完整清单（控制台只放最近几条）。
       attention: [t('airCrumbConsole'), t('airAdminAttention'), t('airAdminAttentionHint')],
       secrets: [t('airCrumbSettings'), t('airAdminPanelSecrets'), t('secretsVaultShortHint')],
@@ -1511,7 +1483,7 @@
     };
     // The card stays lit on the directory's own page; the library is ⌘K / 控制台.
     $('library').classList.toggle('active', mode === 'tasks' && !taskId);
-    $('overview').classList.toggle('active', consoleOpen);
+    $('overview').classList.toggle('active', mode === 'overview');
     $('schedules').classList.toggle('active', mode === 'schedules');
     document.querySelectorAll('[data-air-view]').forEach(button => button.classList.toggle('active', button.dataset.airView === mode));
     if (adminModes.has(mode)) {
@@ -1849,36 +1821,32 @@
     window.MultiCCAirWorktrees?.render({ data, directoryId, api, notice, refresh });
     window.MultiCCAirDirectoryNav?.render({ data, directoryId, api, notice, refresh, navigate });
     const adminMode = adminModes.has(mode);
-    $('task-sidebar').hidden = adminMode;
+    // 控制台是主区域里的一页（adminModes 的一员），但它这一页讲的就是任务本身，
+    // 所以侧栏那份「手上的任务」照旧留着 —— 目录首页有它，它也该有。
+    const consoleMode = mode === 'overview';
+    $('task-sidebar').hidden = adminMode && !consoleMode;
     $('directory-library').hidden = mode !== 'library';
-    $('admin-center').hidden = !adminMode;
+    // 每一页只有一块正文：控制台有自己那一块，就不该再让 #admin-center 也站着。
+    $('admin-center').hidden = !adminMode || consoleMode;
+    $('console-center').hidden = !consoleMode;
     $('schedule-center').hidden = mode !== 'schedules';
     $('task-layout').hidden = mode === 'library' || mode === 'schedules' || adminMode;
     // Page actions ride in the header (see air.html): one heading band per view.
     $('add-directory').hidden = mode !== 'library';
     $('schedule-create').hidden = mode !== 'schedules';
     $('admin-actions').hidden = !adminMode;
+    // 保险箱常驻在控制台那一页的工具栏上（见 air.html 的 #console-secrets）。
+    $('console-secrets').hidden = !consoleMode;
     if (adminMode) window.MultiCCAirAdmin?.render(mode, adminContext());
 
-    // 面板状态由 render 统一落到 DOM 上：直接打开 /air?view=overview（/manage
-    // 就落在这儿）时，状态是从地址里读出来的，没有谁调过 setConsole。
-    applyConsole(consoleOpen);
-
-    // 原来挂在「跨目录活动」上的那条常驻信号，现在挂在控制台入口上：不展开
-    // 面板也知道别的目录有事在等我。
+    // 原来挂在「跨目录活动」上的那条常驻信号，现在挂在控制台入口上：不进那一页
+    // 也知道别的目录有事在等我。
     const urgent = urgentTasks();
     $('console-badge').hidden = !urgent.length;
     $('console-badge').textContent = urgent.length ? String(urgent.length) : '';
 
     renderSidebarTasks();
     renderPins();
-
-    // 面板打开时才渲染它的内容：控制台不是页面，所以它不是「当前视图」。
-    if (consoleOpen) {
-      $('console-here').textContent = dir ? t('airConsoleHere', { name: dir.name }) : '';
-      $('console-close').textContent = taskId ? t('airBackToTask') : t('airCloseConsole');
-      window.MultiCCAirAdmin?.render('overview', adminContext());
-    }
 
     // #empty 就是「目录详情」这一页，它不再给谁让位：有对话时它是被浮层盖住的那一层，
     // 没对话时它就是页面上唯一的那一层。所以这里只管浮层开不开，不动 #empty —— 它
@@ -2607,8 +2575,8 @@
       if (entryChanged === null) failed = true;
       // 定时任务与控制台概览只在真的有新数据时重画，否则每 4 秒白建一遍 DOM。
       if (snapshot.unchanged && !entryChanged) return;
-      if (mode === 'schedules' || consoleOpen) await window.MultiCCAirSchedules?.refresh();
-      if (consoleOpen) window.MultiCCAirAdmin?.render('overview', adminContext());
+      if (mode === 'schedules' || mode === 'overview') await window.MultiCCAirSchedules?.refresh();
+      if (mode === 'overview') window.MultiCCAirAdmin?.render('overview', adminContext());
     } catch (error) { failed = true; notice(error.message); }
     finally { if (failed) pollFailures++; else pollFailures = 0; loading = false; }
   }
@@ -2620,8 +2588,9 @@
       // 中文词表只有一份（stateNames）：面板要说的状态词跟侧栏是同一批，
       // 传下去比在 air-admin.js 里再抄一份可靠。
       label,
-      openConsole: () => setConsole(true),
-      closeConsole: () => setConsole(false),
+      // 控制台从一层浮层变成了一页：进出都走 setMode，跟「定时任务」「工作目录库」
+      // 同一条路（地址、页头、正文可见性都由它一次落地）。
+      openConsole: () => setMode('overview'),
       // 「谁在等我」整页读的是外壳这份 /api/air 快照，刷新也只能由外壳去做 ——
       // 让它自己再打一个接口就等于给控制台造了第二份口径。
       refresh: () => refresh(),
@@ -2632,7 +2601,7 @@
   // The sidebar card is the current directory, so it opens that directory's own
   // task page — the full directory library stays on ⌘K and 控制台 › 浏览工作目录.
   $('library').onclick = () => (directoryId ? navigate(directoryId) : setMode('library'));
-  $('overview').onclick = () => setConsole(!consoleOpen);
+  $('overview').onclick = () => setMode('overview');
   $('directory-task-more').onclick = () => {
     directoryTasksExpanded = !directoryTasksExpanded;
     renderDirectoryOverview();
@@ -2671,8 +2640,6 @@
     try { localStorage.setItem('air:task-sort', JSON.stringify(directoryTaskSort)); } catch (_) {}
     renderDirectoryOverview();
   };
-  $('console-close').onclick = () => setConsole(false);
-  $('console-scrim').onclick = () => setConsole(false);
   $('palette-scrim').onclick = () => closePalette();
   $('palette-input').oninput = () => { paletteIndex = 0; renderPalette(); };
   // 全文结果晚一拍到：到了就重画一次（标题匹配的那版已经在屏幕上，不会有空白期）。
@@ -2894,8 +2861,9 @@
     }
     if (event.key === 'Escape') {
       // 一层一层地退：先收浮层，再收导航与详情。
+      // 控制台不在这条链上：它是一页，不是一层浮层 —— 离开它走侧栏（或 ⌘K），
+      // 和离开「定时任务」「工作目录库」是同一个动作。
       if (paletteOpen) { closePalette(); return; }
-      if (consoleOpen) { setConsole(false); return; }
       if ($('task-header').classList.contains('options-open')) { closeOptions(); return; }
       if (document.querySelector('#task-pins .pin-tab.is-open')) { closePinPanels(); return; }
       // 对话浮层也在这条链上，而且是最后让位的那一层：展开态先收回默认（页头回来），
@@ -2918,10 +2886,9 @@
     entry = null;
     closeDetails();
     closePalette();
-    applyConsole(['overview', 'activity'].includes(params.get('view')));
     render();
     void window.MultiCCAirTaskEntry?.open({ taskId, api, notice });
-    if (mode === 'schedules' || consoleOpen) void window.MultiCCAirSchedules?.refresh().then(render);
+    if (mode === 'schedules' || mode === 'overview') void window.MultiCCAirSchedules?.refresh().then(render);
   });
   window.addEventListener('pagehide', () => { saveDraft(); stopped = true; epoch++; clearTimeout(timer); });
   window.addEventListener('pageshow', event => {

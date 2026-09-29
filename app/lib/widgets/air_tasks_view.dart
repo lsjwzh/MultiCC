@@ -1096,8 +1096,8 @@ class _AirTasksViewState extends State<AirTasksView>
     if (created == true) await _refresh();
   }
 
-  /// 控制台。Web 那边它是盖在当前页面上的一层浮层，手机上并排放不下，所以做成
-  /// 一条独立页面；分区的顺序和每张卡上的数字照搬（见 [AirConsoleScreen]）。
+  /// 控制台。Web 那边它是主区域里的一页正文（跟目录首页同级），手机上并排放不下，
+  /// 所以做成一条独立页面；分区的顺序和每张卡上的数字照搬（见 [AirConsoleScreen]）。
   ///
   /// 从控制台里点走一条任务、切一个目录、进一个设置页时，先把这一页收掉 ——
   /// 否则它盖住的正是刚落到下面的那一处。

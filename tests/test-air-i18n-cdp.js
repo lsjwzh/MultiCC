@@ -252,7 +252,9 @@ test('the Air shell renders English end to end and the sidebar toggle persists t
         one('#palette-note', 'airPaletteSearchHint'),
         one('#schedule-dialog-title', 'airNewScheduledTask'),
         one('#schedule-save', 'airScheduleCreateAndBind'),
-        one('#console-close', 'airBackToTask'),
+        // 控制台从前那颗「返回任务」的关闭按钮没了（它是一页，退路是地址和侧栏），
+        // 这个 key 现在只剩 More 抽屉左上角那一颗在用。
+        one('#more-close', 'airBackToTask'),
         // 目录首页顶部那道 Chat / Terminal 切换（air-directory-mode.js）：Chat /
         // Terminal 两个词本身中英同形（不在这条 notEqual 断言里），但终端那一块的
         // 文案是翻出来的 —— 连同空态一起钉住（fixture 的 sessions 是空的）。

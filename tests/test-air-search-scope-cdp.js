@@ -112,7 +112,7 @@ test('the task search box finds conversation-only hits, and the scope switch nar
 
     // 控制台那份搜索共用同一套口径：它没有摆开关的位置，就固定按最宽的那档来。
     await page.evaluate(`document.getElementById('overview').click()`);
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`));
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`));
     assert.equal(await page.evaluate(`document.getElementById('console-task-scope')?.value`), 'full');
   });
 });

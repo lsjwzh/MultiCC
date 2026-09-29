@@ -111,7 +111,9 @@
   };
   function open() {
     if (panel.open) return;
-    if (document.body.classList.contains('console-open')) document.getElementById('console-close').click();
+    // 这里从前要先收掉控制台：它是盖住页面的浮层，抽屉会跟它叠在一起。控制台现在
+    // 是主区域里的一页（跟目录首页一样），而这抽屉是 top layer 上的模态框，开在
+    // 哪一页上面都成立，不必再把谁踢走。
     document.getElementById('nav-scrim').click();
     status.textContent = '';
     // 先摆好再 showModal：开着的时候宽度在过渡，第二列如果这时才出现，用户看到

@@ -116,7 +116,7 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
 
     // ── ① 从控制台的工具格进去：原生面板，不嵌旧 manage 页 ──────────────────
     await page.navigate('/air?dir=d1&view=overview');
-    assert.ok(await page.waitFor(`document.body.classList.contains('console-open')`), '控制台打开');
+    assert.ok(await page.waitFor(`document.getElementById('console-center').hidden===false`), '控制台那一页打开');
     const T = {
       memory: await label('airAdminPanelMemory'),
       backToConsole: await label('airAdminBackToConsole'),
@@ -149,7 +149,7 @@ test('the Air memory panel is native: graph from /api/memory/graph, lazy tree, r
     assert.equal(page.requests.some(r => r.path === '/manage.html'), false, 'iframe 的 src 会真的发出去 —— 没这条请求才算真没嵌');
     assert.deepEqual(await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].map(b => b.textContent.replace(/\\s+/g,''))`),
       ['←' + T.backToConsole, '↻' + T.refresh], '工具条是面板自己的（返回控制台 / 刷新），不是旧页面的');
-    assert.equal(await page.evaluate(`document.body.classList.contains('console-open')`), false, '进整页时控制台让开');
+    assert.equal(await page.evaluate(`document.getElementById('console-center').hidden`), true, '换页时控制台那一页让开');
     assert.equal(await text('.air-memory-title span'), T.title, '标题沿用旧页那个 key');
     assert.equal(await text('#mem-tabs .mtab.active'), '🕸 ' + T.tabGraph, '默认落在图谱 tab');
     assert.equal(await text('#mem-tabs .mtab[data-memtab="tree"]'), '🌳 ' + T.tabTree);
