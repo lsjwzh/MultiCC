@@ -5,6 +5,10 @@
 // every server start compares the installed agent with the shipped source and
 // runs the installer in the background when they differ.
 //
+// "Differs" includes an agent that is installed but unusable — a binary without
+// its executable bit, or a missing client symlink — so a half-install repairs
+// itself at the next start instead of failing every request forever.
+//
 // Cheap when nothing changed (a stat and one SHA-256 of a ~60 KB file); the
 // installer itself restarts the agent, so it runs only when needed. It never
 // blocks startup and never throws. The one thing it cannot do is grant the
@@ -36,12 +40,15 @@ function createMacosAgentProvisioner(deps = {}) {
   const bin = path.join(app, 'Contents', 'MacOS', 'MultiCCAgent');
   const stamp = path.join(app, 'Contents', 'Resources', 'source.sha256');
   const plist = env.MULTICC_AGENT_PLIST || path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);
+  const link = env.MULTICC_AGENT_LINK || path.join(home, '.multicc', 'bin', 'multicc-agent');
   const agentDir = env.MULTICC_AGENT_DIR || path.join(home, '.multicc', 'agent');
+  const X_OK = (fs.constants && fs.constants.X_OK) || 1;
 
   let inFlight = null;
   let last = null;
 
   const exists = p => { try { fs.accessSync(p); return true; } catch (_) { return false; } };
+  const isExec = p => { try { fs.accessSync(p, X_OK); return true; } catch (_) { return false; } };
   const readTrim = p => { try { return fs.readFileSync(p, 'utf8').trim(); } catch (_) { return ''; } };
 
   // { action: 'skip' | 'install' | 'update', reason }
@@ -51,6 +58,13 @@ function createMacosAgentProvisioner(deps = {}) {
     if (!exists(script) || !exists(source)) return { action: 'skip', reason: 'installer-not-shipped' };
     if (exists(path.join(agentDir, 'auto-install-disabled'))) return { action: 'skip', reason: 'uninstalled-by-user' };
     if (!exists(bin)) return { action: 'install', reason: 'not-installed' };
+    // Installed but unrunnable: what a copy that lost its executable bit leaves
+    // behind (see install-agent.sh). The stamps all match, launchd cannot start
+    // it, and every request fails — so repair it instead of reporting "current".
+    if (!isExec(bin)) return { action: 'install', reason: 'not-executable' };
+    // The client symlink is what the probe and mcu.sh call; a missing one is the
+    // same kind of half-install.
+    if (!isExec(link)) return { action: 'install', reason: 'client-link-missing' };
     const sum = crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex');
     if (readTrim(stamp) !== sum) return { action: 'update', reason: 'source-changed' };
     if (!exists(plist)) return { action: 'update', reason: 'launch-agent-missing' };
@@ -75,6 +89,22 @@ function createMacosAgentProvisioner(deps = {}) {
     });
   }
 
+  // The agent is a LaunchAgent: launchctl returned, but the process may still be
+  // failing to start. Ask it, so a half-install shows up in the log now instead
+  // of much later as "automatic unlock is not ready".
+  async function waitReady(attempts = 3) {
+    for (let i = 0; i < attempts; i += 1) {
+      if (i) await new Promise(resolve => setTimeout(resolve, 500));
+      const ping = await run(bin, ['ping']);
+      if (ping.code === 0) return { ready: true };
+      if (i === attempts - 1) {
+        const tail = ping.output.trim().split('\n').filter(Boolean).pop() || `exit ${ping.code}`;
+        return { ready: false, error: tail.slice(0, 200) };
+      }
+    }
+    return { ready: false };
+  }
+
   async function provision() {
     let decided;
     try {
@@ -97,7 +127,9 @@ function createMacosAgentProvisioner(deps = {}) {
       const asked = await run(bin, ['request-permissions']);
       if (asked.code !== 0) logger.warn(`[multicc-agent] permission request failed: ${asked.output.trim().slice(-200)}`);
     }
-    return { ...decided, ok: true };
+    const ready = await waitReady();
+    if (!ready.ready) logger.warn(`[multicc-agent] installed but not answering yet: ${ready.error || 'no reply'}`);
+    return { ...decided, ok: true, ...ready };
   }
 
   // Single-flight; resolves with the outcome, never rejects.

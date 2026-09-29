@@ -78,6 +78,10 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
+### Improvements and fixes
+
+- **A half-installed macOS Agent now repairs itself** — the installer staged the prebuilt agent through `mktemp` (0600) and `cp`, which keeps an existing destination's mode, so a machine that used the packaged binary got the agent installed *without its executable bit*: launchd could never start it, every request failed, and automatic unlock reported "check access" no matter how often the user clicked. Installing now sets the mode explicitly and accepts a prebuilt whose mode was lost in transit (instead of falling back to a local build that needs the Xcode command line tools), the startup provisioning step treats a non-executable binary or a missing client symlink as "install it again" rather than "up to date", and after installing it pings the agent and warns when it is not answering. The unlock probe now separates "no executable bit" / "not installed" / "agent too old" from a plain failed check, so the panel says to restart MultiCC — which repairs it — instead of offering a button that cannot help.
+
 ## v2.1.0 — Smarter routing, full-history search, and one unified Air console (2026-09-25)
 
 ### Highlights

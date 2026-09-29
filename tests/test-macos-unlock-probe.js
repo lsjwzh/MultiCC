@@ -49,6 +49,14 @@ test('unlock probe degrades to unavailable instead of failing the save', async (
     { state: 'unavailable', detail: 'agent-not-running' });
   // 二进制不在 / 被超时杀掉
   assert.deepEqual(await harness(new Error('ENOENT')).make().probe(), { state: 'unavailable', detail: 'agent-error' });
+  // 带 errno 的要分清楚：界面照 detail 说话，「没执行权限」和「没装」都不是再点一次
+  // 「检查授权」能解决的（现场就是安装时丢了 0755），要指向「重启 MultiCC 自修」。
+  const eacces = Object.assign(new Error('spawn EACCES'), { code: 'EACCES' });
+  assert.deepEqual(await harness(eacces).make().probe(), { state: 'unavailable', detail: 'agent-not-executable' });
+  const enoent = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+  assert.deepEqual(await harness(enoent).make().probe(), { state: 'unavailable', detail: 'agent-not-installed' });
+  const timeout = Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM' });
+  assert.deepEqual(await harness(timeout).make().probe(), { state: 'unavailable', detail: 'agent-error' });
   assert.deepEqual(await harness('not json at all').make().probe(), { state: 'unavailable', detail: 'bad-reply' });
 
   // 非 macOS 上连 spawn 都不该发生

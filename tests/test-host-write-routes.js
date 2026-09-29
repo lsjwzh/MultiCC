@@ -697,6 +697,7 @@ test('power route releases off intent and presents expected failures without lea
 
 test('lid and unlock switches preserve independent consent and reject incomplete setup', async () => {
   let current = false, requested = false, set = true, authorized = true;
+  let probeReply = null;
   let writes = 0, clears = 0;
   const { routes } = createHarness({
     macosPower: {
@@ -706,7 +707,7 @@ test('lid and unlock switches preserve independent consent and reject incomplete
     },
     powerPreferences: { read: () => requested, write: value => { requested = value; } },
     unlockPassword: { isAvailable: () => true, hasPassword: async () => set, clearPassword: async () => { clears++; } },
-    unlockProbe: { probe: async () => ({ state: authorized ? 'authorized' : 'waiting-for-user' }), runtimeReady: async () => true },
+    unlockProbe: { probe: async () => probeReply || { state: authorized ? 'authorized' : 'waiting-for-user' }, runtimeReady: async () => true },
   });
   const change = (path, enabled) => invoke(routes, '/api/settings/power' + path, { local: true, body: { enabled } });
   set = false;
@@ -715,6 +716,18 @@ test('lid and unlock switches preserve independent consent and reject incomplete
   set = true; authorized = false;
   assert.equal((await change('', true)).statusCode, 409);
   assert.equal(writes, 0);
+  // Agent 自己坏了（丢执行位 / 没装 / 版本老）：回话要指向「重启 MultiCC 自修」，
+  // 而不是让人去点那个怎么点都不会好的「检查授权」。
+  probeReply = { state: 'unavailable', detail: 'agent-not-executable' };
+  const brokenAgent = await change('', true);
+  assert.equal(brokenAgent.statusCode, 409);
+  assert.match(brokenAgent.body.error, /重启 MultiCC/);
+  assert.doesNotMatch(brokenAgent.body.error, /检查授权/);
+  assert.equal(brokenAgent.body.authorization.detail, 'agent-not-executable');
+  // 只是这次没等到确认的，仍然给原来的指引。
+  probeReply = { state: 'unavailable' };
+  assert.match((await change('', true)).body.error, /检查授权/);
+  probeReply = null;
   authorized = true;
   assert.equal((await change('', true)).body.unlockPassword.enabled, true);
   assert.equal(requested, false, 'lid mode does not overwrite independent choice');

@@ -185,17 +185,22 @@ function provisionFixture() {
     MULTICC_AGENT_APP: path.join(tmp, 'MultiCC Agent.app'),
     MULTICC_AGENT_PLIST: path.join(tmp, 'agent.plist'),
     MULTICC_AGENT_DIR: path.join(tmp, 'agent'),
+    MULTICC_AGENT_LINK: path.join(tmp, 'bin', 'multicc-agent'),
   };
+  const bin = path.join(env.MULTICC_AGENT_APP, 'Contents', 'MacOS', 'MultiCCAgent');
   const installed = (source) => {
     const res = path.join(env.MULTICC_AGENT_APP, 'Contents', 'Resources');
     fs.mkdirSync(path.join(env.MULTICC_AGENT_APP, 'Contents', 'MacOS'), { recursive: true });
     fs.mkdirSync(res, { recursive: true });
-    fs.writeFileSync(path.join(env.MULTICC_AGENT_APP, 'Contents', 'MacOS', 'MultiCCAgent'), '');
+    fs.writeFileSync(bin, '');
+    fs.chmodSync(bin, 0o755);
+    fs.mkdirSync(path.dirname(env.MULTICC_AGENT_LINK), { recursive: true });
+    try { fs.symlinkSync(bin, env.MULTICC_AGENT_LINK); } catch (_) { /* already linked */ }
     fs.writeFileSync(path.join(res, 'source.sha256'), `${crypto.createHash('sha256').update(source).digest('hex')}\n`);
     fs.writeFileSync(env.MULTICC_AGENT_PLIST, '');
   };
   const calls = [];
-  const exits = { install: 0, 'request-permissions': 0 };
+  const exits = { install: 0, 'request-permissions': 0, ping: 0 };
   const spawnFake = (file, args) => {
     const sub = args[args.length - 1];
     calls.push([path.basename(file), sub]);
@@ -221,6 +226,14 @@ test('agent provisioning: decides install / update / skip from what is on disk',
   assert.deepEqual(f.make().plan(), { action: 'install', reason: 'not-installed' });
   f.installed('// v1\n');
   assert.deepEqual(f.make().plan(), { action: 'skip', reason: 'up-to-date' });
+  // 装上了但跑不起来（预编译二进制丢过 0755：mktemp 建 0600、cp 保留目标权限）：
+  // 时间戳与哈希都对得上，只有执行位能揭穿它，所以必须由这里判成「要修」。
+  fs.chmodSync(path.join(f.env.MULTICC_AGENT_APP, 'Contents', 'MacOS', 'MultiCCAgent'), 0o644);
+  assert.deepEqual(f.make().plan(), { action: 'install', reason: 'not-executable' });
+  f.installed('// v1\n');
+  fs.rmSync(f.env.MULTICC_AGENT_LINK);
+  assert.deepEqual(f.make().plan(), { action: 'install', reason: 'client-link-missing' });
+  f.installed('// v1\n');
   fs.writeFileSync(path.join(f.root, 'scripts', 'macos-agent', 'MultiCCAgent.swift'), '// v2\n');
   assert.deepEqual(f.make().plan(), { action: 'update', reason: 'source-changed' });
   f.installed('// v2\n');
@@ -239,14 +252,24 @@ test('agent provisioning: runs the installer in the background, asks for grants 
   assert.equal(a, b, 'single-flight');
   const first = await a;
   assert.equal(first.ok, true);
-  assert.deepEqual(f.calls, [['sh', 'install'], ['MultiCCAgent', 'request-permissions']]);
+  assert.deepEqual(f.calls, [['sh', 'install'], ['MultiCCAgent', 'request-permissions'], ['MultiCCAgent', 'ping']]);
+  assert.equal(first.ready, true, 'a half-install must be visible here, not only as "unlock is not ready" later');
 
   f.calls.length = 0;
   f.installed('// v1\n');
   fs.writeFileSync(path.join(f.root, 'scripts', 'macos-agent', 'MultiCCAgent.swift'), '// v2\n');
   const update = await f.make().ensure();
   assert.equal(update.action, 'update');
-  assert.deepEqual(f.calls, [['sh', 'install']], 'an update keeps the existing grants: no prompts');
+  assert.deepEqual(f.calls, [['sh', 'install'], ['MultiCCAgent', 'ping']], 'an update keeps the existing grants: no prompts');
+
+  // 装完 launchd 说成功、进程却起不来（旧版丢执行位的现场）：如实报出来，别当成装好了。
+  f.calls.length = 0;
+  f.exits.ping = 3;
+  const silent = await f.make().ensure();
+  assert.equal(silent.ok, true);
+  assert.equal(silent.ready, false);
+  assert.ok(f.logs.some((l) => l.startsWith('WARN') && l.includes('not answering')));
+  f.exits.ping = 0;
 
   f.calls.length = 0;
   f.exits.install = 3;
@@ -281,10 +304,22 @@ test('agent provisioning: packages ship the installer, and the installer prefers
     MULTICC_AGENT_SIGN_IDENTITY: '-',
     MULTICC_AGENT_POWER_DISABLED: '1',
   };
+  const bin = path.join(env.MULTICC_AGENT_APP, 'Contents', 'MacOS', 'MultiCCAgent');
   const out = execFileSync('/bin/sh', [INSTALLER, 'install'], { env, encoding: 'utf8' });
   assert.match(out, /using prebuilt binary/);
+  // 复制路径会经 mktemp（0600），cp 又保留目标权限：装完必须显式 0755，否则 launchd
+  // 根本起不来，而界面上看是「已安装」。
+  assert.equal(fs.statSync(bin).mode & 0o777, 0o755, 'the copied binary must be executable');
   assert.equal(fs.readFileSync(path.join(env.MULTICC_AGENT_APP, 'Contents', 'Resources', 'source.sha256'), 'utf8').trim(),
     fs.readFileSync(path.join(prebuilt, 'source.sha256'), 'utf8').trim());
+
+  // 包在路上丢了执行位（zip 不带 unix 模式）也要能用预编译那份，而不是退回本地编译
+  // ——用户机器上通常没有 Xcode 命令行工具，那条路只会失败。
+  fs.rmSync(env.MULTICC_AGENT_APP, { recursive: true, force: true });
+  fs.chmodSync(path.join(prebuilt, 'MultiCCAgent'), 0o644);
+  const restored = execFileSync('/bin/sh', [INSTALLER, 'install'], { env, encoding: 'utf8' });
+  assert.match(restored, /using prebuilt binary/);
+  assert.equal(fs.statSync(bin).mode & 0o777, 0o755);
 
   // uninstall stops auto-install until the next manual install
   execFileSync('/bin/sh', [INSTALLER, 'uninstall'], { env });
