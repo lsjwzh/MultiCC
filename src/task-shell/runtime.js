@@ -1,4 +1,5 @@
 'use strict';
+const { MAX_TASKS_PER_DIRECTORY, directoryAtCapacity } = require('./capacity');
 
 const { randomUUID } = require('node:crypto');
 const {
@@ -334,8 +335,8 @@ function createTaskShellRuntime(ports) {
       if (indexedSession && indexedSession.dirId !== s.dirId) throw failure('project_mismatch', 'Tasks must belong to the same project', 403);
       const title = String(indexed?.title || identity.taskText || identity.title || id).trim().slice(0, 120) || id;
       if (!task) {
-        if (store.list('task').filter(value => value.dirId === s.dirId).length >= 200) {
-          throw failure('task_shell_task_limit', 'Task limit reached (200 tasks/project)', 429);
+        if (directoryAtCapacity(store, s.dirId)) {
+          throw failure('task_shell_task_limit', `Task limit reached (${MAX_TASKS_PER_DIRECTORY} tasks/project)`, 429);
         }
         const sessionId = indexedSession?.kind === 'chat' ? indexedSession.id : `task-${id.replace(/^tsk_/, '')}`;
         const owned = owns(sessionId);
@@ -486,7 +487,7 @@ function createTaskShellRuntime(ports) {
       if (target && payload.intent === 'work' && references.length) throw failure('context_requires_new_task', 'Start a new task to import versioned context');
       let task = target;
       if (!task) {
-        if (store.list('task').filter(t => t.dirId === s.dirId).length >= 200) throw failure('task_shell_task_limit', 'Task limit reached (200 tasks/project)', 429);
+        if (directoryAtCapacity(store, s.dirId)) throw failure('task_shell_task_limit', `Task limit reached (${MAX_TASKS_PER_DIRECTORY} tasks/project)`, 429);
         const snapshotIds = [];
         for (const value of contexts.values()) { store.set('snapshot', value.hash, value); snapshotIds.push(value.hash); }
         const id = `tsk_${randomUUID().replace(/-/g, '')}`;
