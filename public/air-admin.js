@@ -170,10 +170,16 @@
     else element.style.setProperty('--ring-tint', ringTint(seed));
   }
 
-  /** 状态徽标：图标 + 中文标签，可访问名称与可见文案是同一句话。 */
+  /** 状态徽标：图标 + 中文标签，可访问名称与可见文案是同一句话。
+   *
+   *  ✅ 那一格整张卡共用，但词可能更细一点：服务端判定 D 时会随判定一起落下
+   *  「达成目标 / 需要交互」（`task.goalState`，没有目标就没有这个值），于是同一枚
+   *  对勾下写着三个不同的说法。图标、色调、优先级都不动 —— 细分只发生在文案上，
+   *  而词表只有一份（status-presentation.js 的 succeededSubLabel）。 */
   function statusBadge(task, opts = {}) {
     const spec = taskSpec(task);
-    const label = STATUS_COPY[spec.status] || spec.status;
+    const label = registry()?.succeededSubLabel?.(spec.status, task?.goalState, t)
+      || STATUS_COPY[spec.status] || spec.status;
     const badge = make('span');
     const api = registry();
     if (api) {
@@ -227,8 +233,11 @@
     const held = resource.capacityReason ? context.label(resource.capacityReason)
       : resource.lease && resource.lease !== 'idle' ? context.label(resource.lease)
         : context.label(resource.residency);
-    // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
-    const badgeText = context.label(taskStatus(task));
+    // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。徽标在
+    // ✅ 上换过词时（达成目标 / 需要交互）这里也得跟着换，否则同一行会同时印
+    // 「达成目标」和「执行成功」两个词说同一件事。
+    const badgeText = registry()?.succeededSubLabel?.(taskStatus(task), task?.goalState, t)
+      || context.label(taskStatus(task));
     if (held && held !== stage && !badgeText.includes(held)) bits.push(held);
     return bits.join(' · ');
   }

@@ -478,6 +478,8 @@ test('every label and aria key exists in both zh and en', () => {
     keys.add(spec.ariaKey);
     keys.add(spec.airLabelKey);
   }
+  // ✅ 的子状态印在同一枚徽标上，缺一条就会把 statusGoalAchieved 这种裸键印出去。
+  for (const key of Object.values(SP.GOAL_STATE_LABEL_KEYS)) keys.add(key);
   for (const key of keys) {
     const occurrences = catalog.split(`"${key}"`).length - 1;
     assert.ok(occurrences >= 2, `${key} must be defined in both zh and en (found ${occurrences})`);
@@ -505,6 +507,42 @@ test('zh and en both define the status keys in the source catalogs', () => {
       }
     }
   }
+  // 子状态换的是同一枚徽标上的同一个词，长度门槛跟 Air 词一样。
+  for (const key of Object.values(SP.GOAL_STATE_LABEL_KEYS)) {
+    assert.ok(zh[key] && zh[key] !== key, `zh.json missing ${key}`);
+    assert.ok(en[key] && en[key] !== key, `en.json missing ${key}`);
+    assert.ok(zh[key].length <= 8, `zh 子状态词 ${key} too long for a badge: ${zh[key]}`);
+    assert.ok(en[key].length <= 24, `en 子状态词 ${key} too long for a badge: ${en[key]}`);
+  }
+});
+
+// ── 7b. ✅ 的子状态：只有 succeeded 会换词，换不到就落回粗的那个词 ─────────────
+
+test('succeededSubLabel only refines ✅, and never invents a word', () => {
+  const dict = { statusGoalAchieved: '达成目标', statusGoalInteract: '需要交互' };
+  const t = (key) => dict[key] || key;
+  assert.deepEqual(SP.GOAL_STATE_LABEL_KEYS, { achieved: 'statusGoalAchieved', interact: 'statusGoalInteract' });
+  assert.equal(SP.succeededSubLabel('succeeded', 'achieved', t), '达成目标');
+  assert.equal(SP.succeededSubLabel('succeeded', 'interact', t), '需要交互');
+  // 服务端历史值 / 别名折成 succeeded 之后同样换词（completed 是 turn outcome 的老写法）
+  assert.equal(SP.succeededSubLabel('completed', 'achieved', t), '达成目标');
+  // 大小写与空白不算第二个值：这是个展示用词表，宽容一点读没坏处。
+  assert.equal(SP.succeededSubLabel('succeeded', ' Achieved ', t), '达成目标');
+  // 没有子状态、或者子状态不是这两个之一：返回空串，调用方 || 落回注册表的词
+  assert.equal(SP.succeededSubLabel('succeeded', null, t), '');
+  assert.equal(SP.succeededSubLabel('succeeded', 'done', t), '');
+  assert.equal(SP.succeededSubLabel('succeeded', 'succeeded', t), '');
+  assert.equal(SP.succeededSubLabel('succeeded', '', t), '');
+  // 子状态只挂在 ✅ 上 —— 其余状态的卡片写的是它们自己的词，一个字都不换
+  for (const status of ['idle', 'queued', 'running', 'waiting', 'background',
+    'blocked', 'error', 'done', 'cancelled', 'archived', 'offline', 'unknown', 'failed']) {
+    assert.equal(SP.succeededSubLabel(status, 'achieved', t), '',
+      `${status} 不该借用 ✅ 的子状态词`);
+  }
+  // 词典缺键（旧服务端 / 生成物没跟上）时绝不能把裸键印到徽标上
+  assert.equal(SP.succeededSubLabel('succeeded', 'achieved', (key) => key), '');
+  assert.equal(SP.succeededSubLabel('succeeded', 'achieved'), '');
+  assert.equal(SP.succeededSubLabel(null, 'achieved', t), '');
 });
 
 // ── 8. Web ↔ Flutter parity ─────────────────────────────────────────────────
@@ -553,6 +591,18 @@ function parseDart() {
   assert.ok(ringBlock, 'dart ringTints not found');
   const ringTints = [...ringBlock[1].matchAll(/0xFF([0-9A-Fa-f]{6})/g)]
     .map(m => `#${m[1].toLowerCase()}`);
+  // ✅ 的子状态词表：两端必须逐键一致，否则同一条任务在 Web 说「达成目标」、在
+  // App 说「需要交互」。
+  const goalBlock = /const Map<String, String> goalStateLabelKeys = \{([\s\S]*?)\n\};/.exec(src);
+  assert.ok(goalBlock, 'dart goalStateLabelKeys not found');
+  const goalStateLabelKeys = {};
+  for (const m of goalBlock[1].matchAll(/'([^']+)': '([^']+)',/g)) goalStateLabelKeys[m[1]] = m[2];
+  // 取词入口本身也要在：Dart 没有 JS 的导出清单，缺了只能靠这行。
+  assert.match(
+    src,
+    /String succeededSubLabel\(Object\? status, Object\? goalState\)/,
+    'dart succeededSubLabel not found',
+  );
   return {
     specs,
     aliases: mapOf('statusAliases'),
@@ -562,6 +612,7 @@ function parseDart() {
     taskStatuses: setOf('taskStatuses'),
     openRunStates: setOf('openRunStates'),
     ringTints,
+    goalStateLabelKeys,
   };
 }
 
@@ -572,6 +623,8 @@ test('Flutter mirrors the web registry exactly', () => {
   assert.deepEqual(dart.taskStatuses, [...SP.TASK_STATUSES], 'task vocabulary drifted');
   assert.deepEqual(Object.keys(dart.specs).sort(), Object.keys(SP.STATUS_PRESENTATION).sort());
   assert.deepEqual(dart.ringTints, [...SP.RING_TINTS], '运行标记的调色板两端漂移了');
+  assert.deepEqual(dart.goalStateLabelKeys, SP.GOAL_STATE_LABEL_KEYS,
+    '✅ 子状态词表两端漂移了（Web 的 GOAL_STATE_LABEL_KEYS vs Dart 的 goalStateLabelKeys）');
 
   for (const [name, web] of Object.entries(SP.STATUS_PRESENTATION)) {
     assert.deepEqual(dart.specs[name], {

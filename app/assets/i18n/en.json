@@ -942,6 +942,8 @@
   "statusBlocked": "Blocked",
   "statusError": "Error",
   "statusSucceeded": "Succeeded",
+  "statusGoalAchieved": "Goal achieved",
+  "statusGoalInteract": "Needs input",
   "statusDone": "Completed",
   "statusCancelled": "Cancelled",
   "statusArchived": "Archived",

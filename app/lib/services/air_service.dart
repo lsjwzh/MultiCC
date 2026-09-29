@@ -416,6 +416,7 @@ class AirTask {
     this.sessionId,
     this.sourceSessionId,
     this.runState,
+    this.goalState,
     this.resource = const {},
     this.worktreeChanges,
   });
@@ -441,6 +442,13 @@ class AirTask {
   /// 这一轮的运行状态，由队列事件折出来（服务端 `task-board/normalize.js` 的
   /// TASK_RUN_STATES）。客户端只读它，不从 [status] 猜。
   final String? runState;
+
+  /// 「执行成功」的子状态：`achieved`（达成目标）/ `interact`（需要交互），其余
+  /// 时刻为 null —— 也就是 ✅ 那一格该说哪三个词里的哪一个。只影响展示文案，
+  /// 取值由服务端 classify 在判定 D 时算好（`src/classify/vocab.js`
+  /// goalStateForClassify），客户端不回推。[runState] 不是 succeeded 时它必为
+  /// null。
+  final String? goalState;
   final Map<String, dynamic> resource;
 
   /// 外层卡片的待交付提示。服务端从 merge-state 缓存投影；null 表示尚未取到，
@@ -463,6 +471,7 @@ class AirTask {
     sessionId: json['sessionId'] as String?,
     sourceSessionId: json['sourceSessionId'] as String?,
     runState: json['runState'] as String?,
+    goalState: json['goalState'] as String?,
     resource: (json['resource'] as Map?)?.cast<String, dynamic>() ?? const {},
     worktreeChanges: AirWorktreeChanges.fromJson(
       (json['worktreeChanges'] as Map?)?.cast<String, dynamic>(),

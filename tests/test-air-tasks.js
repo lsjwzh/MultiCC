@@ -444,6 +444,37 @@ test('Air snapshot projects a never-admitted dispatch claim as idle, not 执行�
   assert.equal(byId.l, 'running', '会话有调度状态时不越权改判');
 });
 
+test('Air cards carry the ✅ sub-state, and drop one the display layer cannot name', async () => {
+  // ✅ 那一格有三个说法（执行成功 / 需要交互 / 达成目标），词由服务端 classify 判定时
+  // 落好（src/classify/vocab.js goalStateForClassify）。卡片只是把它抄出来 —— 但必须
+  // 过 isGoalState 这一关：一条陈旧或伪造的记录不能让 UI 印出别的词。
+  const { mountAirRoutes } = require('../src/workspace/air-routes');
+  const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };
+  const now = Date.now();
+  const chat = (goalState) => (id) => ({ id, dirId: 'd1', kind: 'chat', taskState: {
+    goal: '把登录页改成暗色', phase: 'done', classifyState: 'D', queueState: 'succeeded',
+    goalState, startedAt: now - 1000, endedAt: now, classifyHistory: [] } });
+  const records = ['ok', 'wip', 'junk', 'none'].map((key, index) => {
+    const value = ['achieved', 'interact', 'wat', null][index];
+    return [key, chat(value)(key)];
+  });
+  mountAirRoutes(app, {
+    admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }) },
+    records: new Map(records),
+    directories: new Map([['d1', { id: 'd1', name: 'Repo', path: '/repo' }]]),
+    getBoard: () => ({ modules: {}, tasks: Object.fromEntries(records.map(([key]) => [key, {
+      id: key, title: key, status: 'active', runState: 'succeeded', runStateAt: now, updatedAt: now,
+      sessionId: key, refs: [{ sessionId: key, dirId: 'd1' }] }])) }),
+    clis: ['codex'], shell: { taskAccess: () => ({ readOnly: true }) } });
+  const res = airResponse(); await handlers.get('/api/air')({}, res); const response = JSON.parse(res.body);
+  const byId = Object.fromEntries(response.tasks.map(task => [task.id, task]));
+  assert.equal(byId.ok.runState, 'succeeded', '这一轮正常收尾');
+  assert.equal(byId.ok.goalState, 'achieved');
+  assert.equal(byId.wip.goalState, 'interact');
+  assert.equal(byId.junk.goalState, null, '认不出来的子状态一律当没有 —— 徽标退回「执行成功」');
+  assert.equal(byId.none.goalState, null, '没有目标就没有子状态');
+});
+
 test('Air snapshot carries the most recently worked chat runtime as lastRuntime', async () => {
   const { mountAirRoutes } = require('../src/workspace/air-routes');
   const handlers = new Map(), app = { get: (p, fn) => handlers.set(p, fn), post() {} };

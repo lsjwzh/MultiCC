@@ -1,5 +1,6 @@
 const { taskShortCode } = require('../classify/task-short-code');
 const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
+const { isGoalState } = require('../classify/vocab');
 
 function createTaskStateStore(deps) {
   const { persistedSessions, saveBestEffort, chatBroadcast, workspaceBroadcast } = deps;
@@ -7,7 +8,10 @@ function createTaskStateStore(deps) {
   const TASK_STATE_DEFAULTS = {
     goal: '', taskId: null, phase: 'idle', startedAt: null, endedAt: null,
     lastSummary: '', lastSummaryAt: null, lastTurnEndedAt: null,
-    classifyState: null, pendingDispatches: [],
+    // 「执行成功」的子状态（achieved/interact，见 src/classify/vocab.js
+    // GOAL_STATES）：只在 classifyState==='D' 时有值，其余时刻为 null。它描述的是
+    // ✅ 那一格该说「达成目标」「需要交互」还是「执行成功」，不影响任何判定/守卫。
+    classifyState: null, goalState: null, pendingDispatches: [],
     classifyHistory: [],
     pendingUserInput: null, userInputSignalVersion: 0, userInputSignalTurnId: null,
     apiError: null,
@@ -41,6 +45,9 @@ function createTaskStateStore(deps) {
       taskShortCode: taskShortCode(next.taskId),
       phase: next.phase || 'idle',
       classifyState: next.classifyState || null,
+      // 「执行成功」这一格的子状态（达成目标 / 需要交互）。只影响展示文案，随
+      // task_state 一起广播，卡片不必自己从 goal/phase 再推一遍。
+      goalState: isGoalState(next.goalState) ? next.goalState : null,
       apiError: next.apiError || null,
       // Lets a surface say 「已取消」 instead of 「API 异常」 without inventing a
       // second terminal value: the state is still E, only the reason differs.
