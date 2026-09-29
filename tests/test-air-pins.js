@@ -11,7 +11,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { airResponse } = require('./helpers/air-response');
 
-const { PIN_LIMIT, normalizePins, createAirPinRuntime } = require('../src/workspace/pins');
+const { PIN_LIMIT, normalizePins, readStoredPinIds, createAirPinRuntime } = require('../src/workspace/pins');
 const { mountAirRoutes } = require('../src/workspace/air-routes');
 
 function tempFile() {
@@ -57,6 +57,28 @@ test('toggle 钉上再拔掉，顺序按钉的顺序，落盘后换一个进程�
   // 另一份运行时读同一个文件 —— 这就是「Web 和 App 看到同一份」那件事。
   const reopened = createAirPinRuntime({ file, listTaskIds: () => ['t1', 't2', 't3'] });
   assert.deepEqual(reopened.read(), ['t1']);
+});
+
+test('淘汰读取最新落盘 pin；损坏文件时拒绝猜测保护名单', () => {
+  const { runtime, file } = fixture();
+  assert.deepEqual(readStoredPinIds(file), []);
+  runtime.toggle('t1');
+  assert.deepEqual(readStoredPinIds(file), ['t1']);
+  runtime.toggle('t2');
+  assert.deepEqual(readStoredPinIds(file), ['t1', 't2']);
+  fs.writeFileSync(file, '{ broken');
+  assert.throws(() => readStoredPinIds(file));
+});
+
+test('failed pin persistence cannot report success or leave a memory-only pin', () => {
+  // A regular file used as a parent is guaranteed to make atomic save fail.
+  const blocker = tempFile();
+  fs.writeFileSync(blocker, 'not a directory');
+  const blocked = fixture({ file: path.join(blocker, 'pins.json') });
+  assert.throws(() => blocked.runtime.toggle('t1'), { code: 'pin_save_failed' });
+  assert.deepEqual(blocked.runtime.read(), []);
+  assert.equal(invoke(blocked.routes, 'POST /api/air/pins', { body: { taskIds: ['t1'] } }).statusCode, 500);
+  assert.deepEqual(blocked.runtime.read(), []);
 });
 
 test('页头可以 pin 超过 5 个，只在存储安全线拒绝', () => {

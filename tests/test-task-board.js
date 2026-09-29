@@ -896,8 +896,9 @@ test('host task-board dispatch rejects busy targets before durable admission', (
   // run subsystem; the workspace/run/repo-lease vetoes are what remain.
   assert.match(source, /function dispatchTargetBusyReasons\(sid, item = null\)[\s\S]*?isRunActive\(sid\)[\s\S]*?isLeased\(sid\)/);
   assert.match(source, /function dispatchTargetBusy\(sid, item = null\)[\s\S]*?dispatchTargetBusyReasons\(sid, item\)\.length > 0/);
-  // The task board reads the run state directly; it has no busy port of its own.
-  assert.doesNotMatch(source, /createTaskBoardRuntime\([\s\S]*?isSessionBusy:/);
+  // Retention also needs the same veto before deleting an old task. It may
+  // consume this read-only verdict, but must not create a competing busy rule.
+  assert.match(source, /createTaskBoardRuntime\([\s\S]*?isSessionBusy: sid => dispatchTargetBusy\(sid\)/);
   // The dispatch admission path lives in src/dispatch/gateway-host.js now.
   const start = gatewayHost.indexOf('async function dispatchToSession(');
   const end = gatewayHost.indexOf('\n  // ── Dispatch ↔', start);

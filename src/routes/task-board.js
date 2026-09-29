@@ -15,6 +15,7 @@ const { createTaskWorktreeService } = require('../task-worktree');
 const { taskFields } = require('../task-display-attribution');
 const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board/runtime-helpers');
 const { createColdStartSeed } = require('../task-board/cold-start-seed');
+const { createTaskRetention } = require('../task-board/retention');
 const { createTaskPlanningRuntime } = require('./task-planning');
 
 function createTaskBoardRuntime(deps) {
@@ -1685,6 +1686,12 @@ function createTaskBoardRuntime(deps) {
   const taskLifecycle = require('../task-board/lifecycle').createBoardTaskLifecycle({ deps, getBoard: () => board,
     resolveTask: resolvedTask, taskIdentityIds, commit: commitPlanningMutation, taskDto, notify,
     taskDirId: task => core.taskDirId(board, task), activeOperations: activeTaskOperations });
+  const retention = createTaskRetention({ getBoard: () => board, records,
+    getPinnedTaskIds: () => deps.getPinnedTaskIds(), getRunState: id => getSessionRunState(id),
+    isSessionBusy: id => deps.isSessionBusy?.(id) === true,
+    taskDirId: task => core.taskDirId(board, task), taskLineageIds: task => taskIdentityIds(task),
+    prepareDelete: (task, ids, options) => deps.prepareTaskDelete(task, ids, options),
+    deleteById: (id, options) => taskLifecycle.deleteById(id, options) });
 
   // Air 任务「移动」：编排会话工作区搬迁（带未提交改动）、shell 指针与板块记录。
   const taskRelocate = require('../task-board/relocate').createTaskRelocate({ deps, resolveTask: resolvedTask,
@@ -1747,7 +1754,9 @@ function createTaskBoardRuntime(deps) {
       core.setTaskRouting(task, { mode: 'task-bound', workerSessionId: input.sessionId, oneWay: true });
       return { ok: true };
     }),
-    mountRoutes, isTaskLifecycleBusy: id => taskLifecycle.isBusy(id), onMessagePersisted,
+    mountRoutes, isTaskLifecycleBusy: id => taskLifecycle.isBusy(id),
+    evictOldestSafeTask: (dirId, listShellTasks, atCapacity, excludedIds) => retention.evict(dirId, listShellTasks, atCapacity, excludedIds),
+    onMessagePersisted,
     onQueueEvent,
     reconcileRunState,
     recordRouterAdmission,

@@ -2012,8 +2012,10 @@ function dispatchTargetBusy(sid, item = null) {
   return dispatchTargetBusyReasons(sid, item).length > 0;
 }
 const taskBoardRuntime = createTaskBoardRuntime({
-  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn), workspaceBroadcast, chatBroadcast }),
+  ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), isSessionBusy: sid => dispatchTargetBusy(sid), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn), workspaceBroadcast, chatBroadcast }),
   file: MULTICC_PATHS.taskBoardFile,
+  getPinnedTaskIds: () => require('./src/workspace/pins').readStoredPinIds(MULTICC_PATHS.airPinsFile),
+  isSessionBusy: sid => dispatchTargetBusy(sid),
   auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
   loadHistory: sessionId => viewChatHistory(sessionId),
   dispatchToSession,

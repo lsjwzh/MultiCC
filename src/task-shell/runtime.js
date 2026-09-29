@@ -29,10 +29,18 @@ function createTaskShellRuntime(ports) {
     store, getRecord, getHistory, getExecution, createExecution, indexTask, send, cancel,
     getTask = () => null,
   } = ports;
+  async function ensureTaskSlot(dirId, excludedIds = []) {
+    if (!directoryAtCapacity(store, dirId)) return;
+    await ports.evictTaskForCapacity?.(dirId, () => store.list('task'), () => directoryAtCapacity(store, dirId), excludedIds);
+    if (directoryAtCapacity(store, dirId)) throw failure('task_shell_task_limit',
+      `Task limit reached (${MAX_TASKS_PER_DIRECTORY} tasks/project)`, 409);
+  }
   const flights = new Map();
   const roles = require('./role-bindings').createRoleBindings(store, { getRecord, getDirectory: ports.getDirectory, assertWritable });
-  const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports, shell, open, chatScope });
-  const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles });
+  // Keep port reads live: host/tests may replace a callback after construction.
+  const capacityPorts = Object.assign(Object.create(ports), { ensureTaskSlot });
+  const taskActions = require('./task-actions').createTaskActions({ store, getRecord, getTask, getHistory, getExecution, createExecution, indexTask, ports: capacityPorts, shell, open, chatScope });
+  const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports: capacityPorts, ownerOf: taskActions.ownerOf, roles });
   const independent = require('./independent-continue').createIndependentContinuation({ store, getRecord, getHistory,
     getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles, hasCapacity });
   const relations = require('./relations').createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
@@ -352,8 +360,23 @@ function createTaskShellRuntime(ports) {
       return task;
     });
   }
-  function resolveTask(shellId, identity = {}) {
+  function validateNewLocate(shellId, identity) {
+    const s = shell(shellId), id = identifier(identity.taskId, 'taskId');
+    if (s.standalone && s.currentTaskId && id !== s.currentTaskId) throw failure('standalone_task_identity_locked');
+    if (!getRecord(s.sourceSessionId)) throw failure('source_session_missing');
+    const indexed = indexedTask(id), indexedSession = indexed?.chatSessionId && getRecord(indexed.chatSessionId);
+    if (indexedSession && indexedSession.dirId !== s.dirId) throw failure('project_mismatch', 'Tasks must belong to the same project', 403);
+    const sessionId = indexedSession?.kind === 'chat' ? indexedSession.id : `task-${id.replace(/^tsk_/, '')}`;
+    const owned = owns(sessionId);
+    if (owned && owned.id !== id) throw failure('task_identity_mismatch');
+    return s;
+  }
+  async function resolveTask(shellId, identity = {}) {
     assertWritable(identity.taskId);
+    if (!store.get('task', identity.taskId)) {
+      const owner = validateNewLocate(shellId, identity);
+      await ensureTaskSlot(owner.dirId, [owner.currentTaskId, owner.defaultTaskId]);
+    }
     const task = locateOrCreate(shellId, identity);
     const s = shell(shellId);
     if (taskActions.ownerOf(task)?.id !== shellId) throw failure('task_owner_mismatch');
@@ -465,6 +488,15 @@ function createTaskShellRuntime(ports) {
       const sourceState = await getExecution(source.sessionId);
       if (payload.dependsOn.includes(id) && (sourceState.busy !== false || !sourceState.completed)) throw failure('dependency_not_ready');
       contexts.set(id, snapshotHistory(id, getHistory(source.sessionId), { activeTurnId: sourceState.turnId && sourceState.busy ? sourceState.turnId : null }));
+    }
+    if (!target && payload.intent === 'work' && !store.get('receipt', receiptId) && directoryAtCapacity(store, s.dirId)) {
+      const currentShell = shell(s.id);
+      if (!delivery.taskIdentityLocked && payload.expectedCursorVersion != null
+          && payload.expectedCursorVersion !== (currentShell.cursorVersion || 0)) {
+        throw failure('stale_shell_cursor', 'The current task changed; refresh before sending');
+      }
+      if (!getRecord(s.sourceSessionId)) throw failure('source_session_missing');
+      await ensureTaskSlot(s.dirId, [s.currentTaskId, s.defaultTaskId]);
     }
     return store.transaction(() => {
       const existing = store.get('receipt', receiptId);
@@ -656,7 +688,15 @@ function createTaskShellRuntime(ports) {
       clientMsgId: `dispatch_${hash([options.ownerSessionId, options.idempotencyKey || options.operationId || randomUUID()]).slice(0, 40)}`,
     }, { taskIdentityLocked: true, dispatch });
   }
-  function sendExplicit(shellId, raw, identity = {}) {
+  async function sendExplicit(shellId, raw, identity = {}) {
+    if (!store.get('task', identity.taskId)) {
+      const payload = normalize({ ...raw, taskId: identity.taskId });
+      if (payload.intent !== 'work' || payload.contextTaskIds.length || payload.dependsOn.length) {
+        throw failure('context_requires_new_task', 'Start a new task to import versioned context');
+      }
+      const owner = validateNewLocate(shellId, identity);
+      await ensureTaskSlot(owner.dirId, [owner.currentTaskId, owner.defaultTaskId]);
+    }
     const task = locateOrCreate(shellId, identity);
     return sendInput(shellId, { ...raw, taskId: task.id }, {
       taskIdentityLocked: true,

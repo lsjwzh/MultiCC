@@ -9,6 +9,7 @@ const { fixture } = require('./helpers/task-shell');
 const { gitWorktreeAdd } = require('../src/git/service');
 const { createSeparationTransfer } = require('../src/workspace/separation-transfer');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
+const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/task-shell/capacity');
 const { parseTaskAttribution, buildTaskAttributionSystemPrompt } = require('../src/classify/task-attribution');
 const { mountTaskShellRoutes } = require('../src/task-shell/routes');
 const express = require('express');
@@ -37,8 +38,8 @@ test('only explicit low relevance with a title produces a suggestion; locked ide
 });
 test('proposing splits the task identity immediately but makes no execution, cursor or history changes', async t => {
   const f = await setup(t), shell = f.runtime.view(f.a.id);
-  const p = f.propose(); assert.equal(p.state, 'pending');
-  assert.deepEqual(f.propose(), p);
+  const p = await f.propose(); assert.equal(p.state, 'pending');
+  assert.deepEqual(await f.propose(), p);
   const task = f.store.get('task', p.taskId);
   assert.ok(task, 'the task id is allocated with the suggestion');
   assert.equal(task.ready, false, 'shares the conversation execution until a separate decision');
@@ -55,18 +56,37 @@ test('proposing splits the task identity immediately but makes no execution, cur
   assert.deepEqual(f.histories.get('a').map(m => m.taskId), [f.source.id, f.source.id, f.source.id]);
   assert.deepEqual(createTaskShellRuntime(f.ports).separation.latest('a'), p);
 });
+test('a full directory evicts a safe old task before proposing, but never its source', async t => {
+  const f = await setup(t);
+  let excluded;
+  f.ports.evictTaskForCapacity = async (_dirId, _list, _full, ids) => {
+    excluded = ids;
+    f.store.remove('task', 'tsk_old');
+  };
+  f.store.transaction(() => {
+    for (let i = 1; i < MAX_TASKS_PER_DIRECTORY; i++) {
+      const id = i === 1 ? 'tsk_old' : `tsk_seed_${i}`;
+      f.store.set('task', id, { id, dirId: 'd1' });
+    }
+  });
+  const suggestion = await f.propose();
+  assert.ok(suggestion.taskId);
+  assert.deepEqual(excluded, [f.source.id]);
+  assert.ok(f.store.get('task', f.source.id));
+  assert.equal(directoryTaskCount(f.store, 'd1'), MAX_TASKS_PER_DIRECTORY);
+});
 test('a repeated verdict for the same new task reuses the open suggestion instead of minting a twin', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   const sent2 = await f.runtime.send(f.a.id, { text: 'More of the new goal', clientMsgId: 'new-goal-2' });
   f.histories.get('a').push({ id: 'u2', role: 'user', content: 'More of the new goal', turnId: 'turn-2', clientMsgId: sent2.receiptId, taskId: f.source.id },
     { id: 'a2', role: 'assistant', content: 'More result', turnId: 'turn-2', taskId: f.source.id });
-  const p2 = f.runtime.separation.propose('a', sent2.receiptId, { turnId: 'turn-2', anchorMessageId: 'a2',
+  const p2 = await f.runtime.separation.propose('a', sent2.receiptId, { turnId: 'turn-2', anchorMessageId: 'a2',
     separation: { title: 'Independent goal', reason: 'Same new task' } });
   assert.equal(p2.id, p.id);
   assert.equal(f.store.list('task').length, 2);
 });
 test('opening an embedded task is read-only and a kept verdict reuses its identity', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   const entry = await f.runtime.bindPlannedTask(p.taskId);
   assert.equal(entry.task.id, p.taskId);
   assert.equal(entry.sessionId, 'a', 'the embedded task still reads from the shared conversation');
@@ -75,7 +95,7 @@ test('opening an embedded task is read-only and a kept verdict reuses its identi
   const sent2 = await f.runtime.send(f.a.id, { text: 'Continue related goal', clientMsgId: 'related-2' });
   f.histories.get('a').push({ id: 'u2', role: 'user', content: 'Continue related goal', turnId: 'turn-2', clientMsgId: sent2.receiptId },
     { id: 'a2', role: 'assistant', content: 'Done', turnId: 'turn-2' });
-  const again = f.runtime.separation.propose('a', sent2.receiptId, { turnId: 'turn-2', anchorMessageId: 'a2',
+  const again = await f.runtime.separation.propose('a', sent2.receiptId, { turnId: 'turn-2', anchorMessageId: 'a2',
     separation: { title: 'Independent goal', reason: 'Same goal after keep' } });
   assert.equal(again.id, p.id);
   assert.equal(again.state, 'kept');
@@ -84,13 +104,13 @@ test('opening an embedded task is read-only and a kept verdict reuses its identi
 });
 test('first exchange, stale anchor and forged execution cannot propose separation', async t => {
   const f = await setup(t);
-  f.histories.get('a').shift(); assert.equal(f.propose(), null);
+  f.histories.get('a').shift(); assert.equal(await f.propose(), null);
   f.histories.get('a').unshift({ id: 'u0', role: 'user', content: 'Old goal' });
-  assert.equal(f.runtime.separation.propose('a', f.sent.receiptId, { ...f.input, anchorMessageId: 'missing' }), null);
-  assert.throws(() => f.runtime.separation.propose('b', f.sent.receiptId, f.input), { code: 'separation_not_found' });
+  assert.equal(await f.runtime.separation.propose('a', f.sent.receiptId, { ...f.input, anchorMessageId: 'missing' }), null);
+  await assert.rejects(f.runtime.separation.propose('b', f.sent.receiptId, f.input), { code: 'separation_not_found' });
 });
 test('keep is durable and idempotent while the related task remains detachable later', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   assert.deepEqual(await f.runtime.separation.decide('a', p.id, 'keep'), { ok: true, decision: 'keep' });
   const restarted = createTaskShellRuntime(f.ports);
   assert.equal(restarted.separation.latest('a'), null);
@@ -100,7 +120,7 @@ test('keep is durable and idempotent while the related task remains detachable l
   assert.equal(f.store.list('task').length, 2);
 });
 test('defer keeps the already split task detachable across restarts and later turns', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   assert.deepEqual(await f.runtime.separation.decide('a', p.id, 'defer'),
     { ok: true, decision: 'defer', id: p.id, deferred: true });
   // Deferral is only a shell decision: the related task identity already exists.
@@ -122,7 +142,7 @@ test('confirmed separation creates one independent task and imports only this ex
   const f = await setup(t);
   f.runtime.roles.update(f.source.id, { expectedVersion: 0, clientMsgId: 'roles-1',
     bindings: [{ name: 'reviewer', prompt: 'Preserve the task boundary.' }] });
-  const p = f.propose(), before = JSON.stringify(f.histories.get('a'));
+  const p = await f.propose(), before = JSON.stringify(f.histories.get('a'));
   const results = await Promise.all([1,2].map(() => f.runtime.separation.decide('a', p.id, 'separate')));
   assert.deepEqual(results[0], results[1]);
   const task = f.store.get('task', results[0].taskId);
@@ -141,7 +161,7 @@ test('confirmed separation creates one independent task and imports only this ex
   assert.deepEqual(await createTaskShellRuntime(f.ports).separation.decide('a', p.id, 'separate'), results[0]);
 });
 test('a newer turn does not invalidate a task identity that was already split', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   f.histories.get('a').push({ id: 'u2', role: 'user', content: 'Next input' });
   assert.equal(f.runtime.separation.latest('a').id, p.id);
   const result = await f.runtime.separation.decide('a', p.id, 'separate');
@@ -154,7 +174,7 @@ test('a stable source snapshot can separate a failed, waiting or unobserved turn
     { id: 'turn-1', outcome: 'succeeded', pendingInput: true, endCodeRevision: 'revision-1' },
     { id: 'turn-1', outcome: 'succeeded', pendingInput: false, endCodeRevision: null },
   ]) {
-    const f = await setup(t, { deliveryEvidence: () => ({ run, integration: null }) }), p = f.propose();
+    const f = await setup(t, { deliveryEvidence: () => ({ run, integration: null }) }), p = await f.propose();
     const result = await f.runtime.separation.decide('a', p.id, 'separate');
     assert.equal(result.ok, true);
     assert.equal(f.store.get('task-separation', p.id).deliveryKind, 'workspace_snapshot');
@@ -164,15 +184,15 @@ test('a clean source snapshot does not require a merge receipt', async t => {
   const changed = { id: 'turn-1', outcome: 'succeeded', pendingInput: false,
     startCodeRevision: 'revision-0', endCodeRevision: 'revision-1' };
   const missing = await setup(t, { deliveryEvidence: () => ({ run: changed, integration: null }) });
-  const result = await missing.runtime.separation.decide('a', missing.propose().id, 'separate');
+  const result = await missing.runtime.separation.decide('a', (await missing.propose()).id, 'separate');
   assert.equal(result.ok, true);
   assert.equal(missing.store.get('task', result.taskId).forkBaseline.commit, 'a'.repeat(40));
   const stale = await setup(t, { deliveryEvidence: () => ({ run: changed, integration: { id: 'integration-1', integrationHead: 'abc' } }),
     verifyDeliveryBaseline: async () => ({ effectValid: false }) });
-  assert.equal((await stale.runtime.separation.decide('a', stale.propose().id, 'separate')).ok, true);
+  assert.equal((await stale.runtime.separation.decide('a', (await stale.propose()).id, 'separate')).ok, true);
 });
 test('busy sources keep the suggestion while a dirty source moves its checkout into the new task', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   f.ports.withSeparationBarrier = async (input, work) => {
     if (f.statuses.get('a')?.busy) throw Object.assign(new Error('busy'), { code: 'fork_source_busy' });
     return work({ barrier: { id: `barrier-${input.separationId}` },
@@ -194,7 +214,7 @@ test('busy sources keep the suggestion while a dirty source moves its checkout i
   assert.equal(f.store.list('task').length, 2);
 });
 test('a failed checkout transfer stays retryable and never records an application', async t => {
-  const f = await setup(t), p = f.propose(), transfer = f.ports.transferWorkspace;
+  const f = await setup(t), p = await f.propose(), transfer = f.ports.transferWorkspace;
   f.ports.transferWorkspace = async input => { f.transfers.push(input); return { ok: false, code: 'split_off_failed', error: 'carry patch does not apply' }; };
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'split_off_failed' });
   const saved = f.store.get('task-separation', p.id);
@@ -210,7 +230,7 @@ test('a failed checkout transfer stays retryable and never records an applicatio
   assert.equal(f.applications.length, 1);
 });
 test('a host that cannot move the checkout refuses to split the task', async t => {
-  const f = await setup(t, { transferWorkspace: undefined }), p = f.propose();
+  const f = await setup(t, { transferWorkspace: undefined }), p = await f.propose();
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'separation_transfer_unavailable' });
   assert.equal(f.store.get('task-separation', p.id).phase, 'blocked');
   assert.equal(f.applications.length, 0);
@@ -293,7 +313,7 @@ test('a checkout holding non-regenerable ignored files is retained instead of de
   assert.equal(records.get(target).workspaceState, 'awake');
 });
 test('a transiently blocked suggestion stays retryable after the conversation advances', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   f.ports.withSeparationBarrier = async (input, work) => {
     if (f.statuses.get('a')?.busy) throw Object.assign(new Error('busy'), { code: 'fork_source_busy' });
     return work({ barrier: { id: `barrier-${input.separationId}` },
@@ -318,7 +338,7 @@ test('a transiently blocked suggestion stays retryable after the conversation ad
 test('blocked separation persists only a bounded safe error code', async t => {
   const f = await setup(t, { withSeparationBarrier: async () => {
     throw Object.assign(new Error('secret /Users/example/token'), { code: 'bad code /Users/example/token' });
-  } }), p = f.propose();
+  } }), p = await f.propose();
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'));
   const saved = f.store.get('task-separation', p.id);
   assert.deepEqual(saved.lastError, { code: 'separation_failed' });
@@ -331,12 +351,12 @@ test('an anchor changed during code capture prevents shell checkout', async t =>
     return work({ barrier: { id: `barrier-${input.separationId}` },
       code: { revision: 'revision-1', head: 'a'.repeat(40), repoId: 'repo-1', dirty: false } });
   };
-  const p = f.propose();
+  const p = await f.propose();
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'separation_stale' });
   assert.equal(f.store.list('task').length, 2, 'the identity survives a failed shell checkout');
 });
 test('partial creation resumes the frozen, already confirmed task after restart without duplicating it', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   const index = f.ports.indexTask;
   f.ports.indexTask = () => ({ ok: false });
   const broken = createTaskShellRuntime(f.ports);
@@ -348,7 +368,7 @@ test('partial creation resumes the frozen, already confirmed task after restart 
   assert.equal(result.ok, true); assert.equal(f.store.list('task').length, 2); assert.equal(f.creations.length, 1);
 });
 test('a failed execution checkout cannot be mislabeled as kept in the shared shell', async t => {
-  const f = await setup(t), p = f.propose(), create = f.ports.createExecution;
+  const f = await setup(t), p = await f.propose(), create = f.ports.createExecution;
   f.ports.createExecution = async () => ({ ok: false, code: 'execution_create_failed' });
   const broken = createTaskShellRuntime(f.ports);
   await assert.rejects(broken.separation.decide('a', p.id, 'separate'), { code: 'execution_create_failed' });
@@ -361,7 +381,7 @@ test('a failed execution checkout cannot be mislabeled as kept in the shared she
   assert.equal(result.ok, true);
 });
 test('HTTP confirmation binds session and suggestion, validates decisions and keeps errors structured', async t => {
-  const f = await setup(t), p = f.propose(), app = express(); app.use(express.json());
+  const f = await setup(t), p = await f.propose(), app = express(); app.use(express.json());
   mountTaskShellRoutes(app, { getRuntime: () => f.runtime });
   const server = app.listen(0, '127.0.0.1'); await new Promise(r => server.once('listening', r));
   t.after(() => new Promise(r => { server.close(r); server.closeAllConnections(); }));
@@ -386,7 +406,7 @@ test('confirmed separation seeds the full judged turn into the new transcript an
   };
   f.ports.hideHistory = (sourceId, ids) => { hidden.push({ sourceId, ids }); return ids.length; };
   const before = JSON.stringify(f.histories.get('a'));
-  const p = f.propose();
+  const p = await f.propose();
   const result = await f.runtime.separation.decide('a', p.id, 'separate');
   const task = f.store.get('task', result.taskId);
   // Only the judged turn (turn-1) is seeded — the older exchange stays behind,
@@ -420,7 +440,7 @@ test('restart healing hides an already-seeded transcript and retries the pending
   };
   f.ports.hideHistory = (sourceId, ids) => { hidden.push({ sourceId, ids }); return ids.length; };
   f.ports.movePendingUserInput = async (...args) => { moves.push(args); return { ok: true, requestId: 'usrq-healed' }; };
-  const p = f.propose(), result = await f.runtime.separation.decide('a', p.id, 'separate');
+  const p = await f.propose(), result = await f.runtime.separation.decide('a', p.id, 'separate');
   assert.equal(appended.length, 2);
   hidden.length = 0; moves.length = 0;
   const healed = await createTaskShellRuntime(f.ports).separation.heal();
@@ -430,7 +450,7 @@ test('restart healing hides an already-seeded transcript and retries the pending
   assert.deepEqual(moves, [['a', result.sessionId, { turnId: 'turn-1', taskId: result.taskId }]]);
 });
 test('separation succeeds without the handoff ports and reports zero seeded messages', async t => {
-  const f = await setup(t), p = f.propose();
+  const f = await setup(t), p = await f.propose();
   const result = await f.runtime.separation.decide('a', p.id, 'separate');
   assert.equal(result.ok, true);
   assert.equal(result.seededMessages, 0);
