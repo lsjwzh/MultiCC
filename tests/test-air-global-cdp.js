@@ -351,6 +351,29 @@ test('the Air global panel is native: install hint, guarded OAuth switch, macOS 
     assert.ok(await page.waitFor(`document.getElementById('air-global-unlock-toggle').checked && !document.getElementById('air-global-unlock-toggle').disabled`));
     assert.equal(await page.evaluate(`document.getElementById('air-global-unlock-password').value`), '');
 
+    // Agent 自己坏了（装的时候丢了执行位 / 压根没装）：指引要指向「重启 MultiCC 自修」，
+    // 并把那个怎么点都不会好的「检查授权」收起来 —— 现场就是在它上面一直打转。
+    // 按钮的回包是异步的（element.click() 一返回就去断言会读到上一次的状态），所以按
+    // 文案+按钮可见性一起等。
+    const authorized = (key, buttonVisible) => page.waitFor(
+      `document.getElementById('air-global-unlock-status').textContent === t(${JSON.stringify(key)})`
+      + ` && document.getElementById('air-global-unlock-authorize').checkVisibility() === ${buttonVisible}`);
+    unlockPassword = { available: true, set: true, canEdit: true, requested: false };
+    await page.evaluate(`MultiCCAirGlobal.refresh()`);
+    unlockAuthorization = { state: 'unavailable', detail: 'agent-not-executable' };
+    await click('unlock-authorize');
+    assert.ok(await authorized('airGlobalUnlockAgentBroken', false));
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockAgentBroken'));
+    unlockAuthorization = { state: 'unavailable', detail: 'agent-not-installed' };
+    await click('unlock-authorize');
+    assert.ok(await authorized('airGlobalUnlockAgentMissing', false));
+    // 没有 detail 的「没能确认」仍然保留原话与按钮（可能只是这次没等到）。
+    unlockAuthorization = { state: 'unavailable' };
+    await click('unlock-authorize');
+    assert.ok(await authorized('airGlobalUnlockProbeUnknown', true));
+    assert.equal(await text('#air-global-unlock-status'), await t('airGlobalUnlockProbeUnknown'));
+    unlockAuthorization = { state: 'authorized' };
+
     // Remote first-time setup explains where to go, without an unusable form.
     unlockPassword = { available: true, set: false, canEdit: false, requested: false };
     await page.evaluate(`MultiCCAirGlobal.refresh()`);

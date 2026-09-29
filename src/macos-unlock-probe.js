@@ -22,6 +22,18 @@ function defaultAgentBin() {
 //   waiting-for-user 系统正在等用户点「始终允许」（没点，或点了但这次读已经超时）
 //   no-password      条目不在（保存没成功，或者刚被清掉）
 //   unavailable      Agent 没装 / 没在跑 / 回话看不懂 —— 密码已保存，只是这次没能确认
+//
+// unavailable 还带 detail，界面照它给具体指引：execFile 的 errno 能分辨「程序没装」和
+// 「程序装了但跑不起来」，混成一句「请确认 Agent 正在运行」会让用户在一个永远点不好的
+// 「检查授权」上打转（后者正是安装脚本复制预编译二进制时丢了 0755 的现场）。修法是
+// 重启 MultiCC —— 启动时的自动安装会把执行位补回来。
+function spawnDetail(error) {
+  if (!error) return 'bad-reply';
+  if (error.code === 'EACCES') return 'agent-not-executable';
+  if (error.code === 'ENOENT') return 'agent-not-installed';
+  return 'agent-error';
+}
+
 function createUnlockProbe({
   platform = process.platform,
   execFileFn = execFile,
@@ -41,7 +53,7 @@ function createUnlockProbe({
     let obj = null;
     try { obj = JSON.parse(reply.stdout.trim()); } catch { obj = null; }
     if (!obj || typeof obj !== 'object') {
-      return { state: 'unavailable', detail: reply.error ? 'agent-error' : 'bad-reply' };
+      return { state: 'unavailable', detail: spawnDetail(reply.error) };
     }
     if (obj.authorized === true) return obj.powerProtocol === 1
       ? { state: 'authorized' } : { state: 'unavailable', detail: 'agent-update-required' };

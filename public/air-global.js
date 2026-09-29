@@ -281,12 +281,22 @@
     'no-password': 'airGlobalUnlockNotStored',
     unavailable: 'airGlobalUnlockProbeUnknown',
   };
+  // Agent 自身坏了（没执行权限 / 没装 / 版本老）时，点多少次「检查授权」都不会好，
+  // 指引必须换成「重启 MultiCC 会自动修」——否则用户会在这个按钮上一直打转。
+  const RESTART_FIXES = {
+    'agent-not-executable': 'airGlobalUnlockAgentBroken',
+    'agent-not-installed': 'airGlobalUnlockAgentMissing',
+    'agent-update-required': 'airGlobalUnlockAgentOutdated',
+  };
   function paintAuthorization(authorization) {
     const state = authorization?.state || 'unavailable';
+    const restartFixesIt = !!RESTART_FIXES[authorization?.detail];
     const status = el('air-global-unlock-status');
-    status.textContent = t(AUTHORIZATION_TEXT[state] || AUTHORIZATION_TEXT.unavailable);
+    status.textContent = t(RESTART_FIXES[authorization?.detail]
+      || AUTHORIZATION_TEXT[state] || AUTHORIZATION_TEXT.unavailable);
     status.className = 'air-global-status' + (state === 'authorized' ? ' ok' : ' err');
-    el('air-global-unlock-authorize').hidden = state === 'authorized' || powerState?.unlockPassword?.canEdit === false;
+    el('air-global-unlock-authorize').hidden = state === 'authorized' || restartFixesIt
+      || powerState?.unlockPassword?.canEdit === false;
   }
 
   function paintUnlock(value) {

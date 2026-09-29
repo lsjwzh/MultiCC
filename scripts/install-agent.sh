@@ -103,15 +103,25 @@ else
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   TMP="$(mktemp "$APP/Contents/MacOS/.build.XXXXXX")"
   trap 'rm -f "$TMP"' EXIT
-  if [ -x "$PREBUILT/MultiCCAgent" ] && [ "$(cat "$PREBUILT/source.sha256" 2>/dev/null)" = "$SUM" ]; then
-    cp "$PREBUILT/MultiCCAgent" "$TMP"
+  # A prebuilt binary is usable whenever it matches this source — `-x` would
+  # send a package whose mode bits got dropped in transit down the build path,
+  # which then fails on a Mac without the command line tools.
+  PREBIN="$PREBUILT/MultiCCAgent"
+  if [ -f "$PREBIN" ] && [ "$(cat "$PREBUILT/source.sha256" 2>/dev/null)" = "$SUM" ]; then
+    cp "$PREBIN" "$TMP"
     echo "multicc-agent: using prebuilt binary"
   else
     sh "$HERE/macos-agent/build.sh" "$TMP" \
       || die "swift build failed (need Xcode command line tools: xcode-select --install)"
   fi
+  # mktemp creates 0600 and cp keeps an existing destination's mode, so a plain
+  # copy would leave the binary non-executable: launchd cannot start it, every
+  # request fails, and the app looks "installed but never ready". The mode is
+  # not part of the code signature, so it must (and may) be fixed before signing.
+  chmod 0755 "$TMP"
   mv -f "$TMP" "$BIN"
   trap - EXIT
+  [ -x "$BIN" ] || die "$BIN is not executable"
   cat > "$APP/Contents/Info.plist" <<INFO
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

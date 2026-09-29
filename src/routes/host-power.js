@@ -11,6 +11,14 @@ async function probeAuthorization(deps, allowUI = false) {
   catch { return { state: 'unavailable', detail: 'probe-failed' }; }
 }
 
+// Agent 自己坏了的时候，「点击检查授权」是句误导：那个按钮怎么点都不会好，能修的是
+// 重启 MultiCC（它会在启动时重跑安装）。按探测回执里的 detail 换话说。
+const AGENT_BROKEN_ERROR = {
+  'agent-not-executable': 'MultiCC Agent 的安装不完整（程序没有执行权限）。请在这台 Mac 上重启 MultiCC，它会自动修好。',
+  'agent-not-installed': '这台 Mac 上还没装 MultiCC Agent。请重启 MultiCC，它会自动装好。',
+  'agent-update-required': 'MultiCC Agent 需要随 MultiCC 一起更新，请重启 MultiCC。',
+};
+
 async function requireUnlockReady(deps, res) {
   if (!(await passwordService(deps).hasPassword())) {
     res.status(409).json({ code: 'unlock_setup_required', error: '请先在这台 Mac 的全局设置中保存登录密码，再开启此功能。' });
@@ -19,7 +27,8 @@ async function requireUnlockReady(deps, res) {
   const authorization = await probeAuthorization(deps);
   if (authorization.state !== 'authorized') {
     res.status(409).json({ code: 'unlock_authorization_required', authorization,
-      error: '自动解锁尚未准备好，请在这台 Mac 的全局设置中点击「检查授权」。' });
+      error: AGENT_BROKEN_ERROR[authorization.detail]
+        || '自动解锁尚未准备好，请在这台 Mac 的全局设置中点击「检查授权」。' });
     return false;
   }
   return true;

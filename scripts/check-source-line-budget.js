@@ -284,10 +284,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 只改文案（airScheduleCommandHint 指到 examples/cron-scripts/）不增行，只长字节：
   // 按最后一版重跑生成器的真实值登记 7206/450584。
   // 2026-09-29 任务容量提示与确认清理增加 6 个双语键；生成后 7218/452143。
+  // 2026-09-29 自动解锁的 Agent 故障指路补 3 键（airGlobalUnlockAgentBroken /
+  // AgentMissing / AgentOutdated，中英各 3 行 = +6）；生成后 7224/453091。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7218,
-    maxBytes: 452143,
+    maxLines: 7224,
+    maxBytes: 453091,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
