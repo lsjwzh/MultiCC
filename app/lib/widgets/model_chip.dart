@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../i18n.dart';
 import '../models/message.dart';
 import '../providers/session_manager.dart';
 import '../providers/chat_provider.dart';
@@ -71,7 +72,16 @@ String providerDisplayLabel(
 /// Tap to switch (next turn applies).
 class ModelChip extends StatefulWidget {
   final String sessionId;
+
+  /// 用户**已经选好**的那条车道（`ChatProvider.pendingConfiguration.desiredCli`）：
+  /// 会话忙时换道是「下轮生效」，provider 池必须按这条车道取，否则药丸列的还是
+  /// 旧车道的线路。
   final SessionCli cli;
+
+  /// 下轮生效的那份改动（`ChatProvider.pendingConfiguration.value`）。有它时药丸
+  /// 显示的是 pending 里的线路/模型，并挂上「下轮生效」——与 web 的 modelBtn 同一
+  /// 口径（public/chat.js:1598 `dataset.pending` + chat-layout.css 的 ::after）。
+  final SessionPendingConfiguration? pending;
   final SettingsService settings;
   final bool compact;
   const ModelChip({
@@ -79,6 +89,7 @@ class ModelChip extends StatefulWidget {
     required this.sessionId,
     required this.cli,
     required this.settings,
+    this.pending,
     this.compact = false,
   });
 
@@ -216,6 +227,28 @@ class ModelChipState extends State<ModelChip> {
     return effortShortNameForCli(s.cli, s.effectiveEffort ?? s.effort);
   }
 
+  /// 「下轮生效」那份配置当运行时用 —— 与 web 的 `desiredConfig()`
+  /// （public/chat-ai-config.js：`{...info, ...pending.profile, cli: pending.cli}`）
+  /// 同一口径。
+  ///
+  /// pending.profile 是**整体**的期望值，所以这里不掺旧运行时的任何字段：服务端
+  /// staging 时先跑 cliSwitchDefaults → activateCliState（新车道没配置过的字段就是
+  /// null），应用时又是整体 `Object.assign(session, pending.profile)`。旧 model、
+  /// 旧线路解析出来的 effectiveModel 对新车道都没有意义。
+  SessionCliConfig _pendingView(SessionPendingConfiguration p) => SessionCliConfig(
+    cli: p.cli,
+    provider: p.provider,
+    providerSelection: p.providerSelection,
+    model: p.model,
+    effectiveModel: p.model,
+    effort: p.effort,
+    effectiveEffort: p.effort,
+    agent: p.agent,
+    subagent: p.subagent,
+    deferred: true,
+    pending: p,
+  );
+
   @override
   Widget build(BuildContext context) {
     final mgr = context.watch<SessionManager>();
@@ -227,20 +260,30 @@ class ModelChipState extends State<ModelChip> {
         break;
       }
     }
-    final runtime =
-        _runtime ??
-        (s == null
-            ? null
-            : SessionCliConfig(
-                cli: s.cli,
-                provider: s.provider,
-                providerSelection: s.providerSelection,
-                model: s.model,
-                effectiveModel: s.effectiveModel,
-                effort: s.effort,
-                effectiveEffort: s.effectiveEffort,
-              ));
-    final selection = live.providerSelection ?? runtime?.providerSelection;
+    // 待应用的改动有三条来源，任一有就用它当显示口径：调用方（ChatProvider，
+    // 换道/AI 配置保存的响应或 staged 广播）、本 widget 自己拉的会话记录、以及
+    // SessionManager 列表里那条会话。剩下的才是「没有 pending，按运行时显示」。
+    final staged = widget.pending ?? _runtime?.pending ?? s?.pending;
+    final runtime = staged != null
+        ? _pendingView(staged)
+        : (_runtime ??
+              (s == null
+                  ? null
+                  : SessionCliConfig(
+                      cli: s.cli,
+                      provider: s.provider,
+                      providerSelection: s.providerSelection,
+                      model: s.model,
+                      effectiveModel: s.effectiveModel,
+                      effort: s.effort,
+                      effectiveEffort: s.effectiveEffort,
+                    )));
+    final pending = staged != null;
+    // pending 那份才是下一轮要用的，选择项以它为准；没有 pending 才用运行时正在
+    // 跑的那个（Auto 模式的实际路由）。
+    final selection = pending
+        ? runtime!.providerSelection
+        : (live.providerSelection ?? runtime?.providerSelection);
     final parts = <String>[];
     if (selection != null) {
       parts.add(
@@ -264,7 +307,8 @@ class ModelChipState extends State<ModelChip> {
     final label = parts.join(' | ');
     return Tooltip(
       message:
-          'Provider / Model${widget.cli.supportsEffort ? ' / ${widget.cli.effortFieldLabel}' : ''}',
+          'Provider / Model${widget.cli.supportsEffort ? ' / ${widget.cli.effortFieldLabel}' : ''}'
+          '${pending ? '（${t('cliSwitchPending')}）' : ''}',
       child: GestureDetector(
         onTap: () => _switchAIConfig(context, mgr),
         child: Container(
@@ -301,6 +345,19 @@ class ModelChipState extends State<ModelChip> {
                   ),
                 ),
               ],
+              // 对齐 web 的 [data-pending]::after（chat-layout.css：10px / 左距 6px
+              // / #bd842e）。窄页头这枚 chip 只剩 icon（连名字都没有），再挂 40px
+              // 文字会把那一行的固定预算顶爆，窄屏只留 tooltip 里的说法。
+              if (pending && !widget.compact) ...[
+                const SizedBox(width: 6),
+                Text(
+                  t('cliSwitchPending'),
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Color(0xFFbd842e),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -310,22 +367,30 @@ class ModelChipState extends State<ModelChip> {
 
   Future<void> _switchAIConfig(BuildContext context, SessionManager mgr) async {
     final target = widget.sessionId;
-    SessionCliConfig? runtime = _runtime;
-    if (runtime == null) {
-      for (final session in mgr.sessions) {
-        if (session.id != target) continue;
-        runtime = SessionCliConfig(
-          cli: session.cli,
-          provider: session.provider,
-          providerSelection: session.providerSelection,
-          model: session.model,
-          effectiveModel: session.effectiveModel,
-          effort: session.effort,
-          effectiveEffort: session.effectiveEffort,
-        );
+    Session? session;
+    for (final x in mgr.sessions) {
+      if (x.id == target) {
+        session = x;
         break;
       }
     }
+    // 与药丸同一条口径：有 pending 就拿 pending 当初始值（web 在打开面板前也是
+    // 先 `...pendingConfiguration?.profile` 覆盖一次），否则拿运行时。
+    final staged = widget.pending ?? _runtime?.pending ?? session?.pending;
+    SessionCliConfig? runtime = staged != null
+        ? _pendingView(staged)
+        : (_runtime ??
+              (session == null
+                  ? null
+                  : SessionCliConfig(
+                      cli: session.cli,
+                      provider: session.provider,
+                      providerSelection: session.providerSelection,
+                      model: session.model,
+                      effectiveModel: session.effectiveModel,
+                      effort: session.effort,
+                      effectiveEffort: session.effectiveEffort,
+                    )));
     // Header data is already enough to paint the sheet. Refresh catalogs in
     // the background; opening the control must never wait for a 20s model-list
     // request. The next open (and the chip itself) receives the refreshed data.
@@ -348,7 +413,7 @@ class ModelChipState extends State<ModelChip> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (_) => AIConfigSheet(
-        cli: runtime!.cli,
+        cli: runtime.cli,
         providers: _providers,
         provider: runtime.provider ?? '',
         providerSelection: runtime.providerSelection,

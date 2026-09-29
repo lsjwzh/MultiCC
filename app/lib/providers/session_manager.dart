@@ -687,8 +687,16 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       fresh: fresh,
     );
     for (final provider in _providers.values) {
-      if (!config.deferred && provider.executionSessionName == id)
+      if (provider.executionSessionName != id) continue;
+      if (config.deferred) {
+        // Deferred: the server kept the old CLI live and staged the picked one
+        // for the next turn. The app must still show what was picked (web does
+        // the same — its pills read the staged config), otherwise the header
+        // keeps showing the old CLI and the AI chip the old CLI's providers.
+        provider.applyPendingConfiguration(config.pending);
+      } else {
         provider.applyCliConfig(config);
+      }
     }
     await loadDashboard();
     return config;

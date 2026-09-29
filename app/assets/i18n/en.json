@@ -2913,6 +2913,7 @@
   "backgroundTasksTitle": "Background tasks",
   "chatContextBarLabel": "Workspace and run status",
   "chatWidthHint": "Adjust chat width",
+  "cliSwitchPending": "Applies next turn",
   "cliSwitchTitle": "Current {cli}; click to switch CLI (the context is handed off through a structured checkpoint)",
   "danmakuCollapseToFab": "Collapse to the floating button",
   "dbgPageLoadedConnect": "page loaded — connecting",
