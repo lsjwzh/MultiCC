@@ -150,6 +150,15 @@ function createTurnEventJournal(deps = {}) {
     return { sessions: sessions.size, dropped, corruptLines };
   }
 
+  // Resolves once every queued append/rotation for the session has settled.
+  // Tests assert on file state and must not race the async rename chain —
+  // polling "two equal directory snapshots" can catch the gap between two
+  // renames and read a mid-rotation world as final.
+  function whenIdle(sessionId) {
+    if (!dirFor) return Promise.resolve();
+    return stateFor(sessionId).queue;
+  }
+
   // All generations, oldest first, so seq is ascending across files — the
   // full-history view derivation (open tasks at cutoff) needs. Same parse
   // rules as read(); a corrupt line is skipped but never stops the rest.
@@ -170,7 +179,7 @@ function createTurnEventJournal(deps = {}) {
     return out;
   }
 
-  return Object.freeze({ note, read, readAll, stats });
+  return Object.freeze({ note, read, readAll, stats, whenIdle });
 }
 
 let shared = null;
