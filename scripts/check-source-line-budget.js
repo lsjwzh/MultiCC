@@ -73,11 +73,10 @@ const MIGRATION_DEBT = Object.freeze({
   // 按实测登记到 3012/121755。这一格仍是那笔 ~200 行的 vendor-quota 集群该还的债。
   // 2026-09-27 FIFO 暂存消息可改正文：queueAction 增加 text 透传（编辑用）。
   // 一行签名 + 一行转发，按实测高水位抬到 3014/121791。
-  'app/lib/providers/chat_provider.dart': Object.freeze({
-    ceiling: 3014,
-    byteCeiling: 121791,
-    target: 3000,
-  }),
+  // 2026-09-29 服务端 auto-commit 重构删掉了每轮勾选框的全部状态
+  // （_turnAutoCommit/_turnAutoCommitTouched/_autoCommittedTurns 等 ~50 行），
+  // 实测降回 2963（<= 3000），这条登记按闸的要求退休 —— 别再把它加回来。
+  // 该拆的仍是那笔 ~200 行的 vendor-quota 集群。
   // public/chat.js 越过 3000：2026-09-27 产出链接优化（fixupLocalFileLinks +
   // stripServerOrigin：agent 输出的本地文件链接改走 /api/download，不再 404）和
   // FIFO 暂存消息双击改正文（createEditHandler + configure 的 onEdit）各加了十几行。

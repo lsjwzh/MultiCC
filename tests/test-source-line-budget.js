@@ -84,8 +84,9 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // renderSchedules moved to public/air-schedule-center.js and dropped it to
   // 2903 — the debt entry went in the same commit, so the list below lost it.
   // chat_provider.dart crossed 3000 (from exactly 3000) in the limit-bar
-  // structural review — see the debt comment in scripts/check-source-line-budget.js
-  // for the split that retires it.
-  assert.deepEqual(result.debts.map(entry => entry.file),
-    ['app/lib/providers/chat_provider.dart']);
+  // structural review and was retired on 2026-09-29, when the server-side
+  // auto-commit refactor removed the per-turn checkbox state (~50 lines) and
+  // dropped it to 2963 — the debt entry went in the same commit, so the list
+  // below lost it.
+  assert.deepEqual(result.debts.map(entry => entry.file), []);
 });
