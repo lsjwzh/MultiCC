@@ -369,10 +369,6 @@ body.air-chat.task-artifacts-chat #task-artifacts-panel,
 body.air-chat.task-artifacts-chat .task-artifacts-toggle { color-scheme: light; }
 .air-chat .task-artifacts-task, .air-chat .task-artifacts-empty,
 .air-chat .task-artifacts-path, .air-chat .task-artifacts-meta { color: var(--chat-muted); opacity: 1; }
-.air-chat .msg.user .msg-auto-commit,
-.air-chat .msg.user .msg-auto-commit:hover { color: var(--chat-blue); border-color: var(--chat-line); }
-.air-chat .msg-auto-commit.done, .air-chat .msg-auto-commit.done::after,
-.air-chat .msg.user .msg-auto-commit.done, .air-chat .msg.user .msg-auto-commit.done::after,
 .air-chat .msg-usage .u-saved { color: var(--chat-success); }
 .air-chat .msg.system-msg.disconnect-banner { color: var(--chat-danger); background: var(--chat-danger-soft); border-color: var(--chat-danger-line); }
 .air-chat .msg.system-msg.disconnect-banner:hover { background: var(--chat-danger-hover); }

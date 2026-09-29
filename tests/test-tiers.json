@@ -175,11 +175,6 @@
       "lane": "flutter"
     },
     {
-      "path": "app/test/autocommit_turn_test.dart",
-      "tier": "flow",
-      "lane": "flutter"
-    },
-    {
       "path": "app/test/aux_classify_bar_test.dart",
       "tier": "other",
       "lane": "flutter"

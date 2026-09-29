@@ -46,7 +46,7 @@ function createFixture(overrides = {}) {
   const chatSessions = overrides.chatSessions || new Map();
   const calls = {
     mergeState: [], baseBranch: [], run: [], merge: [], sync: [], rebase: [],
-    events: [], broadcasts: [], logs: [], warnings: [],
+    events: [], broadcasts: [], logs: [], warnings: [], chatBroadcasts: [],
   };
   const implementations = {
     gitWorktreeMergeState: async (dir, session) => {
@@ -82,6 +82,7 @@ function createFixture(overrides = {}) {
     ...implementations,
     appendEvent: (...args) => calls.events.push(args),
     workspaceBroadcast: (...args) => calls.broadcasts.push(args),
+    chatBroadcast: (...args) => calls.chatBroadcasts.push(args),
     existsSync: overrides.existsSync || (() => true),
     now: () => clock,
     random: () => 0,
@@ -107,7 +108,7 @@ test('mountRoutes installs the Git routes once per app', () => {
   const fixture = createFixture();
   fixture.runtime.mountRoutes(fixture.app);
   assert.deepEqual(Object.keys(fixture.runtime).sort(), [
-    'isWorktreeActive', 'mergeStateCached', 'mountRoutes',
+    'autoCommitTurn', 'isWorktreeActive', 'mergeStateCached', 'mountRoutes',
   ]);
   assert.deepEqual([...fixture.app.routes.keys()].sort(), [
     'GET /api/git/commit-diff',
@@ -775,6 +776,138 @@ test('rebase maps action, force, conflict and actor operation metadata while alw
   assert.equal(blocked.body.queueDepth, 2);
   assert.deepEqual(blocked.body.reasons, ['active']);
   assert.equal(rejected.calls.broadcasts.length, 1);
+});
+
+test('autoCommitTurn merges a ready worktree and reports the result to the chat', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitMergeBack: async (dir, session) => {
+        fixture.calls.merge.push([dir.id, session.id]);
+        return { ok: true, merged: true, commits: 2, committed: true };
+      },
+    },
+  });
+  const result = await fixture.runtime.autoCommitTurn('s1');
+  assert.equal(result.ok, true);
+  assert.equal(result.merged, true);
+  assert.deepEqual(fixture.calls.merge, [['d1', 's1']]);
+  assert.equal(fixture.calls.logs.some(line => line.includes('auto-commit merge')), true);
+  assert.equal(fixture.calls.events.some(([, event]) => event === 'merged'), true);
+  assert.equal(fixture.calls.broadcasts.some(([, payload]) => payload.type === 'merge_status'
+    && payload.sessionId === 's1'), true);
+  assert.deepEqual(fixture.calls.chatBroadcasts, [['s1', {
+    type: 'system', subtype: 'auto_commit',
+    message: '✓ 自动提交完成：已合并 2 个提交回基分支（含本次自动提交）',
+  }]]);
+});
+
+test('autoCommitTurn resolves the workspace owner before checking the switch', async () => {
+  const records = new Map([
+    ['slot-1', { id: 'slot-1', dirId: 'd1', workspaceOwnerSessionId: 's1' }],
+    ['s1', { id: 's1', dirId: 'd1', branch: 'multicc/s1', worktreePath: '/repo/wt-s1' }],
+  ]);
+  const on = createFixture({ records });
+  const merged = await on.runtime.autoCommitTurn('slot-1');
+  assert.equal(merged.ok, true);
+  assert.equal(on.calls.merge.length, 1, 'owner identity drives the merge');
+  assert.equal(on.calls.chatBroadcasts[0][0], 's1', 'notice goes to the owner session');
+
+  records.get('s1').autoCommit = false;
+  const off = createFixture({ records });
+  const skipped = await off.runtime.autoCommitTurn('slot-1');
+  assert.deepEqual(skipped, { ok: false, skipped: true, reason: 'auto_commit_off' });
+  assert.equal(off.calls.merge.length, 0);
+  assert.equal(off.calls.chatBroadcasts.length, 0);
+});
+
+test('autoCommitTurn skips missing switch targets without touching git', async () => {
+  const fixture = createFixture();
+  assert.deepEqual(await fixture.runtime.autoCommitTurn('missing'),
+    { ok: false, skipped: true, reason: 'session_not_found' });
+
+  fixture.records.get('s1').worktreePath = null;
+  assert.deepEqual(await fixture.runtime.autoCommitTurn('s1'),
+    { ok: false, skipped: true, reason: 'no_worktree' });
+
+  fixture.records.get('s1').worktreePath = '/repo/wt-s1';
+  fixture.records.get('s1').workspaceState = 'hibernated';
+  assert.deepEqual(await fixture.runtime.autoCommitTurn('s1'),
+    { ok: false, skipped: true, reason: 'hibernated' });
+  assert.equal(fixture.calls.merge.length, 0);
+  assert.equal(fixture.calls.mergeState.length, 0, 'cheap gates run before any git read');
+  assert.equal(fixture.calls.chatBroadcasts.length, 0);
+
+  const gone = createFixture({ existsSync: () => false });
+  assert.deepEqual(await gone.runtime.autoCommitTurn('s1'),
+    { ok: false, skipped: true, reason: 'no_worktree' });
+});
+
+test('autoCommitTurn stays silent when the worktree has nothing to merge', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitWorktreeMergeState: async () => ({ mergeReady: false, dirty: false, ahead: 0, behind: 0 }),
+    },
+  });
+  const result = await fixture.runtime.autoCommitTurn('s1');
+  assert.deepEqual(result, { ok: true, merged: false, skipped: true, reason: 'nothing_to_merge' });
+  assert.equal(fixture.calls.merge.length, 0);
+  assert.equal(fixture.calls.chatBroadcasts.length, 0, 'a clean worktree commits nothing and says nothing');
+});
+
+test('autoCommitTurn reports an empty merge and conflicts as chat system messages', async () => {
+  const empty = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: true, merged: false, commits: 0 }) },
+  });
+  await empty.runtime.autoCommitTurn('s1');
+  assert.equal(empty.calls.chatBroadcasts.at(-1)[1].message, '✓ 自动提交：没有新提交需要合并');
+
+  const conflicted = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: false, conflicts: ['a.js', 'b.js'] }) },
+  });
+  const result = await conflicted.runtime.autoCommitTurn('s1');
+  assert.equal(result.ok, false);
+  assert.equal(conflicted.calls.chatBroadcasts.at(-1)[1].message,
+    '⚠️ 自动提交冲突：请先手动合并。冲突文件：a.js, b.js');
+
+  const failed = createFixture({
+    implementations: { gitMergeBack: async () => ({ ok: false, error: 'spawn git ENOENT' }) },
+  });
+  await failed.runtime.autoCommitTurn('s1');
+  assert.equal(failed.calls.chatBroadcasts.at(-1)[1].message, '自动提交失败：spawn git ENOENT');
+});
+
+test('autoCommitTurn runs once per session while a merge is in flight', async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const fixture = createFixture({
+    implementations: {
+      gitMergeBack: async (dir, session) => {
+        fixture.calls.merge.push([dir.id, session.id]);
+        return gate;
+      },
+    },
+  });
+  const first = fixture.runtime.autoCommitTurn('s1');
+  await tick();
+  const second = await fixture.runtime.autoCommitTurn('s1');
+  assert.deepEqual(second, { ok: false, skipped: true, reason: 'inflight' });
+  release({ ok: true, merged: true, commits: 1 });
+  const result = await first;
+  assert.equal(result.merged, true);
+  assert.equal(fixture.calls.merge.length, 1);
+});
+
+test('autoCommitTurn contains unexpected git failures', async () => {
+  const fixture = createFixture({
+    implementations: {
+      gitMergeBack: async () => { throw new Error('boom'); },
+    },
+  });
+  const result = await fixture.runtime.autoCommitTurn('s1');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'git_operation_failed');
+  assert.equal(fixture.calls.warnings.length > 0, true);
+  assert.equal(fixture.calls.chatBroadcasts.at(-1)[1].subtype, 'auto_commit');
 });
 
 test('route lookups preserve legacy 404/400 DTOs', async () => {

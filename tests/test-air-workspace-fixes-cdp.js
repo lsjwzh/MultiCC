@@ -24,7 +24,7 @@ test('Air directory memo, cross-directory completion and AutoCommit controls', a
   routes['/api/air'] = () => json({ ok: true, directories: [
     { id: 'd1', name: 'MultiCC', path: '/projects/multicc' }, { id: 'd2', name: '库存', path: '/projects/stock' },
   ], tasks, clis: ['codex'], migration: { errors: [] }, sessions: [] });
-  let autoCommit = true, mergeCount = 0;
+  let autoCommit = true;
   const history = { messages: [{ id: 'u1', role: 'user', content: '修复问题', clientMsgId: 'client1' }], hasMore: false };
   const entry = () => ({ ok: true, task: tasks[1], sessionId: 'task-a', ownerShellId: 'shell-a', readOnly: false,
     execution: { busy: false, status: 'idle' }, resource: { residency: 'planned', lease: 'idle' }, attribution: {},
@@ -39,7 +39,6 @@ test('Air directory memo, cross-directory completion and AutoCommit controls', a
   routes['/api/sessions/task-a'] = () => json({ id: 'task-a', cli: 'codex', autoCommit });
   routes['PATCH /api/sessions/task-a'] = ({ body }) => { autoCommit = JSON.parse(body).autoCommit; return json({ autoCommit }); };
   routes['/api/sessions/task-a/merge-status'] = () => json({ branch: 'multicc/task-a', baseBranch: 'main', mergeReady: true });
-  routes['POST /api/sessions/task-a/merge'] = () => { mergeCount++; return json({ merged: true, commits: 1 }); };
   routes['/api/sessions/task-a/liveness'] = () => json({ state: 'idle' });
   routes['/api/settings/access-token'] = () => json({ hasToken: true, canEdit: false });
   routes['/api/providers'] = () => json({ available: false, providers: [], defaults: {} });
@@ -67,37 +66,23 @@ test('Air directory memo, cross-directory completion and AutoCommit controls', a
 
     await page.navigate('/air?dir=d1&task=t0');
     const frame = `document.getElementById('conversation').contentWindow`;
-    const cb = `${frame}.document.querySelector('.msg-auto-commit input')`;
     const button = `${frame}.document.getElementById('auto-commit-btn')`;
     assert.ok(await page.waitFor(`${button}?.dataset.state === 'on'`));
     await page.evaluate(`${frame}.eval('refreshShellHistory()')`);
-    assert.ok(await page.waitFor(`${cb} && ${button}?.dataset.state === 'on'`), JSON.stringify({ requests: page.requests.map(r => r.path).filter(p => p.startsWith('/api/')),
+    // The per-turn checkbox under the last user message is gone: the header
+    // toggle (session-level PATCH) is the only control. The server merges at
+    // turn end whenever the switch is on.
+    assert.ok(await page.waitFor(`${button}?.dataset.state === 'on'`), JSON.stringify({ requests: page.requests.map(r => r.path).filter(p => p.startsWith('/api/')),
       frame: await page.evaluate(`({url:${frame}.location.href,text:${frame}.document.body.innerText.slice(-1500),state:${button}?.dataset.state})`) }));
-    assert.equal(await page.evaluate(`${cb}.checked`), true);
+    assert.equal(await page.evaluate(`${frame}.document.querySelector('.msg-auto-commit')`), null,
+      'no per-turn checkbox is rendered anymore');
     await page.evaluate(`${button}.click()`);
     assert.ok(await page.waitFor(`${button}.dataset.state === 'off'`));
-    assert.equal(await page.evaluate(`${cb}.checked`), false, 'session toggle updates the current turn');
-    await page.evaluate(`${frame}.eval('autoCommitIfNeeded(_lastUserBubble)')`);
-    assert.equal(mergeCount, 0, 'disabled session must not merge');
+    assert.equal(autoCommit, false, 'header toggle persists to the session record');
+    await page.evaluate(`${frame}.eval('refreshShellHistory()')`);
+    assert.ok(await page.waitFor(`${button}.dataset.state === 'off'`), 'history rebuild keeps the header state');
     await page.evaluate(`${button}.click()`);
     assert.ok(await page.waitFor(`${button}.dataset.state === 'on'`));
-    await page.evaluate(`${cb}.click()`);
-    await page.evaluate(`${frame}.eval('refreshShellHistory()')`);
-    assert.equal(await page.evaluate(`${cb}.checked`), false, 'history rebuild preserves a manual opt-out');
-    await page.evaluate(`${frame}.eval('loadSessionModel()')`);
-    assert.equal(await page.evaluate(`${cb}.checked`), false, 'profile refresh preserves a manual opt-out');
-    await page.navigate('/air?dir=d1&task=t0');
-    assert.ok(await page.waitFor(`${button}?.dataset.state === 'on'`));
-    await page.evaluate(`${frame}.eval('refreshShellHistory()')`);
-    assert.ok(await page.waitFor(`${cb} && ${button}?.dataset.state === 'on'`));
-    assert.equal(await page.evaluate(`${cb}.checked`), false, 'page reload preserves the same turn choice');
-    await page.evaluate(`${frame}.eval('autoCommitIfNeeded(_lastUserBubble)')`);
-    assert.equal(mergeCount, 0, 'manual opt-out wins over the enabled default');
-    await page.evaluate(`${cb}.click()`);
-    await page.evaluate(`${frame}.eval('applyMergeStatus({mergeReady:true}); autoCommitIfNeeded(_lastUserBubble)')`);
-    assert.equal(mergeCount, 1, 'enabled current turn merges once');
-    await page.evaluate(`${frame}.eval('refreshShellHistory()')`);
-    await page.evaluate(`${frame}.eval('applyMergeStatus({mergeReady:true}); autoCommitIfNeeded(_lastUserBubble)')`);
-    assert.equal(mergeCount, 1, 'completed marker survives a rebuild, preventing duplicate merges');
+    assert.equal(autoCommit, true);
   });
 });

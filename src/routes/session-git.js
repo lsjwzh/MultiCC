@@ -431,6 +431,85 @@ function createSessionGitRuntime(rawDeps) {
     return out;
   }
 
+  // Shared commit → merge → broadcast flow behind the manual merge route and
+  // the turn-end auto-commit. Returns the gitMergeBack result; when the merge
+  // landed, siblingsSynced is attached after the sibling fast-forward sweep.
+  async function executeMergeBack(dir, identity, { taskId = null, origin = 'manual' } = {}) {
+    const result = await deps.gitMergeBack(dir, identity).catch(error => {
+      deps.logger.warn(`[multicc] merge ${identity.id} failed: ${errorText(error)}`);
+      return failedGitResult(error);
+    });
+    if (!result.ok) return result;
+    deps.logger.log(`[multicc] ${origin === 'auto' ? 'auto-commit merge' : 'merge'} ${identity.branch} → ${dir.baseBranch}: `
+      + (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
+    deps.appendEvent(dir.id, 'merged',
+      result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', identity.id);
+    deps.workspaceBroadcast(dir.id, {
+      type: 'merge_status', sessionId: identity.id, ...(taskId ? { taskId } : {}),
+      mergeState: await mergeStateFresh(dir, identity),
+    });
+    if (result.merged) {
+      const synced = await autoSyncSiblingWorktrees(dir, identity.id);
+      if (synced.length) result.siblingsSynced = synced;
+    }
+    return result;
+  }
+
+  // Turn-end auto-commit. The per-turn checkbox under the last user message is
+  // gone: the session-level switch (autoCommit !== false) is the only gate.
+  // The chat turn engine calls this from its complete-session-turn effect, so
+  // the merge runs even when no chat page is connected — the page used to be
+  // the trigger, and turns that ended offline were never merged nor caught up.
+  const autoCommitInflight = new Set();
+  async function autoCommitTurn(sessionId) {
+    const requested = deps.records.get(sessionId);
+    const identity = requested?.workspaceOwnerSessionId
+      ? deps.records.get(requested.workspaceOwnerSessionId) : requested;
+    if (!identity) return { ok: false, skipped: true, reason: 'session_not_found' };
+    if (identity.autoCommit === false) return { ok: false, skipped: true, reason: 'auto_commit_off' };
+    if (!identity.worktreePath || !identity.branch || !deps.existsSync(identity.worktreePath)) {
+      return { ok: false, skipped: true, reason: 'no_worktree' };
+    }
+    if (identity.workspaceState === 'hibernated') {
+      return { ok: false, skipped: true, reason: 'hibernated' };
+    }
+    const dir = deps.directories.get(identity.dirId);
+    if (!dir) return { ok: false, skipped: true, reason: 'directory_not_found' };
+    if (autoCommitInflight.has(identity.id)) return { ok: false, skipped: true, reason: 'inflight' };
+    autoCommitInflight.add(identity.id);
+    try {
+      // A turn just wrote the worktree; the cached poll value is stale. One
+      // authoritative read decides both whether to act and whether to stay
+      // silent (a clean worktree commits nothing and says nothing).
+      const state = await mergeStateFresh(dir, identity);
+      if (!state || state.mergeReady !== true) {
+        return { ok: true, merged: false, skipped: true, reason: 'nothing_to_merge' };
+      }
+      const result = await executeMergeBack(dir, identity, { origin: 'auto' });
+      if (typeof deps.chatBroadcast === 'function' && !result.blocked) {
+        if (result.ok && result.merged) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: `✓ 自动提交完成：已合并 ${result.commits} 个提交回基分支${result.committed ? '（含本次自动提交）' : ''}` });
+        } else if (result.ok) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: '✓ 自动提交：没有新提交需要合并' });
+        } else if (result.conflicts && result.conflicts.length) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: `⚠️ 自动提交冲突：请先手动合并。冲突文件：${result.conflicts.join(', ')}` });
+        } else if (!result.ok) {
+          deps.chatBroadcast(identity.id, { type: 'system', subtype: 'auto_commit',
+            message: `自动提交失败：${result.error || 'unknown'}` });
+        }
+      }
+      return result;
+    } catch (error) {
+      deps.logger.warn(`[multicc] auto-commit merge ${identity.id} failed: ${errorText(error)}`);
+      return failedGitResult(error);
+    } finally {
+      autoCommitInflight.delete(identity.id);
+    }
+  }
+
   function findSession(req, res) {
     const requested = deps.records.get(req.params.id);
     const persisted = requested?.workspaceOwnerSessionId ? deps.records.get(requested.workspaceOwnerSessionId) : requested;
@@ -1120,26 +1199,11 @@ function createSessionGitRuntime(rawDeps) {
       if (!found) return;
       const { persisted, dir } = found;
       if (!hasWorktree(persisted, res, '该会话没有 worktree，无需合并')) return;
-      const result = await deps.gitMergeBack(dir, persisted).catch(error => {
-        deps.logger.warn(`[multicc] merge ${persisted.id} failed: ${errorText(error)}`);
-        return failedGitResult(error);
-      });
+      const result = await executeMergeBack(dir, persisted);
       if (!result.ok) {
         const status = result.conflicts && result.conflicts.length ? 409
           : (result.code === 'git_operation_failed' ? 500 : 400);
         return res.status(status).json(result);
-      }
-      deps.logger.log(`[multicc] merge ${persisted.branch} → ${dir.baseBranch}: `
-        + (result.merged ? `${result.commits} commit(s)` : 'nothing to merge'));
-      deps.appendEvent(dir.id, 'merged',
-        result.merged ? `${result.commits} 个提交 → ${dir.baseBranch}` : '无新提交', persisted.id);
-      deps.workspaceBroadcast(dir.id, {
-        type: 'merge_status', sessionId: persisted.id,
-        mergeState: await mergeStateFresh(dir, persisted),
-      });
-      if (result.merged) {
-        const synced = await autoSyncSiblingWorktrees(dir, persisted.id);
-        if (synced.length) result.siblingsSynced = synced;
       }
       return res.json(result);
     });
@@ -1235,6 +1299,7 @@ function createSessionGitRuntime(rawDeps) {
     mountRoutes,
     mergeStateCached,
     isWorktreeActive,
+    autoCommitTurn,
   });
 }
 

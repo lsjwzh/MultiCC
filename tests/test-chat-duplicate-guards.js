@@ -68,7 +68,7 @@ for (const source of ['committed', 'nested-only', 'history']) {
   }
 }
 
-test('shell commit preserves the auto-commit checkbox and distinct sends with identical text', () => {
+test('shell commit keeps distinct sends with identical text apart', () => {
   const rig = shellRig();
   for (const index of [1, 2]) {
     const clientMsgId = `client-${index}`;
@@ -79,11 +79,8 @@ test('shell commit preserves the auto-commit checkbox and distinct sends with id
       message: 'same message', clientMsgId: `sr_${index}`,
     });
     rig.receive(events.ack);
-    const checkbox = global.document.createElement('label');
-    checkbox.className = 'msg-auto-commit';
-    rig.state.lastUserBubble.appendChild(checkbox);
     rig.receive(events.committed);
-    assert.equal(rig.state.lastUserBubble.querySelector('.msg-auto-commit'), checkbox);
+    assert.equal(rig.state.lastUserBubble.dataset.msgId, `stored-${index}`);
     rig.receive(events.committed);
     assert.equal(rig.messagesEl.querySelectorAll('.msg.user').length, index);
   }

@@ -667,8 +667,6 @@
       let lastUserElement = hostState.lastUserElement || null;
       const wasCurrent = currentElement === existing;
       const wasLastUser = lastUserElement === existing;
-      const pendingAutoCommit = wasLastUser ? existing.querySelector('.msg-auto-commit') : null;
-      if (pendingAutoCommit) node.appendChild(pendingAutoCommit);
       existing.replaceWith(node);
       if (wasCurrent) currentElement = node;
       if (wasLastUser) lastUserElement = node;

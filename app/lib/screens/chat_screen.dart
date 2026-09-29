@@ -155,14 +155,6 @@ class _ChatViewState extends State<ChatView> {
   // 幂等键 —— 两个容器（worktree 提示条 / 冲突横幅）共用同一份，跟 Web 一样。
   bool _forceSyncing = false;
   String? _forceSyncClientMsgId;
-  // 每轮自动提交（Web 的 `autoCommitIfNeeded`）：执行状态（在途互斥 + 轮次
-  // 游标）在 controller 上，页面只负责每帧喊一声、并提供「刷新 merge-status」
-  // 这个能力。
-  late final AutoCommitController _autoCommit = AutoCommitController(
-    settings: widget.settings,
-    isAlive: () => mounted,
-    refreshMergeReady: _refreshMergeReady,
-  );
   bool _dispatchExpanded = false;
   // 右侧两个抽屉（调试面板 + 产物边栏）的开关、列表与轮询都在这里。
   late final ChatSidePanels _panels = ChatSidePanels(
@@ -587,12 +579,6 @@ class _ChatViewState extends State<ChatView> {
     super.didChangeDependencies();
     final provider = context.watch<ChatProvider>();
     _syncQuoteInserter(provider);
-    // 一轮结束（WS `result` 帧让 turnEndTick 自增）是自动提交唯一的触发点，
-    // 所以这一步要排在下面那些「换会话才做」的早退之前。
-    _autoCommit.syncTick(
-      provider: provider,
-      manager: context.read<SessionManager>(),
-    );
     // 产物边栏的 scope 是任务壳，握手完成后才拿得到 —— 这里每帧问一次，
     // 拿到就换过去（web 的 `setScope` 也是外部推进来的）。
     _panels.sync(provider.shellId);
@@ -670,16 +656,11 @@ class _ChatViewState extends State<ChatView> {
   }
 
   /// 页头 ⋯ 里的「自动提交✓/✕」（Web 的 `#auto-commit-btn` 点击）。
-  Future<void> _toggleAutoCommit(ChatProvider provider) => _autoCommit.toggle(
-    provider: provider,
-    manager: context.read<SessionManager>(),
-  );
-
-  /// 刷一次 merge-status，并把「现在有没有可合并的东西」告诉自动提交执行器。
-  Future<bool> _refreshMergeReady(String session) async {
-    await _refreshMergeStatus(session);
-    return _mergeStatus?['mergeReady'] == true;
-  }
+  Future<void> _toggleAutoCommit(ChatProvider provider) =>
+      toggleSessionAutoCommit(
+        provider: provider,
+        manager: context.read<SessionManager>(),
+      );
 
   // ── Deep-link focus resolution ────────────────────────────────────────────
   // Called once (post-frame) after the initial history page is applied. If the
@@ -2242,12 +2223,6 @@ class _MessageListState extends State<_MessageList> {
         status: provider.statusText,
       );
     }
-    // 每轮勾选框挂在最后一条用户消息上（Web 的 `_lastUserBubble`）。没被手动
-    // 勾过的那一轮跟随会话级开关，所以这里要读一次会话记录里的值。
-    final sessionAutoCommit = context.select<SessionManager, bool>(
-      (m) => sessionAutoCommitOf(m.sessions, provider.sessionName),
-    );
-    final lastUserTurnId = lastUserMessageId(messages);
     final admissionProgress = provider.admissionProgressText;
     // 「思考中」那一行的渲染条件收在 provider 上：调试面板也要问同一件事
     // （`stuck` 徽章 = thinking 还在屏幕上但已经不 streaming），两边各写一份
@@ -2288,28 +2263,8 @@ class _MessageListState extends State<_MessageList> {
                     prev == null ||
                     msg.timestamp.difference(prev.timestamp).inMinutes.abs() >=
                         _timeSeparatorGapMinutes;
-                // 只有最后一条用户消息挂每轮勾选框；其余气泡四个参数全走默认值，
-                // 渲染结果跟没有这个功能时逐像素一致。
-                final turnId =
-                    lastUserTurnId != null && msg.id == lastUserTurnId
-                    ? lastUserTurnId
-                    : null;
                 final bubble = _maybeHighlight(
-                  MessageBubble(
-                    message: msg,
-                    showAutoCommit: turnId != null,
-                    autoCommitChecked:
-                        turnId != null &&
-                        provider.turnAutoCommit(
-                          turnId,
-                          fallback: sessionAutoCommit,
-                        ),
-                    autoCommitDone:
-                        turnId != null && provider.isTurnAutoCommitted(turnId),
-                    onAutoCommitChanged: turnId == null
-                        ? null
-                        : (v) => provider.setTurnAutoCommit(turnId, v),
-                  ),
+                  MessageBubble(message: msg),
                   msg.id,
                 );
                 if (!showTime) return bubble;
