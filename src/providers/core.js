@@ -850,7 +850,35 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
 }
 
 function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist }) {
-  if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) throw new Error('请在官方账号中管理登录和切换账号');
+  if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) {
+    // Login/account identity is OAuth-managed and not editable here. Advanced
+    // settings (currently: egress-IP allowlist) are the one thing an official
+    // provider's editor may still submit — persisted as a minimal override
+    // record (see official-catalog.js's provider() merge), everything else
+    // still bounces to the dedicated official-account flow.
+    if ([name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap].some(v => v !== undefined)) {
+      throw new Error('请在官方账号中管理登录和切换账号');
+    }
+    const officialProviderId = `${appType}-official`;
+    const list = loadStore();
+    const normalized = normalizeEgressIpAllowlist(egressIpAllowlist);
+    let p = list.find(x => x.appType === appType && x.id === officialProviderId);
+    if (!p && normalized.length) {
+      p = { id: officialProviderId, appType, source: 'builtin-override' };
+      list.push(p);
+    }
+    if (p) {
+      if (normalized.length) p.egressIpAllowlist = normalized;
+      else {
+        delete p.egressIpAllowlist;
+        // Nothing else lives on this override record — drop the empty stub.
+        const idx = list.indexOf(p);
+        if (idx !== -1) list.splice(idx, 1);
+      }
+    }
+    saveStore(list);
+    return { id: officialProviderId, appType };
+  }
   const list = loadStore();
   const p = list.find(x => x.appType === appType && x.id === id);
   if (!p) throw new Error('provider not found');

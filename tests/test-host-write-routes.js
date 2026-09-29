@@ -22,7 +22,6 @@ const EXPECTED_PATHS = [
   'POST /api/tunnel/sakurafrp/public-url',
   'POST /api/tunnel/funnel',
   'POST /api/settings/access-token',
-  'POST /api/settings/official-oauth',
   'POST /api/settings/power',
   'POST /api/settings/power/auto-unlock',
   'POST /api/settings/power/unlock-password',
@@ -88,10 +87,8 @@ function createHarness(overrides = {}) {
       BARK_URL: 'https://api.day.app/device-old',
       WEBHOOK_URL: 'https://hooks.example.test/hook-old',
       ACCESS_TOKEN: 'old-token',
-      CLAUDE_OFFICIAL_VIA_PROXY: '0',
     },
     accessToken: 'old-token',
-    oauthEnabled: false,
     allowRemote: false,
     envWrites: [],
     events: [],
@@ -131,11 +128,6 @@ function createHarness(overrides = {}) {
     },
     getAllowRemote: () => state.allowRemote,
     isLocalRequest: req => req.local === true,
-    getOfficialOAuthEnabled: () => state.oauthEnabled,
-    setOfficialOAuthEnabled: enabled => {
-      state.events.push(['oauth-live', enabled]);
-      state.oauthEnabled = enabled;
-    },
     macosPower: {
       isAvailable: () => true,
       setLidSleepPrevention: async enabled => ({ available: true, enabled }),
@@ -180,10 +172,7 @@ test('mounts the complete host write group behind a narrow dependency boundary',
 
 test('permission matrix preserves authenticated routes and limits only sensitive local settings', async () => {
   const { routes, state } = createHarness();
-  for (const routePath of [
-    '/api/settings/access-token',
-    '/api/settings/official-oauth',
-  ]) {
+  for (const routePath of ['/api/settings/access-token']) {
     const response = await invoke(routes, routePath, {
       local: false,
       body: { enabled: true, on: true, token: 'new-token' },
@@ -580,7 +569,7 @@ test('access-token writes durably before hot reload and refuses unsafe clearing'
   assert.equal(cliTunnel.state.accessToken, 'old-token');
 });
 
-test('access-token and boolean persistence failures leave live values unchanged', async () => {
+test('access-token persistence failures leave live values unchanged', async () => {
   const secret = 'disk full at /Users/private/.env';
   const { routes, state } = createHarness({
     writeEnvFile: () => { throw new Error(secret); },
@@ -589,37 +578,11 @@ test('access-token and boolean persistence failures leave live values unchanged'
     local: true,
     body: { token: 'new-token' },
   });
-  const oauth = await invoke(routes, '/api/settings/official-oauth', {
-    local: true,
-    body: { enabled: true },
-  });
   assert.equal(access.nextError.message, secret);
-  assert.equal(oauth.nextError.message, secret);
   assert.equal(state.accessToken, 'old-token');
-  assert.equal(state.oauthEnabled, false);
-  for (const response of [access, oauth]) {
-    const presented = presentSafely(response.nextError);
-    assert.equal(presented.body.error, 'internal_error');
-    assert.equal(JSON.stringify(presented.body).includes('/Users/private'), false);
-  }
-});
-
-test('official OAuth validates booleans, preserves response DTOs and persists before going live', async () => {
-  const { routes, state } = createHarness();
-  assert.deepEqual((await invoke(routes, '/api/settings/official-oauth', {
-    local: true,
-    body: { enabled: 'true' },
-  })).body, { error: 'enabled 必须是布尔' });
-
-  const oauth = await invoke(routes, '/api/settings/official-oauth', {
-    local: true,
-    body: { enabled: true },
-  });
-  assert.deepEqual(oauth.body, { ok: true, enabled: true });
-  assert.equal(state.oauthEnabled, true);
-  const oauthPersist = state.events.findIndex(([type, value]) => type === 'persist' && value.CLAUDE_OFFICIAL_VIA_PROXY === '1');
-  const oauthLive = state.events.findIndex(([type]) => type === 'oauth-live');
-  assert.ok(oauthPersist >= 0 && oauthPersist < oauthLive);
+  const presented = presentSafely(access.nextError);
+  assert.equal(presented.body.error, 'internal_error');
+  assert.equal(JSON.stringify(presented.body).includes('/Users/private'), false);
 });
 
 test('power settings preserve success and validation responses and redact thrown errors', async () => {

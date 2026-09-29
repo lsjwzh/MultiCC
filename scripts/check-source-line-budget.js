@@ -289,10 +289,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 2026-09-29 Provider 高级配置新增「限定出口 IP」编辑框补 3 键
   // （airProviderEgressIpSummary / Body / Placeholder，中英各 3 行 = +6）；
   // 生成后 7230/453911。
+  // 2026-09-29 删除「官方会话走代理（OAuth 重放）」UI 整段，去掉 12 个双语键
+  // （airGlobalOauth* × 8 + officialOauthProxy* × 2，中英各 12 行 = -24）；
+  // 按最后一版重跑生成器的真实值登记 7206/450337。
+  // 2026-09-29 官方 provider 可编辑高级设置补 1 键（airProviderOfficialLockedHint，
+  // 中英各 1 行 = +2）；按最后一版重跑生成器的真实值登记 7208/450638。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7230,
-    maxBytes: 453911,
+    maxLines: 7208,
+    maxBytes: 450638,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

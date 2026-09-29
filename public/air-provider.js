@@ -56,6 +56,7 @@
       <form id="air-provider-form">
         <div class="section-heading"><div><span class="eyebrow">AIR PROVIDER</span><h2 id="air-provider-form-title">${t('airProviderFormTitleNew')}</h2></div><button type="button" id="air-provider-close" aria-label="${t('airProviderClose')}">×</button></div>
         <p>${t('airProviderFormIntro')}</p>
+        <p id="air-provider-official-hint" class="air-migration-note" hidden>${t('airProviderOfficialLockedHint')}</p>
         <input type="hidden" name="providerId">
         <label>${t('airProviderPresetLabel')}<select name="preset"><option value="">${t('airProviderPresetCustom')}</option><optgroup label="Claude"><option value="claude-subscription">${t('airProviderPresetClaudeSubscription')}</option><option value="claude-api">${t('airProviderPresetClaudeApi')}</option><option value="claude-glm">${t('airProviderPresetGlm')}</option><option value="claude-deepseek">DeepSeek</option><option value="claude-minimax">MiniMax</option><option value="claude-qwen">${t('airProviderPresetQwen')}</option><option value="claude-openrouter">OpenRouter</option></optgroup><optgroup label="Codex"><option value="codex-official">${t('airProviderPresetCodexOfficial')}</option><option value="codex-xf-maas">${t('airProviderPresetXfMaas')}</option></optgroup></select></label>
         <div class="form-row"><label>CLI<select name="appType"><option value="claude">Claude</option><option value="codex">Codex</option></select></label><label>${t('airProviderUpstreamProtocol')}<select name="apiFormat"><option value="anthropic">Anthropic Messages</option><option value="openai_responses">OpenAI Responses</option></select></label></div>
@@ -128,6 +129,7 @@
     const dialog = ensureDialog();
     const form = el('air-provider-form');
     form.reset();
+    const locked = !!provider?.isOfficial;
     form.elements.providerId.value = provider?.id || '';
     form.elements.appType.value = provider?.appType || 'claude';
     form.elements.appType.disabled = !!provider;
@@ -142,6 +144,22 @@
     form.elements.egressIpAllowlist.value = egressIpAllowlist.join('\n');
     el('air-provider-egress-ip').open = egressIpAllowlist.length > 0;
     syncDialogProtocol();
+    // Official providers are OAuth-managed: identity/credential fields are read-only
+    // here (login/account switching lives in the dedicated official-account flow),
+    // leaving only the advanced settings below (egress-IP allowlist) editable.
+    form.dataset.official = locked ? '1' : '';
+    form.elements.preset.disabled = locked;
+    form.elements.name.disabled = locked;
+    form.elements.baseUrl.disabled = locked;
+    form.elements.authToken.disabled = locked;
+    form.elements.model.disabled = locked;
+    form.elements.models.disabled = locked;
+    if (locked) form.elements.apiFormat.disabled = true;
+    for (const tier of ['opus', 'sonnet', 'haiku', 'fable']) {
+      form.elements[`alias-${tier}-model`].disabled = locked;
+      form.elements[`alias-${tier}-name`].disabled = locked;
+    }
+    el('air-provider-official-hint').hidden = !locked;
     el('air-provider-form-title').textContent = provider ? t('airProviderEditTitle', { name: displayName(provider) }) : t('airProviderFormTitleNew');
     el('air-provider-save').textContent = provider ? t('airProviderSave') : t('airProviderCreate');
     el('air-provider-form-error').textContent = '';
@@ -155,20 +173,27 @@
     const error = el('air-provider-form-error');
     const providerId = form.elements.providerId.value;
     const appType = form.elements.appType.value;
-    const model = form.elements.model.value.trim();
-    const body = {
-      name: form.elements.name.value.trim(),
-      baseUrl: form.elements.baseUrl.value.trim(),
-      model,
-      models: catalogApi.normalizeModelOptions(form.elements.models.value, model),
-      apiFormat: form.elements.apiFormat.value,
-    };
-    const token = form.elements.authToken.value.trim();
-    if (!providerId || token) body.authToken = token;
-    if (appType === 'claude') body.aliasMap = aliasMapFrom(form);
-    if (!providerId) body.appType = appType;
-    body.egressIpAllowlist = form.elements.egressIpAllowlist.value
+    const egressIpAllowlist = form.elements.egressIpAllowlist.value
       .split(/[\n,]/).map(item => item.trim()).filter(Boolean);
+    let body;
+    if (form.dataset.official === '1') {
+      // OAuth-managed identity: only the advanced settings below are ours to write.
+      body = { egressIpAllowlist };
+    } else {
+      const model = form.elements.model.value.trim();
+      body = {
+        name: form.elements.name.value.trim(),
+        baseUrl: form.elements.baseUrl.value.trim(),
+        model,
+        models: catalogApi.normalizeModelOptions(form.elements.models.value, model),
+        apiFormat: form.elements.apiFormat.value,
+        egressIpAllowlist,
+      };
+      const token = form.elements.authToken.value.trim();
+      if (!providerId || token) body.authToken = token;
+      if (appType === 'claude') body.aliasMap = aliasMapFrom(form);
+      if (!providerId) body.appType = appType;
+    }
     save.disabled = true; error.textContent = '';
     try {
       const path = providerId ? `/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(providerId)}` : '/api/providers';
@@ -224,7 +249,11 @@
           root.shareRelayProvider?.(provider.appType, provider.id);
         }),
         button(t('airProviderDelete'), () => removeProvider(provider), 'danger'));
-    } else actions.append(make('span', t('airProviderOfficialSwitchHint')));
+    } else {
+      actions.append(
+        button(t('airProviderEdit'), () => openEditor(provider)),
+        make('span', t('airProviderOfficialSwitchHint')));
+    }
     card.append(actions);
     return card;
   }

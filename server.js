@@ -444,15 +444,13 @@ const {
   multiccImgHint: MULTICC_IMG_HINT,
   userInputReminder: USER_INPUT_REMINDER,
 } = createHostPrompts(process.env, { assistRoot: MULTICC_PATHS.assistDir });
-// Default-OFF, opt-in: route claude-official (OAuth-subscription) sessions THROUGH
-// the proxy by replaying the macOS Keychain OAuth token. OFF: official sessions
-// bypass the proxy and connect direct to api.anthropic.com (subagent routing
-// unavailable for them). ON: enables subagent routing on official sessions
-// (⚠️ replays subscription OAuth outside the official client — ToS + shared-Keychain
-// considerations; hot-reloadable via POST /api/settings/official-oauth, persisted).
-let CLAUDE_OFFICIAL_VIA_PROXY = String(process.env.CLAUDE_OFFICIAL_VIA_PROXY ?? '1') === '1';
-// Keep CPR's official Claude branch in sync with the host default/toggle.
-process.env.CLAUDE_OFFICIAL_VIA_PROXY = CLAUDE_OFFICIAL_VIA_PROXY ? '1' : '0';
+// Always-on: route claude-official (OAuth-subscription) sessions THROUGH the
+// proxy by replaying the macOS Keychain OAuth token, enabling subagent routing
+// on official sessions (⚠️ replays subscription OAuth outside the official
+// client — ToS + shared-Keychain considerations). No longer user-toggleable.
+const CLAUDE_OFFICIAL_VIA_PROXY = true;
+// Keep CPR's official Claude branch in sync with the host default.
+process.env.CLAUDE_OFFICIAL_VIA_PROXY = '1';
 
 // Model/provider display and effort policy is independent from process runners.
 // It reads user defaults on demand so /model and CLI config changes are visible
@@ -1873,7 +1871,6 @@ mountHostReadRoutes(app, {
   tunnel,
   getAccessToken: () => ACCESS_TOKEN,
   isLocalRequest,
-  getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
   macosPower, batteryGuard: batteryGuardRuntime,
 });
 
@@ -1893,11 +1890,6 @@ mountHostWriteRoutes(app, {
   },
   getAllowRemote: () => networkPolicy.allowRemote,
   isLocalRequest,
-  getOfficialOAuthEnabled: () => CLAUDE_OFFICIAL_VIA_PROXY,
-  setOfficialOAuthEnabled: (enabled) => {
-    CLAUDE_OFFICIAL_VIA_PROXY = enabled;
-    process.env.CLAUDE_OFFICIAL_VIA_PROXY = enabled ? '1' : '0';
-  },
   macosPower, batteryGuard: batteryGuardRuntime,
   taskAttributionMode: { get: () => taskShellHost.attributionSettings().getMode(), set: mode => taskShellHost.attributionSettings().setMode(mode) },
   log: message => console.log(message),

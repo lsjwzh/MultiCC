@@ -314,29 +314,6 @@ function createAccessTokenHandler(deps) {
   };
 }
 
-function createBooleanSettingHandler(deps, setting) {
-  return function booleanSettingHandler(req, res, next) {
-    if (!requireLocal(deps, req, res)) return undefined;
-    const enabled = req.body && req.body.enabled;
-    if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled 必须是布尔' });
-    try {
-      const previous = setting.get();
-      const value = enabled ? '1' : '0';
-      persistThenApply(
-        deps,
-        { [setting.envKey]: value },
-        () => setting.set(enabled),
-        () => setting.set(previous),
-        setting.envKey.toLowerCase(),
-      );
-      deps.log(setting.logMessage(enabled));
-      return res.json({ ok: true, enabled });
-    } catch (error) {
-      return next(error);
-    }
-  };
-}
-
 function assertHostWriteDeps(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('host write route dependencies are required');
   for (const name of [
@@ -346,8 +323,6 @@ function assertHostWriteDeps(deps) {
     'setAccessToken',
     'getAllowRemote',
     'isLocalRequest',
-    'getOfficialOAuthEnabled',
-    'setOfficialOAuthEnabled',
   ]) {
     if (typeof deps[name] !== 'function') throw new TypeError(`host write route dependency missing: ${name}`);
   }
@@ -385,12 +360,6 @@ function mountHostWriteRoutes(app, rawDeps) {
   app.post('/api/tunnel/sakurafrp/public-url', createTunnelSakurafrpPublicUrlHandler(deps));
   app.post('/api/tunnel/funnel', createTunnelFunnelHandler(deps));
   app.post('/api/settings/access-token', createAccessTokenHandler(deps));
-  app.post('/api/settings/official-oauth', createBooleanSettingHandler(deps, {
-    envKey: 'CLAUDE_OFFICIAL_VIA_PROXY',
-    get: deps.getOfficialOAuthEnabled,
-    set: deps.setOfficialOAuthEnabled,
-    logMessage: enabled => `[multicc/proxy] official-via-proxy (OAuth replay) ${enabled ? 'enabled' : 'disabled'} via UI`,
-  }));
   mountPowerWriteRoutes(app, deps);
   // 自动归属档位是主机策略：只在服务端持有的档位阶梯，改动只允许本机发起，
   // 并且先落 .env 再切运行时值（失败按 env 回滚）。
@@ -424,7 +393,6 @@ module.exports = {
   createTunnelSakurafrpPublicUrlHandler,
   createTunnelFunnelHandler,
   createAccessTokenHandler,
-  createBooleanSettingHandler,
   createPowerSettingsHandler,
   mountHostWriteRoutes,
 };
