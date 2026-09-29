@@ -258,13 +258,18 @@
   // 所以一条任务在侧栏和控制台不可能显示成两种状态，彩虹圈也不可能只出现在一边
   // —— 注册表把 spinner 只给了 running，「出错的任务绝不动画」因此不由这里决定。
   const taskStatus = task => window.MultiCCAirAdmin?.taskStatus?.(task) || 'unknown';
+  /** 徽标上真正写出来的那个词。✅ 那一格可能更细（达成目标 / 需要交互，见
+   *  status-presentation.js 的 succeededSubLabel），而下面几行「徽标说过的词不再说
+   *  一遍」的去重要比的正是同一个词 —— 各自读一份就会去错。 */
+  const taskBadgeWord = task => window.MultiCCStatusPresentation
+    ?.succeededSubLabel?.(taskStatus(task), task?.goalState, t) || label(taskStatus(task));
   const isRunningTask = task => window.MultiCCAirAdmin?.isRunning?.(task) === true;
   const runningDirectories = () => window.MultiCCAirAdmin?.runningDirectories?.(data) || new Set();
   const applyRing = (element, on, seed) => window.MultiCCAirAdmin?.applyRing?.(element, on, seed);
   /** 状态徽标（图标 + 中文标签）。没有注册表时给一句可读的兜底文案。 */
   function statusBadge(task, options) {
     return window.MultiCCAirAdmin?.statusBadge?.(task, options)
-      || node('span', label(taskStatus(task)), 'mc-status');
+      || node('span', taskBadgeWord(task), 'mc-status');
   }
 
   // `conditional` 只给每 4 秒被问一次的那两个轮询接口用，它们的调用方知道
@@ -641,7 +646,7 @@
       // the target without turning every compact row into a path dump.
       const worktree = task.resource?.path
         ? `WT${task.resource.branch ? ` · ${task.resource.branch}` : ''}` : '';
-      const extra = [stage, detail, worktree].filter(part => part && !label(taskStatus(task)).includes(part)).join(' · ');
+      const extra = [stage, detail, worktree].filter(part => part && !taskBadgeWord(task).includes(part)).join(' · ');
       if (worktree) meta.title = task.resource.path;
       if (extra) meta.append(node('em', extra, 'task-note'));
       copy.append(node('strong', task.title || t('airUntitledTask')), meta);
@@ -1241,7 +1246,7 @@
       if (isPinned(task.id)) meta.append(node('span', '📌', 'task-pin'));
       const stage = task.recordType === 'planned' ? t('airSidebarPlanned', { stage: label(task.workflowStage || task.status) }) : '';
       // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）。
-      const badgeText = label(taskStatus(task));
+      const badgeText = taskBadgeWord(task);
       const extra = [stage, holdText(task.resource)].filter(part => part && !badgeText.includes(part)).join(' · ');
       button.append(node('strong', task.title), meta);
       if (extra) button.append(node('small', extra, 'task-note'));

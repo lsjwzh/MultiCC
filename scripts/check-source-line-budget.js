@@ -291,10 +291,13 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 右下角提醒牌堆补齐 air-notify-deck.js 早就在用却没登记的 6 键（deck*/float*）、
   // 目录页合卡与分页（airCodeAndWorktrees / airTaskPage* 5 键）；与上面出口 IP /
   // 控制台成页那几批合流后，按本树重跑生成器的真实值登记 7290/456602。
+  // 2026-09-29 「执行成功」拆出三个子状态的展示文案补 2 键（statusGoalAchieved /
+  // statusGoalInteract，中英各 2 行 = +4 行），重跑生成器实测 7294/456770，
+  // 按棘轮登记到这一格。
   'public/i18n-catalog.js': Object.freeze({
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7290,
-    maxBytes: 456602,
+    maxLines: 7294,
+    maxBytes: 456770,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

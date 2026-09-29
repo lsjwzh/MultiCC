@@ -136,6 +136,37 @@ const PHASE_LABELS = {
   wrapping: '收尾中', done: '已完成',
 };
 
+// ── 「执行成功」的三个子状态（展示层，2026-09-29）────────────────────────────
+//
+// D 说的是**这一轮**正常收尾，不是「这件事做完了」：线上 2218 条 D 判定里只有 1293
+// 条带着 phase=已完成，其余分别停在 实现中/验证中/收尾中/规划中。用户要的是把 ✅
+// 那一格再分三档（图标不变，仍是 ✅）：
+//
+//   达成目标（achieved）— 有目标，且当前任务的所有要求都做完了
+//   需要交互（interact）— 有目标，但还得用户再推一把才走得下去
+//   执行成功（没有子状态）— 压根没有目标（纯招呼/系统消息），没什么可"达成"的
+//
+// 判定只读 classify 已经产出的两个字段（goal、phase），不新增模型输出、不看自然
+// 语言：phase 的语义本来就是「把当前任务所有要求都做完了才判已完成」，与「目标达成」
+// 是同一件事的两种说法，另起一问只会得到两个偶尔互相矛盾的答案。
+//
+// 字母不是 D 时没有子状态 —— 那时卡片显示的是 W/B/E 自己的词，这三档只挂在 ✅ 上。
+const GOAL_STATES = Object.freeze({ achieved: 'achieved', interact: 'interact' });
+
+/** 这一轮判定的「执行成功」子状态：achieved / interact / null（没有子状态）。 */
+function goalStateForClassify(result) {
+  if (!isTerminalLetter(result?.state)) return null;
+  const goal = String(result?.goal || '').trim();
+  // '—' / '-' 是提示词约定的「没有任务」占位符（同 parseClassifyResult 的垃圾过滤）。
+  if (!goal || goal === '—' || goal === '-') return null;
+  return result?.phase === 'done' ? GOAL_STATES.achieved : GOAL_STATES.interact;
+}
+
+/** 这个值是不是一个已知的子状态？（读回来的旧记录 / 客户端传来的值都要过这一关） */
+function isGoalState(value) {
+  return value === GOAL_STATES.achieved || value === GOAL_STATES.interact;
+}
+
 // The renderable turn run-state vocabulary. ONE server-side list: every
 // run-state producer (session-work-host.getRunState, task-board aggregation,
 // workspace status) emits only these, and each classify letter's `cardStatus`
@@ -299,6 +330,10 @@ module.exports = {
   isParkedLetter,
   isOutcomeLetter,
   turnOutcomeForClassify,
+  // 「执行成功」的三个子状态：判定 + 值域（展示层读它，不自己推）。
+  goalStateForClassify,
+  isGoalState,
+  GOAL_STATES,
   CLASSIFY_DISPLAY,
   CLASSIFY_STATES,
   CLASSIFY_TURN_OUTCOME,

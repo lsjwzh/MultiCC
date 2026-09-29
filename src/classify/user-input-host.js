@@ -178,6 +178,8 @@ function createUserInputSignalHost({
       userInputSignalVersion: 1,
       userInputSignalTurnId: turnId || null,
       classifyState: 'P',
+      // 同上：问出去的那一刻，上一次 D 判定的「达成目标/需要交互」已经不成立了。
+      goalState: null,
     });
   }
 

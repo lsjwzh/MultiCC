@@ -553,6 +553,41 @@ Map<CanonicalStatus, String> airStatusWords() => {
   for (final status in CanonicalStatus.values) status: airStatusWord(status),
 };
 
+// ── 「执行成功」的子状态（达成目标 / 需要交互）──────────────────────────────
+//
+// ✅ 那一格回答的是「这一轮跑完了没有」，而用户读到它时的理解往往是「这件事做完
+// 了没有」。服务端的 classify 在判定 D 时会把后一个答案一起给出
+// （src/classify/vocab.js goalStateForClassify：有目标 + 阶段已完成 = 达成目标；
+// 有目标但阶段没到已完成 = 需要交互；压根没有目标 = 保持「执行成功」），这里只做
+// 词映射 —— 图标（同一枚 ✅）、色调、优先级一个都不动，三个子状态共用一行。
+//
+// 镜像：public/status-presentation.js 的 goalStateLabelKeys / succeededSubLabel。
+/// 子状态值 → 文案键。值本身由服务端定义，这层不认识就退回粗的那个词。
+const Map<String, String> goalStateLabelKeys = {
+  'achieved': 'statusGoalAchieved',
+  'interact': 'statusGoalInteract',
+};
+
+/// `succeeded` 的更细那一个词，别的状态一律返回 ''（子状态只挂在 ✅ 上）。调用方
+/// 把它当「有没有更具体的话可说」，取不到就退回注册表里 succeeded 的词：
+///
+///   final word = succeededSubLabel(status, task.goalState);
+///   final shown = word.isEmpty ? airStatusLabel(status) : word;
+///
+/// 认不出来的值不记诊断：这不是一个状态，只是一个更细的说法，退回粗的那个词完全
+/// 无害 —— 旧服务端和新客户端互相说话时天天发生。
+String succeededSubLabel(Object? status, Object? goalState) {
+  final key = _norm(status);
+  final canonical = statusPresentation.keys.any((s) => s.name == key)
+      ? key
+      : (statusAliases[key]?.name ?? '');
+  if (canonical != CanonicalStatus.succeeded.name) return '';
+  final labelKey = goalStateLabelKeys[_norm(goalState)];
+  if (labelKey == null) return '';
+  final word = t(labelKey);
+  return word == labelKey ? '' : word;
+}
+
 /// 运行标记的颜色：和 Web 的 status-presentation.js `RING_TINTS` 是同一份，顺序也
 /// 必须一样 —— 颜色按 id 哈希取，同一个 id 在两端要落到同一个色。
 /// tests/test-status-presentation.js 逐项比对这两张表。

@@ -79,12 +79,16 @@ class AirTaskStatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = airTaskStatus(task);
-    final word = airStatusLabel(status);
+    // ✅ 那一格有三个说法（执行成功 / 需要交互 / 达成目标）：服务端在判定 D 时算
+    // 好子状态随卡片一起来，这里只负责换词，图标、色调、排序都不动。认不出来就
+    // 退回「执行成功」。同 Web 的 `statusBadge()`。
+    final word = succeededSubLabel(status, task.goalState);
+    final shown = word.isEmpty ? airStatusLabel(status) : word;
     return StatusBadge(
       domain: StatusDomain.task,
       status: status,
-      label: word,
-      semanticLabel: word,
+      label: shown,
+      semanticLabel: shown,
       fontSize: fontSize,
       dense: dense,
     );
@@ -211,8 +215,11 @@ String airTaskDetail(AirTask task) {
   final held = task.resourceText;
   // 徽标已经说过的词不在这里再说一遍（「执行中 · 执行中」不是更多信息）——
   // 同 Web 侧栏那句 `!badgeText.includes(part)`。比的是徽标上那个词（[airStatusCopy]），
-  // 不是词典里的词：一行上只有一套词的时候，这两句才真的能对上。
-  final badge = airStatusLabel(airTaskStatus(task));
+  // 不是词典里的词：一行上只有一套词的时候，这两句才真的能对上。徽标在 ✅ 上换过
+  // 词时这里也要跟着换，否则「执行成功」会跟「达成目标」重复印一行。
+  final status = airTaskStatus(task);
+  final sub = succeededSubLabel(status, task.goalState);
+  final badge = sub.isEmpty ? airStatusLabel(status) : sub;
   if (held.isNotEmpty && held != stage && !badge.contains(held)) bits.add(held);
   return bits.join(' · ');
 }

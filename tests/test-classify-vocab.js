@@ -25,6 +25,9 @@ const {
   isSettledLetter,
   isParkedLetter,
   isOutcomeLetter,
+  goalStateForClassify,
+  isGoalState,
+  GOAL_STATES,
   CLASSIFY_DISPLAY,
   CLASSIFY_STATES,
   PHASE_LABELS,
@@ -155,6 +158,41 @@ test('phaseLabel maps known phases to Chinese and unknown to empty string', () =
   assert.equal(phaseLabel('implementing'), '实现中');
   assert.equal(phaseLabel('nope'), '');
   assert.equal(phaseLabel(undefined), '');
+});
+
+// ── 「执行成功」的展示子状态（只读 classify 已有的 goal + phase）───────────────
+
+test('goalStateForClassify splits ✅ three ways, and only for D', () => {
+  const at = (over) => goalStateForClassify({ state: 'D', goal: '把登录页改成暗色', phase: 'done', ...over });
+  // 有目标 + 阶段已经做完 = 达成目标
+  assert.equal(at({}), 'achieved');
+  // 有目标，但阶段还没到「已完成」= 还得用户再推一把
+  for (const phase of ['planning', 'implementing', 'verifying', 'wrapping']) {
+    assert.equal(at({ phase }), 'interact', `phase=${phase} 不是「已达成」，就该说需要交互`);
+  }
+  // 压根没有目标（招呼 / 系统消息）：保持「执行成功」，没有子状态
+  assert.equal(at({ goal: '' }), null);
+  assert.equal(at({ goal: '—' }), null);
+  assert.equal(at({ goal: ' - ' }), null);
+  assert.equal(goalStateForClassify({ state: 'D', phase: 'done' }), null);
+  // 子状态只挂在 ✅ 上：W/B/E/P 的卡片写的是它们自己的词
+  for (const state of ['W', 'B', 'E', 'P', 'C']) {
+    assert.equal(goalStateForClassify({ state, goal: '有目标', phase: 'done' }), null,
+      `${state} 不该有「执行成功」的子状态`);
+  }
+  assert.equal(goalStateForClassify({ goal: '有目标', phase: 'done' }), null);
+  assert.equal(goalStateForClassify(undefined), null);
+  assert.equal(goalStateForClassify(null), null);
+});
+
+test('isGoalState is the guard every reader goes through', () => {
+  assert.deepEqual(Object.values(GOAL_STATES).sort(), ['achieved', 'interact']);
+  assert.equal(isGoalState(GOAL_STATES.achieved), true);
+  assert.equal(isGoalState(GOAL_STATES.interact), true);
+  // 认不出来的值一律当「没有子状态」，绝不因为一条陈旧或伪造的记录就把 ✅ 改写
+  for (const bad of [null, undefined, '', 'done', 'succeeded', 'ACHIEVED', 'achieved ', 0, {}]) {
+    assert.equal(isGoalState(bad), false, `isGoalState(${JSON.stringify(bad)}) must be false`);
+  }
 });
 
 test('classify C is retired: no dispatch branch persists it, it falls through to W', () => {

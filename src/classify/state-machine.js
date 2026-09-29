@@ -18,6 +18,7 @@ const { SYSTEM_PREFIX } = require('../session/delivery');
 const crypto = require('crypto');
 const {
   classifyDisplay,
+  goalStateForClassify,
   phaseLabel,
   isProcessingLetter,
   isWaitForUserLetter,
@@ -264,10 +265,16 @@ function createClassifyStateMachine(rawDeps) {
       const dismissedQuestion = result.evidence === 'user_dismissed_question';
       const msg = dismissedQuestion ? '待回答问题已标记为已处理'
         : finalGoal ? `执行成功：${finalGoal}` : '执行成功';
+      // ✅ 这一格的三个子状态（达成目标 / 需要交互 / 无子状态），判定读的就是刚落盘
+      // 的 goal + phase（见 vocab.js goalStateForClassify），随判定一起持久化 ——
+      // 卡片不用自己推，也不会有第二份口径。
+      const goalState = dismissedQuestion ? null
+        : goalStateForClassify({ state, goal: finalGoal, phase: finalPhase });
       const completionTaskId = transitionTaskId || entryTaskId;
       const completionTaskShortCode = taskShortCode(completionTaskId);
       const completionNotice = {
         type: 'notify', state: 'succeeded', classifyState: 'D', message: msg,
+        goalState,
         taskShortCode: completionTaskShortCode,
         taskGoal: finalGoal || '',
         voiceMessage: dismissedQuestion ? msg : completionVoiceMessage(completionTaskShortCode, finalGoal),
@@ -284,7 +291,7 @@ function createClassifyStateMachine(rawDeps) {
       setSessionStatus(sessionName, { status: 'succeeded' });
       // D triggers no later state write, so persist it immediately. Otherwise a
       // crash before the next durable operation restores a stale P/W/E snapshot.
-      setTaskState(sessionName, { classifyState: 'D', endedAt: Date.now() });
+      setTaskState(sessionName, { classifyState: 'D', goalState, endedAt: Date.now() });
       getWaitInjector().resetAuto(sessionName);
       // Clear the resume-interrupted counter so any future P-misclassify restarts from
       // count=1 rather than compounding on this concluded task. (Note: this clears the
@@ -375,9 +382,12 @@ function createClassifyStateMachine(rawDeps) {
     setSessionStatus(sessionName, { status: disp.cardStatus });
     // Persist the accurate rule letter. Cancellation metadata remains the guard
     // against stale finalizers and late task-attribution work.
+    // goalState 一并归零：它描述的是「上一次 D 判定说这件事做完了没有」，这一轮不是
+    // D 就不该有值，否则一条随后被重判成 E 的卡会带着上一轮的「达成目标」躺在盘上。
     setTaskState(sessionName, cancel
       ? {
         classifyState: cls,
+        goalState: null,
         endedAt: Date.now(),
         cancelledAt: cancel.at || Date.now(),
         cancelReason: cancel.reason || 'user_cancelled',
@@ -386,7 +396,7 @@ function createClassifyStateMachine(rawDeps) {
         cancelSuperseded: cancel.superseded === true,
         supersededByEntryId: cancel.supersededByEntryId || null,
       }
-      : { classifyState: cls, endedAt: Date.now() });
+      : { classifyState: cls, goalState: null, endedAt: Date.now() });
     // Reset auto-continue guard when the user is in charge now. B/E keep their own flow.
     if (isWaitForUserLetter(state)) {
       getWaitInjector().resetAuto(sessionName);
@@ -1347,6 +1357,9 @@ function createClassifyStateMachine(rawDeps) {
       // is still running (classify will refine shortly).
       setTaskState(sessionName, {
         classifyState: 'P',
+        // 新一轮开始了，上一次 D 判定的子状态不再描述任何东西（同下面那批取消
+        // 信封字段：留着就是一条自相矛盾的记录）。
+        goalState: null,
         cancelledAt: null,
         cancelReason: null,
         cancelSuperseded: false,
@@ -1372,7 +1385,7 @@ function createClassifyStateMachine(rawDeps) {
       taskIdentityState: explicitContinuation ? 'canonical' : 'provisional',
       taskIdentityPending: !explicitContinuation,
       taskIdentityAnchorMessageId: anchorMessageId,
-      classifyState: 'P', cancelledAt: null, cancelReason: null,
+      classifyState: 'P', goalState: null, cancelledAt: null, cancelReason: null,
       cancelSuperseded: false, supersededByEntryId: null,
     });
     recordTaskBoardGoal(sessionName, cs.currentTask.goal, cs.currentTask.phase, cs, 'P');

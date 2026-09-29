@@ -227,6 +227,39 @@
     return 'unknown';
   }
 
+  // ── 「执行成功」的子状态（达成目标 / 需要交互）──────────────────────────────
+  //
+  // ✅ 那一格回答的是「这一轮跑完了没有」，而用户读到它时的理解往往是「这件事做完
+  // 了没有」。服务端的 classify 在判定 D 时会同时给出后一个答案
+  // （src/classify/vocab.js goalStateForClassify：有目标 + 阶段已完成 = 达成目标；
+  // 有目标但阶段没到已完成 = 需要交互；压根没有目标 = 保持「执行成功」），这里只做
+  // 词映射 —— 图标（同一枚 ✅）、色调、优先级一个都不动，三个子状态共用一行。
+  const GOAL_STATE_LABEL_KEYS = Object.freeze({
+    achieved: 'statusGoalAchieved',
+    interact: 'statusGoalInteract',
+  });
+
+  /**
+   * `succeeded` 的更细那一个词，别的状态一律返回 ''（子状态只挂在 ✅ 上）。调用方
+   * 把它当「有没有更具体的话可说」，取不到就退回注册表里 succeeded 的词：
+   *
+   *   const word = succeededSubLabel(status, task.goalState, t) || airStatusLabel(status, t);
+   *
+   * 认不出来的值不记诊断：这不是一个状态，只是一个更细的说法，退回粗的那个词完全
+   * 无害 —— 旧服务端和新客户端互相说话时天天发生。
+   * Dart 端镜像：app/lib/utils/status_presentation.dart 的 succeededSubLabel。
+   */
+  function succeededSubLabel(status, goalState, translate) {
+    const key = normalizeKey(status);
+    const canonical = STATUS_PRESENTATION[key] ? key : STATUS_ALIASES[key];
+    if (canonical !== 'succeeded') return '';
+    const labelKey = GOAL_STATE_LABEL_KEYS[normalizeKey(goalState)];
+    if (!labelKey) return '';
+    const t = typeof translate === 'function' ? translate : identity;
+    const word = t(labelKey);
+    return word && word !== labelKey ? String(word) : '';
+  }
+
   // ── Air copy: one table for both Air surfaces ───────────────────────────────
   //
   // Air (sidebar task rows + the console) prints a status in ITS OWN words — the
@@ -626,6 +659,8 @@
     isBusyStatus,
     canStopRunState,
     classifyStatus,
+    succeededSubLabel,
+    GOAL_STATE_LABEL_KEYS,
     airStatusLabel,
     airStatusLabels,
     airStatusWordFor,

@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/air_service.dart';
@@ -10,6 +11,7 @@ AirTask _task({
   String dirId = 'd1',
   String status = 'active',
   String? runState,
+  String? goalState,
   String? workflowStage,
   String recordType = '',
   Map<String, dynamic> resource = const {},
@@ -25,6 +27,7 @@ AirTask _task({
   readOnly: false,
   workflowStage: workflowStage,
   runState: runState,
+  goalState: goalState,
   resource: resource,
   worktreeChanges: worktreeChanges,
 );
@@ -194,6 +197,60 @@ void main() {
       final running = _task(runState: 'running', resource: const {'lease': 'running'});
       expect(airStatusLabel(airTaskStatus(running)), '执行中');
       expect(airTaskDetail(running), '');
+    });
+  });
+
+  group('✅ 那一格的三个说法', () {
+    test('子状态换的只是词，图标/色调/状态本身都不动', () {
+      // 判定在服务端（src/classify/vocab.js goalStateForClassify），客户端只读
+      // goalState 换词；换不到的（没目标、认不出的值）落回「执行成功」。
+      expect(succeededSubLabel(CanonicalStatus.succeeded, 'achieved'), '达成目标');
+      expect(succeededSubLabel(CanonicalStatus.succeeded, 'interact'), '需要交互');
+      expect(succeededSubLabel(CanonicalStatus.succeeded, null), '');
+      expect(succeededSubLabel(CanonicalStatus.succeeded, 'wat'), '');
+      // 子状态只挂在 ✅ 上：别的状态一个字都不换。
+      for (final status in CanonicalStatus.values) {
+        if (status == CanonicalStatus.succeeded) continue;
+        expect(succeededSubLabel(status, 'achieved'), '', reason: '$status 借用了 ✅ 的子状态词');
+      }
+      // 徽标本体：状态没变、颜色没变，只有可见文案换了一个。
+      final achieved = _task(runState: 'succeeded', goalState: 'achieved');
+      expect(airTaskStatus(achieved), CanonicalStatus.succeeded);
+      expect(airTaskSpec(achieved).icon, '✅');
+    });
+
+    testWidgets('徽标画出的是子状态那个词', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AirTaskStatusBadge(task: _task(runState: 'succeeded', goalState: 'achieved')),
+        ),
+      ));
+      expect(find.text('达成目标'), findsOneWidget);
+      expect(find.text('执行成功'), findsNothing);
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: AirTaskStatusBadge(task: _task(runState: 'succeeded', goalState: 'interact')),
+        ),
+      ));
+      expect(find.text('需要交互'), findsOneWidget);
+
+      // 没有子状态（旧服务端 / 没有目标）时还是老样子。
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(body: AirTaskStatusBadge(task: _task(runState: 'succeeded'))),
+      ));
+      expect(find.text('执行成功'), findsOneWidget);
+    });
+
+    test('第二层信息跟徽标实际印的那个词比，不跟粗的词比', () {
+      // 徽标印的是子状态的词，所以「有没有重复说」要以它为准：资源那句话正好
+      // 等于徽标上的词时仍然只印一次（同 Web 那句 `!badgeText.includes(part)`）。
+      final task = _task(
+        runState: 'succeeded',
+        goalState: 'achieved',
+        resource: const {'lease': 'running'},
+      );
+      expect(airTaskDetail(task), '执行中');
     });
   });
 

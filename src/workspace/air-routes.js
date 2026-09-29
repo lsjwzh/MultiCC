@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const core = require('../task-board/core');
-const { isAbnormalLetter } = require('../classify/vocab');
+const { isAbnormalLetter, isGoalState } = require('../classify/vocab');
 const { createAirPinRuntime } = require('./pins');
 const { pendingAttention } = require('../task-board/attention');
 
@@ -316,6 +316,11 @@ function mountAirRoutes(app, deps) {
         // 自愈：证明这一轮从没被受理过的卡片按空闲投影，而不是永久「执行中」。
         runState: core.deadDispatchClaim(t, core.taskRunSessionIds(t).some(hasTurnState), projectNow)
           ? 'idle' : (core.staleWorkerClaim(t, deps.getSessionRunState, projectNow) || t.runState || null),
+        // ✅ 那一格的子状态（达成目标 / 需要交互，读不到就是 null = 老样子的「执行
+        // 成功」）。判定在服务端 classify 落盘时做完（src/classify/vocab.js
+        // goalStateForClassify），客户端只读不推；它只配 succeeded 用，别的状态一律
+        // 忽略 —— 一条刚跑起来的新一轮不该顶着上一轮的「达成目标」。
+        goalState: isGoalState(record?.taskState?.goalState) ? record.taskState.goalState : null,
         resource: taskResource, worktreeChanges,
         // 未看过的结果（完成/出错/等回复）只在服务端记一份，所有客户端读同一个答案。
         attention: pendingAttention(t) };
