@@ -31,6 +31,7 @@ const { createOpencodeModelLimitResolver } = require('./opencode-model-limits');
 const { createCodexAttemptHome } = require('../codex/attempt-home');
 const { createCodexSessionHomeRuntime } = require('../codex/session-home');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
+const { normalizeAllowlist: normalizeEgressIpAllowlist } = require('./egress-ip-policy');
 // Resident lanes hold their route across turns, so they own the codex home that
 // bakes it (see the module). It reaches back here for the physical
 // materialization, which is why it is required from this side.
@@ -628,6 +629,10 @@ function summarize(p, opts = {}) {
     builtinOfficial: p.builtinOfficial === true,
     activeAccountId: p.activeAccountId || null,
     quotaKind: p.quotaKind || null,
+    // Advanced option: non-empty means this provider may only be used while
+    // the host's current public IP exactly matches one of these addresses
+    // (see providers/egress-ip-policy.js). Empty/absent = unrestricted.
+    egressIpAllowlist: normalizeEgressIpAllowlist(p.egressIpAllowlist),
     source: p.source || 'local', // 'local' | 'ccswitch'
     baseUrl,
     model,
@@ -817,7 +822,7 @@ function resolveCodexDirectHttp(providerId) {
     : { ...target, canDirect: false };
 }
 
-function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap }) {
+function createProvider({ appType, name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist }) {
   if (!APP_TYPES.includes(appType)) throw new Error('appType must be claude or codex');
   if (!name || !String(name).trim()) throw new Error('name required');
   // Generate id first so buildSettingsConfig can embed it in the proxy base_url.
@@ -835,6 +840,8 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
     settingsConfig: cfg,
     createdAt: Date.now(),
   };
+  const normalizedEgressIpAllowlist = normalizeEgressIpAllowlist(egressIpAllowlist);
+  if (normalizedEgressIpAllowlist.length) p.egressIpAllowlist = normalizedEgressIpAllowlist;
   const list = loadStore();
   if (officialCatalog && require('./official-catalog').isOfficial(p)) return summarize(officialCatalog.provider(appType));
   list.push(p);
@@ -842,7 +849,7 @@ function createProvider({ appType, name, baseUrl, authToken, model, models, apiF
   return { id: p.id, appType, name: p.name };
 }
 
-function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap }) {
+function updateProvider(appType, id, { name, baseUrl, authToken, model, models, apiFormat, settingsConfig, aliasMap, egressIpAllowlist }) {
   if (officialCatalog && officialCatalog.normalize(appType, id) === `${appType}-official`) throw new Error('请在官方账号中管理登录和切换账号');
   const list = loadStore();
   const p = list.find(x => x.appType === appType && x.id === id);
@@ -882,6 +889,11 @@ function updateProvider(appType, id, { name, baseUrl, authToken, model, models, 
   if (name) p.name = String(name).trim();
   p.apiFormat = normalizeApiFormat(apiFormat || p.apiFormat, appType, cfg);
   p.settingsConfig = cfg;
+  if (egressIpAllowlist !== undefined) {
+    const normalized = normalizeEgressIpAllowlist(egressIpAllowlist);
+    if (normalized.length) p.egressIpAllowlist = normalized;
+    else delete p.egressIpAllowlist;
+  }
   saveStore(list);
   return { id, appType };
 }

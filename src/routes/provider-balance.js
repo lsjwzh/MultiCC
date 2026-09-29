@@ -18,6 +18,7 @@ const {
   pollRelayQuota,
 } = require('../usage-limit-poller');
 const { fetchKimiBalance } = require('./kimi-quota');
+const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
 const { balanceBar, renderQuotaBar, COLOR } = require('../quota/quota-bar-view');
 
 function quotaBarFor(strategy, dto, fetchedAt) {
@@ -176,15 +177,23 @@ function createProviderBalanceRuntime(options = {}) {
     }
     let dto = null;
     let failureDetail = null;
-    try {
-      dto = await adapters[target.strategy](target, now());
-    } catch (error) {
-      dto = null;
-      // Preserve the layered root cause (HTTP status + body / OS errno chain)
-      // instead of flattening every failure to an opaque "fetch_failed".
-      failureDetail = error && error.kind === 'limit_fetch_failed' && error.detail
-        ? error.detail
-        : String((error && error.message) || error).slice(0, 300);
+    // Same egress-IP-allowlist gate as the chat-turn admission path and the
+    // background usage-limit poller: an on-demand balance query must not
+    // reach a provider that is restricted to a different egress IP either.
+    const egressCheck = checkEgressIpAllowed(provider);
+    if (!egressCheck.allowed) {
+      failureDetail = egressCheck.detail;
+    } else {
+      try {
+        dto = await adapters[target.strategy](target, now());
+      } catch (error) {
+        dto = null;
+        // Preserve the layered root cause (HTTP status + body / OS errno chain)
+        // instead of flattening every failure to an opaque "fetch_failed".
+        failureDetail = error && error.kind === 'limit_fetch_failed' && error.detail
+          ? error.detail
+          : String((error && error.message) || error).slice(0, 300);
+      }
     }
     if (!dto) {
       const failure = {

@@ -65,6 +65,7 @@
         <label>${t('airProviderDefaultModel')}<input name="model" maxlength="240" placeholder="${t('airProviderModelPlaceholder')}"></label>
         <label>${t('airProviderOptionalModels')}<textarea name="models" rows="3" placeholder="${t('airProviderModelsPlaceholder')}"></textarea></label>
         <details id="air-provider-aliases"><summary>${t('airProviderAliasSummary')}</summary><div class="provider-alias-grid"><span>${t('airProviderTierColumn')}</span><span>${t('airProviderDisplayNameColumn')}</span><span>${t('airProviderRealModelColumn')}</span></div></details>
+        <details id="air-provider-egress-ip"><summary>${t('airProviderEgressIpSummary')}</summary><p>${t('airProviderEgressIpBody')}</p><textarea name="egressIpAllowlist" rows="3" placeholder="${t('airProviderEgressIpPlaceholder')}"></textarea></details>
         <p id="air-provider-form-error" role="alert"></p>
         <div class="schedule-form-actions"><button type="button" id="air-provider-cancel">${t('airProviderCancel')}</button><button type="submit" id="air-provider-save" class="primary">${t('airProviderCreate')}</button></div>
       </form>`;
@@ -137,6 +138,9 @@
     form.elements.models.value = (provider?.modelOptions || []).join('\n');
     form.elements.authToken.placeholder = provider?.hasToken ? t('airProviderTokenKeep', { mask: provider.tokenMask || t('airProviderSet') }) : t('airProviderTokenUnset');
     fillAliases(form, provider?.aliasMap);
+    const egressIpAllowlist = provider?.egressIpAllowlist || [];
+    form.elements.egressIpAllowlist.value = egressIpAllowlist.join('\n');
+    el('air-provider-egress-ip').open = egressIpAllowlist.length > 0;
     syncDialogProtocol();
     el('air-provider-form-title').textContent = provider ? t('airProviderEditTitle', { name: displayName(provider) }) : t('airProviderFormTitleNew');
     el('air-provider-save').textContent = provider ? t('airProviderSave') : t('airProviderCreate');
@@ -163,6 +167,8 @@
     if (!providerId || token) body.authToken = token;
     if (appType === 'claude') body.aliasMap = aliasMapFrom(form);
     if (!providerId) body.appType = appType;
+    body.egressIpAllowlist = form.elements.egressIpAllowlist.value
+      .split(/[\n,]/).map(item => item.trim()).filter(Boolean);
     save.disabled = true; error.textContent = '';
     try {
       const path = providerId ? `/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(providerId)}` : '/api/providers';

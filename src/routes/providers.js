@@ -11,6 +11,22 @@ const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
 const { officialAccountIdFromProvider } = require('../official-accounts');
 const { createRoutingTest } = require('./auto-provider-routing-test');
 const { detachProviderReferences } = require('../providers/force-detach');
+const { isValidIp } = require('../providers/egress-ip');
+
+// req.body.egressIpAllowlist arrives as an array (or is absent — leave the
+// stored value untouched on PATCH, that's the `undefined` case) or `null`/`[]`
+// to clear it. Anything containing a non-IP string is a config mistake, not a
+// provider mismatch, so it is rejected here rather than silently dropped.
+function parseEgressIpAllowlist(body) {
+  const value = body.egressIpAllowlist;
+  if (value === undefined) return undefined;
+  if (value === null) return [];
+  if (!Array.isArray(value)) throw new Error('egressIpAllowlist must be an array of IP addresses');
+  const list = value.map(v => String(v).trim()).filter(Boolean);
+  const invalid = list.find(ip => !isValidIp(ip));
+  if (invalid) throw new Error(`egressIpAllowlist contains an invalid IP address: ${invalid}`);
+  return list;
+}
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
@@ -248,6 +264,7 @@ function createProviderRoutes(rawDeps) {
 
     app.post('/api/providers', (req, res) => {
       try {
+        const egressIpAllowlist = parseEgressIpAllowlist(req.body);
         const result = deps.providers.createProvider({
           appType: (req.body.appType || '').trim(),
           name: req.body.name,
@@ -258,6 +275,7 @@ function createProviderRoutes(rawDeps) {
           ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
           aliasMap: req.body.aliasMap,
+          ...(egressIpAllowlist !== undefined ? { egressIpAllowlist } : {}),
         });
         res.json({ ok: true, ...result });
       } catch (error) {
@@ -267,6 +285,7 @@ function createProviderRoutes(rawDeps) {
 
     app.patch('/api/providers/:appType/:id', (req, res) => {
       try {
+        const egressIpAllowlist = parseEgressIpAllowlist(req.body);
         deps.providers.updateProvider(req.params.appType, req.params.id, {
           name: req.body.name,
           baseUrl: req.body.baseUrl,
@@ -276,6 +295,7 @@ function createProviderRoutes(rawDeps) {
           ...(req.body.apiFormat !== undefined ? { apiFormat: req.body.apiFormat } : {}),
           settingsConfig: req.body.settingsConfig,
           aliasMap: req.body.aliasMap,
+          ...(egressIpAllowlist !== undefined ? { egressIpAllowlist } : {}),
         });
         res.json({ ok: true });
       } catch (error) {
