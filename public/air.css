@@ -1656,6 +1656,11 @@ main { background: transparent; }
 .schedule-card, .air-config-section, .detail-group, .air-legacy-frame {
   border: 1px solid var(--hairline); border-radius: 22px; background: #fff; box-shadow: var(--shadow-1);
 }
+/* 「靠留白分开」在任务面板和 GIT 卡之间必须真的留得出来：两张 22px 圆角的卡直接贴边
+   时，左边缘两条圆角会咬出一个背景色的缺口，看着像被谁掐了一把。这一列的空隙档位
+   就是 18px（#directory-stats 也是这一档），所以往下每一张卡都补上这个下边距。
+   #quick-task-form 自己的 margin-top 是 34px，外边距会折叠，输入框上方的留白不变。 */
+#empty .directory-task-panel, #empty .directory-git-panel { margin-bottom: 18px; }
 .directory-task-panel .section-heading { padding: 16px 20px 12px; border-bottom: 1px solid var(--hairline); }
 .directory-task-panel .section-heading strong { font-size: 15px; }
 .directory-task-heading-actions { gap: 12px; }
