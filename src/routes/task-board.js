@@ -1689,6 +1689,7 @@ function createTaskBoardRuntime(deps) {
   const retention = createTaskRetention({ getBoard: () => board, records,
     getPinnedTaskIds: () => deps.getPinnedTaskIds(), getRunState: id => getSessionRunState(id),
     isSessionBusy: id => deps.isSessionBusy?.(id) === true,
+    isTaskBusy: id => taskLifecycle.isBusy(id) || !!activeTaskOperations.get(id),
     taskDirId: task => core.taskDirId(board, task), taskLineageIds: task => taskIdentityIds(task),
     prepareDelete: (task, ids, options) => deps.prepareTaskDelete(task, ids, options),
     deleteById: (id, options) => taskLifecycle.deleteById(id, options) });
@@ -1712,6 +1713,19 @@ function createTaskBoardRuntime(deps) {
 
   function mountRoutes(app) {
     planningRuntime.mountRoutes(app);
+    const retentionRoute = handler => async (req, res) => {
+      try {
+        const dirId = req.params.dirId;
+        if (!deps.directories?.get(dirId)) return res.status(404).json({ ok: false, code: 'directory_not_found' });
+        if (typeof deps.listShellTasks !== 'function') return res.status(503).json({ ok: false, code: 'task_inventory_unavailable' });
+        return res.json({ ok: true, ...await handler(dirId, () => deps.listShellTasks(), req) });
+      } catch (error) {
+        return res.status(error.status || 500).json({ ok: false, code: error.code || 'retention_failed' });
+      }
+    };
+    app.get('/api/task-board/directories/:dirId/retention', retentionRoute((dirId, list) => retention.preview(dirId, list)));
+    app.post('/api/task-board/directories/:dirId/retention', retentionRoute((dirId, list, req) =>
+      retention.deleteSelected(dirId, list, req.body?.taskIds)));
     app.post('/api/task-board/tasks/:taskId/status', (req, res) => {
       // Return the promise so harness callers can await the full handler.
       return handleStatus(req, res).catch(error => {

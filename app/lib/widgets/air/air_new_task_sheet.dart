@@ -30,6 +30,93 @@ typedef AirNewTaskSubmit =
       int? goalBudget,
     });
 
+/// Same preview/confirm/delete flow as Web Air. The server rechecks every task
+/// at execution time; this dialog never sends `force`.
+Future<void> showAirTaskRetentionDialog(
+  BuildContext context, {
+  required AirService service,
+  required String directoryId,
+  Future<void> Function()? onChanged,
+}) async {
+  Map<String, dynamic> preview;
+  try {
+    preview = await service.previewTaskRetention(directoryId);
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+    }
+    return;
+  }
+  if (!context.mounted) return;
+  final tasks = ((preview['tasks'] as List?) ?? const [])
+      .whereType<Map>()
+      .map((task) => Map<String, dynamic>.from(task))
+      .toList(growable: false);
+  var busy = false;
+  String? errorText;
+  final result = await showDialog<Map<String, dynamic>>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setDialogState) => AlertDialog(
+        title: const Text('管理任务容量'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('此目录已有 ${preview['count']}/${preview['limit']} 个任务。'
+                  '${tasks.isEmpty ? '当前没有可安全批量清理的任务，请在任务列表中手动检查并删除。' : '以下是最久未交互、已结束、未置顶且工作区干净并已合并的 ${tasks.length} 条任务；删除后不可恢复。'}'),
+              if (tasks.isNotEmpty)
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: tasks.length,
+                    itemBuilder: (_, index) => ListTile(
+                      dense: true,
+                      title: Text('${tasks[index]['title'] ?? tasks[index]['id']}'),
+                      subtitle: tasks[index]['lastInteractionAt'] is num
+                          ? Text(DateTime.fromMillisecondsSinceEpoch(
+                              (tasks[index]['lastInteractionAt'] as num).toInt()).toLocal().toString().split('.').first)
+                          : null,
+                    ),
+                  ),
+                ),
+              if (errorText != null) Text(errorText!, style: const TextStyle(color: AppColors.danger)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: busy ? null : () => Navigator.pop(dialogContext), child: const Text('关闭')),
+          if (tasks.isNotEmpty)
+            FilledButton(
+              onPressed: busy ? null : () async {
+                setDialogState(() => busy = true);
+                try {
+                  final outcome = await service.deleteTaskRetention(directoryId,
+                      tasks.map((task) => '${task['id']}').toList());
+                  if (dialogContext.mounted) Navigator.pop(dialogContext, outcome);
+                } catch (error) {
+                  setDialogState(() { busy = false; errorText = '$error'; });
+                }
+              },
+              child: Text(busy ? '正在核验并删除…' : '确认删除列出的安全任务'),
+            ),
+        ],
+      ),
+    ),
+  );
+  if (result == null) return;
+  await onChanged?.call();
+  if (context.mounted) {
+    final deleted = (result['deleted'] as List?)?.length ?? 0;
+    final skipped = (result['skipped'] as List?)?.length ?? 0;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('已删除 $deleted 条，跳过 $skipped 条。草稿已保留，可以重试新建。'),
+    ));
+  }
+}
+
 Future<void> showAirNewTaskSheet(
   BuildContext context, {
   required List<AirDirectory> directories,
@@ -37,6 +124,8 @@ Future<void> showAirNewTaskSheet(
   required SettingsService settings,
   required List<String> clis,
   required AirNewTaskSubmit onSubmit,
+  String? Function()? errorText,
+  bool Function()? capacityExceeded,
   AirService? service,
   http.Client? httpClient,
 }) {
@@ -55,6 +144,8 @@ Future<void> showAirNewTaskSheet(
       settings: settings,
       clis: clis,
       onSubmit: onSubmit,
+      errorText: errorText,
+      capacityExceeded: capacityExceeded,
       service: service,
       httpClient: httpClient,
     ),
@@ -68,6 +159,8 @@ class _AirNewTaskSheet extends StatefulWidget {
     required this.settings,
     required this.clis,
     required this.onSubmit,
+    required this.errorText,
+    required this.capacityExceeded,
     required this.service,
     required this.httpClient,
   });
@@ -77,6 +170,8 @@ class _AirNewTaskSheet extends StatefulWidget {
   final SettingsService settings;
   final List<String> clis;
   final AirNewTaskSubmit onSubmit;
+  final String? Function()? errorText;
+  final bool Function()? capacityExceeded;
   final AirService? service;
   final http.Client? httpClient;
 
@@ -89,6 +184,8 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
   /// 路由，那个 State `setState` 重建不到这里 —— 而输入框那颗按钮的文案
   /// （「正在创建…」）和禁用态看的就是这个值。
   bool _submitting = false;
+  String _error = '';
+  bool _capacityExceeded = false;
   late String _directoryId;
 
   @override
@@ -124,6 +221,12 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
     );
     if (!mounted) return landed;
     setState(() => _submitting = false);
+    if (!landed) {
+      setState(() {
+        _error = widget.errorText?.call() ?? '创建失败，请重试。';
+        _capacityExceeded = widget.capacityExceeded?.call() ?? false;
+      });
+    }
     // 人已经被带进那个任务了 —— 就地收掉，别压在聊天页上面。没成的话留着：
     // 草稿还在输入框里，重试就是原样再点一次。
     if (landed) Navigator.of(context).pop();
@@ -157,6 +260,16 @@ class _AirNewTaskSheetState extends State<_AirNewTaskSheet> {
               const SizedBox(height: 10),
               _head(),
               _directoryPicker(),
+              if (_error.isNotEmpty) Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(_error, style: const TextStyle(color: AppColors.danger, fontSize: 12)),
+              ),
+              if (_capacityExceeded && widget.service != null)
+                TextButton(
+                  onPressed: () => showAirTaskRetentionDialog(context,
+                    service: widget.service!, directoryId: _directoryId),
+                  child: const Text('查看安全清理清单 / 自行管理任务'),
+                ),
               const SizedBox(height: 12),
               AirQuickComposer(
                 key: const ValueKey('air-new-task-composer'),

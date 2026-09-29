@@ -115,6 +115,12 @@ class AirTaskActionException implements Exception {
   String toString() => airTaskActionErrors[code] ?? '操作失败（$code）。';
 }
 
+class AirTaskCapacityException implements Exception {
+  const AirTaskCapacityException();
+  @override
+  String toString() => '此目录已达到 1024 个任务，且没有可自动淘汰的安全任务。请手动删除，或查看安全清理清单；草稿已保留。';
+}
+
 /// 这行卡在哪：先说容量/租约这类会自己好转的原因，没有才说目录是计划态还是已经
 /// 备好 —— 同 Web Air 的 `resourceText`。任务行和详情面板都要这一句，所以放在
 /// 这里而不是任一处界面代码里。
@@ -708,6 +714,9 @@ class AirService {
     final response = await _request(method, path, body);
     final result = _decode(response);
     if (response.statusCode >= 400 || result['ok'] == false) {
+      if (result['code'] == 'task_shell_task_limit' || result['error'] == 'task_shell_task_limit') {
+        throw const AirTaskCapacityException();
+      }
       throw Exception(
         result['message'] ?? result['code'] ?? 'HTTP ${response.statusCode}',
       );
@@ -936,6 +945,13 @@ class AirService {
     '/api/task-board/tasks/${Uri.encodeComponent(taskId)}',
     force ? {'force': true} : null,
   );
+
+  Future<Map<String, dynamic>> previewTaskRetention(String dirId) =>
+      _get('/api/task-board/directories/${Uri.encodeComponent(dirId)}/retention');
+
+  Future<Map<String, dynamic>> deleteTaskRetention(String dirId, List<String> taskIds) =>
+      _post('/api/task-board/directories/${Uri.encodeComponent(dirId)}/retention',
+          {'taskIds': taskIds});
 
   /// 钉住 / 取消钉住一个任务，返回钉住之后的整份清单（顺序就是显示顺序）。
   ///

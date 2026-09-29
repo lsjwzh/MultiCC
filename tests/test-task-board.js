@@ -961,6 +961,8 @@ test('REST: the surviving task-board endpoints register and keep working', async
     'POST /api/task-board/tasks/:taskId/title',
     'POST /api/task-board/tasks/:taskId/planning',
     'POST /api/task-board/tasks/:taskId/move',
+    'GET /api/task-board/directories/:dirId/retention',
+    'POST /api/task-board/directories/:dirId/retention',
     'POST /api/task-board/tasks/:taskId/status',
     // Air 任务「移动」：跨目录搬迁。
     'POST /api/task-board/tasks/:taskId/relocate',

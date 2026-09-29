@@ -854,7 +854,17 @@ main { min-width: 0; flex: 1; display: flex; flex-direction: column; background:
 .quick-task-goal-limits input { width: 84px; min-height: 26px; padding: 3px 6px; font-size: 11px; }
 /* Dropping files anywhere on the card reads as the card lighting up. */
 #quick-task-form.is-dropping { border-color: #8fbde8; box-shadow: 0 10px 30px #3155761f, 0 0 0 3px #dcecfb; }
-#quick-task-status { min-width: 0; flex: 1; overflow: hidden; color: #718499; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+#quick-task-status { min-width: 0; flex: 1; color: #718499; font-size: 10px; white-space: normal; }
+.quick-task-actions:has(#quick-task-status.capacity-error) { flex-wrap: wrap; }
+#quick-task-status.capacity-error { order: 9; flex-basis: 100%; padding: 8px; border-radius: 8px; background: #fff0eb; color: #9a4937; font-size: 11px; }
+.quick-task-retention { align-self: flex-end; margin: 4px 12px 8px; padding: 2px 6px; border: 0; background: transparent; color: #326b9b; font-size: 10px; cursor: pointer; }
+.task-retention-dialog { width: min(560px, calc(100vw - 24px)); max-height: min(80vh, 700px); padding: 20px; border: 1px solid #dbe6ef; border-radius: 18px; background: #fbfdff; color: #26394b; }
+.task-retention-dialog::backdrop { background: #172b4259; }
+.task-retention-dialog .section-heading { display: flex; justify-content: space-between; align-items: center; }
+.task-retention-dialog p { line-height: 1.5; font-size: 12px; }
+.task-retention-list { max-height: 42vh; overflow: auto; font-size: 12px; }
+.task-retention-list > div { padding: 7px 4px; border-bottom: 1px solid #e8eef4; }
+.task-retention-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 /* ── 对话浮层 ────────────────────────────────────────────────────────────────
    对话是「浮在目录详情之上的一层」，不是「换掉目录详情的那一页」。#empty 一直在
    下面（不 hidden、不卸载）。桌面默认是一张四周留缝的完整浮卡：边缘透出底页，

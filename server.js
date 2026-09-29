@@ -2015,6 +2015,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
   ...require('./src/task-board/lifecycle-host').createTaskLifecycleHost({ records: persistedSessions, getBoard: () => taskBoardRuntime.getBoard(), getShell: () => taskShellHost, getHistory: id => loadChatHistory(id), getState: id => chatSessions.get(id), getRunState: id => sessionWorkHost.getRunState(id), isSessionBusy: sid => dispatchTargetBusy(sid), getHistoryService: () => chatHistoryService, destroySession: destroySessionCascade, directories, persist: () => savePersistedSessionsBestEffort('task-delete'), mutate: (source, fn) => sessionPersistence.mutate(source, fn), workspaceBroadcast, chatBroadcast }),
   file: MULTICC_PATHS.taskBoardFile,
   getPinnedTaskIds: () => require('./src/workspace/pins').readStoredPinIds(MULTICC_PATHS.airPinsFile),
+  listShellTasks: () => taskShellHost.listTasks(),
   isSessionBusy: sid => dispatchTargetBusy(sid),
   auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,
   loadHistory: sessionId => viewChatHistory(sessionId),

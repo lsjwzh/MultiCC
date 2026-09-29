@@ -125,6 +125,8 @@ class _AirTasksViewState extends State<AirTasksView>
   bool _lastCreateHandedOff = false;
   String? _directoryId;
   String _error = '';
+  String _lastCreateError = '';
+  bool _capacityError = false;
   bool _loading = false, _submitting = false, _foreground = true;
   bool _openingTerminal = false;
   bool _creatingTerminal = false;
@@ -198,7 +200,7 @@ class _AirTasksViewState extends State<AirTasksView>
       if (!mounted) return;
       setState(() {
         _data = result;
-        _error = '';
+        if (!_capacityError) _error = '';
         if (result.directoryOf(_directoryId) == null) {
           _directoryId = result.directories.isEmpty
               ? null
@@ -685,6 +687,8 @@ class _AirTasksViewState extends State<AirTasksView>
     setState(() {
       _submitting = true;
       _error = '';
+      _lastCreateError = '';
+      _capacityError = false;
     });
     String? created;
     try {
@@ -746,6 +750,8 @@ class _AirTasksViewState extends State<AirTasksView>
           setState(() {
             _submitting = false;
             _error = error.toString();
+            _lastCreateError = _error;
+            _capacityError = error is AirTaskCapacityException;
           });
         }
       }
@@ -780,6 +786,8 @@ class _AirTasksViewState extends State<AirTasksView>
       service: _service,
       httpClient: widget.httpClient,
       clis: _data?.clis ?? const [],
+      errorText: () => _lastCreateError,
+      capacityExceeded: () => _capacityError,
       onSubmit:
           ({
             required String directoryId,
@@ -1699,6 +1707,11 @@ class _AirTasksViewState extends State<AirTasksView>
 
                 case 'schedules':
                   _openDestination(WorkspaceDestination.cron);
+                case 'retention':
+                  if (_directoryId != null) {
+                    unawaited(showAirTaskRetentionDialog(context,
+                      service: _service, directoryId: _directoryId!, onChanged: _refresh));
+                  }
                 case 'refresh':
                   unawaited(_refresh());
                 case 'onboarding':
@@ -1718,6 +1731,8 @@ class _AirTasksViewState extends State<AirTasksView>
               ),
 
               const PopupMenuItem(value: 'schedules', child: Text('定时任务')),
+              if (_directoryId != null)
+                const PopupMenuItem(value: 'retention', child: Text('管理任务容量')),
               const PopupMenuItem(value: 'refresh', child: Text('刷新')),
               // Web 那边是 manage 页右上角那颗 ❓（`onclick="startOnboarding()"`）。
               PopupMenuItem(value: 'onboarding', child: Text(t('onboarding'))),
@@ -1733,10 +1748,15 @@ class _AirTasksViewState extends State<AirTasksView>
               width: double.infinity,
               color: AppColors.dangerSoft,
               padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
-              child: Text(
-                _error,
-                style: const TextStyle(color: AppColors.danger, fontSize: 12.5),
-              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(_error, style: const TextStyle(color: AppColors.danger, fontSize: 12.5)),
+                if (_capacityError && _directoryId != null)
+                  TextButton(
+                    onPressed: () => showAirTaskRetentionDialog(context,
+                      service: _service, directoryId: _directoryId!, onChanged: _refresh),
+                    child: const Text('查看安全清理清单 / 自行管理任务'),
+                  ),
+              ]),
             ),
           Expanded(
             child: _mode == _AirMode.library
