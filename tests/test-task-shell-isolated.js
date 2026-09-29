@@ -98,6 +98,12 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     const sa = await api('/api/task-shells', { sessionId: a.id }), sb = await api('/api/task-shells', { sessionId: b.id });
     const first = await api(`/api/task-shells/${sa.id}/messages`, { text: 'HOLD_ORIGINAL', clientMsgId: 'one', intent: 'work' });
     await wait(() => rows().some(r => r.sessionId === first.sessionId), 'first execution did not start');
+    // The fork delete-preflight below hinges on unmerged work surviving: the
+    // test commits "fork source evidence" onto this task's branch and expects
+    // it to stay unmerged until the manual ff-merge near the end. Server-side
+    // auto-commit is on by default and would merge that branch into base at
+    // every later turn end (rebuilt source turn included), erasing the premise.
+    await api(`/api/sessions/${first.sessionId}`, { autoCommit: false }, 200, 'PATCH');
     await api(`/api/task-shells/${sb.id}/links`, { taskId: first.taskId });
     const newTaskInput = { text: 'INDEPENDENT_TASK', newTask: true, clientMsgId: 'two', intent: 'work' };
     const second = await api(`/api/task-shells/${sb.id}/messages`, newTaskInput);
@@ -253,6 +259,11 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
     const forkInput = { clientMsgId: 'isolated-fork' };
     const fork = await api(`/api/task-shell-tasks/${first.taskId}/fork`, forkInput);
     assert.deepEqual(await api(`/api/task-shell-tasks/${first.taskId}/fork`, forkInput), fork);
+    // The delete-preflight below hinges on the fork holding unmerged work (its
+    // branch tip is the source's unmerged evidence commit). Server-side
+    // auto-commit is on by default and would merge that branch back into base
+    // the moment the FORK_CONTINUE turn ends, erasing the premise — pin it off.
+    await api(`/api/sessions/${fork.sessionId}`, { autoCommit: false }, 200, 'PATCH');
     const forkRecord = readJson(paths.sessionsFile, { legacyIsArray: true }).data.find(r => r.id === fork.sessionId);
     assert.notEqual(forkRecord.worktreePath, recordA.worktreePath);
     assert.ok(!forkRecord.workspaceOwnerSessionId);
@@ -308,6 +319,10 @@ const rows = () => fs.existsSync(invocations) ? fs.readFileSync(invocations, 'ut
       { decision: 'separate' });
     assert.equal(separated.taskId, splitTaskId);
     assert.equal(separated.sessionId, splitSessionId);
+    // Same unmerged-work premise as the source: the moved checkout's branch
+    // contains the evidence commit, and SPLIT_CONTINUE's turn end must not
+    // auto-merge it into base before the fork delete-preflight runs.
+    await api(`/api/sessions/${splitSessionId}`, { autoCommit: false }, 200, 'PATCH');
     const movedSessions = readJson(paths.sessionsFile, { legacyIsArray: true }).data;
     const movedSource = movedSessions.find(record => record.id === first.sessionId);
     const movedTarget = movedSessions.find(record => record.id === splitSessionId);

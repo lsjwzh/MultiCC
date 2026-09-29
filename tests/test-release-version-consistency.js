@@ -161,13 +161,18 @@ test('core runner covers every selected path and expands declared variants', () 
   // core；两个免密助手测试（test-privileged-helper.js / -route.js）本就在 flow 档，
   // 沿 powerd 那条路一起删掉，core 之外的数字不动。294 - 1 = 293，
   // deterministic 253 - 1 = 252，commands 280 - 1 = 279。
-  assert.equal(core.length, 293, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 293);
+  // 2026-09-29 provider 批量迁移（45db1c13，随休眠快照落盘）：注册
+  // tests/test-provider-reassign.js 为 core 时没同步这几个数字，main 因此红在
+  // 294 !== 293。它是 hermetic 的——内存 harness + 临时目录，不碰端口、网络、
+  // 真进程——留在 core 是安全的。293 + 1 = 294，deterministic 252 + 1 = 253，
+  // commands 279 + 1 = 280。
+  assert.equal(core.length, 294, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 294);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 252);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 253);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 17,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -177,8 +182,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 279,
-    '276 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 280,
+    '277 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
