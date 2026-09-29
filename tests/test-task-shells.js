@@ -7,12 +7,30 @@ const os = require('node:os');
 const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
+const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/task-shell/capacity');
 const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/task-shell/context');
 const { createTaskShellHost } = require('../src/task-shell/host');
 const { displayMessages, displayTask } = require('../src/task-display-attribution');
 
 const { fixture } = require('./helpers/task-shell');
 const input = (key, taskId = null, extra = {}) => ({ clientMsgId: key, taskId, intent: 'work', text: key, ...extra });
+
+test('task-first creation allows 1024 tasks per directory, then rejects only that directory', async t => {
+  const f = fixture(t, { getDirectory: id => id === 'd1' || id === 'd2' ? { id } : null });
+  f.store.transaction(() => {
+    for (let i = 0; i < MAX_TASKS_PER_DIRECTORY - 1; i++) {
+      f.store.set('task', `tsk_seed_${i}`, { id: `tsk_seed_${i}`, dirId: 'd1' });
+    }
+  });
+  assert.equal(directoryTaskCount(f.store, 'd1'), 1023);
+  const last = await f.runtime.createStandalone({ dirId: 'd1', title: 'Allowed task', clientMsgId: 'create-1024' });
+  assert.equal(last.ok, true);
+  assert.equal(directoryTaskCount(f.store, 'd1'), 1024);
+  await assert.rejects(f.runtime.createStandalone({ dirId: 'd1', title: 'Overflow task', clientMsgId: 'create-1025' }),
+    { code: 'task_shell_task_limit', status: 409 });
+  assert.equal(directoryTaskCount(f.store, 'd1'), 1024);
+  assert.equal((await f.runtime.createStandalone({ dirId: 'd2', title: 'Other directory', clientMsgId: 'create-other' })).ok, true);
+});
 
 test('task-shell display attribution uses the registry code and preserves source tasks', () => {
   const tasks = new Map([
