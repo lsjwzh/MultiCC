@@ -136,13 +136,14 @@
     const translate = typeof opts.translate === 'function' ? opts.translate : (key, vars) => {
       const table = STRINGS[key] || {};
       // Follow the page's own language toggle (multicc_lang) first, then the
-      // browser locale — the same rule the rest of the Air UI uses.
-      let lang = 'zh';
-      try {
-        const stored = win.localStorage?.getItem('multicc_lang');
-        lang = /^en$/i.test(stored || '') ? 'en' : /^zh/i.test(stored || '') ? 'zh' : lang;
-      } catch (_) {}
-      if (!/^zh/i.test(lang)) lang = /zh/i.test(win.navigator?.language || '') ? 'zh' : 'en';
+      // browser locale — the same rule the rest of the Air UI uses. A stored
+      // choice wins outright: re-deriving it from navigator.language turned an
+      // English page Chinese whenever the browser itself was Chinese.
+      let stored = null;
+      try { stored = win.localStorage?.getItem('multicc_lang'); } catch (_) {}
+      const lang = /^en$/i.test(stored || '') ? 'en'
+        : /^zh/i.test(stored || '') ? 'zh'
+          : (/zh/i.test(win.navigator?.language || '') ? 'zh' : 'en');
       let text = table[lang] || table.zh || key;
       if (vars) for (const name of Object.keys(vars)) text = text.replace(`{${name}}`, vars[name]);
       return text;

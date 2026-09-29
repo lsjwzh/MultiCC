@@ -21,7 +21,9 @@ const path = require('node:path');
 
 const MODULE = fs.readFileSync(path.join(__dirname, '..', 'public', 'air-task-notify.js'), 'utf8');
 
-function loadModule() {
+// `navigatorLanguage` matters only where the module guesses a language for a
+// page that has never been toggled; the default matches the machine these run on.
+function loadModule({ navigatorLanguage = 'zh-CN' } = {}) {
   const store = new Map();
   const win = {
     localStorage: {
@@ -29,7 +31,7 @@ function loadModule() {
       setItem: (key, value) => store.set(key, String(value)),
       removeItem: key => store.delete(key),
     },
-    navigator: { language: 'zh-CN' },
+    navigator: { language: navigatorLanguage },
     setTimeout: () => 1,
     clearTimeout: () => {},
     // No audio / TTS in the fake browser — voice is a no-op but must not throw.
@@ -82,6 +84,54 @@ const KIND = { done: 'completed', succeeded: 'completed', error: 'error', waitin
 // A task as the snapshot carries it; `at` present → the server has a pending mark.
 const T = (id, status, at, extra = {}) => ({
   id, status, ...(at ? { attention: { kind: KIND[status], at } } : {}), ...extra,
+});
+
+// The controller hands its translate() to the deck factory, and the deck
+// (public/air-notify-deck.js) is what actually draws "Task complete" / "Open".
+// Capturing that option is how a test reads the resolved wording with no DOM.
+function captureTranslate(win, api) {
+  const seen = { translate: null };
+  const cards = {
+    ids: () => [], has: () => false, size: () => 0,
+    upsert() {}, remove() {}, clear() {}, isOpen: () => false, setOpen() {},
+  };
+  const ctrl = api.create({
+    getCurrentTaskId: () => null,
+    openTask: () => {},
+    window: win, document: win.document,
+    setTimeout: win.setTimeout, clearTimeout: win.clearTimeout,
+    deck: { create: opts => { seen.translate = opts.translate; return cards; } },
+  });
+  // The deck is built lazily, on the first mark that has to be shown.
+  ctrl.onSnapshot([T('t1', 'done', 50)], '');
+  return seen;
+}
+
+test('a stored English choice survives a Chinese browser locale', () => {
+  // The browser itself is zh-CN and the user switched this page to English.
+  // Re-deriving the language from navigator.language made the completion toast
+  // Chinese on exactly that machine.
+  const { win, api } = loadModule({ navigatorLanguage: 'zh-CN' });
+  win.localStorage.setItem('multicc_lang', 'en');
+  const { translate } = captureTranslate(win, api);
+  assert.equal(typeof translate, 'function', 'the deck factory receives translate()');
+  assert.equal(translate('floatTitle'), 'Task complete');
+  assert.equal(translate('floatOpen'), 'Open');
+});
+
+test('a stored Chinese choice survives an English browser locale', () => {
+  const { win, api } = loadModule({ navigatorLanguage: 'en-US' });
+  win.localStorage.setItem('multicc_lang', 'zh');
+  const { translate } = captureTranslate(win, api);
+  assert.equal(translate('floatTitle'), '任务已完成');
+  assert.equal(translate('floatOpen'), '打开');
+});
+
+test('with nothing stored the browser locale decides', () => {
+  const zh = loadModule({ navigatorLanguage: 'zh-CN' });
+  assert.equal(captureTranslate(zh.win, zh.api).translate('floatTitle'), '任务已完成');
+  const en = loadModule({ navigatorLanguage: 'en-US' });
+  assert.equal(captureTranslate(en.win, en.api).translate('floatTitle'), 'Task complete');
 });
 
 test('first snapshot a browser ever sees is a baseline: marks show, nothing rings', () => {
