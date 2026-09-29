@@ -294,7 +294,19 @@ function buildTaskAttributionSystemPrompt({
   const relatedRule = relatedTasks.length
     ? `\n\n「内容相关任务」是按最新一轮内容从整个任务板和全部历史对话里检索出来的，可能包含本次会话从没提过的任务。命中只说明材料/主题相关：若最新一轮确实是其中某个任务的继续、追问或修订，可以 relation=same 并填它的 id；若它与最新一轮属于同一工作主题但交付物不同，relation=new 并把它的 id 填进 relatedTaskId；判定不了就忽略它。不要仅因命中就复用它的 taskId。`
     : '';
-  return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n最近任务：\n${known}${related}${relatedRule}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问或修订。同一交付目标的继续才复用原任务名和 taskId。产生独立交付物、子任务或衍生任务时 relation=new，保留新任务身份；若它与某个旧任务属于同一工作主题，用 relatedTaskId 指向该旧任务，仅供任务面板归组。relation=same 时也可填 relatedTaskId 表示弱关联（同主题分组），但不能指向当前任务自己。\n\n${relevanceRule}\n\n同时提炼 memory_candidate：本轮对话中值得沉淀进任务长期记忆的稳定事实、决策或结论（接口约定、踩坑、方案取舍），一句话、不含过程描述；没有值得记的就填 null。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null","relatedTaskId":"相关时填写既有 ID；否则 null","contextRelevance":"high|medium|low","splitTaskName":null,"relevanceReason":null,"memory_candidate":"值得记的一条结论，或 null"}\n不要输出状态字母、解释或 Markdown。`;
+  // 「先读进度与状态」— the live half of the goal/achievement contract. This job
+  // owns taskName + phase, and phase *is* the task's progress; asking for it
+  // without saying where to read it left the model judging from the last
+  // sentence (a narration-only tail reads as "done" far too often). The reading
+  // is two-part on purpose — 进度 (which of the segment's requirements actually
+  // landed) then 状态 (who the turn is waiting on) — and phase is the conclusion
+  // of that reading, never an independent guess.
+  const stateRule = `【先读进度与状态，再定名与阶段】判定前先从对话记录里把"当前任务"的进度与状态读出来，不要只看最后一句：
+① 进度：把当前任务段里用户提出的每条要求逐条列出，再回记录里找每条的落点——已经落地 / 做了一半 / 只说了要做 / 完全没做。
+② 状态：眼下卡在谁身上——助手还在做（话没说完、或正在执行操作）、已正常收尾、在等用户拿主意或回答、在等后台任务或回调、还是被 API 异常截断。这份读数只用来判断名称与阶段，turn 的状态字母仍然不由你输出。
+③ phase 就是这份读数的结论，不是单独猜的：只要还有一条要求没有落地（没做、做了一半、只说了要做、结果没验证过），就不能填 done，按进度选 planning/implementing/verifying/wrapping；只有每条要求都有可验证的结果、且没有遗留下来的下一步，才填 done。助手只口头说"已完成/搞定了"而记录里看不到结果、把问题抛回给用户、或只是这一轮对话结束，都不算 done。`;
+  const nameRule = 'taskName 的写法：动词 + 对象，说清"要做成什么"、必须可验证（如"把登录页改成暗色主题"）；这一段里用户提了多个并列要求时要全部覆盖（用"、"并列）。只写做完后的可观察结果，不写过程或手段（"分析一下""看看代码""继续""优化下"都不是任务名）。是同一任务的继续、追问或修订时沿用原有名称，不要换个说法。';
+  return `你是任务归集器，只负责给消息归属任务，不负责判断 turn 的运行状态。\n\n${stateRule}\n\n最近任务：\n${known}${related}${relatedRule}\n当前任务ID：${currentTaskId || '无'}${identityRule ? `\n${identityRule}` : ''}\n\n判断最新一轮是真正的新任务，还是最近某个任务的继续、追问或修订。同一交付目标的继续才复用原任务名和 taskId。产生独立交付物、子任务或衍生任务时 relation=new，保留新任务身份；若它与某个旧任务属于同一工作主题，用 relatedTaskId 指向该旧任务，仅供任务面板归组。relation=same 时也可填 relatedTaskId 表示弱关联（同主题分组），但不能指向当前任务自己。\n\n${nameRule}\n\n${relevanceRule}\n\n同时提炼 memory_candidate：本轮对话中值得沉淀进任务长期记忆的稳定事实、决策或结论（接口约定、踩坑、方案取舍），一句话、不含过程描述；没有值得记的就填 null。\n\n只输出一个 JSON 对象：\n{"taskName":"简短任务名","phase":"planning|implementing|verifying|wrapping|done","relation":"same|new","taskId":"same 时填写上面的既有 ID；new 时为 null","relatedTaskId":"相关时填写既有 ID；否则 null","contextRelevance":"high|medium|low","splitTaskName":null,"relevanceReason":null,"memory_candidate":"值得记的一条结论，或 null"}\n不要输出状态字母、解释或 Markdown。`;
 }
 
 function buildTaskAttributionConversation(history, reply = '') {

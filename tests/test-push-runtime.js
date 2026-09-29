@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { BusinessPushRequestError, browserPayloadOf } = require('../src/push/business');
-const { createPushRuntime, redactClassifierTail, stripAnsi } = require('../src/push/runtime');
+const { createPushRuntime, redactClassifierTail, stripAnsi, CLASSIFY_PROMPT } = require('../src/push/runtime');
 
 function createApp() {
   const routes = new Map();
@@ -472,6 +472,14 @@ test('notify enforces cooldown and produces localized Web Push plus Bark/Webhook
   assert.equal(harness.runtime.notify('term', 'waiting', '请确认').title,
     'MultiCC #term: 等待操作');
   await flush();
+});
+
+test('the terminal classify prompt reads progress and status before answering', () => {
+  // The terminal-side classifier (legacy CLI lanes) is the same "internal
+  // parsing" job as the chat-side one: no plan block, but it must read the
+  // task's progress and status out of the tail instead of judging the last line.
+  assert.match(CLASSIFY_PROMPT, /先读进度与状态/);
+  assert.match(CLASSIFY_PROMPT, /「已完成」= 目标达成/);
 });
 
 test('stop clears every idle timer and invalidates stale timer and Aux callbacks', async () => {
