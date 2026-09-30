@@ -91,7 +91,11 @@ signing_identity() {
 }
 
 [ -f "$SRC" ] || die "missing $SRC"
-SUM="$(cat "$SRC" "$HERE/macos-agent/LidBrightnessBridge.h" "$HERE/macos-agent/LidBrightnessBridge.m" | shasum -a 256 | cut -d' ' -f1)"
+SUM="$(cat "$SRC" "$HERE/macos-agent/LidBrightnessBridge.h" "$HERE/macos-agent/LidBrightnessBridge.m" | /usr/bin/openssl dgst -sha256 | awk '{print $NF}')"
+# shasum uses Perl, which can fail in a broken LC_CTYPE environment while a
+# shell pipeline still exits successfully. Never install with an empty stamp.
+[ "${#SUM}" -eq 64 ] || die "could not hash Agent sources"
+case "$SUM" in *[!0-9a-f]*) die "invalid Agent source hash" ;; esac
 STAMP="$APP/Contents/Resources/source.sha256"
 SIGNER_STAMP="$APP/Contents/Resources/signer"
 SIGNER="$(signing_identity)"
