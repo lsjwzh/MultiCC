@@ -4,7 +4,10 @@
 // 对话框内部用 CLI 下拉让用户挑选底层 CLI（claude/codex/opencode/zcode/qoder），
 // 并按新 CLI 的 appType 重新拉取 provider 池、重建模型/effort/agent 区段。
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../i18n.dart';
 import '../models/message.dart';
@@ -12,6 +15,7 @@ import '../models/agent_preset.dart';
 import '../models/provider_limit_label.dart';
 import '../services/settings_service.dart';
 import '../services/manage_service.dart';
+import '../services/session_service.dart';
 import '../services/claude_models_service.dart';
 import '../services/codex_models_service.dart';
 import '../services/opencode_models_service.dart';
@@ -52,6 +56,17 @@ class CreateSessionDialog extends StatefulWidget {
   final SettingsService settings;
   final bool basicMode;
 
+  /// 打开前没备好的那两样（Provider 池、各车道的安装情况）由弹窗自己补：先把弹窗
+  /// 摆出来，数据到了再画。调用点因此不必在 `showDialog` 之前 await 一趟往返 ——
+  /// Air 的「新建终端」那颗按钮过去就是这么等的，按下去到弹窗出现之间是空白。
+  ///
+  /// 打开时就把这两样准备好了的调用点保持 false（默认），行为一字不变。
+  final bool selfLoad;
+
+  /// 测试与自定义传输用。调用点原来在弹窗外面拉池子时用的是自己那份 client，
+  /// 拉的动作搬进来之后得跟着一起进来，否则 mock 断在这里就断不上了。
+  final http.Client? httpClient;
+
   const CreateSessionDialog({
     super.key,
     required this.kind,
@@ -61,6 +76,8 @@ class CreateSessionDialog extends StatefulWidget {
     this.cliAvailability = const {},
     required this.settings,
     this.basicMode = false,
+    this.selfLoad = false,
+    this.httpClient,
   });
 
   @override
@@ -85,6 +102,17 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   /// qoder skips the pool entirely (BYOK).
   List<Map<String, dynamic>> _providers = const [];
   String? _defaultProviderId;
+
+  /// 打开时没拿到安装情况的调用点（`selfLoad`）由 [_loadAvailability] 现问一次。
+  late Map<SessionCli, bool> _availability;
+
+  /// 池子正在路上（`selfLoad` 那条路才会真亮起来）：Provider 那一格要说一句
+  /// 「正在读取」，别只摆一个「默认登录」让人以为没有线路可选。
+  bool _loadingProviders = false;
+
+  /// 整机一条能跑的车道都没有。这句提示原来在调用点、等安装情况回来才判；判定
+  /// 搬进来之后弹窗先出、随后自己换成这句话和一颗关闭（见 [build]）。
+  bool _hostNoCli = false;
 
   String? _pickedProvider; // null or '' = default; id = that provider
   String? _pickedModel;
@@ -118,7 +146,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   /// A CLI is selectable when the host reports it available. Unknown entries
   /// (empty availability map, e.g. cold start with no sessions to probe) fall
   /// back to available so the user is never blocked from creating a session.
-  bool _cliAvailable(SessionCli cli) => widget.cliAvailability[cli] ?? true;
+  bool _cliAvailable(SessionCli cli) => _availability[cli] ?? true;
 
   /// 兜底车道（`codex exec`，计划淘汰）的说明：这条车道对外也叫 Codex（区别在小字
   /// codex exec），所以这里必须点出该换到哪条，光说「计划淘汰」用户分不出该选谁。
@@ -182,6 +210,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _roleCtrl = TextEditingController();
     _agentCtrl = TextEditingController();
     _presetSvc = AgentPresetService(settings: widget.settings);
+    // 先落地：下面挑默认 CLI 的第一句就要问 [_cliAvailable]。
+    _availability = widget.cliAvailability;
     _pickedCli =
         widget.defaultCli ??
         (widget.kind == SessionKind.chat
@@ -207,6 +237,55 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     if (_isCodex) _loadCodexModels();
     final opts = _currentModelOptions;
     _pickedModel = opts.isNotEmpty ? opts.first.key : null;
+    // 调用点没把池子和安装情况备好（`selfLoad`）：弹窗已经在屏幕上了，这两样现补。
+    if (widget.selfLoad) unawaited(_bootstrap());
+  }
+
+  /// 补数据。顺序有讲究：先问各车道的安装情况（可能把默认 CLI 换成真装了的那个），
+  /// 再按最终 CLI 拉 Provider 池 —— 池子是跟着 CLI 走的，先拉等于白拉一趟。
+  Future<void> _bootstrap() async {
+    await _loadAvailability();
+    if (!mounted || _hostNoCli) return;
+    // 默认那条没装就换到第一条装了的路。initState 里同一条规则用的是调用点给的
+    // 安装情况，那时还是空表；数据刚到，这里再判一次。
+    var cli = _pickedCli;
+    if (!_cliAvailable(cli)) {
+      for (final candidate in _selectableClis) {
+        if (_cliAvailable(candidate)) {
+          cli = candidate;
+          break;
+        }
+      }
+    }
+    // force：默认 CLI 没变时也要真去拉一趟池子（这就是这次 bootstrap 的目的）。
+    await _onCliChanged(cli, force: true);
+  }
+
+  /// 各车道的安装情况。调用点给了就用它，没给（`selfLoad`）自己问一次 ——
+  /// 「整机一个 CLI 都没有」这条兜底要等它回来才判得了。
+  Future<void> _loadAvailability() async {
+    if (widget.cliAvailability.isNotEmpty) return;
+    Map<SessionCli, bool> availability = const {};
+    try {
+      final installInfo = await SessionService(
+        settings: widget.settings,
+        httpClient: widget.httpClient,
+      ).fetchCliInstallSpecs();
+      final raw = installInfo['availability'];
+      if (raw is Map) {
+        availability = {
+          for (final cli in SessionCli.values)
+            cli: raw[cli.name] is Map
+                ? raw[cli.name]['available'] == true
+                : false,
+        };
+      }
+    } catch (_) {}
+    if (!mounted || availability.isEmpty) return;
+    setState(() {
+      _availability = availability;
+      _hostNoCli = !SessionCli.values.any((cli) => availability[cli] == true);
+    });
   }
 
   @override
@@ -426,45 +505,46 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           AgentPresetPickerSheet(service: _presetSvc, index: _presetIndex),
     );
     if (id == null || !mounted) return;
+    // 先弹窗、后拉数据：替换提示是固定文案，没必要等预设正文从服务端回来才问。
+    // 正文在用户点头之后才真的需要，拉取跟着挪到那里。
+    if (_roleCtrl.text.trim().isNotEmpty) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          backgroundColor: const Color(0xFFf8fbff),
+          title: Text(
+            t('roleReplaceTitle'),
+            style: const TextStyle(color: Color(0xFF233249), fontSize: 15),
+          ),
+          content: Text(
+            t('roleReplaceBody'),
+            style: const TextStyle(color: Color(0xFF6f8096), fontSize: 13),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: Text(
+                t('cancel'),
+                style: const TextStyle(color: Color(0xFF6f8096)),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: Text(
+                t('roleReplaceBtn'),
+                style: const TextStyle(color: Color(0xFFb64e43)),
+              ),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
     try {
       final preset = await _presetSvc.fetchPreset(id);
-      final prompt = preset.prompt ?? '';
       if (!mounted) return;
-      if (_roleCtrl.text.trim().isNotEmpty) {
-        final ok = await showDialog<bool>(
-          context: context,
-          builder: (c) => AlertDialog(
-            backgroundColor: const Color(0xFFf8fbff),
-            title: Text(
-              t('roleReplaceTitle'),
-              style: const TextStyle(color: Color(0xFF233249), fontSize: 15),
-            ),
-            content: Text(
-              t('roleReplaceBody'),
-              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 13),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(c, false),
-                child: Text(
-                  t('cancel'),
-                  style: const TextStyle(color: Color(0xFF6f8096)),
-                ),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(c, true),
-                child: Text(
-                  t('roleReplaceBtn'),
-                  style: const TextStyle(color: Color(0xFFb64e43)),
-                ),
-              ),
-            ],
-          ),
-        );
-        if (ok != true) return;
-      }
       setState(() {
-        _roleCtrl.text = prompt;
+        _roleCtrl.text = preset.prompt ?? '';
         _applyPresetDefaults(preset);
       });
     } catch (e) {
@@ -500,8 +580,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   /// dependent fields (provider / model / effort) to sensible defaults for
   /// that CLI. Qoder skips the pool entirely (BYOK) but still seeds the model
   /// from its static option list.
-  Future<void> _onCliChanged(SessionCli cli) async {
-    if (cli == _pickedCli) return;
+  Future<void> _onCliChanged(SessionCli cli, {bool force = false}) async {
+    if (cli == _pickedCli && !force) return;
     // Optimistic reset: clear all dependent state so the UI reflects the new
     // CLI immediately. The old provider pool is dropped (it belongs to the
     // previous CLI's appType) and refilled below.
@@ -514,6 +594,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       _customModelCtrl.clear();
       _providers = const [];
       _defaultProviderId = null;
+      _loadingProviders = cli.supportsProvider;
     });
     if (!cli.supportsProvider) {
       // Qoder owns its account/BYOK; no provider pool to fetch. Seed the model
@@ -532,9 +613,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     if (cli.isClaudeFamily) _loadClaudeModels();
     if (cli.isCodexFamily) {
       try {
-        await CodexModelsService(
-          settings: widget.settings,
-        ).load(forceRefresh: true);
+        // 缓存优先。每次换 CLI 都强制联网刷一遍，等于让 Provider 池在 Codex 的
+        // 模型接口后面排队（最长 20s）；账号目录的新鲜度由服务端 throttled 的
+        // 后台 sync 负责，不该由「打开这张表」来担。
+        await CodexModelsService(settings: widget.settings).load();
       } catch (_) {}
     }
     if (cli == SessionCli.opencode) {
@@ -545,6 +627,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     try {
       final d = await ManageService(
         settings: widget.settings,
+        httpClient: widget.httpClient,
       ).fetchProvidersForCli(cli.name);
       if (!mounted) return;
       var providers = (d['providers'] as List? ?? [])
@@ -564,6 +647,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       setState(() {
         _providers = providers;
         _defaultProviderId = defaultProviderId;
+        _loadingProviders = false;
         if (defaultProviderId != null &&
             defaultProviderId.isNotEmpty &&
             providers.any((p) => p['id'] == defaultProviderId)) {
@@ -574,6 +658,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       });
     } catch (_) {
       // Leave the optimistic empty state in place on failure.
+      if (mounted) setState(() => _loadingProviders = false);
     }
   }
 
@@ -611,6 +696,27 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // 整机一条能跑的车道都没有（安装情况回来才知道）：这张表开出来也只能空转，
+    // 把话说清楚就好。这句提示原在调用点、等请求回来才决定开不开弹窗 —— 判定搬
+    // 进来之后弹窗先出，随后自己换成这一屏。
+    if (_hostNoCli) {
+      return AlertDialog(
+        backgroundColor: const Color(0xFFffffff),
+        content: Text(
+          t('noCompatibleAi'),
+          style: const TextStyle(color: Color(0xFF233249), fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(null),
+            child: Text(
+              t('cancel'),
+              style: const TextStyle(color: Color(0xFF6f8096)),
+            ),
+          ),
+        ],
+      );
+    }
     final modelOptions = _currentModelOptions;
     return AlertDialog(
       backgroundColor: const Color(0xFFffffff),
@@ -782,6 +888,19 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                   style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
                 ),
                 const SizedBox(height: 4),
+                if (_loadingProviders) ...[
+                  // 池子还在路上：这一句不能省 —— 否则这一格只剩「默认登录」一个
+                  // 选项，看着像这台机器上一条线路都没有。Web 的 Air 设置面板在
+                  // 同一个位置说的也是这句（air-task-settings.js 用的同一个键）。
+                  Text(
+                    t('airProviderLoadingList'),
+                    style: const TextStyle(
+                      color: Color(0xFF0965cf),
+                      fontSize: 11,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                ],
                 DropdownButtonFormField<String>(
                   value: _pickedProvider ?? '',
                   isExpanded: true,

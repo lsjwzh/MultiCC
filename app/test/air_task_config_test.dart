@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -375,6 +376,67 @@ void main() {
 
     expect(rounds, isNull);
     expect(budget, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  /// 「先弹窗、里面填数据」：Provider 池还在路上时，面板必须已经开在屏幕上了。
+  /// 以前这里是 `await prepareAIConfigInputs(...)` 完才 `showModalBottomSheet`，
+  /// 按下去到面板出现之间白白隔着一次服务端往返（用户报的就是这个等待）。
+  testWidgets('池子还在路上，面板就已经开出来了（转圈），到了再画面板', (tester) async {
+    final settings = await _settings();
+    final gate = Completer<http.Response>();
+    var providerCalls = 0;
+    final client = MockClient((request) async {
+      if (request.url.path.startsWith('/api/providers')) {
+        providerCalls++;
+        return gate.future;
+      }
+      return http.Response(
+        jsonEncode({'ok': true}),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+
+    await tester.pumpWidget(
+      _editorHost(
+        settings: settings,
+        initial: const AirTaskRuntime(cli: 'claude'),
+        httpClient: client,
+        onPicked: (_) {},
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('open')));
+    // 只推几帧：池子那趟请求还卡在 gate 上。
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+
+    expect(providerCalls, 1, reason: '池子这一趟已经发出去了');
+    expect(
+      find.byKey(const ValueKey('ai-config-loading')),
+      findsOneWidget,
+      reason: '数据没到也不能按下去没反应 —— 面板的壳先出来',
+    );
+
+    gate.complete(
+      http.Response(
+        jsonEncode({
+          'ok': true,
+          'providers': [
+            {'id': 'p1', 'name': '火山方舟', 'protocol': 'anthropic'},
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('ai-config-loading')), findsNothing);
+    expect(find.text('保存'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

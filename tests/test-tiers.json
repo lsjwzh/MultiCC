@@ -310,6 +310,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/create_session_dialog_self_load_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/cron_run_history_test.dart",
       "tier": "other",
       "lane": "flutter"

@@ -1967,6 +1967,79 @@ Future<_AIConfigInputBundle> _loadAIConfigInputs(
   return _AIConfigInputBundle(runtime, providers);
 }
 
+/// 路由已经挂上去了、数据还在路上的那一帧画的东西。「先弹窗、后填数据」的两个
+/// 外壳共用这一份 —— 键也是同一个，测试只认这两个键。
+class _AIConfigLoadingShell extends StatelessWidget {
+  const _AIConfigLoadingShell();
+
+  @override
+  Widget build(BuildContext context) => const SafeArea(
+    child: SizedBox(
+      key: ValueKey('ai-config-loading'),
+      height: 180,
+      child: Center(child: CircularProgressIndicator()),
+    ),
+  );
+}
+
+class _AIConfigLoadErrorShell extends StatelessWidget {
+  const _AIConfigLoadErrorShell();
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        key: const ValueKey('ai-config-load-error'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(t('sessionNotLoaded')),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// 「先弹窗、里面填数据」的通用外壳：Provider 池（连同它要预热的模型清单）还在
+/// 路上时，路由已经挂上去、先画一枚转圈，数据到了再交给 [builder] 画真面板。
+///
+/// 会话那条路（[_AIConfigSheetLoader]）一直就是这个形状；Air 的线路药丸和新建会话
+/// 对话框以前是在外面 `await` 完才 `showModalBottomSheet` —— 按下去到面板出现之间
+/// 白白隔着一次服务端往返，codex 那一支还要现拉一遍账号模型目录。
+class AIConfigSheetDeferred extends StatelessWidget {
+  const AIConfigSheetDeferred({
+    super.key,
+    required this.providers,
+    required this.builder,
+  });
+
+  /// 面板要的那一份 Provider 池。调用方通常还会在弹窗关掉之后再 await 它一次
+  /// （要拿名字），所以这里不吞异常：只有这一个 future，谁用谁接。
+  final Future<List<Map<String, dynamic>>> providers;
+  final Widget Function(
+    BuildContext context,
+    List<Map<String, dynamic>> providers,
+  )
+  builder;
+
+  @override
+  Widget build(BuildContext context) =>
+      FutureBuilder<List<Map<String, dynamic>>>(
+        future: providers,
+        builder: (context, snapshot) {
+          final providers = snapshot.data;
+          if (providers != null) return builder(context, providers);
+          if (snapshot.hasError) return const _AIConfigLoadErrorShell();
+          return const _AIConfigLoadingShell();
+        },
+      );
+}
+
 class _AIConfigSheetLoader extends StatelessWidget {
   const _AIConfigSheetLoader({
     required this.future,
@@ -2001,35 +2074,11 @@ class _AIConfigSheetLoader extends StatelessWidget {
           httpClient: httpClient,
         );
       }
-      if (snapshot.hasError) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              key: const ValueKey('ai-config-load-error'),
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(t('sessionNotLoaded')),
-                const SizedBox(height: 12),
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('关闭'),
-                ),
-              ],
-            ),
-          ),
-        );
-      }
+      if (snapshot.hasError) return const _AIConfigLoadErrorShell();
       // The route is already visible while the session/catalog requests run.
       // This makes a tap respond in the next frame even on a slow phone or a
       // cold Codex model cache.
-      return const SafeArea(
-        child: SizedBox(
-          key: ValueKey('ai-config-loading'),
-          height: 180,
-          child: Center(child: CircularProgressIndicator()),
-        ),
-      );
+      return const _AIConfigLoadingShell();
     },
   );
 }
