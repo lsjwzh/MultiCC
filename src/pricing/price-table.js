@@ -556,8 +556,13 @@ function createPriceTable(options = {}) {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     let timer = null;
     if (controller) {
+      // This timer must stay ref'd: when the fetch itself wedges (or an
+      // injected fetch settles only via the abort), it is the ONLY thing that
+      // can settle the refresh promise. An unref'd timer lets the event loop
+      // drain first, leaving refresh() pending forever in an otherwise idle
+      // process. It is cleared in finally the moment the fetch settles, so a
+      // healthy refresh never holds the process open.
       timer = setTimeout(() => controller.abort(), timeoutMs);
-      if (timer && typeof timer.unref === 'function') timer.unref();
     }
     try {
       const meta = readMeta();
