@@ -795,15 +795,23 @@ class AirService {
   }
 
   /// Search all lifecycle states, including archived conversations.
+  ///
+  /// `dirId` 为 null = 跨全部目录（控制台那一页）。不带这个参数，而不是带上
+  /// `'all'`：服务端把「没给」和「给了一个叫 all 的目录」分得很清楚，后者会被当成
+  /// 一个真实目录名去筛，结果是一条都命不中。
   Future<List<String>> searchTaskIds(
     String query, {
-    required String dirId,
+    required String? dirId,
     required bool fullText,
   }) async {
     final paths = [
       Uri(
         path: '/api/task-board/search',
-        queryParameters: {'q': query, 'dirId': dirId, 'limit': '20'},
+        queryParameters: {
+          'q': query,
+          if (dirId != null) 'dirId': dirId,
+          'limit': '20',
+        },
       ).toString(),
       if (fullText)
         Uri(

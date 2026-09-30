@@ -39,6 +39,14 @@
       params.set('view', 'overview');
       history.replaceState(history.state, '', `${location.pathname}?${params}${location.hash}`);
     }
+    // 裸 /air（view / dir / task 三个参数全缺）就是控制台那一页。老用户把 /air 当目录首页
+    // 用，新用户第一次打开也该直接看见「跨目录的活动」，而不是先挑一个目录。带 dir= 或
+    // task= 的地址仍然落目录首页（92 处 CDP 用例钉着这条），带 view= 的地址也一字不动；
+    // external 等其它参数只是路过，规整地址时原样留着，不在这里增删。
+    if (!params.get('view') && !params.get('dir') && !params.get('task')) {
+      params.set('view', 'overview');
+      history.replaceState(history.state, '', `${location.pathname}?${params}${location.hash}`);
+    }
     return params;
   }
   const initialParams = readRouteParams();

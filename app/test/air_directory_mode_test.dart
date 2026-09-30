@@ -117,6 +117,16 @@ void main() {
 
   _RecordingManager? liveManager;
 
+  /// 走目录库切到另一个目录（和用户点 ☰ › 工作目录库 › 目录卡是同一条路）。
+  Future<void> openDirectory(WidgetTester tester, String dirId) async {
+    await tester.tap(find.byKey(const ValueKey('air-header-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('工作目录库'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(ValueKey('air-directory-$dirId')));
+    await tester.pumpAndSettle();
+  }
+
   Future<List<String>> pumpView(
     WidgetTester tester, {
     _RecordingManager? manager,
@@ -146,21 +156,15 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    // 首页现在第一眼是控制台（Web 那边裸 /air 也落这一页），目录首页要先进一个
+    // 目录才看得到。这一份测的正是那个目录首页，所以按用户的路多走一步 —— 下面
+    // 每一处断言都还是原样。
+    await openDirectory(tester, 'd1');
     return requests;
   }
 
   Future<void> switchTo(WidgetTester tester, String mode) async {
     await tester.tap(find.byKey(ValueKey('air-directory-mode-$mode')));
-    await tester.pumpAndSettle();
-  }
-
-  /// 走目录库切到另一个目录（和用户点 ☰ › 工作目录库 › 目录卡是同一条路）。
-  Future<void> openDirectory(WidgetTester tester, String dirId) async {
-    await tester.tap(find.byKey(const ValueKey('air-header-menu')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('工作目录库'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(ValueKey('air-directory-$dirId')));
     await tester.pumpAndSettle();
   }
 

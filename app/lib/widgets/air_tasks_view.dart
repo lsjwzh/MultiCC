@@ -86,7 +86,12 @@ class AirTasksView extends StatefulWidget {
   State<AirTasksView> createState() => _AirTasksViewState();
 }
 
-enum _AirMode { tasks, library }
+/// Air 首页主区里的几页，同一层，共用同一条页头（含左上角的 ☰）。
+///
+/// `console` 是控制台 —— Web 那边它也是主区域里的一页（`?view=overview`），不是
+/// 盖在别处的一层。App 从前把它做成一条 push 的路由，于是左上角长出一颗返回
+/// 箭头，跟别的页不是一路；现在它回到主区里来，页头就只剩同一颗 ☰ 了。
+enum _AirMode { console, tasks, library }
 
 /// 目录首页顶部那道切换（Web `public/air.html` 的 `#directory-mode`）。
 ///
@@ -144,7 +149,10 @@ class _AirTasksViewState extends State<AirTasksView>
   /// 现在第几页（从 1 起）。换目录、改筛选、改搜索都回到第 1 页 —— 换了条件还停
   /// 在第 7 页，看到的往往是空的。
   int _tasksPage = 1;
-  _AirMode _mode = _AirMode.tasks;
+
+  /// 打开 Air 就落在控制台（Web 那边裸 `/air` 也落这一页）。第一眼要看到的是
+  /// 「有什么在跑、有什么在等我」，而不是某一个目录里的对话。
+  _AirMode _mode = _AirMode.console;
 
   /// 当前目录首页显示哪一类东西。默认 Chat（任务/对话），和 Web 一致；换一个
   /// 目录也回到 Chat —— 「默认还是 chat 模式」不该被上一次切到 Terminal 记住。
@@ -1101,60 +1109,14 @@ class _AirTasksViewState extends State<AirTasksView>
     if (created == true) await _refresh();
   }
 
-  /// 控制台。Web 那边它是主区域里的一页正文（跟目录首页同级），手机上并排放不下，
-  /// 所以做成一条独立页面；分区的顺序和每张卡上的数字照搬（见 [AirConsoleScreen]）。
+  /// 控制台。它是主区里的一页（`_AirMode.console`，见 [AirConsoleBody]），不是
+  /// 一条 push 出来的路由 —— 左上角因此跟别的页共用同一颗 ☰，也没有「打开一层、
+  /// 点走一条又把它收掉」那套往返（从前每个回调都要先 pop 再落到目标页）。
   ///
-  /// 从控制台里点走一条任务、切一个目录、进一个设置页时，先把这一页收掉 ——
-  /// 否则它盖住的正是刚落到下面的那一处。
+  /// 从侧栏点进来时先收抽屉：它盖着的正是刚切过去的那一页。
   void _openConsole() {
     _closeDrawer();
-    final navigator = Navigator.of(context);
-    unawaited(
-      navigator.push(
-        MaterialPageRoute<void>(
-          builder: (routeContext) => AirConsoleScreen(
-            settings: widget.settings,
-            httpClient: widget.httpClient,
-            onOpenTask: (task) {
-              Navigator.of(routeContext).pop();
-              unawaited(_open(task));
-            },
-            onOpenTasks: () {
-              Navigator.of(routeContext).pop();
-              setState(() {
-                _mode = _AirMode.tasks;
-                _tasksPage = 1;
-              });
-            },
-            onOpenLibrary: () {
-              Navigator.of(routeContext).pop();
-              setState(() => _mode = _AirMode.library);
-            },
-            onSelectDirectory: (dirId) {
-              Navigator.of(routeContext).pop();
-              _selectDirectory(dirId);
-            },
-            onOpenSchedules: () {
-              Navigator.of(routeContext).pop();
-              _openSchedules();
-            },
-            onOpenDestination: (destination) {
-              Navigator.of(routeContext).pop();
-              _openDestination(destination);
-            },
-            onOpenMemory: () {
-              Navigator.of(routeContext).pop();
-              _openMemoryGraph();
-            },
-            onOpenAiAssistant: () {
-              Navigator.of(routeContext).pop();
-              _openAiAssistant();
-            },
-            onOpenWebConsole: _openWebConsole,
-          ),
-        ),
-      ),
-    );
+    setState(() => _mode = _AirMode.console);
   }
 
   void _openAiAssistant() {
@@ -1618,7 +1580,11 @@ class _AirTasksViewState extends State<AirTasksView>
               ),
             ),
             Text(
-              _mode == _AirMode.library ? '工作目录' : (directory?.name ?? '工作目录'),
+              switch (_mode) {
+                _AirMode.console => t('airConsole'),
+                _AirMode.library => '工作目录',
+                _AirMode.tasks => directory?.name ?? '工作目录',
+              },
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
@@ -1693,6 +1659,8 @@ class _AirTasksViewState extends State<AirTasksView>
                   unawaited(_addDirectory());
                 case 'import-fleet':
                   unawaited(_importExternal());
+                case 'console-web':
+                  _openWebConsole();
 
                 case 'schedules':
                   _openDestination(WorkspaceDestination.cron);
@@ -1718,6 +1686,14 @@ class _AirTasksViewState extends State<AirTasksView>
                 value: 'import-fleet',
                 child: Text('导入共享工作区'),
               ),
+              // 网页版控制台。只在控制台这一页给：在别处它是一句「跳到另一个页面
+              // 的同一页」，读了只会分心 —— 原生控制台现在已经能干活，这条是出口，
+              // 不是入口（同 `_openWebConsole` 的注释）。
+              if (_mode == _AirMode.console)
+                const PopupMenuItem(
+                  value: 'console-web',
+                  child: Text('在网页里打开控制台'),
+                ),
 
               const PopupMenuItem(value: 'schedules', child: Text('定时任务')),
               if (_directoryId != null)
@@ -1748,21 +1724,41 @@ class _AirTasksViewState extends State<AirTasksView>
               ]),
             ),
           Expanded(
-            child: _mode == _AirMode.library
-                ? AirDirectoryLibrary(
-                    directories: data?.directories ?? const [],
-                    currentDirectoryId: _directoryId,
-                    tasksOf: (dirId) => data?.tasksOf(dirId) ?? const [],
-                    runningDirectories: runningDirectories,
-                    onOpen: _selectDirectory,
-                    onAddDirectory: () => unawaited(_addDirectory()),
-                    onAction: (directory, action) =>
-                        unawaited(_onDirectoryAction(directory, action)),
-                    // 第 1 步圈的就是这颗「添加」（Web 第 1 步的目标是「新建
-                    // 目录」按钮，同一件事）。
-                    addButtonKey: _tourLibraryKey,
-                  )
-                : _buildDirectory(data, directory, tasks),
+            child: switch (_mode) {
+              _AirMode.console => AirConsoleBody(
+                settings: widget.settings,
+                httpClient: widget.httpClient,
+                // 点开一条任务 = 先落到它自己的目录页，再把它升起来。Web 那边从
+                // 控制台点一行也是这样：地址变成「那个目录 + 那条任务」，不是
+                // 停在控制台上盖一层。控制台是跨目录的，所以这一跳带着任务自己
+                // 的目录走，不看当前选的是哪个目录。
+                onOpenTask: (task) {
+                  _selectDirectory(task.dirId);
+                  unawaited(_open(task));
+                },
+                onOpenLibrary: () => setState(() => _mode = _AirMode.library),
+                onSelectDirectory: _selectDirectory,
+                onOpenSchedules: _openSchedules,
+                onOpenDestination: _openDestination,
+                onOpenMemory: _openMemoryGraph,
+                onOpenTaskgraph: () => unawaited(_openTaskGraph()),
+                onOpenAiAssistant: _openAiAssistant,
+              ),
+              _AirMode.library => AirDirectoryLibrary(
+                directories: data?.directories ?? const [],
+                currentDirectoryId: _directoryId,
+                tasksOf: (dirId) => data?.tasksOf(dirId) ?? const [],
+                runningDirectories: runningDirectories,
+                onOpen: _selectDirectory,
+                onAddDirectory: () => unawaited(_addDirectory()),
+                onAction: (directory, action) =>
+                    unawaited(_onDirectoryAction(directory, action)),
+                // 第 1 步圈的就是这颗「添加」（Web 第 1 步的目标是「新建
+                // 目录」按钮，同一件事）。
+                addButtonKey: _tourLibraryKey,
+              ),
+              _AirMode.tasks => _buildDirectory(data, directory, tasks),
+            },
           ),
         ],
       ),

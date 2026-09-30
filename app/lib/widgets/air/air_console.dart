@@ -3,36 +3,39 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import '../../i18n.dart';
 import '../../models/message.dart';
 import '../../services/air_service.dart';
 import '../../services/manage_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
+import '../../utils/status_presentation.dart';
 import '../workspace_navigation_drawer.dart';
 import 'air_attention_screen.dart';
+import 'air_directory_search.dart';
 import 'air_panels.dart';
 import 'air_task_status.dart';
 import 'air_task_actions.dart';
 
 /// 控制台：跨所有工作目录看「现在有什么在跑、有什么在等我」。
 ///
-/// 对应 Web `public/air-admin.js` 的 `renderOverview`。Web 那边它是一层盖在当前
-/// 页面上的浮层（点一条任务浮层自己让开）；手机上并排放不下，所以这边是一条
-/// 独立页面 —— 分区的顺序、每张卡上的数字和每个筛选的含义都照搬。
+/// 对应 Web `public/air-admin.js` 的 `renderOverview`。Web 那边它是主区域里的
+/// 一页正文（跟目录首页、定时任务同级），App 这边也一样 —— 它是 Air 首页主区
+/// 里的一页（`_AirMode.console`），不再是自己 push 的一条路由。所以这里没有
+/// Scaffold：页头那条 AppBar（含左上角的 ☰）是宿主的，这一块只是它的正文。
 ///
 /// 数据只来自两个地方：`/api/air` 那一份快照（任务 + 目录）和 `/api/cron`
 /// （定时任务）。控制台不新开一套统计口径，也不自己算「在不在跑」。
-class AirConsoleScreen extends StatefulWidget {
-  const AirConsoleScreen({
+class AirConsoleBody extends StatefulWidget {
+  const AirConsoleBody({
     super.key,
     required this.settings,
     required this.onOpenTask,
-    required this.onOpenTasks,
     required this.onOpenLibrary,
     required this.onSelectDirectory,
     required this.onOpenDestination,
     required this.onOpenMemory,
-    required this.onOpenWebConsole,
+    required this.onOpenTaskgraph,
     this.onOpenAiAssistant,
     this.onOpenSchedules,
     this.httpClient,
@@ -45,9 +48,7 @@ class AirConsoleScreen extends StatefulWidget {
   /// 当前选的是哪个目录。
   final ValueChanged<AirTask> onOpenTask;
 
-  /// 回到任务主区（「新建任务」和「进行中任务」卡片都走这里 —— App 的任务页
-  /// 顶上就是输入区，所以这两件事落在同一个地方）。
-  final VoidCallback onOpenTasks;
+  /// 目录库（「工作目录」那一栏右上角那句、以及小字行里那条都走这里）。
   final VoidCallback onOpenLibrary;
 
   /// 从「工作目录」那一栏切到某个目录（回到任务主区）。
@@ -63,53 +64,123 @@ class AirConsoleScreen extends StatefulWidget {
   /// 记忆图谱在 App 里仍是网页那一页（原生版还没做），单独给一个回调。
   final VoidCallback onOpenMemory;
 
-  /// 控制台里的一切都在原生页上；想用网页版留一个明确的出口。
-  final VoidCallback onOpenWebConsole;
+  /// 「任务图谱」卡（Web 工具格的第 3 格）。App 有原生页，宿主自己 push。
+  final VoidCallback onOpenTaskgraph;
 
   /// AI Assistant 是控制台的一级入口，不再要求先进入设置中心再找一层卡片。
   final VoidCallback? onOpenAiAssistant;
 
   @override
-  State<AirConsoleScreen> createState() => _AirConsoleScreenState();
+  State<AirConsoleBody> createState() => _AirConsoleBodyState();
 }
 
 /// 控制台是给人看的，不是导出用的：超过这个数就只显示最近的一批，并把总数
 /// 说清楚（同 Web `TASK_LIST_LIMIT`）。
 const int _taskListLimit = 60;
 
-/// 「谁在等我」是控制台的第一格，也是打开这一页第一眼要看的东西，所以它只留
-/// 最近更新的几条：一屏扫完，剩下的交给它自己的整页（这一格的「查看全部」）。不封顶
-/// 的话，等我的任务一多，这一格就把下面的「全部任务」和工具格整片推出视野 ——
-/// 控制台变成一份清单的滚动条（同 Web `ATTENTION_LIMIT`）。
-const int _attentionLimit = 5;
+/// 顶上那五个过滤格（同 Web `air-admin.js` 的 `tiles`）：进行中 / 等我回复 /
+/// 异常 / 今日完成 / 全部。点一格，统计带和工作目录之间就展开那一格的清单；再点
+/// 同一格收起。默认什么都不展开 —— 控制台第一眼是数字，不是一堵清单墙。
+enum _ConsoleTile { running, waiting, error, today, all }
 
-enum _ConsoleStatus { open, all, archived }
+/// 一格的三个词：叫什么、空的时候写什么、以及它自己的 id（`name` 正好就是 Web 那边
+/// 的 `data-view`，所以两边同一格的清单用的是同一个键）。
+extension on _ConsoleTile {
+  String get labelKey => switch (this) {
+    _ConsoleTile.running => 'airAdminTileRunning',
+    _ConsoleTile.waiting => 'airAdminTileWaiting',
+    _ConsoleTile.error => 'airAdminTileError',
+    _ConsoleTile.today => 'airAdminTileToday',
+    _ConsoleTile.all => 'airAdminTileAll',
+  };
 
-class _AirConsoleScreenState extends State<AirConsoleScreen> {
+  String get emptyKey => switch (this) {
+    _ConsoleTile.running => 'airAdminNoRunningTasks',
+    _ConsoleTile.waiting => 'airAdminNoAttentionTasks',
+    _ConsoleTile.error => 'airAdminNoErrorTasks',
+    _ConsoleTile.today => 'airAdminNoDoneToday',
+    _ConsoleTile.all => 'airAdminNoMatchingTasks',
+  };
+}
+
+/// 「今日完成」：这一轮跑成功（succeeded）或生命周期 done、且最后一次更新落在
+/// 今天本地零点之后。任务没有单独的完成时间戳，[AirTask.updatedAt] 就是它结束的
+/// 那一刻。（同 Web `air-admin.js` 的 `doneToday`。）
+bool _doneToday(AirTask task, [DateTime? now]) {
+  if (airTaskStatus(task) != CanonicalStatus.succeeded &&
+      task.status != 'done') {
+    return false;
+  }
+  final at = now ?? DateTime.now();
+  final midnight = DateTime(at.year, at.month, at.day);
+  return task.updatedAt >= midnight.millisecondsSinceEpoch;
+}
+
+class _AirConsoleBodyState extends State<AirConsoleBody> {
   late final AirService _service = AirService(
     settings: widget.settings,
     httpClient: widget.httpClient,
   );
-  final _search = TextEditingController();
+  final _searchController = TextEditingController();
+
+  /// 全文检索（同 Web 控制台挂的 `MultiCCTaskSearch`）。本地按标题筛是即时反馈，
+  /// 也是服务端结果拿不到时的退路：断网、老服务没有这条路由、接口报错，都只表现
+  /// 为「和以前一样按标题筛」，面板从不因为一次请求没回来而空掉。
+  ///
+  /// `crossDirectory` —— 控制台是跨目录的一页，检索也跨全部目录（Web 那边同一处
+  /// 不传 dirId，走的就是同一条路）。
+  late final AirDirectorySearch _search = AirDirectorySearch(
+    _service,
+    crossDirectory: true,
+  );
   AirSnapshot? _data;
   List<CronTask>? _schedules;
   String _error = '';
   bool _loading = false, _cronFailed = false;
   String _query = '';
-  _ConsoleStatus _status = _ConsoleStatus.open;
+  // 状态档就是目录首页用的那一份枚举（`AirDirectoryTaskFilter`）：两处说「进行中
+  // 与待处理」时必须是同一批任务 —— 控制台曾经自己写了三个值的 `_ConsoleStatus`，
+  // 两个地方各判一遍，迟早分叉。
+  AirDirectoryTaskFilter _status = AirDirectoryTaskFilter.open;
   String _dir = 'all';
+
+  /// 顶上展开的是哪一格。null = 都收起（第一眼只看数字，同 Web）。
+  _ConsoleTile? _tile;
+
+  /// 搜索连不连对话正文一起搜（同 Web `consoleFilter.fullText`）。
+  bool _fullText = true;
 
   @override
   void initState() {
     super.initState();
+    _search.addListener(_onSearchChanged);
     _load();
   }
 
   @override
   void dispose() {
+    _searchController.dispose();
     _search.dispose();
     _service.close();
     super.dispose();
+  }
+
+  /// 检索结果（含「回到本地筛选」）都是重画这一次列表的理由。
+  void _onSearchChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// 搜索框的每一跳都同时喂两条路：本地标题筛选立刻重画，全文结果到了再按相关度
+  /// 覆盖一次。口径照 Web 的 `MultiCCTaskSearch.attach`。
+  void _onQueryChanged(String value) {
+    setState(() => _query = value);
+    _search.search(value, null, _fullText);
+  }
+
+  /// 换了搜索范围要重新问一次服务端（两条语料的召回不同），不能只重画。
+  void _onScopeChanged(bool value) {
+    setState(() => _fullText = value);
+    _search.search(_query, null, value);
   }
 
   /// 两份数据一起拉，但能不能各自失败要分开算：定时任务读不到不该让整个控制台
@@ -164,308 +235,189 @@ class _AirConsoleScreenState extends State<AirConsoleScreen> {
     if (deleted && mounted) await _load();
   }
 
-  /// 「全部任务」这一份列表。控制台是跨目录的，这里不按当前目录收窄 —— 目录是
+  /// 「全部」那一格的清单。控制台是跨目录的，这里不按当前目录收窄 —— 目录是
   /// 执行上下文，不是「能不能看见这条任务」的前提。
+  ///
+  /// 有搜索词时状态那格换成「全部记录」（同 Web 的 `searchFilter()`）：默认只看在办
+  /// 会把已归档任务的命中静默滤掉（服务端有结果、列表显示 0 条），而那正是「明明
+  /// 搜得到却搜不到」的来源。目录那格照旧参与，它本来就是搜索范围的一部分。
   List<AirTask> get _filteredTasks {
     final needle = _query.trim().toLowerCase();
-    final rows =
-        _tasks
-            .where(
-              (task) => switch (_status) {
-                _ConsoleStatus.all => true,
-                _ConsoleStatus.archived => task.status == 'archived',
-                _ConsoleStatus.open => !task.closed,
-              },
-            )
-            .where((task) => _dir == 'all' || task.dirId == _dir)
-            .where(
-              (task) =>
-                  needle.isEmpty ||
-                  '${task.title} ${_directoryName(task.dirId)}'
-                      .toLowerCase()
-                      .contains(needle),
-            )
-            .toList()
-          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    return rows;
+    final querying = needle.isNotEmpty;
+    final status = querying ? AirDirectoryTaskFilter.all : _status;
+    final rows = _tasks
+        .where(status.matches)
+        .where((task) => _dir == 'all' || task.dirId == _dir)
+        .toList();
+    if (!querying) {
+      return rows..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    }
+    // 有全文结果就按相关度排（标题没命中、正文命中的任务因此能被找到）；没有
+    // （还没回来 / 报错）就退回按标题筛，列表从不空着。命中池里找不到的 id
+    // （任务刚被删掉）直接跳过，不编造行。
+    final ids = _search.ids;
+    if (ids != null && ids.isNotEmpty) {
+      final rank = {for (var i = 0; i < ids.length; i++) ids[i]: i};
+      final ranked = rows.where((task) => rank.containsKey(task.id)).toList()
+        ..sort((a, b) => rank[a.id]!.compareTo(rank[b.id]!));
+      if (ranked.isNotEmpty) return ranked;
+    }
+    return rows
+        .where(
+          (task) => '${task.title} ${_directoryName(task.dirId)}'
+              .toLowerCase()
+              .contains(needle),
+        )
+        .toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
   }
 
   @override
   Widget build(BuildContext context) {
     final data = _data;
     final tasks = _tasks;
-    final active = tasks.where((task) => !task.closed).toList();
-    final executing = active.where(airTaskRunning).toList();
-    final waiting = active.where(airNeedsAttention).toList();
+    // 五个数字的口径照搬 Web `renderOverview`。`active` 是**生命周期**（未完成、
+    // 未归档），不是 `!task.closed` —— 后者把 `workflowStage == 'done'` 也算关掉，
+    // 而目录首页的「进行中与待处理」走的正是这条生命周期线
+    // （`AirDirectoryTaskFilter.open`）。控制台跟它必须数出同一批任务。
+    final active = tasks.where(AirDirectoryTaskFilter.open.matches).toList();
+    final executing = tasks.where(airTaskRunning).toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    // 「等我回复」和「异常」拆成两格：前者是要我回答 / 卡在资源上的，后者是跑出错
+    // 的。两格合起来仍是 urgent —— 侧栏那个徽标数的是这个总数（同 Web）。
+    final urgent = airUrgentTasks(tasks);
+    final failed = urgent.where((task) => airTaskUrgency(task) == 1).toList();
+    final waitingMe = urgent
+        .where((task) => airTaskUrgency(task) != 1)
+        .toList();
+    final finished = tasks.where((task) => _doneToday(task)).toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     final running = airRunningDirectories(tasks);
     final enabledSchedules = (_schedules ?? const <CronTask>[])
         .where((task) => task.enabled)
         .length;
-    final urgent = airUrgentTasks(tasks);
     final rows = _filteredTasks;
     final shown = rows.take(_taskListLimit).toList();
 
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        backgroundColor: AppColors.panel,
-        foregroundColor: AppColors.text,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        title: const Text(
-          '控制台',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-        ),
-        actions: [
-          PopupMenuButton<String>(
-            key: const ValueKey('air-console-menu'),
-            icon: const Icon(Icons.more_horiz_rounded),
-            tooltip: '更多操作',
-            color: AppColors.panel,
-            onSelected: (value) {
-              switch (value) {
-                case 'library':
-                  widget.onOpenLibrary();
-                case 'create':
-                  widget.onOpenTasks();
-                case 'refresh':
-                  _load();
-                case 'web':
-                  widget.onOpenWebConsole();
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'library', child: Text('浏览工作目录')),
-              PopupMenuItem(value: 'create', child: Text('新建任务')),
-              PopupMenuItem(value: 'refresh', child: Text('刷新')),
-              PopupMenuItem(value: 'web', child: Text('在网页里打开控制台')),
-            ],
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(
-          key: const ValueKey('air-console'),
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
-          children: [
-            if (_error.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Text(
-                  _error,
-                  style: const TextStyle(
-                    color: AppColors.danger,
-                    fontSize: 12.5,
-                  ),
-                ),
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        key: const ValueKey('air-console'),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
+        children: [
+          if (_error.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                _error,
+                style: const TextStyle(color: AppColors.danger, fontSize: 12.5),
               ),
-            if (data == null && _error.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 60),
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else ...[
-              _Stats(
-                directories: data?.directories.length ?? 0,
-                runningDirectories: running.length,
-                active: active.length,
-                executing: executing.length,
-                waiting: waiting.length,
-                enabledSchedules: enabledSchedules,
-                totalSchedules: _schedules?.length,
-                schedulesLoading: _schedules == null && !_cronFailed,
-                schedulesFailed: _cronFailed,
-                onOpenTasks: widget.onOpenTasks,
-                onOpenLibrary: widget.onOpenLibrary,
+            ),
+          if (data == null && _error.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 60),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else ...[
+            _Tiles(
+              running: executing.length,
+              runningDirectories: running.length,
+              waiting: waitingMe.length,
+              failed: failed.length,
+              today: finished.length,
+              all: active.length,
+              total: tasks.length,
+              selected: _tile,
+              onSelect: (tile) =>
+                  setState(() => _tile = _tile == tile ? null : tile),
+            ),
+            const SizedBox(height: 8),
+            _MetaLine(
+              directories: data?.directories.length ?? 0,
+              enabledSchedules: enabledSchedules,
+              totalSchedules: _schedules?.length,
+              schedulesFailed: _cronFailed,
+              onOpenLibrary: widget.onOpenLibrary,
+              onOpenSchedules: _openSchedules,
+            ),
+            if (_tile != null) ...[
+              const SizedBox(height: 10),
+              _TileDrawer(
+                tile: _tile!,
+                executing: executing,
+                waitingMe: waitingMe,
+                failed: failed,
+                finished: finished,
+                rows: rows,
+                shown: shown,
+                searchController: _searchController,
+                status: _status,
+                dir: _dir,
+                fullText: _fullText,
+                directories: data?.directories ?? const [],
+                directoryName: _directoryName,
+                onQuery: _onQueryChanged,
+                onStatus: (value) => setState(() => _status = value),
+                onScope: _onScopeChanged,
+                onDir: (value) => setState(() => _dir = value),
+                onOpenTask: widget.onOpenTask,
+                onDeleteTask: _deleteTask,
+                unread: urgent.length,
+                onOpenAttention: () => _openAttention(urgent),
+                onClose: () => setState(() => _tile = null),
+              ),
+            ],
+            const SizedBox(height: 15),
+            // 控制台要回答的是两件「一眼扫完」的事：谁在等我，以及我有哪些目录。
+            // 顺序照 Web `renderOverview`：统计带 → 小字 → 展开的清单 → 工作目录 →
+            // AI Assistant → 工具格。
+            _Panel(
+              eyebrow: 'WORK DIRECTORIES',
+              title: t('airAdminWorkDirectories'),
+              action: _LinkButton(
+                id: 'air-console-library',
+                label: t('airAdminDirectoryLibrary'),
+                onTap: widget.onOpenLibrary,
+              ),
+              child: Column(
+                children: [
+                  for (final directory
+                      in data?.directories ?? const <AirDirectory>[])
+                    _DirectoryRow(
+                      directory: directory,
+                      tasks: tasks
+                          .where((task) => task.dirId == directory.id)
+                          .toList(),
+                      running: running.contains(directory.id),
+                      onTap: () => widget.onSelectDirectory(directory.id),
+                    ),
+                  if ((data?.directories ?? const []).isEmpty)
+                    _Empty(t('airAdminNoDirectories')),
+                ],
+              ),
+            ),
+            const SizedBox(height: 15),
+            _AssistantCard(
+              onTap:
+                  widget.onOpenAiAssistant ??
+                  () => widget.onOpenDestination(WorkspaceDestination.global),
+            ),
+            const SizedBox(height: 15),
+            _Panel(
+              eyebrow: 'SYSTEM TOOLS',
+              title: t('airAdminServicesAndSettings'),
+              child: _ToolGrid(
+                onOpenDocs: () =>
+                    widget.onOpenDestination(WorkspaceDestination.docs),
+                onOpenMemory: widget.onOpenMemory,
+                onOpenTaskgraph: widget.onOpenTaskgraph,
+                onOpenSettings: () =>
+                    widget.onOpenDestination(WorkspaceDestination.global),
                 onOpenSchedules: _openSchedules,
               ),
-              const SizedBox(height: 15),
-              _AssistantCard(
-                onTap:
-                    widget.onOpenAiAssistant ??
-                    () => widget.onOpenDestination(WorkspaceDestination.global),
-              ),
-              const SizedBox(height: 15),
-              _Panel(
-                eyebrow: 'ACROSS ALL WORKSPACES',
-                title: '谁在等我',
-                // 清单本来就按最近更新排过，所以「只显示前几条」砍掉的是最久没动过的
-                // 那些，留下的仍是眼下最近有动静的人。总数照报，别让封顶看起来像「就这么几条」。
-                note: urgent.length > _attentionLimit
-                    ? '${urgent.length} 条 · 显示最近更新的 $_attentionLimit 条'
-                    : '按最近更新排序，点击直达',
-                // 没超过就没有第二页可去，出口不出现 —— 按钮跟着「有地方可去」出现，
-                // 而不是常驻一个点了没反应的「全部」。
-                action: urgent.length > _attentionLimit
-                    ? TextButton(
-                        key: const ValueKey('air-console-attention-all'),
-                        onPressed: () => _openAttention(urgent),
-                        style: TextButton.styleFrom(
-                          foregroundColor: AppColors.accent,
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                          minimumSize: const Size(0, 28),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        child: Text(
-                          '查看全部 ${urgent.length} 条 ›',
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                      )
-                    : null,
-                child: Column(
-                  children: [
-                    for (final task in urgent.take(_attentionLimit))
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: AirTaskTile(
-                          // 同一条任务在「谁在等我」和「全部任务」里各出现一次，
-                          // 两个分区因此各给一份自己的标识。
-                          key: ValueKey('air-console-urgent-${task.id}'),
-                          task: task,
-                          directoryName: _directoryName(task.dirId),
-                          showTime: true,
-                          onTap: () => widget.onOpenTask(task),
-                        ),
-                      ),
-                    if (urgent.isEmpty) const _Empty('没有正在等我的任务。'),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 15),
-              // 控制台要回答的是两件「一眼扫完」的事：谁在等我，以及我有哪些目录。所以
-              // 「工作目录」紧跟在「谁在等我」后面 —— 它是这一页的第二眼，不该压在
-              // 「全部任务」和工具格底下等用户滚到底才看见。（同 Web `renderOverview`）
-              _Panel(
-                eyebrow: 'WORK DIRECTORIES',
-                title: '工作目录',
-                note: '目录库与搜索在右上角',
-                child: Column(
-                  children: [
-                    for (final directory
-                        in data?.directories ?? const <AirDirectory>[])
-                      _DirectoryRow(
-                        directory: directory,
-                        tasks: tasks
-                            .where((task) => task.dirId == directory.id)
-                            .toList(),
-                        running: running.contains(directory.id),
-                        onTap: () => widget.onSelectDirectory(directory.id),
-                      ),
-                    if ((data?.directories ?? const []).isEmpty)
-                      const _Empty('还没有工作目录。'),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 15),
-              _Panel(
-                eyebrow: 'ALL TASKS · 全部目录',
-                title: '全部任务',
-                note: rows.length > shown.length
-                    ? '${rows.length} 条 · 显示最近 ${shown.length} 条'
-                    : '${rows.length} 条',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      key: const ValueKey('air-console-search'),
-                      controller: _search,
-                      onChanged: (value) => setState(() => _query = value),
-                      style: const TextStyle(
-                        color: AppColors.text,
-                        fontSize: 13,
-                      ),
-                      decoration: sheetInputDecoration(hint: '搜索标题或目录'),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _Picker<_ConsoleStatus>(
-                            pickerKey: const ValueKey('air-console-status'),
-                            value: _status,
-                            items: const {
-                              _ConsoleStatus.open: '进行中与待处理',
-                              _ConsoleStatus.all: '全部记录',
-                              _ConsoleStatus.archived: '已归档',
-                            },
-                            onChanged: (value) =>
-                                setState(() => _status = value),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _Picker<String>(
-                            pickerKey: const ValueKey('air-console-dir'),
-                            value: _dir,
-                            items: {
-                              'all': '全部目录',
-                              for (final directory
-                                  in data?.directories ??
-                                      const <AirDirectory>[])
-                                directory.id: directory.name,
-                            },
-                            onChanged: (value) => setState(() => _dir = value),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    if (rows.isEmpty)
-                      const _Empty('没有符合条件的任务。换个关键词或放宽筛选。')
-                    else
-                      SizedBox(
-                        key: const ValueKey('air-console-task-scroll'),
-                        // 每行按 86px 估：行尾那枚操作是 42px，标题行至少要它那么
-                        // 高，加上副行与内边距就是这个数（见 AirTaskTile）。这只是
-                        // 给这句「最多一屏」算个舒服的高度，真正的滚动在列表里。
-                        height: (shown.length * 86.0)
-                            .clamp(86.0, 340.0)
-                            .toDouble(),
-                        child: ListView.separated(
-                          primary: false,
-                          itemCount: shown.length,
-                          separatorBuilder: (_, _) => const SizedBox(height: 8),
-                          itemBuilder: (context, index) {
-                            final task = shown[index];
-                            return AirTaskTile(
-                              key: ValueKey('air-console-task-${task.id}'),
-                              task: task,
-                              directoryName: _directoryName(task.dirId),
-                              showTime: MediaQuery.sizeOf(context).width > 360,
-                              onTap: () => widget.onOpenTask(task),
-                              trailing: AirTaskRowAction(
-                                key: ValueKey('air-console-delete-${task.id}'),
-                                tooltip: '删除任务',
-                                onPressed: () => _deleteTask(task),
-                                icon: const Icon(
-                                  Icons.delete_outline_rounded,
-                                  color: AppColors.danger,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 15),
-              _Panel(
-                eyebrow: 'SYSTEM TOOLS',
-                title: '服务与设置',
-                child: _ToolGrid(
-                  onOpenDocs: () =>
-                      widget.onOpenDestination(WorkspaceDestination.docs),
-                  onOpenMemory: widget.onOpenMemory,
-                  onOpenSettings: () =>
-                      widget.onOpenDestination(WorkspaceDestination.global),
-                  onOpenSchedules: _openSchedules,
-                ),
-              ),
-            ],
+            ),
           ],
-        ),
+        ],
       ),
     );
   }
@@ -547,11 +499,11 @@ class _AssistantCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 12),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    const Text(
                       'AI ASSISTANT',
                       style: TextStyle(
                         color: AppColors.faint,
@@ -560,21 +512,24 @@ class _AssistantCard extends StatelessWidget {
                         letterSpacing: 1.1,
                       ),
                     ),
-                    SizedBox(height: 2),
+                    const SizedBox(height: 2),
                     Text(
-                      '分类、摘要与意图判断',
-                      style: TextStyle(
+                      t('airAdminAssistantTagline'),
+                      style: const TextStyle(
                         color: AppColors.text,
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    SizedBox(height: 2),
+                    const SizedBox(height: 2),
                     Text(
-                      '配置协议、Provider 与模型，查看健康状态和运行记录',
+                      t('airAdminAssistantDesc'),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: AppColors.muted, fontSize: 10.5),
+                      style: const TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 10.5,
+                      ),
                     ),
                   ],
                 ),
@@ -589,97 +544,359 @@ class _AssistantCard extends StatelessWidget {
   }
 }
 
-/// 四张统计卡。Web 是四列一行，手机上一行放不下，改成两列两行。
+/// 顶上那五格（同 Web 控制台的 `tiles`）：进行中 / 等我回复 / 异常 / 今日完成 /
+/// 全部。点一格，统计带和工作目录之间就展开那一格的清单；再点同一格收起。默认什么
+/// 都不展开 —— 控制台第一眼是数字，不是一堵清单墙。
 ///
-/// 统计是一条「读数带」，不是控制台的主体：四个数字用来确认系统活着，真正要看的是
-/// 下面的任务。所以它压扁了（数字 24→19px、色条 26×3→18×2），省下来的高度全给
-/// 「谁在等我」和「全部任务」—— 同 Web `.admin-stat` 的那次收紧。
-class _Stats extends StatelessWidget {
-  const _Stats({
-    required this.directories,
+/// 统计是一条「读数带」，不是控制台的主体：数字用来确认系统活着，真正要看的是下面的
+/// 任务。所以它压扁了（数字 24→19px、色条 26×3→18×2），省下来的高度全给那份清单
+/// —— 同 Web `.admin-stat` 的那次收紧。
+///
+/// Web 是一行五张；手机上一行放不下，这里两列多行，格子的顺序不变（最后一格独占一
+/// 行）。目录数和定时任务数是背景信息、不是要处理的东西，所以不在这条读数带上，降
+/// 成下面那行小字（同 Web 把它们放进 `console-overview-meta`）。
+class _Tiles extends StatelessWidget {
+  const _Tiles({
+    required this.running,
     required this.runningDirectories,
-    required this.active,
-    required this.executing,
     required this.waiting,
+    required this.failed,
+    required this.today,
+    required this.all,
+    required this.total,
+    required this.selected,
+    required this.onSelect,
+  });
+
+  final int running;
+  final int runningDirectories;
+  final int waiting;
+  final int failed;
+  final int today;
+  final int all;
+
+  /// 全部记录的总条数。它只出现在「全部」那一格的小字里 —— 那一格的数字是**未归档**
+  /// 的条数（生命周期口径），两个数说的不是一件事，所以都得写出来。
+  final int total;
+  final _ConsoleTile? selected;
+  final ValueChanged<_ConsoleTile> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final tiles = <(_ConsoleTile, int, String, Color?)>[
+      (
+        _ConsoleTile.running,
+        running,
+        runningDirectories > 0
+            ? t('airAdminDirectoriesRunning', {'n': '$runningDirectories'})
+            : t('airAdminTileRunningIdle'),
+        AppColors.success,
+      ),
+      (
+        _ConsoleTile.waiting,
+        waiting,
+        waiting > 0
+            ? t('airAdminTileWaitingDetail')
+            : t('airAdminNothingPending'),
+        waiting > 0 ? AppColors.amber : null,
+      ),
+      (
+        _ConsoleTile.error,
+        failed,
+        failed > 0 ? t('airAdminTileErrorDetail') : t('airAdminTileErrorNone'),
+        failed > 0 ? AppColors.danger : null,
+      ),
+      (
+        _ConsoleTile.today,
+        today,
+        t('airAdminTileTodayDetail'),
+        AppColors.accent,
+      ),
+      (
+        _ConsoleTile.all,
+        all,
+        t('airAdminTileAllDetail', {'n': '$total'}),
+        AppColors.opencode,
+      ),
+    ];
+    return Column(
+      children: [
+        for (var i = 0; i < tiles.length; i += 2)
+          Padding(
+            padding: EdgeInsets.only(bottom: i + 2 < tiles.length ? 10 : 0),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var j = i; j < i + 2 && j < tiles.length; j++) ...[
+                    if (j > i) const SizedBox(width: 10),
+                    Expanded(
+                      child: _TileCard(
+                        id: tiles[j].$1.name,
+                        label: t(tiles[j].$1.labelKey),
+                        value: tiles[j].$2,
+                        detail: tiles[j].$3,
+                        tone: tiles[j].$4,
+                        selected: selected == tiles[j].$1,
+                        onTap: () => onSelect(tiles[j].$1),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// 统计带下面那行小字：几个工作目录、几条定时任务启用。这两项是背景信息，所以不给
+/// 大数字；但每一句仍然是一个入口（同 Web 的 `console-overview-meta`）。
+class _MetaLine extends StatelessWidget {
+  const _MetaLine({
+    required this.directories,
     required this.enabledSchedules,
     required this.totalSchedules,
-    required this.schedulesLoading,
     required this.schedulesFailed,
-    required this.onOpenTasks,
     required this.onOpenLibrary,
     required this.onOpenSchedules,
   });
 
   final int directories;
-  final int runningDirectories;
-  final int active;
-  final int executing;
-  final int waiting;
   final int enabledSchedules;
 
   /// null 表示还没读到（定时任务和任务快照是两份数据，各自会失败）。
   final int? totalSchedules;
-  final bool schedulesLoading;
   final bool schedulesFailed;
-  final VoidCallback onOpenTasks;
   final VoidCallback onOpenLibrary;
   final VoidCallback onOpenSchedules;
 
   @override
   Widget build(BuildContext context) {
-    final scheduleDetail = schedulesFailed
-        ? '定时任务读取失败，下拉重试'
-        : schedulesLoading
-        ? '正在读取…'
-        : '共 ${totalSchedules ?? 0} 条规则';
-    return Column(
+    final total = totalSchedules;
+    // 读不到时说「读不到」，不拿 0 去充数：0 条启用和「不知道有几条」是两件事，
+    // 后者写成前者会让人以为定时任务被清空了。
+    final scheduleText = schedulesFailed
+        ? t('airScheduleLoadFailed', {'msg': t('airAdminRefreshPageRetry')})
+        : total == null
+        ? '${t('airAdminScheduledTasks')} · ${t('airAdminLoading')}'
+        : t('airAdminMetaSchedules', {
+            'n': '$enabledSchedules',
+            'total': '$total',
+          });
+    return Wrap(
+      spacing: 6,
+      runSpacing: 2,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: _StatCard(
-                label: '工作目录',
-                value: '$directories',
-                detail: runningDirectories > 0
-                    ? '$runningDirectories 个目录正在跑'
-                    : '统一目录库',
-                tone: AppColors.accent,
-                onTap: onOpenLibrary,
-              ),
+        _LinkButton(
+          id: 'air-console-meta-directories',
+          label: t('airAdminMetaDirectories', {'n': '$directories'}),
+          onTap: onOpenLibrary,
+        ),
+        const Text('·', style: TextStyle(color: AppColors.faint, fontSize: 11)),
+        _LinkButton(
+          id: 'air-console-meta-schedules',
+          label: scheduleText,
+          onTap: onOpenSchedules,
+        ),
+      ],
+    );
+  }
+}
+
+/// 五格共用的展开区（同 Web 的 `console-filter-panel`）：换格只换标题和清单，位置
+/// 就在读数带正下方 —— 点哪格就在哪里长出来，不用滚到底去找。
+///
+/// 「全部」多一排搜索与筛选，其余四格没有：那四格的清单口径就是上面那几格数字用的
+/// 同一份数组，数字和清单不会分叉；「全部」才是需要人自己收窄的那一份。
+class _TileDrawer extends StatelessWidget {
+  const _TileDrawer({
+    required this.tile,
+    required this.executing,
+    required this.waitingMe,
+    required this.failed,
+    required this.finished,
+    required this.rows,
+    required this.shown,
+    required this.searchController,
+    required this.status,
+    required this.dir,
+    required this.fullText,
+    required this.directories,
+    required this.directoryName,
+    required this.onQuery,
+    required this.onStatus,
+    required this.onScope,
+    required this.onDir,
+    required this.onOpenTask,
+    required this.onDeleteTask,
+    required this.unread,
+    required this.onOpenAttention,
+    required this.onClose,
+  });
+
+  final _ConsoleTile tile;
+  final List<AirTask> executing;
+  final List<AirTask> waitingMe;
+  final List<AirTask> failed;
+  final List<AirTask> finished;
+
+  /// 「全部」那一格筛完之后的清单；其余四格用不到。
+  final List<AirTask> rows;
+  final List<AirTask> shown;
+  final TextEditingController searchController;
+  final AirDirectoryTaskFilter status;
+  final String dir;
+  final bool fullText;
+  final List<AirDirectory> directories;
+  final String Function(String) directoryName;
+  final ValueChanged<String> onQuery;
+  final ValueChanged<AirDirectoryTaskFilter> onStatus;
+  final ValueChanged<bool> onScope;
+  final ValueChanged<String> onDir;
+  final ValueChanged<AirTask> onOpenTask;
+  final ValueChanged<AirTask> onDeleteTask;
+
+  /// 跨目录待处理的总数。「等我回复」那一格后面挂的整页出口用它。
+  final int unread;
+  final VoidCallback onOpenAttention;
+  final VoidCallback onClose;
+
+  List<AirTask> get _list => switch (tile) {
+    _ConsoleTile.running => executing,
+    _ConsoleTile.waiting => waitingMe,
+    _ConsoleTile.error => failed,
+    _ConsoleTile.today => finished,
+    _ConsoleTile.all => rows,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final list = _list;
+    final visible = tile == _ConsoleTile.all
+        ? shown
+        : list.take(_taskListLimit).toList();
+    final total = list.length;
+    return _Panel(
+      eyebrow: 'ACROSS ALL WORKSPACES',
+      title: t(tile.labelKey),
+      note: total > visible.length
+          ? t('airAdminTaskCountLimited', {
+              'total': '$total',
+              'shown': '${visible.length}',
+            })
+          : t('airAdminNItems', {'n': '$total'}),
+      action: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (tile == _ConsoleTile.waiting && unread > 0)
+            _LinkButton(
+              id: 'air-console-attention-all',
+              label: t('airAdminViewAllCount', {'n': '$unread'}),
+              onTap: onOpenAttention,
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _StatCard(
-                label: '进行中任务',
-                value: '$active',
-                detail: '$executing 个正在执行',
-                tone: AppColors.success,
-                onTap: onOpenTasks,
-              ),
+          _LinkButton(
+            id: 'air-console-collapse',
+            label: t('airAdminCollapse'),
+            onTap: onClose,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (tile == _ConsoleTile.all) ...[
+            _controls(context),
+            const SizedBox(height: 10),
+          ],
+          for (var i = 0; i < visible.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            AirTaskTile(
+              key: ValueKey('air-console-task-${visible[i].id}'),
+              task: visible[i],
+              directoryName: directoryName(visible[i].dirId),
+              showTime: true,
+              onTap: () => onOpenTask(visible[i]),
+              // 删除只在「全部」那格里给：其余四格都是「现在有事」的清单，在这里
+              // 删掉一条，读的人多半还没看清它是什么。
+              trailing: tile == _ConsoleTile.all
+                  ? AirTaskRowAction(
+                      key: ValueKey('air-console-delete-${visible[i].id}'),
+                      tooltip: t('airDeleteTaskAria', {
+                        'title': visible[i].title,
+                      }),
+                      icon: const Icon(Icons.delete_outline_rounded),
+                      onPressed: () => onDeleteTask(visible[i]),
+                    )
+                  : null,
             ),
           ],
+          if (visible.isEmpty) _Empty(t(tile.emptyKey)),
+        ],
+      ),
+    );
+  }
+
+  /// 「全部」那一格的筛选行（同 Web `#console-task-controls`）：搜索 + 状态 +
+  /// 搜索范围 + 目录。
+  ///
+  /// 搜索范围摆在搜索框**上面**：它是这一格的语义开关（搜不搜对话正文），先定范围
+  /// 再打字，比打完字再发现「原来只搜了标题」少一次返工。
+  Widget _controls(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _Picker<bool>(
+          pickerKey: const ValueKey('air-console-scope'),
+          value: fullText,
+          items: {
+            true: t('airSearchScopeFull'),
+            false: t('airSearchScopeBoard'),
+          },
+          onChanged: onScope,
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
+        TextField(
+          key: const ValueKey('air-console-search'),
+          controller: searchController,
+          onChanged: onQuery,
+          textInputAction: TextInputAction.search,
+          style: const TextStyle(color: AppColors.text, fontSize: 12.5),
+          decoration: sheetInputDecoration(
+            hint: t('airAdminSearchPlaceholder'),
+          ),
+        ),
+        const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
-              child: _StatCard(
-                label: '等待处理',
-                value: '$waiting',
-                detail: waiting > 0 ? '等待回答、资源或重试' : '当前没有要处理的事',
-                tone: waiting > 0 ? AppColors.amber : null,
+              child: _Picker<AirDirectoryTaskFilter>(
+                pickerKey: const ValueKey('air-console-status'),
+                value: status,
+                // 控制台只摆 Web 那三档（进行中与待处理 / 全部记录 / 已归档）。
+                // 目录首页那七档里的「运行中 / 等待回复 / 异常 / 执行成功」在这里是
+                // 上面那几格数字，用点选代替下拉 —— 同一件事不给两条路。
+                items: {
+                  AirDirectoryTaskFilter.open: t('airAdminFilterOpen'),
+                  AirDirectoryTaskFilter.all: t('airAdminFilterAll'),
+                  AirDirectoryTaskFilter.archived: t('airAdminStatusArchived'),
+                },
+                onChanged: onStatus,
               ),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
             Expanded(
-              child: _StatCard(
-                label: '定时任务',
-                value: schedulesLoading || schedulesFailed
-                    ? '—'
-                    : '$enabledSchedules',
-                detail: scheduleDetail,
-                tone: AppColors.opencode,
-                onTap: onOpenSchedules,
+              child: _Picker<String>(
+                pickerKey: const ValueKey('air-console-dir'),
+                value: dir,
+                items: {
+                  'all': t('airAdminAllDirectories'),
+                  for (final directory in directories)
+                    directory.id: directory.name,
+                },
+                onChanged: onDir,
               ),
             ),
           ],
@@ -689,34 +906,44 @@ class _Stats extends StatelessWidget {
   }
 }
 
-class _StatCard extends StatelessWidget {
-  const _StatCard({
+/// 一格统计。数字是读数，小字说的是这个数字数的是什么 —— 后者才是「点开能看见哪些
+/// 任务」的说明，所以它给足两行（同一行里两张卡因此对齐），不截成半句话。
+///
+/// 选中态落在边框和底色上：五格里哪一格展开着，得一眼看得出来。
+class _TileCard extends StatelessWidget {
+  const _TileCard({
+    required this.id,
     required this.label,
     required this.value,
     required this.detail,
+    required this.selected,
+    required this.onTap,
     this.tone,
-    this.onTap,
   });
 
+  final String id;
   final String label;
-  final String value;
+  final int value;
   final String detail;
+  final bool selected;
+  final VoidCallback onTap;
   final Color? tone;
-  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.panel,
+      color: selected ? AppColors.well : AppColors.panel,
       borderRadius: BorderRadius.circular(AppColors.radiusCard),
       child: InkWell(
-        key: ValueKey('air-stat-$label'),
+        key: ValueKey('air-console-tile-$id'),
         onTap: onTap,
         borderRadius: BorderRadius.circular(AppColors.radiusCard),
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(AppColors.radiusCard),
-            border: Border.all(color: AppColors.line),
+            border: Border.all(
+              color: selected ? AppColors.accent : AppColors.line,
+            ),
           ),
           padding: const EdgeInsets.fromLTRB(11, 8, 11, 9),
           child: Column(
@@ -733,11 +960,13 @@ class _StatCard extends StatelessWidget {
               ),
               Text(
                 label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: AppColors.muted, fontSize: 10),
               ),
               const SizedBox(height: 2),
               Text(
-                value,
+                '$value',
                 style: const TextStyle(
                   color: AppColors.text,
                   fontSize: 19,
@@ -748,7 +977,7 @@ class _StatCard extends StatelessWidget {
               const SizedBox(height: 3),
               Text(
                 detail,
-                maxLines: 1,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: AppColors.faint, fontSize: 10),
               ),
@@ -758,6 +987,38 @@ class _StatCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 控制台里那些「一句话入口」：小字括号、展开区的收起、整页出口。它们共用一种样子
+/// —— 同一页上三个不同长相的链接，读的人要先认形状再认字。
+class _LinkButton extends StatelessWidget {
+  const _LinkButton({
+    required this.id,
+    required this.label,
+    required this.onTap,
+  });
+
+  final String id;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    key: ValueKey(id),
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(AppColors.radiusChip),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: AppColors.accent,
+          fontSize: 11.5,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    ),
+  );
 }
 
 /// 一个分区：eyebrow + 标题 + 右上角一句注（可再挂一个出口）。
@@ -938,8 +1199,13 @@ class _DirectoryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final unfinished = tasks.where((task) => !task.closed).length;
-    final executing = tasks.where(airTaskRunning).length;
+    // 口径跟控制台顶上那几格、以及 Web 的 `admin-directory-row` 是同一份：
+    // 「进行中」是生命周期（未完成、未归档），不是 `!task.closed` —— 后者把
+    // `workflowStage == 'done'` 也算关掉，一条刚跑完还没归档的任务会被这行漏掉。
+    final unfinished = tasks
+        .where(AirDirectoryTaskFilter.open.matches)
+        .toList();
+    final executing = unfinished.where(airTaskRunning).length;
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -993,7 +1259,7 @@ class _DirectoryRow extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    '$unfinished 进行中',
+                    t('airAdminNInProgress', {'n': '${unfinished.length}'}),
                     style: const TextStyle(
                       color: AppColors.text,
                       fontSize: 11.5,
@@ -1001,7 +1267,9 @@ class _DirectoryRow extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    executing > 0 ? '$executing 执行中' : '${tasks.length} 个任务',
+                    executing > 0
+                        ? t('airAdminNExecuting', {'n': '$executing'})
+                        : t('airAdminNTaskCount', {'n': '${tasks.length}'}),
                     style: TextStyle(
                       color: executing > 0
                           ? AppColors.success
@@ -1024,16 +1292,23 @@ class _DirectoryRow extends StatelessWidget {
   }
 }
 
+/// 工具格。五格，顺序照 Web 的 `shortcuts`：服务与文档 / 记忆图谱 / 任务图谱 /
+/// 设置中心 / 自动运行。
+///
+/// 保险箱不在这张格子里（同 Web 的注释）：它在控制台那一页的页头工具栏上，跟这一页
+/// 的其它动作并列常驻，不用滚到工具格才找得到。
 class _ToolGrid extends StatelessWidget {
   const _ToolGrid({
     required this.onOpenDocs,
     required this.onOpenMemory,
+    required this.onOpenTaskgraph,
     required this.onOpenSettings,
     required this.onOpenSchedules,
   });
 
   final VoidCallback onOpenDocs;
   final VoidCallback onOpenMemory;
+  final VoidCallback onOpenTaskgraph;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenSchedules;
 
@@ -1043,23 +1318,36 @@ class _ToolGrid extends StatelessWidget {
       (
         'docs',
         Icons.travel_explore_outlined,
-        '服务与文档',
-        '本地服务、网页和文件',
+        t('airAdminPanelDocs'),
+        t('airAdminPanelDocsDesc'),
         onOpenDocs,
       ),
-      ('memory', Icons.hub_outlined, '记忆图谱', '项目与会话记忆', onOpenMemory),
+      (
+        'memory',
+        Icons.hub_outlined,
+        t('airAdminPanelMemory'),
+        t('airAdminMemoryShortDesc'),
+        onOpenMemory,
+      ),
+      (
+        'taskgraph',
+        Icons.account_tree_outlined,
+        t('airAdminPanelTaskgraph'),
+        t('airAdminTaskgraphShortDesc'),
+        onOpenTaskgraph,
+      ),
       (
         'settings',
         Icons.settings_outlined,
-        '设置中心',
-        'Provider、通知与连接',
+        t('airAdminSettingsCenter'),
+        t('airAdminSettingsShortDesc'),
         onOpenSettings,
       ),
       (
         'schedules',
         Icons.schedule_rounded,
-        '自动运行',
-        '固定任务定时规则',
+        t('airAdminAutoRun'),
+        t('airAdminAutoRunDesc'),
         onOpenSchedules,
       ),
     ];
