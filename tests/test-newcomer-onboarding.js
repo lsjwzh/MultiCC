@@ -70,6 +70,21 @@ test('the Air landing page teaches model setup and mandatory AI Assist config', 
   assert.match(airHtml, /id="setup-card"/);
   assert.match(airHtml, /id="setup-provider"/);
   assert.match(airHtml, /id="setup-aux"/);
+  // 而且它住在**控制台那一页**里（#console-center）—— 落地页就是控制台，
+  // 引导开在目录首页上等于开在用户第二眼才到的地方。
+  const consoleCenter = airHtml.slice(
+    airHtml.indexOf('<section id="console-center"'),
+    airHtml.indexOf('<section id="task-layout"'),
+  );
+  assert.match(consoleCenter, /id="setup-card"/);
+  // 目录首页（#empty）在它后面 —— 文档里没有第二张卡，也没有留在老地方的那一张。
+  const setupAt = airHtml.indexOf('id="setup-card"');
+  const directoryHomeAt = airHtml.indexOf('<div id="empty">');
+  assert.ok(
+    setupAt > 0 && setupAt < directoryHomeAt,
+    '首启卡应当只出现在控制台那一页里，而不是目录首页',
+  );
+  assert.equal(airHtml.match(/id="setup-card"/g).length, 1);
   // 第一步覆盖两条来路：导入已有线路，或用 CLI 自带登录
   assert.match(airHtml, /导入你已有的 API 线路/);
   assert.match(airHtml, /CLI 自带的登录/);

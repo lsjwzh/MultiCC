@@ -160,9 +160,15 @@ class SessionService {
   /// (whether a given id can be spawned). On HTTP error sets `ok: false` +
   /// `error` so callers can degrade gracefully.
   Future<Map<String, dynamic>> fetchCliInstallSpecs() async {
-    final res = await http
-        .get(Uri.parse(_url('/api/cli/install-specs')), headers: _headers)
-        .timeout(const Duration(seconds: 10));
+    // 走可注入的 [httpClient]（同本文件 fetchTaskBoundSession 的写法）：控制台的
+    // 首启配置卡在「一个 CLI 都没装」时要拿这份命令，widget 测试靠它 stub 掉 wire。
+    final client = httpClient;
+    final uri = Uri.parse(_url('/api/cli/install-specs'));
+    final res =
+        await (client != null
+                ? client.get(uri, headers: _headers)
+                : http.get(uri, headers: _headers))
+            .timeout(const Duration(seconds: 10));
     final body = jsonDecode(res.body);
     final map = body is Map<String, dynamic> ? body : <String, dynamic>{};
     if (res.statusCode >= 400) {

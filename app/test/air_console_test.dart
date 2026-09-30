@@ -27,6 +27,9 @@ MockClient _client(
   bool schedulesFail = false,
   List<String> searchHits = const [],
   bool searchFails = false,
+  bool Function()? auxConfigured,
+  Map<String, dynamic>? cliAvailability,
+  bool installSpecsFail = false,
 }) => MockClient((request) async {
   const headers = {'content-type': 'application/json; charset=utf-8'};
   final path = request.url.path;
@@ -39,6 +42,40 @@ MockClient _client(
     if (schedulesFail) return http.Response('nope', 500);
     return http.Response(
       jsonEncode(schedules ?? const []),
+      200,
+      headers: headers,
+    );
+  }
+  // 首启配置卡的那一眼：`/api/aux/config` 里有没有 providerId。默认「已配置」
+  // —— 除了专测那张卡的用例，其余用例都不该被它打扰。
+  if (path == '/api/aux/config') {
+    return http.Response(
+      jsonEncode({
+        'protocol': 'anthropic',
+        'providerId': (auxConfigured?.call() ?? true) ? 'p1' : '',
+        'model': 'glm-4-flash',
+        'cliAvailability':
+            cliAvailability ?? const {'claude': true, 'codex': true},
+        'protocols': const [],
+        'providersByProtocol': const {'anthropic': [], 'openai': []},
+      }),
+      200,
+      headers: headers,
+    );
+  }
+  // 一个 CLI 都没装时卡片要给出的官方安装命令（取法与 Web 一致：display || command）。
+  if (path == '/api/cli/install-specs') {
+    if (installSpecsFail) {
+      return http.Response(jsonEncode({'ok': false}), 500, headers: headers);
+    }
+    return http.Response(
+      jsonEncode({
+        'ok': true,
+        'specs': const {
+          'claude': {'command': 'npm i -g @anthropic-ai/claude-code'},
+          'codex': {'command': 'npm i -g @openai/codex'},
+        },
+      }),
       200,
       headers: headers,
     );
@@ -195,7 +232,7 @@ Widget _console({
   ValueChanged<WorkspaceDestination>? onOpenDestination,
   VoidCallback? onOpenMemory,
   VoidCallback? onOpenTaskgraph,
-  VoidCallback? onOpenAiAssistant,
+  Future<void> Function()? onOpenAiAssistant,
   VoidCallback? onOpenSchedules,
 }) => MaterialApp(
   home: Scaffold(
@@ -279,8 +316,14 @@ void main() {
     await tester.pumpWidget(_console(settings: settings, client: client));
     await tester.pumpAndSettle();
 
-    // 两份数据各拉一次，控制台不自己造统计口径。
-    expect(requests, ['/api/air', '/api/external-fleets', '/api/cron']);
+    // 两份数据各拉一次，控制台不自己造统计口径；第三趟只问首启卡该不该亮
+    // （aux 配没配），不参与任何一个数字。
+    expect(requests, [
+      '/api/air',
+      '/api/external-fleets',
+      '/api/cron',
+      '/api/aux/config',
+    ]);
 
     // 「进行中」只认注册表说在转的那一个状态：r1 在跑，t1/t2/t3 都不在跑。
     expect(_tileValue('running', '1'), findsOneWidget);
@@ -659,7 +702,7 @@ void main() {
         onOpenDestination: destinations.add,
         onOpenMemory: () => memory++,
         onOpenTaskgraph: () => taskgraph++,
-        onOpenAiAssistant: () => assistant++,
+        onOpenAiAssistant: () async => assistant++,
       ),
     );
     await tester.pumpAndSettle();
@@ -982,6 +1025,123 @@ void main() {
     expect(card.height, lessThan(120), reason: '统计格实测 ${card.height}');
     final value = tester.widget<Text>(_tileValue('all', '3'));
     expect(value.style?.fontSize, lessThanOrEqualTo(20));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  // ── 首启配置卡（Web `#setup-card`，2.0 起住在控制台最上方） ────────────────
+  // 裸 /air 落的就是这一页，所以引导必须开在这儿 —— 它是新用户唯一会看到的
+  // 第一屏。亮不亮只看一件事：`/api/aux/config` 里有没有 providerId。
+
+  testWidgets('aux 没配就亮首启卡，配好了不亮', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings();
+
+    final unconfigured = _client(<String>[], auxConfigured: () => false);
+    await tester.pumpWidget(_console(settings: settings, client: unconfigured));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-console-setup')), findsOneWidget);
+    expect(find.text(t('airSetupTitle')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-console-setup-import')), findsOneWidget);
+    expect(find.byKey(const ValueKey('air-console-setup-aux')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    unconfigured.close();
+
+    final configured = _client(<String>[]);
+    await tester.pumpWidget(_console(settings: settings, client: configured));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-console-setup')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    configured.close();
+  });
+
+  testWidgets('首启卡两颗动作各去各的地方；从 AI Assistant 页回来会重查一次', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings();
+    var auxConfigured = false;
+    final destinations = <WorkspaceDestination>[];
+    var assistant = 0;
+    final client = _client(<String>[], auxConfigured: () => auxConfigured);
+
+    await tester.pumpWidget(
+      _console(
+        settings: settings,
+        client: client,
+        onOpenDestination: destinations.add,
+        // 宿主那一页在测试里不真去：这里只演「它关掉之前，配置被配好了」。
+        onOpenAiAssistant: () async {
+          assistant++;
+          auxConfigured = true;
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('air-console-setup-import')));
+    await tester.pumpAndSettle();
+    expect(destinations, [WorkspaceDestination.provider]);
+
+    await tester.tap(find.byKey(const ValueKey('air-console-setup-aux')));
+    await tester.pumpAndSettle();
+    expect(assistant, 1);
+    // 刚在那一页配好 —— 卡片当场消失，不用等下一次刷新（同 Web 离开 aux 页重查）。
+    expect(find.byKey(const ValueKey('air-console-setup')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  testWidgets('一个 CLI 都没装时，首启卡直接说清并提供官方安装命令', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings();
+    final client = _client(
+      <String>[],
+      auxConfigured: () => false,
+      cliAvailability: const {'claude': false, 'codex': false},
+    );
+
+    await tester.pumpWidget(_console(settings: settings, client: client));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('air-console-setup-cli-missing')),
+      findsOneWidget,
+    );
+    // 拿不到命令（接口失败）时这一行空着，但卡片照旧把话说全 —— 所以只断言
+    // 「命令取到了」，不把它当成卡片成立的前提。
+    expect(
+      find.textContaining('npm i -g @anthropic-ai/claude-code'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+
+  // 放在这一组最后：它落的是这台设备的本地偏好（`air:setup-dismissed`），
+  // SettingsService 是单例，之后才跑的用例不该吃到这一笔。
+  testWidgets('「暂时跳过」把卡片收掉并记在本机，重开这一页也不再亮', (tester) async {
+    _tallCanvas(tester);
+    final settings = await _settings();
+    final client = _client(<String>[], auxConfigured: () => false);
+
+    await tester.pumpWidget(_console(settings: settings, client: client));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-console-setup')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('air-console-setup-dismiss')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-console-setup')), findsNothing);
+    // 跳过的只是这张卡，不是那项配置 —— 所以它记在本机，不写服务端。
+    expect(settings.airSetupDismissed, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(_console(settings: settings, client: client));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-console-setup')), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();

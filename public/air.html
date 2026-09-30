@@ -187,8 +187,38 @@
     <!-- 控制台：和目录首页、定时任务同级的一页，就开在右边这块主区域里。
          概览内容由 air-admin.js 渲染进 #console-content，页面自己的动作
          （浏览工作目录 / 新建任务）走页头那排工具，和其他每一页同一条规矩 ——
-         一页只有一个标题带，正文里不再重复一遍标题。 -->
+         一页只有一个标题带，正文里不再重复一遍标题。
+
+         首启配置卡（#setup-card）住在这里，不归目录首页：裸 /air 与 /manage 都
+         落在这一页（见 air.js 的 readRouteParams），而它是新用户唯一会看到的
+         第一屏 —— 引导开在别的页上等于没有引导。它是静态节点，不是
+         renderOverview 画出来的，所以 #console-content 整块重建时它不受影响
+         （air.js 的 renderSetupCard() 只管切 hidden）。 -->
     <section id="console-center" hidden>
+      <!-- 首启配置卡：/api/aux/config 还没有 providerId 时由 air.js 亮出来。
+           这张卡就是 2.0 的引导：先有模型（导入线路或用 CLI 自带），再配
+           AI Assistant —— 它是任务分类与归属的核心，必须配置，但轻量 flash
+           模型就够。配置完成后它永远消失；「暂时跳过」只记在本机
+           （air:setup-dismissed），跳过的只是这张卡，不是那项配置。 -->
+      <section id="setup-card" class="setup-card" hidden aria-label="首次配置引导" data-i18n-aria-label="airSetupGuide">
+        <div class="setup-copy">
+          <span class="eyebrow">GETTING STARTED</span>
+          <h2 data-i18n="airSetupTitle">开始之前，先完成两项配置</h2>
+          <ol>
+            <li><strong data-i18n="airSetupModel">准备模型</strong><span data-i18n="airSetupModelText">：在「CLI 与 Provider」里导入你已有的 API 线路，或直接使用 CLI 自带的登录。没有可用模型，任务无法执行。</span></li>
+            <li><strong data-i18n="airSetupAux">配置 AI Assistant</strong><span data-i18n="airSetupAuxText">：它是 MultiCC 的核心——消息分类、任务归属、自动推进都依赖它，</span><em data-i18n="airSetupAuxMust">必须配置</em><span data-i18n="airSetupAuxText2">。选一个便宜的 flash / 轻量模型即可，不必占用主力模型。</span></li>
+          </ol>
+          <div id="setup-cli-missing" class="setup-warn" hidden>
+            <strong data-i18n="airSetupCliMissing">未检测到任何 CLI</strong><span data-i18n="airSetupCliMissingText">：MultiCC 通过 CLI 执行任务与模型调用，请先至少安装一个并登录，否则模型与 AI Assistant 都无法工作。</span>
+            <code id="setup-cli-missing-cmds"></code>
+          </div>
+        </div>
+        <div class="setup-actions">
+          <button id="setup-provider" type="button" data-i18n="airSetupImport">导入模型 / 线路</button>
+          <button id="setup-aux" type="button" class="primary" data-i18n="airSetupConfigureAux">配置 AI Assistant</button>
+          <button id="setup-dismiss" type="button" aria-label="暂时跳过配置引导" data-i18n-aria-label="airSetupSkipLabel" data-i18n="airSetupSkip">暂时跳过</button>
+        </div>
+      </section>
       <div id="console-content" aria-live="polite"></div>
     </section>
 
@@ -220,33 +250,6 @@
                  长一套选择 UI。 -->
             <button id="directory-terminal-new" class="directory-terminal-new" type="button" title="在本目录新建终端（可选 CLI、Provider、模型）" data-i18n-title="airNewTerminalHint"><span aria-hidden="true">＋</span> <span data-i18n="airNewTerminal">新终端</span></button>
             <nav id="directory-terminal-list" aria-label="本目录终端列表" data-i18n-aria-label="airTerminalsList"></nav>
-          </section>
-          <!-- 首启配置卡：/api/aux/config 还没有 providerId 时由 air.js 亮出来。
-               它挂在目录首页上，所以是用户点进任一个目录（或带 dir= 直接落地）时
-               看到的；裸 /air 与 /manage 现在都落控制台那一页（见上面控制台那段
-               注释），这张卡要等进了目录才露面。旧版引导（tour.js）只挂在已退役的
-               manage/chat 页上，等于主入口一直没有任何引导。这张卡
-               就是 2.0 的引导：先有模型（导入线路或用 CLI 自带），再配 AI Assistant
-               ——它是任务分类与归属的核心，必须配置，但轻量 flash 模型就够。配置
-               完成后它永远消失；「暂时跳过」只记在本机。 -->
-          <section id="setup-card" class="setup-card" hidden aria-label="首次配置引导" data-i18n-aria-label="airSetupGuide">
-            <div class="setup-copy">
-              <span class="eyebrow">GETTING STARTED</span>
-              <h2 data-i18n="airSetupTitle">开始之前，先完成两项配置</h2>
-              <ol>
-                <li><strong data-i18n="airSetupModel">准备模型</strong><span data-i18n="airSetupModelText">：在「CLI 与 Provider」里导入你已有的 API 线路，或直接使用 CLI 自带的登录。没有可用模型，任务无法执行。</span></li>
-                <li><strong data-i18n="airSetupAux">配置 AI Assistant</strong><span data-i18n="airSetupAuxText">：它是 MultiCC 的核心——消息分类、任务归属、自动推进都依赖它，</span><em data-i18n="airSetupAuxMust">必须配置</em><span data-i18n="airSetupAuxText2">。选一个便宜的 flash / 轻量模型即可，不必占用主力模型。</span></li>
-              </ol>
-              <div id="setup-cli-missing" class="setup-warn" hidden>
-                <strong data-i18n="airSetupCliMissing">未检测到任何 CLI</strong><span data-i18n="airSetupCliMissingText">：MultiCC 通过 CLI 执行任务与模型调用，请先至少安装一个并登录，否则模型与 AI Assistant 都无法工作。</span>
-                <code id="setup-cli-missing-cmds"></code>
-              </div>
-            </div>
-            <div class="setup-actions">
-              <button id="setup-provider" type="button" data-i18n="airSetupImport">导入模型 / 线路</button>
-              <button id="setup-aux" type="button" class="primary" data-i18n="airSetupConfigureAux">配置 AI Assistant</button>
-              <button id="setup-dismiss" type="button" aria-label="暂时跳过配置引导" data-i18n-aria-label="airSetupSkipLabel" data-i18n="airSetupSkip">暂时跳过</button>
-            </div>
           </section>
           <div id="directory-stats" aria-label="当前目录任务统计" data-i18n-aria-label="airDirectoryStats"></div>
           <section class="directory-task-panel">

@@ -82,6 +82,10 @@ class SettingsService {
   static const _keyChatWidthLimited = 'multicc_chat_width_limited';
   static const _keyChatWidthMax = 'multicc_chat_width_max';
 
+  /// 首启配置卡的「暂时跳过」。这一条**故意**不跟 App 的 `multicc_` 前缀走 ——
+  /// 它对应的是 Web 那个同名 localStorage 键（见 [airSetupDismissed]）。
+  static const _keyAirSetupDismissed = 'air:setup-dismissed';
+
   /// How many past server connections to remember.
   static const _serverHistoryMax = 10;
 
@@ -165,6 +169,15 @@ class SettingsService {
 
   /// Default Claude model for newly created chats ('' = follow Claude default).
   String get defaultModel => _prefs.getString(_keyDefaultModel) ?? '';
+
+  /// 首启配置卡被「暂时跳过」了吗。键名跟 Web 的 localStorage 键一字不差
+  /// （`air:setup-dismissed`，public/air.js 的 setupDismissed）—— 两边存的是各自
+  /// 设备的本地偏好，本来就不会同步，但名字对齐之后「跳过的只是这张卡、不是那项
+  /// 配置」这条语义在两端读起来是同一句话（同 [OnboardingStore] 的做法）。
+  bool get airSetupDismissed => _prefs.getBool(_keyAirSetupDismissed) ?? false;
+
+  Future<void> dismissAirSetup() =>
+      _prefs.setBool(_keyAirSetupDismissed, true);
 
   /// Whether local push notifications are shown for turn outcomes.
   bool get notificationsEnabled => _prefs.getBool(_keyNotify) ?? true;

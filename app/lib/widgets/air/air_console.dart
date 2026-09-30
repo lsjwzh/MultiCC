@@ -7,6 +7,7 @@ import '../../i18n.dart';
 import '../../models/message.dart';
 import '../../services/air_service.dart';
 import '../../services/manage_service.dart';
+import '../../services/session_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../../utils/status_presentation.dart';
@@ -68,7 +69,11 @@ class AirConsoleBody extends StatefulWidget {
   final VoidCallback onOpenTaskgraph;
 
   /// AI Assistant 是控制台的一级入口，不再要求先进入设置中心再找一层卡片。
-  final VoidCallback? onOpenAiAssistant;
+  ///
+  /// 返回的是「那一页关掉了」的 Future：首启配置卡在它落回来之后要再问一次
+  /// `/api/aux/config`，刚在那儿配好的话卡片当场消失（同 Web 离开 aux 设置页时
+  /// 重查一次）。宿主不接时退回落到设置中心。
+  final Future<void> Function()? onOpenAiAssistant;
 
   @override
   State<AirConsoleBody> createState() => _AirConsoleBodyState();
@@ -150,6 +155,18 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
   /// 搜索连不连对话正文一起搜（同 Web `consoleFilter.fullText`）。
   bool _fullText = true;
 
+  /// 首启配置卡的三样状态，口径照抄 Web 的 `refreshAuxConfigured` /
+  /// `refreshCliMissing`：
+  /// - [_auxConfigured]：null = 还没查到（刚起页 / 查询失败），false = 未配置，
+  ///   true = 已配置。查不到时维持现状 —— 不亮卡，也不弹错误。
+  /// - [_cliMissing]：一个 CLI 都没装。这时模型与 AI Assistant 都注定配不成，
+  ///   卡片要直接说清「至少装一个」并给出官方安装命令。
+  /// - [_setupDismissed]：本机记的「暂时跳过」。跳过的只是这张卡，不是那项配置。
+  bool? _auxConfigured;
+  bool _cliMissing = false;
+  String _cliInstallHint = '';
+  late bool _setupDismissed = widget.settings.airSetupDismissed;
+
   @override
   void initState() {
     super.initState();
@@ -200,11 +217,9 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
     } finally {
       _loading = false;
     }
+    final manage = _manage();
     try {
-      final tasks = await ManageService(
-        settings: widget.settings,
-        httpClient: widget.httpClient,
-      ).fetchCronTasks();
+      final tasks = await manage.fetchCronTasks();
       if (!mounted) return;
       setState(() {
         _schedules = tasks;
@@ -217,7 +232,79 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
         _cronFailed = true;
       });
     }
+    await _loadAuxConfig(manage);
   }
+
+  ManageService _manage() =>
+      ManageService(settings: widget.settings, httpClient: widget.httpClient);
+
+  /// 首启配置卡看的那一眼：`/api/aux/config` 里有没有 providerId。
+  ///
+  /// 与 Web 的 `refreshAuxConfigured()` 同源：查不到就维持现状（不亮卡也不报错），
+  /// 亮卡的条件是「确实未配置」。从 AI Assistant 那一页回来时会再问一次 —— 刚在
+  /// 那儿配好的话，卡片应该当场消失，而不是等下一次刷新。
+  Future<void> _loadAuxConfig([ManageService? manage]) async {
+    final Map<String, dynamic> config;
+    try {
+      config = await (manage ?? _manage()).fetchAuxConfig();
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    final missing = _cliMissingIn(config['cliAvailability']);
+    setState(() {
+      _auxConfigured = (config['providerId'] ?? '').toString().isNotEmpty;
+      _cliMissing = missing;
+    });
+    if (missing && _cliInstallHint.isEmpty) unawaited(_loadCliInstallHint());
+  }
+
+  /// 一个 CLI 都没装吗。`/api/aux/config` 给的是 `{claude: bool, codex: bool}`
+  /// （取不到时是 null，那就当没缺 —— 不知道的事不往卡片上写）。
+  bool _cliMissingIn(dynamic raw) {
+    if (raw is! Map) return false;
+    return raw['claude'] == false && raw['codex'] == false;
+  }
+
+  /// 官方安装命令来自 `/api/cli/install-specs`，取法与 Web 一致
+  /// （`specs.<family>.display || command`）。取不到就留空 —— 引导卡照旧只讲
+  /// 那两件必须做的事，不为一条命令卡住。
+  Future<void> _loadCliInstallHint() async {
+    try {
+      final info = await SessionService(
+        settings: widget.settings,
+        httpClient: widget.httpClient,
+      ).fetchCliInstallSpecs();
+      final specs = info['specs'];
+      if (specs is! Map) return;
+      final commands = <String>[];
+      for (final family in const ['claude', 'codex']) {
+        final spec = specs[family];
+        if (spec is! Map) continue;
+        final shown = (spec['display'] ?? spec['command'] ?? '').toString();
+        if (shown.isNotEmpty) commands.add(shown);
+      }
+      if (!mounted || commands.isEmpty) return;
+      setState(() => _cliInstallHint = commands.join('   |   '));
+    } catch (_) {
+      // 取不到命令就留空，不打断引导。
+    }
+  }
+
+  /// 「暂时跳过」：只藏这张卡，不代表配置已完成。落本机，键与 Web 同名。
+  Future<void> _dismissSetup() async {
+    setState(() => _setupDismissed = true);
+    try {
+      await widget.settings.dismissAirSetup();
+    } catch (_) {
+      // 落盘失败不该把卡片又弹回来 —— 这一次会话里它已经关掉了。
+    }
+  }
+
+  /// 首启卡亮不亮。快照还没到时不亮（同 Web 的 `data && ...`）：控制台第一眼是
+  /// 数字，不是一张「先配这个」的墙。
+  bool get _showSetup =>
+      _data != null && _auxConfigured == false && !_setupDismissed;
 
   List<AirTask> get _tasks => _data?.tasks ?? const [];
 
@@ -319,6 +406,19 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
               child: Center(child: CircularProgressIndicator()),
             )
           else ...[
+            // 首启配置卡在最上面：它是这一页唯一「不做完就该一直在」的东西，
+            // 也是新用户落地 /air 看到的第一屏（见 air.html 里同一张卡）。
+            if (_showSetup) ...[
+              _SetupCard(
+                cliMissing: _cliMissing,
+                cliInstallHint: _cliInstallHint,
+                onImportModel: () =>
+                    widget.onOpenDestination(WorkspaceDestination.provider),
+                onConfigureAux: _openAiAssistant,
+                onDismiss: () => unawaited(_dismissSetup()),
+              ),
+              const SizedBox(height: 14),
+            ],
             _Tiles(
               running: executing.length,
               runningDirectories: running.length,
@@ -398,9 +498,7 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
             ),
             const SizedBox(height: 15),
             _AssistantCard(
-              onTap:
-                  widget.onOpenAiAssistant ??
-                  () => widget.onOpenDestination(WorkspaceDestination.global),
+              onTap: () => unawaited(_openAiAssistant()),
             ),
             const SizedBox(height: 15),
             _Panel(
@@ -444,6 +542,20 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
     );
   }
 
+  /// AI Assistant 那一页：宿主接了回调就等它落回来，回来后再问一次配置
+  /// （刚配好 → 首启卡当场消失）；没接就退回设置中心 —— 那条路是 push 一层抽屉
+  /// 里的页面，看不到「关掉」的时刻，所以只在返回时尽力重查一次。
+  Future<void> _openAiAssistant() async {
+    final handler = widget.onOpenAiAssistant;
+    if (handler == null) {
+      widget.onOpenDestination(WorkspaceDestination.global);
+      return;
+    }
+    await handler();
+    if (!mounted) return;
+    await _loadAuxConfig();
+  }
+
   /// 定时任务中心的入口有两处（「自动运行」工具卡和「定时任务」统计卡），
   /// 但它们去同一个地方 —— 宿主给了原生回调就走原生页，没给才退回老抽屉。
   void _openSchedules() {
@@ -453,6 +565,242 @@ class _AirConsoleBodyState extends State<AirConsoleBody> {
       return;
     }
     widget.onOpenDestination(WorkspaceDestination.cron);
+  }
+}
+
+/// 首启配置卡（Web `#setup-card`，样式在 air.css 的 `.setup-card`）：只在
+/// AI Assistant 还没配的时候出现在控制台最上方。它讲的是两件真正必须做的事 ——
+/// 先有模型（导入线路，或直接用 CLI 自带的登录），再配 AI Assistant（消息分类、
+/// 任务归属、自动推进都依赖它）。
+///
+/// 视觉跟 Web 那张卡同一族：浅蓝白卡片 + 一根强调色的左边线。它是这一页上唯一
+/// 一张「不做完就该一直在」的卡，所以比下面的统计卡响一点。
+class _SetupCard extends StatelessWidget {
+  const _SetupCard({
+    required this.cliMissing,
+    required this.cliInstallHint,
+    required this.onImportModel,
+    required this.onConfigureAux,
+    required this.onDismiss,
+  });
+
+  final bool cliMissing;
+
+  /// 官方安装命令（`/api/cli/install-specs` 的 `display || command`）。取不到就是
+  /// 空串 —— 这一行本来只是「去哪儿装」的补白，缺了不影响这张卡说话。
+  final String cliInstallHint;
+
+  final VoidCallback onImportModel;
+  final VoidCallback onConfigureAux;
+  final VoidCallback onDismiss;
+
+  /// 卡里那两步的排版：词加粗、解释跟在后头，各占一段（Web 那边是一个 `<ol>`）。
+  static Widget _step(String lead, String body) => Text.rich(
+    TextSpan(
+      children: [
+        TextSpan(
+          text: lead,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        TextSpan(text: body),
+      ],
+    ),
+    style: const TextStyle(
+      color: AppColors.text,
+      fontSize: 13,
+      height: 1.5,
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey('air-console-setup'),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFDBE6F1)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Stack(
+        children: [
+          // 左边那根强调色：这张卡是页面上唯一一张「不做完就该一直在」的。
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            child: Container(width: 3, color: AppColors.accent),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'GETTING STARTED',
+                  style: TextStyle(
+                    color: AppColors.faint,
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  t('airSetupTitle'),
+                  style: const TextStyle(
+                    color: AppColors.text,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _step(t('airSetupModel'), t('airSetupModelText')),
+                const SizedBox(height: 6),
+                // 「必须配置」在 Web 上是一段 `<em>`；这里只是加粗同一个词，仍然
+                // 读作一句完整的话。
+                _step(
+                  t('airSetupAux'),
+                  '${t('airSetupAuxText')}${t('airSetupAuxMust')}'
+                      '${t('airSetupAuxText2')}',
+                ),
+                if (cliMissing) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    key: const ValueKey('air-console-setup-cli-missing'),
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 11,
+                      vertical: 9,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFDF6EC),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFECD9C2)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text.rich(
+                          TextSpan(
+                            children: [
+                              TextSpan(
+                                text: t('airSetupCliMissing'),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              TextSpan(text: t('airSetupCliMissingText')),
+                            ],
+                          ),
+                          style: const TextStyle(
+                            color: AppColors.warning,
+                            fontSize: 11.5,
+                            height: 1.55,
+                          ),
+                        ),
+                        if (cliInstallHint.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              cliInstallHint,
+                              style: const TextStyle(
+                                color: AppColors.text,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                // 两颗动作 + 一颗「暂时跳过」。窄屏就换行 —— Web 在 760px 以下
+                // 也是把「暂时跳过」折到下一行的。
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    _SetupAction(
+                      id: 'air-console-setup-import',
+                      label: t('airSetupImport'),
+                      onTap: onImportModel,
+                    ),
+                    _SetupAction(
+                      id: 'air-console-setup-aux',
+                      label: t('airSetupConfigureAux'),
+                      primary: true,
+                      onTap: onConfigureAux,
+                    ),
+                    _SetupAction(
+                      id: 'air-console-setup-dismiss',
+                      label: t('airSetupSkip'),
+                      quiet: true,
+                      onTap: onDismiss,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 首启卡上的一颗按钮。三颗同一套尺寸，只有底色/字色分三档：普通（白底描边）、
+/// 主（浅蓝底 = 该点的那一颗）、安静（无边框，给「暂时跳过」）。
+class _SetupAction extends StatelessWidget {
+  const _SetupAction({
+    required this.id,
+    required this.label,
+    required this.onTap,
+    this.primary = false,
+    this.quiet = false,
+  });
+
+  final String id;
+  final String label;
+  final VoidCallback onTap;
+  final bool primary;
+  final bool quiet;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(9),
+      child: InkWell(
+        key: ValueKey(id),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(9),
+        child: Ink(
+          decoration: BoxDecoration(
+            color: quiet
+                ? Colors.transparent
+                : (primary ? AppColors.blueSoft : AppColors.panel),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: quiet
+                  ? Colors.transparent
+                  : (primary ? const Color(0xFFB9D9F8) : const Color(0xFFDBE6F1)),
+            ),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: quiet
+                  ? AppColors.muted
+                  : (primary ? const Color(0xFF146DCC) : AppColors.text),
+              fontSize: 13,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
