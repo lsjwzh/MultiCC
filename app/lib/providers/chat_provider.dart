@@ -830,6 +830,9 @@ class ChatProvider extends ChangeNotifier {
   String _classifyState = '';
   String get classifyState => _classifyState;
 
+  /// 「执行成功」子状态（achieved/interact/null），服务端判定，这里只展示。
+  Object? classifyGoalState;
+
   /// Whether the verdict above is FROZEN because the aux classifier that
   /// produces it is itself unhealthy. The bar keeps rendering the last goal —
   /// it is still the best description available — but marks it as not current.
@@ -1465,14 +1468,12 @@ class ChatProvider extends ChangeNotifier {
 
       case 'task_state':
         {
-          // aux classify verdict for this session: {goal, phase, classifyState}.
-          // Empty goal ⇒ not classified ⇒ hide the bar. Mirrors web
-          // renderAuxClassify. The verdict's freshness rides on the same tick —
-          // absent (an older server) leaves it alone rather than clearing it, so
-          // the marker can't blink off on a frame that predates the fact.
+          // aux classify verdict: {goal, phase, classifyState, goalState}. Empty
+          // goal ⇒ hide the bar; absent freshness (older server) leaves it alone.
           final p = evt.payload as Map<String, dynamic>;
           _classifyGoal = (p['goal'] ?? '').toString().trim();
           _classifyPhase = (p['phase'] ?? 'idle').toString().toLowerCase();
+          classifyGoalState = p['goalState'];
           final next = (p['classifyState'] ?? '').toString().toUpperCase();
           _classifyState = next == 'C' ? 'W' : next;
           if (p['auxUnhealthy'] is bool) {

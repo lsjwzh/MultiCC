@@ -23,7 +23,7 @@ function clean(value, max = 256) {
 function noteRoute(event) {
   const routing = event.routing && typeof event.routing === 'object' ? event.routing : null;
   return {
-    phase: 'selected',
+    routePhase: 'selected',
     protocol: clean(event.protocol, 64),
     providerId: clean(event.providerId),
     providerName: clean(event.providerName),
@@ -44,7 +44,7 @@ function noteRoute(event) {
 // Mirrors the live handler: only a turn Jev was asked about has a note. A
 // verdict that was never prepared (continuations, nudges) stays silent.
 function wantsNote(event) {
-  return event.phase === 'selected' && !!event.routing
+  return event.routePhase === 'selected' && !!event.routing
     && event.routing.code !== 'jev_not_prepared' && !!clean(event.providerName);
 }
 
@@ -90,7 +90,7 @@ function createAutoRouteNotes({ broadcast, append, records, save, now = Date.now
   }
 
   return function emit(sessionId, event) {
-    if (!event || event.type !== 'provider_auto_route' || !ROUTE_PHASES.has(event.phase)) {
+    if (!event || event.type !== 'provider_auto_route' || !ROUTE_PHASES.has(event.routePhase)) {
       return broadcast(sessionId, event);
     }
     rememberLine(sessionId, event);

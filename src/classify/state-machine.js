@@ -184,8 +184,22 @@ function createClassifyStateMachine(rawDeps) {
     const entryTaskId = Object.prototype.hasOwnProperty.call(ctx, 'taskId')
       ? ctx.taskId || null
       : cs?._currentTaskId || persisted?.taskState?.taskId || null;
+    // ── Common: persist goal + phase ────────────────────────────────────
+    if (cs && cs.currentTask) {
+      cs.currentTask.goal = (goal && goal !== '—') ? goal : '';
+      if (phase) cs.currentTask.phase = phase;
+    }
+    const finalGoal = (cs && cs.currentTask) ? cs.currentTask.goal : goal;
+    const finalPhase = (cs && cs.currentTask) ? cs.currentTask.phase : phase;
+    // The entry's goalState is computed from the SAME final goal/phase the
+    // completion notice below persists (including the dismissed-question null),
+    // so a history row replays to the sub-state the bar actually showed — the
+    // gap where the sub-state was only on the live taskState snapshot.
+    const entryGoalState = result.evidence === 'user_dismissed_question'
+      ? null : goalStateForClassify({ state, goal: finalGoal, phase: finalPhase });
     const entry = { at: now, goal: goal || '', taskId: entryTaskId,
-      phase: phase || '', state, error: !!error, evidence: result.evidence || undefined };
+      phase: phase || '', state, goalState: entryGoalState,
+      error: !!error, evidence: result.evidence || undefined };
     if (persisted) {
       const ts = persisted.taskState || {};
       const hist = (Array.isArray(ts.classifyHistory) ? ts.classifyHistory : [])
@@ -194,14 +208,6 @@ function createClassifyStateMachine(rawDeps) {
       ts.classifyHistory = hist;
       persisted.taskState = ts;
     }
-
-    // ── Common: persist goal + phase ────────────────────────────────────
-    if (cs && cs.currentTask) {
-      cs.currentTask.goal = (goal && goal !== '—') ? goal : '';
-      if (phase) cs.currentTask.phase = phase;
-    }
-    const finalGoal = (cs && cs.currentTask) ? cs.currentTask.goal : goal;
-    const finalPhase = (cs && cs.currentTask) ? cs.currentTask.phase : phase;
     // Persist BOTH goal and phase (was goal-only, leaving phase stale).
     if (sessionName) setTaskState(sessionName, finalPhase ? { goal: finalGoal || '', phase: finalPhase } : { goal: finalGoal || '' });
     if (sessionId && finalGoal) setSessionSummary(sessionId, finalGoal);

@@ -390,11 +390,13 @@
     function applyAuxVerdictStaleness(source) {
       verdictStaleness = readStaleness(source || {});
       if (!lastVerdict) return;
-      renderAuxClassify(lastVerdict.goal, lastVerdict.phase, lastVerdict.classifyState, lastVerdict.code);
+      renderAuxClassify(lastVerdict.goal, lastVerdict.phase, lastVerdict.classifyState, lastVerdict.code, {
+        goalState: lastVerdict.goalState,
+      });
     }
 
     function renderAuxClassify(goal, phase, classifyState, code, freshness) {
-      lastVerdict = { goal, phase, classifyState, code };
+      lastVerdict = { goal, phase, classifyState, code, goalState: freshness?.goalState || null };
       if (freshness && typeof freshness === 'object') verdictStaleness = readStaleness(freshness);
       const bar = doc.getElementById('aux-classify-bar');
       if (!bar) return;
@@ -418,6 +420,11 @@
       const phaseLabel = phaseLabels[String(phase || '').toLowerCase()] || '';
       if (phaseEl) { phaseEl.textContent = phaseLabel; phaseEl.style.display = phaseLabel ? '' : 'none'; }
       const display = classifyDisplay(classifyState || 'P');
+      // ✅ 的子状态词（达成目标 / 需要交互）与 Air 任务行同源（status-presentation
+      // 的 succeededSubLabel），聊天窗口不再只能说「执行成功」；非 D 或没有子状态时
+      // 该函数返回 ''，退回 display.label 原词。
+      const subLabel = statusRegistry().succeededSubLabel?.(display.status, freshness?.goalState, translate) || '';
+      const statusLabel = subLabel || display.label;
       bar.classList.remove('lc-running', 'lc-completed', 'lc-waiting', 'lc-interrupted',
         'st-running', 'st-completed', 'st-succeeded', 'st-waiting', 'st-error', 'st-done', 'st-idle',
         'st-blocked', 'st-cancelled', 'st-unknown');
@@ -425,7 +432,7 @@
         // Idempotent badge: an E turn drops the spinner and gains ❌ + an
         // accessible name here exactly as it does on the cards.
         statusRegistry().applyStatusBadge(stateEl, 'session', display.status, {
-          translate: global.t, label: display.label, document: doc,
+          translate: global.t, label: statusLabel, document: doc,
           stale: verdictStaleness.auxUnhealthy,
         });
         stateEl.style.display = '';

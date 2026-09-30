@@ -130,6 +130,10 @@ function createAutoProviderRuntime(options = {}) {
     let physicalAttempt = 0;
     let selectionFailureReason = null;
 
+    // The wire field is `routePhase`: three unrelated enums (turn-progress
+    // heartbeat, this policy narration, the attempt lifecycle) used to share the
+    // key `phase`, so a reader could not tell which enum it had without the
+    // message type. `phase` below is just this closure's local argument name.
     function publish(phase, candidate, details = {}) {
       const event = Object.freeze({
         type: 'provider_auto_route',
@@ -138,7 +142,7 @@ function createAutoProviderRuntime(options = {}) {
         sessionId: session.id,
         turnId,
         protocol: selection.protocol,
-        phase,
+        routePhase: phase,
         providerId: candidate && candidate.providerId || null,
         providerName: candidate && candidate.providerName || null,
         model: candidate && candidate.model || null,

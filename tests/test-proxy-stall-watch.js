@@ -558,7 +558,7 @@ test('a recorded stall becomes a timeout decision in a safe phase, so Auto switc
     assert.equal(failover.decision.providerFailover.category, 'timeout');
     assert.equal(failover.fromProviderName, 'Stalled line');
     assert.equal(failover.toProviderName, 'Backup line');
-    assert.deepEqual(events.map(event => event.phase), ['selected', 'switched']);
+    assert.deepEqual(events.map(event => event.routePhase), ['selected', 'switched']);
     assert.equal(events[1].reasonCode, 'failover_timeout');
   }
 });

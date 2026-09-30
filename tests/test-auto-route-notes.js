@@ -7,7 +7,7 @@ const { createAutoRouteNotes } = require('../src/chat/auto-route-notes');
 function selected(extra = {}) {
   return {
     type: 'provider_auto_route', version: 1, mode: 'auto', sessionId: 's1', turnId: 'turn-1',
-    protocol: 'openai_responses', phase: 'selected', attemptNo: 1,
+    protocol: 'openai_responses', routePhase: 'selected', attemptNo: 1,
     providerId: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-v4-flash',
     tier: 't1', preferredTier: 't1', trustDomain: 'third_party',
     routing: { source: 'jev', code: 'jev_choice', tier: 't1', tierIndex: 0, tierCount: 2, latencyMs: 900, onUnknown: 'strong' },
@@ -42,7 +42,7 @@ test('a routed pick is persisted as a display-only note and remembered on the se
   assert.equal(note.clientMsgId, 'auto-route-turn-1-1');
   assert.equal(note.content, 'Auto → DeepSeek · deepseek-v4-flash');
   assert.deepEqual(note.autoRoute, {
-    phase: 'selected', protocol: 'openai_responses', providerId: 'deepseek', providerName: 'DeepSeek',
+    routePhase: 'selected', protocol: 'openai_responses', providerId: 'deepseek', providerName: 'DeepSeek',
     model: 'deepseek-v4-flash', tier: 't1', preferredTier: 't1',
     routing: { source: 'jev', code: 'jev_choice', tierIndex: 0, tierCount: 2, latencyMs: 900, onUnknown: 'strong' },
   });
@@ -59,7 +59,7 @@ test('turns nobody asked Jev about and non-route phases leave no note', () => {
   const f = fixture();
   f.emit('s1', selected({ routing: null }));
   f.emit('s1', selected({ routing: { source: 'fallback', code: 'jev_not_prepared', onUnknown: 'strong' } }));
-  f.emit('s1', selected({ phase: 'succeeded' }));
+  f.emit('s1', selected({ routePhase: 'succeeded' }));
   assert.equal(f.appended.length, 0);
   assert.equal(f.broadcasts.length, 3);
   assert.ok(f.broadcasts.every(([, event]) => !event.noteClientMsgId));
@@ -70,7 +70,7 @@ test('turns nobody asked Jev about and non-route phases leave no note', () => {
 test('a failover updates the remembered line without a second note', () => {
   const f = fixture();
   f.emit('s1', selected());
-  f.emit('s1', selected({ phase: 'switched', attemptNo: 2, providerId: 'or', providerName: 'OpenRouter', model: 'gpt-5.5' }));
+  f.emit('s1', selected({ routePhase: 'switched', attemptNo: 2, providerId: 'or', providerName: 'OpenRouter', model: 'gpt-5.5' }));
   assert.equal(f.appended.length, 1);
   assert.equal(f.record.autoProviderLastRoute.providerName, 'OpenRouter');
   assert.equal(f.record.autoProviderLastRoute.model, 'gpt-5.5');
