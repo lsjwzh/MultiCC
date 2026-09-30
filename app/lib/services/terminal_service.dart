@@ -35,9 +35,10 @@ class TerminalService {
   TerminalService({
     required this.settings,
     required this.sessionId,
+    Terminal? terminalOverride,
     WsTicketClient? wsTicketClient,
     WebSocketChannel Function(Uri)? channelFactory,
-  }) : terminal = Terminal(maxLines: 5000),
+  }) : terminal = terminalOverride ?? Terminal(maxLines: 5000),
        _wsAuth = WsTicketConnectionGate(wsTicketClient ?? WsTicketClient()),
        _connectChannel = channelFactory ?? WebSocketChannel.connect {
     terminal.onOutput = _onTerminalOutput;
