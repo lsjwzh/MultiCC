@@ -1,9 +1,11 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh" data-i18n-doc-title="shareDocTitle">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>MultiCC · 分享会话</title>
+<script src="i18n-catalog.js"></script>
+<script src="i18n.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#c9d1d9;--faint:#8b949e;--accent:#58a6ff;--green:#238636;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -32,34 +34,39 @@
   .center input{width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;margin-bottom:12px;outline:none}
   .center .err{color:#f85149;font-size:13px;margin-bottom:10px;min-height:16px}
   .center button{width:100%;padding:10px}
+  /* 语言开关固定右上角：这个页面有三种形态（密码 / 失效 / 会话），开关不该跟着
+     某一种形态藏起来 —— 扫码进来的第三方第一眼就要能换语言。 */
+  #lang-toggle{position:fixed;top:10px;right:12px;z-index:50;padding:5px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--faint);font-size:12px;font-weight:500;width:auto;cursor:pointer}
+  #lang-toggle:hover{color:var(--text);border-color:var(--accent)}
 </style>
 </head>
 <body>
+  <button id="lang-toggle" class="lang-toggle" type="button" onclick="toggleLang()" data-i18n-title="languageToggle" title="切换语言：中文 / English"></button>
   <div id="gate" class="center" style="display:none">
-    <div class="logo" style="font-size:22px;margin-bottom:14px">Multi<span>CC</span> · 分享</div>
-    <h1>需要访问密码</h1>
-    <p>分享方为此会话设置了密码，请输入后查看。</p>
+    <div class="logo" style="font-size:22px;margin-bottom:14px">Multi<span>CC</span> <span data-i18n="shareLogoTag">· 分享</span></div>
+    <h1 data-i18n="shareGateTitle">需要访问密码</h1>
+    <p data-i18n="shareGateIntro">分享方为此会话设置了密码，请输入后查看。</p>
     <div class="err" id="gate-err"></div>
-    <input id="gate-pw" type="password" placeholder="访问密码" autocomplete="current-password">
-    <button id="gate-go">进入</button>
+    <input id="gate-pw" type="password" data-i18n-placeholder="shareGatePassword" placeholder="访问密码" autocomplete="current-password">
+    <button id="gate-go" data-i18n="shareGateEnter">进入</button>
   </div>
 
   <div id="dead" class="center" style="display:none">
-    <h1>链接无效</h1>
-    <p id="dead-msg">该分享链接不存在或已过期。</p>
+    <h1 data-i18n="shareDeadTitle">链接无效</h1>
+    <p id="dead-msg" data-i18n="shareDeadMessage">该分享链接不存在或已过期。</p>
   </div>
 
   <header id="app-header" style="display:none">
     <span class="logo">Multi<span>CC</span></span>
     <span class="meta" id="hdr-label">—</span>
-    <span class="badge" id="hdr-badge">只读</span>
+    <span class="badge" id="hdr-badge" data-i18n="shareBadgeReadonly">只读</span>
   </header>
   <div id="log" style="display:none"></div>
   <div id="status-wrap" style="padding:0 14px;display:none"><div id="status"></div></div>
   <footer id="composer" style="display:none">
     <div class="inrow">
-      <textarea id="input" rows="1" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"></textarea>
-      <button id="send">发送</button>
+      <textarea id="input" rows="1" data-i18n-placeholder="shareInputPlaceholder" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="send" data-i18n="shareSend">发送</button>
     </div>
   </footer>
 
@@ -90,20 +97,20 @@ async function loadSession() {
   let r;
   try { r = await fetch(`/api/share/${TOKEN}/session`); } catch { return show('dead'); }
   if (r.status === 401) return show('gate');
-  if (!r.ok) { const j = await r.json().catch(() => ({})); $('dead-msg').textContent = j.error || '该分享链接不存在或已过期。'; return show('dead'); }
+  if (!r.ok) { const j = await r.json().catch(() => ({})); $('dead-msg').textContent = j.error || t('shareDeadMessage'); return show('dead'); }
   const data = await r.json();
   ACCESS = data.access; SESSION = data.sessionId;
-  $('hdr-label').textContent = data.label || data.sessionId || '分享';
+  $('hdr-label').textContent = data.label || data.sessionId || t('shareFallbackLabel');
   renderHistory(data.messages || []);
   if (data.type === 'messages') {
     // Static snapshot of selected messages — no live session, no WS, no input.
-    $('hdr-badge').textContent = '消息快照';
+    $('hdr-badge').textContent = t('shareBadgeSnapshot');
     show('app');
     $('composer').style.display = 'none';
-    setStatus('这是分享的消息快照（只读）。');
+    setStatus(t('shareSnapshotNote'));
     return;
   }
-  $('hdr-badge').textContent = ACCESS === 'operate' ? '可对话' : '只读';
+  $('hdr-badge').textContent = ACCESS === 'operate' ? t('shareBadgeOperate') : t('shareBadgeReadonly');
   show('app');
   connectWs();
 }
@@ -118,7 +125,7 @@ function addMessage(role, content, tools) {
   const log = $('log');
   const wrap = document.createElement('div');
   wrap.className = 'msg ' + (role === 'user' ? 'user' : 'assistant');
-  const who = document.createElement('div'); who.className = 'who'; who.textContent = role === 'user' ? '我' : 'AI';
+  const who = document.createElement('div'); who.className = 'who'; who.textContent = role === 'user' ? t('shareWhoUser') : t('shareWhoAi');
   const body = document.createElement('div'); body.className = 'body';
   let html = esc(content || '');
   if (tools && tools.length) html += tools.map(t => `<div class="tool"><b>🔧 ${esc(t.name)}</b>${t.input && t.input.command ? ' ' + esc(String(t.input.command).slice(0, 200)) : t.input && t.input.file_path ? ' ' + esc(t.input.file_path) : ''}</div>`).join('');
@@ -134,7 +141,7 @@ function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws/chat?session=${encodeURIComponent(SESSION)}&share=${encodeURIComponent(TOKEN)}`);
   ws.onmessage = (ev) => { let e; try { e = JSON.parse(ev.data); } catch { return; } onEvent(e); };
-  ws.onclose = () => { setStatus('连接已断开，5 秒后重连…'); setTimeout(connectWs, 5000); };
+  ws.onclose = () => { setStatus(t('shareStatusReconnecting')); setTimeout(connectWs, 5000); };
   ws.onopen = () => setStatus('');
 }
 
@@ -155,9 +162,9 @@ function onEvent(e) {
     // Reconcile with authoritative history (captures the user prompt + final text).
     fetch(`/api/share/${TOKEN}/session`).then(r => r.ok ? r.json() : null).then(d => { if (d && d.messages) renderHistory(d.messages); }).catch(() => {});
   } else if (e.type === 'notify') {
-    setStatus(e.state === 'waiting' ? '⏳ ' + (e.message || '等待操作') : '');
+    setStatus(e.state === 'waiting' ? '⏳ ' + (e.message || t('shareStatusWaiting')) : '');
   } else if (e.type === 'system' && e.subtype === 'init') {
-    setStatus('AI 正在处理…');
+    setStatus(t('shareStatusProcessing'));
   }
 }
 
@@ -169,8 +176,8 @@ async function submitPassword() {
   const pw = $('gate-pw').value;
   $('gate-err').textContent = '';
   let r;
-  try { r = await fetch(`/api/share/${TOKEN}/auth`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) }); } catch { $('gate-err').textContent = '网络错误'; return; }
-  if (!r.ok) { const j = await r.json().catch(() => ({})); $('gate-err').textContent = j.error || '密码错误'; return; }
+  try { r = await fetch(`/api/share/${TOKEN}/auth`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) }); } catch { $('gate-err').textContent = t('shareErrNetwork'); return; }
+  if (!r.ok) { const j = await r.json().catch(() => ({})); $('gate-err').textContent = j.error || t('shareErrBadPassword'); return; }
   loadSession();
 }
 $('gate-go').onclick = submitPassword;
@@ -187,7 +194,7 @@ function sendMsg() {
   addMessage('user', text, null); scrollDown();
   ws.send(JSON.stringify({ type: 'user_message', text }));
   input.value = ''; input.style.height = 'auto';
-  setStatus('AI 正在处理…');
+  setStatus(t('shareStatusProcessing'));
 }
 
 if (!TOKEN) show('dead'); else loadSession();

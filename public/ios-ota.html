@@ -1,9 +1,11 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh" data-i18n-doc-title="iosOtaDocTitle">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>MultiCC — iOS OTA 安装</title>
+<script src="i18n-catalog.js"></script>
+<script src="i18n.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:#0d1117;color:#e6edf3;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
@@ -24,37 +26,41 @@
   .links{margin-top:18px;font-size:12px;line-height:2}
   .links a{color:#58a6ff;text-decoration:none;word-break:break-all}
   .notes{margin-top:20px;padding-top:16px;border-top:1px solid #21262d;font-size:11px;color:#6e7681;line-height:1.8;text-align:left}
+  #lang-toggle{position:fixed;top:10px;right:12px;z-index:50;padding:5px 10px;border:1px solid #30363d;border-radius:8px;background:#161b22;color:#8b949e;font-size:12px;cursor:pointer}
+  #lang-toggle:hover{color:#e6edf3}
 </style>
 </head>
 <body>
+<button id="lang-toggle" class="lang-toggle" type="button" onclick="toggleLang()" data-i18n-title="languageToggle" title="切换语言：中文 / English"></button>
 <div class="card">
   <div class="logo">📱</div>
-  <h1>MultiCC iOS 版</h1>
-  <div class="sub">无线 (OTA) 安装 · 无需 USB</div>
+  <h1 data-i18n="iosOtaHeading">MultiCC iOS 版</h1>
+  <div class="sub" data-i18n="iosOtaSub">无线 (OTA) 安装 · 无需 USB</div>
 
-  <div class="banner" id="https-banner">⚠️ iOS 只接受 <b>HTTPS</b> 的 OTA 安装。当前页面是 HTTP，请改用 Tailscale Funnel 等 HTTPS 地址访问本页后再安装。</div>
+  <div class="banner" id="https-banner"><span data-i18n="iosOtaHttpsWarnA">⚠️ iOS 只接受</span> <b>HTTPS</b><span data-i18n="iosOtaHttpsWarnB"> 的 OTA 安装。当前页面是 HTTP，请改用 Tailscale Funnel 等 HTTPS 地址访问本页后再安装。</span></div>
   <div class="banner" id="error-banner"></div>
 
-  <div class="meta" id="meta">读取版本信息…</div>
+  <div class="meta" id="meta" data-i18n="iosOtaReadingVersion">读取版本信息…</div>
 
-  <a id="install-btn" class="disabled" href="#">⬇️ 安装 / 更新到本机</a>
+  <a id="install-btn" class="disabled" href="#" data-i18n="iosOtaInstallBtn">⬇️ 安装 / 更新到本机</a>
 
   <div id="qr-wrap"></div>
-  <div class="qr-hint" id="qr-hint">用 iPhone 相机扫码，在本机打开本页</div>
+  <div class="qr-hint" id="qr-hint" data-i18n="iosOtaQrHint">用 iPhone 相机扫码，在本机打开本页</div>
 
   <div class="links" id="links" style="display:none">
-    <div><a id="direct-link" href="/multicc-ios.ipa">直接下载 IPA 文件</a></div>
+    <div><a id="direct-link" href="/multicc-ios.ipa" data-i18n="iosOtaDirectDownload">直接下载 IPA 文件</a></div>
     <div><a id="manifest-link" href="#" onclick="return false"></a></div>
   </div>
 
   <div class="notes">
-    <b>前提：</b>IPA 的签名描述文件必须包含这台设备的 UDID（Xcode 连过一次即自动登记）；同 bundle id + 更高 build 号 = 原地升级，数据保留。免费开发者账号签名 7 天过期。<br>
-    <b>发布：</b>在服务器 Mac 上运行 <code>./scripts/publish-ipa.sh 路径/到.ipa</code>，本页立即出现新版本（无需重启服务）。
+    <b data-i18n="iosOtaNotesPrereqLabel">前提：</b><span data-i18n="iosOtaNotesPrereq">IPA 的签名描述文件必须包含这台设备的 UDID（Xcode 连过一次即自动登记）；同 bundle id + 更高 build 号 = 原地升级，数据保留。免费开发者账号签名 7 天过期。</span><br>
+    <b data-i18n="iosOtaNotesPublishLabel">发布：</b><span data-i18n="iosOtaNotesPublishBefore">在服务器 Mac 上运行 </span><code>./scripts/publish-ipa.sh path/to.ipa</code><span data-i18n="iosOtaNotesPublishAfter">，本页立即出现新版本（无需重启服务）。</span>
   </div>
 </div>
 
 <script src="qrcode.min.js"></script>
 <script src="shared/format.js"></script>
+<script src="shared/dom-helpers.js"></script>
 <script>
 (function () {
   'use strict';
@@ -77,11 +83,15 @@
   // 没给大小就不画这一格（返回空串），而不是画一个「0 B」。
   var pkgSize = function (bytes) { return window.MultiCCFormat.formatBytes(bytes, { placeholder: '' }); };
 
+  // 版本号/bundle id 会被拼进 innerHTML，服务器写什么是它的自由，这里按文本处理。
+  // 转义走全站唯一那份：shared/dom-helpers.js 已在页头加载，它会把 escapeHtml
+  // 挂成全局 —— 本页别再自带一份副本（同一条规则只留一处实现）。
+
   function fmtTime(iso) {
     if (!iso) return '';
     var d = new Date(iso);
     if (isNaN(d.getTime())) return '';
-    return d.toLocaleString();
+    return d.toLocaleString(getLocale());
   }
 
   function renderQr() {
@@ -116,16 +126,16 @@
     })
     .then(function (info) {
       if (!info.exists) {
-        metaEl.innerHTML = '还没有发布 IPA。<br>在服务器 Mac 上运行 <b>./scripts/publish-ipa.sh 路径/到.ipa</b> 后刷新本页。';
+        metaEl.textContent = t('iosOtaNoIpa');
         return;
       }
-      var version = info.versionName ? ('v' + info.versionName + (info.versionCode ? ' (' + info.versionCode + ')' : '')) : '未知版本';
+      var version = info.versionName ? ('v' + info.versionName + (info.versionCode ? ' (' + info.versionCode + ')' : '')) : t('iosOtaUnknownVersion');
       metaEl.innerHTML =
-        '<b>' + version + '</b>' + (pkgSize(info.size) ? ' · ' + pkgSize(info.size) : '') + '<br>' +
-        (info.bundleId ? info.bundleId + '<br>' : '') +
-        (info.mtime ? '发布于 ' + fmtTime(info.mtime) : '');
+        '<b>' + escapeHtml(version) + '</b>' + (pkgSize(info.size) ? ' · ' + pkgSize(info.size) : '') + '<br>' +
+        (info.bundleId ? escapeHtml(info.bundleId) + '<br>' : '') +
+        (info.mtime ? escapeHtml(t('iosOtaPublishedAt', { time: fmtTime(info.mtime) })) : '');
       if (!info.installable) {
-        showError('IPA 已发布，但缺少版本元数据（sidecar 不完整），无法生成安装清单。请用 publish-ipa.sh 重新发布。');
+        showError(t('iosOtaMissingSidecar'));
         return;
       }
       installBtn.href = itmsUrl;
@@ -135,7 +145,7 @@
       renderQr();
     })
     .catch(function (err) {
-      metaEl.textContent = '版本信息读取失败：' + err.message;
+      metaEl.textContent = t('iosOtaInfoFailed', { message: err.message });
     });
 })();
 </script>

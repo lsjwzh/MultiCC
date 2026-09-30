@@ -2478,6 +2478,15 @@
       ]
     },
     {
+      "path": "tests/test-desktop-shell-i18n.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:desktop",
+      "entrypoints": [
+        "npm:test:desktop"
+      ]
+    },
+    {
       "path": "tests/test-desktop-shell.js",
       "tier": "flow",
       "lane": "deterministic",

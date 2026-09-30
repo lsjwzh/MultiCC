@@ -21,6 +21,16 @@
  *   session.stop();  // End session
  */
 
+// 这条链路（chat / dashboard）都挂着 i18n.js，本模块就不自带词典了：借页面的 t，
+// 借不到（测试页/旧壳）就退回中文原文 —— 同 voice-stream.js 的 voiceTr。
+function voiceTr(key, fallback, params) {
+  const translate = typeof window !== 'undefined' ? window.t : undefined;
+  let text = typeof translate === 'function' ? translate(key, params) : key;
+  if (text === key) text = fallback;
+  if (params) for (const name of Object.keys(params)) text = text.split(`{${name}}`).join(String(params[name]));
+  return text;
+}
+
 class VoiceSession {
   constructor(opts) {
     this.opts = opts || {};
@@ -103,7 +113,7 @@ class VoiceSession {
 
     } catch (err) {
       this._setState('IDLE');
-      if (this.opts.onError) this.opts.onError('无法访问麦克风: ' + err.message);
+      if (this.opts.onError) this.opts.onError(voiceTr('voiceMicDeniedDetail', '无法访问麦克风: {detail}', { detail: err.message }));
     }
   }
 
@@ -164,7 +174,7 @@ class VoiceSession {
         await this._handleAiResponse(text);
       }
     } catch (err) {
-      if (this.opts.onError) this.opts.onError('AI 请求失败: ' + err.message);
+      if (this.opts.onError) this.opts.onError(voiceTr('voiceAiFailed', 'AI 请求失败: {detail}', { detail: err.message }));
       this._setState('LISTENING');
     }
   }
@@ -216,7 +226,7 @@ class VoiceSession {
     try {
       await this.voiceOutput.speak(text);
     } catch (err) {
-      if (this.opts.onError) this.opts.onError('TTS 失败: ' + err.message);
+      if (this.opts.onError) this.opts.onError(voiceTr('voiceTtsFailed', 'TTS 失败: {detail}', { detail: err.message }));
       this._continueListening();
     }
   }

@@ -61,7 +61,7 @@
       dirtyChanges: '有未提交改动',
       aheadCommits: '领先 {n} 个提交',
       mergeReadyTitle: '可合并：{detail}',
-      mergeWorktreeTitle: '把 worktree 合并回基分支',
+      mergeWorktreeTitle: '把此会话 worktree 合并回基分支',
       moreSessionActions: '更多操作（改名/留言/Diff/合并/删除）',
       moreSessionActionsReady: '{detail}（点击查看更多）',
       terminal: '终端',
@@ -151,7 +151,7 @@
       dirtyChanges: 'uncommitted changes',
       aheadCommits: '{n} commits ahead',
       mergeReadyTitle: 'Ready to merge: {detail}',
-      mergeWorktreeTitle: 'Merge worktree back to base branch',
+      mergeWorktreeTitle: 'Merge this session’s worktree back to the base branch',
       moreSessionActions: 'More actions (rename/note/Diff/merge/delete)',
       moreSessionActionsReady: '{detail} (click for more)',
       terminal: 'Terminal',
@@ -191,7 +191,41 @@
       clearChatViewHint: 'Clears this page\'s message view; the native CLI context is untouched',
     },
   };
-  const getLang = () => localStorage.getItem('multicc_lang') || 'zh';
+  // 语言来源按优先级三段：用户显式选过的（localStorage）＞ 系统语言 ＞ 英文兜底。
+  // 系统语言只做「中文 / 其它」二分：zh* 归中文，其余（含 de/fr、含取不到系统语言的
+  // C locale 容器）一律英文。国际发行渠道（AppImageHub 目录站那类）明确要求「非中文
+  // 环境默认英文界面」，而中文环境里的默认仍然是中文，所以这里不需要一张语言表，
+  // 只需要这一个判断 —— 也别写成「非英文即中文」，那正是原来反过来的那版错误。
+  const LANG_STORE_KEY = 'multicc_lang';
+  const FALLBACK_LANG = 'en';
+  function systemLang() {
+    const tags = [];
+    try {
+      const nav = typeof navigator === 'undefined' ? null : navigator;
+      if (nav) {
+        if (Array.isArray(nav.languages)) tags.push(...nav.languages);
+        if (nav.language) tags.push(nav.language);
+        if (nav.userLanguage) tags.push(nav.userLanguage);
+      }
+    } catch (_) {}
+    for (const tag of tags) {
+      const value = String(tag || '').trim().toLowerCase();
+      if (!value) continue;
+      if (value === 'zh' || value.indexOf('zh-') === 0 || value.indexOf('zh_') === 0) return 'zh';
+      // 第一个成形（看起来像语言标签）的取值说了算：de-DE / fr / en-US 都归英文界面，
+      // 因为产品只有中英两套文案。垃圾值（空串、下划线开头）跳过，继续往后看。
+      if (/^[a-z]{2,3}(?:[-_]|$)/.test(value)) return FALLBACK_LANG;
+    }
+    return FALLBACK_LANG;
+  }
+  // localStorage 在 file://（桌面版的错误页）和隐私模式下可能直接抛，读不到就当没选过。
+  const getLang = () => {
+    try {
+      const stored = localStorage.getItem(LANG_STORE_KEY);
+      if (stored && I18N[stored]) return stored;
+    } catch (_) {}
+    return systemLang();
+  };
   // 日期/时间也要跟着语言走：zh-CN 的短日期是「9月21日 14:30」，英文界面里那两个
   // 汉字就是残留。所有 Intl / toLocaleString 都传 getLocale()，不要写字面量，也
   // 不要留空让浏览器自己挑（浏览器是中文时英文界面照样冒汉字）。
@@ -209,7 +243,9 @@
   }
 
 function setLang(lang) {
-  localStorage.setItem('multicc_lang', I18N[lang] ? lang : 'zh');
+  // 认不出来的取值回落到的不是「中文」而是当前系统语言：否则在一个英文环境里
+  // 传个拼错的 lang 参数，会把用户从英文界面翻回中文。
+  try { localStorage.setItem(LANG_STORE_KEY, I18N[lang] ? lang : systemLang()); } catch (_) {}
   location.reload();
 }
 
@@ -220,6 +256,10 @@ function toggleLang() {
 function applyI18n(root) {
   const scope = root || document;
   document.documentElement.lang = getLang();
+  // <title> 不是普通元素，querySelector 挑不到；页面在 <html> 上挂 data-i18n-doc-title
+  // 就能让标签页也跟着切语言（否则英文界面里浏览器标签上仍是一行中文）。
+  const docTitleKey = document.documentElement.dataset && document.documentElement.dataset.i18nDocTitle;
+  if (docTitleKey) document.title = t(docTitleKey);
   scope.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
   scope.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle); });
   scope.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.dataset.i18nPlaceholder); });
@@ -233,6 +273,7 @@ function applyI18n(root) {
 window.I18N = I18N;
 window.t = t;
 window.getLang = getLang;
+window.systemLang = systemLang;
 window.getLocale = getLocale;
 window.setLang = setLang;
 window.toggleLang = toggleLang;

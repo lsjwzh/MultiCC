@@ -62,8 +62,23 @@ function sanitizedBaseEnv() {
   return env;
 }
 
+// ── System language ─────────────────────────────────────────────────────────
+// The web UI picks its language from `navigator.language` (public/i18n.js), and
+// Chromium derives that from this process's locale. Electron resolves LANG/LC_*
+// for us through app.getLocale(), so pinning the Chromium switch to it is what
+// makes the packaged app follow the system language: Chinese systems stay
+// Chinese, and a C/en locale gets the English interface the AppImage catalog
+// requires. Without this the packaged app can sit on Chromium's en-US default
+// whatever the system says (which would silently flip Chinese users to English).
+// Must run before app is ready; every locale the shell shows (?lang= on the
+// splash/error pages) reads from the same value.
+const systemLocale = (() => {
+  try { return app.getLocale() || 'en-US'; } catch (_) { return 'en-US'; }
+})();
+try { app.commandLine.appendSwitch('lang', systemLocale); } catch (_) {}
+
 // ── Window ──────────────────────────────────────────────────────────────────
-const SPLASH_URL = `file://${path.join(__dirname, 'assets', 'splash.html')}`;
+const SPLASH_URL = `file://${path.join(__dirname, 'assets', 'splash.html')}?lang=${encodeURIComponent(systemLocale)}`;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -129,6 +144,12 @@ function showError(failure, origin) {
   const params = new URLSearchParams({
     reason: (failure && failure.reason) || 'unknown',
     message: ((failure && failure.message) || '').slice(0, 500),
+    // The backend's own last lines: the page is what a user (or a bug report,
+    // or a catalog reviewer's screenshot) actually sees, so the reason a server
+    // died belongs on it — a one-line "failed to start" leaves the only clue in
+    // a log file on the user's disk.
+    tail: ((failure && failure.tail) || '').slice(-2000),
+    lang: systemLocale,
     logDir: desktopEnv ? desktopEnv.logsDir : '',
     dataDir: desktopEnv ? desktopEnv.dataRoot : '',
     origin: origin || '',

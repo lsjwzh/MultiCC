@@ -97,6 +97,12 @@
     deckHint: { zh: '共 {n} 条 · 点击展开', en: '{n} reminders · click to expand' },
     deckCollapse: { zh: '收起 ✕', en: 'Collapse ✕' },
     deckMore: { zh: '还有 {n} 条较早的', en: '{n} older' },
+    // 语音播报那一句：比弹窗标题多一个任务名，所以另开三条而不是复用 completed/errored/waiting。
+    spokenCompleted: { zh: '任务「{title}」已完成', en: 'Task "{title}" done' },
+    spokenErrored: { zh: '任务「{title}」出错了', en: 'Task "{title}" failed' },
+    spokenWaiting: { zh: '任务「{title}」在等你回复', en: 'Task "{title}" needs your reply' },
+    // 一批多条时的后缀（sentence() 会拼在第一条后面），跟着播报那句的语言走。
+    spokenMore: { zh: '，另有 {n} 个任务有新结果', en: ' · {n} more results' },
   };
 
   function storage() {
@@ -133,17 +139,21 @@
     const doc = opts.document || win.document;
     const getCurrentTaskId = typeof opts.getCurrentTaskId === 'function' ? opts.getCurrentTaskId : () => null;
     const openTask = typeof opts.openTask === 'function' ? opts.openTask : null;
+    // 语言只有一处判定：public/i18n.js 的 getLang()（显式选择 ＞ 系统语言 ＞ 英文）。
+    // 就地这份只在窗口里没有 i18n.js（老缓存页面）时兜底，规则必须和它一致 ——
+    // 兜底成中文会让英文系统上的任务提醒 bubble 说中文。语音合成也读它。
+    function uiLang() {
+      try {
+        if (typeof win.getLang === 'function') return win.getLang();
+        const stored = win.localStorage?.getItem('multicc_lang');
+        return stored === 'en' || stored === 'zh' ? stored
+          : (/^zh/i.test(win.navigator?.language || '') ? 'zh' : 'en');
+      } catch (_) { return 'en'; }
+    }
     const translate = typeof opts.translate === 'function' ? opts.translate : (key, vars) => {
       const table = STRINGS[key] || {};
-      // Follow the page's own language toggle (multicc_lang) first, then the
-      // browser locale — the same rule the rest of the Air UI uses. A stored
-      // choice wins outright: re-deriving it from navigator.language turned an
-      // English page Chinese whenever the browser itself was Chinese.
-      let stored = null;
-      try { stored = win.localStorage?.getItem('multicc_lang'); } catch (_) {}
-      const lang = /^en$/i.test(stored || '') ? 'en'
-        : /^zh/i.test(stored || '') ? 'zh'
-          : (/zh/i.test(win.navigator?.language || '') ? 'zh' : 'en');
+      // 语言判定只留 uiLang() 一处（上面那段就是它）：显式选择 ＞ 系统语言 ＞ 英文。
+      const lang = uiLang();
       let text = table[lang] || table.zh || key;
       if (vars) for (const name of Object.keys(vars)) text = text.replace(`{${name}}`, vars[name]);
       return text;
@@ -230,7 +240,8 @@
     function speak(text) {
       if (win.speechSynthesis && typeof win.SpeechSynthesisUtterance === 'function') {
         const utterance = new win.SpeechSynthesisUtterance(text);
-        utterance.lang = 'zh-CN';
+        // 念的是哪国话就得报哪国 lang，否则英文内容会被中文语音库按拼音读出来。
+        utterance.lang = uiLang() === 'zh' ? 'zh-CN' : 'en-US';
         utterance.rate = 1.1;
         utterance.volume = 0.75;
         win.speechSynthesis.speak(utterance);
@@ -261,12 +272,17 @@
       return mine;
     }
 
+    // 播报的那一句必须跟着界面语言走（上面 STRINGS 里的 spoken*）：这里以前是
+    // 中文字面量，英文页面上语音会突然说中文。有任务名就用 spoken*（带 {title}），
+    // 没有名就退回和浮动条同款的那句 floatTitle*；多任务只加一条后缀。
+    const SPOKEN_KEY = { error: 'spokenErrored', waiting: 'spokenWaiting', completed: 'spokenCompleted' };
+    const FLOAT_KEY = { error: 'floatTitleError', waiting: 'floatTitleWaiting', completed: 'floatTitle' };
     function sentence(items) {
       const [first] = items;
       const title = String(first.task?.title || '').slice(0, 40);
-      const outcome = first.kind === 'error' ? '出错了' : first.kind === 'waiting' ? '在等你回复' : '已完成';
-      let text = title ? `任务「${title}」${outcome}` : `任务${outcome}`;
-      if (items.length > 1) text += `，另有 ${items.length - 1} 个任务有新结果`;
+      const kind = FLOAT_KEY[first.kind] ? first.kind : 'completed';
+      let text = title ? translate(SPOKEN_KEY[kind], { title }) : translate(FLOAT_KEY[kind]);
+      if (items.length > 1) text += translate('spokenMore', { n: items.length - 1 });
       return text;
     }
 

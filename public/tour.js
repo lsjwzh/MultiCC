@@ -83,11 +83,18 @@
   let resultBaseline = null;
   let stopResultTrigger = null;
 
+  // 语言只有一份判定：public/i18n.js 的 getLang()（显式选择 ＞ 系统语言 ＞ 英文）。
+  // 引导页和 i18n.js 同在 manage/Air 里加载，所以直接问它；只有它不在（老缓存页面）
+  // 时才按同一条规则就地兜底 —— 兜底也不能写死中文，否则英文系统上引导卡会一直是中文。
   function lang() {
     try {
-      return localStorage.getItem(LANG_KEY) === 'en' ? 'en' : 'zh';
+      if (typeof window.getLang === 'function') return window.getLang();
+      const stored = localStorage.getItem(LANG_KEY);
+      if (stored === 'en' || stored === 'zh') return stored;
+      const system = typeof navigator === 'undefined' ? '' : (navigator.language || '');
+      return /^zh/i.test(system) ? 'zh' : 'en';
     } catch (_) {
-      return 'zh';
+      return 'en';
     }
   }
 

@@ -1,9 +1,11 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh" data-i18n-doc-title="wechatDocTitle">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MultiCC — WeChat Bridge</title>
+  <script src="i18n-catalog.js"></script>
+  <script src="i18n.js"></script>
   <script src="error-envelope.js"></script>
   <script src="auth-client.js"></script>
   <script src="shared/dom-helpers.js"></script>
@@ -44,6 +46,17 @@
     }
     .hdr-status.on  { background: #23863620; color: #3fb950; border: 1px solid #23863660; }
     .hdr-status.off { background: #21262d; color: #6e7681; border: 1px solid #30363d; }
+    #header .lang-toggle {
+      font-size: 12px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-weight: 600;
+      border: 1px solid #30363d;
+      background: #21262d;
+      color: #c9d1d9;
+      cursor: pointer;
+    }
+    #header .lang-toggle:hover { background: #30363d; border-color: #8b949e; }
 
     /* ── Layout ── */
     #main {
@@ -278,6 +291,7 @@
     <span class="title">/ WeChat Bridge (iLink)</span>
     <button class="cfg-toggle" id="cfg-toggle" onclick="toggleConfig()">&#9776;</button>
     <span class="spacer"></span>
+    <button class="lang-toggle" type="button" onclick="toggleLang()" data-i18n-title="languageToggle" title="切换语言：中文 / English"></button>
     <span class="hdr-status off" id="hdr-status">Stopped</span>
   </div>
 
@@ -285,44 +299,44 @@
     <div id="config-panel">
       <!-- Login Section -->
       <div class="cfg-section">
-        <div class="cfg-title">微信登录 (iLink)</div>
+        <div class="cfg-title" data-i18n="wechatLoginTitle"></div>
         <div id="login-area">
           <img id="qr-img" alt="QR Code" />
           <div id="login-status"></div>
           <div style="margin-top:8px;">
-            <button class="btn" id="btn-get-qr" onclick="getQRCode()">获取登录二维码</button>
-            <button class="btn btn-danger" id="btn-logout" onclick="logout()" style="display:none;">退出登录</button>
+            <button class="btn" id="btn-get-qr" onclick="getQRCode()" data-i18n="airBridgesBtnGetQr"></button>
+            <button class="btn btn-danger" id="btn-logout" onclick="logout()" style="display:none;" data-i18n="airBridgesBtnLogout"></button>
           </div>
         </div>
         <div class="cfg-hint" style="margin-top:8px;">
-          使用微信扫描二维码绑定 ClawBot。<br>
-          需先在微信中启用 ClawBot 插件。<br>
-          登录有效期 24 小时，过期需重新扫码。
+          <span data-i18n="wechatScanHint1"></span><br>
+          <span data-i18n="wechatScanHint2"></span><br>
+          <span data-i18n="wechatScanHint3"></span>
         </div>
       </div>
 
       <!-- Session Binding -->
       <div class="cfg-section">
-        <div class="cfg-title">Claude Code 会话</div>
+        <div class="cfg-title" data-i18n="wechatSessionSection"></div>
         <div class="cfg-row">
-          <span class="cfg-label">默认会话</span>
+          <span class="cfg-label" data-i18n="wechatDefaultSession"></span>
           <select class="cfg-input" id="cfg-session">
-            <option value="">-- 选择会话 --</option>
+            <option value="" data-i18n="wechatSelectSession"></option>
           </select>
         </div>
         <div class="cfg-row">
-          <button class="btn" onclick="loadSessions()" style="font-size:12px;padding:4px 10px;">刷新会话列表</button>
+          <button class="btn" onclick="loadSessions()" style="font-size:12px;padding:4px 10px;" data-i18n="wechatRefreshSessions"></button>
         </div>
         <div class="cfg-hint">
-          微信用户可发送 <code>/bind &lt;id&gt;</code> 绑定到其他会话。
+          <span data-i18n="wechatBindHintPre"></span> <code>/bind &lt;id&gt;</code> <span data-i18n="wechatBindHintPost"></span>
         </div>
       </div>
 
       <!-- Advanced -->
       <div class="cfg-section">
-        <div class="cfg-title">高级设置</div>
+        <div class="cfg-title" data-i18n="wechatAdvanced"></div>
         <div class="cfg-row">
-          <span class="cfg-label">输出缓冲超时 (ms)</span>
+          <span class="cfg-label" data-i18n="wechatIdleTimeout"></span>
           <input class="cfg-input" id="cfg-idle" type="number" value="5000" min="2000" step="500" />
         </div>
       </div>
@@ -330,9 +344,9 @@
       <!-- Actions -->
       <div class="cfg-section">
         <div class="cfg-actions">
-          <button class="btn btn-green" id="btn-start" onclick="startBridge()">启动桥接</button>
-          <button class="btn btn-danger" id="btn-stop" onclick="stopBridge()" disabled>停止</button>
-          <button class="btn" onclick="saveConfig()">保存配置</button>
+          <button class="btn btn-green" id="btn-start" onclick="startBridge()" data-i18n="airBridgesBtnStart"></button>
+          <button class="btn btn-danger" id="btn-stop" onclick="stopBridge()" disabled data-i18n="airBridgesBtnStop"></button>
+          <button class="btn" onclick="saveConfig()" data-i18n="wechatSaveConfig"></button>
         </div>
         <div class="cfg-status" id="cfg-status"></div>
       </div>
@@ -340,31 +354,31 @@
       <!-- Help -->
       <div class="cfg-section">
         <div class="cfg-hint">
-          <b>微信命令:</b> 在微信中发送<br>
-          <code>/help</code> — 显示帮助<br>
-          <code>/status</code> — 查看状态<br>
-          <code>/sessions</code> — 列出会话<br>
-          <code>/bind &lt;id&gt;</code> — 绑定到指定会话<br>
-          <code>/unbind</code> — 回到默认会话<br>
-          <code>/send &lt;id&gt; &lt;text&gt;</code> — 向指定会话发命令
+          <b data-i18n="wechatHelpTitle"></b> <span data-i18n="wechatHelpIntro"></span><br>
+          <code>/help</code> — <span data-i18n="wechatHelpHelp"></span><br>
+          <code>/status</code> — <span data-i18n="wechatHelpStatus"></span><br>
+          <code>/sessions</code> — <span data-i18n="wechatHelpSessions"></span><br>
+          <code>/bind &lt;id&gt;</code> — <span data-i18n="wechatHelpBind"></span><br>
+          <code>/unbind</code> — <span data-i18n="wechatHelpUnbind"></span><br>
+          <code>/send &lt;id&gt; &lt;text&gt;</code> — <span data-i18n="wechatHelpSend"></span>
         </div>
       </div>
     </div>
 
     <div id="chat-area">
       <div id="chat-log">
-        <div class="log-empty">桥接未启动。先扫码登录微信，选择会话后点击「启动桥接」。</div>
+        <div class="log-empty" data-i18n="wechatLogEmpty"></div>
       </div>
       <div id="input-bar">
-        <input id="msg-input" type="text" placeholder="输入消息..." autocomplete="off" />
+        <input id="msg-input" type="text" data-i18n-placeholder="typeMessage" placeholder="输入消息..." autocomplete="off" />
         <span class="send-target">
-          发送到
+          <span data-i18n="wechatSendTo"></span>
           <select id="send-target">
             <option value="pty">Claude Code</option>
-            <option value="wechat">微信</option>
+            <option value="wechat" data-i18n="wechatOptionWechat"></option>
           </select>
         </span>
-        <button class="btn btn-green" onclick="sendMsg()" style="padding:7px 12px;">发送</button>
+        <button class="btn btn-green" onclick="sendMsg()" style="padding:7px 12px;" data-i18n="wechatSend"></button>
       </div>
     </div>
   </div>

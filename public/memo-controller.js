@@ -8,6 +8,16 @@
   const MAX_ID_LENGTH = 240;
   const MAX_PATH_LENGTH = 4096;
 
+  // 这个控制器被 chat / memo / manage / memory 四边共用，自己不带词典：页面加载了
+  // i18n.js 就借用它的 t（英文字典里有这些 key），没加载（Node 单测）就原样返回 key，
+  // 免得测试还得在桩里造一套词典。
+  function tr(key, params) {
+    return root && typeof root.t === 'function' ? root.t(key, params) : key;
+  }
+  function locale() {
+    return root && typeof root.getLocale === 'function' ? root.getLocale() : undefined;
+  }
+
   function boundedText(value, maxLength) {
     if (typeof value !== 'string') return '';
     return value.slice(0, maxLength);
@@ -356,12 +366,12 @@
         directory = id ? await directoryFor(id) : null;
       } catch (error) {
         if (requestVersion !== loadVersion) return false;
-        notify(`Directory load failed: ${client.errorMessage(error)}`, true);
+        notify(tr('memoDirectoryLoadFailed', { message: client.errorMessage(error) }), true);
         return false;
       }
       if (requestVersion !== loadVersion) return false;
       if (!directory) {
-        notify('Directory not found', true);
+        notify(tr('memoDirectoryNotFound'), true);
         return false;
       }
 
@@ -371,8 +381,8 @@
       const status = element('status');
       const title = element('title');
       const subtitle = element('subtitle');
-      if (title) title.textContent = `📝 ${boundedText(directory.name || id, 240)} · 备忘`;
-      if (subtitle) subtitle.textContent = '加载中…';
+      if (title) title.textContent = tr('memoTitleNamed', { name: boundedText(directory.name || id, 240) });
+      if (subtitle) subtitle.textContent = tr('loading');
       if (textarea) {
         textarea.value = '';
         textarea.onkeydown = (event) => {
@@ -408,11 +418,11 @@
           if (draft !== null && !restored) clearDraft(id);
           textarea.focus();
           if (restored) {
-            if (status) status.textContent = '已恢复上次未保存的内容，即将自动保存';
+            if (status) status.textContent = tr('memoRestoredUnsaved');
             scheduleAutoSave();
           }
         }
-        if (subtitle) subtitle.textContent = `${memo.path}${memo.exists ? '' : ' · 文件尚未创建（保存即创建）'}`;
+        if (subtitle) subtitle.textContent = `${memo.path}${memo.exists ? '' : tr('memoNotCreated')}`;
         if (typeof ui.onLoaded === 'function') ui.onLoaded(directory, memo);
         return true;
       } catch (error) {
@@ -420,10 +430,10 @@
         const draft = textarea ? readDraft(id) : null;
         if (textarea && draft !== null) {
           textarea.value = draft;
-          if (status) status.textContent = '已恢复本地草稿，服务恢复后将自动保存';
+          if (status) status.textContent = tr('memoRestoredLocalDraft');
           scheduleAutoSave();
         }
-        if (subtitle) subtitle.textContent = `加载失败：${client.errorMessage(error)}`;
+        if (subtitle) subtitle.textContent = tr('memoLoadFailed', { message: client.errorMessage(error) });
         return false;
       }
     }
@@ -440,17 +450,17 @@
       }
       const text = textarea.value;
       saveInFlight = true;
-      if (status) status.textContent = '保存中…';
+      if (status) status.textContent = tr('memoSaving');
       try {
         const result = await client.saveMemo(dirId, text);
         clearDraft(dirId);
         if (currentDirId === dirId) {
           lastSavedText = text;
-          if (status) status.textContent = `已保存 · ${now().toLocaleTimeString()}`;
+          if (status) status.textContent = tr('memoSavedAt', { time: now().toLocaleTimeString(locale()) });
         }
         return result;
       } catch (error) {
-        if (currentDirId === dirId && status) status.textContent = `保存失败：${client.errorMessage(error)}`;
+        if (currentDirId === dirId && status) status.textContent = tr('memoSaveFailed', { message: client.errorMessage(error) });
         return null;
       } finally {
         saveInFlight = false;
@@ -471,7 +481,7 @@
 
     function renderPickerSession(list, session) {
       const state = getSessionStatus(session.id);
-      const status = boundedText(state && state.status, 40) || (session.active ? 'active' : 'idle');
+      const status = boundedText(state && state.status, 40) || tr(session.active ? 'active' : 'idle');
       const button = document.createElement('button');
       button.type = 'button';
       button.className = ui.buttonClass || 'btn';
@@ -490,19 +500,19 @@
       const text = currentLineText();
       const status = element('status');
       if (!text) {
-        if (status) status.textContent = '当前行为空，无法发送';
+        if (status) status.textContent = tr('memoEmptyLine');
         return;
       }
       let sessions;
       try {
         sessions = await sessionsForCurrentDirectory(dirId);
       } catch (error) {
-        if (currentDirId === dirId && status) status.textContent = `加载会话列表失败：${client.errorMessage(error)}`;
+        if (currentDirId === dirId && status) status.textContent = tr('memoSessionListFailed', { message: client.errorMessage(error) });
         return;
       }
       if (currentDirId !== dirId) return;
       if (!sessions.length) {
-        if (status) status.textContent = '该工作区还没有 chat 会话，请先新建一个';
+        if (status) status.textContent = tr('memoNoSessions');
         return;
       }
       const previewLength = Math.max(40, Number(ui.previewLength) || 120);
@@ -523,15 +533,15 @@
       if (!text) return;
       pickerClose();
       const status = element('status');
-      if (status) status.textContent = `发送到 ${targetId}…`;
+      if (status) status.textContent = tr('memoSending', { target: targetId });
       try {
         const result = await client.sendLine(dirId, text, targetId);
         if (currentDirId === dirId && status) {
-          status.textContent = `已发送到 ${targetId} · ${now().toLocaleTimeString()}`;
+          status.textContent = tr('memoSentAt', { target: targetId, time: now().toLocaleTimeString(locale()) });
         }
         return result;
       } catch (error) {
-        if (currentDirId === dirId && status) status.textContent = `发送失败：${client.errorMessage(error)}`;
+        if (currentDirId === dirId && status) status.textContent = tr('memoSendFailed', { message: client.errorMessage(error) });
         return null;
       }
     }

@@ -302,10 +302,19 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
   // 逐条走真实输入时才暴露的——它们由数组字面量给出、藏在 part(...) 调用之外，
   // 静态抽取漏掉了。合计 215 键（中英各 215 行），重跑生成器实测 7714/489418，
   // 按棘轮登记到这一格。
+  // 2026-09-30 多语言收尾这一轮合回 main 之后的实测高水位。这一格是两侧各自抬高过、
+  // 再从不同基线碰头的，所以解法只有一条：按重新生成后的真实数字登记。账目是
+  // main 3853 键（7714 行）+ 本分支独有的 1265 键 = 5134 键，随后删掉随旧控制台一起
+  // 退场的 878 键（manage.html/manage.js 的 mng*、meta.html 的 meta*、任务板 UI 的 tb*
+  // —— 那三个文件在 main 上已经整块删除，键不可能还有调用点），落回 4256 键、
+  // 8520 行 / 536314 字节。另有 13 条 airGlobalPermissions* 是 main 上漏登记的键
+  // （air-global.js 调了、词典里没有，那道闸在 main 上本来是红的），这一轮一并补上。
+  // 涨的依然是数据量：天花板压在当前高水位上，再涨必须回来改这里。
   'public/i18n-catalog.js': Object.freeze({
+    // 合并前 main 的值：7714 / 489418。合并后按重新生成的真实数字抬到这一格。
     // Shared setup, cancel and saved-password management for the two power switches.
-    maxLines: 7714,
-    maxBytes: 489418,
+    maxLines: 8520,
+    maxBytes: 536314,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

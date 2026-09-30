@@ -1,8 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>MultiCC — 启动失败</title>
+<title>MultiCC</title>
+<script src="shell-i18n.js"></script>
 <style>
   :root { color-scheme: dark; }
   html, body { height: 100%; margin: 0; }
@@ -24,6 +25,8 @@
     border-radius: 10px; white-space: pre-wrap; word-break: break-all;
     max-height: 220px; overflow: auto;
   }
+  .detail:empty { display: none; }
+  .tail-label { font-size: 12px; color: #8b91a3; margin: 0 0 6px; }
   .actions { display: flex; gap: 12px; flex-wrap: wrap; }
   button {
     font: inherit; font-size: 14px; padding: 9px 18px; border-radius: 9px; cursor: pointer;
@@ -31,44 +34,63 @@
   }
   button.primary { background: #3b5bdb; border-color: #3b5bdb; color: #fff; }
   button:hover { filter: brightness(1.12); }
+  .lang { margin-left: auto; padding: 6px 12px; font-size: 12px; color: #9aa1b5; }
   .paths { margin-top: 18px; font-size: 12px; color: #6d7386; line-height: 1.8; user-select: text; }
   .paths code { color: #9aa1b5; }
 </style>
 </head>
-<body>
+<body data-title-key="docTitleFailed">
 <div class="card">
-  <h1><span class="dot">●</span> <span id="title">MultiCC 启动失败</span></h1>
-  <p class="sub">The local MultiCC backend could not start.</p>
+  <h1><span class="dot">●</span> <span id="title" data-shell-i18n="failedTitle"></span></h1>
+  <p class="sub" data-shell-i18n="failedSub"></p>
   <div class="detail" id="detail"></div>
+  <p class="tail-label" id="tail-label" data-shell-i18n="detail" hidden></p>
+  <div class="detail" id="tail" hidden></div>
   <div class="actions">
-    <button class="primary" id="retry">重试启动</button>
-    <button id="logs">打开日志</button>
-    <button id="data">打开数据目录</button>
-    <button id="quit">退出</button>
+    <button class="primary" id="retry" data-shell-i18n="retry"></button>
+    <button id="logs" data-shell-i18n="openLogs"></button>
+    <button id="data" data-shell-i18n="openData"></button>
+    <button id="quit" data-shell-i18n="quit"></button>
+    <button class="lang" id="lang" data-shell-i18n="language" data-shell-i18n-title="languageTitle"></button>
   </div>
   <div class="paths" id="paths"></div>
 </div>
 <script>
 (function () {
+  var shell = window.MultiCCShellI18n;
   var params = new URLSearchParams(location.search);
   var reason = params.get('reason') || 'unknown';
   var message = params.get('message') || '';
+  var tail = params.get('tail') || '';
   var logDir = params.get('logDir') || '';
   var dataDir = params.get('dataDir') || '';
 
-  var copy = {
-    'port-in-use': '本地端口被占用（EADDRINUSE）。可能是另一个 MultiCC 服务或其他程序占用了端口。关闭占用程序后点「重试启动」，桌面版会自动换一个空闲端口。',
-    'crash-loop': '本地服务在短时间内多次异常退出，已停止自动重启。请查看日志定位原因；常见原因是数据目录损坏或依赖缺失。',
-    'not-ready': '本地服务启动后长时间未就绪（等待 /readyz 超时）。请查看日志了解卡在哪一步。',
-    'spawn-error': '无法启动本地服务进程。可能是安装不完整（缺少 server 文件），请重新安装桌面版。'
+  // 失败原因到文案的 key。文案在 shell-i18n.js 里，中英各一份。
+  var REASONS = {
+    'port-in-use': 'reasonPortInUse',
+    'crash-loop': 'reasonCrashLoop',
+    'not-ready': 'reasonNotReady',
+    'spawn-error': 'reasonSpawnError',
+    'missing-runtime': 'reasonMissingRuntime'
   };
-  document.getElementById('title').textContent = 'MultiCC 启动失败';
+
+  shell.apply();
   document.getElementById('detail').textContent =
-    (copy[reason] || '发生未知错误。') + (message ? '\n\n' + message : '');
+    shell.t(REASONS[reason] || 'reasonUnknown') + (message ? '\n\n' + message : '');
+  // 后台进程自己的日志末尾也摆上来：这一页是给人截图看的，只给一句「启动失败」
+  // 等于把唯一的线索锁在用户机器上的日志文件里。
+  if (tail) {
+    var tailLabel = document.getElementById('tail-label');
+    var tailBox = document.getElementById('tail');
+    tailLabel.hidden = false;
+    tailBox.hidden = false;
+    tailBox.textContent = tail;
+  }
 
   var paths = [];
-  if (logDir) paths.push('日志 Logs：<code>' + escapeHtml(logDir) + '</code>');
-  if (dataDir) paths.push('数据 Data：<code>' + escapeHtml(dataDir) + '</code>');
+  var sep = shell.t('labelSep');
+  if (logDir) paths.push(shell.t('logsLabel') + sep + '<code>' + escapeHtml(logDir) + '</code>');
+  if (dataDir) paths.push(shell.t('dataLabel') + sep + '<code>' + escapeHtml(dataDir) + '</code>');
   document.getElementById('paths').innerHTML = paths.join('<br>');
 
   function escapeHtml(s) {
@@ -76,6 +98,8 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
+
+  document.getElementById('lang').addEventListener('click', function () { shell.toggleLang(); });
 
   var bridge = window.multiccDesktop;
   function bind(id, fn) {

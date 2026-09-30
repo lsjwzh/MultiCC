@@ -2,6 +2,27 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const ROOT = path.join(__dirname, '..');
+
+// 上屏的文案由页面的 window.t 提供（本模块自己不带词典，见 error-envelope.js 的 tr）：
+// Node 里 root 是 null，取词直接回落成 key —— 不挂词典就断言，测到的是 errEnvRetrySuffix
+// 这个 key 本身，而不是用户真正看到的那一句。两份词典都装：中文环境看中文，英文环境
+// 看英文（PR #7515 反馈的就是这条 —— 审查容器没有中文 locale，界面却全是中文）。
+const CATALOGS = Object.fromEntries(['zh', 'en'].map(locale => [
+  locale,
+  JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', `${locale}.json`), 'utf8')),
+]));
+function translator(locale) {
+  const dict = CATALOGS[locale];
+  return (key, params) => String(dict[key] !== undefined ? dict[key] : key)
+    .replace(/\{(\w+)\}/g, (all, name) => (params && name in params ? String(params[name]) : all));
+}
+// error-envelope 在 require 时就把 root 抓走了，所以 window 必须先有、后 require。
+global.window = { t: translator('zh') };
+
 const {
   diagnosticText,
   fromHttpResponse,
@@ -71,6 +92,15 @@ test('WebSocket close codes produce actionable connection envelopes', () => {
   assert.equal(abnormal.family, 'network');
   assert.equal(abnormal.retryable, true);
   assert.match(presentation(abnormal, { retrySeconds: 2 }).message, /2s 后重试/);
+  // 同一句在英文环境里不能带中文：连接错误页正是英文用户最先看到的那一屏。
+  // 信封是「建立时取词」的（fromWsClose 当场就把 errEnvWs1006 翻好了），所以换了语言
+  // 要重新建一个信封 —— 拿旧信封再 presentation 只能换掉分类标题，换不掉正文。
+  global.window.t = translator('en');
+  const english = presentation(fromWsClose({ code: 1006, reason: '' }), { retrySeconds: 2 });
+  assert.match(english.message, /retrying in 2s/);
+  assert.doesNotMatch(english.message, /[㐀-鿿]/);
+  assert.doesNotMatch(english.headline, /[㐀-鿿]/, '英文环境的错误分类标题也不许是中文');
+  global.window.t = translator('zh');
 
   const policy = fromWsClose({ code: 1008, reason: 'grant expired' });
   assert.equal(policy.family, 'auth');

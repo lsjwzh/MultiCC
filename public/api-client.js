@@ -12,6 +12,16 @@
   const errorModel = (root && root.MultiCCErrorEnvelope)
     || (typeof module === 'object' && module.exports ? require('./error-envelope') : null);
 
+  // 页面上的全局 t()（i18n.js）。本模块也会被 Node 单测 require（那时没有 t），
+  // 所以取不到词就回落成调用方给的原文，不抛错。
+  function tr(key, fallback) {
+    if (root && typeof root.t === 'function') {
+      const text = root.t(key);
+      if (text && text !== key) return text;
+    }
+    return fallback;
+  }
+
   class ApiError extends Error {
     constructor(message, options = {}) {
       super(message);
@@ -298,7 +308,9 @@
         retryable: envelope ? envelope.retryable : false,
         action: envelope && envelope.action,
         envelope,
-        diagnostics: envelope ? errorModel.diagnosticText(envelope) : '错误: Request failed',
+        // 没有 envelope 时（fetch 自己抛了）也要给详情面板一行：标签沿用
+        // error-envelope 的同一个 key，语言才跟页面走，而不是在这里再写死一次中文。
+        diagnostics: envelope ? errorModel.diagnosticText(envelope) : `${tr('errEnvDiagErrorLabel', '错误:')} Request failed`,
       };
     }
     const envelope = error.envelope || (errorModel && errorModel.normalize(error, {

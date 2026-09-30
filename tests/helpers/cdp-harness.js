@@ -8,6 +8,9 @@ const { spawn } = require('node:child_process');
 const WebSocket = require('ws');
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+// options.locale 只改 acceptLanguage 也会动 UA，所以给一个明确的中性身份，
+// 别让页面按 UA 猜出一台不存在的设备。
+const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 const CHROME_CANDIDATES = Object.freeze([
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -280,6 +283,15 @@ async function createCdpHarness(options = {}) {
     // compositor has something to render. Best-effort: builds that reject it
     // keep the old behaviour.
     try { await send('Page.bringToFront'); } catch (_) {}
+
+    // options.locale：把「浏览器认为的系统语言」钉死。headless Chrome 的
+    // navigator.language 来自宿主系统（macOS 上 --lang 也压不住），中文开发机上
+    // 凡是验「非中文系统默认英文」的用例都会自己变红。acceptLanguage 是唯一能改
+    // navigator.language 的那条路，Intl 另由 setLocaleOverride 管。
+    if (options.locale) {
+      await send('Emulation.setUserAgentOverride', { userAgent: DESKTOP_UA, acceptLanguage: options.locale });
+      try { await send('Emulation.setLocaleOverride', { locale: options.locale }); } catch (_) {}
+    }
 
     const harness = {
       baseUrl: fixture.baseUrl,

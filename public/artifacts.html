@@ -24,6 +24,9 @@
       <p id="artifacts-workspace"></p>
     </div>
     <div id="artifacts-tools">
+      <!-- 语言开关和别的页头一样放最右边：国际目录站的审查环境没有中文 locale，
+           这一页得当场能切回英文（切完 reload，本页的文案全是静态标记，够用）。 -->
+      <button class="lang-toggle" type="button" onclick="toggleLang()" data-i18n-title="languageToggle" title="切换语言：中文 / English"></button>
       <button id="artifacts-refresh" type="button" data-i18n="taskArtifactsRefresh">刷新</button>
       <a id="artifacts-manage" href="/manage?view=docs" target="_blank" rel="noopener noreferrer"
          data-i18n="taskArtifactsManage">全部服务与文档 ↗</a>

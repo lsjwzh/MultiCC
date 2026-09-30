@@ -57,15 +57,29 @@ vm.runInContext(fs.readFileSync(path.join(root, 'public', 'i18n.js'), 'utf8'), c
 // 所以它的每一个 key 都必须落在词典里 —— 每个 air*.js 都扫，新模块不用回来加名字。
 const airFiles = ['air.html', ...fs.readdirSync(path.join(root, 'public'))
   .filter((name) => /^air.*\.js$/.test(name)).sort()];
+// 主界面之外的那些页（memo / events / wechat / dashboard …）以前不在
+// 这道闸里：它们的中文能切、也能漏，只是没人守。老控制台 manage.html 与
+// task-shell.html 就是现成的例子 —— 「任务计划 / 任务说明 / 验收标准」三个标题
+// 一直没挂 data-i18n，英文模式下露中文，而这份名单扫不到它，CI 一点都看不出来。
+// （那两个页面后来都退场了，但这条规矩留着：public 下每个页面都扫，新页面不用
+// 回来登记，漏了 key 当场红。）
+const pageFiles = fs.readdirSync(path.join(root, 'public'))
+  .filter((name) => name.endsWith('.html')).sort();
 const webRefs = new Set();
 // chat-ai-config.js 和 auto-provider-editor.js 也是 Air 里真的会渲染出来的共享模块
-// （任务配置弹窗的模型/线路下拉、Auto 候选池），所以一起扫。
+// （任务配置弹窗的模型/线路下拉、Auto 候选池），所以一起扫；
 // chat-handoff.js 是交接包的导出/导入弹窗（chat.js 是行数棘轮文件，装不下），
 // 它同样直接渲染在聊天页上。
-for (const name of ['chat.html', 'chat.js',
-  'chat-ai-config.js', 'auto-provider-editor.js', 'chat-handoff.js', ...airFiles]) {
+// 终端页（index.html）和会话看板（dashboard.html）自己不带静态文案：信息条、统计卡、
+// 表格都是脚本 fetch 回来之后现画的，applyI18n 那一遍扫不到 —— 它们的词条只出现在
+// client.js / dashboard.js 里。这两个文件以前不在这份名单上，key 拼错了 CI 一声不吭
+// （页面上直接印出 termCwdUnknown 这种东西），所以一起扫。
+for (const name of [...pageFiles, 'chat.js', 'chat-ai-config.js', 'auto-provider-editor.js',
+  'chat-handoff.js', 'client.js', 'dashboard.js', ...airFiles]) {
   const source = fs.readFileSync(path.join(root, 'public', name), 'utf8');
-  for (const match of source.matchAll(/(?:\btt|\bt)\(\s*(['"])([^'"\n]+)\1/g)) webRefs.add(match[2]);
+  // tr(...) 也是取词：它是各模块自带的「词典取不到就用中文兜底」那层壳（client.js /
+  // dashboard.js / memo-controller.js 都有），只认 t(/tt( 会让这批 key 全漏掉。
+  for (const match of source.matchAll(/(?:\btt|\btr|\bt)\(\s*(['"])([^'"\n]+)\1/g)) webRefs.add(match[2]);
   for (const match of source.matchAll(/data-i18n(?:-title|-placeholder|-aria-label|-value)?=["']([^"']+)["']/g)) webRefs.add(match[1]);
   // t() 的参数不一定当场写成字面量 —— 也有 t(enabled ? 'airLidSleepOn' : 'airLidSleepOff')
   // 和先存进数组、渲染时才 t(title) 的写法。上面那条正则只抓「t('key')」，
@@ -107,11 +121,30 @@ for (const key of AIR_SHELL_KEYS) {
   }
 }
 
-// 切换语言：和 chat/manage 是同一套（写 localStorage['multicc_lang'] + reload），
-// 默认必须是中文 —— 老用户打开 Air 不能被改掉语言。
-assert.strictEqual(context.window.getLang(), 'zh', 'Air must default to Chinese');
+// 语言来源三段：显式选择 ＞ 系统语言 ＞ 英文。国际目录站（AppImageHub 那类）要求
+// 非中文环境默认英文界面，所以「取不到系统语言」（Node 单测、C locale 容器）也算
+// 英文环境；中文环境里的默认仍然是中文，老用户显式选过的语言也永远优先。
+function setSystemLanguage(tag, list) {
+  context.navigator = tag === null ? undefined : { language: tag, languages: list || [tag] };
+}
+setSystemLanguage('en-US');
+assert.strictEqual(context.window.systemLang(), 'en', 'an English system resolves to English');
+assert.strictEqual(context.window.getLang(), 'en', 'nothing stored on an English system boots English');
+setSystemLanguage('zh-CN', ['zh-CN', 'zh']);
+assert.strictEqual(context.window.getLang(), 'zh', 'a Chinese system must stay Chinese');
+setSystemLanguage('zh-TW');
+assert.strictEqual(context.window.getLang(), 'zh', 'every zh-* variant counts as Chinese');
+setSystemLanguage('de-DE');
+assert.strictEqual(context.window.getLang(), 'en', 'a third language falls back to English, never to Chinese');
+setSystemLanguage(null);
+assert.strictEqual(context.window.getLang(), 'en', 'no system language at all (C locale) falls back to English');
+
+context.window.setLang('zh');
+assert.strictEqual(store.get('multicc_lang'), 'zh', 'setLang must persist the choice');
+assert.strictEqual(context.window.getLang(), 'zh', 'an explicit choice wins over the system language');
+assert.strictEqual(context.window.t('airWorkspace'), catalogs.zh.airWorkspace);
+setSystemLanguage('zh-CN');
 context.window.setLang('en');
-assert.strictEqual(store.get('multicc_lang'), 'en', 'setLang must persist the choice');
 assert.strictEqual(context.window.getLang(), 'en');
 assert.strictEqual(context.window.t('airWorkspace'), catalogs.en.airWorkspace);
 assert.notStrictEqual(context.window.t('airWorkspace'), catalogs.zh.airWorkspace);
@@ -122,8 +155,13 @@ assert.strictEqual(store.get('multicc_lang'), 'zh', 'toggleLang must flip back t
 assert.strictEqual(context.window.t('airWorkspace'), catalogs.zh.airWorkspace);
 context.window.applyI18n();
 assert.strictEqual(context.document.documentElement.lang, 'zh');
+// 认不出的取值落到「系统语言」，而不是写死中文：英文系统上拼错一个 lang 参数，
+// 不该把用户从英文界面翻回中文。
 context.window.setLang('fr');
-assert.strictEqual(store.get('multicc_lang'), 'zh', 'an unknown language must fall back to Chinese');
+assert.strictEqual(store.get('multicc_lang'), 'zh', 'an unknown language falls back to the system language (zh here)');
+setSystemLanguage('en-US');
+context.window.setLang('fr');
+assert.strictEqual(store.get('multicc_lang'), 'en', 'an unknown language on an English system stays English');
 
 console.log(`i18n catalogs OK: ${Object.keys(catalogs.zh).length} shared keys, ${webRefs.size} Web references`);
 

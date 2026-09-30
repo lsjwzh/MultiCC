@@ -36,7 +36,7 @@
     "test:cpu-hotpaths": "node --test tests/test-server-cpu-hotpaths.js",
     "desktop:stage": "node scripts/desktop-bundle-server.js --no-install",
     "desktop:dev": "npm --prefix desktop install --no-audit --no-fund && npm --prefix desktop start",
-    "test:desktop": "node --test tests/test-desktop-shell.js",
+    "test:desktop": "node --test tests/test-desktop-shell.js tests/test-desktop-shell-i18n.js",
     "test:standalone": "node --test tests/test-standalone-bundle.js tests/test-standalone-installer.js",
     "test:deterministic": "npm run test:core && npm run test:task-board-auto && npm run test:cpu-hotpaths && npm run test:security && npm run test:state && npm run test:git && npm run test:worktree-reclamation && npm run test:bridges && npm run test:architecture && npm run test:governance && npm run test:provider-router && npm run test:desktop && npm run test:standalone",
     "test:contracts": "node --test tests/test-api-contracts.js tests/test-turn-state-rules.js tests/test-task-attribution-backtest.js tests/test-classify-api-error-state.js tests/test-aux-run-log.js tests/test-aux-run-routes.js tests/test-static-doc-page.js tests/test-newcomer-onboarding.js tests/test-quota-bar-parity.js tests/test-quota-gating-parity.js",

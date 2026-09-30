@@ -1,10 +1,12 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh" data-i18n-doc-title="eventsDocTitle">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0d1117" />
   <title>📋 活动记录 · MultiCC</title>
+  <script src="i18n-catalog.js"></script>
+  <script src="i18n.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
@@ -45,13 +47,14 @@
 <body>
   <div id="header">
     <div id="title">
-      <div id="title-name">📋 活动记录</div>
-      <div id="title-sub">加载中…</div>
+      <div id="title-name" data-i18n="eventsTitle">📋 活动记录</div>
+      <div id="title-sub" data-i18n="loading">加载中…</div>
     </div>
-    <button class="btn" onclick="refresh()">↻ 刷新</button>
+    <button class="btn lang-toggle" onclick="toggleLang()" data-i18n-title="languageToggle" title="切换语言：中文 / English"></button>
+    <button class="btn" onclick="refresh()" data-i18n="eventsRefresh">↻ 刷新</button>
   </div>
   <div id="count"></div>
-  <div id="body"><div class="empty">加载中…</div></div>
+  <div id="body"><div class="empty" data-i18n="loading">加载中…</div></div>
   <script src="error-envelope.js"></script>
   <script src="auth-client.js"></script>
   <script>
@@ -60,36 +63,45 @@
     const dirsApi = '/api/directories';
     const eventsApi = `/api/directories/${encodeURIComponent(dirId)}/events`;
 
+    function emptyRow(text) {
+      const div = document.createElement('div'); div.className = 'empty'; div.textContent = text; return div;
+    }
+    // 每类事件一条模板，再各自带一个「没写 detail 时说什么」的词条。以前这里是
+    // 一整段中文模板串死在 JS 里，英文界面下整屏都是中文。
+    const EVENT_KEYS = {
+      session_created: ['eventsEvtSessionCreated', null],
+      session_renamed: ['eventsEvtSessionRenamed', null],
+      session_model_changed: ['eventsEvtModelChanged', null],
+      session_deleted: ['eventsEvtSessionDeleted', null],
+      merged: ['eventsEvtMerged', null],
+      memory_updated: ['eventsEvtMemoryUpdated', 'eventsDetailMemoryUpdated'],
+      synced: ['eventsEvtSynced', null],
+      sync_conflict: ['eventsEvtSyncConflict', 'eventsDetailSyncConflict'],
+      dispatch: ['eventsEvtDispatch', null],
+      note: ['eventsEvtNote', null],
+      note_delivered: ['eventsEvtNoteDelivered', null],
+      session_role_changed: ['eventsEvtRoleChanged', 'eventsDetailRoleChanged'],
+      session_streaming_changed: ['eventsEvtStreamingChanged', 'eventsDetailStreamingChanged'],
+      session_autocontinue_changed: ['eventsEvtAutoContinue', 'eventsDetailAutoContinue'],
+      session_autocommit_changed: ['eventsEvtAutoCommit', 'eventsDetailAutoCommit'],
+      session_provider_changed: ['eventsEvtProviderChanged', 'eventsDetailProviderChanged'],
+      trigger_added: ['eventsEvtTriggerAdded', 'eventsDetailTriggerAdded'],
+      pushed: ['eventsEvtPushed', 'eventsDetailPushed'],
+    };
     function eventLabel(evt) {
       const who = evt.sessionLabel || evt.sessionId || '';
-      switch (evt.type) {
-        case 'session_created': return `🆕 新建会话 ${who}（${evt.detail || ''}）`;
-        case 'session_renamed': return `✏️ 会话改名为 ${evt.detail || who}`;
-        case 'session_model_changed': return `🧠 切换模型 ${evt.detail || who}`;
-        case 'session_deleted': return `🗑 删除会话 ${evt.detail || who}`;
-        case 'merged':          return `🔀 ${who} 合并：${evt.detail || ''}`;
-        case 'memory_updated':  return `🧠 ${who} ${evt.detail || '更新会话记忆'}`;
-        case 'synced':          return `🔄 ${who} 同步：${evt.detail || ''}`;
-        case 'sync_conflict':   return `⚠️ ${who} ${evt.detail || '同步冲突'}`;
-        case 'dispatch':        return `📤 ${who} 分发 ${evt.detail || ''}`;
-        case 'note':            return `📨 ${who} 留言 ${evt.detail || ''}`;
-        case 'note_delivered':  return `📬 ${who}：${evt.detail || ''}`;
-        case 'session_role_changed': return `🎭 ${who} ${evt.detail || '角色变更'}`;
-        case 'session_streaming_changed': return `📡 ${who} ${evt.detail || '流式切换'}`;
-        case 'session_autocontinue_changed': return `🔁 ${who} ${evt.detail || '自动接力'}`;
-        case 'session_autocommit_changed': return `📦 ${who} ${evt.detail || '自动提交'}`;
-        case 'session_provider_changed': return `🔌 ${who} ${evt.detail || '切换 Provider'}`;
-        case 'trigger_added':  return `⚡ ${who} ${evt.detail || '添加触发器'}`;
-        case 'pushed':         return `↑ ${who} ${evt.detail || '推送'}`;
-        default:               return `· ${evt.type} ${who}`;
-      }
+      const entry = EVENT_KEYS[evt.type];
+      if (!entry) return `· ${evt.type} ${who}`;
+      const [templateKey, defaultKey] = entry;
+      const detail = evt.detail || (defaultKey ? t(defaultKey) : '');
+      return t(templateKey, { who, detail });
     }
     function fmtTs(ts) {
       const d = new Date(ts);
       const now = new Date();
       const sameDay = d.toDateString() === now.toDateString();
-      if (sameDay) return d.toLocaleTimeString('zh-CN', { hour12: false });
-      return d.toLocaleDateString('zh-CN') + ' ' + d.toLocaleTimeString('zh-CN', { hour12: false });
+      if (sameDay) return d.toLocaleTimeString(getLocale(), { hour12: false });
+      return d.toLocaleDateString(getLocale()) + ' ' + d.toLocaleTimeString(getLocale(), { hour12: false });
     }
 
     async function refresh() {
@@ -99,20 +111,24 @@
           fetch(eventsApi).then(r => r.json()),
         ]);
         const dir = (Array.isArray(dirRes) ? dirRes : []).find(d => d.id === dirId);
-        document.getElementById('title-name').textContent = '📋 ' + (dir ? dir.name : '活动记录');
+        document.getElementById('title-name').textContent = '📋 ' + (dir ? dir.name : t('eventsTitlePlain'));
         document.getElementById('title-sub').textContent = dir ? dir.path : dirId;
         const events = (evtRes.events || []).slice().reverse();
         const body = document.getElementById('body');
-        document.getElementById('count').textContent = events.length ? `共 ${events.length} 条活动` : '';
+        document.getElementById('count').textContent = events.length ? t('eventsCount', { n: events.length }) : '';
         if (!events.length) {
-          body.innerHTML = '<div class="empty">暂无活动记录</div>';
+          body.replaceChildren(emptyRow(t('eventsEmpty')));
           return;
         }
-        body.innerHTML = events.map(e =>
-          `<div class="evt-row"><span class="evt-time">${fmtTs(e.ts)}</span><span class="evt-label">${eventLabel(e).replace(/</g,'&lt;')}</span></div>`
-        ).join('');
+        body.replaceChildren(...events.map(e => {
+          const row = document.createElement('div'); row.className = 'evt-row';
+          const time = document.createElement('span'); time.className = 'evt-time'; time.textContent = fmtTs(e.ts);
+          const label = document.createElement('span'); label.className = 'evt-label'; label.textContent = eventLabel(e);
+          row.append(time, label);
+          return row;
+        }));
       } catch (e) {
-        document.getElementById('body').innerHTML = '<div class="empty">加载失败：' + e.message + '</div>';
+        document.getElementById('body').replaceChildren(emptyRow(t('eventsLoadFailed', { message: e.message })));
       }
     }
     refresh();

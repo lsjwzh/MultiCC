@@ -6,9 +6,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const ROOT = path.join(__dirname, '..');
+
+// 控制器把文案交给页面的 window.t（它自己不带头词典，见 memo-controller.js 的 tr）。
+// 测试按 zh.json 造一份等价的最小实现挂到 window 上再 require —— 断言于是仍盯着真正
+// 会上屏的中文，而不是 key；插值也一并验到了。
+const ZH = JSON.parse(fs.readFileSync(path.join(ROOT, 'app', 'assets', 'i18n', 'zh.json'), 'utf8'));
+function zhT(key, params) {
+  const text = String(ZH[key] !== undefined ? ZH[key] : key);
+  return text.replace(/\{(\w+)\}/g, (all, name) => (params && name in params ? String(params[name]) : all));
+}
+global.window = { t: zhT };
+
 const memo = require('../public/memo-controller');
 
-const ROOT = path.join(__dirname, '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'public', 'memo-controller.js'), 'utf8');
 
 class FakeElement {
