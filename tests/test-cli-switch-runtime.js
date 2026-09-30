@@ -70,6 +70,7 @@ function createHarness(overrides = {}) {
     getChatStream: () => stream,
     hasLiveBackgroundTasks: () => overrides.backgroundActive === true,
     cancelClassify: () => effects.push('cancel-classify'),
+    planAutoCliSwitch: overrides.planAutoCliSwitch,
     assignKillReason: (_runner, reason) => effects.push(`kill-reason:${reason}`),
     finishProviderAttempt: (attempt, facts) => {
       effects.push(`attempt-finish:${attempt.routeAttemptId}:${facts.reasonCode}`);
@@ -708,6 +709,88 @@ test('a pending profile applies once at an idle boundary; live steering retains 
   assert.equal(h.session.provider, 'next-provider'); assert.equal(h.session.model, 'next-model');
   assert.equal(h.session.cliSessionId, 'claude-native'); assert.equal(h.session.pendingConfiguration, undefined);
   assert.equal(h.effects.filter(e => e === 'stream-close:s1').length, 1);
+});
+
+// ── Auto Provider lane switch ─────────────────────────────────────────────
+// A pool whose lines span CLIs moves the session at the turn boundary through
+// the manual switch path; the pool travels with it and the planned line becomes
+// the target lane's provider.
+function autoPool(extra = {}) {
+  return {
+    version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 3, sticky: true,
+    allowCrossTrust: false, cliSwitch: 'failover',
+    candidates: [
+      { providerId: 'claude-provider', cli: 'claude', enabled: true, priority: 0 },
+      { providerId: 'codex-line', cli: 'codex', enabled: true, priority: 1 },
+    ],
+    ...extra,
+  };
+}
+
+test('an auto pool with cliSwitch moves the session to the planned lane and keeps the pool', () => {
+  const plans = [];
+  const h = createHarness({
+    planAutoCliSwitch: (args) => {
+      plans.push(args);
+      return { cli: 'codex', fromCli: 'claude', providerId: 'codex-line', providerName: 'Codex Line', model: 'gpt-5' };
+    },
+  });
+  const pool = autoPool();
+  h.session.providerSelection = pool;
+  assert.equal(h.runtime.applyPendingConfiguration('s1', { clientMsgId: 'm1' }, 'hard question'), true);
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].text, 'hard question');
+  assert.equal(h.session.cli, 'codex');
+  assert.equal(h.session.providerSelection, pool, 'the same pool object must follow the session');
+  assert.equal(h.session.provider, 'codex-line');
+  assert.equal(h.session.model, null);
+  assert.equal(h.session.pendingCliHandoff.reason, 'auto_provider_cli_switch');
+  assert.equal(h.session.pendingCliHandoff.fromCli, 'claude');
+  assert.equal(h.session.cliStates.codex.provider, 'codex-line', 'the lane remembers its concrete line');
+  assert.ok(h.effects.includes('mutate:runtime.auto-provider-cli-switch'));
+  assert.ok(h.effects.includes('message:handoff_fixed'));
+  assert.ok(h.effects.includes('chat:cli_switched'));
+  assert.ok(h.effects.includes('chat:system'));
+  assert.equal(h.effects.some(e => e.startsWith('sync:')), false, 'a fresh Codex lane has no thread to move');
+});
+
+test('a resumable Codex thread is moved to the planned line before the switch', () => {
+  const h = createHarness({
+    planAutoCliSwitch: () => ({ cli: 'codex', providerId: 'codex-line', providerName: 'Codex Line' }),
+  });
+  h.session.cliStates.codex = { ...(h.session.cliStates.codex || {}), cliSessionId: 'codex-native', provider: 'codex-default' };
+  h.session.providerSelection = autoPool();
+  h.runtime.applyPendingConfiguration('s1', {}, 'x');
+  assert.equal(h.session.cliSessionId, 'codex-native');
+  const sync = h.effects.indexOf('sync:codex-native');
+  assert.ok(sync >= 0);
+  assert.ok(sync < h.effects.indexOf('mutate:runtime.auto-provider-cli-switch'));
+});
+
+test('the lane switch stays out of the way: staged choices, legacy pools, unavailable lanes, planner faults', () => {
+  const base = () => ({ cli: 'codex', providerId: 'codex-line' });
+  let h = createHarness({ planAutoCliSwitch: base });
+  h.session.providerSelection = autoPool({ cliSwitch: undefined });
+  h.runtime.applyPendingConfiguration('s1', {}, 'x');
+  assert.equal(h.session.cli, 'claude', 'a single-lane pool never leaves its CLI');
+
+  h = createHarness({ planAutoCliSwitch: base, availability: { claude: { available: true } } });
+  h.session.providerSelection = autoPool();
+  assert.equal(h.runtime.applyPendingConfiguration('s1', {}, 'x'), true);
+  assert.equal(h.session.cli, 'claude', 'an uninstalled target lane is not entered');
+
+  h = createHarness({ planAutoCliSwitch: () => { throw new Error('planner down'); } });
+  h.session.providerSelection = autoPool();
+  assert.equal(h.runtime.applyPendingConfiguration('s1', {}, 'x'), true, 'a planner fault never blocks the turn');
+  assert.equal(h.session.cli, 'claude');
+
+  let called = 0;
+  h = createHarness({ planAutoCliSwitch: () => { called += 1; return base(); } });
+  h.session.providerSelection = autoPool();
+  h.chat.isStreaming = true;
+  h.runtime.applyPendingConfiguration('s1', {}, 'x');
+  assert.equal(called, 0, 'a busy session is not re-planned mid-turn');
+  assert.equal(h.session.cli, 'claude');
 });
 
 // ── 上游最新版比对 + 一键升级 ─────────────────────────────────────────────

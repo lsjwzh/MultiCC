@@ -19,6 +19,7 @@ import '../services/opencode_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../utils/cli_display.dart';
 
 class AIConfigResult {
   final String provider;
@@ -57,17 +58,36 @@ class _AutoProviderGroup {
 
 class _AutoCandidateDraft {
   _AutoCandidateDraft({
+    required this.id,
     required this.providerId,
     required this.model,
     required this.priority,
     required this.enabled,
+    this.cli,
+    this.autoModel = false,
     this.rung,
   });
 
+  /// The row's identity inside the panel: a route is *(lane, provider)*, and a
+  /// cross-CLI pool may list the same provider on two lanes. The session's own
+  /// lane keeps the bare provider id, so a single-lane pool's keys — and the
+  /// tests that find them — are unchanged.
+  final String id;
+
   final String providerId;
+
+  /// The lane this route runs on, or null on a single-lane pool. Only displayed
+  /// (badge) and carried back out: the panel never moves a route between lanes,
+  /// but a re-save must not drop the lane the API or the web editor set.
+  final String? cli;
+
   String model;
   int priority;
   bool enabled;
+
+  /// Let the runtime pick the model from the price ladder. Only legal with a
+  /// price-tiered block, so it is cleared whenever the panel leaves that mode.
+  bool autoModel;
 
   /// 用户手点的档位（1 = 最简单），未点过是 null —— 未点过的行每轮按模型名重猜
   /// （web 的 dataset.rung 与 dataset.value 之分）。空值绝不进 wire。
@@ -140,6 +160,12 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   String _autoRoutingOnUnknown = 'strong';
   SessionProviderRouting? _seededRouting;
   String _autoError = '';
+
+  // 档位依据（手动标注 / 按价格）。`'manual'` 与「没这个键」是同一件事，所以
+  // 手动池的 routing 不多写一个键；认得的值之外一律原样带回（未知值不丢）。
+  String _autoTiering = 'manual';
+  // 跨 CLI 池的换道时机（failover / routing）。单一车道的池子没有这个键。
+  String _autoCliSwitch = 'failover';
 
   // Jev key 步骤（与 web 的 routingKey 流程同一套状态机）。
   String _jevState =
@@ -260,9 +286,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   void _seedAutoSelection(SessionProviderSelection? selection) {
     if (selection == null) return;
     _autoGroupKey = selection.protocol;
+    // 身份是（车道，线路）：跨 CLI 池允许同一条线路挂在两条车道上，按 providerId
+    // 折叠会让第二次保存悄悄少掉一条。
     final configured = {
       for (final candidate in selection.candidates)
-        candidate.providerId: candidate,
+        _autoRouteId(candidate.cli, candidate.providerId): candidate,
     };
     final pool = widget.providers
         .where(
@@ -282,26 +310,36 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       ..addAll(
         pool.map((provider) {
           final providerId = provider['id']?.toString() ?? '';
-          seen.add(providerId);
-          final candidate = configured[providerId];
+          // 这一批来自本车道的目录，所以它们的车道就是会话的车道（存的是留空）。
+          final id = _autoRouteId(null, providerId);
+          seen.add(id);
+          final candidate = configured[id];
           return _AutoCandidateDraft(
+            id: id,
             providerId: providerId,
             model: candidate?.model ?? '',
             priority: candidate?.priority ?? ++nextPriority,
             enabled: candidate?.enabled ?? false,
+            autoModel: candidate?.autoModel ?? false,
             rung: _seededRung(candidate, selection.routing),
           );
         }),
       )
       ..addAll(
         selection.candidates
-            .where((candidate) => !seen.contains(candidate.providerId))
+            .where(
+              (candidate) =>
+                  !seen.contains(_autoRouteId(candidate.cli, candidate.providerId)),
+            )
             .map(
               (candidate) => _AutoCandidateDraft(
+                id: _autoRouteId(candidate.cli, candidate.providerId),
                 providerId: candidate.providerId,
+                cli: candidate.cli,
                 model: candidate.model ?? '',
                 priority: candidate.priority,
                 enabled: candidate.enabled,
+                autoModel: candidate.autoModel,
                 rung: _seededRung(candidate, selection.routing),
               ),
             ),
@@ -312,6 +350,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     _seededRouting = selection.routing;
     _autoRoutingEnabled = selection.routing != null;
     _autoRoutingOnUnknown = selection.routing?.resolvedOnUnknown ?? 'strong';
+    _autoTiering = selection.routing?.tiering ?? 'manual';
+    _autoCliSwitch = selection.cliSwitch ?? 'failover';
     final enabled =
         _autoCandidates.where((candidate) => candidate.enabled).toList()
           ..sort((a, b) => a.priority.compareTo(b.priority));
@@ -319,6 +359,15 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       _provider = enabled.first.providerId;
       _model = _normalizeModel(_provider, enabled.first.model);
     }
+  }
+
+  /// 一行在面板里的身份：属于本车道的行（留空或写着会话车道）就用线路 id 本身，
+  /// 别的车道才带上前缀 —— 单一车道的池子键名不变，同一条线路挂两条车道也不会撞。
+  String _autoRouteId(String? cli, String providerId) {
+    final lane = cli?.trim() ?? '';
+    return lane.isEmpty || lane == widget.cli.name
+        ? providerId
+        : '$lane:$providerId';
   }
 
   /// 已配置池里这一行原本落在哪一档（wire 上是 `t1..tK`，面板上显示 1..K）。
@@ -337,14 +386,34 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       _autoCandidates.where((candidate) => candidate.enabled).toList()
         ..sort((a, b) => a.priority.compareTo(b.priority));
 
-  /// 一行在预览里的写法：`线路名（模型）`，没选模型就只有线路名。
+  /// 一行在预览里的写法：`线路名（模型）`，没选模型就只有线路名；跨 CLI 池的行
+  /// 还要带上车道，否则「哪条线路在别的车道上」在预览里看不出来。
   String _autoRowText(_AutoCandidateDraft candidate) {
-    final name = _providerName(candidate.providerId);
+    var name = _providerName(candidate.providerId);
+    final lane = _autoForeignLane(candidate.cli);
+    if (lane != null) name = t('autoEditorLineOnLane', {'name': name, 'cli': lane});
     final model = candidate.model.trim();
+    if (candidate.autoModel) {
+      return t('autoEditorLineAutoModel', {'name': name});
+    }
     return model.isEmpty
         ? name
         : t('autoEditorLineWithModel', {'name': name, 'model': model});
   }
+
+  /// 这一行挂在别的车道上时返回该车道的展示名；本车道（或没写车道）返回 null。
+  String? _autoForeignLane(String? cli) {
+    final lane = cli?.trim() ?? '';
+    if (lane.isEmpty || lane == widget.cli.name) return null;
+    return cliDisplayName(lane);
+  }
+
+  /// 池子里有行写在别的车道上 = 跨 CLI 池（服务端的 `crossCli` 判据是「有没有
+  /// candidate 带 cli」，所以只要有一行带就得按跨车道保存）。
+  bool get _autoCrossCli =>
+      _autoCandidates.any((candidate) => (candidate.cli ?? '').isNotEmpty);
+
+  bool get _autoPriceTiered => _autoTiering == 'price';
 
   /// 每行的生效档位与要画几个档位按钮。手点过的档位留着，没点过的按模型名猜。
   AutoRungPlan get _autoRungPlan {
@@ -371,6 +440,27 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (on && _jevState == 'unknown' && widget.settings != null) {
       _checkJevKey();
     }
+  }
+
+  /// 换档位依据。离开「按价格」时把自动选模型的行收回来 —— 服务端只在价格分档下
+  /// 认 autoModel，留着它下一次保存会被整单拒掉；档位（tier）同理只在手动分档下写。
+  void _setAutoTiering(String value) {
+    setState(() {
+      _autoTiering = value;
+      if (value != 'price') {
+        for (final candidate in _autoCandidates) {
+          candidate.autoModel = false;
+        }
+      }
+      _autoError = '';
+    });
+  }
+
+  void _setAutoCliSwitch(String value) {
+    setState(() {
+      _autoCliSwitch = value;
+      _autoError = '';
+    });
   }
 
   // ── Jev key（难度路由的判定服务）───────────────────────────────────────
@@ -633,7 +723,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
 
   TextEditingController _autoModelCtrl(_AutoCandidateDraft candidate) =>
       _autoModelCtrls.putIfAbsent(
-        candidate.providerId,
+        candidate.id,
         () => TextEditingController(text: candidate.model),
       );
 
@@ -641,17 +731,31 @@ class AIConfigSheetState extends State<AIConfigSheet> {
   // 中间是这条线路的候选，末尾「自定义…」现出文本框 —— 与 Web
   // auto-provider-editor 同一套语义。配置里已有的、不在候选内的 id 会以
   // 「自定义…」+ 原值回显，不会被静默丢掉。
+  //
+  // `autoModel` 的行没有可钉的模型（服务端不接受 model 与 autoModel 同时存在），
+  // 于是整行换成一句「自动选模型」：这一行每轮由价格档现挑模型。
   Widget _buildAutoModelField(_AutoCandidateDraft candidate) {
+    if (candidate.autoModel) {
+      return Text(
+        '${t('autoEditorAutoModel')} — ${t('autoEditorAutoModelHint')}',
+        key: Key('auto-candidate-model-note-${candidate.id}'),
+        style: const TextStyle(
+          color: AppColors.muted,
+          fontSize: 11,
+          height: 1.35,
+        ),
+      );
+    }
     final choices = _autoModelChoices(candidate.providerId);
     final known = choices.contains(candidate.model);
     final isCustom =
-        _autoCustomModel[candidate.providerId] ??
+        _autoCustomModel[candidate.id] ??
         (candidate.model.isNotEmpty && !known);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         DropdownButtonFormField<String>(
-          key: Key('auto-candidate-model-${candidate.providerId}'),
+          key: Key('auto-candidate-model-${candidate.id}'),
           value: isCustom ? '__custom__' : (known ? candidate.model : ''),
           isExpanded: true,
           dropdownColor: AppColors.panel,
@@ -674,7 +778,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
           ],
           onChanged: (next) => setState(() {
             final custom = next == '__custom__';
-            _autoCustomModel[candidate.providerId] = custom;
+            _autoCustomModel[candidate.id] = custom;
             final controller = _autoModelCtrl(candidate);
             if (custom) {
               // 现出的文本框从当前存值起步，避免看到上一次留下的旧文本。
@@ -690,7 +794,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         if (isCustom) ...[
           const SizedBox(height: 6),
           TextFormField(
-            key: Key('auto-candidate-model-custom-${candidate.providerId}'),
+            key: Key('auto-candidate-model-custom-${candidate.id}'),
             controller: _autoModelCtrl(candidate),
             style: const TextStyle(
               color: AppColors.text,
@@ -801,14 +905,17 @@ class AIConfigSheetState extends State<AIConfigSheet> {
           ..clear()
           ..addAll(
             group.providers.asMap().entries.map(
-              (entry) => _AutoCandidateDraft(
-                providerId: entry.value['id']?.toString() ?? '',
-                model: '',
-                priority: entry.key + 1,
-                enabled: defaultEnabled.contains(
-                  entry.value['id']?.toString() ?? '',
-                ),
-              ),
+              (entry) {
+                final providerId = entry.value['id']?.toString() ?? '';
+                return _AutoCandidateDraft(
+                  // 这些行来自本车道的目录，所以身份就是线路 id（车道留空）。
+                  id: providerId,
+                  providerId: providerId,
+                  model: '',
+                  priority: entry.key + 1,
+                  enabled: defaultEnabled.contains(providerId),
+                );
+              },
             ),
           );
         _autoMaxAttempts = 2;
@@ -880,9 +987,11 @@ class AIConfigSheetState extends State<AIConfigSheet> {
       model = enabled.first.model.trim();
       // 按难度：rung 折算成 t1..tK 随候选一起上 wire，并附上 routing 块。折算失败
       // （只有一档、超过上限）时不出面板 —— 静默存成一个「号称按难度」的单档池
-      // 比报错更坏。
+      // 比报错更坏。按价格时没有手标档位：整块照写，但 tiers 是空的。
       SessionProviderRouting? routing;
-      final tierByProvider = <String, String>{};
+      final priceTiered = _autoPriceTiered;
+      final crossCli = _autoCrossCli;
+      final tierByRow = <String, String>{};
       if (_autoRoutingEnabled) {
         final plan = _autoRungPlan;
         final result = serializeAutoRouting(
@@ -894,19 +1003,23 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                     ? null
                     : enabled[index].model.trim(),
                 priority: enabled[index].priority.clamp(1, 100),
-                rung: plan.rungs[index],
+                // 价格分档下档位由价格表现算，面板上的 rung 不进 wire。
+                rung: priceTiered ? 1 : plan.rungs[index],
               ),
           ],
           onUnknown: _autoRoutingOnUnknown,
           previous: _seededRouting,
+          tiering: _autoTiering,
         );
         if (!result.ok) {
           setState(() => _autoError = result.error ?? '');
           return;
         }
         routing = result.routing;
-        for (final candidate in result.candidates) {
-          tierByProvider[candidate.providerId] = candidate.tier!;
+        // routes 与 candidates 同序，所以行的身份也照同序对回去。
+        for (var index = 0; index < result.candidates.length; index += 1) {
+          final tier = result.candidates[index].tier;
+          if (tier != null) tierByRow[enabled[index].id] = tier;
         }
       }
       providerSelection = SessionProviderSelection(
@@ -915,16 +1028,20 @@ class AIConfigSheetState extends State<AIConfigSheet> {
             .map(
               (candidate) => SessionProviderCandidate(
                 providerId: candidate.providerId,
-                model: candidate.model.trim().isEmpty
+                model:
+                    candidate.autoModel || candidate.model.trim().isEmpty
                     ? null
                     : candidate.model.trim(),
                 priority: candidate.priority.clamp(1, 100),
                 enabled: candidate.enabled,
                 // 关掉按难度时档位必须清掉：留着 tier 又没有 routing 的池子，
                 // 服务端会当成档位不匹配拒掉。
-                tier: candidate.enabled
-                    ? tierByProvider[candidate.providerId]
-                    : null,
+                tier: candidate.enabled ? tierByRow[candidate.id] : null,
+                // 跨车道池里每一行都得写明车道（服务端会拒掉留空的行）；本车道
+                // 目录里的行补上会话自己的车道名，两边说的就是同一件事。
+                cli: crossCli ? (candidate.cli ?? widget.cli.name) : null,
+                // autoModel 只在价格分档下合法，别的模式下留着它整单会被拒。
+                autoModel: priceTiered && candidate.autoModel,
               ),
             )
             .toList(growable: false),
@@ -932,6 +1049,8 @@ class AIConfigSheetState extends State<AIConfigSheet> {
         sticky: _autoSticky,
         allowCrossTrust: _autoAllowsCrossTrust,
         routing: routing,
+        // 换道时机只有跨车道的池子才有；单车道池子一个字节都不多写。
+        cliSwitch: crossCli ? _autoCliSwitch : null,
       );
     }
     final providerLabel = providerSelection == null
@@ -1002,8 +1121,14 @@ class AIConfigSheetState extends State<AIConfigSheet> {
           const SizedBox(height: 8),
           _buildAutoModeRow(),
           if (_autoRoutingEnabled) ...[
+            const SizedBox(height: 6),
+            _buildAutoTieringRow(),
             const SizedBox(height: 8),
             _buildAutoJevBox(),
+          ],
+          if (_autoCrossCli) ...[
+            const SizedBox(height: 6),
+            _buildAutoCliRow(),
           ],
           const SizedBox(height: 10),
           Row(
@@ -1033,8 +1158,9 @@ class AIConfigSheetState extends State<AIConfigSheet> {
           const SizedBox(height: 6),
           ...ordered.map((candidate) {
             final provider = _providerMap(candidate.providerId);
+            final lane = _autoForeignLane(candidate.cli);
             return Container(
-              key: Key('auto-candidate-${candidate.providerId}'),
+              key: Key('auto-candidate-${candidate.id}'),
               margin: const EdgeInsets.only(bottom: 8),
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
@@ -1047,7 +1173,7 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                     children: [
                       Checkbox(
                         key: Key(
-                          'auto-candidate-enabled-${candidate.providerId}',
+                          'auto-candidate-enabled-${candidate.id}',
                         ),
                         value: candidate.enabled,
                         onChanged: (value) => setState(() {
@@ -1067,12 +1193,37 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                           detail: providerLimitDetail(provider),
                         ),
                       ),
+                      // 挂在别的车道上才画角标：本车道的行说「Claude」是废话。
+                      if (lane != null) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          key: Key('auto-candidate-cli-${candidate.id}'),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: cliDisplayColor(
+                              candidate.cli,
+                            ).withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            lane,
+                            style: TextStyle(
+                              color: cliDisplayColor(candidate.cli),
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
                       const SizedBox(width: 8),
                       SizedBox(
                         width: 64,
                         child: TextFormField(
                           key: Key(
-                            'auto-candidate-priority-${candidate.providerId}',
+                            'auto-candidate-priority-${candidate.id}',
                           ),
                           initialValue: '${candidate.priority}',
                           keyboardType: TextInputType.number,
@@ -1095,7 +1246,10 @@ class AIConfigSheetState extends State<AIConfigSheet> {
                   ),
                   const SizedBox(height: 6),
                   _buildAutoModelField(candidate),
-                  if (_autoRoutingEnabled && candidate.enabled) ...[
+                  // 按价格分档时没有手标档位（服务端也不接受两者同时存在）。
+                  if (_autoRoutingEnabled &&
+                      !_autoPriceTiered &&
+                      candidate.enabled) ...[
                     const SizedBox(height: 6),
                     _buildAutoTierRow(candidate),
                   ],
@@ -1190,42 +1344,50 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     );
   }
 
-  /// 「怎么选线路」——第一个决定，一次点击切过去（与 web 的 mode 段同一套文案）。
-  Widget _buildAutoModeRow() {
-    final order = !_autoRoutingEnabled;
-    Widget option({
-      required Key key,
-      required String label,
-      required bool selected,
-      required VoidCallback onTap,
-    }) {
-      return InkWell(
-        key: key,
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(5),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: selected
-                ? AppColors.accent.withValues(alpha: 0.12)
-                : const Color(0xFFeef4fb),
-            border: Border.all(
-              color: selected ? AppColors.accent : const Color(0xFFdce6f1),
-            ),
-            borderRadius: BorderRadius.circular(5),
+  /// 一枚可点的选项片（模式 / 换道时机 / 档位依据共用一套样式，跟 web 的同一套）。
+  Widget _autoChoiceChip({
+    required Key key,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      key: key,
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(5),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: selected
+              ? AppColors.accent.withValues(alpha: 0.12)
+              : const Color(0xFFeef4fb),
+          border: Border.all(
+            color: selected ? AppColors.accent : const Color(0xFFdce6f1),
           ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? AppColors.accent : AppColors.muted,
-              fontSize: 12,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            ),
+          borderRadius: BorderRadius.circular(5),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? AppColors.accent : AppColors.muted,
+            fontSize: 12,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
           ),
         ),
-      );
-    }
+      ),
+    );
+  }
 
+  /// 一行「标签 + 若干选项片 + 一句说明」，三行（模式 / 换道时机 / 档位依据）
+  /// 共用的骨架 —— 换个位置就是同一套控件，不该各写一遍。
+  Widget _buildAutoChoiceRow({
+    required String label,
+    required List<(String, String)> choices,
+    required String selected,
+    required String detail,
+    required String keyPrefix,
+    required void Function(String) onPick,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1237,29 +1399,22 @@ class AIConfigSheetState extends State<AIConfigSheet> {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text(
-              t('autoEditorModeLabel'),
+              label,
               style: const TextStyle(color: AppColors.faint, fontSize: 11),
             ),
             const SizedBox(width: 2),
-            option(
-              key: const Key('auto-route-mode-order'),
-              label: t('autoEditorModeOrder'),
-              selected: order,
-              onTap: () => _setAutoRouting(false),
-            ),
-            option(
-              key: const Key('auto-route-mode-routing'),
-              label: t('autoEditorModeRouting'),
-              selected: !order,
-              onTap: () => _setAutoRouting(true),
-            ),
+            for (final (value, labelKey) in choices)
+              _autoChoiceChip(
+                key: Key('$keyPrefix-$value'),
+                label: t(labelKey),
+                selected: selected == value,
+                onTap: () => onPick(value),
+              ),
           ],
         ),
         const SizedBox(height: 4),
         Text(
-          order
-              ? t('autoEditorModeOrderDetail')
-              : t('autoEditorModeRoutingDetail'),
+          detail,
           style: const TextStyle(
             color: AppColors.muted,
             fontSize: 11,
@@ -1270,20 +1425,84 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     );
   }
 
+  /// 「怎么选线路」——第一个决定，一次点击切过去（与 web 的 mode 段同一套文案）。
+  Widget _buildAutoModeRow() {
+    final order = !_autoRoutingEnabled;
+    return _buildAutoChoiceRow(
+      label: t('autoEditorModeLabel'),
+      choices: const [
+        ('order', 'autoEditorModeOrder'),
+        ('routing', 'autoEditorModeRouting'),
+      ],
+      selected: order ? 'order' : 'routing',
+      detail: order
+          ? t('autoEditorModeOrderDetail')
+          : t('autoEditorModeRoutingDetail'),
+      keyPrefix: 'auto-route-mode',
+      onPick: (value) => _setAutoRouting(value == 'routing'),
+    );
+  }
+
+  /// 「档位从哪来」——手标档位（每条线自己贴难度）还是按价格表每轮排一次。
+  /// 与模式行同一套控件；未知的档位依据不画片，但值原样留着（见 [_setAutoTiering]）。
+  Widget _buildAutoTieringRow() {
+    final known = kAutoTieringChoices.any((choice) => choice.$1 == _autoTiering);
+    final detail = kAutoTieringChoices
+        .firstWhere(
+          (choice) => choice.$1 == _autoTiering,
+          orElse: () => ('', '', ''),
+        )
+        .$3;
+    return _buildAutoChoiceRow(
+      label: t('autoEditorTieringLabel'),
+      choices: [
+        for (final choice in kAutoTieringChoices) (choice.$1, choice.$2),
+      ],
+      // 不认得的取值让两片都不选中：界面不撒谎，用户一点就换成认得的。
+      selected: known ? _autoTiering : '',
+      detail: detail.isEmpty ? '' : t(detail),
+      keyPrefix: 'auto-route-tiering',
+      onPick: _setAutoTiering,
+    );
+  }
+
+  /// 跨 CLI 池的「什么时候换道」——只在池子里真的写了车道时才出现。
+  Widget _buildAutoCliRow() {
+    final known = kAutoCliSwitchChoices.any(
+      (choice) => choice.$1 == _autoCliSwitch,
+    );
+    final detail = kAutoCliSwitchChoices
+        .firstWhere(
+          (choice) => choice.$1 == _autoCliSwitch,
+          orElse: () => ('', '', ''),
+        )
+        .$3;
+    return _buildAutoChoiceRow(
+      label: t('autoEditorCliSwitchLabel'),
+      choices: [
+        for (final choice in kAutoCliSwitchChoices) (choice.$1, choice.$2),
+      ],
+      selected: known ? _autoCliSwitch : '',
+      detail: detail.isEmpty ? '' : t(detail),
+      keyPrefix: 'auto-route-cli-switch',
+      onPick: _setAutoCliSwitch,
+    );
+  }
+
   /// 一行负责简单还是复杂任务。手点过就定住，没点过的按模型名（flash/mini 之流
   /// 归简单）猜一个，用户随时能改。
   Widget _buildAutoTierRow(_AutoCandidateDraft candidate) {
     final plan = _autoRungPlan;
     final current = _autoEffectiveRung(candidate);
     return Row(
-      key: Key('auto-candidate-tier-${candidate.providerId}'),
+      key: Key('auto-candidate-tier-${candidate.id}'),
       children: [
         const SizedBox(width: 2),
         for (var rung = 1; rung <= plan.ceiling; rung += 1) ...[
           Tooltip(
             message: autoTierLabel(rung, plan.ceiling),
             child: InkWell(
-              key: Key('auto-candidate-tier-${candidate.providerId}-$rung'),
+              key: Key('auto-candidate-tier-${candidate.id}-$rung'),
               // 用户一动档位就把上一次的报错收掉：他正在解决的就是那件事。
               onTap: () => setState(() {
                 candidate.rung = rung;
@@ -1340,6 +1559,16 @@ class AIConfigSheetState extends State<AIConfigSheet> {
     if (!_autoRoutingEnabled) {
       return Text(
         t('autoEditorSummaryOrder', {
+          'chain': rows.map(_autoRowText).join(t('autoEditorSummaryThen')),
+        }),
+        key: const Key('auto-provider-summary'),
+        style: style,
+      );
+    }
+    // 按价格：没有手标档位可说，能说的就是「这个池子按价格排」。
+    if (_autoPriceTiered) {
+      return Text(
+        t('autoEditorSummaryPrice', {
           'chain': rows.map(_autoRowText).join(t('autoEditorSummaryThen')),
         }),
         key: const Key('auto-provider-summary'),

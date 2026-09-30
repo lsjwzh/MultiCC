@@ -184,7 +184,7 @@ function createSessionProfileRoutes(rawDeps) {
             code: preparedProviderSelection.code,
           });
         }
-        preparedPrimaryProvider = primaryProviderCandidate(preparedProviderSelection.value);
+        preparedPrimaryProvider = primaryProviderCandidate(preparedProviderSelection.value, s.cli || 'claude');
       }
       if (hasProviderPatch) {
         preparedProvider = validProviderId(s.cli || 'claude', (req.body.provider || '').toString().trim());

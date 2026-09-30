@@ -537,6 +537,87 @@ test('an unrouted pool keeps its exact previous behaviour', () => {
   assert.equal(events[0].routing, null);
 });
 
+// ── price tiering ────────────────────────────────────────────────────────────
+//
+// A price-tiered pool stores no ladder at all: the runtime derives one per turn
+// from the shared price table and hands it to both prepare and resolve. The two
+// can therefore disagree when the table refreshes mid-flight, and both sides of
+// that disagreement have to be named rather than silently routed.
+
+test('a price ladder that shrank between judging and the turn is not a verdict', () => {
+  const routing = createAutoProviderRouting({ jev: jev(WEAK), now: () => NOW });
+  const selection = { routing: { tiering: 'price', tiers: ['p1', 'p2'], onUnknown: 'strong' } };
+  // Nothing left to decide: one rung would give every turn the same answer.
+  const empty = routing.resolveTier({ selection, verdict: { ok: true, tier: 'p1' }, tiers: [] });
+  assert.equal(empty.code, 'price_tiers_unavailable');
+  assert.equal(empty.source, 'unavailable');
+  assert.equal(empty.tier, null);
+  assert.equal(empty.tierIndex, null);
+  assert.equal(empty.tierCount, 0);
+  // A single surviving rung is no better: the verdict is dropped and the
+  // pool's onUnknown answer is what the turn runs on.
+  const single = routing.resolveTier({ selection, verdict: { ok: true, tier: 'p1' }, tiers: ['p1'] });
+  assert.equal(single.code, 'price_tiers_unavailable');
+  assert.equal(single.source, 'fallback');
+  assert.equal(single.tier, 'p1');
+  assert.deepEqual([single.tierIndex, single.tierCount], [0, 1]);
+});
+
+test('a verdict for a rung the current ladder does not have is re-resolved', () => {
+  const routing = createAutoProviderRouting({ jev: jev(WEAK), now: () => NOW });
+  const selection = { routing: { tiering: 'price', tiers: ['p1', 'p2'], onUnknown: 'weak' } };
+  const changed = routing.resolveTier({
+    selection, verdict: { ok: true, tier: 'p3', latencyMs: 12 }, tiers: ['p1', 'p2'],
+  });
+  // The table moved under the verdict: the conservative default applies, and
+  // the reason is named so the ledger can tell it apart from a dead gateway.
+  assert.equal(changed.code, 'price_ladder_changed');
+  assert.equal(changed.source, 'fallback');
+  assert.equal(changed.tier, 'p1');
+  assert.equal(changed.latencyMs, 12);
+  assert.equal(changed.escalated, false);
+  // A verdict still on the ladder is honored exactly as a manual pool's is.
+  const kept = routing.resolveTier({
+    selection, verdict: { ok: true, tier: 'p2', reasonCode: 'jev_choice' }, tiers: ['p1', 'p2'],
+  });
+  assert.equal(kept.tier, 'p2');
+  assert.equal(kept.source, 'jev');
+  assert.deepEqual([kept.tierIndex, kept.tierCount], [1, 2]);
+});
+
+test('a price pool with fewer than two rungs never spends an evaluation', async () => {
+  const seen = [];
+  const ladder = [];
+  const routing = createAutoProviderRouting({
+    jev: { classify: async args => { seen.push(args); return { ok: true, tier: 'p1' }; } },
+    now: () => NOW,
+    ttlMs: 60_000,
+    resolveLadder: () => ladder,
+  });
+  const providers = catalog();
+  const session = {
+    id: 's-price', cli: 'claude',
+    providerSelection: {
+      version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: false,
+      candidates: [{ providerId: 'weakp', priority: 1 }, { providerId: 'strongp', priority: 2 }],
+      routing: { provider: 'jev', tiering: 'price' },
+    },
+  };
+  assert.equal(routing.prepareTurn({ session, text: '改个 typo', providers }), null);
+  assert.equal(seen.length, 0);
+  // One rung is still not a decision.
+  ladder.push('p1');
+  assert.equal(routing.prepareTurn({ session, text: '改个 typo', providers }), null);
+  assert.equal(seen.length, 0);
+  // Two rungs and the evaluation earns its round trip.
+  ladder.push('p2');
+  const verdict = await routing.prepareTurn({ session, text: '改个 typo', providers });
+  assert.equal(verdict.ok, true);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].tiers, ['p1', 'p2']);
+  assert.equal(routing.consume({ sessionId: 's-price', text: '改个 typo' }).tier, 'p1');
+});
+
 test('textHash is stable and text-sensitive', () => {
   assert.equal(textHash('abc'), textHash('abc'));
   assert.notEqual(textHash('abc'), textHash('abd'));

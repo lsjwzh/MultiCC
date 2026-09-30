@@ -325,7 +325,7 @@ function createChatTurnEngine(deps) {
   const recordDeliveryProbe = deliveryProbeRegistry.record;
   const runnerDeliveryHandoff = deliveryProbeRegistry.lookup;
   const autoProviderRuntime = deps.autoProviderRuntime || createAutoProviderRuntime({
-    providers, providerLimitCache, logger, emit: createAutoRouteNotes({ broadcast: chatBroadcast,
+    providers, providerLimitCache, logger, isCliAvailable: deps.isCliAvailable, emit: createAutoRouteNotes({ broadcast: chatBroadcast,
       append: appendChatMessage, records: persistedSessions, save: savePersistedSessionsBestEffort }),
     hasLiveBackgroundTasks: sessionId => {
       try { return getBackgroundTaskRuntime()?.hasProcessBackgroundTasks?.(sessionId) === true; }
@@ -360,7 +360,7 @@ function createChatTurnEngine(deps) {
     });
     if (result.scheduled) chatBroadcast(sessionName, {
       type: 'system', subtype: 'warning',
-      message: `Auto Provider：${preparation.fromProviderName} 已中断，将由 ${preparation.providerName} 在新回合中安全接续。`,
+      message: `Auto Provider：${preparation.fromProviderName} 已中断，将由 ${preparation.providerName}${preparation.cli ? `（${preparation.cli} CLI）` : ''} 在新回合中安全接续。`,
     });
     return result;
   }
@@ -1001,7 +1001,7 @@ function createChatTurnEngine(deps) {
     }
     const delivery = opts.clientMsgId || opts.deliveryId;
     const replay = delivery && getChatHistoryService().hasPersistedDelivery(sessionName, delivery);
-    if (!replay && deps.applyPendingConfiguration?.(sessionName, opts) === false) return { blocked: true };
+    if (!replay && deps.applyPendingConfiguration?.(sessionName, opts, text) === false) return { blocked: true };
     const experimentalRuntime = getExperimentalTuiChatRuntime?.();
     if (experimentalRuntime?.owns(persisted)) {
       return { delegated: experimentalRuntime.admit(sessionName, text, opts) };
@@ -2980,7 +2980,7 @@ function createChatTurnEngine(deps) {
     runChatTurnStreaming,
     finalizeStreamingTurn,
     handleChatWs,
-    prepareAutoProviderAdmission,
+    prepareAutoProviderAdmission, autoProviderRuntime,
   };
 }
 

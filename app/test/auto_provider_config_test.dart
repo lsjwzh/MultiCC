@@ -505,6 +505,184 @@ void main() {
     });
   });
 
+  // ── 跨 CLI 与按价格：wire 上新长出来的那几个键 ──────────────────────────
+
+  test('a manual pool never grows a lane, a policy or a tiering key', () {
+    // 逐字节一致的老契约：这些键在旧池子里一个都不许出现。
+    expect(routedSelection.toJson().containsKey('cliSwitch'), isFalse);
+    final routing = routedSelection.toJson()['routing'] as Map;
+    expect(routing.containsKey('tiering'), isFalse);
+    for (final candidate in routedSelection.toJson()['candidates'] as List) {
+      expect((candidate as Map).containsKey('cli'), isFalse);
+      expect(candidate.containsKey('autoModel'), isFalse);
+    }
+    final json = routedSelection.toJson();
+    expect(parseProviderSelection(json)?.toJson(), json);
+  });
+
+  test('a cross-CLI pool keeps its lanes and its switch policy', () {
+    final json = <String, dynamic>{
+      'version': 1,
+      'mode': 'auto',
+      'protocol': 'anthropic',
+      'candidates': [
+        {
+          'providerId': 'relay',
+          'model': 'glm-5.2',
+          'priority': 1,
+          'enabled': true,
+          'cli': 'claude',
+        },
+        {
+          // 同一条线路挂两条车道是合法的（Anthropic 格式的 key 两边都能用），
+          // App 按 providerId 折叠就会在这里悄悄少一条。
+          'providerId': 'relay',
+          'model': 'glm-5.2',
+          'priority': 2,
+          'enabled': true,
+          'cli': 'opencode',
+        },
+      ],
+      'maxAttempts': 2,
+      'sticky': true,
+      'allowCrossTrust': false,
+      'cliSwitch': 'routing',
+    };
+    final parsed = parseProviderSelection(json);
+    expect(parsed?.isCrossCli, isTrue);
+    expect(parsed?.cliSwitch, 'routing');
+    expect(parsed?.candidates.map((candidate) => candidate.cli), [
+      'claude',
+      'opencode',
+    ]);
+    expect(parsed?.toJson(), json);
+  });
+
+  test('a price-tiered pool keeps tiering and its automatic model lines', () {
+    final json = <String, dynamic>{
+      'version': 1,
+      'mode': 'auto',
+      'protocol': 'anthropic',
+      'candidates': [
+        {
+          'providerId': 'relay',
+          'model': 'glm-5.2',
+          'priority': 1,
+          'enabled': true,
+          'cli': 'claude',
+        },
+        // autoModel 的行没有 model：服务端不接受两个答案同时存在。
+        {
+          'providerId': 'cheap',
+          'model': null,
+          'priority': 2,
+          'enabled': true,
+          'cli': 'opencode',
+          'autoModel': true,
+        },
+      ],
+      'maxAttempts': 2,
+      'sticky': true,
+      'allowCrossTrust': false,
+      'cliSwitch': 'failover',
+      'routing': {
+        'version': 1,
+        'provider': 'jev',
+        'apiKeyName': 'vercel-api-key',
+        'onUnknown': 'strong',
+        'tiering': 'price',
+        'tiers': <String>[],
+        'model': 'typesafe-ai/jev',
+      },
+    };
+    final parsed = parseProviderSelection(json);
+    expect(parsed?.routing?.priceTiered, isTrue);
+    expect(parsed?.routing?.tiers, isEmpty);
+    expect(parsed?.candidates.last.autoModel, isTrue);
+    expect(parsed?.candidates.first.autoModel, isFalse);
+    expect(parsed?.toJson(), json);
+  });
+
+  test('a value this build has never seen is carried, not dropped', () {
+    final json = <String, dynamic>{
+      'version': 1,
+      'mode': 'auto',
+      'protocol': 'anthropic',
+      'candidates': [
+        {
+          'providerId': 'relay',
+          'model': 'glm-5.2',
+          'priority': 1,
+          'enabled': true,
+          'cli': 'kimi',
+        },
+        {
+          'providerId': 'other',
+          'model': 'glm-5.2',
+          'priority': 2,
+          'enabled': true,
+          'cli': 'acme-lane',
+        },
+      ],
+      'maxAttempts': 2,
+      'sticky': true,
+      'allowCrossTrust': false,
+      'cliSwitch': 'eager',
+      'routing': {
+        'version': 1,
+        'provider': 'jev',
+        'apiKeyName': 'k',
+        'tiering': 'latency',
+        'tiers': <String>[],
+      },
+    };
+    final parsed = parseProviderSelection(json);
+    expect(parsed?.cliSwitch, 'eager');
+    expect(parsed?.candidates.last.cli, 'acme-lane');
+    expect(parsed?.routing?.tiering, 'latency');
+    expect(parsed?.routing?.priceTiered, isFalse);
+    expect(parsed?.toJson(), json);
+  });
+
+  test('the price ladder is written with no hand-tagged tier', () {
+    const routes = [
+      AutoRoutedRoute(providerId: 'a', model: 'x', priority: 1, rung: 1),
+      AutoRoutedRoute(providerId: 'b', model: 'y', priority: 2, rung: 2),
+    ];
+    const previous = SessionProviderRouting(
+      apiKeyName: 'my-key',
+      tiers: ['t1', 't2'],
+      model: 'typesafe-ai/jev',
+      timeoutMs: 4000,
+      escalation: {'minConfidence': 0.5},
+    );
+    final result = serializeAutoRouting(
+      routes: routes,
+      onUnknown: 'strong',
+      previous: previous,
+      tiering: 'price',
+    );
+    expect(result.ok, isTrue);
+    expect(result.routing?.tiering, 'price');
+    expect(result.routing?.tiers, isEmpty);
+    expect(result.candidates.map((candidate) => candidate.tier), [null, null]);
+    // 面板不暴露的旋钮照旧原样带回。
+    expect(result.routing?.model, 'typesafe-ai/jev');
+    expect(result.routing?.timeoutMs, 4000);
+    expect(result.routing?.escalation, {'minConfidence': 0.5});
+    expect(result.routing?.apiKeyName, 'my-key');
+    // 换回手动标注：`tiering` 这个键不写（缺省就是手动），梯子照旧由 rung 折算。
+    final manual = serializeAutoRouting(
+      routes: routes,
+      onUnknown: 'strong',
+      previous: previous,
+      tiering: 'manual',
+    );
+    expect(manual.routing?.toJson().containsKey('tiering'), isFalse);
+    expect(manual.routing?.tiers, ['t1', 't2']);
+    expect(manual.candidates.map((candidate) => candidate.tier), ['t1', 't2']);
+  });
+
   test('rungs compact into a ladder the server accepts', () {
     const routes = [
       AutoRoutedRoute(providerId: 'a', model: null, priority: 1, rung: 1),
@@ -656,6 +834,142 @@ void main() {
       result?.providerSelection?.candidates.map((candidate) => candidate.tier),
       ['t1', 't2'],
     );
+  });
+
+  testWidgets('a price-tiered cross-CLI pool shows its lanes and saves back', (
+    tester,
+  ) async {
+    AIConfigResult? result;
+    const providers = <Map<String, dynamic>>[
+      {
+        'id': 'relay',
+        'name': '便宜线',
+        'protocol': 'anthropic',
+        'isOfficial': false,
+        'modelOptions': ['glm-4.5-flash'],
+      },
+      {
+        'id': 'backup',
+        'name': '备线',
+        'protocol': 'anthropic',
+        'isOfficial': false,
+        'modelOptions': ['glm-5.2'],
+      },
+    ];
+    // 跨车道 + 按价格：relay 在会话自己的车道上，cheap 整个交给 opencode 车道
+    // 每轮按价格表现挑模型（所以它没有钉死的 model，只有 autoModel）。
+    const pool = SessionProviderSelection(
+      protocol: 'anthropic',
+      candidates: [
+        SessionProviderCandidate(
+          providerId: 'relay',
+          model: 'glm-4.5-flash',
+          priority: 1,
+          cli: 'claude',
+        ),
+        SessionProviderCandidate(
+          providerId: 'cheap',
+          priority: 2,
+          autoModel: true,
+          cli: 'opencode',
+        ),
+      ],
+      maxAttempts: 2,
+      cliSwitch: 'routing',
+      routing: SessionProviderRouting(onUnknown: 'priority', tiering: 'price'),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => ElevatedButton(
+              key: const Key('open-cross-cli-auto-config'),
+              onPressed: () async {
+                result = await showModalBottomSheet<AIConfigResult>(
+                  context: context,
+                  isScrollControlled: true,
+                  builder: (_) => const AIConfigSheet(
+                    cli: SessionCli.claude,
+                    providers: providers,
+                    provider: 'relay',
+                    providerSelection: pool,
+                    model: 'glm-4.5-flash',
+                    effort: 'medium',
+                  ),
+                );
+              },
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('open-cross-cli-auto-config')));
+    await tester.pumpAndSettle();
+
+    // 角标只挂在别的车道上：本车道的行说「Claude」是废话。
+    expect(find.byKey(const Key('auto-candidate-cli-relay')), findsNothing);
+    expect(
+      find.byKey(const Key('auto-candidate-cli-opencode:cheap')),
+      findsOneWidget,
+    );
+    expect(find.text('OpenCode'), findsOneWidget);
+    // autoModel 的行没有模型下拉，换一句「自动选模型」。
+    expect(
+      find.byKey(const Key('auto-candidate-model-opencode:cheap')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const Key('auto-candidate-model-note-opencode:cheap')),
+      findsOneWidget,
+    );
+    // 按价格就没有手标档位（服务端也不接受两者同时存在）。
+    expect(find.byKey(const Key('auto-candidate-tier-relay')), findsNothing);
+    expect(
+      find.byKey(const Key('auto-candidate-tier-opencode:cheap')),
+      findsNothing,
+    );
+    // 跨车道才有「换道时机」，开了按难度才有「档位依据」，两份都是可编辑的片。
+    expect(
+      find.byKey(const Key('auto-route-cli-switch-routing')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('auto-route-tiering-price')), findsOneWidget);
+    expect(find.textContaining('按价格自动排档'), findsOneWidget);
+
+    final failover = find.byKey(const Key('auto-route-cli-switch-failover'));
+    await tester.ensureVisible(failover);
+    await tester.tap(failover);
+    await tester.pumpAndSettle();
+
+    final save = find.widgetWithText(ElevatedButton, '保存');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+
+    final saved = result?.providerSelection;
+    expect(saved?.cliSwitch, 'failover');
+    expect(saved?.routing?.tiering, 'price');
+    expect(saved?.routing?.tiers, isEmpty);
+    expect(saved?.routing?.onUnknown, 'priority');
+    final byId = {
+      for (final candidate in saved!.candidates) candidate.providerId: candidate,
+    };
+    // 本车道的行也补上车道名（跨车道池里留空的行服务端会拒），档位一个都不留。
+    expect(byId['relay']?.cli, 'claude');
+    expect(byId['relay']?.tier, isNull);
+    expect(byId['relay']?.model, 'glm-4.5-flash');
+    expect(byId['backup']?.cli, 'claude');
+    expect(byId['backup']?.enabled, isFalse);
+    expect(byId['cheap']?.cli, 'opencode');
+    expect(byId['cheap']?.autoModel, isTrue);
+    expect(byId['cheap']?.model, isNull);
+    expect(saved.candidates.map((candidate) => candidate.tier), [
+      null,
+      null,
+      null,
+    ]);
   });
 
   testWidgets('choosing a tier by hand moves a line up the ladder', (

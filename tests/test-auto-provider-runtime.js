@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
+const { createAutoProviderRouting } = require('../src/chat/auto-provider-routing');
 
 function fixture({
   emptyFetchedAt = 0, thirdFetchedAt = null, maxAttempts = 3, backgroundActive = false,
@@ -55,6 +56,78 @@ function fixture({
     },
   };
   return { runtime, session, events, limits };
+}
+
+// A pool that spans two lanes needs a catalog whose answer depends on the lane:
+// which providers exist, which protocol they speak and which CLI they serve.
+function laneProviders() {
+  const laneCatalog = {
+    claude: [
+      { id: 'claude-a', name: 'Claude A', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'claude-a-model', modelOptions: ['claude-a-model'] },
+      { id: 'claude-b', name: 'Claude B', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'claude-b-model', modelOptions: ['claude-b-model'] },
+    ],
+    codex: [
+      { id: 'codex-a', name: 'Codex A', appType: 'codex', apiFormat: 'openai_responses', compatibleClis: ['codex'], model: 'codex-a-model', modelOptions: ['codex-a-model'] },
+      { id: 'codex-b', name: 'Codex B', appType: 'codex', apiFormat: 'openai_responses', compatibleClis: ['codex'], model: 'codex-b-model', modelOptions: ['codex-b-model'] },
+    ],
+  };
+  return {
+    laneCatalog,
+    providers: {
+      appTypeForCli: cli => (cli.startsWith('codex') ? 'codex' : 'claude'),
+      appTypesForCli: cli => [cli.startsWith('codex') ? 'codex' : 'claude'],
+      listProviders: appType => laneCatalog[appType] || [],
+      providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
+      modelValidForProvider: (appType, providerId, model) => (laneCatalog[appType] || [])
+        .some(provider => provider.id === providerId && provider.modelOptions.includes(model)),
+    },
+  };
+}
+
+function exhaust(limits, ids, now = 1_000_000) {
+  for (const id of ids) {
+    limits.set(id, {
+      status: 'ok', kind: 'balance', fetchedAt: now,
+      summary: { kind: 'balance', available: false, total: 0 },
+      summaryText: '余额不足',
+    });
+  }
+}
+
+function crossFixture({
+  cli = 'claude', cliSwitch = 'failover', maxAttempts = 2, exhausted = [], candidates = null,
+  routingStore = null, selectionRouting = null,
+} = {}) {
+  const now = 1_000_000;
+  const { providers } = laneProviders();
+  const limits = new Map();
+  exhaust(limits, exhausted);
+  const events = [];
+  const state = { disabledCli: null };
+  const runtime = createAutoProviderRuntime({
+    providers,
+    providerLimitCache: { get: (_appType, id) => limits.get(id) || null },
+    limitCacheStaleMs: 60_000,
+    now: () => now,
+    emit: (_sessionId, event) => events.push(event),
+    hasLiveBackgroundTasks: () => false,
+    isCliAvailable: lane => lane !== state.disabledCli,
+    ...(routingStore ? { routing: routingStore } : {}),
+  });
+  const session = {
+    id: 's-lanes', cli, provider: 'legacy-concrete',
+    providerSelection: {
+      version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts, sticky: true, cliSwitch,
+      candidates: candidates || [
+        { providerId: 'claude-a', priority: 2, cli: 'claude' },
+        { providerId: 'claude-b', priority: 3, cli: 'claude' },
+        { providerId: 'codex-a', priority: 5, cli: 'codex' },
+        { providerId: 'codex-b', priority: 1, cli: 'codex' },
+      ],
+      ...(selectionRouting ? { routing: selectionRouting } : {}),
+    },
+  };
+  return { runtime, session, events, limits, state, providers };
 }
 
 function quotaDecision() {
@@ -406,4 +479,333 @@ test('replacing or clearing the selection resets in-memory stickiness and route 
     turnId: 'turn-2',
   });
   assert.equal(replaced.initial().providerId, 'empty');
+});
+
+// ── planning a lane switch (cross-CLI pools) ─────────────────────────────────
+
+test('a failover pool stays on its lane while any line there is usable', () => {
+  const { runtime, session, events } = crossFixture();
+  assert.equal(runtime.planTurn({ session, text: '继续' }), null);
+  assert.deepEqual(events, []);
+});
+
+test('a failover pool switches lanes once its own lane is spent', () => {
+  const { runtime, session, events } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
+  const planned = runtime.planTurn({ session, text: '继续' });
+  assert.deepEqual(planned, {
+    cli: 'codex', fromCli: 'claude', providerId: 'codex-b', providerName: 'Codex B',
+    model: 'codex-b-model', reasonCode: 'auto_cli_failover',
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'provider_auto_route');
+  assert.equal(events[0].routePhase, 'cli_switch_planned');
+  assert.equal(events[0].cli, 'codex');
+  assert.equal(events[0].fromCli, 'claude');
+  assert.equal(events[0].providerId, 'codex-b');
+  assert.equal(events[0].reasonCode, 'auto_cli_failover');
+  assert.equal(events[0].tier, null);
+  assert.equal(events[0].routing, null);
+  // Nothing was priced: a planned lane switch carries no price fields.
+  assert.equal('price' in events[0], false);
+  // Re-planning is idempotent while the reservation stands.
+  assert.deepEqual(runtime.planTurn({ session, text: '继续' }), planned);
+});
+
+const TIERED_CANDIDATES = [
+  { providerId: 'claude-a', priority: 1, tier: 'strong', cli: 'claude' },
+  { providerId: 'claude-b', priority: 2, tier: 'strong', cli: 'claude' },
+  { providerId: 'codex-a', priority: 3, tier: 'weak', cli: 'codex' },
+  { providerId: 'codex-b', priority: 4, tier: 'weak', cli: 'codex' },
+];
+
+function weakVerdictStore() {
+  return createAutoProviderRouting({
+    jev: { classify: async () => ({ ok: true, tier: 'weak', reasonCode: 'jev_choice' }) },
+    now: () => 1_000_000,
+    ttlMs: 60_000,
+  });
+}
+
+test('a routing pool follows a verdict that lives on another lane', async () => {
+  const { runtime, session, events, providers } = crossFixture({
+    cliSwitch: 'routing',
+    candidates: TIERED_CANDIDATES,
+    selectionRouting: { provider: 'jev', tiers: ['weak', 'strong'] },
+    routingStore: weakVerdictStore(),
+  });
+  await runtime.prepareTurn({ session, text: '简单的问题', providers });
+  // The verdict is what picks the lane: a routing pool does not wait for its
+  // own lane to run dry the way a failover pool does.
+  const planned = runtime.planTurn({ session, text: '简单的问题' });
+  assert.equal(planned.cli, 'codex');
+  assert.equal(planned.providerId, 'codex-a');
+  assert.equal(planned.reasonCode, 'auto_cli_routing');
+  assert.equal(events[0].routePhase, 'cli_switch_planned');
+  assert.equal(events[0].reasonCode, 'auto_cli_routing');
+});
+
+test('a failover pool ignores a verdict from another lane while its own is usable', async () => {
+  const { runtime, session, events, providers } = crossFixture({
+    candidates: TIERED_CANDIDATES,
+    selectionRouting: { provider: 'jev', tiers: ['weak', 'strong'] },
+    routingStore: weakVerdictStore(),
+  });
+  await runtime.prepareTurn({ session, text: '简单的问题', providers });
+  // The same verdict on a failover pool: the claude lane still has a line, and
+  // switching lanes costs a handoff, so the weaker-but-local line wins.
+  assert.equal(runtime.planTurn({ session, text: '简单的问题' }), null);
+  assert.deepEqual(events, []);
+});
+
+test('a tie under routing policy stays on the lane the session already runs on', () => {
+  const { runtime, session, events } = crossFixture({
+    cliSwitch: 'routing',
+    candidates: [
+      { providerId: 'claude-a', priority: 1, cli: 'claude' },
+      { providerId: 'claude-b', priority: 11, cli: 'claude' },
+      { providerId: 'codex-a', priority: 1, cli: 'codex' },
+      { providerId: 'codex-b', priority: 11, cli: 'codex' },
+    ],
+  });
+  // Leaving the lane costs a handoff, so an equal pick must not.
+  assert.equal(runtime.planTurn({ session, text: '随便看看' }), null);
+  assert.deepEqual(events, []);
+});
+
+test('a lane that cannot be switched to is never planned, and a stale plan for it is dropped', () => {
+  const { runtime, session, events, state } = crossFixture({
+    exhausted: ['claude-a', 'claude-b'],
+  });
+  state.disabledCli = 'codex';
+  assert.equal(runtime.planTurn({ session, text: '继续' }), null);
+  assert.deepEqual(events, []);
+  // The lane was up when the plan was made; by the next call it is gone, and
+  // the session must stay where it actually is.
+  state.disabledCli = null;
+  assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+  state.disabledCli = 'codex';
+  assert.equal(runtime.planTurn({ session, text: '继续' }), null);
+});
+
+test('the hop budget caps lane switches and a successful turn resets it', () => {
+  const { runtime, session, limits } = crossFixture({
+    exhausted: ['claude-a', 'claude-b'], maxAttempts: 2,
+  });
+  assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+  assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+  // Two switches is the whole budget: a pool with every lane failing would
+  // otherwise hand the session back and forth forever.
+  assert.equal(runtime.planTurn({ session, text: '继续' }), null);
+
+  limits.clear();
+  const turn = runtime.beginTurn({ session, turnId: 'turn-lane', promptText: '继续' });
+  assert.equal(turn.initial().providerId, 'claude-a');
+  turn.recordSuccess({ providerId: 'claude-a' });
+  exhaust(limits, ['claude-a', 'claude-b']);
+  assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
+});
+
+test('a background notification never plans a lane switch', () => {
+  const { runtime, session, events } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
+  // A background report belongs to the lane whose tools it reports on.
+  assert.equal(runtime.planTurn({ session, text: '任务完成', turnOptions: { bgTaskIds: ['bg-1'] } }), null);
+  assert.equal(runtime.planTurn({ session, text: '任务完成', turnOptions: { bgToolUseIds: ['tool-1'] } }), null);
+  assert.deepEqual(events, []);
+});
+
+test('a continuation stays on its lane unless a handoff reserved another one', () => {
+  const { runtime, session } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
+  assert.equal(runtime.planTurn({ session, text: '继续', turnOptions: { originContinue: true } }), null);
+  // A message the user actually sent is not a continuation, even when a
+  // continuation turn carries it.
+  assert.equal(runtime.planTurn({
+    session, text: '继续', turnOptions: { originContinue: true, directUserInput: true },
+  }).cli, 'codex');
+  // ...and once a lane is reserved, the continuation follows the reservation.
+  assert.equal(runtime.planTurn({ session, text: '继续', turnOptions: { originContinue: true } }).cli, 'codex');
+});
+
+test('the turn after a plan starts on the reserved line of the new lane', () => {
+  // codex-b is the lane's first pick but is momentarily out of quota when the
+  // plan is made, so the reservation is for codex-a.
+  const { runtime, session, events, limits } = crossFixture({
+    exhausted: ['claude-a', 'claude-b', 'codex-b'],
+  });
+  const planned = runtime.planTurn({ session, text: '继续' });
+  assert.equal(planned.cli, 'codex');
+  assert.equal(planned.providerId, 'codex-a');
+
+  limits.clear();
+  session.cli = 'codex'; // the switch runtime moved the session before the turn
+  const turn = runtime.beginTurn({ session, turnId: 'turn-lane', promptText: '继续' });
+  // Priority order would start on codex-b now that it is back; the reservation
+  // outranks it, because the plan was made for this turn.
+  assert.deepEqual(turn.initial(), {
+    providerId: 'codex-a', model: 'codex-a-model', reasonCode: 'auto_initial_selection',
+  });
+  const selected = events.filter(event => event.routePhase === 'selected').at(-1);
+  assert.equal(selected.providerId, 'codex-a');
+  assert.equal(selected.cli, 'codex');
+  assert.equal('price' in selected, false);
+  // The reservation is one-shot: the next turn is back to priority order.
+  const later = runtime.beginTurn({ session, turnId: 'turn-next', promptText: '继续' });
+  assert.equal(later.initial().providerId, 'codex-b');
+});
+
+test('a legacy single-lane pool never plans a switch and keeps its event shape', () => {
+  const { runtime, session, events } = fixture({ emptyFetchedAt: 900_000 });
+  assert.equal(runtime.planTurn({ session, text: '你好' }), null);
+  const turn = runtime.beginTurn({ session, turnId: 'turn-legacy' });
+  assert.equal(turn.initial().providerId, 'empty');
+  assert.ok(events.length > 0);
+  for (const event of events) {
+    assert.equal('cli' in event, false);
+    assert.equal('price' in event, false);
+    assert.equal('priceSource' in event, false);
+  }
+});
+
+// ── price-tiered pools ───────────────────────────────────────────────────────
+
+const PRICE_NOW = 3_000_000;
+
+// Each spec is one route: its models are its own, and a plain line runs on the
+// first of them. `ladder` stands in for the ladder the runtime derives from the
+// price table (they are asserted to agree through the tier a turn lands on).
+function pricePool({ specs, ladder, verdictTier = null, maxAttempts = 2 }) {
+  const prices = {};
+  const catalog = specs.map(spec => {
+    const models = Object.keys(spec.prices);
+    Object.assign(prices, spec.prices);
+    return {
+      id: spec.id, name: spec.id, appType: 'claude', apiFormat: 'anthropic',
+      compatibleClis: ['claude'], model: models[0], modelOptions: models,
+    };
+  });
+  const providers = {
+    appTypeForCli: () => 'claude',
+    appTypesForCli: () => ['claude'],
+    listProviders: () => catalog,
+    providerSupportsCli: (provider, cli) => provider.compatibleClis.includes(cli),
+    modelValidForProvider: () => true,
+  };
+  const events = [];
+  const routing = createAutoProviderRouting({
+    jev: {
+      classify: async () => ({
+        ok: true, tier: verdictTier || ladder[0], reasonCode: 'jev_choice', latencyMs: 4,
+      }),
+    },
+    now: () => PRICE_NOW,
+    ttlMs: 60_000,
+    resolveLadder: ({ selection }) => (
+      selection.routing.tiering === 'price' ? ladder : selection.routing.tiers
+    ),
+  });
+  const runtime = createAutoProviderRuntime({
+    providers,
+    routing,
+    priceTable: {
+      lookup: model => (model in prices
+        ? { blended: prices[model], input: 0, output: 0, model, source: 'stub' }
+        : null),
+    },
+    providerLimitCache: { get: () => null },
+    limitCacheStaleMs: 60_000,
+    now: () => PRICE_NOW,
+    emit: (_sessionId, event) => events.push(event),
+    hasLiveBackgroundTasks: () => false,
+  });
+  const session = {
+    id: 's-price', cli: 'claude', provider: 'legacy-concrete',
+    providerSelection: {
+      version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts, sticky: false,
+      candidates: specs.map(spec => ({
+        providerId: spec.id, priority: spec.priority, enabled: true,
+        ...(spec.autoModel ? { autoModel: true } : {}),
+      })),
+      routing: { provider: 'jev', tiering: 'price' },
+    },
+  };
+  return { runtime, session, events, providers };
+}
+
+async function priceTurn(pool, text = '改个 typo', turnId = 't1') {
+  await pool.runtime.prepareTurn({ session: pool.session, text, providers: pool.providers });
+  return pool.runtime.beginTurn({ session: pool.session, turnId, promptText: text });
+}
+
+test('a price-tiered turn runs on the line its ladder judged, and audits the price', async () => {
+  const specs = [
+    { id: 'cheap', priority: 1, prices: { 'cheap-m': 1 } },
+    { id: 'pricey', priority: 2, prices: { 'pricey-m': 10 } },
+  ];
+  const easy = pricePool({ specs, ladder: ['p1', 'p2'], verdictTier: 'p1' });
+  const easyTurn = await priceTurn(easy);
+  assert.deepEqual(easyTurn.initial(), {
+    providerId: 'cheap', model: 'cheap-m', reasonCode: 'auto_initial_selection',
+  });
+  assert.equal(easyTurn.routing.source, 'jev');
+  assert.equal(easyTurn.routing.tier, 'p1');
+  assert.equal(easyTurn.routing.tierCount, 2);
+  const selected = easy.events.at(-1);
+  assert.equal(selected.routePhase, 'selected');
+  assert.equal(selected.tier, 'p1');
+  assert.equal(selected.preferredTier, 'p1');
+  assert.equal(selected.price, 1);
+  assert.equal(selected.priceSource, 'stub');
+  // Still one lane: no lane field on the event.
+  assert.equal('cli' in selected, false);
+
+  const hard = pricePool({ specs, ladder: ['p1', 'p2'], verdictTier: 'p2' });
+  const hardTurn = await priceTurn(hard, '重构整个 provider 层', 't2');
+  assert.equal(hardTurn.initial().providerId, 'pricey');
+  assert.equal(hard.events.at(-1).price, 10);
+});
+
+test('inside one price tier the cheaper line wins, and priority only breaks its ties', async () => {
+  // Six distinct prices over four rungs: the two cheapest share p1.
+  const pool = pricePool({
+    ladder: ['p1', 'p2', 'p3', 'p4'],
+    verdictTier: 'p1',
+    specs: [
+      { id: 'p2-cheap', priority: 1, prices: { 'p2-cheap-m': 2 } },
+      { id: 'p1-cheap', priority: 9, prices: { 'p1-cheap-m': 1 } },
+      { id: 'p3', priority: 3, prices: { 'p3-m': 3 } },
+      { id: 'p4', priority: 4, prices: { 'p4-m': 4 } },
+      { id: 'p5', priority: 5, prices: { 'p5-m': 5 } },
+      { id: 'p6', priority: 6, prices: { 'p6-m': 6 } },
+    ],
+  });
+  const turn = await priceTurn(pool);
+  // Priority would start on p2-cheap; the ladder says both are p1, and inside a
+  // rung the cheaper line goes first.
+  assert.equal(turn.initial().providerId, 'p1-cheap');
+  assert.equal(turn.routing.tierCount, 4);
+  assert.equal(pool.events.at(-1).price, 1);
+});
+
+test('an auto-model line is expanded, and the judged tier picks the model', async () => {
+  const specs = [
+    { id: 'flex', priority: 1, autoModel: true, prices: { 'flex-cheap': 1, 'flex-pricey': 9 } },
+    { id: 'fixed', priority: 2, prices: { 'fixed-m': 20 } },
+  ];
+  const easy = pricePool({ specs, ladder: ['p1', 'p2', 'p3'], verdictTier: 'p1' });
+  const easyTurn = await priceTurn(easy);
+  assert.deepEqual(easyTurn.initial(), {
+    providerId: 'flex', model: 'flex-cheap', reasonCode: 'auto_initial_selection',
+  });
+  assert.equal(easyTurn.routing.tierCount, 3);
+
+  const hard = pricePool({ specs, ladder: ['p1', 'p2', 'p3'], verdictTier: 'p2' });
+  const hardTurn = await priceTurn(hard, '重构整个 provider 层', 't2');
+  assert.deepEqual(hardTurn.initial(), {
+    providerId: 'flex', model: 'flex-pricey', reasonCode: 'auto_initial_selection',
+  });
+
+  // The ladder spans every line of the pool, the unexpanded route included.
+  const fixed = pricePool({ specs, ladder: ['p1', 'p2', 'p3'], verdictTier: 'p3' });
+  const fixedTurn = await priceTurn(fixed, '更难的活', 't3');
+  assert.equal(fixedTurn.initial().providerId, 'fixed');
+  assert.equal(fixed.events.at(-1).price, 20);
 });

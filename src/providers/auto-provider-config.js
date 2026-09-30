@@ -64,6 +64,21 @@ const MAX_ROUTING_ENDPOINT_CHARS = MAX_ENDPOINT_CHARS;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const VAULT_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const DEFAULT_ROUTING_TIMEOUT_MS = 2_500;
+// Cross-CLI pools: a candidate may name the CLI lane that serves it, and the
+// session then switches lanes (with the usual handoff checkpoint) when the pool
+// picks a line on another CLI. Only lanes whose provider is a user-selectable
+// route are eligible — a providerless lane has nothing for the pool to pick.
+const AUTO_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi']);
+// When a cross-CLI pool leaves the session's current lane:
+//   failover — only when no line on the current CLI is usable (default; a lane
+//              switch costs a handoff, so it is the last resort);
+//   routing  — whenever the per-turn pick (difficulty tier, price) lives on
+//              another CLI.
+const CLI_SWITCH_POLICIES = new Set(['failover', 'routing']);
+// How a routed pool's tiers are decided: `manual` is the hand-tagged ladder
+// (candidate.tier + routing.tiers); `price` derives the ladder per turn from the
+// shared price table (src/pricing/price-table.js), cheapest first.
+const ROUTING_TIERINGS = new Set(['manual', 'price']);
 const MIN_ROUTING_TIMEOUT_MS = 250;
 const MAX_ROUTING_TIMEOUT_MS = 10_000;
 
@@ -128,19 +143,35 @@ function validateCandidate(raw, index, context) {
     return fail(`candidate ${index + 1} has an invalid tier`, 'invalid_provider_candidate');
   }
   const enabled = raw.enabled !== false;
+  const cli = raw.cli == null || raw.cli === '' ? null : String(raw.cli).trim();
+  if (cli != null && !AUTO_CLIS.has(cli)) {
+    return fail(`candidate ${index + 1} has an unsupported cli`, 'invalid_provider_candidate');
+  }
+  const autoModel = raw.autoModel === true;
+  // An auto-model line picks its model per turn from the provider's own list;
+  // a pinned model next to it would be a second, contradicting answer.
+  if (autoModel && model) {
+    return fail(`candidate ${index + 1} cannot pin a model and pick one automatically`,
+      'invalid_provider_candidate');
+  }
   let trustDomain = null;
-  if (context.catalog) {
-    const provider = context.catalog.byId.get(providerId);
+  let protocol = null;
+  const catalog = context.catalogFor ? context.catalogFor(cli) : context.catalog;
+  if (catalog) {
+    const provider = catalog.byId.get(providerId);
     if (!provider) return fail(`provider ${providerId} was not found`, 'provider_not_found');
-    const supports = typeof context.catalog.providers.providerSupportsCli === 'function'
-      ? context.catalog.providers.providerSupportsCli(provider, context.catalog.cli)
-      : Array.isArray(provider.compatibleClis) && provider.compatibleClis.includes(context.catalog.cli);
-    if (!supports) return fail(`provider ${providerId} does not support ${context.catalog.cli}`, 'provider_cli_mismatch');
-    if (protocolOf(provider) !== context.protocol) {
+    const supports = typeof catalog.providers.providerSupportsCli === 'function'
+      ? catalog.providers.providerSupportsCli(provider, catalog.cli)
+      : Array.isArray(provider.compatibleClis) && provider.compatibleClis.includes(catalog.cli);
+    if (!supports) return fail(`provider ${providerId} does not support ${catalog.cli}`, 'provider_cli_mismatch');
+    protocol = protocolOf(provider);
+    // A single-lane pool keeps its one protocol; a cross-CLI pool checks the
+    // protocol per lane instead (see validateProviderSelection).
+    if (!context.crossCli && protocol !== context.protocol) {
       return fail(`provider ${providerId} does not use ${context.protocol}`, 'provider_protocol_mismatch');
     }
-    if (model && typeof context.catalog.providers.modelValidForProvider === 'function'
-        && !context.catalog.providers.modelValidForProvider(provider.appType || context.catalog.appType, providerId, model)) {
+    if (model && typeof catalog.providers.modelValidForProvider === 'function'
+        && !catalog.providers.modelValidForProvider(provider.appType || catalog.appType, providerId, model)) {
       return fail(`model ${model} is not available for provider ${providerId}`, 'provider_model_mismatch');
     }
     trustDomain = trustDomainOf(provider);
@@ -149,10 +180,13 @@ function validateCandidate(raw, index, context) {
   // wire contract, and an untouched pool must keep emitting byte-identical JSON.
   const value = { providerId, model, priority, enabled };
   if (tier != null) value.tier = tier;
+  if (cli != null) value.cli = cli;
+  if (autoModel) value.autoModel = true;
   return Object.freeze({
     ok: true,
     value: Object.freeze(value),
     trustDomain,
+    protocol,
   });
 }
 
@@ -325,13 +359,28 @@ function validateRouting(input, candidates) {
   if (!ROUTING_ON_UNKNOWN.has(onUnknown)) {
     return fail('routing.onUnknown must be strong, weak or priority', 'invalid_provider_routing');
   }
-  const ladder = tierOrderFor(candidates, input.tiers);
-  if (ladder.error) return ladder.error;
-  // One tier cannot route: every request would get the same answer while the UI
-  // claimed a difficulty decision had been made.
-  if (ladder.order.length < 2) {
-    return fail('routing requires at least two enabled candidate tiers',
-      'provider_routing_requires_tiers');
+  const tiering = input.tiering == null || input.tiering === ''
+    ? 'manual' : String(input.tiering).trim().toLowerCase();
+  if (!ROUTING_TIERINGS.has(tiering)) {
+    return fail('routing.tiering must be manual or price', 'invalid_provider_routing');
+  }
+  let ladder = { order: [] };
+  if (tiering === 'price') {
+    // The ladder is the price table's, recomputed per turn; a hand-tagged tier
+    // next to it would be a second ladder nobody reads.
+    if (candidates.some(candidate => candidate.tier)
+        || (Array.isArray(input.tiers) && input.tiers.length)) {
+      return fail('manual tiers are not used with price tiering', 'provider_routing_tier_mismatch');
+    }
+  } else {
+    ladder = tierOrderFor(candidates, input.tiers);
+    if (ladder.error) return ladder.error;
+    // One tier cannot route: every request would get the same answer while the
+    // UI claimed a difficulty decision had been made.
+    if (ladder.order.length < 2) {
+      return fail('routing requires at least two enabled candidate tiers',
+        'provider_routing_requires_tiers');
+    }
   }
   const escalationInput = input.escalation && typeof input.escalation === 'object'
     && !Array.isArray(input.escalation) ? input.escalation : {};
@@ -362,6 +411,9 @@ function validateRouting(input, candidates) {
       apiKeyName,
       timeoutMs,
       onUnknown,
+      // Only a price-tiered pool carries the key, so a manual pool's DTO stays
+      // byte-identical to the one it had before tiering existed.
+      ...(tiering === 'price' ? { tiering } : {}),
       tiers: Object.freeze([...ladder.order]),
       escalation: Object.freeze(escalation),
     }),
@@ -385,19 +437,63 @@ function validateProviderSelection(input, options = {}) {
   // Missing/false keeps the v1 fail-closed behavior. A true value is the
   // persisted user authorization for a mixed Official/user-managed pool.
   const allowCrossTrust = input.allowCrossTrust === true;
-  const catalog = catalogFor(options);
+  // A pool is cross-CLI as soon as one candidate names its lane. The others then
+  // belong to the session's current lane, written out so the stored pool reads
+  // the same whichever lane the session happens to be on later.
+  const crossCli = input.candidates.some(raw => raw && typeof raw === 'object'
+    && raw.cli != null && raw.cli !== '');
+  const homeCli = options && options.cli ? String(options.cli) : null;
+  const catalogs = new Map();
+  const laneCatalog = (cli) => {
+    const key = cli || homeCli || '';
+    if (!catalogs.has(key)) {
+      catalogs.set(key, key ? catalogFor({ ...options, cli: key }) : catalogFor(options));
+    }
+    return catalogs.get(key);
+  };
   const candidates = [];
   const ids = new Set();
   const trustDomains = new Set();
+  const laneProtocols = new Map();
   for (let index = 0; index < input.candidates.length; index += 1) {
-    const result = validateCandidate(input.candidates[index], index, { protocol, catalog });
+    let raw = input.candidates[index];
+    if (crossCli && raw && typeof raw === 'object' && !Array.isArray(raw)
+        && (raw.cli == null || raw.cli === '')) {
+      if (!homeCli || !AUTO_CLIS.has(homeCli)) {
+        return fail(`candidate ${index + 1} must name its cli in a cross-CLI pool`,
+          'invalid_provider_candidate');
+      }
+      raw = { ...raw, cli: homeCli };
+    }
+    const result = validateCandidate(raw, index, {
+      protocol, crossCli, catalog: crossCli ? null : laneCatalog(null),
+      catalogFor: crossCli ? laneCatalog : null,
+    });
     if (!result.ok) return result;
-    if (ids.has(result.value.providerId)) {
+    // The same route may serve two lanes (an Anthropic-format key used by both
+    // claude and opencode); within one lane it may appear once.
+    const key = `${result.value.cli || ''}\n${result.value.providerId}`;
+    if (ids.has(key)) {
       return fail(`provider ${result.value.providerId} appears more than once`, 'duplicate_provider_candidate');
     }
-    ids.add(result.value.providerId);
+    ids.add(key);
+    if (crossCli && result.protocol) {
+      const lane = result.value.cli;
+      if (laneProtocols.has(lane) && laneProtocols.get(lane) !== result.protocol) {
+        return fail(`candidates on ${lane} mix protocols`, 'provider_protocol_mismatch');
+      }
+      laneProtocols.set(lane, result.protocol);
+    }
     candidates.push(result.value);
     if (result.value.enabled && result.trustDomain) trustDomains.add(result.trustDomain);
+  }
+  if (laneProtocols.size && ![...laneProtocols.values()].includes(protocol)) {
+    return fail(`no candidate uses ${protocol}`, 'provider_protocol_mismatch');
+  }
+  const cliSwitch = input.cliSwitch == null || input.cliSwitch === ''
+    ? 'failover' : String(input.cliSwitch).trim().toLowerCase();
+  if (!CLI_SWITCH_POLICIES.has(cliSwitch)) {
+    return fail('cliSwitch must be failover or routing', 'invalid_provider_selection');
   }
   const enabledCount = candidates.filter(candidate => candidate.enabled).length;
   if (enabledCount < 2) return fail('Auto Provider requires at least two enabled candidates', 'insufficient_provider_candidates');
@@ -411,6 +507,13 @@ function validateProviderSelection(input, options = {}) {
   }
   const routing = validateRouting(input.routing, candidates);
   if (routing && routing.ok === false) return routing;
+  // Picking a model per turn needs a ranking to pick by; that ranking is the
+  // price ladder, so an auto-model line without it would silently mean "first".
+  if (candidates.some(candidate => candidate.autoModel)
+      && !(routing && routing.value.tiering === 'price')) {
+    return fail('automatic model selection requires price tiering',
+      'provider_auto_model_requires_price_tiering');
+  }
   const value = {
     version: 1,
     mode: 'auto',
@@ -420,15 +523,19 @@ function validateProviderSelection(input, options = {}) {
     sticky: input.sticky !== false,
     allowCrossTrust,
   };
+  if (crossCli) value.cliSwitch = cliSwitch;
   if (routing) value.routing = routing.value;
   return Object.freeze({ ok: true, value: Object.freeze(value), error: null, code: null });
 }
 
-function primaryProviderCandidate(selection) {
+// `cli` scopes a cross-CLI pool to the lane the session is on: the concrete
+// fallback provider must be one that lane can actually run.
+function primaryProviderCandidate(selection, cli = null) {
   const candidates = selection && Array.isArray(selection.candidates) ? selection.candidates : [];
   let primary = null;
   for (const candidate of candidates) {
     if (!candidate || candidate.enabled === false) continue;
+    if (cli && candidate.cli && candidate.cli !== cli) continue;
     if (!primary || candidate.priority < primary.priority) primary = candidate;
   }
   return primary;
@@ -450,13 +557,25 @@ function providerSelectionDto(input) {
     maxAttempts: value.maxAttempts,
     sticky: value.sticky,
     allowCrossTrust: value.allowCrossTrust,
+    ...(value.cliSwitch ? { cliSwitch: value.cliSwitch } : {}),
     ...(value.routing
       ? { routing: { ...value.routing, tiers: [...value.routing.tiers] } }
       : {}),
   };
 }
 
+// Lanes a pool spans, in first-seen order; empty for a single-lane pool.
+function selectionClis(selection) {
+  const out = [];
+  for (const candidate of selection && Array.isArray(selection.candidates) ? selection.candidates : []) {
+    if (candidate && candidate.cli && !out.includes(candidate.cli)) out.push(candidate.cli);
+  }
+  return out;
+}
+
 module.exports = {
+  AUTO_CLIS,
+  CLI_SWITCH_POLICIES,
   CUSTOM_ROUTING_GATEWAY,
   DEFAULT_CUSTOM_ROUTING_API_KEY,
   DEFAULT_CUSTOM_ROUTING_MODEL,
@@ -468,12 +587,14 @@ module.exports = {
   MAX_TIERS,
   PROTOCOLS,
   ROUTING_GATEWAYS,
+  catalogFor,
   customEndpointError,
   jevTarget,
   normalizeStoredProviderSelection,
   primaryProviderCandidate,
   protocolOf,
   providerSelectionDto,
+  selectionClis,
   trustDomainOf,
   validateProviderSelection,
   validateRoutingTarget,

@@ -166,13 +166,27 @@ test('core runner covers every selected path and expands declared variants', () 
   // 294 !== 293。它是 hermetic 的——内存 harness + 临时目录，不碰端口、网络、
   // 真进程——留在 core 是安全的。293 + 1 = 294，deterministic 252 + 1 = 253，
   // commands 279 + 1 = 280。
-  assert.equal(core.length, 294, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 294);
+  // 2026-09-30 模型价格表（src/pricing/price-table.js）：注册
+  // tests/test-price-table.js 为 core deterministic。它钉的是路由的输入契约——
+  // 同一个 id 被多个 provider 贩卖时哪个价格作答（providerHint > 一方 provider >
+  // 中位价）、只有有价条目才算命中、以及刷新遇到垃圾载荷/断线/超时时必须保留旧表
+  // 而不是把一份好价格换成错误页。完全 hermetic：fetch 注入、缓存目录全是 mkdtemp
+  // 临时目录、不碰真 ~/.multicc、不碰网络、不绑端口、不起进程（唯一真实计时器是
+  // 25ms 的 abort 超时断言）。294 + 1 = 295，deterministic 253 + 1 = 254，
+  // commands 280 + 1 = 281。
+  // 2026-09-30 价格分档的池（src/chat/auto-provider-pricing.js）：注册
+  // tests/test-auto-provider-pricing.js 为 core deterministic。它钉的是价格表的
+  // 消费契约——查不到的 id、抛错的表、负价一律落到「未知价」而不是掀翻一轮；自动选模
+  // 的线路按价格铺开而不是砍成最便宜的六个；四档封顶且未知价永远排在最贵那档。完全
+  // hermetic：纯函数 + 注入的价表 stub，不碰网络、不碰 ~/.multicc、不绑端口、不起进程。
+  // 295 + 1 = 296，deterministic 254 + 1 = 255，commands 281 + 1 = 282。
+  assert.equal(core.length, 296, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 296);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 253);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 255);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 24);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 17,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -182,8 +196,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 280,
-    '277 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 282,
+    '279 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

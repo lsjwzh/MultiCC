@@ -36,7 +36,7 @@ async function createSessionRecord({ dir, cli, kind, label = null, id = null, ep
   const autoSelection = validateProviderSelection(providerSelection, { cli, providers }); if (!autoSelection.ok) return { ok: false, error: autoSelection.error }; let providerId;
   if (provider === undefined) {
     const defaultPool = cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli;
-    providerId = primaryProviderCandidate(autoSelection.value)?.providerId || providerDefaults[defaultPool] || null;
+    providerId = primaryProviderCandidate(autoSelection.value, cli)?.providerId || providerDefaults[defaultPool] || null;
   } else {
     const v = validProviderId(cli, provider);
     if (!v.ok) return { ok: false, error: 'invalid provider' }; if (autoSelection.value && !autoSelection.value.candidates.some(candidate => candidate.enabled && candidate.providerId === v.value)) return { ok: false, error: 'Auto Provider fallback must be an enabled candidate' };

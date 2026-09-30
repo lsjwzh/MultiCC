@@ -842,6 +842,57 @@ function createCliSwitchRuntime(options) {
       cliStates: options.cliStateSummary(session), cliAvailability: options.cliAvailabilitySummary() };
   }
 
+  // Turn-boundary hook: a staged configuration is applied first (it is the
+  // user's explicit choice), then an Auto Provider pool that spans CLI lanes
+  // may move the session to another lane for this turn.
+  function applyTurnConfiguration(sessionId, turnOptions = {}, text = '') {
+    if (applyPendingConfiguration(sessionId, turnOptions) === false) return false;
+    try { autoSwitchCli(sessionId, turnOptions, text); } catch (error) {
+      console.warn('[cli-switch] auto provider lane switch failed:', error && error.message);
+    }
+    return true;
+  }
+
+  // The lane switch reuses the manual switch path whole — checkpoint, per-lane
+  // native state, handoff delivered with the turn's message — so an automatic
+  // switch is exactly as recoverable as one made from the menu. The pool itself
+  // travels with the session: the target lane's own saved selection is replaced
+  // by it, and the planned line becomes the lane's concrete provider.
+  function autoSwitchCli(sessionId, turnOptions, text) {
+    const session = records.get(sessionId);
+    const pool = session && session.providerSelection;
+    if (typeof options.planAutoCliSwitch !== 'function' || pool?.mode !== 'auto' || !pool.cliSwitch) return;
+    if (session.pendingConfiguration || isConfigurationBusy(sessionId)) return;
+    const availability = options.cliAvailabilitySummary() || {};
+    const plan = options.planAutoCliSwitch({ session, text, turnOptions });
+    const fromCli = session.cli || 'claude';
+    if (!plan || !plan.cli || plan.cli === fromCli || !availability[plan.cli]?.available) return;
+    // Same order as a staged switch: move a resumable Codex thread to the new
+    // route before the session record says it lives there.
+    const target = JSON.parse(JSON.stringify(session));
+    options.activateCliState(target, plan.cli, { defaults: cliSwitchDefaults(plan.cli) });
+    if ((plan.cli === 'codex' || plan.cli === 'codex-exp') && target.cliSessionId
+        && target.provider !== plan.providerId) {
+      options.synchronizeCodexSessionRoute({ logicalSessionId: session.id,
+        nativeSessionId: target.cliSessionId, fromProviderId: target.provider || null,
+        toProviderId: plan.providerId });
+    }
+    let switched;
+    sessionPersistence.mutate('runtime.auto-provider-cli-switch', () => {
+      switched = performCliSwitch(session, plan.cli, { deferEffects: true });
+      session.providerSelection = pool;
+      session.provider = plan.providerId;
+      session.model = null;
+      session.pendingCliHandoff.reason = 'auto_provider_cli_switch';
+      options.rememberActiveCliState(session);
+    });
+    switched.publish();
+    options.chatBroadcast(sessionId, {
+      type: 'system', subtype: 'warning',
+      message: `Auto Provider：${fromCli} → ${plan.cli}（${plan.providerName || plan.providerId}${plan.model ? ` · ${plan.model}` : ''}）。`,
+    });
+  }
+
   function applyPendingConfiguration(sessionId, turnOptions = {}) {
     const session = records.get(sessionId), pending = session?.pendingConfiguration;
     if (!pending) return true;
@@ -1084,7 +1135,7 @@ function createCliSwitchRuntime(options) {
     cliSwitchBusyState,
     performCliSwitch,
     consumePendingCliHandoff,
-    applyPendingConfiguration,
+    applyPendingConfiguration: applyTurnConfiguration,
   });
 }
 

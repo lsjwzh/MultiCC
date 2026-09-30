@@ -101,6 +101,131 @@ void main() {
     );
   });
 
+  test('a price-ranked pick says what the line costs', () {
+    // 运行时发的是 blended 一个数（`priceSource` 说明这个数从哪来）。
+    expect(
+      autoRouteNote(
+        _route(
+          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+          {'price': 2.5, 'priceSource': 'price_table'},
+        ),
+      ),
+      '🧭 Jev 判定为复杂任务 · 选用 智谱（glm-4.6） · \$2.5 每 1M tokens',
+    );
+    // 价格表里那份是对象：输入/输出两条都报。
+    expect(
+      autoRouteNote(
+        _route(
+          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+          {
+            'price': {'input': 3, 'output': 15, 'blended': 6, 'source': 'seed'},
+          },
+        ),
+      ),
+      endsWith(' · \$3/\$15 每 1M tokens'),
+    );
+    // 只有 blended 的对象也算得出一个数，小数不会被四舍五入掉。
+    expect(
+      autoRouteNote(
+        _route(
+          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+          {
+            'price': {'blended': 0.07},
+          },
+        ),
+      ),
+      endsWith(' · \$0.07 每 1M tokens'),
+    );
+    // 读不出来的价格（旧服务端、脏数据）什么都不加，老文案一个字符都不变。
+    expect(
+      autoRouteNote(
+        _route(
+          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+          {'price': 'free'},
+        ),
+      ),
+      '🧭 Jev 判定为复杂任务 · 选用 智谱（glm-4.6）',
+    );
+    I18n.switchLang('en');
+    expect(
+      autoRouteNote(
+        _route(
+          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+          {'price': 2.5},
+        ),
+      ),
+      endsWith(' · \$2.5 per 1M tokens'),
+    );
+  });
+
+  test('a planned lane switch names the two lanes', () {
+    expect(
+      autoRouteNote({
+        'routePhase': 'cli_switch_planned',
+        'fromCli': 'claude',
+        'cli': 'codex',
+      }),
+      'Auto 换道：Claude → Codex',
+    );
+    // 服务端在计划的帧里也带 reasonCode，但那是给日志看的，聊天里不说。
+    expect(
+      autoRouteNote({
+        'routePhase': 'cli_switch_planned',
+        'fromCli': 'opencode',
+        'cli': 'kimi',
+        'reasonCode': 'price',
+      }),
+      'Auto 换道：OpenCode → Kimi Code',
+    );
+    // 同一条车道 = 什么都没动；说不出的车道名不值得发一条聊天；老键 `phase` 也认。
+    expect(
+      autoRouteNote({
+        'routePhase': 'cli_switch_planned',
+        'fromCli': 'claude',
+        'cli': 'claude',
+      }),
+      isEmpty,
+    );
+    expect(
+      autoRouteNote({'routePhase': 'cli_switch_planned', 'cli': 'codex'}),
+      isEmpty,
+    );
+    expect(
+      autoRouteNote({
+        'phase': 'cli_switch_planned',
+        'fromCli': 'codex-exp',
+        'cli': 'zcode',
+      }),
+      'Auto 换道：Codex → ZCode',
+    );
+  });
+
+  test('the lane plan leaves the verdict line alone', () {
+    // 换道是**计划**：`cli_switched` 会自己画一条，判断行不该跟着改写，也不该
+    // 把等着的那条判断行扔掉。
+    final line = AutoRouteLine();
+    final messages = <ChatMessage>[];
+    line.judging(messages);
+    expect(
+      line.settle(messages, {
+        'routePhase': 'cli_switch_planned',
+        'fromCli': 'claude',
+        'cli': 'opencode',
+      }),
+      isFalse,
+    );
+    expect(messages.single.content, '🧭 Jev 正在判断这条消息的难度…');
+    expect(
+      line.settle(
+        messages,
+        _route({'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1}),
+      ),
+      isTrue,
+    );
+    expect(messages, hasLength(1));
+    expect(messages.single.content, startsWith('🧭 Jev 判定为复杂任务'));
+  });
+
   test('only a selected route with a routing verdict speaks', () {
     expect(autoRouteNote({'phase': 'switched', 'routing': {}}), isEmpty);
     expect(autoRouteNote({'phase': 'selected', 'providerName': 'x'}), isEmpty);

@@ -790,12 +790,28 @@ class SessionProviderCandidate {
   /// [serializeAutoRouting] exactly like public/auto-provider-editor.js.
   final String? tier;
 
+  /// Which CLI lane serves this route (`claude`, `codex-exp`, …). Absent on a
+  /// single-lane pool; present on every candidate of a cross-CLI one — the
+  /// server fills the session's own lane in for rows that leave it blank, and
+  /// refuses a cross-CLI save whose rows do not name a lane. The App only
+  /// displays it; which lane a route belongs to is not editable here, but it
+  /// must survive a re-save untouched.
+  final String? cli;
+
+  /// Let the runtime pick this route's model per turn from the price ladder
+  /// instead of pinning [model] (server: `provider_auto_model_requires_price_tiering`).
+  /// Only legal with `routing.tiering == 'price'` and mutually exclusive with a
+  /// pinned model, so a legacy pool never carries it.
+  final bool autoModel;
+
   const SessionProviderCandidate({
     required this.providerId,
     this.model,
     required this.priority,
     this.enabled = true,
     this.tier,
+    this.cli,
+    this.autoModel = false,
   });
 
   factory SessionProviderCandidate.fromJson(Map<dynamic, dynamic> json) =>
@@ -807,6 +823,10 @@ class SessionProviderCandidate {
         tier: (json['tier']?.toString().trim().isEmpty ?? true)
             ? null
             : json['tier'].toString().trim(),
+        cli: (json['cli']?.toString().trim().isEmpty ?? true)
+            ? null
+            : json['cli'].toString().trim(),
+        autoModel: json['autoModel'] == true,
       );
 
   Map<String, dynamic> toJson() => {
@@ -817,6 +837,10 @@ class SessionProviderCandidate {
     // Absent on an unrouted pool: the server DTO is a wire contract and an
     // untouched pool must keep emitting byte-identical JSON.
     if (tier != null) 'tier': tier,
+    // Same rule for the cross-CLI and price-mode fields: only the pools that
+    // have them write them, and an unknown lane id is carried, not dropped.
+    if (cli != null) 'cli': cli,
+    if (autoModel) 'autoModel': true,
   };
 }
 
@@ -846,6 +870,13 @@ class SessionProviderRouting {
   final int? timeoutMs;
   final Map<String, double>? escalation;
 
+  /// How the ladder is decided: `'price'` ranks the lines from the shared price
+  /// table every turn (then [tiers] is empty and no candidate carries a tier),
+  /// `null` is the hand-tagged ladder — which is also what the server writes for
+  /// a manual pool, so a routing block that predates tiering round-trips byte for
+  /// byte. An unknown future value is carried, never interpreted.
+  final String? tiering;
+
   const SessionProviderRouting({
     this.version = 1,
     this.provider = 'jev',
@@ -855,7 +886,11 @@ class SessionProviderRouting {
     this.model,
     this.timeoutMs,
     this.escalation,
+    this.tiering,
   });
+
+  /// Whether the ladder is the price table's rather than the pool's own.
+  bool get priceTiered => tiering == 'price';
 
   /// What the router does with a message it could not judge; the server reads a
   /// missing key as 'strong'.
@@ -891,6 +926,9 @@ class SessionProviderRouting {
                   entry.key.toString(): (entry.value as num).toDouble(),
             }
           : null,
+      tiering: (json['tiering']?.toString().trim().isEmpty ?? true)
+          ? null
+          : json['tiering'].toString().trim(),
     );
   }
 
@@ -899,6 +937,9 @@ class SessionProviderRouting {
     'provider': provider,
     'apiKeyName': apiKeyName,
     if (onUnknown != null) 'onUnknown': onUnknown,
+    // Only a price-tiered block writes it: a manual pool's routing JSON stays
+    // exactly the JSON it was before tiering existed.
+    if (tiering != null) 'tiering': tiering,
     'tiers': tiers,
     if (model != null) 'model': model,
     if (timeoutMs != null) 'timeoutMs': timeoutMs,
@@ -921,6 +962,13 @@ class SessionProviderSelection {
   /// keeps a plain ordered pool byte-identical to what it always sent.
   final SessionProviderRouting? routing;
 
+  /// When a cross-CLI pool leaves the session's current lane: `'failover'`
+  /// (only when no line on this lane is usable — the server's default) or
+  /// `'routing'` (whenever the per-turn pick lives on another lane). Only
+  /// written for a cross-CLI pool: the server reads a missing key as failover,
+  /// and a single-lane pool must not carry it at all.
+  final String? cliSwitch;
+
   const SessionProviderSelection({
     this.version = 1,
     this.mode = 'auto',
@@ -930,7 +978,13 @@ class SessionProviderSelection {
     this.sticky = true,
     this.allowCrossTrust = false,
     this.routing,
+    this.cliSwitch,
   });
+
+  /// Whether any candidate names its lane — the server's own `crossCli` test,
+  /// and the condition under which [cliSwitch] belongs on the wire.
+  bool get isCrossCli =>
+      candidates.any((candidate) => (candidate.cli ?? '').isNotEmpty);
 
   Map<String, dynamic> toJson() => {
     'version': version,
@@ -940,6 +994,7 @@ class SessionProviderSelection {
     'maxAttempts': maxAttempts,
     'sticky': sticky,
     'allowCrossTrust': allowCrossTrust,
+    if (cliSwitch != null) 'cliSwitch': cliSwitch,
     if (routing != null) 'routing': routing!.toJson(),
   };
 }
@@ -969,6 +1024,9 @@ SessionProviderSelection? parseProviderSelection(dynamic json) {
     routing: rawRouting is Map
         ? SessionProviderRouting.fromJson(rawRouting)
         : null,
+    cliSwitch: (json['cliSwitch']?.toString().trim().isEmpty ?? true)
+        ? null
+        : json['cliSwitch'].toString().trim(),
   );
 }
 

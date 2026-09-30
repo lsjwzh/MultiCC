@@ -939,6 +939,9 @@
         providers: providersOf(state),
         protocol: autoProtocolFromValue(providerSelect.value),
         initialSelection: configuredAuto,
+        // 会话自己的 CLI 就是这个池子的主车道；别的车道用同一个接口按 cli 再取一次。
+        cli: (state && state.cli) || '',
+        loadCliProviders: cli => loadProviderList(cli).then(list => list.providers),
         // 池子里换人会让「随主」的模型候选跟着换 —— 尾巴得重算。
         onChange: () => refreshSubUi(),
         formatProvider: provider => providerLabel(provider, false)

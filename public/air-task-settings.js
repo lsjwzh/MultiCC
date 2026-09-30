@@ -423,6 +423,9 @@
         document, container: autoHost, providers, protocol,
         initialSelection: config.providerSelection?.mode === 'auto' && config.providerSelection.protocol === protocol
           ? config.providerSelection : null,
+        // 当前 CLI 是这个池子的主车道；别的车道按 cli 再用同一个接口取一遍。
+        cli: currentCli,
+        loadCliProviders: cli => aiApi.loadProviderList(cli).then(list => list.providers),
         formatProvider: provider => `${provider.name || provider.id}${provider.model ? ` · ${provider.model}` : ''}`,
         // 池子里换人会让「随主」的模型候选跟着换 —— 尾巴得重算。
         onChange: () => refreshSubLine(),
