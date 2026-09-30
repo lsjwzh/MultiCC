@@ -56,6 +56,18 @@
       voiceKey: null, labelKey: 'classifyProcessing',
       ding: null, background: false,
     },
+    // G/N are D's two goalState sub-letters (达成目标/需要交互) — same push
+    // title/voice/ding as D, the badge label is the only thing that differs.
+    G: {
+      key: 'succeeded', type: 'succeeded', titleKey: 'notificationSucceededTitle',
+      voiceKey: 'voiceExecutionSucceeded', labelKey: 'statusGoalAchieved',
+      ding: 'succeeded', background: false,
+    },
+    N: {
+      key: 'succeeded', type: 'succeeded', titleKey: 'notificationSucceededTitle',
+      voiceKey: 'voiceExecutionSucceeded', labelKey: 'statusGoalInteract',
+      ding: 'succeeded', background: false,
+    },
   };
 
   // A push payload (and a legacy notify frame) carries the TYPE, not the letter.

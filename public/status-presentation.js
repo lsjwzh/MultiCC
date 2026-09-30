@@ -214,8 +214,11 @@
   // can answer. `C` is retired server-side but stays here so a replayed or
   // persisted old payload still renders instead of falling to unknown.
   // tests/test-status-presentation.js pins this against the server table.
+  // G/N are D's two goalState sub-letters (达成目标/需要交互) — same canonical
+  // status as D, only the badge word (succeededSubLabel below) differs.
   const CLASSIFY_LETTER_STATUS = Object.freeze({
     D: 'succeeded', C: 'running', W: 'waiting', B: 'background', E: 'error', P: 'running',
+    G: 'succeeded', N: 'succeeded',
   });
 
   /** classify letter (D/C/W/B/E/P) → canonical session status. */

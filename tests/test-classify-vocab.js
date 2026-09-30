@@ -151,7 +151,7 @@ test('the classify prompt carries the goal-verifiability and achievement criteri
 });
 
 test('CLASSIFY_DISPLAY is complete and self-consistent for every state', () => {
-  for (const letter of ['D', 'C', 'W', 'B', 'E', 'P']) {
+  for (const letter of ['D', 'C', 'W', 'B', 'E', 'P', 'G', 'N']) {
     const d = CLASSIFY_DISPLAY[letter];
     assert.ok(d, `${letter} present`);
     assert.equal(typeof d.label, 'string');
@@ -165,6 +165,14 @@ test('CLASSIFY_DISPLAY is complete and self-consistent for every state', () => {
   // job the user cannot answer was the lie the split removed.
   assert.equal(CLASSIFY_DISPLAY.B.cardStatus, 'background');
   assert.equal(CLASSIFY_DISPLAY.E.barTint, 'error');
+  // G/N are D's two goalState sub-letters: same icon/tone/priority as D
+  // (cardStatus/barTint stay 'succeeded'), only the label word differs.
+  assert.equal(CLASSIFY_DISPLAY.G.cardStatus, 'succeeded');
+  assert.equal(CLASSIFY_DISPLAY.G.barTint, 'succeeded');
+  assert.equal(CLASSIFY_DISPLAY.G.label, '达成目标');
+  assert.equal(CLASSIFY_DISPLAY.N.cardStatus, 'succeeded');
+  assert.equal(CLASSIFY_DISPLAY.N.barTint, 'succeeded');
+  assert.equal(CLASSIFY_DISPLAY.N.label, '需要交互');
 });
 
 test('classifyDisplay falls back to the wait state for unknown letters', () => {
@@ -249,6 +257,8 @@ test('each predicate answers exactly one question, and the letters partition by 
     W: [false, true, false, false, false],
     B: [false, false, true, false, false],
     D: [false, false, false, true, false],
+    G: [false, false, false, true, false],
+    N: [false, false, false, true, false],
     E: [false, false, false, false, true],
   };
   for (const letter of Object.keys(CLASSIFY_DISPLAY)) {
@@ -306,14 +316,19 @@ test('no predicate claims an unknown or un-normalized letter', () => {
   assert.equal(isTerminalLetter('d'), false);
 });
 
-test('live-letter membership: CLASSIFY_STATES is the parser\'s own output range', () => {
-  assert.deepEqual([...CLASSIFY_STATES].sort(), ['B', 'D', 'E', 'P', 'W']);
+test('live-letter membership: CLASSIFY_STATES covers everything a turn can persist', () => {
+  assert.deepEqual([...CLASSIFY_STATES].sort(), ['B', 'D', 'E', 'G', 'N', 'P', 'W']);
   // Everything the parser can still emit is a member — the set cannot drift
   // below the parser without this failing.
   for (const input of ['D', 'W', 'B', 'E', 'P']) {
     const state = parseClassifyResult(`目标\n实现中\n${input}`).state;
     assert.ok(CLASSIFY_STATES.has(state), `parser output ${state} is not a live letter`);
   }
+  // G/N are never raw parser output — state-machine.js persists them IN PLACE
+  // OF D once it reads D's goalState — but they must still be members, or a
+  // recovery guard (scheduler.js) would silently fold a recovered G/N back to D.
+  assert.ok(CLASSIFY_STATES.has('G'));
+  assert.ok(CLASSIFY_STATES.has('N'));
   // C is not live (retirement is `parseClassifyResult`, not a second decision
   // here), yet the predicates still tolerate a legacy persisted C.
   assert.equal(CLASSIFY_STATES.has('C'), false);
@@ -357,10 +372,10 @@ test('src/ has no inline classify-letter comparison outside the vocabulary', () 
   // letter D anywhere in the tree — CLI capability tables, push types and
   // comments legitimately carry letters of their own.
   const PATTERNS = [
-    /[=!]==?\s*['"][DPWEB]['"]/g,                  // classifyState === 'D'
-    /['"][DPWEB]['"]\s*[=!]==?/g,                  // 'D' === classifyState
+    /[=!]==?\s*['"][DPWEBGN]['"]/g,                  // classifyState === 'D'
+    /['"][DPWEBGN]['"]\s*[=!]==?/g,                  // 'D' === classifyState
     /\[\s*(?:['"][A-Z]['"]\s*,\s*)+['"][A-Z]['"]\s*\]\s*\.includes\(/g, // ['W','B'].includes(x)
-    /\.includes\(\s*['"][DPWEB]['"]\s*\)/g,        // [...].includes('D')
+    /\.includes\(\s*['"][DPWEBGN]['"]\s*\)/g,        // [...].includes('D')
   ];
   // Prove the guard catches the shapes it claims — including the two historic
   // ones. A guard that quietly matches nothing is worse than no guard.

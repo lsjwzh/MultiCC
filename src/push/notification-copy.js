@@ -37,6 +37,8 @@ const COPY = Object.freeze({
 // collapses it to W) but a legacy persisted C still renders as "wait on user".
 const KEY_OF = Object.freeze({
   d: 'succeeded', succeeded: 'succeeded', completed: 'succeeded',
+  // G/N are D's two goalState sub-letters — same push title as D.
+  g: 'succeeded', n: 'succeeded',
   w: 'waiting', waiting: 'waiting', c: 'waiting',
   b: 'waiting_background', waiting_background: 'waiting_background',
   e: 'error', error: 'error',

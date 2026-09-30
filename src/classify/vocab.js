@@ -127,6 +127,26 @@ const CLASSIFY_DISPLAY = {
     voiceText: null, ding: null,
     cardStatus: 'running', barTint: 'running',
   },
+  G: {  // Goal achieved — a D whose goalStateForClassify() sub-state is
+        // 'achieved'. state-machine.js persists this LETTER instead of D so a
+        // future filter can key on the letter directly (grouping/secondary
+        // judgement), not just the goalState metadata field. Icon/tone/priority
+        // stay identical to D on purpose — only the badge word differs.
+    label: '达成目标',
+    pushType: 'succeeded', pushTitle: '执行成功',
+    voiceText: '本轮执行成功', ding: 'succeeded',
+    cardStatus: 'succeeded', barTint: 'succeeded',
+  },
+  N: {  // Need interaction — a D whose goalStateForClassify() sub-state is
+        // 'interact'. Same reasoning as G above; kept out of the 'A' name
+        // because task-context-host.js's dead `classifyState === 'A'` branch
+        // and its accompanying test (test-task-board.js) already claim that
+        // letter for a retired, unrelated meaning.
+    label: '需要交互',
+    pushType: 'succeeded', pushTitle: '执行成功',
+    voiceText: '本轮执行成功', ding: 'succeeded',
+    cardStatus: 'succeeded', barTint: 'succeeded',
+  },
 };
 
 // Phase labels — centralized, used by both classify-in-progress path and
@@ -190,14 +210,19 @@ const OPEN_RUN_STATES = Object.freeze(['queued', 'running', 'waiting', 'backgrou
 /** Is this run state one whose run is still open (and therefore stoppable)? */
 function isOpenRunState(state) { return OPEN_RUN_STATES.includes(state); }
 
-// The live classify letters: exactly what parseClassifyResult can still return.
-// This answers "is this a state I recognize?" — a membership question, not a
-// question about meaning — so it is one set here rather than the
-// `new Set(['P','D','W','B','E'])` that session-work/scheduler.js and
+// The live classify letters: every value this system can persist as a turn's
+// classifyState. parseClassifyResult itself can only ever return P/D/W/B/E —
+// G and N are never raw model output, they are what state-machine.js persists
+// IN PLACE OF D once it reads D's goalState sub-state (achieved/interact). A
+// recovered/replayed schedule can carry G or N just as easily as D, so the
+// membership set has to know them too, or scheduler.js's recovery guards
+// (`CLASSIFY_STATES.has(classifyState) ? classifyState : 'D'`) would silently
+// downgrade a recovered G/N back to plain D. This is one set here rather than
+// the `new Set(['P','D','W','B','E'])` that session-work/scheduler.js and
 // workspace/runtime.js each used to declare by hand. C is deliberately absent
 // (it is retired and collapses to W); the predicates below still tolerate a
 // legacy persisted 'C' wherever one is read back from an older snapshot.
-const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E']);
+const CLASSIFY_STATES = new Set(['P', 'D', 'W', 'B', 'E', 'G', 'N']);
 
 // Helpers
 function classifyDisplay(cls) { return CLASSIFY_DISPLAY[cls] || CLASSIFY_DISPLAY['W']; }
@@ -221,7 +246,8 @@ function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 //   isProcessingLetter:  P (or the retired C) — a turn is in flight right now.
 //   isWaitForUserLetter: W — the turn ended and only the user can move it on.
 //   isBackgroundLetter:  B — the turn ended parked on a background job/callback.
-//   isTerminalLetter:    D — the current turn executed successfully (terminal).
+//   isTerminalLetter:    D/G/N — the current turn executed successfully
+//                        (terminal); G/N are D's two goalState sub-letters.
 //   isAbnormalLetter:    E — the turn ended in a fault or an explicit cancel.
 //   isSettledLetter:     D or W — won't change without new user input; safe to
 //                        skip for re-classify/push (the user is in charge).
@@ -233,7 +259,7 @@ function phaseLabel(ph) { return PHASE_LABELS[ph] || ''; }
 function isProcessingLetter(cls) { return cls === 'P' || cls === 'C'; }
 function isWaitForUserLetter(cls) { return cls === 'W'; }
 function isBackgroundLetter(cls) { return cls === 'B'; }
-function isTerminalLetter(cls) { return cls === 'D'; }
+function isTerminalLetter(cls) { return cls === 'D' || cls === 'G' || cls === 'N'; }
 function isAbnormalLetter(cls) { return cls === 'E'; }
 function isSettledLetter(cls) { return isTerminalLetter(cls) || isWaitForUserLetter(cls); }
 function isParkedLetter(cls) { return isWaitForUserLetter(cls) || isBackgroundLetter(cls); }
@@ -245,6 +271,8 @@ function isOutcomeLetter(cls) { return isTerminalLetter(cls) || isAbnormalLetter
 // task.status to done.
 const CLASSIFY_TURN_OUTCOME = Object.freeze({
   D: 'succeeded',
+  G: 'succeeded',
+  N: 'succeeded',
   C: 'running',
   W: 'waiting_user',
   B: 'waiting_background',
