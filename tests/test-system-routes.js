@@ -515,6 +515,11 @@ test('system route mount owns the app-binary metadata and canonical download rou
     // already needs) replaced it, and it has no route of its own.
     ['GET', '/api/system/disk-access', 'function'],
     ['POST', '/api/system/disk-access/open', 'function'],
+    // Agent desktop-permission guidance (lid mode): reads which macOS
+    // permissions the Agent holds, and opens the matching System Settings
+    // pane. Same reviewed family as disk-access/open above.
+    ['GET', '/api/system/agent-permissions', 'function'],
+    ['POST', '/api/system/agent-permissions/open', 'function'],
   ]);
 
   const response = { json(value) { this.body = value; } };

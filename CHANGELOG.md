@@ -2,6 +2,14 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.2.1 — English by default outside Chinese locales (2026-09-30)
+
+### Highlights
+
+- **The Web UI and desktop shell now default to English outside Chinese locales** — interface language resolves in three stages: your explicit choice wins, otherwise the system locale decides, falling back to English when it is not Chinese. Chinese locales keep Chinese as before, and every page gained a language switcher so the choice is always one click away. The terminal page and the task board were fully wired into i18n along the way. (The Flutter app still defaults to Chinese; its switch is tracked separately.)
+- **The session dashboard is gone** — the standalone dashboard web page, the App screen and its API were removed entirely; the Air view and the task board remain the way to watch sessions. If you linked to the old dashboard, those links now lead nowhere by design.
+- **macOS lid-closed mode keeps the desktop alive with the backlights off** — the Agent can keep working on a lid-closed Mac without waking the displays, and enabling lid mode now walks you through the desktop permissions it needs instead of failing silently. Installer source hashing no longer depends on the Perl locale.
+
 ## v2.2.0 — Auto-commit that fires even when no page is watching (2026-09-29)
 
 ### Highlights
