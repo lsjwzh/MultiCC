@@ -645,6 +645,7 @@ test('Flutter mirrors the web registry exactly', () => {
     D: SP.CLASSIFY_LETTER_STATUS.D, C: SP.CLASSIFY_LETTER_STATUS.C,
     W: SP.CLASSIFY_LETTER_STATUS.W, B: SP.CLASSIFY_LETTER_STATUS.B,
     E: SP.CLASSIFY_LETTER_STATUS.E, P: SP.CLASSIFY_LETTER_STATUS.P,
+    G: SP.CLASSIFY_LETTER_STATUS.G, N: SP.CLASSIFY_LETTER_STATUS.N,
   }, 'classify table differs between web and app');
 });
 

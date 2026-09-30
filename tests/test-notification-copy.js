@@ -43,7 +43,7 @@ const LETTERS = Object.keys(CLASSIFY_DISPLAY);
 // 字母 → 文案行 key（三侧共用的那一个抽象）。B 与 W 的 push type 相同，key 不同。
 const KEY_OF_LETTER = {
   D: 'succeeded', C: 'waiting', W: 'waiting', B: 'waiting_background',
-  E: 'error', P: 'running',
+  E: 'error', P: 'running', G: 'succeeded', N: 'succeeded',
 };
 // 推送/旧 notify 帧里带的是 type，不是字母。四个真会被推的 + 两个只作状态。
 const TYPE_LETTER = {
