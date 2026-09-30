@@ -2,6 +2,15 @@
 
 All notable changes to MultiCC are documented in this file.
 
+## v2.2.2 — Auto Provider knows what each model costs (2026-10-01)
+
+### Highlights
+
+- **A built-in per-model price table** — the Auto Provider router can now compare candidate lanes by cost before picking one. The table follows the public models.dev catalog (~225 providers, ~8300 models) and answers synchronously from local copies: a refreshed cache first, an OpenCode cache if one is already on disk, and a shipped first-party seed as the offline fallback — never a network round trip inside a turn.
+- **`/api/pricing/*` read endpoints** — status, bulk lookup (up to 50 model ids), an awaited refresh, and search, so the chat and manage UIs can show why one lane is cheaper than another.
+- **The Auto Provider editor shows pricing** — the web editor and the App's AI configuration sheet display per-model input/output (and cache) prices next to the candidates, and the router's cost reasoning is visible instead of implicit.
+- **Classify, composer and notification copy updates** — the classify state machine and vocab, the message composer and the push notification copy were tightened alongside, with the App's admission notes, classify bar and session status helpers following the same contracts.
+
 ## v2.2.1 — English by default outside Chinese locales (2026-09-30)
 
 ### Highlights
