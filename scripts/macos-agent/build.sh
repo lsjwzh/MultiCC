@@ -15,6 +15,8 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/MultiCCAgent.swift"
+BRIDGE="$HERE/LidBrightnessBridge.m"
+HEADER="$HERE/LidBrightnessBridge.h"
 OUT="${1:?usage: build.sh OUT [ARCH...]}"
 shift
 [ $# -gt 0 ] || set -- "$(uname -m)"
@@ -34,8 +36,10 @@ trap 'rm -rf "$WORK"' EXIT
 SLICES=""
 for arch in "$@"; do
   case "$arch" in arm64|x86_64) ;; *) echo "build.sh: unsupported arch $arch" >&2; exit 2 ;; esac
+  xcrun clang -O2 -fobjc-arc -target "$arch-apple-macos11.0" -c "$BRIDGE" -o "$WORK/$arch-bridge.o"
   # shellcheck disable=SC2086
-  xcrun swiftc -O -target "$arch-apple-macos11.0" $WEAK -o "$WORK/$arch" "$SRC"
+  xcrun swiftc -O -target "$arch-apple-macos11.0" -import-objc-header "$HEADER" $WEAK \
+    -o "$WORK/$arch" "$SRC" "$WORK/$arch-bridge.o"
   SLICES="$SLICES $WORK/$arch"
 done
 # shellcheck disable=SC2086

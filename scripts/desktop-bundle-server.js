@@ -26,6 +26,8 @@ const MACOS_AGENT_FILES = [
   'scripts/install-agent.sh',
   'scripts/macos-agent/build.sh',
   'scripts/macos-agent/MultiCCAgent.swift',
+  'scripts/macos-agent/LidBrightnessBridge.h',
+  'scripts/macos-agent/LidBrightnessBridge.m',
 ];
 // The root power reconciler 「关盖运行」installs inside its one administrator
 // prompt (plugins/utils/macos-power.js). Without these two files in the staged

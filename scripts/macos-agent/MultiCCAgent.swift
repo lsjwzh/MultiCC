@@ -46,6 +46,7 @@ import AppKit
 import Security
 import IOKit
 import IOKit.pwr_mgt
+import Darwin
 #if canImport(ScreenCaptureKit)
 import ScreenCaptureKit
 #endif
@@ -306,37 +307,9 @@ func screenLocked() -> Bool {
 
 // MARK: - Resident power runtime
 // The Agent owns display transitions even when the web server is stopped.
-// No idle-display policy, no persistent caffeinate assertion, no auto-unlock
-// on a timer: unlocking happens only when computer use requests it.
-struct LidDisplayDecision {
-  var previousClosed: Bool? = nil
-  mutating func action(enabled: Bool, closed: Bool?) -> String? {
-    guard enabled, let closed = closed else { previousClosed = nil; return nil }
-    defer { previousClosed = closed }
-    if closed && previousClosed != true { return "off" }
-    if !closed && previousClosed == true { return "wake" }
-    return nil
-  }
-}
-
-func powerCommand(_ args: [String]) -> (Int32, String) {
-  // pmset output is small for -g; read concurrently so a pipe can never stall
-  // the watchdog. A stuck process is killed after three seconds.
-  let process = Process()
-  process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-  process.arguments = args
-  let pipe = Pipe()
-  process.standardOutput = pipe
-  process.standardError = FileHandle.nullDevice
-  do { try process.run() } catch { return (-1, "") }
-  let timeout = DispatchWorkItem { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }
-  DispatchQueue.global().asyncAfter(deadline: .now() + 3, execute: timeout)
-  let data = pipe.fileHandleForReading.readDataToEndOfFile()
-  process.waitUntilExit()
-  timeout.cancel()
-  return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
-}
-
+// Unlocking happens only when computer use requests it. While the lid is
+// closed we keep the display active but turn off its backlight and the built-in
+// keyboard backlight. This requires a scoped idle-display assertion.
 func lidModeEnabled() -> Bool? {
   // Only MultiCC's explicit choice authorizes lid handling and auto-unlock.
   // Another application's SleepDisabled assertion must never grant consent.
@@ -365,34 +338,152 @@ final class LidDisplayGuard {
   private let lock = NSLock()
   private var state: [String: Any] = ["owner": "agent", "enabled": false]
   func snapshot() -> [String: Any] { lock.lock(); defer { lock.unlock() }; return state }
+  private struct SavedBrightness: Codable {
+    var display: Float
+    var keyboard: Float
+    var active: Bool
+  }
+  private let savedPath = "\(agentDir)/lid-brightness.json"
+  private var saved: SavedBrightness?
+  private var idleAssertion = IOPMAssertionID(0)
+  private var displayLibrary: UnsafeMutableRawPointer?
+  private var displayLookupAttempted = false
+  private typealias GetBrightness = @convention(c) (UInt32, UnsafeMutablePointer<Float>) -> Int32
+  private typealias SetBrightness = @convention(c) (UInt32, Float) -> Int32
+  private var getBrightness: GetBrightness?
+  private var setBrightness: SetBrightness?
+
+  private func displayID() -> CGDirectDisplayID? {
+    var ids = [CGDirectDisplayID](repeating: 0, count: 32)
+    var count: UInt32 = 0
+    guard CGGetOnlineDisplayList(UInt32(ids.count), &ids, &count) == .success else { return nil }
+    return ids.prefix(Int(count)).first(where: { CGDisplayIsBuiltin($0) != 0 })
+  }
+
+  private func displayFunctions() -> Bool {
+    if getBrightness != nil && setBrightness != nil { return true }
+    if displayLookupAttempted { return false }
+    displayLookupAttempted = true
+    displayLibrary = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_NOW)
+    guard let library = displayLibrary,
+          let get = dlsym(library, "DisplayServicesGetBrightness"),
+          let set = dlsym(library, "DisplayServicesSetBrightness") else { return false }
+    getBrightness = unsafeBitCast(get, to: GetBrightness.self)
+    setBrightness = unsafeBitCast(set, to: SetBrightness.self)
+    return true
+  }
+
+  private func readDisplay() -> Float? {
+    guard displayFunctions(), let id = displayID(), let get = getBrightness else { return nil }
+    var value: Float = -1
+    guard get(id, &value) == 0, value.isFinite, value >= 0, value <= 1 else { return nil }
+    return value
+  }
+
+  private func writeDisplay(_ value: Float) -> Bool {
+    if let actual = readDisplay(), abs(actual - value) < 0.02 { return true }
+    guard displayFunctions(), let id = displayID(), let set = setBrightness,
+          set(id, value) == 0, let actual = readDisplay() else { return false }
+    return abs(actual - value) < 0.02
+  }
+
+  private func readKeyboard() -> MCKeyboardBrightness? {
+    var result = MCKeyboardBrightness()
+    return MCKeyboardRead(&result) == 0 ? result : nil
+  }
+
+  private func writeKeyboard(_ value: Float) -> Bool {
+    guard let before = readKeyboard() else { return false }
+    if abs(before.brightness - value) < 0.02 &&
+       (value != 0 || before.backlightLevel < 0.05) { return true }
+    var actual = MCKeyboardBrightness()
+    guard MCKeyboardSet(before.identifier, value, &actual) == 0,
+          abs(actual.brightness - value) < 0.02 else { return false }
+    // A successful setter can leave the physical backlight unchanged.
+    return value != 0 || actual.backlightLevel < 0.05
+  }
+
+  private func persist(_ value: SavedBrightness) -> Bool {
+    guard let data = try? JSONEncoder().encode(value) else { return false }
+    do {
+      try FileManager.default.createDirectory(atPath: agentDir, withIntermediateDirectories: true)
+      try data.write(to: URL(fileURLWithPath: savedPath), options: .atomic)
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: savedPath)
+      saved = value
+      return true
+    } catch { return false }
+  }
+
+  private func holdDisplayAwake() -> Bool {
+    if idleAssertion != 0 { return true }
+    return IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+      IOPMAssertionLevel(kIOPMAssertionLevelOn), "MultiCC closed lid desktop" as CFString,
+      &idleAssertion) == kIOReturnSuccess
+  }
+
+  private func releaseDisplayAssertion() {
+    if idleAssertion != 0 { IOPMAssertionRelease(idleAssertion); idleAssertion = 0 }
+  }
+
+  private func restore() -> Bool {
+    guard let value = saved, value.active else { releaseDisplayAssertion(); return true }
+    let displayOK = writeDisplay(value.display)
+    let keyboardOK = writeKeyboard(value.keyboard)
+    if displayOK && keyboardOK && persist(SavedBrightness(display: value.display,
+        keyboard: value.keyboard, active: false)) {
+      releaseDisplayAssertion()
+      return true
+    }
+    return false // Keep the durable original for the next open/restart retry.
+  }
+
+  private func recordOpenBrightness() {
+    guard let display = readDisplay(), let keyboard = readKeyboard() else { return }
+    let keyboardValue = keyboard.suppressed != 0 ? (saved?.keyboard ?? keyboard.brightness) : keyboard.brightness
+    let next = SavedBrightness(display: display, keyboard: keyboardValue, active: false)
+    if let old = saved, !old.active,
+       abs(old.display - next.display) < 0.02,
+       abs(old.keyboard - next.keyboard) < 0.02 { return }
+    _ = persist(next)
+  }
+
+  private func darken() -> Bool {
+    guard let value = saved, !value.active, holdDisplayAwake(),
+          persist(SavedBrightness(display: value.display, keyboard: value.keyboard, active: true)) else { return false }
+    if writeDisplay(0) && writeKeyboard(0) { return true }
+    _ = restore()
+    return false
+  }
+
   func run() {
-    var decision = LidDisplayDecision()
+    if let data = FileManager.default.contents(atPath: savedPath) {
+      saved = try? JSONDecoder().decode(SavedBrightness.self, from: data)
+    }
     while true {
       let enabled = lidModeEnabled()
       let closed = lidClosed()
-      let previous = decision
-      let action = decision.action(enabled: enabled == true, closed: closed)
       var error: String? = enabled == nil ? "power-state-unavailable" : nil
-      if let action = action {
-        let success: Bool
-        if action == "off" {
-          success = powerCommand(["displaysleepnow"]).0 == 0
-        } else {
-          // User-activity assertion expires after one second; never prevents lock.
-          var assertion = IOPMAssertionID(0)
-          success = IOPMAssertionDeclareUserActivity("MultiCC lid opened" as CFString,
-            kIOPMUserActiveLocal, &assertion) == kIOReturnSuccess
-          if success {
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { IOPMAssertionRelease(assertion) }
+      if closed == false {
+        if !restore() { error = "brightness-restore-failed" }
+        else if enabled == true && closed == false { recordOpenBrightness() }
+      } else if enabled != true {
+        // Disabling the mode while closed must not turn the backlight on inside
+        // the lid. Restore the durable snapshot after the lid opens.
+        releaseDisplayAssertion()
+      } else if closed == true {
+        if saved?.active == true {
+          if !holdDisplayAwake() || !writeDisplay(0) || !writeKeyboard(0) {
+            error = "brightness-action-failed"
           }
-        }
-        if !success { decision = previous; error = "display-action-failed" }
+        } else if !darken() { error = "brightness-action-failed" }
+        if error == nil && screenLocked() { error = "desktop-locked" }
       }
       lock.lock()
       state = ["owner": "agent", "enabled": enabled == true,
-               "closed": closed as Any? ?? NSNull(), "error": error as Any? ?? NSNull()]
+               "closed": closed as Any? ?? NSNull(), "mode": saved?.active == true ? "backlight-off" : "normal",
+               "error": error as Any? ?? NSNull()]
       lock.unlock()
-      Thread.sleep(forTimeInterval: 2)
+      Thread.sleep(forTimeInterval: closed == true ? 2 : 0.2)
     }
   }
 }

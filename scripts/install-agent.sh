@@ -91,7 +91,7 @@ signing_identity() {
 }
 
 [ -f "$SRC" ] || die "missing $SRC"
-SUM="$(shasum -a 256 "$SRC" | cut -d' ' -f1)"
+SUM="$(cat "$SRC" "$HERE/macos-agent/LidBrightnessBridge.h" "$HERE/macos-agent/LidBrightnessBridge.m" | shasum -a 256 | cut -d' ' -f1)"
 STAMP="$APP/Contents/Resources/source.sha256"
 SIGNER_STAMP="$APP/Contents/Resources/signer"
 SIGNER="$(signing_identity)"
