@@ -196,7 +196,8 @@ A single operational surface for everything:
 ## i18n (Internationalization)
 
 - Both web UI and Flutter app support **Chinese (zh)** and **English (en)**.
-- Default language is Chinese (`zh`); switch to English in settings. The choice is remembered per device (`multicc_lang` in `localStorage` on web, shared preferences in the app).
+- The web UI and the desktop shell resolve their startup language in three steps: an explicit choice (`multicc_lang` in `localStorage`) ＞ the system/browser locale ＞ **English**. Only `zh` / `zh-*` systems start in Chinese; every other locale — including a container with no locale at all (the C locale) — starts in English, so an international directory review never opens on a Chinese screen. The choice is remembered per device.
+- The switch is the `EN/中` button at the top-right of every page header (Air, chat, terminal, dashboard, artifacts, tasks, shares, desktop splash/error). The Flutter app carries the same toggle in settings, where its own saved preference decides (Chinese until one is chosen, shared preferences).
 - All UI strings, status labels, error messages, and notifications are translated.
 
 ## Public access (tunnel)

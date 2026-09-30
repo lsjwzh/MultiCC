@@ -395,7 +395,7 @@ cd MultiCC && ./multicc update --force
 
 完整的文档索引（50+ 篇，含设计契约、语音、provider 路由、治理评审、模块化历史）在 **[docs/README.md](docs/README.md)**。
 
-界面本身支持中英文切换，默认中文。
+界面支持中英文切换，非中文系统默认英文，页头右上角的开关随时可切。
 
 ---
 
