@@ -338,7 +338,9 @@ test('the Air global panel is native: install hint and the macOS lid-sleep switc
     await click('power-toggle');
     assert.ok(await page.waitFor(`document.getElementById('air-global-permission-dialog').open`));
     assert.deepEqual(permissionOpens, ['accessibility']);
-    assert.match(await text('#air-global-permission-body'), /MultiCC Agent/);
+    assert.equal(await text('#air-global-permission-body'), await tParams('airGlobalPermissionsGuide', {
+      name: await t('airGlobalPermissionsAccessibility'),
+    }));
     agentPermissions = { ...agentPermissions, accessibility: true };
     await click('permission-check');
     assert.ok(await page.waitFor(`document.getElementById('air-global-permission-body').textContent === t('airGlobalPermissionsMissing', {name:t('airGlobalPermissionsRecording')})`));
