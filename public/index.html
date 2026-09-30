@@ -368,6 +368,35 @@
     }
     #mobile-keys::-webkit-scrollbar { display: none; }
 
+    /* 键区横滚 + 触控板固定的那一行：触控板不跟着键滚走（手机上方向键从此
+       可以拖出来，不用一格一格点）。 */
+    #mobile-keys-row { display: flex; align-items: center; }
+
+    /* 触控手势区：滑动发方向键（client.js 里 26px 一颗）。touch-action: none
+       很关键——不然滑动先被页面抢去滚动了。 */
+    #gesture-pad {
+      flex-shrink: 0;
+      width: 76px;
+      height: 34px;
+      margin: 6px 8px 4px 0;
+      background: #21262d;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #8b949e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      touch-action: none;
+      cursor: grab;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #gesture-pad svg { pointer-events: none; }
+
+    /* 自定义按键容器：display:contents 让动态按钮直接参与 #mobile-keys 的 flex */
+    #macro-keys { display: contents; }
+
     .mkey {
       flex-shrink: 0;
       min-width: 44px;
@@ -870,23 +899,37 @@
 
   <!-- Mobile input bar (visible on small screens) -->
   <div id="mobile-bar">
-    <div id="mobile-keys">
-      <button class="mkey" data-seq="&#x1b;">Esc</button>
-      <button class="mkey" data-seq="&#x09;">Tab</button>
-      <!-- 粘滞 Ctrl：点亮后下一个键消耗它（Termux 惯例），字母组合不再逐颗枚举 -->
-      <button class="mkey" data-role="ctrl">Ctrl</button>
-      <button class="mkey" data-seq="&#x15;">^U</button>
-      <button class="mkey" data-seq="&#x03;">^C</button>
-      <button class="mkey" data-seq="&#x04;">^D</button>
-      <button class="mkey" data-seq="&#x1b;[A" data-repeat>↑</button>
-      <button class="mkey" data-seq="&#x1b;[B" data-repeat>↓</button>
-      <button class="mkey" data-seq="&#x1b;[D" data-repeat>←</button>
-      <button class="mkey" data-seq="&#x1b;[C" data-repeat>→</button>
-      <!-- claude TUI 翻长输出靠这两个 -->
-      <button class="mkey" data-seq="&#x1b;[5~" data-repeat>PgUp</button>
-      <button class="mkey" data-seq="&#x1b;[6~" data-repeat>PgDn</button>
-      <button class="mkey" data-seq="&#x1b;[H" data-repeat>Home</button>
-      <button class="mkey" data-seq="&#x1b;[F" data-repeat>End</button>
+    <div id="mobile-keys-row">
+      <div id="mobile-keys">
+        <button class="mkey" data-seq="&#x1b;">Esc</button>
+        <button class="mkey" data-seq="&#x09;">Tab</button>
+        <!-- 粘滞 Ctrl：点亮后下一个键消耗它（Termux 惯例），字母组合不再逐颗枚举 -->
+        <button class="mkey" data-role="ctrl">Ctrl</button>
+        <button class="mkey" data-seq="&#x15;">^U</button>
+        <button class="mkey" data-seq="&#x03;">^C</button>
+        <button class="mkey" data-seq="&#x04;">^D</button>
+        <button class="mkey" data-seq="&#x1b;[A" data-repeat>↑</button>
+        <button class="mkey" data-seq="&#x1b;[B" data-repeat>↓</button>
+        <button class="mkey" data-seq="&#x1b;[D" data-repeat>←</button>
+        <button class="mkey" data-seq="&#x1b;[C" data-repeat>→</button>
+        <!-- claude TUI 翻长输出靠这两个 -->
+        <button class="mkey" data-seq="&#x1b;[5~" data-repeat>PgUp</button>
+        <button class="mkey" data-seq="&#x1b;[6~" data-repeat>PgDn</button>
+        <button class="mkey" data-seq="&#x1b;[H" data-repeat>Home</button>
+        <button class="mkey" data-seq="&#x1b;[F" data-repeat>End</button>
+        <!-- 自定义按键（localStorage，见 client.js），排在固定键后面 -->
+        <span id="macro-keys"></span>
+        <button class="mkey" data-role="macro-add" data-i18n-title="termMacroTitle" title="自定义按键">＋</button>
+      </div>
+      <!-- 触控手势区：滑动发方向键 -->
+      <div id="gesture-pad" data-i18n-title="termGesturePad" title="滑动发送方向键" aria-label="gesture pad">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">
+          <path d="M14 5l3 3.5h-6z" fill="currentColor" stroke="none"/>
+          <path d="M14 23l3-3.5h-6z" fill="currentColor" stroke="none"/>
+          <path d="M5 14l3.5 3v-6z" fill="currentColor" stroke="none"/>
+          <path d="M23 14l-3.5 3v-6z" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
     </div>
     <div id="mobile-input-row">
       <input id="mobile-input" type="text"
@@ -895,6 +938,31 @@
         autocomplete="off" autocorrect="off"
         autocapitalize="off" spellcheck="false" />
       <button id="mobile-send" data-i18n="termSend">发送</button>
+    </div>
+  </div>
+
+  <!-- Mobile custom-key manager (styles match init-cwd-modal) -->
+  <div id="macro-modal" style="display:none; position:fixed; inset:0; background:#000000cc; z-index:15000; align-items:center; justify-content:center;">
+    <div style="background:#161b22; border:1px solid #30363d; border-radius:12px; padding:20px; width:420px; max-width:92vw; max-height:80vh; overflow-y:auto;">
+      <div style="font-size:16px; font-weight:700; color:#f0f6fc; margin-bottom:4px;" data-i18n="termMacroTitle">自定义按键</div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:12px;" data-i18n="termMacroEmpty">把常用命令存成一颗键，点一下就发进终端。</div>
+      <div id="macro-list" style="margin-bottom:12px;"></div>
+      <div style="font-size:12px; color:#8b949e; margin-bottom:4px;" data-i18n="termMacroLabel">按键名（如 gs）</div>
+      <input id="macro-label" type="text"
+        style="width:100%; background:#0d1117; border:1px solid #21262d; border-radius:6px; color:#c9d1d9; font-size:13px; font-family:monospace; padding:7px 10px; outline:none; margin-bottom:10px; box-sizing:border-box;"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+      <div style="font-size:12px; color:#8b949e; margin-bottom:4px;" data-i18n="termMacroText">发送内容（如 git status）</div>
+      <input id="macro-text" type="text"
+        style="width:100%; background:#0d1117; border:1px solid #21262d; border-radius:6px; color:#c9d1d9; font-size:13px; font-family:monospace; padding:7px 10px; outline:none; margin-bottom:10px; box-sizing:border-box;"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#8b949e; margin-bottom:14px;">
+        <input id="macro-enter" type="checkbox" checked style="accent-color:#238636;" />
+        <span data-i18n="termMacroEnter">发送后回车</span>
+      </label>
+      <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button id="macro-close" style="padding:7px 16px; border-radius:6px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; font-size:13px; cursor:pointer;" data-i18n="done">完成</button>
+        <button id="macro-add" style="padding:7px 16px; border-radius:6px; border:1px solid #2ea043; background:#238636; color:#fff; font-size:13px; font-weight:600; cursor:pointer;" data-i18n="add">添加</button>
+      </div>
     </div>
   </div>
 

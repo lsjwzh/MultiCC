@@ -333,6 +333,54 @@ test('终端页移动键盘条：粘滞 Ctrl、长按连发、PgUp/PgDn', async 
     await new Promise(r => setTimeout(r, 400));
     const afterWait = (await frames()).filter(f => f === '\x1b[B').length;
     assert.equal(afterWait, atRelease, '抬手后连发要停');
+    // 真实浏览器里 pointerup 后面还跟一个 click（正是消费 repeatFired 的那一次），
+    // 合成事件不生成 click——补上这一下，别让连发标志吃掉后面的断言用的点击。
+    await page.evaluate(`document.querySelector('.mkey[data-seq="\\u001b[B"]').click()`);
+
+    // ── 触控手势区：滑动发方向键，26px 一颗，抬手清零 ──────────────────────
+    // 距离走 clientX/Y 自己算（合成事件没有 movementX），所以 PointerEvent
+    // 要带坐标。手势分两段：62px 上滑 = 两颗 ↑，再滑 15px 不够一步也不该
+    // 沾上上一段的余量。
+    await page.evaluate(`(() => {
+      const pad = document.getElementById('gesture-pad');
+      const fire = (type, x, y) => pad.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y }));
+      fire('pointerdown', 300, 400);
+      fire('pointermove', 300, 338); // -62px = 2 步，余 10px
+      fire('pointerup', 300, 338);
+      fire('pointerdown', 300, 400);
+      fire('pointermove', 300, 385); // -15px，接旧余量也不该够一步
+      fire('pointerup', 300, 385);
+    })()`);
+    const padFrames = (await frames()).filter(f => f === '\x1b[A');
+    assert.equal(padFrames.length, 2, `上滑 62px 发两颗 ↑（实得 ${JSON.stringify(await frames())}）`);
+
+    // ── 自定义按键：localStorage 存 → 键区渲染 → 点击发文本+CR ─────────────
+    await page.evaluate(`(() => {
+      localStorage.setItem('multicc:terminal-macros', JSON.stringify([
+        { label: 'gs', text: 'git status', enter: true },
+        { label: 'll', text: 'ls -la', enter: false },
+      ]));
+      window.MultiCCTerminal.refreshMacros();
+    })()`);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#macro-keys .mkey').length`), 2, '自定义按键渲染进键区');
+    await page.evaluate(`document.querySelector('#macro-keys .mkey[data-macro-index="0"]').click()`);
+    await page.evaluate(`document.querySelector('#macro-keys .mkey[data-macro-index="1"]').click()`);
+    const macroFrames = (await frames()).slice(-2);
+    assert.deepEqual(macroFrames, ['git status\r', 'ls -la'], 'enter:true 补 CR，enter:false 只发原文');
+
+    // 坏 localStorage 收敛成空表：键区清空，不抛。
+    await page.evaluate(`(() => {
+      localStorage.setItem('multicc:terminal-macros', '{"not":"a list"}');
+      window.MultiCCTerminal.refreshMacros();
+    })()`);
+    assert.equal(await page.evaluate(`document.querySelectorAll('#macro-keys .mkey').length`), 0, '坏数据收敛成零颗');
+    assert.deepEqual(await page.evaluate(`window.MultiCCTerminal.loadMacros()`), []);
+
+    // ── ＋：弹出自定义按键管理弹窗 ──────────────────────────────────────────
+    await page.evaluate(`document.querySelector('.mkey[data-role="macro-add"]').click()`);
+    assert.equal(await page.evaluate(`window.MultiCCTerminal.macroDialogVisible()`), true, '＋ 要打开管理弹窗');
+    await page.evaluate(`document.getElementById('macro-close').click()`);
+    assert.equal(await page.evaluate(`window.MultiCCTerminal.macroDialogVisible()`), false, '完成要关掉弹窗');
 
     assert.deepEqual(await page.evaluate(`window.__errors||[]`), [], '页面上不该有未捕获异常');
   });
