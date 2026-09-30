@@ -22,7 +22,7 @@
 // kCliDisplays 是这张表摊平后的车道视图，所有既有取词都读它。
 //
 // 这些字面量原先散在四处，而且各写各的：message.dart 的 displayName switch、
-// dashboard_screen 的两处 switch（`_ => 'Claude'`，于是 codebuddy / kimi / dsh /
+// 已删掉的看板页那两处 switch（`_ => 'Claude'`，于是 codebuddy / kimi / dsh /
 // gemini / grok 在仪表盘上都显示成 Claude）、ai_config_sheet 的 _providerName、
 // cron_screen 的 _cliChoice。现在都从这里取。
 //

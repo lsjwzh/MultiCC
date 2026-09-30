@@ -151,8 +151,8 @@ const FAMILIES = Object.freeze({
 // claude-exp/codex-exp), a four-entry one in air-provider.js, a ternary chain
 // in chat-ai-config.js that printed "WorkBuddy" for any CLI it did not know, a
 // label ternary in server.js (where the unknown case became "Claude Code"), and
-// on Flutter a `switch` in dashboard_screen.dart whose `_ => 'Claude'` really
-// did render codebuddy / dsh / gemini / grok as "Claude".
+// on Flutter a `switch` in the (now removed) dashboard screen whose
+// `_ => 'Claude'` really did render codebuddy / dsh / gemini / grok as "Claude".
 //
 // The mirrors are public/provider-catalog.js (web) and
 // app/lib/utils/cli_display.dart (app); tests/test-cli-display-parity.js reads

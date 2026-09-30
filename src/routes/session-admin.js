@@ -149,14 +149,6 @@ function createSessionAdminRuntime(rawDeps) {
       read: (id, record) => readSessionRuntime(id, record),
     },
   });
-  // Dashboard DTOs do not expose mergeState. Keep their high-frequency list
-  // and stats polling side-effect free instead of spawning Git work per row.
-  const dashboardSessionQuery = createSessionQueryService({
-    records: recordsPort,
-    runtime: {
-      read: (id, record) => readSessionRuntime(id, record, { includeMergeState: false }),
-    },
-  });
 
   const sessionWorkspace = createWorkspaceService({
     sessionQuery,
@@ -238,26 +230,6 @@ function createSessionAdminRuntime(rawDeps) {
         : runtime.terminalLastActivity,
       active: useTerminalRuntime ? runtime.terminalActive : runtime.chatActive,
       clients: useTerminalRuntime ? runtime.terminalClients : runtime.chatClients,
-    };
-  }
-
-  function dashboardSessionPresenter({ record, runtime }) {
-    const task = sessionView(record.id);
-    return {
-      id: record.id,
-      label: record.label || null,
-      cli: record.cli || 'claude',
-      kind: record.kind || 'terminal',
-      type: record.type || null,   // 'commander' etc. — lets the UI badge/guard by role
-      active: !!runtime.active,
-      createdAt: record.createdAt || null,
-      lastActivity: runtime.lastActivity,
-      classifyState: task.classifyState || null,
-      goal: task.goal || '',
-      taskShortCode: task.taskShortCode,
-      stateSource: task.stateSource,
-      phase: task.phase || 'idle',
-      ...verdictFreshness(task),
     };
   }
 
@@ -436,31 +408,6 @@ function createSessionAdminRuntime(rawDeps) {
         });
       }
       res.json(list);
-    });
-
-    app.get('/api/dashboard/sessions', (req, res) => {
-      const { kind, active: activeParam } = req.query;
-      const filterActive = activeParam === undefined ? null : activeParam === 'true';
-      const list = dashboardSessionQuery.list({
-        filter: record => !kind || (record.kind || 'terminal') === kind,
-        presenter: dashboardSessionPresenter,
-      }).filter(session => filterActive === null || session.active === filterActive);
-      res.json({ sessions: list, count: list.length });
-    });
-
-    app.get('/api/dashboard/stats', (req, res) => {
-      const all = dashboardSessionQuery.listContexts();
-      let active = 0;
-      const byCli = {};
-      const byKind = {};
-      for (const { record, runtime } of all) {
-        const cli = record.cli || 'claude';
-        const kind = record.kind || 'terminal';
-        byCli[cli] = (byCli[cli] || 0) + 1;
-        byKind[kind] = (byKind[kind] || 0) + 1;
-        if (runtime.active) active += 1;
-      }
-      res.json({ total: all.length, active, byCli, byKind });
     });
 
     app.post('/api/sessions/:id/reclassify', (req, res) => {

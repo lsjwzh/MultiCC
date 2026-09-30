@@ -162,8 +162,6 @@ test('session admin mounts the complete bounded route set once', () => {
     'GET /api/v1/sessions/:id',
     'GET /api/v1/directories/:id/workspace',
     'GET /api/sessions',
-    'GET /api/dashboard/sessions',
-    'GET /api/dashboard/stats',
     'POST /api/sessions/:id/reclassify',
     'POST /api/sessions/:id/mark-task-done',
     'POST /api/reclassify-all',
@@ -176,18 +174,7 @@ test('session admin mounts the complete bounded route set once', () => {
   assert.deepEqual([...app.routes.keys()].sort(), expected.sort());
 });
 
-test('dashboard polling does not start merge-state Git work', () => {
-  const fixture = createFixture();
-  invoke(fixture.app.routes.get('GET /api/dashboard/sessions'));
-  invoke(fixture.app.routes.get('GET /api/dashboard/stats'));
-  assert.equal(fixture.getMergeStateReads(), 0);
-
-  invoke(fixture.app.routes.get('GET /api/sessions'));
-  assert.ok(fixture.getMergeStateReads() > 0,
-    'the compatibility list retains its explicitly exposed mergeState field');
-});
-
-test('v1 responses stay bounded while legacy and dashboard fields remain compatible', () => {
+test('v1 responses stay bounded while legacy fields remain compatible', () => {
   const { app } = createFixture();
   const v1 = invoke(app.routes.get('GET /api/v1/sessions'));
   assert.equal(v1.body.count, 2);
@@ -215,14 +202,6 @@ test('v1 responses stay bounded while legacy and dashboard fields remain compati
   assert.equal(detail.body.rolePresetId, 'testing__testing-engineer');
   assert.equal(detail.body.experimentalMode, 'tui-chat-mirror');
 
-  const dashboard = invoke(app.routes.get('GET /api/dashboard/stats'));
-  assert.deepEqual(dashboard.body, {
-    total: 2,
-    active: 2,
-    byCli: { claude: 1, codex: 1 },
-    byKind: { chat: 1, terminal: 1 },
-  });
-
   const workspace = invoke(app.routes.get('GET /api/directories/:id/workspace'), {
     params: { id: 'd1' },
   });
@@ -238,20 +217,19 @@ test('every roster carries whether Aux is still revising the judgement', () => {
     // and it keeps showing the judgement itself (it is still the best we have).
     installAuxHealthProvider(() => ({ unhealthy: true, sinceAt: 1_700_000_000_000 }));
     for (const [name, request] of [
-      ['dashboard roster', ['GET /api/dashboard/sessions', {}]],
       ['workspace roster', ['GET /api/directories/:id/workspace', { params: { id: 'd1' } }]],
     ]) {
       const [route, args] = request;
       const body = invoke(app.routes.get(route), args).body;
-      const sessions = Array.isArray(body.sessions) ? body.sessions : body;
-      const s1 = sessions.find(item => item.id === 's1');
+      const s1 = body.sessions.find(item => item.id === 's1');
       assert.equal(s1.auxUnhealthy, true, `${name} marks the stale judgement`);
       assert.equal(s1.auxUnhealthySince, 1_700_000_000_000, `${name} says since when`);
       assert.equal(s1.goal, 'done goal', `${name} still shows the judgement`);
     }
 
     installAuxHealthProvider(() => ({ unhealthy: false }));
-    const recovered = invoke(app.routes.get('GET /api/dashboard/sessions')).body.sessions;
+    const recovered = invoke(app.routes.get('GET /api/directories/:id/workspace'),
+      { params: { id: 'd1' } }).body.sessions;
     assert.equal(recovered.find(item => item.id === 's1').auxUnhealthy, false);
     assert.equal(recovered.find(item => item.id === 's1').auxUnhealthySince, null);
   } finally {
@@ -378,7 +356,6 @@ test('server delegates session-admin routes and retains only the shared v1 error
   assert.doesNotMatch(server, /app\.get\('\/api\/dashboard\/sessions'/);
   for (const [method, route] of [
     ['get', '/api/v1/sessions'],
-    ['get', '/api/dashboard/sessions'],
     ['post', '/api/reclassify-all'],
     ['get', '/api/debug/classify-test-cases'],
     ['get', '/api/directories/:id/workspace'],
@@ -411,7 +388,7 @@ test('legacy session detail exposes the task-bound marker for direct addressing 
 });
 
 
-test('dashboard and workspace read the shell cursor execution without overwriting historical source state', () => {
+test('the workspace roster reads the shell cursor execution without overwriting historical source state', () => {
   let executionSessionId = 'child';
   const f = createFixture({ resolveStateTarget: id => ({ sourceSessionId: id,
     shellId: id === 's1' ? 'shell-1' : null, executionSessionId: id === 's1' ? executionSessionId : id }) });
@@ -426,10 +403,11 @@ test('dashboard and workspace read the shell cursor execution without overwritin
     assert.equal(snapshot.status, { P: 'running', W: 'waiting', D: 'succeeded', E: 'error' }[letter]);
     assert.equal(snapshot.goal, 'new question');
     assert.equal(snapshot.stateSource.executionSessionId, 'child');
-    const dashboard = invoke(f.app.routes.get('GET /api/dashboard/sessions'));
-    const list = Array.isArray(dashboard.body) ? dashboard.body : dashboard.body.sessions;
-    assert.equal(list.find(s => s.id === 's1').classifyState, letter);
-    assert.equal(list.find(s => s.id === 's1').active, true);
+    // The route layer must resolve through the same cursor as the runtime above.
+    const roster = invoke(f.app.routes.get('GET /api/directories/:id/workspace'),
+      { params: { id: 'd1' } }).body.sessions;
+    assert.equal(roster.find(s => s.id === 's1').classifyState, letter);
+    assert.equal(roster.find(s => s.id === 's1').goal, 'new question');
     assert.equal(f.records.get('s1').taskState.classifyState, 'E');
   }
   executionSessionId = 's1';

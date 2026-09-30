@@ -2454,11 +2454,6 @@
       "lane": "deterministic"
     },
     {
-      "path": "tests/test-dashboard.js",
-      "tier": "other",
-      "lane": "deterministic"
-    },
-    {
       "path": "tests/test-delivery-evidence.js",
       "tier": "core",
       "lane": "deterministic",

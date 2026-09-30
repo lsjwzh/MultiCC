@@ -803,11 +803,6 @@ test('every voice entry point goes through the one launch endpoint', () => {
   assert.match(chatHtml, /voice-launch-client\.js/);
   assert.equal(/src="s2s-session\.js"/.test(chatHtml), false);
 
-  const dashboardHtml = readRepoFile('public/dashboard.html');
-  assert.match(dashboardHtml, /voice-global-btn/);
-  assert.match(dashboardHtml, /BETA/, 'the secondary status dashboard labels realtime voice as beta');
-  assert.match(dashboardHtml, /voice-launch-client\.js/);
-  assert.match(readRepoFile('public/dashboard.js'), /MultiCCVoiceLaunch/);
 
   const manage = readRepoFile('public/manage-qwen-audio.js');
   assert.match(manage, /MultiCCVoiceLaunch/);

@@ -70,15 +70,15 @@ const webRefs = new Set();
 // （任务配置弹窗的模型/线路下拉、Auto 候选池），所以一起扫；
 // chat-handoff.js 是交接包的导出/导入弹窗（chat.js 是行数棘轮文件，装不下），
 // 它同样直接渲染在聊天页上。
-// 终端页（index.html）和会话看板（dashboard.html）自己不带静态文案：信息条、统计卡、
-// 表格都是脚本 fetch 回来之后现画的，applyI18n 那一遍扫不到 —— 它们的词条只出现在
-// client.js / dashboard.js 里。这两个文件以前不在这份名单上，key 拼错了 CI 一声不吭
-// （页面上直接印出 termCwdUnknown 这种东西），所以一起扫。
+// 终端页（index.html）自己不带静态文案：信息条是脚本 fetch 回来之后现画的，
+// applyI18n 那一遍扫不到 —— 它的词条只出现在 client.js 里。这个文件以前不在这份
+// 名单上，key 拼错了 CI 一声不吭（页面上直接印出 termCwdUnknown 这种东西），所以
+// 一起扫。
 for (const name of [...pageFiles, 'chat.js', 'chat-ai-config.js', 'auto-provider-editor.js',
-  'chat-handoff.js', 'client.js', 'dashboard.js', ...airFiles]) {
+  'chat-handoff.js', 'client.js', ...airFiles]) {
   const source = fs.readFileSync(path.join(root, 'public', name), 'utf8');
   // tr(...) 也是取词：它是各模块自带的「词典取不到就用中文兜底」那层壳（client.js /
-  // dashboard.js / memo-controller.js 都有），只认 t(/tt( 会让这批 key 全漏掉。
+  // memo-controller.js 都有），只认 t(/tt( 会让这批 key 全漏掉。
   for (const match of source.matchAll(/(?:\btt|\btr|\bt)\(\s*(['"])([^'"\n]+)\1/g)) webRefs.add(match[2]);
   for (const match of source.matchAll(/data-i18n(?:-title|-placeholder|-aria-label|-value)?=["']([^"']+)["']/g)) webRefs.add(match[1]);
   // t() 的参数不一定当场写成字面量 —— 也有 t(enabled ? 'airLidSleepOn' : 'airLidSleepOff')

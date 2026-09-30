@@ -80,6 +80,18 @@ function createStaticAssetsRoutes(rawDeps) {
       return res.redirect(`/air?${params.toString()}`);
     });
 
+    // The standalone session dashboard is gone: its overview table was a
+    // read-only mirror of what Air's console and the App both cover, and its
+    // only inbound link was the terminal page's 📊 button. Old bookmarks land
+    // on the console rather than a 404.
+    app.get(['/dashboard', '/dashboard.html'], (req, res) => {
+      const params = new URLSearchParams({ view: 'overview' });
+      for (const key of ['dir', 'task', 'token', 'external']) {
+        if (typeof req.query[key] === 'string' && req.query[key]) params.set(key, req.query[key]);
+      }
+      return res.redirect(`/air?${params.toString()}`);
+    });
+
     // The legacy task planner has been removed, including its embedded entry.
     app.get(['/air', '/air.html'], (req, res, next) => {
       if (req.query.view !== 'planner') return next();
