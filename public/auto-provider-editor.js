@@ -33,10 +33,6 @@
   // in, because picking a model needs a ranking to pick by.
   const DEFAULT_ROUTING_TIERING = 'manual';
   const PRICE_TIERING = 'price';
-  // /api/pricing/lookup is a bulk endpoint capped at 50 ids (src/routes/
-  // pricing.js); a pool never has more than MAX_CANDIDATES lines anyway, but the
-  // batch is trimmed rather than refused if a host hands us more.
-  const MAX_PRICE_MODELS = 50;
   // 候选池预设：每次新建 Auto Provider 都要重新勾一遍候选、调一遍优先级太费事，
   // 所以可以把配好的池子存成具名预设，也会自动记住最近真正用过的几份。存在浏览器
   // localStorage 里 —— 同源的 chat 弹窗、manage 任务板、Air 任务配置共用一份。
@@ -236,54 +232,6 @@
     return cli ? cliName(cli) : tt('autoEditorCliCurrent', '当前 CLI');
   }
 
-  // Prices are USD per 1M tokens (the unit the table publishes): two decimals
-  // once they are a dollar, three below that, so a $0.027 model still reads as
-  // a number rather than as 0.03.
-  function priceAmount(value) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return null;
-    const rounded = number >= 1 ? Math.round(number * 100) / 100 : Math.round(number * 1000) / 1000;
-    return `$${rounded}`;
-  }
-
-  // "$0.27/$1.1 · 每 1M tokens" — '' when the table knows nothing about this
-  // model, which the caller renders as 价格未知 rather than as a free line. A
-  // table that only carries one of the two numbers still says what it knows.
-  function priceLabel(entry) {
-    if (!entry || typeof entry !== 'object') return '';
-    const input = priceAmount(entry.input);
-    const output = priceAmount(entry.output);
-    if (input != null && output != null) {
-      return tt('autoRoutePricePair', ' · {input}/{output} 每 1M tokens',
-        { input, output }).trim();
-    }
-    const one = input != null ? input : output;
-    const blended = one == null ? priceAmount(entry.blended) : null;
-    const price = one == null ? blended : one;
-    if (price == null) return '';
-    return tt('autoRoutePriceOne', ' · {price} 每 1M tokens', { price }).trim();
-  }
-
-  function priceFetchedAt(status) {
-    const raw = status && status.fetchedAt;
-    const at = raw == null || raw === '' ? null : new Date(raw);
-    if (!at || Number.isNaN(at.getTime())) return '';
-    const pad = value => String(value).padStart(2, '0');
-    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} `
-      + `${pad(at.getHours())}:${pad(at.getMinutes())}`;
-  }
-
-  // One line of "where these numbers came from": the source file, when it was
-  // read, and whether it is old enough that a refresh is worth pressing.
-  function priceStatusText(status) {
-    if (!status || typeof status !== 'object') return tt('autoEditorPriceUnavailable', '价格表暂不可用');
-    const source = String(status.source || '') || tt('autoEditorPriceSourceUnknown', '来源未知');
-    const at = priceFetchedAt(status);
-    const parts = [source, at].filter(Boolean);
-    if (status.stale === true) parts.push(tt('autoEditorPriceStale', '已过期'));
-    return tt('autoEditorPriceStatus', '价格表 {detail}', { detail: parts.join(' · ') });
-  }
-
   function selectionCrossesTrust(candidates, providers) {
     const byId = new Map((Array.isArray(providers) ? providers : [])
       .filter(provider => provider && provider.id)
@@ -353,19 +301,6 @@
       return catalog.providersForCli(catalog.normalizeCatalog(raw), cli);
     }
     return raw && Array.isArray(raw.providers) ? raw.providers : [];
-  }
-
-  // The price table over HTTP: one batched lookup for every model on screen,
-  // the status of the table behind those numbers, and the refresh button.
-  function defaultPricingApi() {
-    const scope = typeof window !== 'undefined' ? window : null;
-    const api = scope && scope.MultiCCApi;
-    if (!api || typeof api.json !== 'function') return null;
-    return {
-      lookup: models => api.json(`/api/pricing/lookup?models=${encodeURIComponent(models.join(','))}`),
-      status: () => api.json('/api/pricing/status'),
-      refresh: () => api.json('/api/pricing/refresh', { method: 'POST' }),
-    };
   }
 
   function candidateForProvider(provider, priority, configured) {
@@ -792,9 +727,6 @@ ${P} ${P}-tier{grid-area:tier}
 ${P}.is-price ${P}-tier{display:none}
 ${P}-auto-model-field{display:none;align-items:center;gap:5px;margin-top:4px;font-size:11px;color:var(--ape-muted)}
 ${P}.is-price ${P}-auto-model-field{display:flex}
-${P}-price{font-size:11px;white-space:nowrap}
-${P}-pricing{display:flex;align-items:center;gap:4px 12px;flex-wrap:wrap;margin:0 0 10px}
-${P}-price-status{flex:1 1 auto;min-width:0}
 ${P}-cli-switch-hint,${P}-tiering-hint{margin:-4px 0 12px}
 ${P} ${P}-tier button{height:22px;padding:0 9px;font-size:11px}
 ${P}.is-order ${P}-tier{display:none}
@@ -882,14 +814,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     const laneCache = new Map();
     const loadCliProviders = typeof options.loadCliProviders === 'function'
       ? options.loadCliProviders : defaultCliProviderLoader;
-    // The price table over HTTP. `undefined` means "use the page's client",
-    // null means "this host has no pricing" — the same convention the preset
-    // store uses.
-    const pricingApi = options.pricingApi === undefined ? defaultPricingApi() : options.pricingApi;
-    let priceGeneration = 0;
-    let priceKey = '';
-    let priceStatus = null;
-    let priceFailed = false;
     // The stored pool the two pool-level choices were last read from, so a
     // re-render of the same selection does not overwrite the user's own choice.
     let seededKey = null;
@@ -976,15 +900,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       tt('autoEditorTieringPrice', '按价格'));
     tieringRow.append(make('span', '', tieringLabel), tieringSeg);
     const tieringHint = make('p', 'multicc-auto-editor-mode-hint multicc-auto-editor-tiering-hint');
-
-    // What a generation of models costs, and where that answer came from. One
-    // batched lookup covers every enabled line's model.
-    const pricingBar = make('div', 'multicc-auto-editor-pricing');
-    const pricingStatusText = make('span', 'multicc-auto-editor-muted multicc-auto-editor-price-status');
-    pricingStatusText.setAttribute('aria-live', 'polite');
-    const pricingRefresh = button('multicc-auto-editor-price-refresh multicc-auto-editor-link',
-      tt('autoEditorPriceRefresh', '刷新价格表'));
-    pricingBar.append(pricingStatusText, pricingRefresh);
 
     const jevBox = make('div', 'multicc-auto-editor-jev');
     // Which gateway every Jev call goes to — the first thing to decide about the
@@ -1101,7 +1016,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     more.append(moreSummary, moreBody);
 
     container.replaceChildren(top, modeRow, modeHint, cliSwitchRow, cliSwitchHint,
-      tieringRow, tieringHint, pricingBar, jevBox, listHead, list, addBox, summary,
+      tieringRow, tieringHint, jevBox, listHead, list, addBox, summary,
       error, warning, more);
 
     function rows() {
@@ -1631,9 +1546,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       show(unknownRow, routingOn);
       renderSummary();
       renderMore();
-      // One batched price ask for every line on screen; an unchanged set of
-      // models is dropped inside refreshPrices.
-      refreshPrices();
       // The key is looked up the first time routing is switched on, not on
       // every open of the editor.
       if (routingOn && keyState === 'unknown') checkKey();
@@ -1876,101 +1788,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       });
     }
 
-    // ── 价格表 ────────────────────────────────────────────────────────────────
-    //
-    // Every enabled line's model goes into ONE lookup: the table answers from a
-    // local copy, but the question is per page-open, not per row. `priceKey` is
-    // the set of models last asked for, so a keystroke in an unrelated field
-    // does not re-ask.
-
-    function priceModelOf(row) {
-      const state = rowState.get(row);
-      const provider = state && state.provider;
-      const model = rowModel(row) || (provider && provider.model) || '';
-      return String(model || '').trim();
-    }
-
-    function priceTargets() {
-      const targets = new Map();
-      for (const row of order) {
-        const node = row.querySelector('.multicc-auto-editor-price');
-        if (!node) continue;
-        targets.set(node, priceModelOf(row));
-      }
-      return targets;
-    }
-
-    function paintPrices(prices) {
-      const byModel = prices && typeof prices === 'object' ? prices : {};
-      for (const [node, model] of priceTargets()) {
-        const label = model && !priceFailed ? priceLabel(byModel[model]) : '';
-        node.textContent = label || (model ? tt('autoEditorPriceUnknown', '价格未知') : '');
-        node.title = model
-          ? tt('autoEditorPriceTitle', '{model} 的价格（USD / 1M tokens）', { model })
-          : '';
-        show(node, !!model);
-      }
-    }
-
-    function paintPriceStatus() {
-      if (!pricingApi) {
-        show(pricingBar, false);
-        return;
-      }
-      show(pricingBar, true);
-      pricingStatusText.textContent = priceFailed
-        ? tt('autoEditorPriceUnavailable', '价格表暂不可用')
-        : priceStatusText(priceStatus);
-    }
-
-    // One batched ask for everything on screen. `force` skips the "same set of
-    // models as last time" guard, which is only useful after a refresh.
-    function refreshPrices({ force = false } = {}) {
-      if (!pricingApi || typeof pricingApi.lookup !== 'function') {
-        paintPriceStatus();
-        return Promise.resolve();
-      }
-      const targets = priceTargets();
-      const models = [...new Set([...targets.values()].filter(Boolean))].slice(0, MAX_PRICE_MODELS);
-      const key = models.join('\n');
-      if (!force && key === priceKey) return Promise.resolve();
-      priceKey = key;
-      if (!models.length) {
-        paintPrices({});
-        return Promise.resolve();
-      }
-      const generation = ++priceGeneration;
-      return Promise.resolve().then(() => pricingApi.lookup(models)).then(payload => {
-        if (destroyed || generation !== priceGeneration) return;
-        priceFailed = !payload || payload.ok === false;
-        priceStatus = (payload && payload.status) || priceStatus;
-        paintPrices(priceFailed ? {} : payload.prices);
-        paintPriceStatus();
-      }, () => {
-        if (destroyed || generation !== priceGeneration) return;
-        priceFailed = true;
-        paintPrices({});
-        paintPriceStatus();
-      });
-    }
-
-    function refreshPriceTable() {
-      if (!pricingApi || typeof pricingApi.refresh !== 'function') return;
-      pricingRefresh.disabled = true;
-      pricingStatusText.textContent = tt('autoEditorPriceRefreshing', '正在刷新价格表…');
-      Promise.resolve().then(() => pricingApi.refresh()).then(payload => {
-        if (destroyed) return;
-        priceFailed = !payload || payload.ok === false;
-        priceStatus = (payload && payload.status) || priceStatus;
-        paintPriceStatus();
-        return refreshPrices({ force: true });
-      }, () => {
-        if (destroyed) return;
-        priceFailed = true;
-        paintPriceStatus();
-      }).finally(() => { pricingRefresh.disabled = false; });
-    }
-
     // One line of the pool. `cli` is the row's lane: '' means the session's own
     // CLI (the provider then comes from the host's list, one row per provider),
     // and a named lane means this row picks a provider out of that lane's own
@@ -2030,9 +1847,7 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       autoModel.checked = configured?.autoModel === true;
       autoField.title = tt('autoEditorAutoModelHint', '这一行的模型每轮按价格档现挑，所以没有钉死的模型。');
       autoField.append(autoModel, document.createTextNode(tt('autoEditorAutoModel', '自动选模型')));
-      const price = make('span', 'multicc-auto-editor-price multicc-auto-editor-muted');
-      show(price, false);
-      modelField.append(providerField, model, custom, autoField, price);
+      modelField.append(providerField, model, custom, autoField);
       // A line with no catalog of its own (an imported relay, for one) needs the
       // same suggestions the manual picker offers; they are resolved after the
       // rows exist so rendering never waits on a request.
@@ -2243,7 +2058,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       tiering = PRICE_TIERING;
       notify();
     });
-    pricingRefresh.addEventListener('click', refreshPriceTable);
     keySave.addEventListener('click', saveKey);
     keyInput.addEventListener('keydown', event => {
       if (event && event.key === 'Enter') saveKey();
@@ -2327,7 +2141,6 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     DEFAULT_ROUTING_TIERING,
     MAX_ATTEMPTS,
     MAX_CANDIDATES,
-    MAX_PRICE_MODELS,
     MAX_ROUTING_ENDPOINT_CHARS,
     MAX_TIERS,
     PRICE_TIERING,

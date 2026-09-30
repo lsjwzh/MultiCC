@@ -101,61 +101,38 @@ void main() {
     );
   });
 
-  test('a price-ranked pick says what the line costs', () {
-    // 运行时发的是 blended 一个数（`priceSource` 说明这个数从哪来）。
+  test('a price-ranked pick draws no price: it is routing input, not UI', () {
+    // 价格只喂给服务端的 Jev 分层，不在界面上外显 —— 事件带不带 price、
+    // price 是数字还是对象，文案都必须一个字符不差。
+    const plain = '🧭 Jev 判定为复杂任务 · 选用 智谱（glm-4.6）';
     expect(
-      autoRouteNote(
-        _route(
-          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
-          {'price': 2.5, 'priceSource': 'price_table'},
-        ),
-      ),
-      '🧭 Jev 判定为复杂任务 · 选用 智谱（glm-4.6） · \$2.5 每 1M tokens',
+      autoRouteNote(_route(
+        {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+        {'price': 2.5, 'priceSource': 'price_table'},
+      )),
+      plain,
     );
-    // 价格表里那份是对象：输入/输出两条都报。
     expect(
-      autoRouteNote(
-        _route(
-          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
-          {
-            'price': {'input': 3, 'output': 15, 'blended': 6, 'source': 'seed'},
-          },
-        ),
-      ),
-      endsWith(' · \$3/\$15 每 1M tokens'),
-    );
-    // 只有 blended 的对象也算得出一个数，小数不会被四舍五入掉。
-    expect(
-      autoRouteNote(
-        _route(
-          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
-          {
-            'price': {'blended': 0.07},
-          },
-        ),
-      ),
-      endsWith(' · \$0.07 每 1M tokens'),
-    );
-    // 读不出来的价格（旧服务端、脏数据）什么都不加，老文案一个字符都不变。
-    expect(
-      autoRouteNote(
-        _route(
-          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
-          {'price': 'free'},
-        ),
-      ),
-      '🧭 Jev 判定为复杂任务 · 选用 智谱（glm-4.6）',
+      autoRouteNote(_route(
+        {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+        {
+          'price': {'input': 3, 'output': 15, 'blended': 6, 'source': 'seed'},
+        },
+      )),
+      plain,
     );
     I18n.switchLang('en');
     expect(
-      autoRouteNote(
-        _route(
-          {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
-          {'price': 2.5},
-        ),
-      ),
-      endsWith(' · \$2.5 per 1M tokens'),
+      autoRouteNote(_route(
+        {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+        {'price': 2.5},
+      )),
+      startsWith('🧭 Jev rated this a complex task'),
     );
+    expect(autoRouteNote(_route(
+      {'source': 'jev', 'code': 'jev_choice', 'tierIndex': 1},
+      {'price': 2.5},
+    )).contains('1M'), isFalse);
   });
 
   test('a planned lane switch names the two lanes', () {

@@ -4209,8 +4209,6 @@ window.MULTICC_I18N_CATALOG = {
     "autoEditorLineOnLane": "{name} · {cli} 车道",
     "autoEditorSummaryPrice": "按价格自动排档：{chain}",
     "autoRouteCliSwitch": "Auto 换道：{from} → {to}",
-    "autoRoutePricePair": " · {input}/{output} 每 1M tokens",
-    "autoRoutePriceOne": " · {price} 每 1M tokens",
     "autoEditorAutoModelNeedsPrice": "「自动选模型」只在「按价格」档位依据下可用。",
     "autoEditorAutoModelPinnedModel": "「自动选模型」的线路不能再钉住一个模型。",
     "autoEditorCliAria": "{provider} 的 CLI",
@@ -4220,14 +4218,6 @@ window.MULTICC_I18N_CATALOG = {
     "autoEditorLaneEmpty": "该 CLI 下没有可用的 Provider",
     "autoEditorLaneLoading": "加载中…",
     "autoEditorListHintPrice": "按价格排档；勾了「自动选模型」的线路由价格表挑模型",
-    "autoEditorPriceRefresh": "刷新价格表",
-    "autoEditorPriceRefreshing": "正在刷新价格表…",
-    "autoEditorPriceSourceUnknown": "来源未知",
-    "autoEditorPriceStale": "已过期",
-    "autoEditorPriceStatus": "价格表 {detail}",
-    "autoEditorPriceTitle": "{model} 的价格（USD / 1M tokens）",
-    "autoEditorPriceUnavailable": "价格表暂不可用",
-    "autoEditorPriceUnknown": "价格未知",
     "autoEditorProviderAria": "{cli} 的 Provider"
   },
   "en": {
@@ -8439,8 +8429,6 @@ window.MULTICC_I18N_CATALOG = {
     "autoEditorLineOnLane": "{name} · {cli} lane",
     "autoEditorSummaryPrice": "Price-ranked pool: {chain}",
     "autoRouteCliSwitch": "Auto lane switch: {from} → {to}",
-    "autoRoutePricePair": " · {input}/{output} per 1M tokens",
-    "autoRoutePriceOne": " · {price} per 1M tokens",
     "autoEditorAutoModelNeedsPrice": "Auto model only works when the tier basis is By price.",
     "autoEditorAutoModelPinnedModel": "An auto-model line cannot also pin a model.",
     "autoEditorCliAria": "{provider}’s CLI",
@@ -8450,14 +8438,6 @@ window.MULTICC_I18N_CATALOG = {
     "autoEditorLaneEmpty": "No Provider available on that CLI",
     "autoEditorLaneLoading": "Loading…",
     "autoEditorListHintPrice": "ranked by price; an auto-model line has its model picked from the table",
-    "autoEditorPriceRefresh": "Refresh price table",
-    "autoEditorPriceRefreshing": "Refreshing the price table…",
-    "autoEditorPriceSourceUnknown": "unknown source",
-    "autoEditorPriceStale": "stale",
-    "autoEditorPriceStatus": "Price table {detail}",
-    "autoEditorPriceTitle": "Price of {model} (USD / 1M tokens)",
-    "autoEditorPriceUnavailable": "Price table unavailable",
-    "autoEditorPriceUnknown": "price unknown",
     "autoEditorProviderAria": "Provider on {cli}"
   }
 };

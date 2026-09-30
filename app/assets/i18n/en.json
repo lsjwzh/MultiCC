@@ -4207,8 +4207,6 @@
   "autoEditorLineOnLane": "{name} · {cli} lane",
   "autoEditorSummaryPrice": "Price-ranked pool: {chain}",
   "autoRouteCliSwitch": "Auto lane switch: {from} → {to}",
-  "autoRoutePricePair": " · {input}/{output} per 1M tokens",
-  "autoRoutePriceOne": " · {price} per 1M tokens",
   "autoEditorAutoModelNeedsPrice": "Auto model only works when the tier basis is By price.",
   "autoEditorAutoModelPinnedModel": "An auto-model line cannot also pin a model.",
   "autoEditorCliAria": "{provider}’s CLI",
@@ -4218,13 +4216,5 @@
   "autoEditorLaneEmpty": "No Provider available on that CLI",
   "autoEditorLaneLoading": "Loading…",
   "autoEditorListHintPrice": "ranked by price; an auto-model line has its model picked from the table",
-  "autoEditorPriceRefresh": "Refresh price table",
-  "autoEditorPriceRefreshing": "Refreshing the price table…",
-  "autoEditorPriceSourceUnknown": "unknown source",
-  "autoEditorPriceStale": "stale",
-  "autoEditorPriceStatus": "Price table {detail}",
-  "autoEditorPriceTitle": "Price of {model} (USD / 1M tokens)",
-  "autoEditorPriceUnavailable": "Price table unavailable",
-  "autoEditorPriceUnknown": "price unknown",
   "autoEditorProviderAria": "Provider on {cli}"
 }
