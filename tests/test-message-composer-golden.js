@@ -21,7 +21,7 @@
 // does not weaken byte-level regression coverage.
 // ═══════════════════════════════════════════════════════════════════════
 
-const { composeMessage, renderPrompt } = require('../src/message-composer');
+const { composeMessage, renderPrompt, buildAutoCommitStatusPrompt } = require('../src/message-composer');
 const { createClaudeAdapter } = require('../src/cli-adapters/claude');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
@@ -152,6 +152,12 @@ function todayPrompt({ text, persisted, sessionName, goalLimits, bare }, deps) {
     const dc = deps.buildDispatchContextPrompt(sessionName);
     if (dc) promptText = dc + promptText;
   }
+  // order 19: AutoCommit status readout sits between turn-plan (18) and
+  // dispatch/gateway (20), i.e. it is prepended after dispatch/gateway and
+  // before the plan layer.
+  if (persisted.type !== 'aux' && persisted.type !== 'gateway') {
+    promptText = buildAutoCommitStatusPrompt(persisted) + promptText;
+  }
   // order 18: the per-turn plan layer sits between the goal note (10) and the
   // dispatch/gateway block (20), i.e. it is prepended after dispatch and before
   // the goal note.
@@ -262,10 +268,10 @@ console.log('── Suite 2: envelope structure ──');
   assert(env.systemPrompt === `${IMG_HINT}\n\n${ROLE_PROMPT}`, 'systemPrompt = imgHint+\\n\\n+rolePrompt');
   assert(env.imgHint === IMG_HINT, 'imgHint carried as independent field');
   assert(env.rolePrompt === ROLE_PROMPT, 'rolePrompt carried as independent field');
-  // layers sorted ascending by order: goal(10) < turn-plan(18) < dispatch(20)
+  // layers sorted ascending by order: goal(10) < turn-plan(18) < autocommit-status(19) < dispatch(20)
   const orders = env.contextLayers.map(l => l.order);
-  assert(orders.length === 3 && orders[0] === 10 && orders[1] === 18 && orders[2] === 20,
-    'contextLayers sorted by order asc (goal<plan<dispatch)');
+  assert(eq(orders, [10, 18, 19, 20]),
+    'contextLayers sorted by order asc (goal<plan<autocommit-status<dispatch)');
   assert(env.spawnOpts.rawModel === 'fable', 'spawnOpts.rawModel = persisted.model (raw, not pre-parsed)');
   assert(env.spawnOpts.rawEffort === 'ultracode', 'spawnOpts.rawEffort = persisted.effort (raw)');
   assert(env.spawnOpts.rawAgent === null, 'spawnOpts.rawAgent = persisted.agent (raw)');

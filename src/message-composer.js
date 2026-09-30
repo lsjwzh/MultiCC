@@ -17,7 +17,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 /**
- * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'turn-plan'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'} ContextLayerKind
+ * @typedef {'goal-limit'|'task-context'|'cli-handoff'|'turn-plan'|'autocommit-status'|'gateway'|'dispatch-context'|'background-stopped'|'cross-agent-notes'} ContextLayerKind
  */
 
 /**
@@ -25,7 +25,7 @@
  *
  * @typedef {Object} ContextLayer
  * @property {ContextLayerKind} kind  - discriminator (unique within an envelope)
- * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 18=turn-plan, 20=gateway/dispatch-context, 25=background-stopped, 30=cross-agent-notes
+ * @property {number} order           - explicit sort key: 10=goal-limit, 12=task-context, 15=cli-handoff, 18=turn-plan, 19=autocommit-status, 20=gateway/dispatch-context, 25=background-stopped, 30=cross-agent-notes
  * @property {string} text            - complete block INCLUDING its own trailing separator; concatenated with no extra separator
  */
 
@@ -190,6 +190,19 @@ function validateEnvelope(env) {
  *     chatBroadcast, normalizeEffort, cliEffortLevel, takeBackgroundStopNote? }
  * @returns {MessageEnvelope}
  */
+// order-19 layer text (see composeMessage below): a factual, per-turn readout
+// of the page-header AutoCommit switch, read fresh from `persisted.autoCommit`
+// so it reflects the switch's state at the moment THIS message was sent -- not
+// some earlier turn's state. This exists to stop the model from stating an
+// intention ("I won't commit") that contradicts what the external switch is
+// about to do (or not do). It is never an instruction to commit: the model
+// still only commits/merges when the user explicitly asks for it in this
+// message (see the AutoCommit rule in src/chat/host-prompts.js).
+function buildAutoCommitStatusPrompt(persisted) {
+  const autoCommitOn = persisted.autoCommit !== false;
+  return `[AutoCommit status as of this message] The page-header AutoCommit switch for this session is currently ${autoCommitOn ? 'ON' : 'OFF'}. This is a factual status readout, not an instruction: ${autoCommitOn ? 'MultiCC will attempt to commit (and merge, if configured) your changes after this turn on its own; you do not need to run git commit/merge yourself' : 'nothing outside this conversation will commit your changes after this turn'}. Do not commit or merge in this prompt unless the user explicitly asked you to in this message -- keep your own statements about committing consistent with this status rather than assuming the opposite.\n\n`;
+}
+
 function composeMessage({ text, persisted, sessionName, opts, deps }) {
   const {
     isFirstTurn,
@@ -262,6 +275,18 @@ function composeMessage({ text, persisted, sessionName, opts, deps }) {
       && persisted.type !== 'aux' && persisted.type !== 'gateway') {
       const plan = deps.buildPlanPrompt(persisted, sessionName);
       if (plan) contextLayers.push({ kind: 'turn-plan', order: 18, text: plan });
+    }
+
+    // order 19: AutoCommit toggle snapshot, read fresh on every turn so it
+    // reflects the page-header switch's state at the moment THIS message was
+    // sent (not some earlier turn's state). Purely informational: it tells the
+    // model what will actually happen outside the conversation, so the model's
+    // own words about committing don't contradict it (e.g. the model says
+    // "I won't commit" in the same turn the external switch auto-commits, or
+    // vice versa). It must never be read as an instruction to commit -- the
+    // model commits/merges only when the user explicitly asks in this message.
+    if (persisted.type !== 'aux' && persisted.type !== 'gateway') {
+      contextLayers.push({ kind: 'autocommit-status', order: 19, text: buildAutoCommitStatusPrompt(persisted) });
     }
 
     // order 20: gateway OR dispatch-context (mutually exclusive; today server.js:9055-9060).
@@ -374,4 +399,4 @@ function renderPrompt(envelope) {
     .join('') + envelope.userText + envelope.suffix;
 }
 
-module.exports = { composeMessage, renderPrompt, validateEnvelope };
+module.exports = { composeMessage, renderPrompt, validateEnvelope, buildAutoCommitStatusPrompt };
