@@ -59,7 +59,10 @@ const _autoRouteAction = {
 String autoRouteNote(Map<dynamic, dynamic> event) {
   final routing = event['routing'];
   final name = (event['providerName'] ?? '').toString();
-  if (routing is! Map || event['phase'] != 'selected' || name.isEmpty) {
+  // `routePhase` is the live key; `phase` covers records persisted before the
+  // rename and events from a server one release older than this App.
+  final phase = event['routePhase'] ?? event['phase'];
+  if (routing is! Map || phase != 'selected' || name.isEmpty) {
     return '';
   }
   String tierName(Object? index, Object? count) {
@@ -183,7 +186,9 @@ class AutoRouteLine {
   /// Whether [messages] changed.
   bool settle(List<ChatMessage> messages, Map<dynamic, dynamic> event) {
     final routing = event['routing'];
-    if (event['phase'] != 'selected' || routing is! Map) return false;
+    if ((event['routePhase'] ?? event['phase']) != 'selected' || routing is! Map) {
+      return false;
+    }
     final pending = _pending(messages);
     _line = null;
     if (pending == null && routing['code'] == 'jev_not_prepared') return false;

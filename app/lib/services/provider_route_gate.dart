@@ -110,7 +110,9 @@ class ProviderRouteGate {
   }
 
   static bool _isTerminal(Map<dynamic, dynamic> source) {
-    final phase = source['phase']?.toString().toLowerCase();
+    // `routePhase` is the current wire key; `phase` covers a server one release
+    // older than this App (and persisted snapshots written before the rename).
+    final phase = (source['routePhase'] ?? source['phase'])?.toString().toLowerCase();
     final outcome = source['outcome']?.toString().toLowerCase();
     return _terminalPhases.contains(phase) || _terminalPhases.contains(outcome);
   }

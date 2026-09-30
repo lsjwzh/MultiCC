@@ -847,7 +847,7 @@ test('a persisted Auto route note renders through the live formatter and adopts 
     .replace(/\{(\w+)\}/g, (_, name) => (params && name in params ? String(params[name]) : `{${name}}`));
   const { document, messagesEl, view } = fixture({ translate });
   const autoRoute = {
-    phase: 'selected', providerId: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-v4-flash',
+    routePhase: 'selected', providerId: 'deepseek', providerName: 'DeepSeek', model: 'deepseek-v4-flash',
     tier: 't1', preferredTier: 't1',
     routing: { source: 'jev', code: 'jev_choice', tierIndex: 0, tierCount: 2, latencyMs: 400 },
   };

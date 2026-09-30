@@ -512,7 +512,7 @@ test('failover escalates out of a broken tier instead of wedging the turn', asyn
   const next = turn.failover(quotaDecision(), openAttempt('weakp'));
   assert.equal(next.invocationOptions.providerId, 'strongp');
   // The tier is pinned for the whole logical turn: a switch does not re-roll it.
-  assert.deepEqual(events.map(event => [event.phase, event.preferredTier]), [
+  assert.deepEqual(events.map(event => [event.routePhase, event.preferredTier]), [
     ['selected', 'weak'], ['switched', 'weak'],
   ]);
 });

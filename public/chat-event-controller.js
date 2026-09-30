@@ -89,7 +89,7 @@
   function formatProgressHeartbeat(message, translate) {
     const tr = typeof translate === 'function' ? translate : (key => key);
     const source = message && typeof message === 'object' ? message : {};
-    const phase = tr(PROGRESS_PHASES[source.phase] || 'progressPhaseRunning');
+    const phase = tr(PROGRESS_PHASES[source.heartbeatPhase] || 'progressPhaseRunning');
     // 一段测出来的时间走全站唯一那份（shared/format.js）。原来这里把秒以下抹掉、
     // 又把零秒说成「0s」—— 一个 900ms 的工具调用会被记成 0。
     const elapsed = FMT.formatDuration(Number(source.elapsedMs) || 0);
@@ -115,7 +115,7 @@
   function formatAutoRouteNote(event, translate) {
     const tr = typeof translate === 'function' ? translate : (key => key);
     const routing = event && event.routing;
-    if (!routing || event.phase !== 'selected' || !event.providerName) return '';
+    if (!routing || event.routePhase !== 'selected' || !event.providerName) return '';
     const tierName = (index, count) => {
       if (!Number.isInteger(index) || !Number.isInteger(count) || count < 2) return '';
       if (count > 3) return tr('autoRouteTierNth', { n: index + 1, count });
@@ -254,14 +254,14 @@
         if (next.routeGeneration < providerRouteHighWater.routeGeneration) return false;
         if (next.routeGeneration === providerRouteHighWater.routeGeneration) {
           if (!sameProviderRoute(next, providerRouteHighWater)) return false;
-          if (providerRouteTerminal && !TERMINAL_PROVIDER_ROUTE_PHASES[message.phase]) return false;
+          if (providerRouteTerminal && !TERMINAL_PROVIDER_ROUTE_PHASES[message.routePhase]) return false;
         }
       }
       if (!providerRouteHighWater || next.routeGeneration > providerRouteHighWater.routeGeneration) {
         providerRouteHighWater = Object.freeze(next);
         providerRouteTerminal = false;
       }
-      if (TERMINAL_PROVIDER_ROUTE_PHASES[message.phase]) providerRouteTerminal = true;
+      if (TERMINAL_PROVIDER_ROUTE_PHASES[message.routePhase]) providerRouteTerminal = true;
       activeProviderRoute = providerRouteTerminal ? null : providerRouteHighWater;
       state.providerRouteHighWater = providerRouteHighWater;
       state.activeProviderRoute = activeProviderRoute;
@@ -525,7 +525,7 @@
           // Policy selection is only a reservation. The attempt-owned route
           // event above is the authority that a physical provider actually began;
           // this only narrates the difficulty verdict behind the reservation.
-          if (message.phase !== 'selected' || !message.routing) break;
+          if (message.routePhase !== 'selected' || !message.routing) break;
           const pendingNote = autoRouteNoteEl && autoRouteNoteEl.isConnected ? autoRouteNoteEl : null;
           autoRouteNoteEl = null;
           // Turns nobody asked Jev about (continuations, nudges) stay silent.
@@ -673,6 +673,7 @@
         case 'task_state':
           liveUi.renderAuxClassify(message.goal, message.phase, message.classifyState, message.taskShortCode, {
             auxUnhealthy: message.auxUnhealthy, auxUnhealthySince: message.auxUnhealthySince,
+            goalState: message.goalState || null,
           });
           break;
         // Aux health flipped while this page was open. The judgement on the bar

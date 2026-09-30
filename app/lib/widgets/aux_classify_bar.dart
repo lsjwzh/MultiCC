@@ -21,6 +21,11 @@ class AuxClassifyBar extends StatelessWidget {
   /// with main_shell _classifyBadge and the web CLASSIFY_DISPLAY barTint.
   final String classifyState;
 
+  /// 「执行成功」的子状态（achieved/interact），D 之外的字母与无目标的 D 为
+  /// null。判定在服务端（goal+phase），这里只借 succeededSubLabel 换词 ——
+  /// 图标/色调不动，与 Air 任务行同源同词。
+  final String? goalState;
+
   /// True when the classifier behind this bar is unhealthy, so [goal]/[phase]
   /// are frozen at the last thing it managed to say. The bar keeps showing them
   /// — they are still the best description we have — and marks them as paused;
@@ -40,6 +45,7 @@ class AuxClassifyBar extends StatelessWidget {
     required this.goal,
     required this.phase,
     required this.classifyState,
+    this.goalState,
     this.stale = false,
     this.onMarkTurnSucceeded,
     this.onCancelTurn,
@@ -68,7 +74,13 @@ class AuxClassifyBar extends StatelessWidget {
     final phaseBg = phaseColor.withValues(alpha: 0.12);
     final phaseBorder = phaseColor.withValues(alpha: 0.34);
     final stateEmoji = spec.icon;
-    final phaseLabel = _phaseLabel(phase);
+    // D 的三个子状态词（达成目标 / 需要交互 / 无子状态退回原词），与 web 的
+    // renderAuxClassify、Air 任务行共用 status_presentation 的 succeededSubLabel。
+    final subLabel = succeededSubLabel(
+      classifyStatusOf(classifyState),
+      goalState,
+    );
+    final phaseLabel = subLabel.isNotEmpty ? subLabel : _phaseLabel(phase);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: const BoxDecoration(

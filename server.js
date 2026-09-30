@@ -273,7 +273,12 @@ const turnProgressHeartbeat = new TurnProgressHeartbeat({
     metrics.inc('multicc_chat_progress_heartbeats_total');
     metrics.set('multicc_chat_silent_turn_seconds', Math.round(event.silentMs / 1000));
     logger.info('chat_progress_heartbeat', event);
-    chatBroadcast(event.sessionId, { type: 'progress_heartbeat', ...event });
+    // Wire key is `heartbeatPhase` (not `phase`): three unrelated enums used to
+    // share that key across progress_heartbeat / provider_auto_route /
+    // provider_route_event, and a reader could not tell which one it was looking
+    // at without the message type. The internal module still calls it `phase`.
+    const { phase: heartbeatPhase, ...heartbeatRest } = event;
+    chatBroadcast(event.sessionId, { ...heartbeatRest, type: 'progress_heartbeat', heartbeatPhase });
   },
 });
 function recordProviderRouterShadowComparison(report) {

@@ -63,7 +63,9 @@ class BackgroundTaskRow {
 }
 
 /// Parses a `progress_heartbeat` payload into its danmaku text — same mapping
-/// as the web's formatProgressHeartbeat (phase + tool-kind wording).
+/// as the web's formatProgressHeartbeat (heartbeatPhase + tool-kind wording).
+/// The `?? evt['phase']` fallback keeps an App newer than the server working
+/// against a server that still sends the old key.
 String heartbeatRowText(Map<String, dynamic> evt) {
   const phases = {
     'starting': '正在启动',
@@ -82,8 +84,8 @@ String heartbeatRowText(Map<String, dynamic> evt) {
   };
   final toolKind = evt['toolKind']?.toString() ?? '';
   final toolLabel = tools[toolKind];
-  final phaseLabel =
-      phases[evt['phase']?.toString()] ?? evt['phase']?.toString() ?? '';
+  final rawPhase = evt['heartbeatPhase'] ?? evt['phase'];
+  final phaseLabel = phases[rawPhase?.toString()] ?? rawPhase?.toString() ?? '';
   final elapsed = (evt['elapsedMs'] as num?)?.toInt() ?? 0;
   final secs = (elapsed / 1000).round();
   final clock = secs >= 60 ? '${secs ~/ 60}m${secs % 60}s' : '${secs}s';

@@ -241,11 +241,11 @@ test('progress heartbeat formatter exposes only safe bounded status fields', () 
   // 时长由 shared/format.js 的 formatDuration 出：150.9 秒进到「分」那一档时秒数按
   // 四舍五入（2m 31s），而不是先把总秒数截断再取模（2m 30s）。
   assert.equal(eventApi.formatProgressHeartbeat({
-    phase: 'tool', elapsedMs: 150_900, toolKind: 'subagent',
+heartbeatPhase: 'tool', elapsedMs: 150_900, toolKind: 'subagent',
     prompt: 'secret prompt', output: 'secret output', token: 'sk-secret',
   }, zhT), '正在调用工具 · 2m 31s · 子 Agent');
   // 负数不是一个「零秒」的读数，是垃圾值 —— 那一格直接不画，不编一个 0s 出来。
-  assert.equal(eventApi.formatProgressHeartbeat({ phase: 'unknown', elapsedMs: -1 }, zhT), '仍在执行');
+  assert.equal(eventApi.formatProgressHeartbeat({ heartbeatPhase: 'unknown', elapsedMs: -1 }, zhT), '仍在执行');
 });
 
 test('memory admission progress shows the user message immediately and updates one loading bubble', () => {
@@ -378,10 +378,10 @@ test('turn and monitor progress update stable rows and terminal events close the
   const fixture = controllerFixture();
   const generation = fixture.controller.beginGeneration();
   fixture.controller.handleEvent({
-    type: 'progress_heartbeat', turnId: 'turn-1', phase: 'tool', elapsedMs: 31_000, toolKind: 'process',
+    type: 'progress_heartbeat', turnId: 'turn-1', heartbeatPhase: 'tool', elapsedMs: 31_000, toolKind: 'process',
   }, generation);
   fixture.controller.handleEvent({
-    type: 'progress_heartbeat', turnId: 'turn-1', phase: 'thinking', elapsedMs: 61_000,
+    type: 'progress_heartbeat', turnId: 'turn-1', heartbeatPhase: 'thinking', elapsedMs: 61_000,
   }, generation);
   fixture.controller.handleEvent({
     type: 'monitor_progress', task_id: 'task-1', description: '后台测试仍在执行', background: true,
@@ -522,7 +522,7 @@ test('route protocol v1 enforces an epoch-scoped monotonic route-generation high
     providerRouteProtocolVersion: 1,
   }, generation);
   const route = (routeGeneration, routeAttemptId, providerId = 'provider-a') => ({
-    type: 'provider_route_event', version: 1, phase: 'selected',
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
     providerRouteScope: 'attempt',
     runtimeEpoch: 'epoch-1', turnId: 'turn-1', decisionId: 'decision-1', routeAttemptId,
     routeGeneration, attemptNo: routeGeneration, providerId,
@@ -576,14 +576,14 @@ test('route protocol v1 reconnect init restores the active attempt and terminal 
     type: 'part_delta', delta: { type: 'text', text: 'after-reconnect' }, ...identity,
   }, generation), true);
   assert.equal(fixture.controller.handleEvent({
-    type: 'provider_route_event', version: 1, phase: 'succeeded', ...identity,
+    type: 'provider_route_event', version: 1, routePhase: 'succeeded', ...identity,
   }, generation), true);
   assert.equal(fixture.state.activeProviderRoute, null);
   assert.equal(fixture.controller.handleEvent({
     type: 'part_delta', delta: { type: 'text', text: 'late' }, ...identity,
   }, generation), false);
   assert.equal(fixture.controller.handleEvent({
-    type: 'provider_route_event', version: 1, phase: 'selected', ...identity,
+    type: 'provider_route_event', version: 1, routePhase: 'selected', ...identity,
   }, generation), false, 'a terminal generation cannot be re-opened');
   assert.equal(fixture.state.currentTextContent, 'after-reconnect');
 });
@@ -621,13 +621,13 @@ test('Auto Provider init and route events update actual route without replacing 
   assert.equal(fixture.state.activeProviderId, '', 'idle init does not claim a physical route');
   assert.equal(fixture.state.activeProviderName, '');
   assert.equal(fixture.controller.handleEvent({
-    type: 'provider_auto_route', version: 1, mode: 'auto', phase: 'switched',
+    type: 'provider_auto_route', version: 1, mode: 'auto', routePhase: 'switched',
     providerId: 'backup', providerName: 'Backup', model: 'm2',
   }, generation), true);
   assert.equal(fixture.state.activeProviderId, '',
     'a policy reservation cannot claim that its physical attempt began');
   assert.equal(fixture.controller.handleEvent({
-    type: 'provider_route_event', version: 1, phase: 'selected',
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
     providerId: 'backup', providerName: 'Backup', model: 'm2',
   }, generation), true);
   assert.equal(fixture.state.activeProviderId, 'backup');
@@ -657,7 +657,7 @@ test('Auto Provider keeps the internal default-model sentinel out of the visible
     attemptNo: 2, providerId: 'claude-official', providerRevision: 'revision-official',
   };
   assert.equal(fixture.controller.handleEvent({
-    type: 'provider_route_event', version: 1, phase: 'selected',
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
     providerName: 'Claude Official', model: '_default_', ...official,
   }, generation), true);
   assert.equal(fixture.state.activeProviderModel, '',
@@ -683,15 +683,15 @@ test('Auto Provider promotes only the current attempt assistant model over its r
   const exhausted = route(1, 'attempt-exhausted', 1, 'quota-empty');
   const official = route(2, 'attempt-official', 2, 'claude-official');
   fixture.controller.handleEvent({
-    type: 'provider_route_event', version: 1, phase: 'selected',
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
     providerName: 'Quota Empty', model: 'claude-opus-4-8', ...exhausted,
   }, generation);
   fixture.controller.handleEvent({
-    type: 'provider_route_event', version: 1, phase: 'failed',
+    type: 'provider_route_event', version: 1, routePhase: 'failed',
     providerName: 'Quota Empty', model: 'claude-opus-4-8', ...exhausted,
   }, generation);
   fixture.controller.handleEvent({
-    type: 'provider_route_event', version: 1, phase: 'selected',
+    type: 'provider_route_event', version: 1, routePhase: 'selected',
     providerName: 'Claude Official', model: '_default_', ...official,
   }, generation);
 
@@ -708,7 +708,7 @@ test('Auto Provider promotes only the current attempt assistant model over its r
   assert.equal(fixture.state.activeProviderModel, 'claude-opus-5');
 
   fixture.controller.handleEvent({
-    type: 'provider_route_event', version: 1, phase: 'succeeded',
+    type: 'provider_route_event', version: 1, routePhase: 'succeeded',
     providerName: 'Claude Official', model: '_default_', ...official,
   }, generation);
   assert.equal(fixture.state.activeProviderModel, 'claude-opus-5',
@@ -1629,7 +1629,7 @@ test('system warning with authAction routes to the auth-action renderer, with pl
 
 function autoRoute(routing, extra = {}) {
   return {
-    type: 'provider_auto_route', version: 1, mode: 'auto', phase: 'selected',
+    type: 'provider_auto_route', version: 1, mode: 'auto', routePhase: 'selected',
     providerId: 'deepseek', providerName: 'DeepSeek 官方', model: 'deepseek-v4-flash',
     tier: 't1', preferredTier: 't1', routing, ...extra,
   };
@@ -1683,7 +1683,7 @@ test('the Jev note explains a fallback and a tier whose lines were all unavailab
   );
   assert.equal(eventApi.formatAutoRouteNote(autoRoute(null), zhT), '');
   assert.equal(eventApi.formatAutoRouteNote(autoRoute({ source: 'jev', tierIndex: 0, tierCount: 2 },
-    { phase: 'switched' }), zhT), '', 'only the initial selection is narrated');
+    { routePhase: 'switched' }), zhT), '', 'only the initial selection is narrated');
 });
 
 function noteFixture() {

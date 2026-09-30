@@ -517,6 +517,9 @@ function createProviderAttemptRuntime(options = {}) {
     try { audit(sessionId, Object.freeze({ ...event, ts: Number(now()) })); } catch (_) {}
   }
 
+  // Wire key `routePhase` (was `phase`): the attempt lifecycle enum used to
+  // collide with the heartbeat and auto-route enums under one key. The local
+  // argument keeps the name `phase`.
   function emitRoute(record, phase, extra = {}) {
     if (!emit || !record) return;
     const event = Object.freeze({
@@ -524,7 +527,7 @@ function createProviderAttemptRuntime(options = {}) {
       version: 1,
       providerRouteScope: 'attempt',
       runtimeEpoch: record.runtimeEpoch,
-      phase,
+      routePhase: phase,
       sessionId: record.sessionId,
       turnId: record.turnId,
       cli: record.cli,

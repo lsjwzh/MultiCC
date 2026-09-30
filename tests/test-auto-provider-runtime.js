@@ -92,7 +92,7 @@ test('stale zero balance is probed first, then quota failure switches to the nex
     fromTrustDomain: 'user-managed', toTrustDomain: 'user-managed',
     category: 'billing_quota',
   });
-  assert.deepEqual(events.map(event => event.phase), ['selected', 'switched']);
+  assert.deepEqual(events.map(event => event.routePhase), ['selected', 'switched']);
   assert.deepEqual(events.map(event => [event.trustDomain, event.fromTrustDomain]), [
     ['user-managed', null],
     ['user-managed', 'user-managed'],
@@ -261,7 +261,7 @@ test('unsafe replay reserves a different provider for exactly one fresh handoff 
     'the original logical turn must never be replayed');
   const reservation = first.prepareHandoff(quotaDecision(), attempt);
   assert.equal(reservation.providerId, 'backup');
-  assert.equal(events.at(-1).phase, 'handoff_pending');
+  assert.equal(events.at(-1).routePhase, 'handoff_pending');
 
   const handoff = runtime.beginTurn({ session, turnId: 'turn-handoff' });
   assert.equal(handoff.initial().providerId, 'backup');
@@ -334,7 +334,7 @@ test('attempt budget exhaustion is terminal and never falls back to same-provide
   assert.equal(exhausted.invocationOptions, null);
   assert.equal(exhausted.decision.action, 'fail_fast');
   assert.equal(exhausted.decision.reason, 'auto_attempt_budget_exhausted');
-  assert.deepEqual(events.map(event => event.phase), ['selected', 'switched', 'exhausted']);
+  assert.deepEqual(events.map(event => event.routePhase), ['selected', 'switched', 'exhausted']);
 });
 
 test('candidate pool exhaustion is terminal when remaining routes are freshly exhausted', () => {
@@ -359,7 +359,7 @@ test('live background tasks fail closed before a provider route switch', () => {
   assert.equal(blocked.invocationOptions, null);
   assert.equal(blocked.decision.action, 'fail_fast');
   assert.equal(blocked.decision.reason, 'auto_background_tasks_active');
-  assert.equal(events.at(-1).phase, 'blocked');
+  assert.equal(events.at(-1).routePhase, 'blocked');
   assert.equal(events.at(-1).reasonCode, 'background_tasks_active');
 });
 

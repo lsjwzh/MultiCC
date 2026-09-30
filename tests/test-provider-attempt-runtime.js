@@ -79,7 +79,7 @@ test('a concrete attempt has immutable identity and a monotonic session generati
   assert.equal(first.replayFence, 'none');
   assert.equal(first.safeToReplay, true);
   assert.equal(Object.isFrozen(first), true);
-  assert.deepEqual(events.map(item => item.event.phase), ['selected']);
+  assert.deepEqual(events.map(item => item.event.routePhase), ['selected']);
   assert.equal(events[0].event.providerRouteScope, 'attempt');
 
   assert.equal(runtime.finishAttempt(first, { outcome: 'failed', errorCategory: 'billing_quota' }).ok, true);
@@ -89,7 +89,7 @@ test('a concrete attempt has immutable identity and a monotonic session generati
   assert.equal(second.routeGeneration, 2);
   assert.equal(second.decisionId, first.decisionId, 'one logical turn owns one route decision');
   assert.notEqual(second.routeAttemptId, first.routeAttemptId);
-  assert.deepEqual(events.map(item => item.event.phase), ['selected', 'failed', 'switched']);
+  assert.deepEqual(events.map(item => item.event.routePhase), ['selected', 'failed', 'switched']);
 });
 
 test('visible proxy deltas close the replay fence before authoritative CLI output arrives', () => {
@@ -923,7 +923,7 @@ test('an explicit same-route continuation inherits the closed replay fence', () 
   assert.equal(second.routeGeneration, 2);
   assert.equal(second.replayFence, 'visible_output');
   assert.equal(second.safeToReplay, false);
-  assert.equal(events.at(-1).event.phase, 'continued');
+  assert.equal(events.at(-1).event.routePhase, 'continued');
   runtime.finishAttempt(second, { outcome: 'failed' });
   assert.throws(() => runtime.beginAttempt(route({
     providerId: 'provider-b', model: 'model-b', providerRevision: 'revision-b',

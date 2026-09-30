@@ -963,6 +963,7 @@ class _ChatViewState extends State<ChatView> {
                                       goal: provider.classifyGoal,
                                       phase: provider.classifyPhase,
                                       classifyState: provider.classifyState,
+                                      goalState: provider.classifyGoalState?.toString(),
                                       stale: provider.classifyStale,
                                       onMarkTurnSucceeded: actions.canMarkDone
                                           ? () => _markTurnSucceeded(provider)
