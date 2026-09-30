@@ -187,6 +187,10 @@
         {
           "file": "src/macos-unlock-probe.js",
           "anchor": "return process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent');"
+        },
+        {
+          "file": "src/routes/macos-privacy.js",
+          "anchor": "agentBin = process.env.MULTICC_AGENT_BIN || path.join(homedir(), '.multicc', 'bin', 'multicc-agent'),"
         }
       ]
     },
