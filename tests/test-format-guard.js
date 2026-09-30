@@ -239,7 +239,10 @@ test('every page that uses the format API loads shared/format.js before it', () 
     }
   }
   assert.deepEqual(failures, []);
-  assert.ok(PAGES.filter(page => scriptSrcs(page).includes(CANONICAL)).length >= 7,
+  // The floor is the real page count, not a wish: it exists so that dropping the
+  // tag from every page at once cannot pass silently. The session dashboard page
+  // was deleted, so the floor moved with it (7 → 6).
+  assert.ok(PAGES.filter(page => scriptSrcs(page).includes(CANONICAL)).length >= 6,
     'the pages that render numbers all carry the tag');
 });
 

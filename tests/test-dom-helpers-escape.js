@@ -80,9 +80,6 @@ const REGISTRY = {
   'public/chat-handoff.js': [
     { name: 'esc', mode: 'delegate', reason: '交接包弹窗，chat.html 在它之前加载 shared/dom-helpers.js' },
   ],
-  'public/dashboard.js': [
-    { name: 'esc', mode: 'delegate', reason: 'dashboard.html 加载了 shared/dom-helpers.js' },
-  ],
   'public/share.html': [
     { name: 'esc', mode: 'delegate', reason: 'inline 脚本前的 <script src="/shared/dom-helpers.js">' },
   ],

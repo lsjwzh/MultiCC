@@ -776,7 +776,6 @@ test('the former hand-written label tables are gone', () => {
   assert.match(chat, /nativeRouteLabel\(/, 'chat.js must take the native route label from the catalog');
   const dartMessage = read('app/lib/models/message.dart');
   assert.match(dartMessage, /String get displayName => cliDisplayName\(name\)/, 'message.dart must delegate to cli_display.dart');
-  assert.match(read('app/lib/screens/dashboard_screen.dart'), /cliDisplayName\(/, 'dashboard_screen.dart must delegate to cli_display.dart');
 });
 
 // ── 8. Wiring: the pages load the catalog before its consumers ──────────────

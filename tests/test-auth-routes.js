@@ -132,7 +132,7 @@ test('with ACCESS_TOKEN: external request without credentials is 403; html gets 
     assert.equal(body.category, 'authentication_permission');
     assert.equal(body.action, 'login');
 
-    res = await raw(h.base, '/dashboard', { headers: { accept: 'text/html' } });
+    res = await raw(h.base, '/air', { headers: { accept: 'text/html' } });
     assert.equal(res.status, 302);
     assert.match(res.headers.get('location'), /^\/login\?redirect=/);
   } finally { await h.close(); }

@@ -18,7 +18,6 @@ import '../widgets/model_picker.dart';
 import 'agent_resources_screen.dart';
 import 'aux_screen.dart';
 import 'bridge_settings_screen.dart';
-import 'dashboard_screen.dart';
 import 'events_screen.dart';
 import 'main_shell.dart';
 import 'provider_screen.dart';
@@ -815,17 +814,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _Hint(t('remoteReadOnlyHint')),
               ],
               const Divider(height: 24),
-              _NavTile(
-                icon: Icons.bar_chart_outlined,
-                title: t('statusDashboard'),
-                subtitle: t('statusDashboardHint'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => DashboardScreen(settings: widget.settings),
-                  ),
-                ),
-              ),
               const SizedBox(height: 8),
               _NavTile(
                 icon: Icons.history,

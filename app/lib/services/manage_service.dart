@@ -751,30 +751,6 @@ class ManageService {
     if (res.statusCode >= 400) _throw(res);
   }
 
-  // ── Dashboard (session overview + aggregate stats) ─────────────────────────
-
-  /// All sessions with active flag + lastActivity. Optional `kind` filter.
-  /// Returns `{sessions: [...], count}`.
-  Future<Map<String, dynamic>> fetchDashboardSessions({String? kind}) async {
-    final q = (kind == 'chat' || kind == 'terminal') ? '?kind=$kind' : '';
-    final res = await http
-        .get(Uri.parse(_url('/api/dashboard/sessions$q')), headers: _headers)
-        .timeout(const Duration(seconds: 10));
-    if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
-  /// Aggregate stats: `{total, active, byCli, byKind}`.
-  Future<Map<String, dynamic>> fetchDashboardStats() async {
-    final res = await http
-        .get(Uri.parse(_url('/api/dashboard/stats')), headers: _headers)
-        .timeout(const Duration(seconds: 10));
-    if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
-  }
-
   // ── Per-directory activity feed (events) ───────────────────────────────────
 
   /// Recent events for a directory. Returns `{events: [{ts,type,sessionId,sessionLabel,detail}]}`.
