@@ -4207,8 +4207,6 @@
   "autoEditorLineOnLane": "{name} · {cli} 车道",
   "autoEditorSummaryPrice": "按价格自动排档：{chain}",
   "autoRouteCliSwitch": "Auto 换道：{from} → {to}",
-  "autoRoutePricePair": " · {input}/{output} 每 1M tokens",
-  "autoRoutePriceOne": " · {price} 每 1M tokens",
   "autoEditorAutoModelNeedsPrice": "「自动选模型」只在「按价格」档位依据下可用。",
   "autoEditorAutoModelPinnedModel": "「自动选模型」的线路不能再钉住一个模型。",
   "autoEditorCliAria": "{provider} 的 CLI",
@@ -4218,13 +4216,5 @@
   "autoEditorLaneEmpty": "该 CLI 下没有可用的 Provider",
   "autoEditorLaneLoading": "加载中…",
   "autoEditorListHintPrice": "按价格排档；勾了「自动选模型」的线路由价格表挑模型",
-  "autoEditorPriceRefresh": "刷新价格表",
-  "autoEditorPriceRefreshing": "正在刷新价格表…",
-  "autoEditorPriceSourceUnknown": "来源未知",
-  "autoEditorPriceStale": "已过期",
-  "autoEditorPriceStatus": "价格表 {detail}",
-  "autoEditorPriceTitle": "{model} 的价格（USD / 1M tokens）",
-  "autoEditorPriceUnavailable": "价格表暂不可用",
-  "autoEditorPriceUnknown": "价格未知",
   "autoEditorProviderAria": "{cli} 的 Provider"
 }
