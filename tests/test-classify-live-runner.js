@@ -456,6 +456,82 @@ test('delayed attribution with a superseded anchor cannot overwrite the newer ta
   assert.equal(h.chatState.currentTask.goal, '更新后的任务');
 });
 
+// ── D 判定落地后，归因答案把 goalState 精修回去 ──────────────────────────────
+//
+// 轮次规则的 D 判定先提交（此刻 phase 被强制成 done，推送/首屏只能用映射兜底——
+// 通常「达成目标」），归因 aux 的答案后到：applyTaskAttributionResult 在判定仍是 D
+// 时用模型直出的 goalState 精修 taskState 与对应 D 历史行。三件事要钉住：模型值
+// 优先、模型没给但带来新鲜 phase 时按映射重算（修掉强制 done 的污染）、非 D 不采信。
+
+function dRefineFixture({ classifyState, historyGoalState, taskGoalState }) {
+  const h = fixture({ goal: '把登录页改成暗色' });
+  h.chatState._currentTaskId = 'task-1';
+  h.record.taskState = {
+    ...h.record.taskState,
+    classifyState,
+    taskId: 'task-1',
+    goalState: taskGoalState,
+    classifyHistory: [{
+      at: h.record.taskState.startedAt + 1000,
+      taskId: 'task-1', goal: '把登录页改成暗色', phase: 'done',
+      state: 'D', goalState: historyGoalState,
+    }],
+  };
+  return h;
+}
+
+test('a still-D verdict is refined by the model goalState when attribution lands', () => {
+  const h = dRefineFixture({ classifyState: 'D', historyGoalState: 'achieved', taskGoalState: 'achieved' });
+  const result = h.machine.applyTaskAttributionResult(h.chatState, 's1', {
+    taskName: '把登录页改成暗色', phase: 'verifying', goalState: 'interact',
+    relation: 'same', taskId: 'task-1',
+  }, {
+    taskId: 'task-1', resolvedTaskId: 'task-1',
+    anchorMessageId: 'msg-scan-1',
+    anchorStatus: { changed: false, observedAnchorMessageId: 'msg-scan-1' },
+  });
+  assert.equal(result.superseded, false);
+  // 模型值优先：即使精修后的 phase=verifying 按映射会是 interact、原值是 achieved，
+  // 这里也直接采信模型的 interact。
+  assert.equal(h.record.taskState.goalState, 'interact');
+  assert.equal(h.record.taskState.classifyState, 'D', '精修只动子状态，不动规则判定的字母');
+  const row = h.record.taskState.classifyHistory.at(-1);
+  assert.equal(row.goalState, 'interact', 'D 历史行跟着精修，回放出来的就是卡片最终显示的子状态');
+  assert.equal(row.state, 'D');
+});
+
+test('model goalState missing falls back to the fresh phase mapping, un-polluting the forced done', () => {
+  // D 提交时 phase 被强制 done → 首屏「达成目标」。归因答案没有 goalState，但带来
+  // 了自己的 phase=verifying → 按映射重算成 interact，污染被纠正。
+  const h = dRefineFixture({ classifyState: 'D', historyGoalState: 'achieved', taskGoalState: 'achieved' });
+  h.machine.applyTaskAttributionResult(h.chatState, 's1', {
+    taskName: '把登录页改成暗色', phase: 'verifying', goalState: null,
+    relation: 'same', taskId: 'task-1',
+  }, {
+    taskId: 'task-1', resolvedTaskId: 'task-1',
+    anchorMessageId: 'msg-scan-1',
+    anchorStatus: { changed: false, observedAnchorMessageId: 'msg-scan-1' },
+  });
+  assert.equal(h.record.taskState.goalState, 'interact');
+  assert.equal(h.record.taskState.classifyHistory.at(-1).goalState, 'interact');
+});
+
+test('a non-D verdict never adopts the model goalState', () => {
+  const h = dRefineFixture({ classifyState: 'W', historyGoalState: 'achieved', taskGoalState: null });
+  h.machine.applyTaskAttributionResult(h.chatState, 's1', {
+    taskName: '把登录页改成暗色', phase: 'verifying', goalState: 'achieved',
+    relation: 'same', taskId: 'task-1',
+  }, {
+    taskId: 'task-1', resolvedTaskId: 'task-1',
+    anchorMessageId: 'msg-scan-1',
+    anchorStatus: { changed: false, observedAnchorMessageId: 'msg-scan-1' },
+  });
+  // 非 D 不采信：W 的卡片说的是 W 自己的词，goalState 不落盘、历史 D 行原样保留。
+  assert.equal(h.record.taskState.goalState, null);
+  assert.equal(h.record.taskState.classifyState, 'W');
+  assert.equal(h.record.taskState.classifyHistory.at(-1).goalState, 'achieved');
+});
+
 test('low relevance in a locked shell allocates the related task identity without changing rule state', async () => {
   const history = [
     { id: 'u0', role: 'user', content: 'Original', taskId: 'task-1' },

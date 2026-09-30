@@ -18,7 +18,7 @@ const { SYSTEM_PREFIX } = require('../session/delivery');
 const crypto = require('crypto');
 const {
   classifyDisplay,
-  goalStateForClassify,
+  resolveGoalState,
   phaseLabel,
   isProcessingLetter,
   isWaitForUserLetter,
@@ -191,12 +191,12 @@ function createClassifyStateMachine(rawDeps) {
     }
     const finalGoal = (cs && cs.currentTask) ? cs.currentTask.goal : goal;
     const finalPhase = (cs && cs.currentTask) ? cs.currentTask.phase : phase;
-    // The entry's goalState is computed from the SAME final goal/phase the
-    // completion notice below persists (including the dismissed-question null),
-    // so a history row replays to the sub-state the bar actually showed — the
-    // gap where the sub-state was only on the live taskState snapshot.
+    // The entry's goalState is resolved from the SAME final goal/phase the
+    // completion notice below persists (model-inferred value first, phase mapping
+    // as the fallback; including the dismissed-question null), so a history row
+    // replays to the sub-state the bar actually showed.
     const entryGoalState = result.evidence === 'user_dismissed_question'
-      ? null : goalStateForClassify({ state, goal: finalGoal, phase: finalPhase });
+      ? null : resolveGoalState(state, result.goalState, { state, goal: finalGoal, phase: finalPhase });
     const entry = { at: now, goal: goal || '', taskId: entryTaskId,
       phase: phase || '', state, goalState: entryGoalState,
       error: !!error, evidence: result.evidence || undefined };
@@ -280,11 +280,11 @@ function createClassifyStateMachine(rawDeps) {
       const dismissedQuestion = result.evidence === 'user_dismissed_question';
       const msg = dismissedQuestion ? '待回答问题已标记为已处理'
         : finalGoal ? `执行成功：${finalGoal}` : '执行成功';
-      // ✅ 这一格的三个子状态（达成目标 / 需要交互 / 无子状态），判定读的就是刚落盘
-      // 的 goal + phase（见 vocab.js goalStateForClassify），随判定一起持久化 ——
-      // 卡片不用自己推，也不会有第二份口径。
+      // ✅ 这一格的三个子状态（达成目标 / 需要交互 / 无子状态）：模型在归集 JSON 里
+      // 直接推理的 goalState 优先（见 vocab.js resolveGoalState），没给时按刚落盘的
+      // goal + phase 映射兜底 —— 卡片不用自己推，也不会有第二份口径。
       const goalState = dismissedQuestion ? null
-        : goalStateForClassify({ state, goal: finalGoal, phase: finalPhase });
+        : resolveGoalState(state, result.goalState, { state, goal: finalGoal, phase: finalPhase });
       const completionTaskId = transitionTaskId || entryTaskId;
       const completionTaskShortCode = taskShortCode(completionTaskId);
       const completionNotice = {
@@ -584,6 +584,15 @@ function createClassifyStateMachine(rawDeps) {
     const persisted = persistedSessions.get(sessionName);
     const currentState = getTaskState(persisted);
     const taskStartedAt = Number(cs.currentTask.startedAt || currentState.startedAt || 0);
+    // The turn-rules verdict commits D BEFORE this attribution answer arrives, and
+    // it forces phase='done' at that moment — so the sub-state first painted (and
+    // pushed) came from the polluted mapping. The model's own goalState lands HERE:
+    // refine the live taskState and the matching D history rows with it. Only a
+    // still-D verdict may be refined; the anchor/superseded guards above already
+    // prove this answer belongs to the turn that verdict judged.
+    const refineGoalState = isTerminalLetter(currentState.classifyState)
+      ? resolveGoalState('D', result.goalState, { state: 'D', goal: taskName, phase })
+      : null;
     const historyTaskIds = new Set([
       previousTaskId,
       context.admittedTaskId || null,
@@ -592,15 +601,18 @@ function createClassifyStateMachine(rawDeps) {
       ? currentState.classifyHistory.map(entry => {
         if (!entry || !historyTaskIds.has(entry.taskId)
             || Number(entry.at || 0) < taskStartedAt) return entry;
-        // Identity attribution refines only identity/name/phase. Preserve the
-        // rule-owned D/W/B/E state and its evidence byte-for-byte.
-        return { ...entry, taskId, goal: taskName, phase };
+        // Identity attribution refines only identity/name/phase (plus the D
+        // sub-state when the model answered one). Preserve the rule-owned
+        // D/W/B/E state and its evidence byte-for-byte.
+        return { ...entry, taskId, goal: taskName, phase,
+          ...(isTerminalLetter(entry.state) && refineGoalState !== null ? { goalState: refineGoalState } : {}) };
       })
       : [];
     setTaskState(sessionName, {
       goal: taskName,
       phase,
       taskId,
+      ...(isTerminalLetter(currentState.classifyState) ? { goalState: refineGoalState } : {}),
       auxRunId: context.runId || null,
       taskIdentityState: 'canonical',
       taskIdentityPending: false,
