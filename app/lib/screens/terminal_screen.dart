@@ -154,6 +154,9 @@ class _TerminalScreenState extends State<TerminalScreen> {
                       autofocus: true,
                       backgroundOpacity: 1.0,
                       padding: const EdgeInsets.all(4),
+                      // 不开这个，iOS 软键盘的退格键永远敲不到 onDelete（空编辑态
+                      // 下 updateEditingValue 根本不来）——手机上就「不能回退删除」。
+                      deleteDetection: true,
                     ),
                   ),
                   // 长按选中文字之后才有东西可点（见 TerminalCopyButton）。
@@ -168,7 +171,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
                 ],
               ),
             ),
-            _MobileKeyBar(terminal: _svc.terminal),
+            TerminalKeyBar(terminal: _svc.terminal),
           ],
         ),
       ),
@@ -387,10 +390,11 @@ Widget _cliBadge(SessionCli cli) {
   );
 }
 
-/// Mobile-friendly key bar for common terminal keys
-class _MobileKeyBar extends StatelessWidget {
+/// Mobile-friendly key bar for common terminal keys. Public so the widget test
+/// can pump it alone and assert each key emits the right byte.
+class TerminalKeyBar extends StatelessWidget {
   final Terminal terminal;
-  const _MobileKeyBar({required this.terminal});
+  const TerminalKeyBar({super.key, required this.terminal});
 
   @override
   Widget build(BuildContext context) {
@@ -404,6 +408,10 @@ class _MobileKeyBar extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
+            // 回车和退格放在最左：软键盘的退格靠 deleteDetection 才工作、回车键
+            // 依输入法而定，这两个是手机上「终端能不能用」的底线，必须一眼可见。
+            _Key('⌫', () => terminal.keyInput(TerminalKey.backspace)),
+            _Key('Enter', () => terminal.keyInput(TerminalKey.enter)),
             _Key(
               'Ctrl+C',
               () => terminal.keyInput(TerminalKey.keyC, ctrl: true),
