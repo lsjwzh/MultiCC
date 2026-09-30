@@ -72,15 +72,27 @@ test('parser keeps continuations on the existing task and permits genuinely new 
   assert.deepEqual(parseTaskAttribution(JSON.stringify({
     taskName: '登录页样式调整', phase: 'implementing', relation: 'same', taskId: 'tsk-login',
   })), {
-    taskName: '登录页样式调整', phase: 'implementing', relation: 'same', taskId: 'tsk-login',
+    taskName: '登录页样式调整', phase: 'implementing', goalState: null, relation: 'same', taskId: 'tsk-login',
     relatedTaskId: null, memoryCandidate: null,
   });
   assert.deepEqual(parseTaskAttribution(JSON.stringify({
     taskName: '增加导出功能', phase: 'planning', relation: 'new', taskId: 'tsk-login',
   })), {
-    taskName: '增加导出功能', phase: 'planning', relation: 'new', taskId: null,
+    taskName: '增加导出功能', phase: 'planning', goalState: null, relation: 'new', taskId: null,
     relatedTaskId: null, memoryCandidate: null,
   });
+});
+
+test('parser passes the model goalState through and drops unknown values', () => {
+  // 模型直接推理的「执行成功」子状态：合法值原样通过（resolveGoalState 会优先采信），
+  // 不认识的词按没给处理，绝不把脏词带进判定。
+  assert.equal(parseTaskAttribution('{"taskName":"换登录页 logo","phase":"verifying","goalState":"interact","relation":"same"}').goalState, 'interact');
+  assert.equal(parseTaskAttribution('{"taskName":"换登录页 logo","phase":"done","goalState":"ACHIEVED","relation":"same"}').goalState, 'achieved');
+  assert.equal(parseTaskAttribution('{"taskName":"换登录页 logo","phase":"done","goalState":"一半","relation":"same"}').goalState, null);
+  assert.equal(parseTaskAttribution('{"taskName":"换登录页 logo","phase":"done","relation":"same"}').goalState, null);
+  // 提示词契约必须真的把 goalState 要出来（模型不知道要答它，判定就永远走回退）。
+  assert.match(buildTaskAttributionSystemPrompt({}), /随后独立判断 goalState（achieved\|interact\|null）/);
+  assert.match(buildTaskAttributionSystemPrompt({}), /"goalState":"achieved\|interact\|null"/);
 });
 
 test('new related tasks keep a distinct identity and accept only a recent related task id', () => {
@@ -91,7 +103,7 @@ test('new related tasks keep a distinct identity and accept only a recent relate
     fallbackTaskId: 'tsk-candidate',
     allowedTaskIds: ['tsk-candidate', 'tsk-login'],
   }), {
-    taskName: '登录页截图测试', phase: 'planning', relation: 'new', taskId: null,
+    taskName: '登录页截图测试', phase: 'planning', goalState: null, relation: 'new', taskId: null,
     relatedTaskId: 'tsk-login', memoryCandidate: null,
   });
   assert.equal(parseTaskAttribution(JSON.stringify({
@@ -156,7 +168,7 @@ test('legacy raw Aux text remains replayable as same-task naming evidence', () =
   assert.deepEqual(parseTaskAttribution('登录页样式调整\n验证中\nD', {
     fallbackTaskId: 'tsk-login',
   }), {
-    taskName: '登录页样式调整', phase: 'verifying', relation: 'same', taskId: 'tsk-login',
+    taskName: '登录页样式调整', phase: 'verifying', goalState: null, relation: 'same', taskId: 'tsk-login',
     relatedTaskId: null, memoryCandidate: null,
   });
 });

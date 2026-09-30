@@ -146,9 +146,10 @@ const PHASE_LABELS = {
 //   需要交互（interact）— 有目标，但还得用户再推一把才走得下去
 //   执行成功（没有子状态）— 压根没有目标（纯招呼/系统消息），没什么可"达成"的
 //
-// 判定只读 classify 已经产出的两个字段（goal、phase），不新增模型输出、不看自然
-// 语言：phase 的语义本来就是「把当前任务所有要求都做完了才判已完成」，与「目标达成」
-// 是同一件事的两种说法，另起一问只会得到两个偶尔互相矛盾的答案。
+// 判定来源（2026-09-30 起）：classify 模型在归集 JSON 里直接输出 goalState
+// （achieved/interact/null），模型值优先；模型没给或不认识时回退下面的 phase 映射
+// —— 旧模型、旧记录、解析失败走的是同一条回退路。phase 的语义本来就是「把当前
+// 任务所有要求都做完了才判已完成」，映射与模型判断说的是同一件事。
 //
 // 字母不是 D 时没有子状态 —— 那时卡片显示的是 W/B/E 自己的词，这三档只挂在 ✅ 上。
 const GOAL_STATES = Object.freeze({ achieved: 'achieved', interact: 'interact' });
@@ -165,6 +166,16 @@ function goalStateForClassify(result) {
 /** 这个值是不是一个已知的子状态？（读回来的旧记录 / 客户端传来的值都要过这一关） */
 function isGoalState(value) {
   return value === GOAL_STATES.achieved || value === GOAL_STATES.interact;
+}
+
+/**
+ * 子状态裁定：模型在 classify 里直接推理的 goalState 优先（允许与 phase 不同——
+ * 它问的是「目标成没成、要不要用户再推一把」，不是「推进到哪一步」）；没给或不
+ * 认识的值回退 goalStateForClassify 的 phase 映射。非 D 一律 null。
+ */
+function resolveGoalState(state, modelValue, result) {
+  if (!isTerminalLetter(state)) return null;
+  return isGoalState(modelValue) ? modelValue : goalStateForClassify(result);
 }
 
 // D 的二次分组键（派生值，不落盘）：老系统/老 App 只认 classifyState 本身
@@ -358,6 +369,7 @@ module.exports = {
   turnOutcomeForClassify,
   // 「执行成功」的三个子状态：判定 + 值域（展示层读它，不自己推）。
   goalStateForClassify,
+  resolveGoalState,
   isGoalState,
   classifyGroupKey,
   GOAL_STATES,

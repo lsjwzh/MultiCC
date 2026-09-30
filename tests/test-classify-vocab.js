@@ -26,6 +26,7 @@ const {
   isParkedLetter,
   isOutcomeLetter,
   goalStateForClassify,
+  resolveGoalState,
   isGoalState,
   classifyGroupKey,
   GOAL_STATES,
@@ -204,6 +205,26 @@ test('goalStateForClassify splits ✅ three ways, and only for D', () => {
   assert.equal(goalStateForClassify({ goal: '有目标', phase: 'done' }), null);
   assert.equal(goalStateForClassify(undefined), null);
   assert.equal(goalStateForClassify(null), null);
+});
+
+// ── 子状态裁定：模型在归集 JSON 里直接推理的 goalState 优先 ────────────────────
+
+test('resolveGoalState prefers the model value, falls back to the phase mapping, non-D stays null', () => {
+  const mapping = { state: 'D', goal: '把登录页改成暗色', phase: 'done' };
+  // 模型值优先——矛盾时也以模型为准：goalState 问的是「目标成没成、要不要用户
+  // 再推一把」，phase 只是「推进到哪一步」，两者允许不同。
+  assert.equal(resolveGoalState('D', 'interact', mapping), 'interact');
+  assert.equal(resolveGoalState('D', 'achieved', { ...mapping, phase: 'verifying' }), 'achieved');
+  // 模型没给 / 给了不认识的词 → 回退 goalStateForClassify 的 phase 映射。
+  assert.equal(resolveGoalState('D', null, mapping), 'achieved');
+  assert.equal(resolveGoalState('D', undefined, mapping), 'achieved');
+  assert.equal(resolveGoalState('D', '一半', mapping), 'achieved');
+  assert.equal(resolveGoalState('D', null, { ...mapping, phase: 'verifying' }), 'interact');
+  // 非 D 一律 null——那三档只挂在 ✅ 上，且模型值也不能借道非 D 落盘。
+  for (const state of ['W', 'B', 'E', 'P', 'C']) {
+    assert.equal(resolveGoalState(state, 'achieved', mapping), null, `${state} 不该有子状态`);
+    assert.equal(resolveGoalState(state, null, mapping), null);
+  }
 });
 
 test('classifyGroupKey compounds D with its goalState without touching classifyState itself', () => {
