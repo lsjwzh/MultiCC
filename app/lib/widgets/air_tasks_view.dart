@@ -159,6 +159,12 @@ class _AirTasksViewState extends State<AirTasksView>
   _DirectoryMode _dirMode = _DirectoryMode.chat;
   Timer? _timer;
 
+  /// 快照轮询的间隔。一次 `/api/air` 回来的是全量正文（本机实测 ~800KB，App 侧
+  /// 还没有条件请求），4 秒一次基本是空转；15 秒对「谁在跑、谁在等我」这种看板
+  /// 够用，也把它压回人读一屏的量级。切回前台会立刻补一次（见
+  /// [didChangeAppLifecycleState]），所以不会出现「刚回来看到的是十几秒前的画面」。
+  static const _snapshotPollInterval = Duration(seconds: 15);
+
   @override
   void initState() {
     super.initState();
@@ -166,7 +172,7 @@ class _AirTasksViewState extends State<AirTasksView>
     unawaited(_loadStore());
     _ops.start();
     _refresh();
-    _timer = Timer.periodic(const Duration(seconds: 4), (_) {
+    _timer = Timer.periodic(_snapshotPollInterval, (_) {
       if (_foreground) _refresh();
     });
     widget.settings.advancedMode.addListener(_onAdvancedModeChanged);
