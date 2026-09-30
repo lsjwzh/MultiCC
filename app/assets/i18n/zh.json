@@ -4216,5 +4216,7 @@
   "autoEditorLaneEmpty": "该 CLI 下没有可用的 Provider",
   "autoEditorLaneLoading": "加载中…",
   "autoEditorListHintPrice": "按价格排档；勾了「自动选模型」的线路由价格表挑模型",
-  "autoEditorProviderAria": "{cli} 的 Provider"
+  "autoEditorProviderAria": "{cli} 的 Provider",
+  "chatModelAttribution": "由 {what} 产出",
+  "chatModelAttributionHint": "这条消息由哪个模型产出。同一段会话里可以换过多次，所以逐条标注。"
 }

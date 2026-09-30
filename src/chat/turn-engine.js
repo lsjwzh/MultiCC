@@ -274,6 +274,7 @@ function createChatTurnEngine(deps) {
     // exercise the reconnect replay.
     turnEventJournal = null,
     persistFinalAssistantResult,
+    modelAttributionField,
     recordDurableTurnUsage,
     runDurablePostTurn,
     isCurrentTurnRunner,
@@ -617,8 +618,10 @@ function createChatTurnEngine(deps) {
       // clock guesswork. durationMs is the wall-clock time from turnStartedAt
       // (user submit) to this result — "模型接到消息到输出完成的耗时".
       const _resultDurationMs = cs.turnStartedAt ? Date.now() - cs.turnStartedAt : undefined;
+      // Same cs/turn/runner the durable stamp spreads → live and reloaded agree.
       forward({ type: 'result', total_cost_usd: evt.total_cost_usd, usage, durationMs: _resultDurationMs,
-        num_turns: cs.chatTurnCount, ...(contextTrace ? { contextTrace } : {}) });
+        num_turns: cs.chatTurnCount, ...(contextTrace ? { contextTrace } : {}),
+        ...modelAttributionField(cs, turn, runner) });
       // Final classification and all post-turn effects run from the owned
       // close/finalize boundary. The result event alone is not enough: history
       // persistence may have failed or a retry may still be planned.

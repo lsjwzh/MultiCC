@@ -175,3 +175,54 @@ test('Codex host sends one delta to history, ledger, role tracker and live resul
   assert.equal(calls.some(call => call[0] === 'status'), false,
     'usage/result persistence cannot announce success before runner settlement');
 });
+
+test('the fallback result frame carries the model attribution the message was stamped with', () => {
+  const cliSessionId = 'native-thread-secret';
+  const cs = {
+    currentAssistantText: 'done',
+    currentToolCalls: [],
+    chatTurnCount: 1,
+    turnStartedAt: 900,
+  };
+  const host = createCodexUsageHost({
+    loadHistory: () => [],
+    reconcileRole() {},
+    clearIncrementalSave() {},
+    persistFinalAssistantResult() { return true; },
+    recordDurableTurnUsage() {},
+    recordResultEvent() {},
+    setSessionStatus() {},
+    now: () => 1000,
+    // Same source the durable message is stamped from (host-runtime) — this is
+    // only the wiring: a fallback frame must not leave the bubble attributeless
+    // while a reload of the same turn shows a line.
+    modelAttributionField: () => ({ modelAttribution: {
+      cli: 'codex', providerId: 'zhipu', providerName: 'Zhipu', model: 'glm-4.6',
+    } }),
+  });
+  const forwarded = [];
+  host.complete({
+    evt: { type: 'complete', usage: cumulative(145, 100, 29, 8) },
+    cs, persisted: { cliSessionId }, sessionName: 'session-a',
+    turn: { id: 'turn-a' }, runner: {}, forward: event => forwarded.push(event),
+  });
+  assert.deepEqual(forwarded[0].modelAttribution, {
+    cli: 'codex', providerId: 'zhipu', providerName: 'Zhipu', model: 'glm-4.6',
+  });
+});
+
+test('no attribution dep means the fallback frame keeps its exact old shape', () => {
+  const cs = { currentAssistantText: 'done', currentToolCalls: [], chatTurnCount: 1, turnStartedAt: 900 };
+  const host = createCodexUsageHost({
+    loadHistory: () => [], reconcileRole() {}, clearIncrementalSave() {},
+    persistFinalAssistantResult() { return true; }, recordDurableTurnUsage() {},
+    recordResultEvent() {}, setSessionStatus() {}, now: () => 1000,
+  });
+  const forwarded = [];
+  host.complete({
+    evt: { type: 'complete', usage: cumulative(20, 10, 5, 1) },
+    cs, persisted: { cliSessionId: 'native-thread-secret' }, sessionName: 'session-a',
+    turn: { id: 'turn-a' }, runner: {}, forward: event => forwarded.push(event),
+  });
+  assert.equal('modelAttribution' in forwarded[0], false);
+});

@@ -564,6 +564,18 @@ class _AssistantBubble extends StatelessWidget {
     final hasTools = message.toolCalls.isNotEmpty;
     final advancedMode = SettingsService.current?.advancedMode.value ?? true;
 
+    // 模型归属的落点（与 Web 端同一条规则，见 public/chat-live-ui.js 的
+    // attachModelAttribution）：优先贴到轨迹那行「⏱ N tools · Xs wall-clock」的
+    // 最右端 —— 那是页脚里最像「这轮多久」的一行；工具不足两个时那一行整个不画
+    // （[hasTrajectoryContent]），于是退到 🕐/⏱ 时间行；两行都不在（老历史缺时间
+    // 戳、基本模式）才自占一行。前两种情况下这些行的右边本来就是空的，所以既不
+    // 多占一行，也挤不掉原有内容。
+    final trajectoryShown =
+        hasTools && advancedMode && hasTrajectoryContent(message.toolCalls);
+    // _TimingLine 只在 advancedMode 且有 durationMs 时才建，而消息的时间戳
+    // （message.timestamp）本来就非空，所以那一行只要建了就必定有内容可写。
+    final timingShown = advancedMode && message.durationMs != null;
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final laneWidth = constraints.maxWidth.isFinite
@@ -602,6 +614,9 @@ class _AssistantBubble extends StatelessWidget {
                     ToolTrajectory(
                       toolCalls: message.toolCalls,
                       turnDurationMs: message.durationMs,
+                      attribution: trajectoryShown
+                          ? message.modelAttribution
+                          : null,
                     ),
                   if (hasTools && !advancedMode)
                     _BasicToolSummary(
@@ -618,6 +633,10 @@ class _AssistantBubble extends StatelessWidget {
                     _TimingLine(
                       timestamp: message.timestamp,
                       durationMs: message.durationMs,
+                      // 轨迹文案行不在时，归属才退到这一行（两处只能贴一处）。
+                      attribution: (timingShown && !trajectoryShown)
+                          ? message.modelAttribution
+                          : null,
                     ),
                   // Durable interrupted draft (partial): never continues.
                   if (message.isPartial)
@@ -633,12 +652,44 @@ class _AssistantBubble extends StatelessWidget {
                       ),
                     ),
                   _TaskAttributionTail(message: message),
+                  // 模型归属：正常情况下它贴在轨迹文案行 / 时间行的最右端（见
+                  // 上面的 trajectoryShown / timingShown），只有那两行都不在时
+                  // 才在这里自占一行兜底。
+                  if (!trajectoryShown && !timingShown)
+                    _ModelAttributionLine(
+                      attribution: message.modelAttribution,
+                    ),
                 ],
               ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+/// 归属的**兜底**一行：页脚里那两行（轨迹的墙钟文案行、🕐/⏱ 时间行）都不在时才
+/// 走这里 —— 正常情况下看不到它，因为归属总是搭在别的一行上。右对齐，并且仍然
+/// 只在真的有归属时渲染（attribution 为 null / 三段全空 = 不留空壳）。
+///
+/// 一段会话里可以换过多次线路/模型，逐条标注才好溯源。只挂在 assistant 气泡上：
+/// user / system 消息没有「哪个模型产出」这回事。
+class _ModelAttributionLine extends StatelessWidget {
+  const _ModelAttributionLine({required this.attribution});
+
+  final ModelAttribution? attribution;
+
+  @override
+  Widget build(BuildContext context) {
+    final segments = modelAttributionSegments(attribution);
+    if (segments.isEmpty) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: ModelAttributionLabel(segments: segments),
+      ),
     );
   }
 }
@@ -1100,7 +1151,11 @@ class _UsageBadge extends StatelessWidget {
 class _TimingLine extends StatelessWidget {
   final DateTime? timestamp;
   final int? durationMs;
-  const _TimingLine({this.timestamp, this.durationMs});
+
+  /// 这条回复的模型归属，贴在这一行的**最右端**（不额外占一行：🕐/⏱ 右边本来
+  /// 就是空的）。null = 没有归属，或者归属已经贴在轨迹文案行上了。
+  final ModelAttribution? attribution;
+  const _TimingLine({this.timestamp, this.durationMs, this.attribution});
 
   /// 一段测出来的墙钟时间：走 utils/format.dart 的 [formatDuration]（web 那侧
   /// chat-live-ui / chat-history-view 同一份）。
@@ -1144,12 +1199,25 @@ class _TimingLine extends StatelessWidget {
 
     if (parts.isEmpty) return const SizedBox.shrink();
 
+    // Wrap for the same reason the usage line above wraps: a large text-scale
+    // factor or a long duration must push the clock onto its own line rather
+    // than overflow the bubble.
+    final line = Wrap(spacing: 10, runSpacing: 2, children: parts);
+    final segments = modelAttributionSegments(attribution);
     return Padding(
       padding: const EdgeInsets.only(top: 4),
-      // Wrap for the same reason the usage line above wraps: a large text-scale
-      // factor or a long duration must push the clock onto its own line rather
-      // than overflow the bubble.
-      child: Wrap(spacing: 10, runSpacing: 2, children: parts),
+      // 有归属时这一行变成「时钟/时长 …… 归属」：两段都 Flexible，窄屏各自
+      // 让位；spaceBetween 把余量全给中间，归属因此顶在这一行的最右端。
+      child: segments.isEmpty
+          ? line
+          : Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Flexible(child: line),
+                const SizedBox(width: 10),
+                Flexible(child: ModelAttributionLabel(segments: segments)),
+              ],
+            ),
     );
   }
 }

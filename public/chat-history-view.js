@@ -131,6 +131,11 @@
       ? settings.buildUsageLine : function noUsage() { return null; };
     const buildTimingLine = typeof settings.buildTimingLine === 'function'
       ? settings.buildTimingLine : function noTiming() { return null; };
+    // 模型归属：说明这条回复是哪个模型产出的。落点由 chat-live-ui 那个 attach 决定
+    // （贴在时间行最右端，不额外占一行），活体与历史共用同一份实现，所以流式中的
+    // 气泡和刷新后的历史落点一致。没有归属时它什么都不做。
+    const attachModelAttribution = typeof settings.attachModelAttribution === 'function'
+      ? settings.attachModelAttribution : function noAttribution() {};
     const attachDeleteButton = typeof settings.attachDeleteButton === 'function'
       ? settings.attachDeleteButton : function noop() {};
     const attachForkButton = typeof settings.attachForkButton === 'function'
@@ -518,6 +523,11 @@
       // wall-clock window spans the whole turn (LLM request + tools) when the
       // server stamped durationMs; otherwise it falls back to the tool window.
       renderToolTrajectory(contentEl, message.tools, message.durationMs);
+      // 归属贴在时间行最右端，assistant-only：user / system 没有「哪个模型产出」这回事。
+      // 必须在轨迹条之后：轨迹文案行就是它的宿主。
+      if (message.role === 'assistant') {
+        attachModelAttribution(contentEl, message.modelAttribution);
+      }
       node.appendChild(contentEl);
       attachMessageActions(node, message);
       return node;

@@ -427,6 +427,11 @@
           Number.isFinite(message.durationMs)
             ? message.durationMs
             : (state.turnStartMs ? Date.now() - state.turnStartMs : undefined));
+        // 归属行是这条消息的页脚最后一行：result 里的字段和随后落库的同名字段出自
+        // 服务端同一次计算，所以流式中的气泡与刷新后的历史逐字一致。
+        if (content && message.modelAttribution) {
+          liveUi.attachModelAttribution?.(resultBubble, message.modelAttribution);
+        }
       }
       state.turnStartMs = 0;
       host.stopTitleAnimation?.();

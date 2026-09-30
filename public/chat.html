@@ -631,7 +631,10 @@
       border-radius: 2px; background: #2f81f7; opacity: 0.85;
     }
     .tool-trajectory-seg.error { background: var(--chat-danger, #f85149); }
-    .tool-trajectory-label { font-size: 11px; color: var(--chat-muted, #6e7681); margin-top: 3px; }
+    /* flex 是为了让模型归属那段字能 margin-left:auto 贴到最右端（见
+       .msg-model-attribution）。只有一个文本子节点时，flex 与原来的块级排版看起来
+       完全一样。 */
+    .tool-trajectory-label { display: flex; align-items: baseline; gap: 10px; font-size: 11px; color: var(--chat-muted, #6e7681); margin-top: 3px; }
 
     /* ── Per-message token usage line ── */
     .msg-usage {
@@ -660,6 +663,27 @@
       padding: 0 6px;
       border-radius: 8px;
       cursor: help;
+    }
+    /* ── 每条 assistant 消息的模型归属 ──
+       这段字贴在时间行（轨迹的「N tools · 时长 wall-clock」文案，或 🕐/⏱ 那行）的
+       最右端，**不额外占一行** —— 那一行右边本来就是空的。一段会话里可能换过多次
+       provider/model，所以归属是逐条的；没有归属信息的老消息不渲染。
+       margin-left:auto 是「贴右」的全部机关：宿主行是 flex 行。 */
+    .msg-model-attribution {
+      margin-left: auto;
+      white-space: nowrap;
+      font-size: 11px;
+      color: var(--chat-muted, #8b949e);
+      user-select: none;
+    }
+
+    /* 兜底：页脚里连 🕐/⏱ 时间行都没有时（老历史缺时间戳）归属才自占一行。
+       .msg-content 是普通块，上面的 margin-left:auto 在那儿不成立，所以这一行
+       自己当 flex 父级把归属推右 —— 与 App 侧 _ModelAttributionLine 的
+       Align.centerRight 同一条规则。正常情况下看不到它。 */
+    .msg-model-attribution-row {
+      display: flex;
+      justify-content: flex-end;
     }
 
     /* ── Thinking indicator ── */

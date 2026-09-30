@@ -102,6 +102,38 @@ function attributionSnapshot(state, turn, runner, explicit = {}) {
   });
 }
 
+// Which model actually produced an assistant message is per-message, not per
+// session: a session can switch provider/model mid-conversation, so a reloaded
+// transcript needs each bubble to say who wrote it. Four display facts only —
+// the same values the usage attribution keeps for a turn. `_default_` is the
+// "no route configured, the CLI's own login answered" marker and says nothing
+// about which model produced the text, so it is dropped; a turn whose four
+// facts are all empty gets no `modelAttribution` key at all, so old history
+// (and every path with no attribution) keeps its byte-for-byte shape.
+const MODEL_ATTRIBUTION_KEYS = Object.freeze(['cli', 'providerId', 'providerName', 'model']);
+const NO_ATTRIBUTION = '_default_';
+
+function modelAttributionFor(state, turn, runner) {
+  let snapshot = null;
+  try { snapshot = attributionSnapshot(state, turn, runner); } catch (_) { return null; }
+  const attribution = {};
+  for (const key of MODEL_ATTRIBUTION_KEYS) {
+    const value = clean(snapshot[key]);
+    if (!value || value === NO_ATTRIBUTION) continue;
+    attribution[key] = value;
+  }
+  return Object.keys(attribution).length ? attribution : null;
+}
+
+// The merge view of the same computation: `{}` when there is nothing to say, so
+// a caller can fold it into an object without an `if`. Both the durable history
+// stamp and the live `result` frame spread this, which is what keeps a
+// streaming bubble and the same bubble after a reload byte-identical.
+function modelAttributionField(state, turn, runner) {
+  const attribution = modelAttributionFor(state, turn, runner);
+  return attribution ? { modelAttribution: attribution } : {};
+}
+
 function createChatHostRuntime(rawPorts) {
   const ports = assertHostRuntimePorts(rawPorts);
   const usagePort = {
@@ -120,6 +152,12 @@ function createChatHostRuntime(rawPorts) {
   function persistFinalAssistantResult(sessionId, state, turn, runner, message, options = {}) {
     const roleUsage = persistedRoleUsage(ports.roleUsageSnapshot, sessionId);
     if (roleUsage && message && message.role === 'assistant') message = { ...message, roleUsage };
+    // Same computation the live `result` frame spreads (see turn-engine), so a
+    // bubble cannot say one model while streaming and another after a reload.
+    if (message && message.role === 'assistant') {
+      const attribution = modelAttributionField(state, turn, runner);
+      if (attribution.modelAttribution) message = { ...message, ...attribution };
+    }
     const result = coordinator.appendFinal({
       turn,
       runner,
@@ -213,4 +251,10 @@ function createChatHostRuntime(rawPorts) {
   });
 }
 
-module.exports = { REQUIRED_PORTS, assertHostRuntimePorts, createChatHostRuntime };
+module.exports = {
+  REQUIRED_PORTS,
+  assertHostRuntimePorts,
+  createChatHostRuntime,
+  modelAttributionFor,
+  modelAttributionField,
+};

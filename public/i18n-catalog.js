@@ -4218,7 +4218,9 @@ window.MULTICC_I18N_CATALOG = {
     "autoEditorLaneEmpty": "该 CLI 下没有可用的 Provider",
     "autoEditorLaneLoading": "加载中…",
     "autoEditorListHintPrice": "按价格排档；勾了「自动选模型」的线路由价格表挑模型",
-    "autoEditorProviderAria": "{cli} 的 Provider"
+    "autoEditorProviderAria": "{cli} 的 Provider",
+    "chatModelAttribution": "由 {what} 产出",
+    "chatModelAttributionHint": "这条消息由哪个模型产出。同一段会话里可以换过多次，所以逐条标注。"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -8438,6 +8440,8 @@ window.MULTICC_I18N_CATALOG = {
     "autoEditorLaneEmpty": "No Provider available on that CLI",
     "autoEditorLaneLoading": "Loading…",
     "autoEditorListHintPrice": "ranked by price; an auto-model line has its model picked from the table",
-    "autoEditorProviderAria": "Provider on {cli}"
+    "autoEditorProviderAria": "Provider on {cli}",
+    "chatModelAttribution": "powered by {what}",
+    "chatModelAttributionHint": "Which model produced this message. A session can switch models between turns, so this is labelled per message."
   }
 };

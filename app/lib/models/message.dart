@@ -132,6 +132,53 @@ class MessageUsage {
   }
 }
 
+/// 这条 assistant 消息是哪个模型产出的 —— 一段会话里可以换过多次线路/模型，
+/// 逐条标注才好溯源。
+///
+/// 服务端在历史 JSON 与实时 `result` 事件里下发同名 `modelAttribution`：
+/// `{cli, providerId, providerName, model}`。**四个键都可能缺**（服务端丢掉空值与
+/// `_default_`），整个字段也可能不出现（老历史就是这样）—— 那种情况返回 null，
+/// 整行不渲染，绝不抛。
+class ModelAttribution {
+  final String? cli;
+  final String? providerId;
+  final String? providerName;
+  final String? model;
+
+  const ModelAttribution({
+    this.cli,
+    this.providerId,
+    this.providerName,
+    this.model,
+  });
+
+  /// 解析一份归属记录；不是 Map、或四个键全空时返回 null（= 没有可说的）。
+  /// `_default_` 是服务端的「未显式选择」哨兵值，等于没说 —— 一并丢掉。
+  static ModelAttribution? fromJson(dynamic raw) {
+    if (raw is! Map) return null;
+    final attribution = ModelAttribution(
+      cli: _meaningful(raw['cli']),
+      providerId: _meaningful(raw['providerId']),
+      providerName: _meaningful(raw['providerName']),
+      model: _meaningful(raw['model']),
+    );
+    return attribution.isEmpty ? null : attribution;
+  }
+
+  bool get isEmpty =>
+      cli == null && providerId == null && providerName == null && model == null;
+
+  static String? _meaningful(dynamic value) {
+    final text = value?.toString().trim();
+    if (text == null || text.isEmpty || text == '_default_') return null;
+    return text;
+  }
+
+  @override
+  String toString() =>
+      'ModelAttribution($cli, $providerId, $providerName, $model)';
+}
+
 class ToolCall {
   final String id;
   final String name;
@@ -200,6 +247,12 @@ class ChatMessage {
   double? cost;
   MessageUsage? usage;
 
+  /// Which model produced this assistant reply (线路 + 车道 + 模型). Parsed from
+  /// the history record or attached from the live `result` frame — both routes
+  /// must show the same line. Null = the server said nothing, and the bubble
+  /// renders no attribution row at all.
+  ModelAttribution? modelAttribution;
+
   /// Server-authored manifest of MultiCC-managed context references for this
   /// turn. It intentionally contains source metadata only; message bodies are
   /// fetched from the authenticated context endpoint when the user opens them.
@@ -262,6 +315,7 @@ class ChatMessage {
     this.isPartial = false,
     this.cost,
     this.usage,
+    this.modelAttribution,
     this.contextTrace,
     this.id,
     this.durationMs,
@@ -295,6 +349,7 @@ class ChatMessage {
       isPartial = json['partial'] == true,
       cost = (json['cost'] as num?)?.toDouble(),
       usage = MessageUsage.fromHistory(json),
+      modelAttribution = ModelAttribution.fromJson(json['modelAttribution']),
       contextTrace = json['contextTrace'] is Map
           ? Map<String, dynamic>.from(json['contextTrace'] as Map)
           : null,

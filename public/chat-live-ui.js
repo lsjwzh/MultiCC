@@ -21,6 +21,39 @@
     ), fallback);
   }
 
+  // 模型归属行（页脚最后一行，「由 X 产出」）的两个显示名都取自
+  // public/provider-catalog.js —— 它是车道显示名与内置官方线路名翻译的**唯一**副本
+  // （app 侧由 cli_display.dart 镜像，别再在这里造第三张表）。目录查不到就退回原始
+  // id：把不认识的车道显示成别的产品名比显示 id 更糟。
+  function providerCatalog() {
+    return global.MultiCCProviderCatalog
+      || (typeof require === 'function' ? require('./provider-catalog.js') : null)
+      || null;
+  }
+
+  // [车道显示名, 线路显示名, 模型] 里非空的三段。归属字段本体由服务端清洗过
+  // （空串 / `_default_` 不会出现），这里只负责显示。
+  function modelAttributionSegments(attribution) {
+    const source = attribution && typeof attribution === 'object' ? attribution : {};
+    // `_default_` 是服务端的「没显式选线路」哨兵，服务端本该已经丢掉它 —— 这里再兜
+    // 一道，因为两端面对同一份输入必须显示相同的东西（App 侧 ModelAttribution 也丢），
+    // 否则一条 `_default_` 就会在 Web 上被当成线路名念出来。
+    const text = value => {
+      const out = value == null ? '' : String(value).trim();
+      return out === '_default_' ? '' : out;
+    };
+    const catalog = providerCatalog();
+    const cli = text(source.cli);
+    const providerName = text(source.providerName);
+    const providerId = text(source.providerId);
+    const lane = cli && catalog && catalog.cliDisplayName ? catalog.cliDisplayName(cli) : cli;
+    // 内置官方线路名（'Codex 官方'）是记录里的数据，按身份翻译；普通线路名原样。
+    const official = providerName && catalog && catalog.providerDisplayName
+      ? catalog.providerDisplayName(providerName) : '';
+    const route = official || providerName || providerId;
+    return [lane, route, text(source.model)].filter(Boolean);
+  }
+
   function bindHeaderMoreMenu(options) {
     const opts = options || {};
     const win = opts.window || global;
@@ -332,6 +365,50 @@
       content.querySelector('.msg-usage')?.remove();
       const line = buildUsageLine(usage, roleBreakdown);
       if (line) content.appendChild(line);
+    }
+
+    // 模型归属：一小段淡淡的小字，贴在**时间行的最右端**，不额外占一行（页脚本来就
+    // 有一行写着这轮跑了多久，右边是空的）。服务端只在真的有归属信息时才发这个字段，
+    // 所以「没有字段 → 不渲染」是调用方的判断；这里没有可显示的三段时同样返回 null，
+    // 绝不留一个空壳。用 span：它要落进别的行里当一个 flex 项。
+    function buildModelAttributionLine(attribution) {
+      const segments = modelAttributionSegments(attribution);
+      if (!segments.length) return null;
+      const line = doc.createElement('span');
+      line.className = 'msg-model-attribution';
+      line.textContent = tt('chatModelAttribution', '由 {what} 产出', { what: segments.join(' · ') });
+      line.title = tt('chatModelAttributionHint',
+        '这条消息由哪个模型产出。同一段会话里可以换过多次，所以逐条标注。');
+      return line;
+    }
+
+    // 同一轮里模型可能换过，所以归属是「这条消息」的，不是会话的：活体气泡在 result
+    // 事件落地时挂一次，历史回放由 renderAssistant 走同一条路（chat.js 把它接进
+    // createHistoryView），两边落点必须一致。
+    //
+    // 落点规则（两端一致）：贴在那一行写着「N tools · 时长 wall-clock」的轨迹文案最右端
+    // —— 那是页脚里最像「这轮多久」的一行；工具不足两个（轨迹条本身不渲染）时退回
+    // 🕐/⏱ 那行；两行都没有（比如老历史缺时间戳）才自占一行。前两种情况下这一行右侧
+    // 本来就是空的，所以不需要多一行，也不会挤掉原有内容。
+    function attachModelAttribution(target, attribution) {
+      const content = target && target.classList && target.classList.contains('msg-content')
+        ? target
+        : (target && target.querySelector ? target.querySelector('.msg-content') : null);
+      if (!content) return null;
+      content.querySelector('.msg-model-attribution')?.remove();
+      content.querySelector('.msg-model-attribution-row')?.remove();
+      const line = buildModelAttributionLine(attribution);
+      if (!line) return null;
+      const host = content.querySelector('.tool-trajectory-label') || content.querySelector('.msg-timing');
+      if (host) { host.appendChild(line); return line; }
+      // 没有可搭的车（老历史缺时间戳，那一行根本不建）：自占一行，但仍贴右 ——
+      // `.msg-content` 是普通块，`margin-left:auto` 在那儿不成立（那需要一个 flex
+      // 父级），所以要自己带一层推右的容器。App 侧同一条兜底用 Align.centerRight。
+      const row = doc.createElement('div');
+      row.className = 'msg-model-attribution-row';
+      row.appendChild(line);
+      content.appendChild(row);
+      return line;
     }
 
     // Shared status registry (public/status-presentation.js). Resolved lazily so
@@ -1590,7 +1667,9 @@
       fmtDuration,
       buildUsageLine,
       buildTimingLine,
+      buildModelAttributionLine,
       attachUsageLine,
+      attachModelAttribution,
       classifyDisplay,
       renderAuxClassify,
       applyAuxVerdictStaleness,
