@@ -515,6 +515,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/pending_cli_switch_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/provider_label_test.dart",
       "tier": "other",
       "lane": "flutter"
