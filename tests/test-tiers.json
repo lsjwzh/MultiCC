@@ -655,6 +655,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/terminal_key_bar_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/terminal_service_test.dart",
       "tier": "core",
       "lane": "flutter"
