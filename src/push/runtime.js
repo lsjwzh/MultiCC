@@ -256,8 +256,12 @@ function createPushRuntime(options) {
     const spec = (options && options.classifyState) || type;
     // Title copy comes from the one table in ./notification-copy (which reads
     // the classify vocab) — no per-type string branches here any more.
+    // `goalState` (the D sub-state, only ever sent on the succeeded push)
+    // picks the finer title word and rides along in the payload for webhook /
+    // push consumers to key on.
+    const goalState = options && options.goalState ? String(options.goalState) : null;
     const payloadForLocale = locale => {
-      const copy = notificationCopy(spec, locale);
+      const copy = notificationCopy(spec, locale, goalState);
       return {
         title: `MultiCC #${sessionId}: ${copy.title}`,
         body: `${message}\n${shortCwd}`,
@@ -266,6 +270,8 @@ function createPushRuntime(options) {
         locale: copy.locale,
         tag: `multicc-${sessionId}`,
         url: '/manage',
+        ...(options && options.classifyState ? { classifyState: options.classifyState } : {}),
+        ...(goalState ? { goalState } : {}),
       };
     };
     const payload = payloadForLocale('zh');

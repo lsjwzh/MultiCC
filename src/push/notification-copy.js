@@ -58,18 +58,33 @@ function copyKeyFor(spec) {
   return raw.length === 1 ? 'waiting' : 'succeeded';
 }
 
+// D's sub-state words (goalStateForClassify: goal + phase landed = achieved,
+// goal but phase short of done = interact). The succeeded push is the only one
+// that ever carries a goalState, so these are the finest words a lock screen
+// can show for a completion. Pinned to the i18n catalog's statusGoal* values by
+// tests/test-notification-copy.js — keep them in step.
+const GOAL_STATE_TITLES = Object.freeze({
+  achieved: Object.freeze({ zh: '达成目标', en: 'Goal achieved' }),
+  interact: Object.freeze({ zh: '需要交互', en: 'Needs input' }),
+});
+
 /**
  * The announcement copy for one classify outcome.
  * @param {string} spec classify letter (D/C/W/B/E/P) or push type (succeeded/waiting/error)
  * @param {string} [locale] 'zh' (default) or 'en'
+ * @param {string} [goalState] the D sub-state ('achieved'|'interact'); unknown
+ *   or absent values keep the plain succeeded title — the sub-state never
+ *   invents wording of its own.
  * @returns {{key: string, locale: string, title: string}} `title` is the phrase
  *   that follows the `MultiCC #<session>: ` prefix — never the whole title, so
  *   the payload shape stays the runtime's business.
  */
-function notificationCopy(spec, locale) {
+function notificationCopy(spec, locale, goalState) {
   const key = copyKeyFor(spec);
   const lang = locale === 'en' ? 'en' : 'zh';
-  return { key, locale: lang, title: COPY[key][lang] };
+  const sub = key === 'succeeded'
+    ? GOAL_STATE_TITLES[String(goalState == null ? '' : goalState).toLowerCase()] : null;
+  return { key, locale: lang, title: (sub && sub[lang]) || COPY[key][lang] };
 }
 
 module.exports = { COPY, KEY_OF, copyKeyFor, notificationCopy };

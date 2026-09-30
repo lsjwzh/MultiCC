@@ -295,10 +295,13 @@ function createClassifyStateMachine(rawDeps) {
         voiceMessage: dismissedQuestion ? msg : completionVoiceMessage(completionTaskShortCode, finalGoal),
       };
       if (isTerminal) {
-        if (!dismissedQuestion) triggerPush(sessionId, 'succeeded', msg);
+        // The succeeded push carries the letter + the D sub-state so the lock
+        // screen can say 达成目标/需要交互 (see ./push/notification-copy). Only
+        // this branch fires it — the W/B/E pushes below never carry a goalState.
+        if (!dismissedQuestion) triggerPush(sessionId, 'succeeded', msg, { classifyState: 'D', goalState });
         terminalBroadcast(sessionId, completionNotice);
       } else {
-        if (!dismissedQuestion) triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`);
+        if (!dismissedQuestion) triggerPush(sessionId, 'succeeded', `[Chat] ${msg}`, { classifyState: 'D', goalState });
         chatBroadcast(sessionName, completionNotice);
       }
       const dirId = persistedSessions.get(sessionName)?.dirId;

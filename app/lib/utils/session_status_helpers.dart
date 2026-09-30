@@ -163,8 +163,18 @@ ClassifyNotificationCopy classifyNotificationCopy(String? spec) {
 }
 
 /// 通知标题里那半句话（"MultiCC · 会话: 等待操作" 的后半句）。
-String classifyNotificationWord(String? spec) =>
-    t(classifyNotificationCopy(spec).wordKey);
+///
+/// [goalState] 是 D 的子状态（achieved/interact，服务端只在终局成功那一帧
+/// 带上）：有它时标题说更细的那句（达成目标 / 需要交互，与服务端推送标题、
+/// Air 任务行同词），认不出的值退回原词——子状态从不自己发明措辞。
+String classifyNotificationWord(String? spec, [String? goalState]) {
+  final copy = classifyNotificationCopy(spec);
+  if (copy.letter == 'D' && goalState != null) {
+    final subKey = goalStateLabelKeys[goalState];
+    if (subKey != null) return t(subKey);
+  }
+  return t(copy.wordKey);
+}
 
 /// 播报句子；这一档无可播报（C/P）时返回空串。
 String classifyNotificationVoice(String? spec) {
