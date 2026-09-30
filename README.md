@@ -363,7 +363,7 @@ keeps the full output and offers a force retry.
 - **Relay-token remote sharing** — grant access and share provider configs securely from the console
 - Public tunnels built in: **Tailscale Funnel**, **花生壳**, and **SakuraFrp** with live monitoring
 - Web Push / Bark / webhook **notifications**
-- Chinese + English UI
+- Chinese + English UI — starts in English outside Chinese locales, switch in every page header
 
 </td><td width="50%" valign="top">
 
@@ -518,7 +518,7 @@ A few of the most common questions:
 ## 中文用户
 
 MultiCC 的核心卖点是：**同一个对话里并行运行、随时切换多个 AI 编程 CLI，上下文不丢。**
-安装、30 秒上手、常见问题的中文说明见 **[README.zh.md](README.zh.md)**。界面本身支持中英文切换（默认中文）。
+安装、30 秒上手、常见问题的中文说明见 **[README.zh.md](README.zh.md)**。界面支持中英文切换，非中文系统默认英文，页头右上角的开关随时可切。
 
 ---
 
