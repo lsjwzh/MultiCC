@@ -1327,6 +1327,15 @@
       ]
     },
     {
+      "path": "tests/test-auto-provider-pricing.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-auto-provider-routing-test.js",
       "tier": "core",
       "lane": "deterministic",
@@ -3311,6 +3320,15 @@
       "owner": "npm:test:state",
       "entrypoints": [
         "npm:test:state"
+      ]
+    },
+    {
+      "path": "tests/test-price-table.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
       ]
     },
     {

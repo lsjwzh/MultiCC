@@ -70,6 +70,9 @@ function createAutoProviderRouting(options = {}) {
     resolveApiKey: options.resolveApiKey || defaultApiKeyResolver,
     logger,
   });
+  // A price-tiered pool has no stored ladder: the owner (the runtime) derives it
+  // from the price table, and both prepare and resolve must ask for the same one.
+  const resolveLadder = typeof options.resolveLadder === 'function' ? options.resolveLadder : null;
   const prepared = new Map(); // `${sessionId}\n${hash}` -> { sessionId, verdict, at }
   const inflight = new Map(); // sessionId -> { hash, promise }
 
@@ -109,12 +112,21 @@ function createAutoProviderRouting(options = {}) {
     const existing = inflight.get(sessionId);
     if (existing && existing.hash === hash) return existing.promise;
     const { routing } = scope;
+    let tiers = routing.tiers;
+    if (routing.tiering === 'price') {
+      try {
+        tiers = resolveLadder ? resolveLadder({ session, selection: scope.selection, providers }) : [];
+      } catch (_) { tiers = []; }
+      // Fewer than two price tiers: nothing to decide, so no call is spent on
+      // it; resolveTier reports price_tiers_unavailable.
+      if (!Array.isArray(tiers) || tiers.length < 2) return null;
+    }
     // Which gateway this pool evaluates through — resolved in one place, shared
     // with the editor's "test" route so both reach the same host and model.
     const target = jevTarget(routing);
     const promise = jev.classify({
       text,
-      tiers: routing.tiers,
+      tiers,
       apiKeyName: target.apiKeyName,
       endpoint: target.endpoint,
       // The pool's own tuned knobs travel with the call: they were validated as
@@ -161,9 +173,18 @@ function createAutoProviderRouting(options = {}) {
   // The tier a turn should use, together with where it came from. `source` is
   // what the UI and the ledger report: 'jev' means Jev decided, 'fallback'
   // means it was unavailable and the conservative default was applied.
-  function resolveTier({ selection, verdict } = {}) {
-    const routing = selection && selection.routing;
-    if (!routing) return null;
+  // A price-tiered pool passes this turn's ladder as `tiers`; a verdict for a
+  // tier that ladder no longer has (the table refreshed in between) is treated
+  // as no verdict at all.
+  function resolveTier({ selection, verdict, tiers } = {}) {
+    const stored = selection && selection.routing;
+    if (!stored) return null;
+    const routing = Array.isArray(tiers) ? { ...stored, tiers } : stored;
+    if (stored.tiering === 'price' && routing.tiers.length < 2) {
+      verdict = Object.freeze({ ok: false, code: 'price_tiers_unavailable' });
+    } else if (Array.isArray(tiers) && verdict && verdict.ok && !tiers.includes(verdict.tier)) {
+      verdict = Object.freeze({ ok: false, code: 'price_ladder_changed', latencyMs: verdict.latencyMs });
+    }
     // Where the tier sits on the ladder, so a chat note can say "simple" or
     // "complex" without knowing the pool's tier keys.
     const ladder = Array.isArray(routing.tiers) ? routing.tiers : [];

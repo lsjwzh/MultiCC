@@ -49,7 +49,30 @@ function limitState(entry, { now = Date.now(), staleAfterMs = 5 * 60_000 } = {})
 // filter — when every candidate of that tier has already been attempted, the
 // remaining pool is still eligible, so a dead weak route can fail over upward
 // instead of wedging the turn. A null tier preserves the legacy ordering.
-function chooseCandidate({ candidates, attempted = new Set(), stickyProviderId = null, preferredTier = null } = {}) {
+//
+// The remaining keys only exist for cross-CLI and price-tiered pools and are
+// inert when absent, so a legacy pool orders exactly as before:
+//   ladder    — the tier keys weakest first; with it, a miss on the preferred
+//               tier climbs before it descends (the nearer stronger tier first).
+//   pinned    — a reserved line ({providerId, model}) from a handoff or a
+//               planned lane switch; it outranks stickiness.
+//   preferCli — the session's current lane; a tie stays on it, since leaving
+//               it costs a handoff.
+//   byPrice   — price-tiered pools prefer the cheaper line inside a tier.
+function tierRank(candidate, preferredTier, ladder) {
+  if (!preferredTier) return 0;
+  if (candidate.tier === preferredTier) return 0;
+  if (!Array.isArray(ladder) || !ladder.length) return 1;
+  const want = ladder.indexOf(preferredTier);
+  const have = ladder.indexOf(candidate.tier);
+  if (want < 0 || have < 0) return ladder.length * 2;
+  return have > want ? have - want : ladder.length + (want - have);
+}
+
+function chooseCandidate({
+  candidates, attempted = new Set(), stickyProviderId = null, preferredTier = null,
+  ladder = null, pinned = null, preferCli = null, byPrice = false,
+} = {}) {
   const eligible = (Array.isArray(candidates) ? candidates : [])
     .filter(candidate => candidate && candidate.enabled !== false && !attempted.has(candidate.providerId));
   const skipped = eligible
@@ -59,13 +82,27 @@ function chooseCandidate({ candidates, attempted = new Set(), stickyProviderId =
       reason: candidate.limitReason || 'fresh_limit_exhausted',
     }));
   const usable = eligible.filter(candidate => candidate.limitState !== 'exhausted');
+  const isPinned = candidate => !!pinned && candidate.providerId === pinned.providerId
+    && (!pinned.cli || candidate.cli === pinned.cli)
+    && (pinned.model == null || candidate.model === pinned.model);
+  const priceOf = candidate => (candidate.price ? candidate.price.blended : Infinity);
   usable.sort((left, right) => {
-    if (preferredTier) {
-      const tierRank = (left.tier === preferredTier ? 0 : 1) - (right.tier === preferredTier ? 0 : 1);
-      if (tierRank !== 0) return tierRank;
+    const tierOrder = tierRank(left, preferredTier, ladder) - tierRank(right, preferredTier, ladder);
+    if (tierOrder !== 0) return tierOrder;
+    if (pinned) {
+      const pinOrder = (isPinned(left) ? 0 : 1) - (isPinned(right) ? 0 : 1);
+      if (pinOrder !== 0) return pinOrder;
     }
     if (left.providerId === stickyProviderId && right.providerId !== stickyProviderId) return -1;
     if (right.providerId === stickyProviderId && left.providerId !== stickyProviderId) return 1;
+    if (preferCli) {
+      const laneOrder = (left.cli === preferCli ? 0 : 1) - (right.cli === preferCli ? 0 : 1);
+      if (laneOrder !== 0) return laneOrder;
+    }
+    if (byPrice) {
+      const leftPrice = priceOf(left), rightPrice = priceOf(right);
+      if (leftPrice !== rightPrice) return leftPrice < rightPrice ? -1 : 1;
+    }
     return left.priority - right.priority || left.index - right.index;
   });
   return Object.freeze({ candidate: usable[0] || null, skipped: Object.freeze(skipped) });

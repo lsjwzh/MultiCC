@@ -616,6 +616,7 @@ console.log('── Suite 6: sub-agent provider hint ──');
   });
   assert(withSub.subagentHint.includes('xf-ds4 / deepseek-v4'), '6b subagent -> hint names the route');
   assert(withSub.subagentHint.includes('token-heavy work'), '6b subagent -> hint steers token-heavy work');
+  assert(withSub.subagentHint.includes('concrete coding actions'), '6b subagent -> hint pushes clear, concrete tasks to sub-agents');
   assert(withSub.systemPrompt === `${IMG_HINT}\n\n${withSub.subagentHint}\n\n${ROLE_PROMPT}`,
     '6b systemPrompt = imgHint + subagentHint + rolePrompt');
   assert(withSub.imgHint === IMG_HINT && withSub.rolePrompt === ROLE_PROMPT, '6b imgHint/rolePrompt untouched');

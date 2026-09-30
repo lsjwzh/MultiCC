@@ -1574,7 +1574,7 @@ const cliSwitchRuntime = createCliSwitchRuntime({
   gitWorktreeSnapshot,
   cwdForSession,
   getChatStream: () => chatStream, hasLiveBackgroundTasks: id => backgroundTaskRuntime?.hasProcessBackgroundTasks(id) === true, getPreparation: id => chatTurnPreparationRuntime.snapshot(id),
-  cancelClassify,
+  cancelClassify, planAutoCliSwitch: args => chatTurnEngine.autoProviderRuntime.planTurn(args),
   assignKillReason, finishProviderAttempt: (attempt, facts) => providerAttemptRuntime.finishAttempt(attempt, facts),
   appendMessage: appendChatMessage,
   appendEvent,
@@ -2127,6 +2127,7 @@ providerRoutes.mountCatalogRoutes(app);
 // (provider/model strings, cached for 1 day). Used by the chat picker when an
 // opencode session has no multicc-managed provider's model list to render.
 mountOpenCodeModelRoutes(app); require('./src/routes/codex-models').mountCodexModelRoutes(app); // account-entitled Codex app-server model/list, 60s cache + explicit refresh
+require('./src/routes/pricing').mountPricingRoutes(app, { priceTable: require('./src/pricing/price-table').sharedPriceTable(), asyncHandler }); // GET /api/pricing/status|lookup|search + POST /api/pricing/refresh — process-wide models.dev price table for the Auto router (src/pricing/price-table.js)
 
 // GET /api/qoder/models — the Qoder CN catalog entitled to the logged-in
 // account (`qoderclicn --list-models`, cached for 1 day). Lets each qoder
@@ -2586,7 +2587,7 @@ const chatTurnEngine = createChatTurnEngine({
   getChatHistoryService: () => chatHistoryService,
   getExperimentalTuiChatRuntime: () => tuiChatMirrorRuntime, applyPendingConfiguration: cliSwitchRuntime.applyPendingConfiguration,
   getSessionHibernation: () => sessionHibernationRuntime, getWorkspaceAdmission: () => workspaceAdmission,
-  getSessionGitRuntime: () => sessionGitRuntime,
+  getSessionGitRuntime: () => sessionGitRuntime, isCliAvailable: cli => !!cliAvailabilitySummary()[cli]?.available,
   isShuttingDown: () => _shuttingDown,
   getPort: () => PORT,
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,

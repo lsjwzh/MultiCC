@@ -15,6 +15,28 @@
   const MAX_TIERS = 6;
   const AUTO_PREFIX = '__auto__:';
   const STYLE_ID = 'multicc-auto-provider-editor-style';
+  // A candidate may name the CLI lane that serves it; the pool is then
+  // cross-CLI, and the session switches lanes when the pool picks a line on
+  // another one. Mirrors AUTO_CLIS in src/providers/auto-provider-config.js, so
+  // the editor offers exactly the lanes the server accepts.
+  const AUTO_CLIS = Object.freeze(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'kimi']);
+  const AUTO_CLI_SET = new Set(AUTO_CLIS);
+  // When a cross-CLI pool leaves the session's current lane:
+  //   failover — only when no line on the current CLI is usable (the default),
+  //   routing  — whenever the per-turn pick lives on another CLI.
+  // Mirrors CLI_SWITCH_POLICIES.
+  const CLI_SWITCH_POLICIES = Object.freeze(['failover', 'routing']);
+  const DEFAULT_CLI_SWITCH = 'failover';
+  // How a routed pool's tiers are decided: hand-tagged candidates (`manual`) or
+  // the shared price table, recomputed per turn (`price`). Mirrors
+  // ROUTING_TIERINGS — `price` is the only shape `autoModel` lines are allowed
+  // in, because picking a model needs a ranking to pick by.
+  const DEFAULT_ROUTING_TIERING = 'manual';
+  const PRICE_TIERING = 'price';
+  // /api/pricing/lookup is a bulk endpoint capped at 50 ids (src/routes/
+  // pricing.js); a pool never has more than MAX_CANDIDATES lines anyway, but the
+  // batch is trimmed rather than refused if a host hands us more.
+  const MAX_PRICE_MODELS = 50;
   // 候选池预设：每次新建 Auto Provider 都要重新勾一遍候选、调一遍优先级太费事，
   // 所以可以把配好的池子存成具名预设，也会自动记住最近真正用过的几份。存在浏览器
   // localStorage 里 —— 同源的 chat 弹窗、manage 任务板、Air 任务配置共用一份。
@@ -186,6 +208,82 @@
     }).filter(entry => entry.count >= 2);
   }
 
+  // The pool's own lane, or '' when the host did not say which CLI the session
+  // runs. An unknown lane is not a guess: every row then reads as "current CLI"
+  // and no candidate carries a cli field, which is exactly what a stored
+  // single-lane pool looks like.
+  function normalizeCli(value) {
+    const cli = String(value == null ? '' : value).trim();
+    return AUTO_CLI_SET.has(cli) ? cli : '';
+  }
+
+  // Display name of a lane — the provider catalog owns the table (it carries
+  // the per-CLI marks and translations), so the editor asks it rather than
+  // restating seven names.
+  function cliName(cli) {
+    const scope = typeof window !== 'undefined' ? window : null;
+    const catalog = scope && scope.MultiCCProviderCatalog;
+    if (cli && catalog && typeof catalog.cliDisplayName === 'function') {
+      const name = catalog.cliDisplayName(cli);
+      if (name) return String(name);
+    }
+    return String(cli || '');
+  }
+
+  // What a row's CLI select shows for one lane; the empty value is the option
+  // every pool starts on, which is why it is a sentence rather than a name.
+  function cliOptionLabel(cli) {
+    return cli ? cliName(cli) : tt('autoEditorCliCurrent', '当前 CLI');
+  }
+
+  // Prices are USD per 1M tokens (the unit the table publishes): two decimals
+  // once they are a dollar, three below that, so a $0.027 model still reads as
+  // a number rather than as 0.03.
+  function priceAmount(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return null;
+    const rounded = number >= 1 ? Math.round(number * 100) / 100 : Math.round(number * 1000) / 1000;
+    return `$${rounded}`;
+  }
+
+  // "$0.27/$1.1 · 每 1M tokens" — '' when the table knows nothing about this
+  // model, which the caller renders as 价格未知 rather than as a free line. A
+  // table that only carries one of the two numbers still says what it knows.
+  function priceLabel(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    const input = priceAmount(entry.input);
+    const output = priceAmount(entry.output);
+    if (input != null && output != null) {
+      return tt('autoRoutePricePair', ' · {input}/{output} 每 1M tokens',
+        { input, output }).trim();
+    }
+    const one = input != null ? input : output;
+    const blended = one == null ? priceAmount(entry.blended) : null;
+    const price = one == null ? blended : one;
+    if (price == null) return '';
+    return tt('autoRoutePriceOne', ' · {price} 每 1M tokens', { price }).trim();
+  }
+
+  function priceFetchedAt(status) {
+    const raw = status && status.fetchedAt;
+    const at = raw == null || raw === '' ? null : new Date(raw);
+    if (!at || Number.isNaN(at.getTime())) return '';
+    const pad = value => String(value).padStart(2, '0');
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} `
+      + `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  }
+
+  // One line of "where these numbers came from": the source file, when it was
+  // read, and whether it is old enough that a refresh is worth pressing.
+  function priceStatusText(status) {
+    if (!status || typeof status !== 'object') return tt('autoEditorPriceUnavailable', '价格表暂不可用');
+    const source = String(status.source || '') || tt('autoEditorPriceSourceUnknown', '来源未知');
+    const at = priceFetchedAt(status);
+    const parts = [source, at].filter(Boolean);
+    if (status.stale === true) parts.push(tt('autoEditorPriceStale', '已过期'));
+    return tt('autoEditorPriceStatus', '价格表 {detail}', { detail: parts.join(' · ') });
+  }
+
   function selectionCrossesTrust(candidates, providers) {
     const byId = new Map((Array.isArray(providers) ? providers : [])
       .filter(provider => provider && provider.id)
@@ -236,6 +334,38 @@
       return claudeCatalog;
     })();
     try { return await claudeCatalogRequest; } finally { claudeCatalogRequest = null; }
+  }
+
+  // Another lane's provider catalog, over the same endpoint the host page uses
+  // for the current CLI (/api/providers?cli=…). The page normalizes the payload
+  // through the shared provider catalog when it is loaded, so a row built from
+  // a lane here carries the same fields as a row built from the host's list;
+  // without either the raw `providers` array is still usable, because the editor
+  // only reads id/model/modelOptions/apiFormat off a provider.
+  async function defaultCliProviderLoader(cli) {
+    const scope = typeof window !== 'undefined' ? window : null;
+    const api = scope && scope.MultiCCApi;
+    if (!cli || !api || typeof api.json !== 'function') return [];
+    const raw = await api.json(`/api/providers?cli=${encodeURIComponent(cli)}`);
+    const catalog = scope.MultiCCProviderCatalog;
+    if (catalog && typeof catalog.normalizeCatalog === 'function'
+        && typeof catalog.providersForCli === 'function') {
+      return catalog.providersForCli(catalog.normalizeCatalog(raw), cli);
+    }
+    return raw && Array.isArray(raw.providers) ? raw.providers : [];
+  }
+
+  // The price table over HTTP: one batched lookup for every model on screen,
+  // the status of the table behind those numbers, and the refresh button.
+  function defaultPricingApi() {
+    const scope = typeof window !== 'undefined' ? window : null;
+    const api = scope && scope.MultiCCApi;
+    if (!api || typeof api.json !== 'function') return null;
+    return {
+      lookup: models => api.json(`/api/pricing/lookup?models=${encodeURIComponent(models.join(','))}`),
+      status: () => api.json('/api/pricing/status'),
+      refresh: () => api.json('/api/pricing/refresh', { method: 'POST' }),
+    };
   }
 
   function candidateForProvider(provider, priority, configured) {
@@ -347,9 +477,13 @@
       return fail(tt('autoEditorRoutingNeedsTwo', '按难度路由至少需要两个候选 Provider。'),
         'insufficient_candidates');
     }
-    const rungs = [...new Set(candidates.map(candidate => Number(candidate.rung) || 0))]
+    // A price-tiered pool carries no hand tags at all: its ladder is the price
+    // table's, recomputed every turn, and a rung next to it would be a second
+    // ladder nobody reads — the server rejects that pairing outright.
+    const priceTiering = routingTieringOf(draft) === PRICE_TIERING;
+    const rungs = priceTiering ? [] : [...new Set(candidates.map(candidate => Number(candidate.rung) || 0))]
       .filter(rung => rung > 0).sort((left, right) => left - right);
-    if (rungs.length < 2) {
+    if (!priceTiering && rungs.length < 2) {
       return fail(tt('autoEditorRoutingNeedsTwoTiers', '按难度分配时，至少要一条线路负责简单任务、另一条负责复杂任务。'),
         'provider_routing_requires_tiers');
     }
@@ -362,10 +496,9 @@
     return Object.freeze({
       ok: true,
       // `rung` is the editor's own control value and never travels on the wire.
-      candidates: candidates.map(({ rung, ...candidate }) => ({
-        ...candidate,
-        tier: keyByRung.get(Number(rung) || 0),
-      })),
+      candidates: candidates.map(({ rung, ...candidate }) => (keyByRung.size
+        ? { ...candidate, tier: keyByRung.get(Number(rung) || 0) }
+        : candidate)),
       value: Object.freeze({
         version: 1,
         provider: ROUTING_PROVIDER,
@@ -387,9 +520,30 @@
         ...(writeOnUnknown ? { onUnknown: String(onUnknown) } : {}),
         ...(previous && previous.timeoutMs != null ? { timeoutMs: Number(previous.timeoutMs) } : {}),
         ...(previous && previous.escalation ? { escalation: { ...previous.escalation } } : {}),
+        // Written only for a price-tiered pool, so a manual pool's routing block
+        // is byte-identical to the one it had before tiering existed.
+        ...(priceTiering ? { tiering: PRICE_TIERING } : {}),
         tiers: Object.freeze(rungs.map(rung => keyByRung.get(rung))),
       }),
     });
+  }
+
+  // Which ladder a routed pool uses. Only the two values the server accepts
+  // exist; anything else is the manual default the editor has always written.
+  function routingTieringOf(draft) {
+    return draft && draft.tiering === PRICE_TIERING ? PRICE_TIERING : DEFAULT_ROUTING_TIERING;
+  }
+
+  // A pool is cross-CLI as soon as one candidate names its lane. The server
+  // then writes the session's own CLI onto the candidates that carry none, so
+  // leaving the field absent on those is the same statement the API makes.
+  function selectionCrossesCli(candidates) {
+    return (Array.isArray(candidates) ? candidates : []).some(candidate => candidate && candidate.cli);
+  }
+
+  function cliSwitchOf(draft) {
+    const policy = String(draft && draft.cliSwitch || '').trim();
+    return CLI_SWITCH_POLICIES.includes(policy) ? policy : DEFAULT_CLI_SWITCH;
   }
 
   // The model a routing block is saved with. A custom gateway asks whatever the
@@ -416,7 +570,19 @@
       const raw = source[index];
       if (!raw || raw.enabled === false) continue;
       const providerId = String(raw.providerId || '').trim();
-      if (!providerId || ids.has(providerId)) {
+      // '当前 CLI' is the empty value: the field stays off the wire, and the
+      // server reads it as the session's own lane. A named lane has to be one
+      // the server knows, or the save would be refused after the fact.
+      const cli = normalizeCli(raw.cli);
+      if (String(raw.cli || '').trim() && !cli) {
+        return fail(tt('autoEditorInvalidCli', '候选 {provider} 的 CLI 无效。', { provider: providerId || '?' }),
+          'invalid_provider_candidate');
+      }
+      // The same route may serve two lanes, so a lane-qualified key is what
+      // "twice" means here; within one lane it may appear once (the server
+      // draws the same line in validateProviderSelection).
+      const candidateKey = `${cli}\n${providerId}`;
+      if (!providerId || ids.has(candidateKey)) {
         return fail(providerId
           ? tt('autoEditorDuplicateProvider', 'Provider {provider} 重复。', { provider: providerId })
           : tt('autoEditorInvalidProvider', '候选 Provider 无效。'),
@@ -426,12 +592,22 @@
       if (!Number.isSafeInteger(priority) || priority < 1 || priority > 100) {
         return fail(tt('autoEditorInvalidPriority', '优先级必须是 1–100 的整数。'), 'invalid_priority');
       }
-      ids.add(providerId);
+      const model = raw.model == null || String(raw.model).trim() === '' ? null : String(raw.model).trim();
+      // An auto-model line picks its model from the price table each turn; a
+      // pinned model next to it would be a second, contradicting answer.
+      const autoModel = raw.autoModel === true;
+      if (autoModel && model) {
+        return fail(tt('autoEditorAutoModelPinnedModel', '「自动选模型」的线路不能再钉住一个模型。'),
+          'invalid_provider_candidate');
+      }
+      ids.add(candidateKey);
       candidates.push({
         providerId,
-        model: raw.model == null || String(raw.model).trim() === '' ? null : String(raw.model).trim(),
+        model: autoModel ? null : model,
         priority,
         enabled: true,
+        ...(cli ? { cli } : {}),
+        ...(autoModel ? { autoModel: true } : {}),
         ...(raw.rung == null ? {} : { rung: Number(raw.rung) }),
         _index: index,
       });
@@ -452,6 +628,15 @@
       : null;
     if (routing && routing.ok === false) return routing;
     const cleanCandidates = routing ? routing.candidates : stripped;
+    // Picking a model per turn needs a ranking to pick by, and that ranking is
+    // the price ladder — without it an auto-model line would silently mean
+    // "first", which the server refuses as well.
+    if (cleanCandidates.some(candidate => candidate.autoModel)
+        && !(routing && routing.value.tiering === PRICE_TIERING)) {
+      return fail(tt('autoEditorAutoModelNeedsPrice', '「自动选模型」只在「按价格」档位依据下可用。'),
+        'provider_auto_model_requires_price_tiering');
+    }
+    const crossCli = selectionCrossesCli(cleanCandidates);
     const providers = Array.isArray(draft.providers) ? draft.providers : [];
     const crossesTrust = selectionCrossesTrust(cleanCandidates, providers);
     if (crossesTrust && draft.crossTrustConfirmed !== true) {
@@ -470,6 +655,9 @@
         maxAttempts,
         sticky: draft.sticky !== false,
         allowCrossTrust: crossesTrust && draft.crossTrustConfirmed === true,
+        // Only a pool that actually spans lanes has a lane policy; a single-CLI
+        // pool keeps exactly the wire shape it had before cross-CLI existed.
+        ...(crossCli ? { cliSwitch: cliSwitchOf(draft) } : {}),
         // Absent for a plain pool, so its wire JSON stays byte-identical.
         ...(routing ? { routing: routing.value } : {}),
       },
@@ -592,15 +780,27 @@ ${P}-list-head small{font-weight:400;font-size:11px;color:var(--ape-muted)}
 ${P}-list,${P}-pool{display:grid;gap:6px}
 ${P} ${P}-row{display:grid;grid-template-columns:22px minmax(0,1fr) minmax(110px,170px) auto auto;grid-template-areas:"rank name model tier act";align-items:center;gap:8px;padding:6px 6px 6px 8px;border:1px solid var(--ape-line);border-radius:9px;background:var(--ape-field)}
 ${P}-rank{grid-area:rank;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:color-mix(in srgb,var(--ape-accent) 14%,transparent);color:var(--ape-accent);font-size:11px;font-weight:600}
-${P}-name{grid-area:name;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+${P}-name{grid-area:name;display:flex;align-items:center;gap:6px;min-width:0}
+${P}-name-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+${P}-cli-field{flex:none}
+${P} ${P}-cli{max-width:118px}
 ${P} ${P}-model-field{grid-area:model;display:grid;gap:0;min-width:0}
+${P} ${P}-provider-field{display:grid;gap:0;min-width:0;margin-bottom:4px}
+${P} ${P}-provider{width:100%;min-width:0}
 ${P} ${P}-model{width:100%;min-width:0}
 ${P} ${P}-tier{grid-area:tier}
+${P}.is-price ${P}-tier{display:none}
+${P}-auto-model-field{display:none;align-items:center;gap:5px;margin-top:4px;font-size:11px;color:var(--ape-muted)}
+${P}.is-price ${P}-auto-model-field{display:flex}
+${P}-price{font-size:11px;white-space:nowrap}
+${P}-pricing{display:flex;align-items:center;gap:4px 12px;flex-wrap:wrap;margin:0 0 10px}
+${P}-price-status{flex:1 1 auto;min-width:0}
+${P}-cli-switch-hint,${P}-tiering-hint{margin:-4px 0 12px}
 ${P} ${P}-tier button{height:22px;padding:0 9px;font-size:11px}
 ${P}.is-order ${P}-tier{display:none}
 ${P}-act{grid-area:act;display:flex;gap:2px}
 ${P} ${P}-icon{width:24px;height:24px;padding:0;border-color:transparent;background:transparent;color:var(--ape-muted);font-size:13px}
-${P}-list ${P}-add-one,${P}-pool :is(${P}-rank,${P}-model-field,${P}-model,${P}-tier,${P}-icon){display:none}
+${P}-list ${P}-add-one,${P}-pool :is(${P}-rank,${P}-model-field,${P}-model,${P}-tier,${P}-icon,${P}-cli-field){display:none}
 ${P} ${P}-pool ${P}-row{display:flex;padding:4px 6px 4px 10px;border-style:dashed;background:transparent;color:var(--ape-muted)}
 ${P}-pool ${P}-name{flex:1 1 auto}
 ${P} ${P}-add-one{height:24px;border-color:transparent;background:transparent;color:var(--ape-accent)}
@@ -666,6 +866,33 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     // Rows whose line declares no models at all, refilled once the local
     // catalog arrives (see the tail of render()).
     let emptyCatalogRows = [];
+    // The lane the session runs on: the option every row starts on. '' when the
+    // host did not say, which reads as "no candidate names a cli" — the wire
+    // shape of every pool stored before cross-CLI existed.
+    let homeCli = normalizeCli(options.cli);
+    // How a routed pool decides its tiers, and where a cross-CLI pool may go
+    // when the current lane runs out. Both are pool-level choices.
+    let tiering = DEFAULT_ROUTING_TIERING;
+    let cliSwitchPolicy = DEFAULT_CLI_SWITCH;
+    // Per-row bookkeeping: the lane's provider, the row's own lane, and the
+    // provider the row is pinned to when it runs on the session's CLI.
+    const rowState = new Map();
+    // Other lanes' provider catalogs, fetched once each through the same
+    // /api/providers the host uses for the current CLI (see ensureLane).
+    const laneCache = new Map();
+    const loadCliProviders = typeof options.loadCliProviders === 'function'
+      ? options.loadCliProviders : defaultCliProviderLoader;
+    // The price table over HTTP. `undefined` means "use the page's client",
+    // null means "this host has no pricing" — the same convention the preset
+    // store uses.
+    const pricingApi = options.pricingApi === undefined ? defaultPricingApi() : options.pricingApi;
+    let priceGeneration = 0;
+    let priceKey = '';
+    let priceStatus = null;
+    let priceFailed = false;
+    // The stored pool the two pool-level choices were last read from, so a
+    // re-render of the same selection does not overwrite the user's own choice.
+    let seededKey = null;
     const loadModels = options.loadModels || loadCandidateModels;
     const formatProvider = typeof options.formatProvider === 'function'
       ? options.formatProvider : provider => provider.name || provider.id;
@@ -725,6 +952,39 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     const routingEnabled = segButton(modeSeg, 'multicc-auto-editor-routing', tt('autoEditorModeRouting', '按难度'));
     modeRow.append(make('span', '', modeLabel), modeSeg);
     const modeHint = make('p', 'multicc-auto-editor-mode-hint');
+
+    // Where the pool may go when the session's own CLI has nothing usable left.
+    // Only a pool that actually spans lanes has this choice, so it stays hidden
+    // until a row names another one.
+    const cliSwitchRow = make('div', 'multicc-auto-editor-mode multicc-auto-editor-cli-switch-row');
+    const cliSwitchLabel = tt('autoEditorCliSwitchLabel', '换道时机');
+    const cliSwitchSeg = segment('multicc-auto-editor-cli-switches', cliSwitchLabel);
+    const cliSwitchFailover = segButton(cliSwitchSeg, 'multicc-auto-editor-cli-switch-failover',
+      tt('autoEditorCliSwitchFailover', '本车道不可用才换'));
+    const cliSwitchRouting = segButton(cliSwitchSeg, 'multicc-auto-editor-cli-switch-routing',
+      tt('autoEditorCliSwitchRouting', '按选择换道'));
+    cliSwitchRow.append(make('span', '', cliSwitchLabel), cliSwitchSeg);
+    const cliSwitchHint = make('p', 'multicc-auto-editor-mode-hint multicc-auto-editor-cli-switch-hint');
+
+    // How a routed pool decides its tiers: by hand, or from the price table.
+    const tieringRow = make('div', 'multicc-auto-editor-mode multicc-auto-editor-tiering-row');
+    const tieringLabel = tt('autoEditorTieringLabel', '档位依据');
+    const tieringSeg = segment('multicc-auto-editor-tierings', tieringLabel);
+    const tieringManual = segButton(tieringSeg, 'multicc-auto-editor-tiering-manual',
+      tt('autoEditorTieringManual', '手动标注'));
+    const tieringPrice = segButton(tieringSeg, 'multicc-auto-editor-tiering-price',
+      tt('autoEditorTieringPrice', '按价格'));
+    tieringRow.append(make('span', '', tieringLabel), tieringSeg);
+    const tieringHint = make('p', 'multicc-auto-editor-mode-hint multicc-auto-editor-tiering-hint');
+
+    // What a generation of models costs, and where that answer came from. One
+    // batched lookup covers every enabled line's model.
+    const pricingBar = make('div', 'multicc-auto-editor-pricing');
+    const pricingStatusText = make('span', 'multicc-auto-editor-muted multicc-auto-editor-price-status');
+    pricingStatusText.setAttribute('aria-live', 'polite');
+    const pricingRefresh = button('multicc-auto-editor-price-refresh multicc-auto-editor-link',
+      tt('autoEditorPriceRefresh', '刷新价格表'));
+    pricingBar.append(pricingStatusText, pricingRefresh);
 
     const jevBox = make('div', 'multicc-auto-editor-jev');
     // Which gateway every Jev call goes to — the first thing to decide about the
@@ -840,7 +1100,8 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
     moreBody.append(maxLabel, stickyLabel, unknownRow, help);
     more.append(moreSummary, moreBody);
 
-    container.replaceChildren(top, modeRow, modeHint, jevBox, listHead, list, addBox, summary,
+    container.replaceChildren(top, modeRow, modeHint, cliSwitchRow, cliSwitchHint,
+      tieringRow, tieringHint, pricingBar, jevBox, listHead, list, addBox, summary,
       error, warning, more);
 
     function rows() {
@@ -851,6 +1112,15 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       return row.querySelector('.multicc-auto-editor-tier');
     }
 
+    function rowCli(row) {
+      return normalizeCli(row.dataset.cli);
+    }
+
+    function rowAutoModel(row) {
+      const toggle = row.querySelector('.multicc-auto-editor-auto-model');
+      return !!(toggle && toggle.checked);
+    }
+
     function rawCandidates() {
       return allRows.map(row => {
         const index = order.indexOf(row);
@@ -859,12 +1129,17 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
           model: rowModel(row) || null,
           priority: index < 0 ? null : index + 1,
           enabled: index >= 0,
+          // The lane is the row's own choice; '' is the session's CLI, which is
+          // written as "no cli field" rather than as a named lane.
+          cli: rowCli(row),
+          autoModel: rowAutoModel(row),
           rung: Number(tierOf(row).dataset.value) || null,
         };
       });
     }
 
     function rowModel(row) {
+      if (rowAutoModel(row)) return '';
       const selected = row.querySelector('.multicc-auto-editor-model').value;
       return selected === '__custom__'
         ? row.querySelector('.multicc-auto-editor-model-custom').value.trim() : selected;
@@ -899,8 +1174,14 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
 
     function rowText(row) {
       const model = rowModel(row);
-      const name = row.querySelector('.multicc-auto-editor-name').textContent;
-      return model ? tt('autoEditorLineWithModel', '{name}（{model}）', { name, model }) : name;
+      // The name cell also carries the row's CLI select, so the line's name is
+      // read off its own span — otherwise every option's text would ride along.
+      const name = row.querySelector('.multicc-auto-editor-name-text').textContent;
+      const label = rowAutoModel(row)
+        ? tt('autoEditorLineAutoModel', '{name}（自动选模型）', { name })
+        : (model ? tt('autoEditorLineWithModel', '{name}（{model}）', { name, model }) : name);
+      const cli = rowCli(row);
+      return cli ? tt('autoEditorLineOnLane', '{name} · {cli} 车道', { name: label, cli: cliName(cli) }) : label;
     }
 
     // Rows in use go to the list in order and get their rank; the rest wait in
@@ -992,6 +1273,14 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       if (!routingOn) {
         summary.textContent = tt('autoEditorSummaryOrder', '效果：先用 {chain}', {
           chain: enabled.map(rowText).join(tt('autoEditorSummaryThen', '，不行再换 ')),
+        });
+        return;
+      }
+      // A price-tiered pool has no hand-tagged ladder to describe — the ladder
+      // is the price order of whatever is on screen this turn.
+      if (tiering === PRICE_TIERING) {
+        summary.textContent = tt('autoEditorSummaryPrice', '按价格自动排档：{chain}', {
+          chain: enabled.map(rowText).join('、'),
         });
         return;
       }
@@ -1258,8 +1547,19 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       for (const row of allRows) row.querySelector('.multicc-auto-editor-add-one').disabled = full;
     }
 
+    // Every provider the pool may name: the host's list plus whatever lanes are
+    // loaded, so a line on another CLI is still recognised when its trust domain
+    // is compared with the rest of the pool.
+    function readProviders() {
+      const extra = [];
+      for (const entry of laneCache.values()) {
+        if (Array.isArray(entry.providers)) extra.push(...entry.providers);
+      }
+      return extra.length ? [...providers, ...extra] : providers;
+    }
+
     function syncTrustWarning({ preserveConfirmation = true } = {}) {
-      const mixed = selectionCrossesTrust(enabledCandidates(), providers);
+      const mixed = selectionCrossesTrust(enabledCandidates(), readProviders());
       warning.style.display = mixed ? '' : 'none';
       if (!mixed || !preserveConfirmation) confirm.checked = false;
       return mixed;
@@ -1284,18 +1584,56 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       syncAttemptLimit();
       syncCandidateLimit();
       syncGatewayCopy();
+      // The lane policy only means something once a line leaves the session's
+      // own CLI; a single-CLI pool shows neither the row nor a hint about it.
+      const crossCli = selectionCrossesCli(enabledCandidates());
+      show(cliSwitchRow, crossCli);
+      show(cliSwitchHint, crossCli);
+      setChecked(cliSwitchFailover, cliSwitchPolicy !== 'routing');
+      setChecked(cliSwitchRouting, cliSwitchPolicy === 'routing');
+      cliSwitchHint.textContent = cliSwitchPolicy === 'routing'
+        ? tt('autoEditorCliSwitchDetailRouting', '每轮的选择落在哪条车道就换到哪条。')
+        : tt('autoEditorCliSwitchDetailFailover', '本车道还有可用线路时不动（换道要一次上下文交接）。');
+      // Tiering decides how a routed pool builds its ladder, so both the row and
+      // the per-line controls that only exist in price mode follow it.
+      const priceTiering = tiering === PRICE_TIERING;
+      show(tieringRow, routingOn);
+      show(tieringHint, routingOn);
+      setChecked(tieringManual, !priceTiering);
+      setChecked(tieringPrice, priceTiering);
+      if (priceTiering) container.classList.add('is-price');
+      else container.classList.remove('is-price');
+      tieringHint.textContent = priceTiering
+        ? tt('autoEditorTieringDetailPrice', '每轮按价格表排档，便宜的先上；标了「自动选模型」的线路还会按这一轮的判断挑模型。')
+        : tt('autoEditorTieringDetailManual', '每条线路的难度档位由你亲手标注。');
       const crossesTrust = syncTrustWarning();
-      if (routingOn) syncRungs();
+      if (routingOn && !priceTiering) syncRungs();
+      // 自动选模型只在「按价格自动分层」下成立（服务端也只接受这种组合）。切回手动
+      // 分层时把它放掉：一个看不见的勾不该把随后的保存顶回去。
+      if (!(routingOn && priceTiering)) {
+        for (const row of allRows) {
+          const toggle = row.querySelector('.multicc-auto-editor-auto-model');
+          if (!toggle || !toggle.checked) continue;
+          toggle.checked = false;
+          const model = row.querySelector('.multicc-auto-editor-model');
+          if (model) model.disabled = false;
+        }
+      }
       modeHint.textContent = routingOn
         ? tt('autoEditorModeRoutingDetail', '每条消息先让 Jev 判断难易：简单的交给便宜模型，复杂的交给强模型。')
         : tt('autoEditorModeOrderDetail', '从第 1 条开始用；它出错或额度用完，就自动换下一条。');
       listHint.textContent = routingOn
-        ? tt('autoEditorListHintRouting', '给每条选它负责简单还是复杂任务，同类里按顺序尝试')
+        ? (priceTiering
+          ? tt('autoEditorListHintPrice', '按价格排档；勾了「自动选模型」的线路由价格表挑模型')
+          : tt('autoEditorListHintRouting', '给每条选它负责简单还是复杂任务，同类里按顺序尝试'))
         : tt('autoEditorListHintOrder', '从上往下尝试，↑↓ 调整顺序');
       show(jevBox, routingOn);
       show(unknownRow, routingOn);
       renderSummary();
       renderMore();
+      // One batched price ask for every line on screen; an unchanged set of
+      // models is dropped inside refreshPrices.
+      refreshPrices();
       // The key is looked up the first time routing is switched on, not on
       // every open of the editor.
       if (routingOn && keyState === 'unknown') checkKey();
@@ -1407,19 +1745,275 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       presetStatus.textContent = tt('autoEditorPresetDeleted', '预设已删除。');
     });
 
-    function buildRow(provider, configured, configuredSelection) {
+    // ── 跨 CLI：别的车道的 Provider 目录 ───────────────────────────────────────
+    //
+    // A pool that spans lanes needs each lane's provider list, and the only
+    // endpoint that knows one is /api/providers?cli=… — the same one the host
+    // page used for the current CLI. Lanes are fetched once, on demand, and a
+    // lane that cannot be fetched degrades to "no provider available" rather
+    // than to a row pointing at a route the server will refuse.
+
+    function laneEntry(cli) {
+      const entry = laneCache.get(cli) || null;
+      return entry;
+    }
+
+    // The lane's providers for THIS pool's protocol: a cross-CLI pool validates
+    // each lane on its own, and every lane has to stay single-protocol, so a
+    // line whose protocol differs from the pool's is never offered.
+    function laneProviders(cli) {
+      const entry = laneEntry(cli);
+      const list = entry && Array.isArray(entry.providers) ? entry.providers : null;
+      if (!list) return null;
+      return list.filter(provider => provider && provider.id && protocolOf(provider) === protocol);
+    }
+
+    function ensureLane(cli) {
+      const lane = normalizeCli(cli);
+      if (!lane || lane === homeCli) return Promise.resolve([]);
+      const existing = laneEntry(lane);
+      if (existing) return existing.promise;
+      const entry = { providers: null, promise: null };
+      entry.promise = Promise.resolve().then(() => loadCliProviders(lane)).then(list => {
+        entry.providers = Array.isArray(list) ? list.filter(Boolean) : [];
+        return entry.providers;
+      }, () => {
+        entry.providers = [];
+        return entry.providers;
+      });
+      laneCache.set(lane, entry);
+      return entry.promise;
+    }
+
+    // Provider ids are looked up by the server inside the lane's own catalog,
+    // and the pool's protocol decides which of that catalog's providers a line
+    // may use, so the fallback for a lane is its first non-official route.
+    function laneDefaultProvider(list) {
+      return list.find(provider => provider.isOfficial !== true) || list[0] || null;
+    }
+
+    function applyRowProvider(row, provider) {
+      const state = rowState.get(row);
+      if (state) state.provider = provider || null;
+      row.dataset.providerId = provider ? String(provider.id) : '';
+      const nameText = row.querySelector('.multicc-auto-editor-name-text');
+      if (nameText) {
+        nameText.textContent = String((provider && formatProvider(provider)) || (provider && provider.id) || '');
+        nameText.title = nameText.textContent;
+      }
+      const model = row.querySelector('.multicc-auto-editor-model');
+      const custom = row.querySelector('.multicc-auto-editor-model-custom');
+      show(custom, false);
+      if (custom) custom.value = '';
+      if (!provider) {
+        model.replaceChildren();
+        model.disabled = true;
+        return;
+      }
+      model.disabled = false;
+      // The model list belongs to the provider, so a lane switch rebuilds it;
+      // fillModels keeps whatever is still on the new list and otherwise falls
+      // back to the new provider's own default.
+      fillModels(model, provider, { model: model.value || null });
+      if (candidateModelChoices(provider, null).length === 1) emptyCatalogRows.push({ model, provider });
+    }
+
+    function fillProviderSelect(row, list, selectedId, { loading = false } = {}) {
+      const select = row.querySelector('.multicc-auto-editor-provider');
+      if (!select) return;
+      select.replaceChildren();
+      select.disabled = !!loading;
+      if (loading) {
+        const option = make('option', '', tt('autoEditorLaneLoading', '加载中…'));
+        option.value = '';
+        select.appendChild(option);
+        return;
+      }
+      if (!list.length) {
+        const option = make('option', '', tt('autoEditorLaneEmpty', '该 CLI 下没有可用的 Provider'));
+        option.value = '';
+        select.appendChild(option);
+        applyRowProvider(row, null);
+        return;
+      }
+      for (const provider of list) {
+        const option = make('option', '', String(formatProvider(provider) || provider.id));
+        option.value = String(provider.id);
+        select.appendChild(option);
+      }
+      const chosen = list.find(provider => String(provider.id) === String(selectedId))
+        || laneDefaultProvider(list);
+      select.value = String(chosen.id);
+      applyRowProvider(row, chosen);
+    }
+
+    // Switching a row's lane swaps which catalog its provider comes from. A row
+    // put back on the session's own CLI keeps the provider it started with, so
+    // an accidental lane change and back costs nothing.
+    function setRowCli(row, value) {
+      const cli = normalizeCli(value);
+      const state = rowState.get(row);
+      const select = row.querySelector('.multicc-auto-editor-cli');
+      row.dataset.cli = cli;
+      if (select && select.value !== cli) select.value = cli;
+      const field = row.querySelector('.multicc-auto-editor-provider-field');
+      if (!cli) {
+        show(field, false);
+        fillProviderSelect(row, providersForProtocol(providers, protocol),
+          state && state.homeProvider ? state.homeProvider.id : row.dataset.providerId);
+        notify();
+        return;
+      }
+      show(field, true);
+      fillProviderSelect(row, laneProviders(cli) || [], row.dataset.providerId,
+        { loading: laneProviders(cli) === null });
+      notify();
+      if (laneProviders(cli) !== null) return;
+      ensureLane(cli).then(() => {
+        if (destroyed || rowCli(row) !== cli) return;
+        fillProviderSelect(row, laneProviders(cli) || [], row.dataset.providerId);
+        notify();
+      });
+    }
+
+    // ── 价格表 ────────────────────────────────────────────────────────────────
+    //
+    // Every enabled line's model goes into ONE lookup: the table answers from a
+    // local copy, but the question is per page-open, not per row. `priceKey` is
+    // the set of models last asked for, so a keystroke in an unrelated field
+    // does not re-ask.
+
+    function priceModelOf(row) {
+      const state = rowState.get(row);
+      const provider = state && state.provider;
+      const model = rowModel(row) || (provider && provider.model) || '';
+      return String(model || '').trim();
+    }
+
+    function priceTargets() {
+      const targets = new Map();
+      for (const row of order) {
+        const node = row.querySelector('.multicc-auto-editor-price');
+        if (!node) continue;
+        targets.set(node, priceModelOf(row));
+      }
+      return targets;
+    }
+
+    function paintPrices(prices) {
+      const byModel = prices && typeof prices === 'object' ? prices : {};
+      for (const [node, model] of priceTargets()) {
+        const label = model && !priceFailed ? priceLabel(byModel[model]) : '';
+        node.textContent = label || (model ? tt('autoEditorPriceUnknown', '价格未知') : '');
+        node.title = model
+          ? tt('autoEditorPriceTitle', '{model} 的价格（USD / 1M tokens）', { model })
+          : '';
+        show(node, !!model);
+      }
+    }
+
+    function paintPriceStatus() {
+      if (!pricingApi) {
+        show(pricingBar, false);
+        return;
+      }
+      show(pricingBar, true);
+      pricingStatusText.textContent = priceFailed
+        ? tt('autoEditorPriceUnavailable', '价格表暂不可用')
+        : priceStatusText(priceStatus);
+    }
+
+    // One batched ask for everything on screen. `force` skips the "same set of
+    // models as last time" guard, which is only useful after a refresh.
+    function refreshPrices({ force = false } = {}) {
+      if (!pricingApi || typeof pricingApi.lookup !== 'function') {
+        paintPriceStatus();
+        return Promise.resolve();
+      }
+      const targets = priceTargets();
+      const models = [...new Set([...targets.values()].filter(Boolean))].slice(0, MAX_PRICE_MODELS);
+      const key = models.join('\n');
+      if (!force && key === priceKey) return Promise.resolve();
+      priceKey = key;
+      if (!models.length) {
+        paintPrices({});
+        return Promise.resolve();
+      }
+      const generation = ++priceGeneration;
+      return Promise.resolve().then(() => pricingApi.lookup(models)).then(payload => {
+        if (destroyed || generation !== priceGeneration) return;
+        priceFailed = !payload || payload.ok === false;
+        priceStatus = (payload && payload.status) || priceStatus;
+        paintPrices(priceFailed ? {} : payload.prices);
+        paintPriceStatus();
+      }, () => {
+        if (destroyed || generation !== priceGeneration) return;
+        priceFailed = true;
+        paintPrices({});
+        paintPriceStatus();
+      });
+    }
+
+    function refreshPriceTable() {
+      if (!pricingApi || typeof pricingApi.refresh !== 'function') return;
+      pricingRefresh.disabled = true;
+      pricingStatusText.textContent = tt('autoEditorPriceRefreshing', '正在刷新价格表…');
+      Promise.resolve().then(() => pricingApi.refresh()).then(payload => {
+        if (destroyed) return;
+        priceFailed = !payload || payload.ok === false;
+        priceStatus = (payload && payload.status) || priceStatus;
+        paintPriceStatus();
+        return refreshPrices({ force: true });
+      }, () => {
+        if (destroyed) return;
+        priceFailed = true;
+        paintPriceStatus();
+      }).finally(() => { pricingRefresh.disabled = false; });
+    }
+
+    // One line of the pool. `cli` is the row's lane: '' means the session's own
+    // CLI (the provider then comes from the host's list, one row per provider),
+    // and a named lane means this row picks a provider out of that lane's own
+    // catalog instead.
+    function buildRow(provider, configured, configuredSelection, cli = '') {
+      const lane = normalizeCli(cli);
       const providerId = String(provider.id);
       const label = provider.name || providerId;
       const row = make('div', 'multicc-auto-editor-row');
       row.dataset.providerId = providerId;
-      const name = make('span', 'multicc-auto-editor-name', String(formatProvider(provider) || providerId));
-      name.title = name.textContent;
+      row.dataset.cli = lane;
+      rowState.set(row, { cli: lane, provider, homeProvider: provider });
+      const name = make('div', 'multicc-auto-editor-name');
+      const nameText = make('span', 'multicc-auto-editor-name-text', String(formatProvider(provider) || providerId));
+      nameText.title = nameText.textContent;
+      const cliField = make('label', 'multicc-auto-editor-cli-field');
+      const cliSelect = make('select', 'multicc-auto-editor-cli');
+      cliSelect.setAttribute('aria-label', tt('autoEditorCliAria', '{provider} 的 CLI', { provider: label }));
+      cliSelect.title = tt('autoEditorCliLabel', '这条线路跑在哪个 CLI');
+      // '' first: the session's own lane is the default every pool starts on,
+      // and the only value that writes no `cli` field at all.
+      for (const value of ['', ...AUTO_CLIS]) {
+        const option = make('option', '', cliOptionLabel(value));
+        option.value = value;
+        cliSelect.appendChild(option);
+      }
+      cliSelect.value = lane;
+      cliField.appendChild(cliSelect);
+      name.append(nameText, cliField);
       const model = make('select', 'multicc-auto-editor-model');
       model.setAttribute('aria-label', tt('autoEditorModelAria', '{provider} 模型', { provider: label }));
       const preferredModel = candidateModel(provider, configured);
       fillModels(model, provider, configured);
       model.value = preferredModel || '';
       const modelField = make('div', 'multicc-auto-editor-model-field');
+      // Which of the lane's providers this line runs — only a foreign lane has
+      // a choice, because the current CLI is the row list itself.
+      const providerField = make('label', 'multicc-auto-editor-provider-field');
+      const providerSelect = make('select', 'multicc-auto-editor-provider');
+      providerSelect.setAttribute('aria-label',
+        tt('autoEditorProviderAria', '{cli} 的 Provider', { cli: cliName(lane) }));
+      providerField.appendChild(providerSelect);
+      show(providerField, !!lane);
       const custom = make('input', 'multicc-auto-editor-model-custom');
       custom.type = 'text';
       custom.maxLength = 200;
@@ -1428,7 +2022,17 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         tt('autoEditorModelAria', '{provider} 模型', { provider: label }));
       custom.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;margin-top:5px';
       show(custom, false);
-      modelField.append(model, custom);
+      // 自动选模型：这一行不钉住模型，每轮由价格表挑。它与钉住的模型互斥（服务端
+      // 也只接受「按价格自动分层」下的 autoModel），所以勾上就把下拉清空并禁掉。
+      const autoField = make('label', 'multicc-auto-editor-auto-model-field');
+      const autoModel = make('input', 'multicc-auto-editor-auto-model');
+      autoModel.type = 'checkbox';
+      autoModel.checked = configured?.autoModel === true;
+      autoField.title = tt('autoEditorAutoModelHint', '这一行的模型每轮按价格档现挑，所以没有钉死的模型。');
+      autoField.append(autoModel, document.createTextNode(tt('autoEditorAutoModel', '自动选模型')));
+      const price = make('span', 'multicc-auto-editor-price multicc-auto-editor-muted');
+      show(price, false);
+      modelField.append(providerField, model, custom, autoField, price);
       // A line with no catalog of its own (an imported relay, for one) needs the
       // same suggestions the manual picker offers; they are resolved after the
       // rows exist so rendering never waits on a request.
@@ -1459,12 +2063,29 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       down.addEventListener('click', () => moveRow(row, 1));
       remove.addEventListener('click', () => useRow(row, false));
       add.addEventListener('click', () => useRow(row, true));
+      cliSelect.addEventListener('change', () => setRowCli(row, cliSelect.value));
+      providerSelect.addEventListener('change', () => {
+        const list = lane ? (laneProviders(lane) || []) : providersForProtocol(providers, protocol);
+        applyRowProvider(row, list.find(item => String(item.id) === providerSelect.value) || null);
+        notify();
+      });
       model.addEventListener('change', () => {
         show(custom, model.value === '__custom__');
         if (model.value === '__custom__' && typeof custom.focus === 'function') custom.focus();
         notify();
       });
       custom.addEventListener('input', notify);
+      autoModel.addEventListener('change', () => {
+        model.disabled = autoModel.checked;
+        notify();
+      });
+      if (autoModel.checked) model.disabled = true;
+      // A foreign row picks its provider out of the lane's catalog, which may
+      // still be in flight; the configured provider id is what it starts on.
+      if (lane) {
+        const list = laneProviders(lane);
+        fillProviderSelect(row, list || [], providerId, { loading: list === null });
+      }
       return row;
     }
 
@@ -1482,15 +2103,38 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       if (!protocol) return;
       const configuredSelection = initialSelection && initialSelection.mode === 'auto'
         && initialSelection.protocol === protocol ? initialSelection : null;
-      const configuredById = new Map((configuredSelection?.candidates || [])
-        .map(candidate => [String(candidate.providerId || ''), candidate]));
+      const configuredCandidates = Array.isArray(configuredSelection?.candidates)
+        ? configuredSelection.candidates : [];
+      // A line is identified by its lane *and* its provider: one route may serve
+      // two lanes of the same pool, and the server draws the same distinction.
+      const byKey = new Map(configuredCandidates
+        .map(candidate => [`${normalizeCli(candidate.cli)}\n${String(candidate.providerId || '')}`, candidate]));
+      // The current CLI's own line for a provider: the lane it named, or the
+      // plain field every pool written before cross-CLI has.
+      const homeOf = providerId => byKey.get(`${homeCli}\n${providerId}`)
+        || byKey.get(`\n${providerId}`) || null;
       const defaultsById = new Map(defaultCandidates(providers, protocol)
         .map(candidate => [candidate.providerId, candidate]));
+      // Both pool-level choices are seeded from the stored pool and fall back to
+      // their defaults, so a pool that predates them opens exactly as before.
+      // Only a different stored pool re-seeds them: a host that re-renders the
+      // same selection (a provider list refreshed under it) must not undo a
+      // toggle the user just made.
+      const seedKey = configuredSelection
+        ? `${configuredSelection.routing?.tiering || ''}|${configuredSelection.cliSwitch || ''}`
+        : '';
+      if (seedKey !== seededKey) {
+        seededKey = seedKey;
+        tiering = configuredSelection?.routing?.tiering === PRICE_TIERING
+          ? PRICE_TIERING : DEFAULT_ROUTING_TIERING;
+        cliSwitchPolicy = cliSwitchOf({ cliSwitch: configuredSelection?.cliSwitch });
+      }
       const used = [];
-      providersForProtocol(providers, protocol).forEach((provider, index) => {
+      const homeProviders = providersForProtocol(providers, protocol);
+      homeProviders.forEach((provider, index) => {
         const providerId = String(provider.id);
-        const configured = configuredById.get(providerId);
-        const row = buildRow(provider, configured, configuredSelection);
+        const configured = homeOf(providerId);
+        const row = buildRow(provider, configured, configuredSelection, '');
         allRows.push(row);
         const enabled = configuredSelection ? !!configured && configured.enabled !== false : defaultsById.has(providerId);
         if (enabled) {
@@ -1498,6 +2142,26 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
           used.push({ row, priority, index });
         }
       });
+      // Lines on another CLI have no row in the host's list — that list is the
+      // session's own lane — so each one gets a row of its own, standing on the
+      // id it was configured with until that lane's catalog arrives.
+      let foreignIndex = homeProviders.length;
+      for (const candidate of configuredCandidates) {
+        const lane = normalizeCli(candidate.cli);
+        const providerId = String(candidate.providerId || '');
+        if (!lane || lane === homeCli || !providerId) continue;
+        const row = buildRow({ id: providerId, name: providerId, protocol }, candidate,
+          configuredSelection, lane);
+        allRows.push(row);
+        foreignIndex += 1;
+        if (candidate.enabled !== false) {
+          used.push({
+            row,
+            priority: Number(candidate.priority) || 100 + foreignIndex,
+            index: foreignIndex,
+          });
+        }
+      }
       order = used.sort((left, right) => left.priority - right.priority || left.index - right.index)
         .slice(0, MAX_CANDIDATES).map(item => item.row);
       rungCeiling = 0;
@@ -1521,16 +2185,34 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       gatewayRendered = null;
       setRouting(!!configuredSelection?.routing);
       onUnknownSelect.value = String(configuredSelection?.routing?.onUnknown || 'strong');
-      syncRungs();
       notify();
-      if (emptyCatalogRows.length) {
-        Promise.resolve().then(() => loadModels(protocol)).then(models => {
-          if (destroyed || generation !== modelGeneration || !Array.isArray(models)) return;
-          for (const { model, provider } of emptyCatalogRows) {
-            fillModels(model, provider, { model: model.value }, models);
+      // Other lanes are fetched after the rows exist, one request per lane and
+      // only for lanes some line actually names, so an untouched pool costs none.
+      for (const lane of new Set(allRows.map(rowCli).filter(value => value && value !== homeCli))) {
+        ensureLane(lane).then(() => {
+          if (destroyed || generation !== modelGeneration) return;
+          for (const row of allRows) {
+            if (rowCli(row) !== lane) continue;
+            fillProviderSelect(row, laneProviders(lane) || [], row.dataset.providerId);
           }
+          notify();
+          fillEmptyCatalogs(generation);
         }).catch(() => {});
       }
+      fillEmptyCatalogs(generation);
+    }
+
+    // Rows whose line declares no models of its own are refilled once a catalog
+    // arrives — the local one for the session's CLI, or the row's own lane list
+    // when a foreign lane landed with one. Rendering never waits on either.
+    function fillEmptyCatalogs(generation) {
+      if (!emptyCatalogRows.length) return;
+      Promise.resolve().then(() => loadModels(protocol)).then(models => {
+        if (destroyed || generation !== modelGeneration || !Array.isArray(models)) return;
+        for (const { model, provider } of emptyCatalogRows) {
+          fillModels(model, provider, { model: model.value }, models);
+        }
+      }).catch(() => {});
     }
 
     maxAttempts.addEventListener('change', notify);
@@ -1545,6 +2227,23 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       notify();
     });
     onUnknownSelect.addEventListener('change', notify);
+    cliSwitchFailover.addEventListener('click', () => {
+      cliSwitchPolicy = DEFAULT_CLI_SWITCH;
+      notify();
+    });
+    cliSwitchRouting.addEventListener('click', () => {
+      cliSwitchPolicy = 'routing';
+      notify();
+    });
+    tieringManual.addEventListener('click', () => {
+      tiering = DEFAULT_ROUTING_TIERING;
+      notify();
+    });
+    tieringPrice.addEventListener('click', () => {
+      tiering = PRICE_TIERING;
+      notify();
+    });
+    pricingRefresh.addEventListener('click', refreshPriceTable);
     keySave.addEventListener('click', saveKey);
     keyInput.addEventListener('keydown', event => {
       if (event && event.key === 'Enter') saveKey();
@@ -1576,12 +2275,16 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
         if (destroyed) return fail(tt('autoEditorDestroyed', 'Auto Provider 编辑器已关闭。'), 'editor_destroyed');
         const result = serializeDraft({
           protocol,
-          providers,
+          providers: readProviders(),
           candidates: rawCandidates(),
           maxAttempts: Number(maxAttempts.value),
           sticky: sticky.checked,
           crossTrustConfirmed: confirm.checked,
           routingEnabled: routingOn,
+          // Both are pool-level: the lane policy is only written when some line
+          // spans a lane, and the tiering only ridealong with a routing config.
+          tiering,
+          cliSwitch: cliSwitchPolicy,
           routingGateway,
           routingEndpoint: endpointInput.value.trim(),
           routingModel: gatewayModel.value.trim(),
@@ -1602,8 +2305,10 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
       destroy() {
         if (destroyed) return;
         destroyed = true;
+        laneCache.clear();
+        rowState.clear();
         container.replaceChildren();
-        container.classList.remove('multicc-auto-editor', 'is-order');
+        container.classList.remove('multicc-auto-editor', 'is-order', 'is-price');
         container.style.display = 'none';
       },
     });
@@ -1612,14 +2317,20 @@ ${P}-more-body{display:grid;justify-items:start;gap:8px;padding:8px 0 2px}
   }
 
   return Object.freeze({
+    AUTO_CLIS,
     AUTO_PREFIX,
+    CLI_SWITCH_POLICIES,
     CUSTOM_ROUTING_GATEWAY,
     CUSTOM_ROUTING_MODEL,
+    DEFAULT_CLI_SWITCH,
     DEFAULT_ROUTING_GATEWAY,
+    DEFAULT_ROUTING_TIERING,
     MAX_ATTEMPTS,
     MAX_CANDIDATES,
+    MAX_PRICE_MODELS,
     MAX_ROUTING_ENDPOINT_CHARS,
     MAX_TIERS,
+    PRICE_TIERING,
     PROTOCOLS,
     ROUTING_API_KEY_NAME,
     ROUTING_GATEWAYS,

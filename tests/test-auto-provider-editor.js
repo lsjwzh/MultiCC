@@ -853,3 +853,326 @@ test('a custom gateway carries the address and model to the test route', async (
     text: '把 README 里的一个错别字改掉',
   }]);
 });
+
+// ── 跨 CLI 车道 / 按价格分层 ─────────────────────────────────────────────────
+//
+// The server reads a pool one lane at a time (`validateProviderSelection`):
+// every candidate is checked against its own CLI's catalog, each lane has to
+// stay single-protocol, and a pool that spans lanes carries a switch policy.
+// The editor has to write exactly that — and keep writing the old shape for a
+// pool that uses none of it.
+
+// The registry the server validates against, with the same questions catalogFor()
+// asks of it (appType per CLI, the providers of an appType, and whether a
+// provider supports a lane).
+function laneRegistry(rows) {
+  const appTypeForCli = cli => (cli === 'codex' || cli === 'codex-exp' ? 'codex' : 'claude');
+  return {
+    appTypeForCli,
+    appTypesForCli: cli => (cli === 'opencode' || cli === 'zcode'
+      ? ['claude', 'codex'] : [appTypeForCli(cli)]),
+    listProviders: appType => rows.filter(row => row.appType === appType),
+    providerSupportsCli: (provider, cli) => Array.isArray(provider.compatibleClis)
+      && provider.compatibleClis.includes(cli),
+    modelValidForProvider: () => true,
+  };
+}
+
+function lanePool() {
+  return [
+    { id: 'managed-a', appType: 'claude', protocol: 'anthropic', compatibleClis: ['claude', 'claude-exp'] },
+    { id: 'managed-b', appType: 'claude', protocol: 'anthropic', compatibleClis: ['claude'] },
+    { id: 'zcode-relay', appType: 'claude', protocol: 'anthropic', compatibleClis: ['zcode', 'opencode'] },
+  ];
+}
+
+test('a cross-CLI pool writes its lane policy and the server reads it back', () => {
+  const candidates = [
+    { providerId: 'managed-a', model: 'model-a', priority: 1, enabled: true, rung: 1 },
+    { providerId: 'zcode-relay', cli: 'zcode', model: 'glm-4.6', priority: 2, enabled: true, rung: 2 },
+  ];
+  const registry = laneRegistry(lanePool());
+  const draft = { protocol: 'anthropic', providers: providers(), candidates, routingEnabled: true };
+  const result = editor.serializeDraft(draft);
+  assert.equal(result.ok, true, result.error);
+  // A pool that spans lanes says how it may switch, default included: the stored
+  // pool has to read the same on every host, not just on the one that saved it.
+  assert.equal(result.value.cliSwitch, 'failover');
+  assert.deepEqual(result.value.candidates.map(candidate => candidate.cli), [undefined, 'zcode']);
+  const validated = serverContract.validateProviderSelection(result.value, { cli: 'claude', providers: registry });
+  assert.equal(validated.ok, true, validated.error);
+  assert.equal(validated.value.cliSwitch, 'failover');
+  assert.deepEqual([...validated.value.candidates].map(candidate => [candidate.providerId, candidate.cli]),
+    [['managed-a', 'claude'], ['zcode-relay', 'zcode']], '服务端把「当前 CLI」也写在候选上');
+
+  const routed = editor.serializeDraft({ ...draft, cliSwitch: 'routing' });
+  assert.equal(routed.value.cliSwitch, 'routing');
+  assert.equal(serverContract.validateProviderSelection(routed.value,
+    { cli: 'claude', providers: registry }).ok, true);
+  // An unknown policy is not a guess: it falls back to the default the server
+  // applies to a pool that never named one.
+  assert.equal(editor.serializeDraft({ ...draft, routingEnabled: false, cliSwitch: 'nope' })
+    .value.cliSwitch, 'failover');
+  // A lane name the server does not know is refused here rather than there.
+  assert.equal(editor.serializeDraft({
+    protocol: 'anthropic', providers: providers(),
+    candidates: [candidates[0], { ...candidates[1], cli: 'gemini' }],
+  }).code, 'invalid_provider_candidate');
+});
+
+test('price tiering writes no ladder, and an auto-model line carries no model', () => {
+  const candidates = [
+    { providerId: 'managed-a', model: null, autoModel: true, priority: 1, enabled: true, rung: 1 },
+    { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true, rung: 2 },
+  ];
+  const registry = laneRegistry(lanePool());
+  const draft = { protocol: 'anthropic', providers: providers(), candidates, routingEnabled: true, tiering: 'price' };
+  const result = editor.serializeDraft(draft);
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.value.routing.tiering, 'price');
+  assert.deepEqual(result.value.routing.tiers, []);
+  assert.deepEqual(result.value.candidates, [
+    { providerId: 'managed-a', model: null, priority: 1, enabled: true, autoModel: true },
+    { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true },
+  ]);
+  // Two lines and no hand tags: the "at least two tiers" rule is a manual-mode
+  // rule, and firing it here would refuse the one shape price tiering has.
+  const validated = serverContract.validateProviderSelection(result.value, { cli: 'claude', providers: registry });
+  assert.equal(validated.ok, true, validated.error);
+  assert.equal(validated.value.routing.tiering, 'price');
+  assert.deepEqual([...validated.value.candidates].map(candidate => [candidate.providerId, candidate.model, candidate.autoModel === true]),
+    [['managed-a', null, true], ['managed-b', 'model-b', false]]);
+
+  // The same two lines with a hand-tagged ladder instead: refused, because an
+  // auto-model line needs the price ladder to pick a model from.
+  const manualOnServer = serverContract.validateProviderSelection({
+    version: 1, mode: 'auto', protocol: 'anthropic',
+    candidates: [
+      { providerId: 'managed-a', model: null, priority: 1, enabled: true, autoModel: true, tier: 't1' },
+      { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true, tier: 't2' },
+    ],
+    routing: { provider: 'jev', tiers: ['t1', 't2'] },
+  }, { cli: 'claude', providers: registry });
+  assert.equal(manualOnServer.code, 'provider_auto_model_requires_price_tiering');
+  assert.equal(editor.serializeDraft({ ...draft, tiering: 'manual' }).code,
+    'provider_auto_model_requires_price_tiering');
+  // …and a line cannot both pin a model and pick one per turn.
+  assert.equal(editor.serializeDraft({
+    ...draft, candidates: [{ ...candidates[0], model: 'model-a' }, candidates[1]],
+  }).code, 'invalid_provider_candidate');
+});
+
+test('a pool saved before cross-CLI and price tiering re-saves byte for byte', () => {
+  const stored = {
+    version: 1,
+    mode: 'auto',
+    protocol: 'anthropic',
+    candidates: [
+      { providerId: 'managed-a', model: 'model-a', priority: 1, enabled: true },
+      { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true },
+    ],
+    maxAttempts: 2,
+    sticky: true,
+    allowCrossTrust: false,
+  };
+  const plain = mountEditor({ initialSelection: stored });
+  assert.equal(plain.$('cli-switch-row').style.display, 'none', '单车道池没有换道策略');
+  assert.equal(plain.$('tiering-row').style.display, 'none', '不走难度路由就没有档位依据');
+  assert.equal(JSON.stringify(plain.control.read({ remember: false }).value), JSON.stringify(stored));
+
+  // The same pool with a hand-tagged ladder: the routing block keeps its old
+  // shape too (no tiering key), and no candidate grows a cli/autoModel field.
+  const routed = {
+    ...stored,
+    routing: { version: 1, provider: 'jev', gateway: 'vercel', apiKeyName: 'vercel-api-key', tiers: ['t1', 't2'] },
+    candidates: [
+      { providerId: 'managed-a', model: 'model-a', priority: 1, enabled: true, tier: 't1' },
+      { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true, tier: 't2' },
+    ],
+  };
+  const { container, control, $, routeOn } = mountEditor({ initialSelection: routed });
+  routeOn();
+  assert.equal(container.classList.contains('is-price'), false);
+  assert.equal($('tiering-row').style.display, '', '走了难度路由才问档位依据');
+  assert.equal(JSON.stringify(control.read({ remember: false }).value), JSON.stringify(routed));
+});
+
+test('the CLI selector turns a line into another lane and the pool policy follows it', async () => {
+  const asked = [];
+  const { $, control, row, inList } = mountEditor({
+    cli: 'claude',
+    loadCliProviders(cli) {
+      asked.push(cli);
+      return Promise.resolve(cli === 'zcode'
+        ? [{ id: 'zcode-relay', name: 'ZCode Relay', protocol: 'anthropic', model: 'glm-4.6' }]
+        : []);
+    },
+  });
+  assert.equal($('cli-switch-row').style.display, 'none');
+  assert.deepEqual(asked, [], '没有别的车道就一个请求也不发');
+
+  const cliSelect = row('managed-a').querySelector('.multicc-auto-editor-cli');
+  cliSelect.value = 'zcode';
+  cliSelect.emit('change');
+  await flush();
+  assert.deepEqual(asked, ['zcode']);
+  // 这条线路改了车道，Provider 就从那条车道自己的目录里选。
+  assert.deepEqual(inList(), ['zcode-relay', 'managed-b']);
+  assert.equal($('cli-switch-row').style.display, '', '跨了车道才出现换道策略');
+  assert.deepEqual(row('zcode-relay').querySelector('.multicc-auto-editor-provider')
+    .options.map(option => option.value), ['zcode-relay']);
+  const cross = control.read({ remember: false });
+  assert.equal(cross.ok, true, cross.error);
+  assert.equal(cross.value.cliSwitch, 'failover');
+  assert.deepEqual(cross.value.candidates.map(candidate => [candidate.providerId, candidate.cli]),
+    [['zcode-relay', 'zcode'], ['managed-b', undefined]]);
+
+  $('cli-switch-routing').emit('click');
+  const chosen = control.read({ remember: false });
+  assert.equal(chosen.value.cliSwitch, 'routing');
+  const server = serverContract.validateProviderSelection(chosen.value, {
+    cli: 'claude', providers: laneRegistry(lanePool()),
+  });
+  assert.equal(server.ok, true, server.error);
+
+  // 改回「当前 CLI」：Provider 回到原来那条，换道策略也跟着消失。
+  cliSelect.value = '';
+  cliSelect.emit('change');
+  assert.deepEqual(inList(), ['managed-a', 'managed-b']);
+  assert.equal($('cli-switch-row').style.display, 'none');
+  assert.deepEqual(asked, ['zcode'], '回到本车道不用再取一次');
+  const back = control.read({ remember: false }).value;
+  assert.equal('cliSwitch' in back, false);
+  assert.equal('cli' in back.candidates[0], false);
+
+  // 那条车道上没有本协议的 Provider：选择器说清楚，这条线路也就没有可保存的 Provider。
+  const mbRow = row('managed-b');
+  const kimi = mbRow.querySelector('.multicc-auto-editor-cli');
+  kimi.value = 'kimi';
+  kimi.emit('change');
+  await flush();
+  assert.equal(mbRow.querySelector('.multicc-auto-editor-provider').options[0].textContent,
+    '该 CLI 下没有可用的 Provider');
+  // 没得选就是把这条线路的 Provider 放空，保存时会被挡下来，而不是悄悄留一个别的车道的 id。
+  assert.equal(mbRow.dataset.providerId, '');
+  assert.equal(control.read({ remember: false }).code, 'invalid_provider');
+});
+
+test('price tiering hides the hand-tagged ladder and offers auto-model per line', () => {
+  const { document, container, control, $, row, routeOn } = mountEditor();
+  routeOn();
+  assert.equal($('tiering-row').style.display, '');
+  assert.equal($('tiering-manual').getAttribute('aria-checked'), 'true');
+  assert.equal(container.classList.contains('is-price'), false);
+  assert.match($('summary').textContent, /^效果：/);
+
+  $('tiering-price').emit('click');
+  assert.equal($('tiering-price').getAttribute('aria-checked'), 'true');
+  assert.equal(container.classList.contains('is-price'), true);
+  // Which controls a mode owns is CSS: the ladder disappears, the auto-model
+  // toggle appears, and both are gated on the one container class.
+  const style = document.getElementById('multicc-auto-provider-editor-style');
+  assert.match(style.textContent, /\.multicc-auto-editor\.is-price \.multicc-auto-editor-tier\{display:none\}/);
+  assert.match(style.textContent, /\.multicc-auto-editor\.is-price \.multicc-auto-editor-auto-model-field\{display:flex\}/);
+  assert.match($('summary').textContent, /^按价格自动排档：Managed A（model-a）、Managed B（model-b）$/);
+
+  const box = row('managed-a').querySelector('.multicc-auto-editor-auto-model');
+  box.checked = true;
+  box.emit('change');
+  const priced = control.read({ remember: false });
+  assert.equal(priced.ok, true, priced.error);
+  assert.equal(priced.value.routing.tiering, 'price');
+  assert.deepEqual(priced.value.routing.tiers, []);
+  assert.deepEqual(priced.value.candidates, [
+    { providerId: 'managed-a', model: null, priority: 1, enabled: true, autoModel: true },
+    { providerId: 'managed-b', model: 'model-b', priority: 2, enabled: true },
+  ]);
+  assert.match($('summary').textContent, /Managed A（自动选模型）/);
+
+  // 回到手动标注：自动选模型被放掉（一个看不见的勾不该把保存顶回去），档位重新由人标注。
+  $('tiering-manual').emit('click');
+  assert.equal(box.checked, false);
+  const manual = control.read({ remember: false });
+  assert.equal(manual.ok, true, manual.error);
+  assert.deepEqual(manual.value.routing.tiers, ['t1', 't2']);
+  assert.equal('tiering' in manual.value.routing, false);
+  assert.equal('autoModel' in manual.value.candidates[0], false);
+});
+
+test('the price table answers every line in one call and has a refresh button', async () => {
+  const lookups = [];
+  let refreshes = 0;
+  let fetchedAt = '2026-09-30T02:00:00.000Z';
+  const tableStatus = () => ({ source: 'models.dev', fetchedAt, stale: false });
+  const { $, row } = mountEditor({
+    pricingApi: {
+      lookup(models) {
+        lookups.push(models);
+        return Promise.resolve({
+          ok: true,
+          status: tableStatus(),
+          prices: {
+            'model-a': {
+              model: 'model-a', providerKey: 'managed-a', input: 0.27, output: 1.1,
+              blended: 0.4775, source: 'models.dev', matchedBy: 'exact',
+            },
+          },
+        });
+      },
+      refresh() {
+        refreshes += 1;
+        fetchedAt = '2026-09-30T03:00:00.000Z';
+        return Promise.resolve({ ok: true, status: tableStatus() });
+      },
+    },
+  });
+  await flush();
+  assert.deepEqual(lookups, [['model-a', 'model-b']], '两条线路一次问完');
+  assert.match($('price-status').textContent, /^价格表 models\.dev · /);
+  // 价格是接在模型后面的后缀，前面的分隔符来自 autoRoutePricePair 本身。
+  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-price').textContent,
+    '· $0.27/$1.1 每 1M tokens');
+  // A model the table does not know is said, not shown as free.
+  const unknown = row('managed-b').querySelector('.multicc-auto-editor-price');
+  assert.equal(unknown.textContent, '价格未知');
+  assert.equal(unknown.title, 'model-b 的价格（USD / 1M tokens）');
+
+  $('price-refresh').emit('click');
+  await flush();
+  await flush();
+  assert.equal(refreshes, 1);
+  assert.deepEqual(lookups, [['model-a', 'model-b'], ['model-a', 'model-b']], '刷新后重问一次');
+  // 刷新过的价格表：状态行跟着换成新的读取时间（按本地时区渲染）。
+  const at = new Date('2026-09-30T03:00:00.000Z');
+  const pad = value => String(value).padStart(2, '0');
+  assert.equal($('price-status').textContent,
+    `价格表 models.dev · ${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+    + ` ${pad(at.getHours())}:${pad(at.getMinutes())}`);
+});
+
+test('a stale price table and a dead one say so instead of showing numbers', async () => {
+  const { $, row } = mountEditor({
+    pricingApi: {
+      lookup: () => Promise.resolve({
+        ok: true,
+        status: { source: 'models.dev', fetchedAt: '2026-09-01T02:00:00.000Z', stale: true },
+        prices: {},
+      }),
+      refresh: () => Promise.reject(new Error('offline')),
+    },
+  });
+  await flush();
+  assert.match($('price-status').textContent, /已过期$/);
+  // 表里没有这个模型时不许编一个数：数字缺失说的是「价格未知」。
+  assert.equal(row('managed-a').querySelector('.multicc-auto-editor-price').textContent, '价格未知');
+
+  const dead = mountEditor({ pricingApi: { lookup: () => Promise.reject(new Error('offline')) } });
+  await flush();
+  assert.equal(dead.$('price-status').textContent, '价格表暂不可用');
+  assert.equal(dead.row('managed-a').querySelector('.multicc-auto-editor-price').textContent, '价格未知');
+
+  // 页面没有价格表客户端（老宿主）：整条价格栏都不出现，编辑器照常工作。
+  const bare = mountEditor();
+  assert.equal(bare.$('pricing').style.display, 'none');
+  assert.equal(bare.control.read({ remember: false }).ok, true);
+});

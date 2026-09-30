@@ -39,7 +39,10 @@ function createAutoProviderHandoff(options = {}) {
     remember(key, cleanSessionId);
     const from = clean(preparation.fromProviderName) || '上一个 Provider';
     const to = clean(preparation.providerName) || clean(preparation.providerId);
-    const text = `${from} 因上游限额或接口错误中断。请由 ${to} 基于已有对话和工具结果继续剩余任务；不要重复已经完成的操作。`;
+    // A lane change also swaps the tool set: the next CLI must not assume the
+    // previous one's native session, only the conversation and the handoff.
+    const lane = clean(preparation.cli) ? `（切换到 ${clean(preparation.cli)} CLI）` : '';
+    const text = `${from} 因上游限额或接口错误中断。请由 ${to}${lane} 基于已有对话和工具结果继续剩余任务；不要重复已经完成的操作。`;
     const metadata = {
       originContinue: true,
       clientMsgId: key,

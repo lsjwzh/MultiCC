@@ -9,6 +9,7 @@ library;
 
 import '../i18n.dart';
 import '../models/message.dart';
+import '../utils/cli_display.dart';
 
 /// Mirrors `MAX_TIERS` / `MAX_ATTEMPTS` in the web editor (and the server's
 /// `MAX_TIERS` / `MAX_ATTEMPTS` in src/providers/auto-provider-config.js).
@@ -161,10 +162,17 @@ class AutoRoutingResult {
 /// `escalation`, and the vault entry name) is carried over rather than reset —
 /// re-saving a pool from the phone must not undo what the API or the web editor
 /// configured.
+///
+/// [tiering] is the ladder the panel is in. `'price'` writes a price-tiered
+/// block: no hand-tagged tier survives it (the server rejects the combination),
+/// so the routes are handed back tierless and `tiers` is written empty. Anything
+/// else — including a value this build has never heard of — is written verbatim
+/// (nothing at all for the `'manual'` default) next to the manual ladder.
 AutoRoutingResult serializeAutoRouting({
   required List<AutoRoutedRoute> routes,
   required String onUnknown,
   SessionProviderRouting? previous,
+  String? tiering,
 }) {
   if (routes.length < 2) {
     return AutoRoutingResult._(
@@ -173,24 +181,27 @@ AutoRoutingResult serializeAutoRouting({
       code: 'insufficient_candidates',
     );
   }
+  final price = tiering == 'price';
   final rungs = <int>{};
   for (final route in routes) {
     if (route.rung > 0) rungs.add(route.rung);
   }
   final ladder = rungs.toList()..sort();
-  if (ladder.length < 2) {
-    return AutoRoutingResult._(
-      ok: false,
-      error: t('autoEditorRoutingNeedsTwoTiers'),
-      code: 'provider_routing_requires_tiers',
-    );
-  }
-  if (ladder.length > kAutoMaxTiers) {
-    return AutoRoutingResult._(
-      ok: false,
-      error: t('autoEditorRoutingTooManyTiers', {'max': '$kAutoMaxTiers'}),
-      code: 'invalid_provider_routing',
-    );
+  if (!price) {
+    if (ladder.length < 2) {
+      return AutoRoutingResult._(
+        ok: false,
+        error: t('autoEditorRoutingNeedsTwoTiers'),
+        code: 'provider_routing_requires_tiers',
+      );
+    }
+    if (ladder.length > kAutoMaxTiers) {
+      return AutoRoutingResult._(
+        ok: false,
+        error: t('autoEditorRoutingTooManyTiers', {'max': '$kAutoMaxTiers'}),
+        code: 'invalid_provider_routing',
+      );
+    }
   }
   final keyByRung = <int, String>{
     for (var index = 0; index < ladder.length; index += 1)
@@ -209,7 +220,9 @@ AutoRoutingResult serializeAutoRouting({
           model: route.model,
           priority: route.priority,
           enabled: true,
-          tier: keyByRung[route.rung],
+          // A price-tiered pool derives its ladder from the price table every
+          // turn; a leftover tier would be a second ladder nobody reads.
+          tier: price ? null : keyByRung[route.rung],
         ),
     ],
     routing: SessionProviderRouting(
@@ -217,7 +230,8 @@ AutoRoutingResult serializeAutoRouting({
       provider: previous?.provider ?? 'jev',
       apiKeyName: previous?.apiKeyName ?? SessionProviderRouting.defaultApiKeyName,
       onUnknown: writeOnUnknown ? onUnknown : null,
-      tiers: [for (final rung in ladder) keyByRung[rung]!],
+      tiering: tiering == 'manual' ? null : tiering,
+      tiers: price ? const [] : [for (final rung in ladder) keyByRung[rung]!],
       model: previous?.model,
       timeoutMs: previous?.timeoutMs,
       escalation: previous?.escalation,
@@ -238,3 +252,39 @@ const List<(String, String, String)> kAutoUnknownChoices = [
     'autoEditorMoreUnknownPriority',
   ),
 ];
+
+/// `(wire value, label key, detail key)` — when a cross-CLI pool leaves the
+/// session's lane, in the order the web editor offers it. Same shape as
+/// [kAutoUnknownChoices] because it is drawn by the same kind of chip row.
+const List<(String, String, String)> kAutoCliSwitchChoices = [
+  (
+    'failover',
+    'autoEditorCliSwitchFailover',
+    'autoEditorCliSwitchDetailFailover',
+  ),
+  (
+    'routing',
+    'autoEditorCliSwitchRouting',
+    'autoEditorCliSwitchDetailRouting',
+  ),
+];
+
+/// `(wire value, label key, detail key)` — how a routed pool's ladder is
+/// decided. `'manual'` is the absent-on-wire default; only `'price'` is written.
+const List<(String, String, String)> kAutoTieringChoices = [
+  (
+    'manual',
+    'autoEditorTieringManual',
+    'autoEditorTieringDetailManual',
+  ),
+  ('price', 'autoEditorTieringPrice', 'autoEditorTieringDetailPrice'),
+];
+
+/// The label a routing event's `cli` gets on screen — the shared CLI display
+/// table (app/lib/utils/cli_display.dart), which returns an unknown id as-is so
+/// a lane this build has never heard of is still named honestly.
+String? autoCliLabel(Object? value) {
+  if (value is! String) return null;
+  final text = value.trim();
+  return text.isEmpty ? null : cliDisplayName(text);
+}
