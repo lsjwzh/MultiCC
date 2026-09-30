@@ -383,6 +383,8 @@
       touch-action: manipulation;
     }
     .mkey:active { background: #388bfd; border-color: #388bfd; color: #fff; }
+    /* 粘滞 Ctrl 点亮态：修饰键还挂着，要一眼可见 */
+    .mkey.armed { background: #238636; border-color: #2ea043; color: #fff; }
 
     #mobile-input-row {
       display: flex;
@@ -868,15 +870,20 @@
     <div id="mobile-keys">
       <button class="mkey" data-seq="&#x1b;">Esc</button>
       <button class="mkey" data-seq="&#x09;">Tab</button>
+      <!-- 粘滞 Ctrl：点亮后下一个键消耗它（Termux 惯例），字母组合不再逐颗枚举 -->
+      <button class="mkey" data-role="ctrl">Ctrl</button>
       <button class="mkey" data-seq="&#x15;">^U</button>
       <button class="mkey" data-seq="&#x03;">^C</button>
       <button class="mkey" data-seq="&#x04;">^D</button>
-      <button class="mkey" data-seq="&#x1b;[A">↑</button>
-      <button class="mkey" data-seq="&#x1b;[B">↓</button>
-      <button class="mkey" data-seq="&#x1b;[D">←</button>
-      <button class="mkey" data-seq="&#x1b;[C">→</button>
-      <button class="mkey" data-seq="&#x1b;[H">Home</button>
-      <button class="mkey" data-seq="&#x1b;[F">End</button>
+      <button class="mkey" data-seq="&#x1b;[A" data-repeat>↑</button>
+      <button class="mkey" data-seq="&#x1b;[B" data-repeat>↓</button>
+      <button class="mkey" data-seq="&#x1b;[D" data-repeat>←</button>
+      <button class="mkey" data-seq="&#x1b;[C" data-repeat>→</button>
+      <!-- claude TUI 翻长输出靠这两个 -->
+      <button class="mkey" data-seq="&#x1b;[5~" data-repeat>PgUp</button>
+      <button class="mkey" data-seq="&#x1b;[6~" data-repeat>PgDn</button>
+      <button class="mkey" data-seq="&#x1b;[H" data-repeat>Home</button>
+      <button class="mkey" data-seq="&#x1b;[F" data-repeat>End</button>
     </div>
     <div id="mobile-input-row">
       <input id="mobile-input" type="text"

@@ -276,3 +276,64 @@ test('终端页信息条：cwd / worktree / 分支 / provider·model，与同目
   });
   if (screenshots.length) console.log('screenshots:', screenshots.join(' '));
 });
+
+// 移动版键盘条（≤768px 才出现的 #mobile-keys）：三件套 = 粘滞 Ctrl、长按连发、
+// PgUp/PgDn（Termux/Blink 的移动端惯例）。夹具没有 WS 升级，所以用替身 socket
+// 抓「真的会发给 PTY 什么」—— 断言的是发出去的 input 帧，不是按钮点没点亮。
+test('终端页移动键盘条：粘滞 Ctrl、长按连发、PgUp/PgDn', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const routes = servePublicDir();
+  routes['/api/sessions/s1'] = () => json({ id: 's1', dirId: 'd1', cli: 'claude', kind: 'terminal', label: 'Multicc Test Terminal', cwd: '/projects/multicc' });
+  routes['/api/sessions'] = () => json([{ id: 's1', dirId: 'd1', kind: 'terminal', cli: 'claude', label: 'Multicc Test Terminal' }]);
+  routes['/api/directories'] = () => json([{ id: 'd1', name: 'MultiCC', path: '/projects/multicc' }]);
+  routes['/api/settings/voice'] = () => json({ ok: true, enabled: false });
+  routes['/api/auth/ws-ticket'] = () => json({ ok: true, ticket: 'fixture' });
+
+  await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-terminal-page') }, async page => {
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: ERROR_TRAP });
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await page.navigate('/?id=s1');
+    assert.ok(await page.waitFor(`!!window.MultiCCTerminal?.terminal`), '终端页要暴露 MultiCCTerminal');
+    assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('mobile-bar')).display`), 'flex', '390px 视口下键盘条要出现');
+
+    // 替身 socket：sendToTerminal 只在 readyState===WebSocket.OPEN 时发；
+    // close 留个空函数——页面重连路径会调它，替身没有就成未捕获异常。
+    await page.evaluate(`window.__frames = []; window.MultiCCTerminal.attachTestSocket({ readyState: 1, close: () => {}, send: d => window.__frames.push(JSON.parse(d).data) })`);
+    const frames = () => page.evaluate(`window.__frames`);
+
+    // ── PgUp / PgDn：claude TUI 翻长输出靠这两个 ───────────────────────────
+    await page.evaluate(`document.querySelector('.mkey[data-seq="\\u001b[5~"]').click()`);
+    await page.evaluate(`document.querySelector('.mkey[data-seq="\\u001b[6~"]').click()`);
+    assert.deepEqual(await frames(), ['\x1b[5~', '\x1b[6~'], 'PgUp/PgDn 发翻页序列');
+
+    // ── 粘滞 Ctrl：点亮 → 输入框里敲字母直接发控制字符，一次性 ─────────────
+    await page.evaluate(`document.querySelector('.mkey[data-role="ctrl"]').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('.mkey[data-role="ctrl"]').classList.contains('armed')`), true, '点亮要有 armed 态');
+    await page.evaluate(`(() => {
+      const input = document.getElementById('mobile-input');
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'u', bubbles: true, cancelable: true }));
+    })()`);
+    assert.deepEqual(await frames(), ['\x1b[5~', '\x1b[6~', '\x15'], 'armed Ctrl + u = ^U');
+    assert.equal(await page.evaluate(`document.querySelector('.mkey[data-role="ctrl"]').classList.contains('armed')`), false, '消耗后熄灭');
+
+    // ── 粘滞 Ctrl + 方向键 = 按词跳的 Ctrl 序列 ─────────────────────────────
+    await page.evaluate(`document.querySelector('.mkey[data-role="ctrl"]').click()`);
+    await page.evaluate(`document.querySelector('.mkey[data-seq="\\u001b[D"]').click()`);
+    assert.deepEqual(await frames(), ['\x1b[5~', '\x1b[6~', '\x15', '\x1b[1;5D'], 'armed Ctrl + ← = CSI 1;5D');
+
+    // ── 长按连发：按住 ↓ 约 420ms 后每 110ms 重复，抬手即停 ─────────────────
+    await page.evaluate(`document.querySelector('.mkey[data-seq="\\u001b[B"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+    assert.ok(
+      await page.waitFor(`window.__frames.filter(f => f === '\\u001b[B').length >= 3`),
+      '长按要连发 ↓（等了 420ms 阈值 + 至少 3 个间隔）',
+    );
+    await page.evaluate(`document.querySelector('.mkey[data-seq="\\u001b[B"]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))`);
+    const atRelease = (await frames()).filter(f => f === '\x1b[B').length;
+    await new Promise(r => setTimeout(r, 400));
+    const afterWait = (await frames()).filter(f => f === '\x1b[B').length;
+    assert.equal(afterWait, atRelease, '抬手后连发要停');
+
+    assert.deepEqual(await page.evaluate(`window.__errors||[]`), [], '页面上不该有未捕获异常');
+  });
+});

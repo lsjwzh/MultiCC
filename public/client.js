@@ -1798,6 +1798,7 @@ document.getElementById('terminal-wrap').addEventListener('click', () => {
 /* ── Mobile Input Bar ── */
 const mobileInput = document.getElementById('mobile-input');
 const mobileSend  = document.getElementById('mobile-send');
+const mobileKeys  = document.getElementById('mobile-keys');
 
 function sendToTerminal(text) {
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1805,11 +1806,70 @@ function sendToTerminal(text) {
   }
 }
 
+/* 粘滞 Ctrl（Termux 惯例）：点亮后下一个键消耗它——键盘条上的方向/Home/End
+   变成 Ctrl 组合序列（Ctrl+←→ 在 readline 里按词跳），输入框里敲的单个字母
+   直接发 ^X 控制字符，不用再逐颗枚举 ^A/^E/^W… 组合键。 */
+const CTRL_SEQ = {
+  '\x1b[A': '\x1b[1;5A', '\x1b[B': '\x1b[1;5B',
+  '\x1b[C': '\x1b[1;5C', '\x1b[D': '\x1b[1;5D',
+  '\x1b[H': '\x1b[1;5H', '\x1b[F': '\x1b[1;5F',
+};
+let ctrlSticky = false;
+function setCtrlSticky(on) {
+  ctrlSticky = on;
+  const btn = mobileKeys.querySelector('.mkey[data-role="ctrl"]');
+  if (btn) btn.classList.toggle('armed', on);
+}
+
+mobileInput.addEventListener('keydown', (e) => {
+  if (!ctrlSticky) return;
+  if (e.key.length === 1 && /[a-z]/i.test(e.key)) {
+    e.preventDefault();
+    sendToTerminal(String.fromCharCode(e.key.toUpperCase().charCodeAt(0) & 0x1f));
+    setCtrlSticky(false);
+  }
+});
+// 输入框失焦就熄掉：粘滞是「下一个键」的一次性状态，不该跨焦点残留。
+mobileInput.addEventListener('blur', () => setCtrlSticky(false));
+
+/* 长按连发（Termux 行为）：按住方向/翻页/Home/End 约半秒后每 110ms 重复。
+   repeatFired 让连发结束后的那次 click 不再多发一下（click 跟在 pointerup 后面）。 */
+let repeatHold = null, repeatRun = null, repeatFired = false;
+function stopKeyRepeat() {
+  clearTimeout(repeatHold);
+  clearInterval(repeatRun);
+  repeatHold = repeatRun = null;
+}
+mobileKeys.addEventListener('pointerdown', (e) => {
+  const btn = e.target.closest('.mkey');
+  // data-repeat 是无值的标记属性，dataset 里是空字符串——判存在不能判真值。
+  if (!btn || !('repeat' in btn.dataset) || !btn.dataset.seq) return;
+  repeatFired = false;
+  stopKeyRepeat();
+  repeatHold = setTimeout(() => {
+    repeatRun = setInterval(() => {
+      repeatFired = true;
+      sendToTerminal(btn.dataset.seq);
+    }, 110);
+  }, 420);
+});
+['pointerup', 'pointercancel'].forEach(ev =>
+  mobileKeys.addEventListener(ev, stopKeyRepeat));
+window.addEventListener('blur', stopKeyRepeat);
+
 // Special key buttons
-document.getElementById('mobile-keys').addEventListener('click', (e) => {
+mobileKeys.addEventListener('click', (e) => {
   const btn = e.target.closest('.mkey');
   if (!btn) return;
-  sendToTerminal(btn.dataset.seq);
+  if (repeatFired) { repeatFired = false; return; }
+  if (btn.dataset.role === 'ctrl') { setCtrlSticky(!ctrlSticky); return; }
+  let seq = btn.dataset.seq;
+  if (!seq) return;
+  if (ctrlSticky) {
+    setCtrlSticky(false);
+    if (CTRL_SEQ[seq]) seq = CTRL_SEQ[seq];
+  }
+  sendToTerminal(seq);
   // Brief visual feedback without stealing keyboard focus from input
 });
 
@@ -2256,6 +2316,8 @@ window.MultiCCTerminal = Object.freeze({
   search: searchAddon,
   // 测试用：喂一条服务端消息 = 走真正的 ws.onmessage（不复制一份解析/渲染逻辑）。
   applyServerMessage: msg => { if (typeof ws?.onmessage === 'function') ws.onmessage({ data: JSON.stringify(msg) }); },
+  // 测试用：替身 socket —— 抓键盘条/输入框发出的 input 帧（夹具里 WS 升不了级）。
+  attachTestSocket: fake => { ws = fake; },
   openFind,
   closeFind,
   findVisible: () => !findBar.hidden,
