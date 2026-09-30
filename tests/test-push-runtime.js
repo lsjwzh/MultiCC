@@ -469,8 +469,26 @@ test('notify enforces cooldown and produces localized Web Push plus Bark/Webhook
   assert.equal(harness.runtime.notify('term', 'error', '失败'), false);
   assert.equal(harness.state.pushCalls.length, 1);
   harness.state.time += 100;
-  assert.equal(harness.runtime.notify('term', 'waiting', '请确认').title,
-    'MultiCC #term: 等待操作');
+  const waiting = harness.runtime.notify('term', 'waiting', '请确认');
+  assert.equal(waiting.title, 'MultiCC #term: 等待操作');
+  // waiting 推送不携带字母/子状态（那是终局成功那一发才有的）。
+  assert.equal('classifyState' in waiting, false);
+  assert.equal('goalState' in waiting, false);
+
+  // 终局成功的推送带 D 字母 + goalState：锁屏标题换成更细的那句，payload 里
+  // 两个字段都透传给 webhook / push 订阅方。
+  harness.state.time += 100;
+  const done = harness.runtime.notify('term', 'succeeded', '执行成功：x', {
+    classifyState: 'D', goalState: 'interact',
+  });
+  assert.equal(done.title, 'MultiCC #term: 需要交互');
+  assert.equal(done.classifyState, 'D');
+  assert.equal(done.goalState, 'interact');
+  harness.state.time += 100;
+  const achieved = harness.runtime.notify('term', 'succeeded', '执行成功：y', {
+    classifyState: 'D', goalState: 'achieved',
+  });
+  assert.equal(achieved.title, 'MultiCC #term: 达成目标');
   await flush();
 });
 

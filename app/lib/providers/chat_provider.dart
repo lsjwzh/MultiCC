@@ -1377,10 +1377,9 @@ class ChatProvider extends ChangeNotifier {
           // with the task list and the voice call), so notifications, the
           // chat bar and TTS all say the same thing for one outcome.
           final cls = (p['classifyState'] ?? '').toString();
-          _maybeNotify(
-            classifyNotificationWord(cls.isEmpty ? notifyState : cls),
-            notifyMsg,
-          );
+          // D 子状态（achieved/interact）只在终局成功帧带上：标题改说达成目标/需要交互。
+          final gs = (p['goalState'] ?? '').toString();
+          _maybeNotify(classifyNotificationWord(cls.isEmpty ? notifyState : cls, gs.isEmpty ? null : gs), notifyMsg);
         }
         break;
 

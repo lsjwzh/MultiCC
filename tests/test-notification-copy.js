@@ -187,7 +187,38 @@ test('整条标题（含 MultiCC #<会话>: 前缀）三侧同一个字符串', 
   }
 });
 
-// ── 2. B 必须说的不是 W 的话（本次改动的核心） ──────────────────────────────
+// ── 2. D 的子状态（goalState）只随终局成功的推送走 ───────────────────────────
+
+test('D 的子状态词（达成目标/需要交互）与词典逐字一致，且只挂在 succeeded 上', () => {
+  const pair = { achieved: 'statusGoalAchieved', interact: 'statusGoalInteract' };
+  for (const [goalState, key] of Object.entries(pair)) {
+    for (const locale of LOCALES) {
+      assert.equal(
+        SERVER.notificationCopy('D', locale, goalState).title,
+        DICT[locale][key],
+        `服务端 ${goalState}/${locale} 的子状态词与词典漂移了`,
+      );
+    }
+  }
+  // 子状态从不发明措辞：认不出的值、没给值、非 succeeded 的格子，一律退回原词。
+  for (const locale of LOCALES) {
+    const plain = serverTail('D', locale);
+    assert.equal(SERVER.notificationCopy('D', locale, 'bogus').title, plain);
+    assert.equal(SERVER.notificationCopy('D', locale, null).title, plain);
+    assert.equal(SERVER.notificationCopy('W', locale, 'achieved').title, serverTail('W', locale));
+    assert.equal(SERVER.notificationCopy('error', locale, 'interact').title, serverTail('E', locale));
+  }
+  // App 的本地通知标题走同一批 key（classifyNotificationWord 的 goalState 分支）；
+  // chat_provider 必须把 notify 帧里的 goalState 递进去，否则锁屏永远只说「执行成功」。
+  const providerSrc = read('app/lib/providers/chat_provider.dart');
+  assert.match(
+    providerSrc,
+    /classifyNotificationWord\(cls\.isEmpty \? notifyState : cls, gs\.isEmpty \? null : gs\)/,
+    'chat_provider 的 notify 帧没把 goalState 递给通知词',
+  );
+});
+
+// ── 3. B 必须说的不是 W 的话（本次改动的核心） ──────────────────────────────
 
 test('B（后台等待）与 W（等待操作）在每一侧都不是同一句话', () => {
   const dart = parseDart();
