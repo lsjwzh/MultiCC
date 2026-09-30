@@ -330,6 +330,18 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  /// 首页第一眼是控制台（Web 那边裸 `/air` 也落这一页），目录首页得先进一个目录
+  /// 才看得到 —— 跟用户点 ⋯ › 工作目录库 › 目录卡是同一条路。下面凡是要看目录首页
+  /// 的用例，pump 完都先按自己的快照选好目录（快照里有哪个 id 就进哪个）。
+  Future<void> openDirectory(WidgetTester tester, String dirId) async {
+    await tester.tap(find.byKey(const ValueKey('air-header-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('工作目录库'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(ValueKey('air-directory-$dirId')));
+    await tester.pumpAndSettle();
+  }
+
   // 状态徽标上的字来自 i18n 词典（注册表只给 key），不加载就只有 key。
   setUpAll(() => I18n.init('zh'));
 
@@ -355,6 +367,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(MaterialApp(home: AirTasksView(settings: settings, httpClient: client)));
     await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
     await tester.tap(find.byKey(const ValueKey('air-stat-running')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const ValueKey('air-directory-task-search')), '正文关键词');
@@ -392,6 +405,7 @@ void main() {
       home: AirTasksView(settings: settings, httpClient: client),
     ));
     await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
     expect(find.byKey(const ValueKey('air-directory-memo')), findsOneWidget);
     expect(find.byKey(const ValueKey('air-directory-artifacts')), findsOneWidget);
     expect(
@@ -433,6 +447,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
     expect(find.text('登录页面'), findsOneWidget);
     // 徽标说的是「这一轮在不在跑」（还没跑过 → 空闲），副行才说它走到哪一步、
     // 卡在哪 —— 与 Web Air 的任务行同一套分工。页头那颗「空闲」是目录的，这里
@@ -467,7 +482,12 @@ void main() {
     expect(tester.takeException(), isNull);
     // 首页只问一次 /api/air —— 目录库、侧栏、统计都从这一份快照里出。（侧栏底部
     // 的主机运维是另一条线，它自己问 /api/server-info 和 /api/version-check。）
-    expect(requests.where((path) => path.startsWith('/api/air')), ['/api/air']);
+    // 起手是两份：首页自己一份，落地的控制台那一页自成一页（`AirConsoleBody` 自己
+    // 拉 `/api/air`）又一份；切进目录首页之后整块都吃首页那一份，不再有新请求。
+    expect(requests.where((path) => path.startsWith('/api/air')), [
+      '/api/air',
+      '/api/air',
+    ]);
 
     await tester.tap(find.byKey(const ValueKey('air-task-delete-t1')));
     await tester.pumpAndSettle();
@@ -512,6 +532,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await openDirectory(tester, 'd1');
     final tile = find.byKey(const ValueKey('air-directory-task-t8'));
     expect(tile, findsOneWidget);
     final tileWidth = tester.getSize(tile).width;
@@ -567,6 +588,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await openDirectory(tester, 'd1');
     // 抬头上的数字说的是「筛出来几条 / 这个目录一共几条」。
     expect(find.text('全部任务'), findsOneWidget);
     expect(find.text('8 / 8 个任务'), findsOneWidget);
@@ -616,6 +638,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await openDirectory(tester, 'd1');
     expect(find.text('25 / 25 个任务'), findsOneWidget);
     expect(find.text('第 1 / 2 页'), findsOneWidget);
     // 第 1 页是最近的那 20 条（lastMessageAt 倒序）。
@@ -664,6 +687,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await openDirectory(tester, 'd1');
     List<String> visibleTitles() => tester
         .widgetList<AirTaskTile>(find.byType(AirTaskTile))
         .map((tile) => tile.task.title)
@@ -719,7 +743,12 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('air-menu-button')));
     await tester.pumpAndSettle();
-    expect(find.text('控制台'), findsOneWidget);
+    // 页头标题现在也叫「控制台」（控制台是主区里的一页，不再是一条 push 出来的
+    // 路由），所以「控制台」这三个字在盘面上有两处 —— 这里圈定抽屉里那一份。
+    expect(
+      find.descendant(of: find.byType(Drawer), matching: find.text('控制台')),
+      findsOneWidget,
+    );
     expect(find.text('定时任务'), findsOneWidget);
     // 侧栏那一组叫「最近任务」，首页抬头那块也叫「最近任务」（Web 上就是同一个
     // 词，`air.html` 的 `.section-heading` 与侧栏各一处），所以这里圈定抽屉里那份。
@@ -800,6 +829,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await openDirectory(tester, 'd1');
     // 目录首页最近任务：updatedAt 最新的是 t1，但 pin 住的 t5 必须排在最前。
     final pinnedTile = find.byKey(const ValueKey('air-directory-task-t5'));
     final newestTile = find.byKey(const ValueKey('air-directory-task-t1'));
@@ -842,6 +872,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
     // 页面里现在有两个可滚的东西（抬头那一截小窗口下也能滚 + 清单自己），所以
     // 「滚到某一行」要指名道姓，不能靠 find.byType(Scrollable) 去猜。
     await tester.scrollUntilVisible(
@@ -898,6 +929,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
     // 五条已钉住的任务按 pin 顺序排最前，t1 被推到最近列表的第六条 —— 在懒加载
     // 的 ListView 里落在视口外，先滚到它再点。
     final pinButton = find.byKey(const ValueKey('air-task-pin-t1'));
@@ -973,10 +1005,22 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.tap(find.text('控制台'));
+    // 点侧栏这一条：控制台现在是主区里的一页（`_mode` 切过去），页头标题也跟着
+    // 变成「控制台」—— 所以「控制台」这三个字不止一处，这里按 key 点，不按文案。
+    await tester.tap(find.byKey(const ValueKey('air-nav-console')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('air-console')), findsOneWidget);
-    expect(find.byKey(const ValueKey('air-console-urgent-t1')), findsOneWidget);
+    // 那条等待回复的任务在「等我回复」那一格里（清单默认收起，数字先摆着）。
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('air-console-tile-waiting')),
+        matching: find.text('1'),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('air-console-tile-waiting')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('air-console-task-t1')), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     client.close();
@@ -992,6 +1036,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    await openDirectory(tester, 'd1');
     await tester.tap(find.byKey(const ValueKey('air-directory-schedules')));
     await tester.pumpAndSettle();
     // 页内弹层：没有换页，铺的也只是这个目录那一列。
@@ -1426,11 +1471,15 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await openDirectory(tester, 'd1');
     await tester.tap(find.byKey(const ValueKey('air-task-details-t1')));
     await tester.pumpAndSettle();
 
     // 面板自己拉一次详情 —— 任务行那份快照里没有 attribution / execution。
+    // 前面那两份 `/api/air` 是加进来的：首页自己一份，转场前落地的控制台那一页
+    // 自成一页，也拉一份。
     expect(requests.where((path) => path.startsWith('/api/air')), [
+      '/api/air',
       '/api/air',
       '/api/air/tasks/t1',
     ]);

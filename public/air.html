@@ -51,7 +51,9 @@
     </div>
 
     <!-- 控制台和「定时任务」一样是主区域里的一页：点它就在右边打开，地址写
-         view=overview（/manage 与 App 的「网页版控制台」都落在这儿）。它从前是从
+         view=overview（裸 /air、/manage 与 App 的「网页版控制台」都落在这儿 ——
+         裸地址没有 view/dir/task 三个参数，air.js 的 readRouteParams 把它当作控制台
+         并顺手把地址规整成 ?view=overview）。它从前是从
          左侧滑出来的一层浮层 —— 那会盖住页头、要一张遮罩，关闭时还得把地址和当前
          任务都还原回去，而它本来就是「跨目录看全部任务」的一页内容（App 那边一直
          是独立页面，Web 这次跟上）。
@@ -220,8 +222,10 @@
             <nav id="directory-terminal-list" aria-label="本目录终端列表" data-i18n-aria-label="airTerminalsList"></nav>
           </section>
           <!-- 首启配置卡：/api/aux/config 还没有 providerId 时由 air.js 亮出来。
-               新用户落地就是 /air（/ 与 /manage 都重定向过来），旧版引导（tour.js）
-               只挂在已退役的 manage/chat 页上，等于主入口一直没有任何引导。这张卡
+               它挂在目录首页上，所以是用户点进任一个目录（或带 dir= 直接落地）时
+               看到的；裸 /air 与 /manage 现在都落控制台那一页（见上面控制台那段
+               注释），这张卡要等进了目录才露面。旧版引导（tour.js）只挂在已退役的
+               manage/chat 页上，等于主入口一直没有任何引导。这张卡
                就是 2.0 的引导：先有模型（导入线路或用 CLI 自带），再配 AI Assistant
                ——它是任务分类与归属的核心，必须配置，但轻量 flash 模型就够。配置
                完成后它永远消失；「暂时跳过」只记在本机。 -->
